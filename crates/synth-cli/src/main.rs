@@ -2421,7 +2421,9 @@ fn compile_all_exports(
         all_type_ret_f32,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f32 (call_indirect)
         all_type_ret_f64,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f64 (call_indirect)
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
-        all_call_indirect_guards, // #642: table size + closed-world type verdicts
+        all_extra_memory_segments, // #406: (mem_idx>0, offset, bytes) init segments on non-default memories
+        multi_memory_decline,      // #406: decode-level reason multi-memory must decline (if any)
+        all_call_indirect_guards,  // #642: table size + closed-world type verdicts
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2526,6 +2528,8 @@ fn compile_all_exports(
             Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f32-ret types
             Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f64-ret types
             Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
+            Vec::new(), // #406: non-default-memory data segments are single-module .wasm only
+            None,       // #406: the WAST fixture suite is single-memory — no decline reason
             // #642: the multi-module WAST merge has no single table image to
             // verify — the default guards DECLINE any call_indirect (the WAST
             // fixture suite carries none), never an unchecked branch.
@@ -2627,6 +2631,11 @@ fn compile_all_exports(
             module.type_ret_f32,
             module.type_ret_f64,
             module.wsc_facts,
+            // VCR-MEM-002 phase 1 (#406): active const-offset data segments on
+            // memories > 0 (previously silently dropped) + the decode-level
+            // decline reason (e.g. a non-const segment offset on memory k).
+            module.extra_memory_data_segments,
+            module.multi_memory_decline,
             guards, // #642
         )
     };
@@ -2645,6 +2654,56 @@ fn compile_all_exports(
                 mem.initial_pages,
                 max_str,
                 mem.initial_pages * 64
+            );
+        }
+    }
+
+    // VCR-MEM-002 phase 1 (#406): module-level multi-memory gates. The
+    // per-op declines in the selector catch every lowering hole, but these
+    // whole-module shapes are wrong BEFORE any op is selected — a multi-memory
+    // module on an unsupported path would ship memory k's init data dropped
+    // and its region unplaced even if no compiled function touches it. Refuse
+    // loudly up front (the #383/#739 honest-fail rule), never alias memory 0.
+    if let Some(reason) = &multi_memory_decline {
+        anyhow::bail!("multi-memory (#406): {reason}");
+    }
+    if all_memories.len() > 1 {
+        if backend.name() != "arm" {
+            anyhow::bail!(
+                "multi-memory (#406): the '{}' backend has no per-memory base \
+                 lowering — a module with {} linear memories compiles only on \
+                 the ARM --relocatable path (VCR-MEM-002 phase 1)",
+                backend.name(),
+                all_memories.len()
+            );
+        }
+        if !relocatable {
+            anyhow::bail!(
+                "multi-memory (#406): a module with {} linear memories cannot \
+                 be compiled into a self-contained image — there is only ONE \
+                 runtime linear-memory base (R11), so every memory would alias \
+                 it (a store to memory 1 silently clobbering memory 0). Compile \
+                 with --relocatable: memory k > 0 is addressed via its own \
+                 `__synth_wasm_data_<k>` region symbol, which the host \
+                 linker/runtime places (VCR-MEM-002 phase 1)",
+                all_memories.len()
+            );
+        }
+        if native_pointer_abi {
+            anyhow::bail!(
+                "multi-memory (#406): --native-pointer-abi is memory-0-only in \
+                 phase 1 — the static-data region classification \
+                 (#345/#354/#678/#739) has no per-memory layering. Drop \
+                 --native-pointer-abi or keep the module single-memory"
+            );
+        }
+        if shadow_stack_size.is_some() {
+            anyhow::bail!(
+                "multi-memory (#406): --shadow-stack-size shrinks MEMORY 0's \
+                 reservation geometry and has no defined meaning for a module \
+                 with {} linear memories in phase 1 — refusing rather than \
+                 shrinking the wrong region",
+                all_memories.len()
             );
         }
     }
@@ -2692,6 +2751,22 @@ fn compile_all_exports(
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
         linear_memory_bytes: all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+        // VCR-MEM-002 phase 1 (#406): per-memory initial page counts, indexed
+        // by memory index. Consulted ONLY by the multi-memory lowering arms —
+        // memory-0 lowering never reads it, so single-memory output is
+        // byte-identical whether it is set or empty.
+        memory_pages: {
+            let slots = all_memories
+                .iter()
+                .map(|m| m.index as usize + 1)
+                .max()
+                .unwrap_or(0);
+            let mut pages = vec![0u32; slots];
+            for m in &all_memories {
+                pages[m.index as usize] = m.initial_pages;
+            }
+            pages
+        },
         // #237: register-promote the stack-pointer global (only consulted under
         // native_pointer_abi) so the dissolved object needs no R9 globals table.
         stack_pointer_global: stack_pointer_global_opt,
@@ -3097,6 +3172,15 @@ fn compile_all_exports(
             target_spec,
             // #676: heterogeneous-table type-id sidecar (empty = no section).
             &config.call_indirect_guards.type_ids_image,
+            // VCR-MEM-002 phase 1 (#406): non-default memories become distinct
+            // `__synth_wasm_data_<k>` regions. Empty for every single-memory
+            // module ⇒ byte-identical output.
+            &all_memories
+                .iter()
+                .filter(|m| m.index > 0)
+                .map(|m| (m.index, m.initial_bytes()))
+                .collect::<Vec<_>>(),
+            &all_extra_memory_segments,
         )?
     } else if cortex_m {
         // #649: the self-contained image materializes the R9 globals table —
@@ -3385,6 +3469,16 @@ fn build_relocatable_elf(
     // #676: the call_indirect type-id sidecar image (one u32 class id per
     // table slot, region order; empty = no heterogeneous table = no section).
     table_type_ids: &[u32],
+    // VCR-MEM-002 phase 1 (#406): NON-DEFAULT linear memories as
+    // `(memory_index, initial_bytes)` with `memory_index > 0`. Each gets its
+    // own reservation section + `__synth_wasm_data_<k>` base symbol, so the
+    // host linker/runtime places every memory as a distinct region. Empty
+    // (every single-memory module) ⇒ zero new sections/symbols ⇒ output
+    // byte-identical.
+    extra_memories: &[(u32, u32)],
+    // #406: active const-offset data segments on non-default memories, as
+    // `(memory_index, offset, bytes)` — placed inside memory k's section.
+    extra_memory_data_segments: &[(u32, u32, Vec<u8>)],
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -4008,6 +4102,82 @@ fn build_relocatable_elf(
         }
     }
 
+    // VCR-MEM-002 phase 1 (#406): section-index bookkeeping for the per-memory
+    // regions below. The fixed prefix is null=0, shstrtab=1, strtab=2,
+    // symtab=3, `.text`=4; the memory-0 wasm-data region (when emitted)
+    // occupies 5, plus 6 when its PROGBITS companion was emitted (the #354
+    // mixed split's `.data`, or the #345 split's globals `.data` — the latter
+    // is unconditional because `split_linmem_bss` requires `native_layout`).
+    let mut next_section_index: u16 = 5;
+    if emit_wasm_data {
+        next_section_index += if do_mixed_split || split_linmem_bss {
+            2
+        } else {
+            1
+        };
+    }
+
+    // #406: one reservation section per NON-DEFAULT memory, in memory-index
+    // order, each `__synth_wasm_data_<k>`-addressable. A memory with init
+    // segments ships PROGBITS (segments placed at their offsets, rest zero —
+    // previously these segments were silently DROPPED); a pure zero-init
+    // memory ships NOBITS (no flash cost). The runtime contract mirrors
+    // memory 0's: the embedder maps each section at its full declared initial
+    // size, which is also what the per-memory `memory.size` constant lowering
+    // assumes (memory.grow on this backend always returns -1, so the initial
+    // size is the size).
+    let mut extra_memory_syms: Vec<(String, u16)> = Vec::new();
+    for &(mem_idx, mem_bytes) in extra_memories {
+        assert!(mem_idx > 0, "#406: memory 0 is the legacy wasm-data region");
+        let segs: Vec<&(u32, u32, Vec<u8>)> = extra_memory_data_segments
+            .iter()
+            .filter(|(k, _, _)| *k == mem_idx)
+            .collect();
+        for (_, off, d) in &segs {
+            if (*off as u64) + (d.len() as u64) > mem_bytes as u64 {
+                anyhow::bail!(
+                    "multi-memory (#406): active data segment [{off:#x}, \
+                     {:#x}) overflows memory {mem_idx}'s declared initial size \
+                     ({mem_bytes} B) — instantiation would trap; refusing to \
+                     truncate",
+                    (*off as u64) + (d.len() as u64)
+                );
+            }
+        }
+        let name = format!(".synth.wasm_mem_{mem_idx}");
+        let section = if segs.is_empty() {
+            Section::new(&name, ElfSectionType::NoBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_size(mem_bytes)
+        } else {
+            let mut blob = vec![0u8; mem_bytes as usize];
+            for (_, off, d) in &segs {
+                blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+            }
+            Section::new(&name, ElfSectionType::ProgBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_data(blob)
+        };
+        elf_builder.add_section(section);
+        extra_memory_syms.push((format!("__synth_wasm_data_{mem_idx}"), next_section_index));
+        next_section_index += 1;
+    }
+    // #406: a segment targeting a memory index with no declared region would
+    // otherwise be silently dropped — the exact pre-#406 failure mode.
+    for (k, _, _) in extra_memory_data_segments {
+        if !extra_memories.iter().any(|(i, _)| i == k) {
+            anyhow::bail!(
+                "multi-memory (#406): active data segment targets memory {k}, \
+                 which has no declared region in this object — refusing to \
+                 drop its init bytes"
+            );
+        }
+    }
+
     // Symbol-name -> symbol index map. Symbol indices are 1-based (index 0 is
     // the reserved null symbol); each `add_symbol` appends one, so we track the
     // running count to know the index of each symbol we define.
@@ -4117,6 +4287,22 @@ fn build_relocatable_elf(
             sym_count += 1;
             sym_indices.insert("__synth_globals".to_string(), sym_count);
         }
+    }
+
+    // VCR-MEM-002 phase 1 (#406): define `__synth_wasm_data_<k>` at the base
+    // of each non-default memory's reservation section. The selector's
+    // `LdrSym` literal-pool words carry `R_ARM_ABS32` against these, so the
+    // host linker places each memory as its own region — never aliased onto
+    // memory 0's base.
+    for (name, shndx) in &extra_memory_syms {
+        let mem_sym = Symbol::new(name)
+            .with_value(0)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Object)
+            .with_section(*shndx);
+        elf_builder.add_symbol(mem_sym);
+        sym_count += 1;
+        sym_indices.insert(name.clone(), sym_count);
     }
 
     let mut import_label_to_field: HashMap<String, String> = HashMap::new();
@@ -6325,6 +6511,8 @@ mod tests {
             None,
             &TargetSpec::cortex_m3(),
             &[],
+            &[], // #406: single-memory — no extra regions
+            &[],
         )
         .expect("#345: native-pointer zero-linmem object builds");
 
@@ -6432,6 +6620,8 @@ mod tests {
             None,
             &TargetSpec::cortex_m3(),
             &[],
+            &[], // #406: single-memory — no extra regions
+            &[],
         )
         .expect("#345: native-pointer literal-pool object builds");
 
@@ -6526,6 +6716,8 @@ mod tests {
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
+            &[],
+            &[], // #406: single-memory — no extra regions
             &[],
         )
         .expect("#354: mixed-case object builds");
