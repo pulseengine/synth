@@ -439,6 +439,19 @@ jobs:
       # crates/synth-cli/tests/multi_memory_406.rs.
       - name: Run multi-memory distinct-regions oracle (#406, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/multi_memory_406_differential.py
+      # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
+      # no native-pointer ABI) must SHIP active memory-0 data segments. Before
+      # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
+      # so every load from an initialized region read 0 (silent miscompile of
+      # any string/lookup/const table). The fix appends the segment bytes to
+      # `.text` as a flash ROM image and copies ROM->RAM in Reset_Handler (crt0
+      # `.data` init), copy dst = the same optimized_linmem_base() the functions
+      # address. The oracle maps ZEROED RAM (inits must come from startup),
+      # executes the REAL reset path, and checks two segments at distinct
+      # offsets, a byte load mid-segment, an unaligned segment, and a zero-init
+      # region (must stay 0). RED on v0.43.0 (4/5 read 0) -> GREEN.
+      - name: Run self-contained data-segment oracle (#758, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/self_contained_data_758_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)

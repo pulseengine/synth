@@ -1440,6 +1440,9 @@ fn compile_command(
     // #649: initial R9 globals-table contents for the self-contained image
     // (both words of an i64 init). Empty for the demo path.
     let mut startup_globals_words: Vec<u32> = Vec::new();
+    // #758: set when the single-function compile path decodes a module carrying
+    // active data segments — the single-func cortex-m builder can't ship them.
+    let mut single_func_has_data_segments = false;
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
@@ -1496,6 +1499,11 @@ fn compile_command(
             // #649: capture the initial globals-table contents so the
             // self-contained image's startup can materialize them.
             startup_globals_words = globals_table_words(&module.globals);
+            // #758: the single-function builder (`build_cortex_m_elf`) has no
+            // data-segment plumbing — a data-carrying module compiled through
+            // this path would silently read zeros. Record so the cortex-m call
+            // below loud-declines rather than emit that silent miscompile.
+            single_func_has_data_segments = !module.data_segments.is_empty();
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             func_params_f32_all = module.func_params_f32.clone();
@@ -1738,6 +1746,22 @@ fn compile_command(
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
+        // #758: the single-function self-contained builder ships no data
+        // segments (only the multi-function `--all-exports` path does). Rather
+        // than emit an image whose initialized regions silently read zero,
+        // decline loudly — the default `synth compile <file>` route already
+        // uses the multi-function path, so this only fires for an explicit
+        // single-function selection of a data-carrying module.
+        if single_func_has_data_segments {
+            anyhow::bail!(
+                "module carries active data segment(s), but the single-function \
+                 self-contained Cortex-M path cannot ship them (they would \
+                 silently read as zero). Compile the whole module (drop \
+                 --func-index/--func-name so the multi-function `--all-exports` \
+                 path runs, which materializes data at reset) or use \
+                 --relocatable (#758)."
+            );
+        }
         build_cortex_m_elf(
             &code,
             &func_name,
@@ -3222,6 +3246,10 @@ fn compile_all_exports(
             target_spec,
             &globals_table_words(&all_globals),
             stack_layout,
+            // #758: active memory-0 data segments — the self-contained startup
+            // now ships them in flash and copies ROM→RAM at reset. Empty ⇒ the
+            // NoBits linear-memory path is byte-identical to before.
+            &all_data_segments,
         )?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
@@ -4715,6 +4743,11 @@ fn build_multi_func_cortex_m_elf(
     globals_words: &[u32],
     // #687: resolved --stack-layout (see the SRAM layout contract above).
     stack_layout: StackLayout,
+    // #758: active memory-0 data segments (offset, bytes). Non-empty ⇒ the
+    // startup ships them in a flash ROM image (appended to `.text`) and copies
+    // ROM→RAM at reset (the classic crt0 `.data` init). Empty ⇒ the linear
+    // memory stays NoBits and the whole image is byte-identical to before.
+    data_segments: &[(u32, Vec<u8>)],
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -4735,6 +4768,43 @@ fn build_multi_func_cortex_m_elf(
             globals_table_bytes
         );
     }
+
+    // #758: build the ROM init image for active memory-0 data segments. The
+    // self-contained image has NO loader that populates RAM from PT_LOAD (the
+    // chip/emulator just presents zeroed SRAM at ram_base), so — like the
+    // #649 R9 globals table — the initializer bytes must be SHIPPED IN FLASH
+    // and COPIED to RAM by the reset path. We pack the segments into a dense
+    // blob `[0..data_extent)` placed at their offsets (later segments overwrite
+    // earlier ones — WASM instantiation order; gaps stay zero and copy
+    // harmlessly over already-zero RAM), append it to `.text`, and emit a
+    // byte-granular ROM→RAM copy loop in the startup.
+    // u64 arithmetic (like the #406 multi-memory bail below) so a wrapped
+    // `off + len` cannot pass the bounds check and then panic in the blob fill.
+    let data_extent_u64: u64 = data_segments
+        .iter()
+        .map(|(off, d)| *off as u64 + d.len() as u64)
+        .max()
+        .unwrap_or(0);
+    if data_extent_u64 > linear_memory_size as u64 {
+        anyhow::bail!(
+            "active data segment extends to {} bytes but linear memory is only \
+             {} bytes ({} pages) — instantiation would trap; refusing to \
+             truncate the initializer (#758)",
+            data_extent_u64,
+            linear_memory_size,
+            linear_memory_pages
+        );
+    }
+    let data_extent: u32 = data_extent_u64 as u32;
+    let data_rom_image: Vec<u8> = if data_extent == 0 {
+        Vec::new()
+    } else {
+        let mut blob = vec![0u8; data_extent as usize];
+        for (off, d) in data_segments {
+            blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+        }
+        blob
+    };
 
     // RAM layout — see the SRAM layout contract in this function's doc (#687).
     //
@@ -4778,11 +4848,18 @@ fn build_multi_func_cortex_m_elf(
     let vector_table_size: u32 = 128;
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(
+    let (startup_code, data_src_patch_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         linmem_base,
         target.has_fpu(),
+        // #758: bytes to copy ROM→RAM at reset (0 = no copy loop emitted, the
+        // blob is empty, and the startup is byte-identical to before).
+        data_extent,
+        // #758: copy destination = the base the compiled functions address
+        // linear memory at (same expression used to compile them, so the two
+        // can't drift under --stack-layout=low or a future base change).
+        stack_layout.optimized_linmem_base(),
     );
     let startup_size = startup_code.len() as u32;
 
@@ -4934,6 +5011,40 @@ fn build_multi_func_cortex_m_elf(
 
     // All function code
     flash_image.extend_from_slice(&all_func_code);
+
+    // #758: append the data ROM init image (4-aligned) after the function
+    // code. It lands INSIDE `.text` (the `.text` section IS `flash_image`), so
+    // any loader/harness that maps `.text` ships the initializer bytes with no
+    // extra section — and no shift of this builder's hand-computed
+    // `text_file_offset` / section indices. The startup's src `MOVW/MOVT R0`
+    // is patched to this ROM address so the reset-path copy loop reads it.
+    if !data_rom_image.is_empty() {
+        while !flash_image.len().is_multiple_of(4) {
+            flash_image.push(0);
+        }
+        let data_rom_addr = flash_base + flash_image.len() as u32;
+        flash_image.extend_from_slice(&data_rom_image);
+
+        // Patch the src address into the startup copy loop's `MOVW/MOVT R0`.
+        // `data_src_patch_off` is the offset of the MOVW within the startup
+        // blob; the startup blob starts at `startup_addr - flash_base` in the
+        // flash image. Non-empty ROM image ⇒ the offset is always Some.
+        let patch_at = (startup_addr - flash_base) as usize
+            + data_src_patch_off.expect(
+                "#758: data ROM image present but startup emitted no src-patch \
+                 offset — generate_minimal_startup invariant violated",
+            );
+        let movw = encode_thumb2_movw(0, (data_rom_addr & 0xFFFF) as u16);
+        let movt = encode_thumb2_movt(0, (data_rom_addr >> 16) as u16);
+        flash_image[patch_at..patch_at + 4].copy_from_slice(&movw);
+        flash_image[patch_at + 4..patch_at + 8].copy_from_slice(&movt);
+        info!(
+            "  #758 data ROM image: {} bytes at 0x{:08x}, copied to linmem 0x{:08x} at reset",
+            data_rom_image.len(),
+            data_rom_addr,
+            linmem_base
+        );
+    }
 
     // Build ELF
     let flash_size = flash_image.len() as u32;
@@ -5661,11 +5772,17 @@ fn build_cortex_m_elf(
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(
+    let (startup_code, _data_src_patch_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         linmem_base,
         target.has_fpu(),
+        // #758: the single-function twin never carries data segments (the
+        // caller loud-declines a data-carrying module before reaching here),
+        // so no ROM→RAM copy loop — byte-identical to before. dst is inert
+        // (data_copy_bytes = 0 suppresses the whole copy block).
+        0,
+        stack_layout.optimized_linmem_base(),
     );
     let startup_size = startup_code.len() as u32;
 
@@ -5836,14 +5953,33 @@ fn build_cortex_m_elf(
 ///   high stack layout; `0x20000000 + stack_size` under `--stack-layout=low`,
 ///   #687)
 /// * R9  = `linmem_base` + memory_size (globals table; only when globals exist)
+///
+/// Returns the startup blob and, when a #758 ROM→RAM data-copy loop was
+/// emitted, the byte offset of the src-address `MOVW` within the blob so the
+/// caller can patch the ROM image's flash address once the layout is known
+/// (`None` = no copy loop, e.g. no data segments / single-function twin).
 fn generate_minimal_startup(
     memory_size: u32,
     globals_words: &[u32],
     linmem_base: u32,
     enable_fpu: bool,
-) -> Vec<u8> {
+    // #758: number of bytes to copy from the flash ROM image to linear memory
+    // at reset. 0 = no copy loop; startup is byte-identical to before.
+    data_copy_bytes: u32,
+    // #758: destination base of that copy — the base the COMPILED FUNCTIONS
+    // address linear memory at (`stack_layout.optimized_linmem_base()` =
+    // 0x2000_0100 + stack_reserve), which is 0x100 ABOVE the startup's R11
+    // `linmem_base` (0x2000_0000) by design (#687). The R11-relative load fold
+    // folds that 0x100 into its immediate, so a function's wasm-offset X lands
+    // at data_copy_dst + X — that is where the ROM bytes must go.
+    data_copy_dst: u32,
+) -> (Vec<u8>, Option<usize>) {
     // This startup code:
-    // 0. (GI-FPU-002, #619) On an FPU target, enables CP10/CP11 in SCB->CPACR
+    // 0. (#758) When there are active data segments, copy `data_copy_bytes`
+    //    from the flash ROM image (appended to `.text`) into linear memory —
+    //    the classic crt0 `.data` init, since the self-contained image has no
+    //    loader to populate RAM from PT_LOAD.
+    // 0b. (GI-FPU-002, #619) On an FPU target, enables CP10/CP11 in SCB->CPACR
     //    so VFP instructions don't fault (the FPU is disabled at reset).
     // 1. Initializes R10 with memory size (for bounds checking)
     // 2. Initializes R11 with the linear memory base for WASM memory access
@@ -5861,11 +5997,52 @@ fn generate_minimal_startup(
     //   B .                ; Infinite loop
     //   .word func_addr    ; Literal pool
 
+    let mut code: Vec<u8> = Vec::new();
+
+    // #758: ROM→RAM data-copy loop, emitted FIRST (before any other block) so
+    // the src-address MOVW sits at a deterministic offset (0) and runs before
+    // user code. Uses only integer ops — no PC-relative literal load, so it
+    // cannot collide with the `01 48 80 47` (`LDR r0,[pc,#4]; BLX r0`) scaffold
+    // the reset-path harnesses locate. All addresses via MOVW/MOVT (like R9/
+    // R10/R11), so the src-patch is a MOVW/MOVT immediate rewrite, not a new
+    // literal. `data_copy_bytes` is known-nonzero here, so a do-while loop
+    // (no zero-guard) is sound.
+    //   R0 = src (flash ROM addr, PATCHED post-layout — starts #0)
+    //   R1 = dst = data_copy_dst (the base the functions address)
+    //   R2 = count = data_copy_bytes
+    // copy: LDRB R3,[R0],#1 ; STRB R3,[R1],#1 ; SUBS R2,R2,#1 ; BNE copy
+    let src_patch_off: Option<usize> = if data_copy_bytes > 0 {
+        let off = code.len(); // 0 — copy block is first
+        // MOVW/MOVT R0, #0 (src placeholder; patched with the ROM flash addr)
+        code.extend_from_slice(&encode_thumb2_movw(0, 0));
+        code.extend_from_slice(&encode_thumb2_movt(0, 0));
+        // MOVW/MOVT R1, #data_copy_dst (dst — the function-visible linmem base)
+        code.extend_from_slice(&encode_thumb2_movw(1, (data_copy_dst & 0xFFFF) as u16));
+        code.extend_from_slice(&encode_thumb2_movt(1, (data_copy_dst >> 16) as u16));
+        // MOVW/MOVT R2, #data_copy_bytes (count)
+        code.extend_from_slice(&encode_thumb2_movw(2, (data_copy_bytes & 0xFFFF) as u16));
+        code.extend_from_slice(&encode_thumb2_movt(2, (data_copy_bytes >> 16) as u16));
+        // copy loop (4 x 16-bit Thumb = 8 bytes):
+        // LDRB R3,[R0],#1  — T3 post-indexed: F810 3B01
+        code.extend_from_slice(&[0x10, 0xF8, 0x01, 0x3B]);
+        // STRB R3,[R1],#1  — T3 post-indexed: F801 3B01
+        code.extend_from_slice(&[0x01, 0xF8, 0x01, 0x3B]);
+        // SUBS R2,R2,#1    — 16-bit T2: 3A01
+        code.extend_from_slice(&[0x01, 0x3A]);
+        // BNE copy (back to the LDRB) — 16-bit T1 cond branch (cond=NE=0001).
+        // Body is LDRB(4)+STRB(4)+SUBS(2)+BNE(2) = 12 bytes; BNE sits 10 bytes
+        // after LDRB. PC = BNE_addr + 4 ⇒ offset = LDRB_addr - PC = -14,
+        // imm8 = -14/2 = -7 = 0xF9. Encoding: 0xD1 0xF9 ⇒ LE bytes F9 D1.
+        code.extend_from_slice(&[0xF9, 0xD1]);
+        Some(off)
+    } else {
+        None
+    };
+
     // Encode MOVW/MOVT for R10 with memory_size
     let r10_movw = encode_thumb2_movw(10, (memory_size & 0xFFFF) as u16);
     let r10_movt = encode_thumb2_movt(10, (memory_size >> 16) as u16);
 
-    let mut code: Vec<u8> = Vec::new();
     // GI-FPU-002 (#619/#369): enable the FPU before any VFP instruction runs.
     // SCB->CPACR (0xE000ED88) |= 0x00F00000 sets CP10+CP11 to full access, then
     // DSB+ISB. Seven 4-byte Thumb-2 instructions (28 bytes, a multiple of 4) so
@@ -5925,7 +6102,7 @@ fn generate_minimal_startup(
     code.extend_from_slice(&[0x00, 0x00]);
     // Literal pool placeholder — LAST word, patched with func_addr | 1
     code.extend_from_slice(&[0x91, 0x00, 0x00, 0x00]);
-    code
+    (code, src_patch_off)
 }
 
 /// Encode Thumb-2 MOVW instruction (move 16-bit immediate to low half of register)
@@ -7021,7 +7198,11 @@ mod tests {
     fn test_minimal_startup_generation() {
         // Test with 64KB memory size (0x10000)
         let memory_size: u32 = 64 * 1024;
-        let startup = generate_minimal_startup(memory_size, &[], 0x2000_0000, false);
+        // #758: no data segments ⇒ data_copy_bytes = 0, no copy loop, and the
+        // src-patch offset is None — the blob is byte-identical to before.
+        let (startup, patch) =
+            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100);
+        assert!(patch.is_none(), "no copy loop when data_copy_bytes == 0");
 
         // Should be 28 bytes:
         // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
@@ -7061,8 +7242,10 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
         let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
-        let startup = generate_minimal_startup(memory_size, &words, 0x2000_0000, false);
-        let empty = generate_minimal_startup(memory_size, &[], 0x2000_0000, false);
+        let startup =
+            generate_minimal_startup(memory_size, &words, 0x2000_0000, false, 0, 0x2000_0100).0;
+        let empty =
+            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100).0;
 
         // 16 scaffold + 8 (R9 movw/movt) + 3 * 12 (movw/movt/str) + 12 tail
         assert_eq!(startup.len(), 16 + 8 + 36 + 12, "materializer size");
@@ -7097,8 +7280,8 @@ mod tests {
         let base_low = base_high + DEFAULT_LOW_STACK_SIZE; // 0x2000_1000
         let words = [0x0C0FFEE1u32];
 
-        let low = generate_minimal_startup(memory_size, &words, base_low, false);
-        let high = generate_minimal_startup(memory_size, &words, base_high, false);
+        let low = generate_minimal_startup(memory_size, &words, base_low, false, 0, base_low).0;
+        let high = generate_minimal_startup(memory_size, &words, base_high, false, 0, base_high).0;
         assert_eq!(low.len(), high.len(), "same shape, shifted constants");
 
         // R10 (memory size) identical.
