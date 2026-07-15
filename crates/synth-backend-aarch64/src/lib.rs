@@ -14,11 +14,21 @@
 //!   add/sub/mul/and/or/xor + const, result to `w0`, `ret`). `compile_bytes`
 //!   turns a leaf integer function's wasm ops into A64 machine code. Ops outside
 //!   the subset return `Unsupported` — an honest loud-skip, never wrong code.
-//! - **1b (next):** an `EM_AARCH64` relocatable-ELF emitter, the `Backend` trait
-//!   impl, `-b aarch64` CLI wiring, and the native differential-execution
-//!   acceptance probe (`synth compile add.wat -b aarch64` → link + run on the
-//!   arm64 host, diff vs wasmtime).
-//! - **later:** spilling, i64, floats, memory, control flow, calls, DWARF.
+//! - **1b:** an `EM_AARCH64` relocatable-ELF emitter, the `Backend` trait impl,
+//!   `-b aarch64` CLI wiring, and the native differential-execution acceptance
+//!   probe (`synth compile add.wat -b aarch64` → link + run on the arm64 host,
+//!   diff vs wasmtime).
+//! - **2 (this milestone):** broaden the covered ops from the i32 core to the
+//!   FULL i32 + i64 integer ALU — i64 x-form arithmetic/bitwise + const,
+//!   i32/i64 shifts (`shl`/`shr_s`/`shr_u`) and rotates (`rotr`/`rotl`),
+//!   `clz`/`ctz`, and the whole compare family (`eq/ne/lt/gt/le/ge` s+u, `eqz`)
+//!   via `cmp`+`cset`. Every op is clang-byte-verified and native-differential
+//!   green vs wasmtime (`scripts/repro/aarch64_m2_538_*.py`). Division
+//!   (`div`/`rem`), `popcnt`, and floats are DELIBERATELY still declined — A64
+//!   `SDIV`/`UDIV` don't trap, so a naive division lowering would be a silent
+//!   miscompile; those need explicit trap guards in a later milestone.
+//! - **later:** division-with-trap-guards, floats, spilling, memory, control
+//!   flow, calls, DWARF.
 
 pub mod backend;
 pub mod elf;
