@@ -731,6 +731,80 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// #494 Phase 3+: redundant-mask (narrowing) elision. When the value `a`
+    /// is proven narrow enough that `a & b == a` on every P-admissible input
+    /// (`UNSAT(P ∧ (a & b) ≠ a)`), the `i32.and` is the identity — its mask
+    /// operand `b` and the `and` op itself are deleted and `a` flows through
+    /// unchanged. This is the "known-narrow-value ⇒ drop the mask" class: a
+    /// dissolved primitive gives LLVM no range on the value, so it keeps the
+    /// `and`/`uxtb`; the fact makes the mask provably dead. Only the common
+    /// wasm order (`value ; const-mask ; and`, keep `a`) is handled — anything
+    /// else DECLINES LOUDLY and the general `and` stands. Returns the surviving
+    /// operand's `Val` on admit (deletion recorded), `None` on decline.
+    fn try_elide_mask(&mut self, i: usize, a: &Val, b: &Val, result_bv: &BV) -> Option<Val> {
+        if self.premises.is_empty() {
+            self.decline(format!(
+                "op#{i} i32.and — no premise reaches this site (no usable value-range fact)"
+            ));
+            return None;
+        }
+        // The mask operand `b` must be a pure, contiguous producer sitting
+        // immediately between `a`'s slice and the `and` — otherwise deleting
+        // it could drop live work (`local.tee`) or leave a gap.
+        let Some(sb) = b.start else {
+            self.decline(format!(
+                "op#{i} i32.and — mask slice is impure or non-contiguous (not erasable)"
+            ));
+            return None;
+        };
+        if a.created + 1 != sb || b.created + 1 != i {
+            self.decline(format!(
+                "op#{i} i32.and — mask operand is not produced immediately before the and \
+                 (non-contiguous)"
+            ));
+            return None;
+        }
+        let mut solver = new_solver();
+        for p in &self.premises {
+            solver.assert(p);
+        }
+        // UNSAT(P ∧ (value & mask) ≠ value) ⇒ the mask never clears a bit of
+        // the value under P ⇒ the `and` is the identity, so the general and
+        // the specialized lowerings (result = value) agree on every P input.
+        solver.assert(&result_bv.ne(&a.bv));
+        match solver.check() {
+            CheckOutcome::Unsat => {
+                self.deletions.push((sb, i));
+                self.admitted.push(format!(
+                    "{}: op#{i} i32.and — redundant mask elided (value proven narrow): \
+                     UNSAT(P ∧ (value & mask) ≠ value) via {} (certificate-checked QF_BV; \
+                     every Unsat carries an LRAT proof validated by ordeal-lrat); deleted \
+                     mask/and [{sb}..={i}]; P = {{{}}}; value = {}",
+                    self.func,
+                    solver.name(),
+                    self.premise_desc.join(" ∧ "),
+                    a.bv,
+                ));
+                Some(a.clone())
+            }
+            CheckOutcome::Sat => {
+                let cex = self.counterexample(solver.as_ref());
+                self.decline(format!(
+                    "op#{i} i32.and — mask is not redundant under P (value can carry a bit \
+                     outside the mask; counterexample: {cex}); general and retained"
+                ));
+                None
+            }
+            CheckOutcome::Unknown(reason) => {
+                self.decline(format!(
+                    "op#{i} i32.and — mask-redundancy obligation Unknown ({reason}); \
+                     conservative decline, general and retained"
+                ));
+                None
+            }
+        }
+    }
+
     fn walk(&mut self) {
         if self.range_facts.is_empty() && self.nonzero_facts.is_empty() {
             self.decline(
@@ -802,12 +876,46 @@ impl<'a> Pass<'a> {
                     let start = a.start.filter(|_| a.created + 1 == i);
                     self.push(bv, start, i);
                 }
+                // #494 Phase 3+: `i32.and` — tracked like the other trap-free
+                // binops, but additionally attempts the redundant-mask elision
+                // (a proven-narrow value makes the mask the identity). A
+                // NON-eliding `and` pushes the EXACT `(bv, start, i)` the
+                // general binop arm below produces — so flag-off stays
+                // byte-identical.
+                WasmOp::I32And => {
+                    let (Some(b), Some(a)) = (self.stack.pop(), self.stack.pop()) else {
+                        self.decline(format!("op#{i} binop on underflowing symbolic stack"));
+                        return;
+                    };
+                    if a.bv.get_size() != 32 || b.bv.get_size() != 32 {
+                        self.decline(format!("op#{i} i32 binop on a non-32-bit operand"));
+                        return;
+                    }
+                    let bv = self.sem.encode_op(op, &[a.bv.clone(), b.bv.clone()]);
+                    self.attach_fact(i, &bv);
+                    // The general binop arm's contiguity proof, verbatim.
+                    let start = match (a.start, b.start) {
+                        (Some(sa), Some(sb)) if a.created + 1 == sb && b.created + 1 == i => {
+                            Some(sa)
+                        }
+                        _ => None,
+                    };
+                    match self.try_elide_mask(i, &a, &b, &bv) {
+                        // Admitted: the mask/and slice was recorded for
+                        // deletion; the surviving value flows through. `start =
+                        // None` keeps the collapsed result out of any later
+                        // erasable slice (conservative, like select-collapse).
+                        Some(surviving) => self.push(surviving.bv, None, i),
+                        // Declined (loud): the general `and` stands, pushed
+                        // exactly as the general binop arm would.
+                        None => self.push(bv, start, i),
+                    }
+                }
                 // Tracked, trap-free i32 binops (div/rem excluded on purpose:
                 // they can trap, and a deleted slice must be effect-free).
                 WasmOp::I32Add
                 | WasmOp::I32Sub
                 | WasmOp::I32Mul
-                | WasmOp::I32And
                 | WasmOp::I32Or
                 | WasmOp::I32Xor
                 | WasmOp::I32Shl
@@ -1662,6 +1770,132 @@ mod tests {
             vec![6],
             "mark remapped from original op#13 to rewritten op#6"
         );
+    }
+
+    // ============ #494 Phase 3+: redundant-mask (narrowing) elision ============
+
+    /// A representative dissolved DSP kernel: pack two proven-11-bit lanes,
+    /// `lo | (hi << 11)`. Both `& 0x7FF` masks are redundant under the lane
+    /// bounds — LLVM keeps them (no range on the params); the facts drop them.
+    fn pack_lanes_ops() -> Vec<WasmOp> {
+        vec![
+            LocalGet(0),     // 0  lo    ← fact [0, 2047]
+            I32Const(0x7FF), // 1
+            I32And,          // 2  lo & 0x7FF  (redundant)
+            LocalGet(1),     // 3  hi    ← fact [0, 2047]
+            I32Const(0x7FF), // 4
+            I32And,          // 5  hi & 0x7FF  (redundant)
+            I32Const(11),    // 6
+            I32Shl,          // 7  hi << 11
+            I32Or,           // 8  lo | (hi << 11)
+            End,             // 9
+        ]
+    }
+
+    #[test]
+    fn narrow_value_elides_redundant_mask_494() {
+        // lo, hi ∈ [0, 2047] ⇒ `x & 0x7FF == x`: both masks fall to
+        // UNSAT(P ∧ (value & mask) ≠ value); each deletes its `const;and` pair.
+        let ops = pack_lanes_ops();
+        let r = specialize_function(
+            "gust_kernel",
+            &ops,
+            &[],
+            &[fact(0, 0, 2047), fact(3, 0, 2047)],
+            &[],
+        );
+        assert_eq!(r.admitted.len(), 2, "declines: {:?}", r.declined);
+        assert!(r.changed());
+        assert_eq!(
+            r.ops,
+            vec![
+                LocalGet(0), // lo flows through the elided mask
+                LocalGet(1), // hi flows through the elided mask
+                I32Const(11),
+                I32Shl,
+                I32Or,
+                End,
+            ],
+            "both redundant masks must be gone, the arithmetic intact"
+        );
+        assert_eq!(r.kept, vec![0, 3, 6, 7, 8, 9]);
+        for line in &r.admitted {
+            assert!(line.contains("UNSAT(P ∧ (value & mask) ≠ value)"), "{line}");
+            assert!(line.contains("certificate-checked"), "{line}");
+            assert!(line.contains("redundant mask elided"), "{line}");
+        }
+    }
+
+    #[test]
+    fn wide_bound_makes_mask_live_and_declines_byte_identically_494() {
+        // lo ∈ [0, 0xFFF]: value 0x800 has bit 11 set, OUTSIDE the 0x7FF mask,
+        // so `x & 0x7FF != x` is Sat — the mask is genuinely live. BOTH sites
+        // decline loudly with a counterexample; the stream is byte-identical.
+        let ops = pack_lanes_ops();
+        let r = specialize_function(
+            "gust_kernel",
+            &ops,
+            &[],
+            &[fact(0, 0, 0xFFF), fact(3, 0, 0xFFF)],
+            &[],
+        );
+        assert_eq!(r.admitted.len(), 0);
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops, "declined ⇒ byte-identical op stream");
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("not redundant") && d.contains("counterexample")),
+            "declines must be loud and carry a model: {:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn mask_without_constraining_premise_declines_no_false_elision_494() {
+        // A TRUE ValueRange fact exists (so the walk runs) but targets the mask
+        // const, not the value; the masked value carries no premise ⇒ the
+        // obligation is Sat ⇒ loud decline, byte-identical.
+        let ops = vec![
+            LocalGet(0),     // 0  value — unconstrained
+            I32Const(0x7FF), // 1  mask ← fact [0x7FF, 0x7FF] (true, non-constraining)
+            I32And,          // 2
+            End,             // 3
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(1, 0x7FF, 0x7FF)], &[]);
+        assert_eq!(r.admitted.len(), 0);
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops);
+    }
+
+    #[test]
+    fn signed_narrow_bound_that_admits_negative_keeps_the_mask_494() {
+        // value ∈ [-1, 2047]: -1 is all-ones, so `-1 & 0x7FF = 0x7FF != -1` —
+        // the obligation is Sat and the mask is (correctly) retained. Guards
+        // against a naive "hi ≤ mask" shortcut that ignores the sign bit.
+        let ops = vec![
+            LocalGet(0),     // 0  ← fact [-1, 2047]
+            I32Const(0x7FF), // 1
+            I32And,          // 2
+            End,             // 3
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(0, -1, 2047)], &[]);
+        assert_eq!(
+            r.admitted.len(),
+            0,
+            "a negative value fails the mask identity"
+        );
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops);
+    }
+
+    #[test]
+    fn mask_elision_no_facts_changes_nothing_494() {
+        let ops = pack_lanes_ops();
+        let r = specialize_function("gust_kernel", &ops, &[], &[], &[]);
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops);
+        assert!(!r.declined.is_empty(), "the no-fact case is a loud decline");
     }
 
     #[test]

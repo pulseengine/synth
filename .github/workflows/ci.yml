@@ -388,7 +388,7 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/f64_369_differential.py
 
   fact-spec-oracle:
-    name: fact-spec elision oracle (#494 phases 2 + 2b)
+    name: fact-spec elision oracle (#494 phases 2 + 2b + 3+)
     # VCR-PERF-002 Phase 2 (#494): the proof-carrying-specialization lever
     # (SYNTH_FACT_SPEC, default off; per-elision ordeal obligation). Built
     # with the `verify` feature (the solver lives in synth-verify — pure-Rust
@@ -455,6 +455,20 @@ jobs:
         run: >
           python scripts/repro/fact_spec_select_494_differential.py
           --fact-lo 0 --fact-hi 4000 --expect-decline
+      # #494 phase 3+ — redundant-mask (narrowing) elision: a proven-narrow
+      # value makes an `i32.and` mask the identity, so it is deleted. On the
+      # representative gust_kernel lane-pack (`lo | (hi<<11)`, both lanes proven
+      # ∈ [0,2047], masks `& 0x7FF` that are NOT uxtb/uxth-foldable) this is an
+      # unambiguous byte win LLVM cannot make (no range on the dissolved
+      # params): in-bounds differential (specialized ≡ wasmtime ≡ unspecialized,
+      # 2 elisions + a required shrink) and the wrong-bound loud-decline
+      # byte-identity leg (bound [0,4095] makes `x & 0x7FF != x` Sat).
+      - name: Run mask-elision in-bounds differential (proven bound)
+        run: python scripts/repro/fact_spec_mask_494_differential.py
+      - name: Run mask-elision wrong-bound loud-decline path
+        run: >
+          python scripts/repro/fact_spec_mask_494_differential.py
+          --fact-lo 0 --fact-hi 4095 --expect-decline
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
