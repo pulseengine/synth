@@ -413,6 +413,17 @@ jobs:
       # declines, nothing to emit) -> GREEN with the relocated arms.
       - name: Run i64/wide above-SP static shrink oracle (#746, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/wide_static_746_differential.py
+      # #757: the multi-chunk static-copy CONTROL (gale's gust:os v0.4.0
+      # static-string copy shape). The triage claimed the #746 fix miscompiles
+      # the head chunk's source ADDRESS relocation; six faithful shapes — incl.
+      # the copy source/index LIVE ACROSS an internal `call` kept here — all
+      # copy "gust:os up\n" correctly on 0.43.0. The oracle resolves the
+      # R_ARM_THM_CALL relocation (the `bl` the copy loop is reached through)
+      # and HARD-FAILS on any unhandled relocation type — an oracle that skips
+      # the call relocation is a vacuous gate (the self-call masqueraded as a
+      # miscompile). Guards that the call-crossing static copy stays correct.
+      - name: Run multi-chunk static-copy control oracle (#757, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/wide_static_copy_757_differential.py
       # #740: the Thumb-2 B<cond>.W (T3) arm packed `halfword_offset >> 1`,
       # HALVING every conditional branch spanning > 254 bytes — gust_poll's
       # loop-head `br_if` to an outer block end landed mid-shape (spurious
