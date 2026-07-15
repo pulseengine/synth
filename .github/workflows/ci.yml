@@ -405,6 +405,16 @@ jobs:
       # declines, nothing to emit) -> GREEN with the relocated arms.
       - name: Run i64/wide above-SP static shrink oracle (#746, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/wide_static_746_differential.py
+      # #740: the Thumb-2 B<cond>.W (T3) arm packed `halfword_offset >> 1`,
+      # HALVING every conditional branch spanning > 254 bytes — gust_poll's
+      # loop-head `br_if` to an outer block end landed mid-shape (spurious
+      # state write + spurious calls on the empty-budget round). Minimal
+      # loop-inside-block shape with wide exits, direct path (non-tail return
+      # declines the optimized path, #500); return AND a linear-memory window
+      # must match wasmtime. Anti-vacuous: FAILS if `poll` stops containing a
+      # 32-bit T3 conditional branch. RED on v0.42.0 (5/6 cases) -> GREEN.
+      - name: Run wide-B<cond>.W branch-target oracle (#740, cortex-m4)
+        run: SYNTH=./target/debug/synth python scripts/repro/brif_outer_740_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+)
