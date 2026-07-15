@@ -158,7 +158,14 @@ def unicorn_call(text, lin_init, faddr, r0, r1):
     # Whole linmem + shadow stack + globals + machine stack, contiguous
     # (0x20000000..0x20120000) — exactly the Reset_Handler RAM layout.
     mu.mem_map(LIN, 0x12_0000)
-    mu.mem_write(CODE, text)
+    # #758 (v0.43.1): the self-contained image now carries the ~1 MB initial
+    # data ROM image INSIDE `.text` (placed right after the last function, e.g.
+    # 0x5e4), so `text` is ~1 MB and overflows the 64 KB code window. Only the
+    # function bodies (the first few KB) are executable; the ROM tail is data
+    # the reset copies into linmem (already reflected in `lin_init`). Write only
+    # the code prefix that fits the map — every reachable instruction lives well
+    # inside it (gust_poll ends near 0x5c0).
+    mu.mem_write(CODE, text[:0x10000])
     if lin_init:
         # .linear_memory carries the full initial linmem image.
         mu.mem_write(LIN, lin_init[:0x12_0000])

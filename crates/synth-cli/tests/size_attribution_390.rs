@@ -105,8 +105,25 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 /// scripts/repro/*_differential.py sweep incl. the new
 /// gust_spill_fwd_390_differential.py (gust_poll state+return vs wasmtime in
 /// default + both lever opt-outs).
+///
+/// REPINNED (#390 spill-reduction, v0.44 Lane D): gust_poll 724 → 716 (−8 B by
+/// this oracle's symbol-delta method; machine code 722 → 716, −6, one redundant
+/// `str.w r0,[sp,#40]` + 2 B realignment) — `forward_stack_reloads` extended
+/// with REDUNDANT-STORE elimination: a `str rd,[sp,#N]` whose slot `#N` the
+/// holder lattice PROVES already holds `rd`'s value (a caller-save re-spilled
+/// unchanged between two calls) writes bytes the slot already has and is
+/// deleted. Same `#606` frozen-span guard as reload-deletion (a deletion inside
+/// a resolved branch→target span would shift the pre-resolved displacement); on
+/// deletion the holder set is left UNCHANGED (the slot content is unaltered, so
+/// every co-holder stays valid). Correctness evidence on the new bytes BEFORE
+/// this repin: full scripts/repro/*_differential.py sweep (90 PASS; the 6
+/// failures — 5 fact_spec require `--features verify`, 1 u64_unpack_riscv a
+/// pre-existing RISC-V unicorn harness issue — fail IDENTICALLY on the pristine
+/// origin/main binary), incl. gust_spill_fwd_390_differential.py (gust_poll
+/// return + post-call state struct vs wasmtime in default + both lever
+/// opt-outs). Only gust_poll's bytes changed; func_0/func_1/gust_mix identical.
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 724),
+    ("gust_poll", 716),
     ("gust_mix", 32),
     ("func_0", 408),
     ("func_1", 76),

@@ -554,11 +554,38 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
             // Full-word store to a pinnable slot: the slot now holds rd's value.
             ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
                 let slot = sp_slot(addr).unwrap();
-                let mut set = BTreeSet::new();
-                if !is_reserved_reg(*rd) {
-                    set.insert(*rd);
+                let rd = *rd;
+                // #390 redundant-store elimination: if the slot PROVABLY already
+                // holds rd's value (rd is a current holder of `slot`), this store
+                // writes bytes the slot already has — a no-op. Delete it. The
+                // holder lattice tracking is identical to the reload-forwarding
+                // fact: `holders[slot]` contains rd iff a prior `str rd,[sp,#slot]`
+                // (or a `ldr rd,[sp,#slot]` / mov-propagated copy) established rd as
+                // slot's value with nothing since that could invalidate it.
+                //
+                // #606: a deletion inside a resolved branch→target span would shift
+                // the pre-resolved displacement by the store's byte size. Keep it
+                // there (it re-writes the same value; state below is identical).
+                //
+                // SOUNDNESS: on deletion, leave `holders` UNCHANGED — the slot's
+                // content is unaltered by removing a redundant write, so every other
+                // register already recorded as holding `slot` stays valid. Only when
+                // the store is KEPT does the slot's holder set collapse to {rd}
+                // (a real write may differ from what other holders assumed).
+                if !is_reserved_reg(rd)
+                    && holders.get(&slot).is_some_and(|s| s.contains(&rd))
+                    && !geo.frozen[j]
+                {
+                    staged.insert(j, None);
+                    rewrites += 1;
+                    // holders[slot] unchanged: rd (and any co-holders) still valid.
+                } else {
+                    let mut set = BTreeSet::new();
+                    if !is_reserved_reg(rd) {
+                        set.insert(rd);
+                    }
+                    holders.insert(slot, set);
                 }
-                holders.insert(slot, set);
             }
             // Any [sp] access we cannot pin to a single whole-word slot:
             // register offset (unresolvable) or sub-word (partial overlap).
@@ -7200,6 +7227,42 @@ mod tests {
         assert_eq!(n, 2);
         assert!(matches!(out[1].op, ArmOp::Mov { rd: Reg::R1, .. }));
         assert!(matches!(out[2].op, ArmOp::Mov { rd: Reg::R2, .. }));
+    }
+
+    #[test]
+    fn forward_redundant_store_of_resident_value_deleted() {
+        // #390 Lane D: ldr r0,[sp,4] establishes r0 as slot-4's holder; the
+        // later str r0,[sp,4] re-writes the value the slot already has ⇒ deleted.
+        // The reload after it stays (a clobber between would be a different test).
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                op2: Operand2::Imm(1),
+            }),
+            str_sp(Reg::R0, 4), // redundant: slot 4 already holds r0
+        ];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 1);
+        // The redundant re-store is gone; the original store remains.
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0].op, ArmOp::Str { rd: Reg::R0, .. }));
+        assert!(matches!(out[1].op, ArmOp::Add { .. }));
+    }
+
+    #[test]
+    fn forward_redundant_store_kept_when_reg_reloaded_between() {
+        // If rd is redefined between the two stores, the slot no longer provably
+        // holds the SAME rd value ⇒ the second store is a REAL write, kept.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            movi(Reg::R0, 99),  // r0 changes ⇒ dropped from slot-4's holders
+            str_sp(Reg::R0, 4), // writes the NEW r0 ⇒ not redundant
+        ];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 0);
+        assert!(matches!(out[2].op, ArmOp::Str { rd: Reg::R0, .. }));
     }
 
     #[test]
