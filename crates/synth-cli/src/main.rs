@@ -3065,33 +3065,62 @@ fn compile_all_exports(
         // VCR-DEC-003 (#396): derive this function's branch-transformation map
         // from the ops it compiled + the ARM line_map/branch_map it produced.
         if let Some(pm) = provenance_map.as_mut() {
-            // Eliminated-constant: original-stream branch/condition ops the
-            // fact-spec dropped (present in func.ops, absent from `kept`).
-            let eliminated: Vec<(usize, String)> = match &spec {
-                Some(s) => {
-                    let kept: std::collections::HashSet<usize> = s.kept.iter().copied().collect();
-                    func.ops
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| !kept.contains(i))
-                        .filter_map(|(i, op)| {
-                            synth_core::provenance::covered_source_op_name(op)
-                                .map(|n| (i, n.to_string()))
-                        })
-                        .collect()
-                }
-                None => Vec::new(),
-            };
-            pm.functions
-                .push(synth_core::provenance::derive_function_provenance(
-                    func.index,
-                    &name,
-                    ops_for_compile,
-                    &op_offsets_for_elf,
-                    &compiled.line_map,
-                    &compiled.branch_map,
-                    &eliminated,
-                ));
+            // Loud-decline (frozen-safe: only affects the sidecar): a lowering
+            // path that dropped source_line (the optimized `ir_to_arm` on some
+            // op shapes) yields an all-`None` line_map. Object branches then
+            // cannot be reconciled to a source condition — emitting entries
+            // anyway would be a map that LIES to witness. Warn and skip this
+            // function rather than serialize a misleading one.
+            let has_branch = compiled
+                .branch_map
+                .iter()
+                .any(|(_, c)| *c == synth_core::backend::BranchClass::CondBranch);
+            let all_none = !compiled.line_map.is_empty()
+                && compiled.line_map.iter().all(|(_, oi)| oi.is_none());
+            if has_branch && all_none {
+                eprintln!(
+                    "warning: provenance: skipping '{name}' — its lowering path carries no \
+                     source map (line_map all-None), so object branches cannot be reconciled \
+                     to source conditions (VCR-DEC-003 v1 covers the ARM direct/Thumb selector \
+                     path; #396 follow-up: optimized ir_to_arm source_line)"
+                );
+            } else {
+                // Eliminated-constant: original-stream branch/condition ops the
+                // fact-spec dropped (present in func.ops, absent from `kept`).
+                // The join key is the ORIGINAL-stream byte offset (func.op_offsets
+                // is unfiltered; `orig_idx` indexes it directly).
+                let eliminated: Vec<(usize, String, u32)> = match &spec {
+                    Some(s) => {
+                        let kept: std::collections::HashSet<usize> =
+                            s.kept.iter().copied().collect();
+                        func.ops
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| !kept.contains(i))
+                            .filter_map(|(i, op)| {
+                                synth_core::provenance::covered_source_op_name(op).map(|n| {
+                                    (
+                                        i,
+                                        n.to_string(),
+                                        func.op_offsets.get(i).copied().unwrap_or(0),
+                                    )
+                                })
+                            })
+                            .collect()
+                    }
+                    None => Vec::new(),
+                };
+                pm.functions
+                    .push(synth_core::provenance::derive_function_provenance(
+                        func.index,
+                        &name,
+                        ops_for_compile,
+                        &op_offsets_for_elf,
+                        &compiled.line_map,
+                        &compiled.branch_map,
+                        &eliminated,
+                    ));
+            }
         }
 
         if !compiled.relocations.is_empty() {

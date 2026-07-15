@@ -171,8 +171,12 @@ fn source_op_name(op: &WasmOp) -> Option<&'static str> {
 ///   its per-op absolute wasm byte offsets, already fact-spec-filtered upstream).
 /// - `line_map` / `branch_map` are index-aligned (one entry per emitted machine
 ///   instruction: `(pc, wasm_op_index)` and `(pc, class)`).
-/// - `eliminated`: `(wasm_op_index_in_original_stream, op_name)` for branch/
-///   condition ops that constant-folding / fact-spec dropped before codegen.
+/// - `eliminated`: `(wasm_op_index_in_original_stream, op_name,
+///   absolute_wasm_byte_offset)` for branch/condition ops that constant-folding
+///   / fact-spec dropped before codegen. The offset is the ORIGINAL-stream byte
+///   offset (the witness join key), NOT derivable from `op_offsets` here (which
+///   is the filtered/kept table) — the caller looks it up in the unfiltered
+///   side-table.
 pub fn derive_function_provenance(
     func_index: u32,
     name: &str,
@@ -180,7 +184,7 @@ pub fn derive_function_provenance(
     op_offsets: &[u32],
     line_map: &LineMap,
     branch_map: &BranchMap,
-    eliminated: &[(usize, String)],
+    eliminated: &[(usize, String, u32)],
 ) -> FunctionProvenance {
     // For each op index, collect the object PCs whose branch_map class matters.
     // line_map and branch_map are parallel; zip them.
@@ -235,9 +239,9 @@ pub fn derive_function_provenance(
     }
 
     // Eliminated-constant entries: branch/condition ops dropped before codegen.
-    for (orig_idx, op_name) in eliminated {
+    for (orig_idx, op_name, byte_offset) in eliminated {
         entries.push(ProvEntry {
-            instruction_offset: 0,
+            instruction_offset: *byte_offset,
             wasm_op_index: *orig_idx,
             op: op_name.clone(),
             kind: ProvKind::EliminatedConstant,
@@ -365,10 +369,12 @@ mod tests {
             &op_offsets,
             &line_map,
             &branch_map,
-            &[(3, "BrIf".to_string())],
+            &[(3, "BrIf".to_string(), 42)],
         );
         assert_eq!(fp.entries.len(), 1);
         assert_eq!(fp.entries[0].kind, ProvKind::EliminatedConstant);
         assert!(fp.entries[0].object_pcs.is_empty());
+        // The witness join key is the real byte offset, not a hardcoded 0.
+        assert_eq!(fp.entries[0].instruction_offset, 42);
     }
 }
