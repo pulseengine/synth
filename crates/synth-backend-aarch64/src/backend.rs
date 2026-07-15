@@ -95,6 +95,8 @@ impl Backend for AArch64Backend {
             relocations: Vec::new(),
             // AArch64 DWARF `.debug_line` is a later milestone (pairs with #394).
             line_map: Vec::new(),
+            // VCR-DEC-003 (#396): provenance is ARM(Thumb)-only in v1.
+            branch_map: Vec::new(),
         })
     }
 

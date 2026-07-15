@@ -500,6 +500,34 @@ pub struct CodeRelocation {
 /// was produced.
 pub type LineMap = Vec<(u32, Option<usize>)>;
 
+/// VCR-DEC-003 (#396, witness#130): the object-level control-flow class of one
+/// emitted machine instruction, captured at encode time alongside [`LineMap`].
+/// It is the piece post-hoc CLI derivation cannot recover — `line_map` records
+/// which wasm op an instruction came from, but not whether that instruction IS a
+/// conditional branch, an unconditional branch, or a predicated (IT-block) move.
+/// The `synth-provenance-v1` emitter needs it to enumerate the ACTUAL object
+/// conditional branches (so it can prove "every object branch resolves to a
+/// source condition", not just "every source branch has an object PC").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchClass {
+    /// A conditional branch (`Bcc`/`Blo`/`Bhs`/`BCondOffset`) — an object-level
+    /// decision point MC/DC must account for.
+    CondBranch,
+    /// An unconditional branch (`B`/`BOffset`) — control flow, not a decision.
+    UncondBranch,
+    /// A predicated conditional move (`SelectMove`, the IT-block form the
+    /// cmp→select fuse produces) — a folded decision with no branch.
+    Predicated,
+    /// Anything else (data-processing, load/store, call, prologue/epilogue).
+    Other,
+}
+
+/// VCR-DEC-003: per-instruction object-branch class, parallel to [`LineMap`]
+/// (same length, same order — one entry per emitted machine instruction).
+/// `(machine_offset_within_code, class)`. Empty when provenance is not being
+/// produced (never serialized into `.text`; frozen-safe additive metadata).
+pub type BranchMap = Vec<(u32, BranchClass)>;
+
 /// A single compiled function
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
@@ -520,6 +548,13 @@ pub struct CompiledFunction {
     /// byte-identical with or without it. Empty for backends/paths that do not
     /// yet produce a source map (RISC-V, the optimized ARM path).
     pub line_map: LineMap,
+    /// VCR-DEC-003 (#396): per-instruction object-branch class, parallel to
+    /// `line_map`. Lets the `synth-provenance-v1` emitter enumerate the real
+    /// object conditional branches (not just re-walk the wasm branch ops).
+    /// Purely additive metadata: never serialized into `.text`, so emitted bytes
+    /// are byte-identical with or without it. Empty for backends/paths that do
+    /// not produce it (RISC-V, the optimized ARM path).
+    pub branch_map: BranchMap,
 }
 
 /// Result of compiling a full module
