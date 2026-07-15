@@ -127,9 +127,30 @@ pub fn div_op(op: &WasmOp) -> Option<DivOp> {
 }
 
 /// Trap condition for a div/rem op: divide-by-zero (all four) plus
-/// `INT_MIN / -1` signed overflow (`div_s`/`rem_s`). The width is taken from
+/// `INT_MIN / -1` signed overflow (`div_s` ONLY). The width is taken from
 /// `dividend` — pass 32-bit terms for i32 ops, 64-bit for i64.
+///
+/// # ordeal 0.9.1 divergence (upstream bug, reported as ordeal#72)
+///
+/// `ordeal::trap::trap_div(DivOp::RemS)` includes the `INT_MIN / -1`
+/// overflow clause, but WASM Core §4.4.1 `irem_s` does NOT trap there — it
+/// returns 0 (only `idiv_s` traps on overflow). synth's own models agree
+/// (`I32.rems` in `coq/Synth/Common/Integers.v` carries no overflow guard;
+/// the shipped `rem_s` lowering emits only the ÷0 guard). The divergence was
+/// invisible while BOTH sides of the VC used the builder (consistent
+/// wrongness); the #166 derived-ARM-trap gate exposed it by rejecting the
+/// CORRECT shipped `rem_s` lowering with an INT_MIN/-1 counterexample. Until
+/// the ordeal#72 fix ships, `RemS` is built through the zero-only path
+/// (`RemU`'s trap condition — the ÷0 test is a bit-pattern equality, so
+/// signedness does not change it).
 pub fn trap_div(op: DivOp, dividend: &BV, divisor: &BV) -> Bool {
+    // WASM rem_s traps ONLY on ÷0 — route around ordeal 0.9.1's spurious
+    // overflow clause (see the doc comment above).
+    let op = if matches!(op, DivOp::RemS) {
+        DivOp::RemU
+    } else {
+        op
+    };
     Bool::from_ordeal(ot::trap_div(
         op,
         dividend.term(),

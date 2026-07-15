@@ -6,6 +6,7 @@
 //! `SYNTH_SOLVER_DIFF=1`.
 #![cfg(feature = "arm")]
 
+use synth_synthesis::rules::Condition;
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
 use synth_verify::{
     ArmSemantics, ArmState, BV, TranslationValidator, ValidationResult, WasmSemantics,
@@ -25,6 +26,116 @@ fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
             registers: 2,
         },
     }
+}
+
+/// Helper to create a multi-instruction test synthesis rule
+fn create_seq_rule(name: &str, wasm_op: WasmOp, arm_ops: Vec<ArmOp>) -> SynthesisRule {
+    SynthesisRule {
+        name: name.to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(wasm_op),
+        replacement: Replacement::ArmSequence(arm_ops),
+        cost: synth_synthesis::Cost {
+            cycles: 4,
+            code_size: 12,
+            registers: 3,
+        },
+    }
+}
+
+/// The SHIPPED ÷0 guard prefix: CMP divisor,#0 ; BNE +0 (skip the UDF) ; UDF.
+/// Since VCR-VER-002 (#166) wired the mandatory trap-preservation VC into
+/// `verify_rule`, every div/rem rule MUST carry its trap guard to verify —
+/// a bare SDIV/UDIV is the trap-dropping #633 bug shape and is Invalid.
+fn div_zero_guard() -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn: Reg::R1,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::BCondOffset {
+            cond: Condition::NE,
+            offset: 0,
+        },
+        ArmOp::Udf { imm: 0 },
+    ]
+}
+
+/// The SHIPPED guarded div_u lowering: ÷0 guard + UDIV.
+fn guarded_div_u() -> Vec<ArmOp> {
+    let mut ops = div_zero_guard();
+    ops.push(ArmOp::Udiv {
+        rd: Reg::R0,
+        rn: Reg::R0,
+        rm: Reg::R1,
+    });
+    ops
+}
+
+/// The SHIPPED guarded div_s lowering: ÷0 guard + INT_MIN/-1 overflow guard
+/// (MOVW/MOVT 0x80000000 ; CMP dividend ; BNE +3 ; CMN divisor,#1 ; BNE +0 ;
+/// UDF) + SDIV.
+fn guarded_div_s() -> Vec<ArmOp> {
+    let mut ops = div_zero_guard();
+    ops.extend([
+        ArmOp::Movw {
+            rd: Reg::R12,
+            imm16: 0,
+        },
+        ArmOp::Movt {
+            rd: Reg::R12,
+            imm16: 0x8000,
+        },
+        ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R12),
+        },
+        ArmOp::BCondOffset {
+            cond: Condition::NE,
+            offset: 3,
+        },
+        ArmOp::Cmn {
+            rn: Reg::R1,
+            op2: Operand2::Imm(1),
+        },
+        ArmOp::BCondOffset {
+            cond: Condition::NE,
+            offset: 0,
+        },
+        ArmOp::Udf { imm: 1 },
+        ArmOp::Sdiv {
+            rd: Reg::R0,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        },
+    ]);
+    ops
+}
+
+/// The SHIPPED guarded rem lowering: ÷0 guard + SDIV/UDIV into R2 + MLS.
+/// (rem_s carries ONLY the ÷0 guard — WASM rem_s(INT_MIN,-1) is 0, no trap.)
+fn guarded_rem(signed: bool) -> Vec<ArmOp> {
+    let mut ops = div_zero_guard();
+    ops.push(if signed {
+        ArmOp::Sdiv {
+            rd: Reg::R2,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        }
+    } else {
+        ArmOp::Udiv {
+            rd: Reg::R2,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        }
+    });
+    ops.push(ArmOp::Mls {
+        rd: Reg::R0,
+        rn: Reg::R2,
+        rm: Reg::R1,
+        ra: Reg::R0,
+    });
+    ops
 }
 
 // ============================================================================
@@ -102,8 +213,10 @@ fn verify_i32_div_s() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
-        let rule = create_rule(
-            "i32.div_s",
+        // VCR-VER-002 (#166): a bare SDIV drops BOTH WASM traps (÷0 and
+        // INT_MIN/-1) — the mandatory trap gate must reject it.
+        let bare = create_rule(
+            "i32.div_s (bare, trap-dropping)",
             WasmOp::I32DivS,
             ArmOp::Sdiv {
                 rd: Reg::R0,
@@ -111,9 +224,16 @@ fn verify_i32_div_s() {
                 rm: Reg::R1,
             },
         );
-
         assert!(matches!(
-            validator.verify_rule(&rule),
+            validator.verify_rule(&bare),
+            Ok(ValidationResult::Invalid { .. })
+        ));
+
+        // The shipped double-guarded lowering verifies: traps preserved AND
+        // the quotient matches.
+        let guarded = create_seq_rule("i32.div_s", WasmOp::I32DivS, guarded_div_s());
+        assert!(matches!(
+            validator.verify_rule(&guarded),
             Ok(ValidationResult::Verified)
         ));
     });
@@ -124,8 +244,9 @@ fn verify_i32_div_u() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
-        let rule = create_rule(
-            "i32.div_u",
+        // VCR-VER-002 (#166): a bare UDIV drops the ÷0 trap — rejected.
+        let bare = create_rule(
+            "i32.div_u (bare, trap-dropping)",
             WasmOp::I32DivU,
             ArmOp::Udiv {
                 rd: Reg::R0,
@@ -133,9 +254,15 @@ fn verify_i32_div_u() {
                 rm: Reg::R1,
             },
         );
-
         assert!(matches!(
-            validator.verify_rule(&rule),
+            validator.verify_rule(&bare),
+            Ok(ValidationResult::Invalid { .. })
+        ));
+
+        // The shipped guarded lowering verifies.
+        let guarded = create_seq_rule("i32.div_u", WasmOp::I32DivU, guarded_div_u());
+        assert!(matches!(
+            validator.verify_rule(&guarded),
             Ok(ValidationResult::Verified)
         ));
     });
@@ -259,47 +386,26 @@ fn verify_i32_rem_s() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
-        let rule = SynthesisRule {
-            name: "i32.rem_s".to_string(),
-            priority: 0,
-            pattern: Pattern::WasmInstr(WasmOp::I32RemS),
-            replacement: Replacement::ArmSequence(vec![
-                // Step 1: Compute quotient
-                ArmOp::Sdiv {
-                    rd: Reg::R2, // quotient destination
-                    rn: Reg::R0, // dividend
-                    rm: Reg::R1, // divisor
-                },
-                // Step 2: Compute remainder using MLS
-                ArmOp::Mls {
-                    rd: Reg::R0, // remainder destination
-                    rn: Reg::R2, // quotient
-                    rm: Reg::R1, // divisor
-                    ra: Reg::R0, // dividend
-                },
-            ]),
-            cost: synth_synthesis::Cost {
-                cycles: 2,
-                code_size: 8,
-                registers: 3,
-            },
-        };
+        // VCR-VER-002 (#166): the guard-less SDIV+MLS sequence drops the ÷0
+        // trap — the mandatory trap gate must reject it.
+        let bare = create_seq_rule(
+            "i32.rem_s (guard-less, trap-dropping)",
+            WasmOp::I32RemS,
+            guarded_rem(true)[3..].to_vec(),
+        );
+        assert!(matches!(
+            validator.verify_rule(&bare),
+            Ok(ValidationResult::Invalid { .. })
+        ));
 
+        // The shipped ÷0-guarded SDIV+MLS verifies: trap preserved AND
+        // rem_s(a,b) = a - (a/b)*b.
+        let rule = create_seq_rule("i32.rem_s", WasmOp::I32RemS, guarded_rem(true));
         match validator.verify_rule(&rule) {
             Ok(ValidationResult::Verified) => {
                 println!("✓ I32RemS sequence verified: rem_s(a,b) = a - (a/b)*b");
             }
-            Ok(ValidationResult::Unknown { reason }) => {
-                // Complex arithmetic may timeout in SMT solver - concrete tests pass
-                println!(
-                    "⚠ I32RemS verification unknown (complex formula): {}",
-                    reason
-                );
-            }
-            other => panic!(
-                "Expected Verified or Unknown for REM_S sequence, got {:?}",
-                other
-            ),
+            other => panic!("Expected Verified for guarded REM_S sequence, got {other:?}"),
         }
     });
 }
@@ -318,47 +424,26 @@ fn verify_i32_rem_u() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
-        let rule = SynthesisRule {
-            name: "i32.rem_u".to_string(),
-            priority: 0,
-            pattern: Pattern::WasmInstr(WasmOp::I32RemU),
-            replacement: Replacement::ArmSequence(vec![
-                // Step 1: Compute quotient
-                ArmOp::Udiv {
-                    rd: Reg::R2, // quotient destination
-                    rn: Reg::R0, // dividend
-                    rm: Reg::R1, // divisor
-                },
-                // Step 2: Compute remainder using MLS
-                ArmOp::Mls {
-                    rd: Reg::R0, // remainder destination
-                    rn: Reg::R2, // quotient
-                    rm: Reg::R1, // divisor
-                    ra: Reg::R0, // dividend
-                },
-            ]),
-            cost: synth_synthesis::Cost {
-                cycles: 2,
-                code_size: 8,
-                registers: 3,
-            },
-        };
+        // VCR-VER-002 (#166): the guard-less UDIV+MLS sequence drops the ÷0
+        // trap — the mandatory trap gate must reject it.
+        let bare = create_seq_rule(
+            "i32.rem_u (guard-less, trap-dropping)",
+            WasmOp::I32RemU,
+            guarded_rem(false)[3..].to_vec(),
+        );
+        assert!(matches!(
+            validator.verify_rule(&bare),
+            Ok(ValidationResult::Invalid { .. })
+        ));
 
+        // The shipped ÷0-guarded UDIV+MLS verifies: trap preserved AND
+        // rem_u(a,b) = a - (a/b)*b.
+        let rule = create_seq_rule("i32.rem_u", WasmOp::I32RemU, guarded_rem(false));
         match validator.verify_rule(&rule) {
             Ok(ValidationResult::Verified) => {
                 println!("✓ I32RemU sequence verified: rem_u(a,b) = a - (a/b)*b");
             }
-            Ok(ValidationResult::Unknown { reason }) => {
-                // Complex arithmetic may timeout in SMT solver - concrete tests pass
-                println!(
-                    "⚠ I32RemU verification unknown (complex formula): {}",
-                    reason
-                );
-            }
-            other => panic!(
-                "Expected Verified or Unknown for REM_U sequence, got {:?}",
-                other
-            ),
+            other => panic!("Expected Verified for guarded REM_U sequence, got {other:?}"),
         }
     });
 }
@@ -1604,24 +1689,10 @@ fn batch_verify_all_arithmetic() {
                     rm: Reg::R1,
                 },
             ),
-            create_rule(
-                "i32.div_s",
-                WasmOp::I32DivS,
-                ArmOp::Sdiv {
-                    rd: Reg::R0,
-                    rn: Reg::R0,
-                    rm: Reg::R1,
-                },
-            ),
-            create_rule(
-                "i32.div_u",
-                WasmOp::I32DivU,
-                ArmOp::Udiv {
-                    rd: Reg::R0,
-                    rn: Reg::R0,
-                    rm: Reg::R1,
-                },
-            ),
+            // div rules carry their SHIPPED trap guards — the batch runs
+            // through the mandatory VCR-VER-002 trap gate (#166).
+            create_seq_rule("i32.div_s", WasmOp::I32DivS, guarded_div_s()),
+            create_seq_rule("i32.div_u", WasmOp::I32DivU, guarded_div_u()),
         ];
 
         let results = validator.verify_rules(&rules);
@@ -1693,9 +1764,11 @@ fn generate_verification_report() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
-        // Test all directly mappable operations
+        // Test all directly mappable operations; the div rules carry their
+        // SHIPPED trap guards (a bare SDIV/UDIV is Invalid under the
+        // mandatory VCR-VER-002 trap gate, #166).
         let test_cases = vec![
-            (
+            create_rule(
                 "i32.add → ADD",
                 WasmOp::I32Add,
                 ArmOp::Add {
@@ -1704,7 +1777,7 @@ fn generate_verification_report() {
                     op2: Operand2::Reg(Reg::R1),
                 },
             ),
-            (
+            create_rule(
                 "i32.sub → SUB",
                 WasmOp::I32Sub,
                 ArmOp::Sub {
@@ -1713,7 +1786,7 @@ fn generate_verification_report() {
                     op2: Operand2::Reg(Reg::R1),
                 },
             ),
-            (
+            create_rule(
                 "i32.mul → MUL",
                 WasmOp::I32Mul,
                 ArmOp::Mul {
@@ -1722,25 +1795,9 @@ fn generate_verification_report() {
                     rm: Reg::R1,
                 },
             ),
-            (
-                "i32.div_s → SDIV",
-                WasmOp::I32DivS,
-                ArmOp::Sdiv {
-                    rd: Reg::R0,
-                    rn: Reg::R0,
-                    rm: Reg::R1,
-                },
-            ),
-            (
-                "i32.div_u → UDIV",
-                WasmOp::I32DivU,
-                ArmOp::Udiv {
-                    rd: Reg::R0,
-                    rn: Reg::R0,
-                    rm: Reg::R1,
-                },
-            ),
-            (
+            create_seq_rule("i32.div_s → guarded SDIV", WasmOp::I32DivS, guarded_div_s()),
+            create_seq_rule("i32.div_u → guarded UDIV", WasmOp::I32DivU, guarded_div_u()),
+            create_rule(
                 "i32.and → AND",
                 WasmOp::I32And,
                 ArmOp::And {
@@ -1749,7 +1806,7 @@ fn generate_verification_report() {
                     op2: Operand2::Reg(Reg::R1),
                 },
             ),
-            (
+            create_rule(
                 "i32.or → ORR",
                 WasmOp::I32Or,
                 ArmOp::Orr {
@@ -1758,7 +1815,7 @@ fn generate_verification_report() {
                     op2: Operand2::Reg(Reg::R1),
                 },
             ),
-            (
+            create_rule(
                 "i32.xor → EOR",
                 WasmOp::I32Xor,
                 ArmOp::Eor {
@@ -1779,8 +1836,8 @@ fn generate_verification_report() {
         let mut invalid = 0;
         let mut unknown = 0;
 
-        for (name, wasm_op, arm_op) in test_cases {
-            let rule = create_rule(name, wasm_op, arm_op);
+        for rule in test_cases {
+            let name = rule.name.clone();
             let result = validator.verify_rule(&rule);
 
             let status = match &result {

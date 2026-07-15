@@ -357,7 +357,10 @@ impl TranslationValidator {
             }
             WasmOp::Unreachable => {
                 let (_state, arm_trap) = self.derive_arm_state(arm_ops, &[], None)?;
-                Ok(Self::condition_verdict(&crate::trap::trap_always(), &arm_trap))
+                Ok(Self::condition_verdict(
+                    &crate::trap::trap_always(),
+                    &arm_trap,
+                ))
             }
             WasmOp::I32Load { offset, .. }
             | WasmOp::I32Load8S { offset, .. }
@@ -394,6 +397,18 @@ impl TranslationValidator {
     /// from the emitted guard structure by the branch-taking executor.
     /// Operands: dividend = `input_0` (R0), divisor = `input_1` (R1),
     /// result in R0.
+    ///
+    /// The VALUE term comes from the straight-line pass
+    /// ([`ArmSemantics::encode_sequence_value_straightline`]) whenever the
+    /// sequence's branch structure is value-dead
+    /// ([`ArmSemantics::branch_spans_are_value_dead`] — true for every
+    /// shipped div/rem guard shape): on such sequences every non-trapping
+    /// path produces the same registers as straight-line execution, and the
+    /// resulting ite-free SDIV/UDIV/MLS terms stay STRUCTURALLY aligned with
+    /// the WASM encoding — an `ite(guard, …)` wrapper on a divider/multiplier
+    /// operand un-shares the circuits and sends the UNSAT value proof off a
+    /// CDCL cliff. Non-conforming shapes fall back to the guarded
+    /// (if-converted) post-state value — sound, potentially slow.
     pub fn verify_div_rem_trap_preservation(
         &self,
         wasm_op: &WasmOp,
@@ -424,7 +439,18 @@ impl TranslationValidator {
 
         let wasm_value = self.wasm_encoder.encode_op(wasm_op, &inputs);
         let (state, arm_may_trap) = self.derive_arm_state(arm_ops, &inputs, None)?;
-        let arm_value = self.arm_encoder.extract_result(&state, &Reg::R0);
+        let arm_value = if ArmSemantics::branch_spans_are_value_dead(arm_ops) {
+            // Ite-free value term, structurally aligned with the WASM side
+            // (see the method doc for the soundness argument).
+            let mut vstate = ArmState::new_symbolic();
+            Self::seed_inputs(&mut vstate, &inputs)?;
+            self.arm_encoder
+                .encode_sequence_value_straightline(arm_ops, &mut vstate)
+                .map_err(VerificationError::UnsupportedOperation)?;
+            self.arm_encoder.extract_result(&vstate, &Reg::R0)
+        } else {
+            self.arm_encoder.extract_result(&state, &Reg::R0)
+        };
 
         let orig = crate::trap::DefineOrTrap {
             value: wasm_value,
@@ -1059,8 +1085,8 @@ mod tests {
     /// small value, the BLO guard passes, and the access escapes below the
     /// linear-memory base — WASM requires a trap. The derived gate exhibits
     /// exactly that dropped-trap counterexample. Pinned Invalid until the
-    /// selector's guard is made wraparound-safe (tracked as a #377/#651
-    /// follow-up filed with this gate).
+    /// selector's guard is made wraparound-safe — filed as #752 (the
+    /// #377/#651 follow-up).
     #[test]
     fn word_load_software_bounds_guard_wraps_at_address_top() {
         with_verification_context(|| {
@@ -1165,7 +1191,7 @@ mod tests {
             (4294967296.0_f32, -1.0_f32)
         };
         let mut ops = Vec::new();
-        let mut guard = |bound: f32, upper: bool| {
+        let guard = |ops: &mut Vec<ArmOp>, bound: f32, upper: bool| {
             ops.push(ArmOp::F32Const {
                 sd: VfpReg::S1,
                 value: bound,
@@ -1200,9 +1226,8 @@ mod tests {
             });
             ops.push(ArmOp::Udf { imm: 0 });
         };
-        guard(hi, true);
-        guard(lo, false);
-        drop(guard);
+        guard(&mut ops, hi, true);
+        guard(&mut ops, lo, false);
         if signed {
             ops.push(ArmOp::I32TruncF32S {
                 rd: Reg::R0,

@@ -343,6 +343,16 @@ impl BV {
         &self.term
     }
 
+    /// Structural equality of the underlying terms. Used by the guarded
+    /// (branch-taking) ARM executor to skip vacuous `ite(g, x, x)` state
+    /// merges: without it every guarded instruction wraps ALL untouched
+    /// registers in a fresh `ite`, nesting the SDIV/UDIV operands in ite
+    /// chains and pushing the div/rem trap VC off a CDCL cliff (a genuinely
+    /// solver-hard miter of two perturbed division circuits).
+    pub(crate) fn same_term(&self, other: &BV) -> bool {
+        self.width == other.width && ord_bv(&self.term, &other.term) == Ordering::Equal
+    }
+
     /// If this is a free variable, its name.
     pub(crate) fn var_name(&self) -> Option<&str> {
         match &self.term {
@@ -688,6 +698,11 @@ impl Bool {
     /// The underlying ordeal term.
     pub(crate) fn term(&self) -> &BoolTerm {
         &self.term
+    }
+
+    /// Structural equality of the underlying terms (see [`BV::same_term`]).
+    pub(crate) fn same_term(&self, other: &Bool) -> bool {
+        ord_bool(&self.term, &other.term) == Ordering::Equal
     }
 
     /// Wrap a raw `ordeal::BoolTerm` — used by the trap module (`trap.rs`),
