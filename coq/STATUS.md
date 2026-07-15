@@ -6,7 +6,7 @@
 `VcrSelRulesGenCheck.v`: `VcrSelRules.v` now DEFINES every `rule_X` as the
 GENERATED `Gen.rule_X` (`VcrSelRulesGenerated.v`, emitted from the shipped
 `sel_dsl::RULES`), so the generated-vs-hand-written `reflexivity` check
-became vacuous — its divergence gate is subsumed by the 40 rule correctness
+became vacuous — its divergence gate is subsumed by the rule correctness
 Qed themselves, which are now stated directly about the generated sequences)
 
 The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
