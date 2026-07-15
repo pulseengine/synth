@@ -31,6 +31,14 @@ required-features = ["verify"]
 name = "fact_spec_div_494"
 required-features = ["verify"]
 
+# #494 bounds-elision (#390 guard_bool): same contract — the memory
+# bounds-guard byte gates need the solver-carrying binary; the fact-spec CI
+# job runs it via
+# `cargo test -p synth-cli --features verify --test fact_spec_bounds_494`.
+[[test]]
+name = "fact_spec_bounds_494"
+required-features = ["verify"]
+
 [features]
 default = ["riscv"]
 awsm = ["synth-backend-awsm"]
