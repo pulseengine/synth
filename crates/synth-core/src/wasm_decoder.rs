@@ -2074,6 +2074,26 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
             offset: memarg.offset as u32,
             align: memarg.align as u32,
         }),
+        // GI-FPU-002 phase 3 (#369): the f64 op tail — rounding via single
+        // VRINT{P,M,Z,N}.F64 (FPv5), min/max via VMINNM/VMAXNM + the
+        // NaN-propagating fix-up, copysign via the VABS/conditional-VNEG
+        // splice, f32.demote_f64 / i32<->f64 conversions via VCVT
+        // (i32.trunc_f64_* carries the #709 trap-on-out-of-range domain
+        // guard). Still m7dp-only (the selector preamble honest-rejects any
+        // f64 op elsewhere). Remaining dropped f64 surface: the i64<->f64
+        // conversions and reinterprets (need lowered i64 pair plumbing).
+        F64Ceil => Some(WasmOp::F64Ceil),
+        F64Floor => Some(WasmOp::F64Floor),
+        F64Trunc => Some(WasmOp::F64Trunc),
+        F64Nearest => Some(WasmOp::F64Nearest),
+        F64Min => Some(WasmOp::F64Min),
+        F64Max => Some(WasmOp::F64Max),
+        F64Copysign => Some(WasmOp::F64Copysign),
+        F32DemoteF64 => Some(WasmOp::F32DemoteF64),
+        F64ConvertI32S => Some(WasmOp::F64ConvertI32S),
+        F64ConvertI32U => Some(WasmOp::F64ConvertI32U),
+        I32TruncF64S => Some(WasmOp::I32TruncF64S),
+        I32TruncF64U => Some(WasmOp::I32TruncF64U),
 
         // f32x4
         F32x4Add => Some(WasmOp::F32x4Add),
@@ -2698,7 +2718,9 @@ mod tests {
         // now DECODED (routed to the VFP selector on FPU targets), so `f32.add`
         // is no longer flagged — and since phase 2 (#369) so is the lowered
         // f64 subset (`f64.add` here; the m7dp-only capability gate lives in
-        // the selector). An out-of-scope scalar float op (`f64.min`) is STILL
+        // the selector). Since phase 3 the f64 op TAIL (`f64.min` here) is
+        // decoded too; an out-of-scope scalar float op (`i64.trunc_f64_s` —
+        // the i64<->f64 conversions need lowered pair plumbing) is STILL
         // flagged (loud-skip), never silently dropped — the #369 honesty
         // contract holds for the not-yet-lowered surface. A pure-integer
         // function stays clean.
@@ -2710,6 +2732,8 @@ mod tests {
                     local.get 0 local.get 1 f64.add)
                 (func (export "dmin") (param f64 f64) (result f64)
                     local.get 0 local.get 1 f64.min)
+                (func (export "dtrunc64") (param f64) (result i64)
+                    local.get 0 i64.trunc_f64_s)
                 (func (export "iadd") (param i32 i32) (result i32)
                     local.get 0 local.get 1 i32.add))
         "#;
@@ -2726,6 +2750,10 @@ mod tests {
         let dmin = functions
             .iter()
             .find(|f| f.export_name.as_deref() == Some("dmin"))
+            .unwrap();
+        let dtrunc64 = functions
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("dtrunc64"))
             .unwrap();
         let iadd = functions
             .iter()
@@ -2753,11 +2781,22 @@ mod tests {
             "f64.add must decode to WasmOp::F64Add: {:?}",
             dadd.ops
         );
+        // In-scope f64 tail op (phase 3, #369): now decoded, not flagged.
+        assert!(
+            dmin.unsupported.is_none(),
+            "GI-FPU-002 phase 3: f64.min must now decode (not be flagged), got {:?}",
+            dmin.unsupported
+        );
+        assert!(
+            dmin.ops.contains(&WasmOp::F64Min),
+            "f64.min must decode to WasmOp::F64Min: {:?}",
+            dmin.ops
+        );
         // Out-of-scope scalar double op: still flagged, never dropped.
         assert!(
-            dmin.unsupported.is_some(),
-            "f64.min must still flag the function unsupported (out of scope), got {:?}",
-            dmin.unsupported
+            dtrunc64.unsupported.is_some(),
+            "i64.trunc_f64_s must still flag the function unsupported (out of scope), got {:?}",
+            dtrunc64.unsupported
         );
         assert!(
             iadd.unsupported.is_none(),

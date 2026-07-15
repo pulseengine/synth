@@ -2082,6 +2082,15 @@ impl ArmEncoder {
             ArmOp::F64PromoteF32 { dd, sm } => {
                 return self.encode_arm_f64_promote_f32(dd, sm);
             }
+            // GI-FPU-002 (#369): no synth A32 target carries an FPU (cortex-r5
+            // has none — the selector declines every float op there), so the
+            // A32 encoder refuses loudly instead of shipping an untested
+            // encoding (#615: never a silent wrong byte).
+            ArmOp::F32DemoteF64 { .. } => {
+                return Err(synth_core::Error::synthesis(
+                    "F32DemoteF64 has no A32 encoding (no A32 target has an FPU)",
+                ));
+            }
             ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi } => {
                 encode_vmov_core_dreg(true, dd, rmlo, rmhi)?
             }
@@ -6215,6 +6224,7 @@ impl ArmEncoder {
                 ))
             }
             ArmOp::F64PromoteF32 { dd, sm } => self.encode_thumb_f64_promote_f32(dd, sm),
+            ArmOp::F32DemoteF64 { sd, dm } => self.encode_thumb_f32_demote_f64(sd, dm),
             ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi } => Ok(vfp_to_thumb_bytes(
                 encode_vmov_core_dreg(true, dd, rmlo, rmhi)?,
             )),
@@ -7034,55 +7044,41 @@ impl ArmEncoder {
     }
 
     /// Encode F32 copysign as Thumb-2
+    /// Encode F32 copysign as Thumb-2, clobbering ONLY R12 (the reserved
+    /// encoder scratch, #212), the flags, and Sd:
+    ///
+    ///   VMOV R12, Sm ; CMP R12, #0    (N flag = the sign bit)
+    ///   VABS.F32 Sd, Sn               (magnitude, sign cleared)
+    ///   IT MI ; VNEG.F32(MI) Sd, Sd
+    ///
+    /// Bit-exact on ±0.0/NaN-sign/±inf (VABS/VNEG are sign-bit-only edits).
+    /// The R12 capture happens BEFORE Sd is written, so Sd aliasing Sn or Sm
+    /// is safe. (The previous sequence staged the magnitude through R0 —
+    /// clobbering a live allocator-owned value, the #615 class; caught while
+    /// composing the F64 twin for #369.)
     fn encode_thumb_f32_copysign(&self, sd: &VfpReg, sn: &VfpReg, sm: &VfpReg) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
 
-        // VMOV R12, Sm (get sign source bits)
+        // VMOV R12, Sm (sign source bits)
         bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_sreg(
             false,
             sm,
             &Reg::R12,
         )?));
-
-        // VMOV R0, Sn (get magnitude source bits)
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_sreg(
-            false,
-            sn,
-            &Reg::R0,
-        )?));
-
-        // AND.W R12, R12, #0x80000000  (isolate the sign bit of the sign source)
-        // Thumb-2 T1 data-processing modified immediate: 11110 i 0 0000 S Rn |
-        // 0 imm3 Rd imm8, where the 12-bit constant is i:imm3:imm8. When the
-        // 5-bit rotation `rot = i:imm3:imm8[7]` is >= 8, the value is
-        // `(0x80 | imm8[6:0]) ROR rot`. For 0x80000000: 0x80 ROR 8 = 0x80000000,
-        // so rot=8 (i=0, imm3=0b100), imm8=0x00. (#719: the previous encoding
-        // used imm3=1/imm8=0x02, which decodes to #0x00020002 — a wrong mask that
-        // spliced bits 17 and 1 instead of the sign bit; copysign was never
-        // execution-differentiated until #719 caught it.)
-        let hw1: u16 = 0xF000 | 12; // AND.W R12, R12, #imm (i=0, S=0, Rn=R12)
-        let hw2: u16 = (0x4 << 12) | (12 << 8); // imm3=4, Rd=R12, imm8=0 → #0x80000000
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // BIC.W R0, R0, #0x80000000  (clear the sign bit of the magnitude source)
-        let hw1: u16 = 0xF020; // BIC.W R0, R0, #imm (i=0, S=0, Rn=R0)
-        let hw2: u16 = 0x4 << 12; // imm3=4, Rd=R0, imm8=0 → #0x80000000
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // ORR.W R0, R0, R12 (R0 = register 0)
-        let hw1: u16 = 0xEA40; // ORR.W R0, R0, R12 (Rn=R0)
-        let hw2: u16 = 12; // Rd=R0, Rm=R12
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // VMOV Sd, R0
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_sreg(
-            true,
-            sd,
-            &Reg::R0,
-        )?));
+        // CMP.W R12, #0 — N = bit31 (the sign, incl. -0.0 / -NaN).
+        bytes.extend_from_slice(&0xF1BC_u16.to_le_bytes());
+        bytes.extend_from_slice(&0x0F00_u16.to_le_bytes());
+        // VABS.F32 Sd, Sn
+        let sd_num = vfp_sreg_to_num(sd)?;
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let (vd, d) = encode_sreg(sd_num);
+        let (vn, n) = encode_sreg(sn_num);
+        let vabs = 0xEEB00AC0 | (d << 22) | (vd << 12) | (n << 5) | vn;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vabs));
+        // IT MI ; VNEG.F32(MI) Sd, Sd
+        bytes.extend_from_slice(&0xBF48_u16.to_le_bytes());
+        let vneg = 0xEEB10A40 | (d << 22) | (vd << 12) | (d << 5) | vd;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vneg));
 
         Ok(bytes)
     }
@@ -7179,18 +7175,35 @@ impl ArmEncoder {
     }
 
     /// Encode VMOV Sd, Rm + VCVT.F64.S32/U32 Dd, Sd as Thumb-2
+    /// Encode i32 → f64 conversion as Thumb-2. The integer stages through the
+    /// DESTINATION's own low S-alias (`S(2d)`) — allocator-owned by
+    /// definition — never S0 (which may hold a live value; the previous
+    /// pseudo-op's S0 staging was the #615 class). Also fixes the SWAPPED
+    /// signed/unsigned VCVT bases (bit7 = 1 is SIGNED — the same swap the f32
+    /// twin had; latent here because f64.convert_i32_* was decode-dropped
+    /// until #369): clang-verified vcvt.f64.s32 d1,s2 = eeb8 1bc1,
+    /// vcvt.f64.u32 d1,s2 = eeb8 1b41.
     fn encode_thumb_f64_convert_i32(&self, dd: &VfpReg, rm: &Reg, signed: bool) -> Result<Vec<u8>> {
+        let dd_num = vfp_dreg_to_num(dd)?;
+        if dd_num > 7 {
+            return Err(synth_core::Error::synthesis(format!(
+                "F64ConvertI32: destination {dd:?} has no S-register alias \
+                 (D8..D15) — the selector allocates only D0..D7"
+            )));
+        }
         let mut bytes = Vec::new();
 
-        // VMOV S0, Rm
-        let vmov = encode_vmov_core_sreg(true, &VfpReg::S0, rm)?;
+        // VMOV S(2d), Rm — stage the integer in the destination's low word.
+        let (vn_s, n_s) = encode_sreg(2 * dd_num);
+        let rt = reg_to_bits(rm);
+        let vmov = 0xEE000A10 | (vn_s << 16) | (rt << 12) | (n_s << 7);
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
-        // VCVT.F64.S32 Dd, S0 or VCVT.F64.U32 Dd, S0
-        let dd_num = vfp_dreg_to_num(dd)?;
+        // VCVT.F64.S32/U32 Dd, S(2d)
         let (vd, d) = encode_dreg(dd_num);
-        let base = if signed { 0xEEB80B40 } else { 0xEEB80BC0 };
-        let vcvt = base | (d << 22) | (vd << 12);
+        let (vm, m) = encode_sreg(2 * dd_num);
+        let base = if signed { 0xEEB80BC0 } else { 0xEEB80B40 };
+        let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
 
         Ok(bytes)
@@ -7207,82 +7220,101 @@ impl ArmEncoder {
         Ok(vfp_to_thumb_bytes(vcvt))
     }
 
-    /// Encode VCVT.S32/U32.F64 S0, Dm + VMOV Rd, S0 as Thumb-2
-    fn encode_thumb_i32_trunc_f64(&self, rd: &Reg, dm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
+    /// Encode VCVT.F32.F64 Sd, Dm (f32.demote_f64) as Thumb-2 — single
+    /// instruction, round-to-nearest-even per FPSCR default, exactly WASM
+    /// §4.3.3 demote (clang-verified: vcvt.f32.f64 s1,d2 = eef7 0bc2).
+    fn encode_thumb_f32_demote_f64(&self, sd: &VfpReg, dm: &VfpReg) -> Result<Vec<u8>> {
+        let sd_num = vfp_sreg_to_num(sd)?;
         let dm_num = vfp_dreg_to_num(dm)?;
+        let (vd, d) = encode_sreg(sd_num);
         let (vm, m) = encode_dreg(dm_num);
 
-        // VCVT.S32.F64 S0, Dm or VCVT.U32.F64 S0, Dm
+        let vcvt = 0xEEB70BC0 | (d << 22) | (vd << 12) | (m << 5) | vm;
+        Ok(vfp_to_thumb_bytes(vcvt))
+    }
+
+    /// Encode f64 → i32 truncation as Thumb-2 (round-toward-zero VCVT). The
+    /// 32-bit result stages through the SOURCE's own low S-alias (`S(2m)`,
+    /// clobbering half of an operand the selector has already popped) — never
+    /// S0, which may hold an unrelated live value (the #615 class). The
+    /// overlapping write is well-defined: VCVT reads its source operand
+    /// before writing (compilers emit `vcvt.f32.f64 s0, d0` routinely).
+    /// The SELECTOR guarantees `dm` is a dead temp, never a pinned param/
+    /// local home (it copies a home into a fresh D-temp first).
+    fn encode_thumb_i32_trunc_f64(&self, rd: &Reg, dm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
+        let dm_num = vfp_dreg_to_num(dm)?;
+        if dm_num > 7 {
+            return Err(synth_core::Error::synthesis(format!(
+                "I32TruncF64: source {dm:?} has no S-register alias \
+                 (D8..D15) — the selector allocates only D0..D7"
+            )));
+        }
+        let mut bytes = Vec::new();
+
+        // VCVT.S32/U32.F64 S(2m), Dm (clang-verified:
+        // vcvt.s32.f64 s1,d2 = eefd 0bc2 ; vcvt.u32.f64 s1,d2 = eefc 0bc2)
+        let (vm, m) = encode_dreg(dm_num);
+        let (vd_s, d_s) = encode_sreg(2 * dm_num);
         let base = if signed { 0xEEBD0BC0 } else { 0xEEBC0BC0 };
-        let vcvt = base | (m << 5) | vm;
+        let vcvt = base | (d_s << 22) | (vd_s << 12) | (m << 5) | vm;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
 
-        // VMOV Rd, S0
-        let vmov = encode_vmov_core_sreg(false, &VfpReg::S0, rd)?;
+        // VMOV Rd, S(2m)
+        let rt = reg_to_bits(rd);
+        let vmov = 0xEE100A10 | (vd_s << 16) | (rt << 12) | (d_s << 7);
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         Ok(bytes)
     }
 
-    /// Encode F64 rounding pseudo-op as Thumb-2 via VCVT to integer and back
-    /// Encode F64 rounding as Thumb-2.
-    /// `mode`: FPSCR RMode — 0b00=nearest, 0b01=+inf(ceil), 0b10=-inf(floor), 0b11=zero(trunc)
+    /// Encode F64 rounding as a SINGLE Thumb-2 VRINT (FPv5 / cortex-m7dp).
+    /// `mode` keeps the legacy FPSCR-RMode numbering of the callers —
+    /// 0b00=nearest(ties-to-even)→VRINTN, 0b01=+inf(ceil)→VRINTP,
+    /// 0b10=-inf(floor)→VRINTM, 0b11=zero(trunc)→VRINTZ — but the rounding
+    /// mode is now ENCODED in the instruction, not smuggled through FPSCR.
+    /// (The previous pseudo-op round-tripped through a 32-bit integer in S0:
+    /// wrong for |x| >= 2^31, NaN/±inf collapsed to 0, -0.0 lost, and it
+    /// CLOBBERED S0/R12 behind the allocator's back — the #615 class.)
+    /// VRINT quietens an sNaN and preserves the sign of ±0.0/NaN per IEEE 754
+    /// roundToIntegral, which is exactly WASM Core §4.3.3 f64.ceil/floor/
+    /// trunc/nearest. VRINTN/P/M live in the FE "always-execute" space (never
+    /// IT-conditional; none of these sequences emits them inside an IT block).
     fn encode_thumb_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        let dm_num = vfp_dreg_to_num(dm)?;
         let dd_num = vfp_dreg_to_num(dd)?;
-        let (vm, m) = encode_dreg(dm_num);
+        let dm_num = vfp_dreg_to_num(dm)?;
         let (vd, d) = encode_dreg(dd_num);
-
-        if mode == 0b11 {
-            // Trunc: VCVTR.S32.F64 — bit[7]=1, always truncates
-            let vcvt_to_int = 0xEEBD0BC0 | (m << 5) | vm;
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_int));
-        } else {
-            let rt: u32 = 12;
-
-            // VMRS R12, FPSCR
-            let vmrs = 0xEEF10A10 | (rt << 12);
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmrs));
-
-            // BIC.W R12, R12, #(3 << 22)
-            let bic_hw1: u16 = 0xF020 | ((rt as u16) & 0xF);
-            let bic_hw2: u16 = (0x05 << 12) | ((rt as u16) << 8) | 0x03;
-            bytes.extend_from_slice(&bic_hw1.to_le_bytes());
-            bytes.extend_from_slice(&bic_hw2.to_le_bytes());
-
-            // ORR.W R12, R12, #(mode << 22)
-            if mode != 0 {
-                let orr_hw1: u16 = 0xF040 | ((rt as u16) & 0xF);
-                let orr_hw2: u16 = (0x05 << 12) | ((rt as u16) << 8) | (mode as u16);
-                bytes.extend_from_slice(&orr_hw1.to_le_bytes());
-                bytes.extend_from_slice(&orr_hw2.to_le_bytes());
-            }
-
-            // VMSR FPSCR, R12
-            let vmsr = 0xEEE10A10 | (rt << 12);
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmsr));
-
-            // VCVT.S32.F64 S0, Dm — non-R variant (bit[7]=0)
-            let vcvt_to_int = 0xEEBD0B40 | (m << 5) | vm;
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_int));
-
-            // Restore FPSCR
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmrs));
-            bytes.extend_from_slice(&bic_hw1.to_le_bytes());
-            bytes.extend_from_slice(&bic_hw2.to_le_bytes());
-            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmsr));
-        }
-
-        // VCVT.F64.S32 Dd, S0
-        let vcvt_to_float = 0xEEB80B40 | (d << 22) | (vd << 12);
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_float));
-
-        Ok(bytes)
+        let (vm, m) = encode_dreg(dm_num);
+        // clang-verified bases (thumbv7em, fpv5-d16):
+        //   vrintn.f64 d1,d2 = feb9 1b42 ; vrintp = feba 1b42
+        //   vrintm.f64 d1,d2 = febb 1b42 ; vrintz = eeb6 1bc2
+        let base: u32 = match mode {
+            0b00 => 0xFEB90B40, // VRINTN.F64 (round to nearest, ties to even)
+            0b01 => 0xFEBA0B40, // VRINTP.F64 (round toward +inf)
+            0b10 => 0xFEBB0B40, // VRINTM.F64 (round toward -inf)
+            _ => 0xEEB60BC0,    // VRINTZ.F64 (round toward zero)
+        };
+        Ok(vfp_to_thumb_bytes(
+            base | (d << 22) | (vd << 12) | (m << 5) | vm,
+        ))
     }
 
-    /// Encode F64 min/max as Thumb-2
+    /// Encode F64 min/max as Thumb-2 with WASM Core §4.3.3 semantics:
+    ///
+    ///   VCMP.F64 Dn, Dm ; VMRS APSR_nzcv, FPSCR
+    ///   VMINNM.F64/VMAXNM.F64 Dd, Dn, Dm      (FPv5; -0.0 < +0.0 ordered)
+    ///   IT VS ; VADD.F64(VS) Dd, Dn, Dm       (unordered ⇒ NaN-propagating)
+    ///
+    /// VMINNM/VMAXNM alone are IEEE minNum/maxNum, which return the NUMBER
+    /// when exactly one operand is NaN — WASM requires NaN. The VS-guarded
+    /// VADD overwrites the result with a quiet NaN whenever the compare was
+    /// unordered (either operand NaN); on the ordered path VMINNM/VMAXNM
+    /// order -0.0 below +0.0, matching WASM's min(+0,-0) = -0 / max = +0.
+    /// Clobbers ONLY Dd and the flags (the previous pseudo-op's ordered IT
+    /// GT/MI select returned the WRONG operand for NaN and ±0 mixes).
+    ///
+    /// Ok-or-Err: `dd` must not alias `dn`/`dm` — the VS fix-up reads them
+    /// AFTER VMINNM wrote `dd` (the selector always allocates a fresh
+    /// destination while both sources are still marked live).
     fn encode_thumb_f64_minmax(
         &self,
         dd: &VfpReg,
@@ -7290,82 +7322,80 @@ impl ArmEncoder {
         dm: &VfpReg,
         is_min: bool,
     ) -> Result<Vec<u8>> {
+        if dd == dn || dd == dm {
+            return Err(synth_core::Error::synthesis(format!(
+                "F64{}: destination {dd:?} aliases a source ({dn:?},{dm:?}) — \
+                 the unordered NaN fix-up would read a clobbered operand \
+                 (compiler bug: the selector must allocate a fresh D-temp)",
+                if is_min { "Min" } else { "Max" },
+            )));
+        }
         let mut bytes = Vec::new();
+        let dd_num = vfp_dreg_to_num(dd)?;
         let dn_num = vfp_dreg_to_num(dn)?;
         let dm_num = vfp_dreg_to_num(dm)?;
-        let dd_num = vfp_dreg_to_num(dd)?;
-
-        // VMOV.F64 Dd, Dn
         let (vd, d) = encode_dreg(dd_num);
         let (vn, n) = encode_dreg(dn_num);
-        let vmov_dn = 0xEEB00B40 | (d << 22) | (vd << 12) | (n << 5) | vn;
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov_dn));
-
-        // VCMP.F64 Dn, Dm
         let (vm, m) = encode_dreg(dm_num);
+
+        // VCMP.F64 Dn, Dm (clang-verified: vcmp.f64 d2,d3 = eeb4 2b43)
         let vcmp = 0xEEB40B40 | (n << 22) | (vn << 12) | (m << 5) | vm;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
-
         // VMRS APSR_nzcv, FPSCR
         bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
-
-        // IT GT (for min) or IT MI (for max)
-        let cond: u16 = if is_min { 0xC } else { 0x4 };
-        let it: u16 = 0xBF00 | (cond << 4) | 0x8;
-        bytes.extend_from_slice(&it.to_le_bytes());
-
-        // VMOV{cond}.F64 Dd, Dm
-        let vmov_dm = 0xEEB00B40 | (d << 22) | (vd << 12) | (m << 5) | vm;
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov_dm));
+        // VMINNM.F64 / VMAXNM.F64 Dd, Dn, Dm (clang-verified:
+        // vminnm.f64 d1,d2,d3 = fe82 1b43 ; vmaxnm = fe82 1b03)
+        let base: u32 = if is_min { 0xFE800B40 } else { 0xFE800B00 };
+        let vnm = base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vnm));
+        // IT VS (unordered ⇒ at least one NaN operand)
+        bytes.extend_from_slice(&0xBF68_u16.to_le_bytes());
+        // VADD.F64(VS) Dd, Dn, Dm — NaN + x propagates a quiet NaN
+        let vadd = 0xEE300B00 | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vadd));
 
         Ok(bytes)
     }
 
-    /// Encode F64 copysign as Thumb-2
+    /// Encode F64 copysign as Thumb-2, clobbering ONLY R12 (the reserved
+    /// encoder scratch, #212), the flags, and Dd:
+    ///
+    ///   VMOV R12, S(2m+1)   (high word of the SIGN source Dm)
+    ///   CMP  R12, #0        (N flag = the sign bit)
+    ///   VABS.F64 Dd, Dn     (magnitude, sign cleared)
+    ///   IT MI ; VNEG.F64(MI) Dd, Dd
+    ///
+    /// Bit-exact on ±0.0/NaN-sign/±inf (VABS/VNEG are sign-bit-only edits).
+    /// The R12 capture happens BEFORE Dd is written, so Dd aliasing Dn or Dm
+    /// is safe. (The previous pseudo-op clobbered R0/R1/R2 behind the
+    /// allocator's back — the #615 class.)
     fn encode_thumb_f64_copysign(&self, dd: &VfpReg, dn: &VfpReg, dm: &VfpReg) -> Result<Vec<u8>> {
+        let dm_num = vfp_dreg_to_num(dm)?;
+        if dm_num > 7 {
+            return Err(synth_core::Error::synthesis(format!(
+                "F64Copysign: sign source {dm:?} has no S-register alias \
+                 (D8..D15) — the selector allocates only D0..D7"
+            )));
+        }
         let mut bytes = Vec::new();
-
-        // VMOV R0, R12, Dm (get sign source)
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_dreg(
-            false,
-            dm,
-            &Reg::R0,
-            &Reg::R12,
-        )?));
-
-        // VMOV R1, R2, Dn (get magnitude source)
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_dreg(
-            false,
-            dn,
-            &Reg::R1,
-            &Reg::R2,
-        )?));
-
-        // AND.W R12, R12, #0x80000000 (i=0, Rn=R12)
-        let hw1: u16 = 0xF000 | 12;
-        let hw2: u16 = (0x1 << 12) | (12 << 8) | 0x02;
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // BIC.W R2, R2, #0x80000000 (i=0, Rn=R2)
-        let hw1: u16 = 0xF020 | 2;
-        let hw2: u16 = (0x1 << 12) | (2 << 8) | 0x02;
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // ORR.W R2, R2, R12
-        let hw1: u16 = 0xEA40 | 2;
-        let hw2: u16 = (2 << 8) | 12;
-        bytes.extend_from_slice(&hw1.to_le_bytes());
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-
-        // VMOV Dd, R1, R2
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_dreg(
-            true,
-            dd,
-            &Reg::R1,
-            &Reg::R2,
-        )?));
+        // VMOV R12, S(2m+1) — the sign source's high word.
+        let (vn_s, n_s) = encode_sreg(2 * dm_num + 1);
+        let vmov = 0xEE100A10 | (vn_s << 16) | (12 << 12) | (n_s << 7);
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
+        // CMP R12, #0 (T2: CMP.W R12, #0) — N = bit31 of the sign word.
+        bytes.extend_from_slice(&0xF1BC_u16.to_le_bytes());
+        bytes.extend_from_slice(&0x0F00_u16.to_le_bytes());
+        // VABS.F64 Dd, Dn
+        let dd_num = vfp_dreg_to_num(dd)?;
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let (vd, d) = encode_dreg(dd_num);
+        let (vn, n) = encode_dreg(dn_num);
+        let vabs = 0xEEB00BC0 | (d << 22) | (vd << 12) | (n << 5) | vn;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vabs));
+        // IT MI ; VNEG.F64(MI) Dd, Dd
+        bytes.extend_from_slice(&0xBF48_u16.to_le_bytes());
+        let vneg = 0xEEB10B40 | (d << 22) | (vd << 12) | (d << 5) | vd;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vneg));
 
         Ok(bytes)
     }
@@ -10588,8 +10618,175 @@ mod tests {
             dm: VfpReg::D1,
         };
         let code = encoder.encode(&op).unwrap();
-        // Two VFP instructions via Thumb encoding
-        assert_eq!(code.len(), 8);
+        // GI-FPU-002 phase 3 (#369): a single VRINTZ.F64 (clang-verified
+        // vrintz.f64 d0,d1 base) — no more FPSCR dance / S0 clobber.
+        assert_eq!(code.len(), 4);
+        assert_eq!(code, vec![0xb6, 0xee, 0xc1, 0x0b]);
+    }
+
+    /// GI-FPU-002 phase 3 (#369): the rewritten f64 tail sequences, byte-exact
+    /// against clang (`-target thumbv7em-none-eabi -mfpu=fpv5-d16`). Each
+    /// clobbers ONLY its destination (+R12/flags where noted) — the previous
+    /// pseudo-ops staged through live S0/R0-R2 (the #615 class) and the
+    /// min/max/rounding semantics were wrong (ordered IT select returned the
+    /// wrong operand on NaN/±0; rounding round-tripped through a 32-bit int).
+    #[test]
+    fn test_369_f64_tail_thumb2_encodings_match_clang() {
+        let enc = ArmEncoder::new_thumb2();
+        // vrintn/vrintp/vrintm.f64 d1, d2 (FE space, never IT'd).
+        for (op, want) in [
+            (
+                ArmOp::F64Nearest {
+                    dd: VfpReg::D1,
+                    dm: VfpReg::D2,
+                },
+                vec![0xb9, 0xfe, 0x42, 0x1b],
+            ),
+            (
+                ArmOp::F64Ceil {
+                    dd: VfpReg::D1,
+                    dm: VfpReg::D2,
+                },
+                vec![0xba, 0xfe, 0x42, 0x1b],
+            ),
+            (
+                ArmOp::F64Floor {
+                    dd: VfpReg::D1,
+                    dm: VfpReg::D2,
+                },
+                vec![0xbb, 0xfe, 0x42, 0x1b],
+            ),
+        ] {
+            assert_eq!(enc.encode(&op).unwrap(), want, "{op:?}");
+        }
+        // vcmp.f64 d1,d2 ; vmrs ; vminnm.f64 d0,d1,d2 ; it vs ; vaddvs.f64
+        let min = enc
+            .encode(&ArmOp::F64Min {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            })
+            .unwrap();
+        assert_eq!(
+            min,
+            vec![
+                0xb4, 0xee, 0x42, 0x1b, // vcmp.f64 d1, d2
+                0xf1, 0xee, 0x10, 0xfa, // vmrs APSR_nzcv, fpscr
+                0x81, 0xfe, 0x42, 0x0b, // vminnm.f64 d0, d1, d2
+                0x68, 0xbf, // it vs
+                0x31, 0xee, 0x02, 0x0b, // vaddvs.f64 d0, d1, d2
+            ]
+        );
+        // vmaxnm variant flips only bit6 of the VMINNM word.
+        let max = enc
+            .encode(&ArmOp::F64Max {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            })
+            .unwrap();
+        assert_eq!(&max[8..12], &[0x81, 0xfe, 0x02, 0x0b]);
+        // Destination aliasing a source must ERR (the NaN fix-up would read
+        // a clobbered operand), never encode.
+        assert!(
+            enc.encode(&ArmOp::F64Min {
+                dd: VfpReg::D1,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            })
+            .is_err()
+        );
+        // copysign d0,(mag)d1,(sign)d2:
+        // vmov r12,s5 ; cmp.w r12,#0 ; vabs.f64 d0,d1 ; it mi ; vnegmi.f64 d0,d0
+        let cs = enc
+            .encode(&ArmOp::F64Copysign {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            })
+            .unwrap();
+        assert_eq!(
+            cs,
+            vec![
+                0x12, 0xee, 0x90, 0xca, // vmov r12, s5
+                0xbc, 0xf1, 0x00, 0x0f, // cmp.w r12, #0
+                0xb0, 0xee, 0xc1, 0x0b, // vabs.f64 d0, d1
+                0x48, 0xbf, // it mi
+                0xb1, 0xee, 0x40, 0x0b, // vnegmi.f64 d0, d0
+            ]
+        );
+        // f32 copysign s0,(mag)s1,(sign)s2 — the R0-clobber-free rewrite:
+        // vmov r12,s2 ; cmp.w r12,#0 ; vabs.f32 s0,s1 ; it mi ; vnegmi.f32
+        let cs32 = enc
+            .encode(&ArmOp::F32Copysign {
+                sd: VfpReg::S0,
+                sn: VfpReg::S1,
+                sm: VfpReg::S2,
+            })
+            .unwrap();
+        assert_eq!(
+            cs32,
+            vec![
+                0x11, 0xee, 0x10, 0xca, // vmov r12, s2
+                0xbc, 0xf1, 0x00, 0x0f, // cmp.w r12, #0
+                0xb0, 0xee, 0xe0, 0x0a, // vabs.f32 s0, s1
+                0x48, 0xbf, // it mi
+                0xb1, 0xee, 0x40, 0x0a, // vnegmi.f32 s0, s0
+            ]
+        );
+        // i32 -> f64 stages through the DESTINATION's S-alias (never S0) and
+        // uses the CORRECT signed/unsigned VCVT bases (previously swapped):
+        // vmov s0,r3 ; vcvt.f64.s32 d0,s0
+        let conv_s = enc
+            .encode(&ArmOp::F64ConvertI32S {
+                dd: VfpReg::D0,
+                rm: Reg::R3,
+            })
+            .unwrap();
+        assert_eq!(
+            conv_s,
+            vec![
+                0x00, 0xee, 0x10, 0x3a, // vmov s0, r3
+                0xb8, 0xee, 0xc0, 0x0b, // vcvt.f64.s32 d0, s0
+            ]
+        );
+        let conv_u = enc
+            .encode(&ArmOp::F64ConvertI32U {
+                dd: VfpReg::D0,
+                rm: Reg::R3,
+            })
+            .unwrap();
+        assert_eq!(&conv_u[4..8], &[0xb8, 0xee, 0x40, 0x0b]); // vcvt.f64.u32
+        // f64 -> i32 stages through the SOURCE's S-alias (never S0):
+        // vcvt.s32.f64 s2,d1 ; vmov r3,s2
+        let trunc_s = enc
+            .encode(&ArmOp::I32TruncF64S {
+                rd: Reg::R3,
+                dm: VfpReg::D1,
+            })
+            .unwrap();
+        assert_eq!(
+            trunc_s,
+            vec![
+                0xbd, 0xee, 0xc1, 0x1b, // vcvt.s32.f64 s2, d1
+                0x11, 0xee, 0x10, 0x3a, // vmov r3, s2
+            ]
+        );
+        let trunc_u = enc
+            .encode(&ArmOp::I32TruncF64U {
+                rd: Reg::R3,
+                dm: VfpReg::D1,
+            })
+            .unwrap();
+        assert_eq!(&trunc_u[0..4], &[0xbc, 0xee, 0xc1, 0x1b]); // vcvt.u32.f64
+        // f32.demote_f64: vcvt.f32.f64 s1, d2
+        let demote = enc
+            .encode(&ArmOp::F32DemoteF64 {
+                sd: VfpReg::S1,
+                dm: VfpReg::D2,
+            })
+            .unwrap();
+        assert_eq!(demote, vec![0xf7, 0xee, 0xc2, 0x0b]);
     }
 
     #[test]

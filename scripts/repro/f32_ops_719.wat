@@ -110,6 +110,19 @@
     f32.add
     i32.reinterpret_f32)
 
+  ;; ---- GI-FPU-002 phase 3 (#369): copysign with a LIVE core value -----------
+  ;; The pre-fix F32Copysign encoder staged the magnitude through R0 — with
+  ;; f32 params (S0/S1) and no core params, the `i32.const 41` temp lands in
+  ;; R0 and is LIVE across the copysign, so the old sequence returned
+  ;; bits(copysign)+bits(copysign) instead of 41+bits(copysign). The rewrite
+  ;; clobbers only R12 (reserved encoder scratch).
+  (func (export "cs_live") (param f32 f32) (result i32)
+    i32.const 41
+    local.get 0
+    local.get 1
+    f32.copysign i32.reinterpret_f32
+    i32.add)
+
   ;; ---- GI-FPU-002 phase 3 (#369): the f32 call boundary is MARSHALLED -------
   ;; Float-signature callees now LOWER: arguments move into the AAPCS-VFP
   ;; S0.. pool, results come out of S0. Every callee below does real VFP

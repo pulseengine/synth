@@ -217,6 +217,24 @@ def main():
                         f"!= wasmtime 0x{want:08x}")
         print(f"[copysign] {len(EDGE_BITS)*6} sign-splice cases checked")
 
+    # ---- GI-FPU-002 phase 3 (#369): copysign with a LIVE core value ----------
+    # cs_live(f32 a, f32 b) = 41 + bits(copysign(a, b)); a/b in S0/S1, and the
+    # `i32.const 41` temp lands in R0 — the pre-fix encoder staged the
+    # magnitude through R0 (clobbering the 41), the rewrite uses only R12.
+    if need("cs_live"):
+        for a, b in ((0x3FC00000, 0x80000000), (0xC2F60000, 0x00000000),
+                     (0x7FC00000, 0xFFC00000), (0x00000001, 0xBF800000)):
+            uc = run(text, base, syms["cs_live"], s0=a, s1=b, r0=0xDEAD0000)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp["cs_live"](store, bits_f32(a), bits_f32(b)) & 0xFFFFFFFF
+            checked += 1
+            if got != want:
+                nonlocal_fail(f"cs_live(0x{a:08x},0x{b:08x}) -> 0x{got:08x} "
+                              f"!= wasmtime 0x{want:08x}")
+            else:
+                print(f"[cs_live] (0x{a:08x},0x{b:08x}) -> 0x{got:08x} OK "
+                      f"(live R0 survives copysign)")
+
     # ---- f32.store(addr, bits): store to mem[addr], read back ----
     if need("store"):
         for i, b in enumerate(EDGE_BITS):

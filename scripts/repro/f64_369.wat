@@ -142,6 +142,59 @@
     call $dmix
     f64.store)
 
+  ;; ---- GI-FPU-002 phase 3 (#369): the f64 op TAIL ----------------------------
+  ;; rounding: OP(mem[0]) -> mem[addr] (VRINT{P,M,Z,N}.F64 — ties-to-even for
+  ;; nearest, ±0.0 sign preserved, NaN quietened)
+  (func (export "dceil") (param i32)
+    local.get 0 (f64.ceil (f64.load (i32.const 0))) f64.store)
+  (func (export "dfloor") (param i32)
+    local.get 0 (f64.floor (f64.load (i32.const 0))) f64.store)
+  (func (export "dtrunc") (param i32)
+    local.get 0 (f64.trunc (f64.load (i32.const 0))) f64.store)
+  (func (export "dnearest") (param i32)
+    local.get 0 (f64.nearest (f64.load (i32.const 0))) f64.store)
+
+  ;; min/max: mem[0] OP mem[8] -> mem[addr] (VMINNM/VMAXNM + NaN fix-up:
+  ;; any-NaN-operand => NaN, min(+0,-0) = -0, max = +0)
+  (func (export "dmin") (param i32)
+    local.get 0 (f64.min (f64.load (i32.const 0)) (f64.load (i32.const 8)))
+    f64.store)
+  (func (export "dmax") (param i32)
+    local.get 0 (f64.max (f64.load (i32.const 0)) (f64.load (i32.const 8)))
+    f64.store)
+
+  ;; copysign(a=mem[0], b=mem[8]) -> mem[addr] (VABS + conditional VNEG splice)
+  (func (export "dcopysign") (param i32)
+    local.get 0 (f64.copysign (f64.load (i32.const 0)) (f64.load (i32.const 8)))
+    f64.store)
+
+  ;; f32.demote_f64(mem[0]) -> i32 bits (round-to-nearest-even; overflow->inf,
+  ;; underflow->signed zero/subnormal)
+  (func (export "ddemote") (result i32)
+    (i32.reinterpret_f32 (f32.demote_f64 (f64.load (i32.const 0)))))
+
+  ;; i32 -> f64 (exact for every i32): convert(n) -> mem[addr]
+  (func (export "dconvs") (param i32 i32)
+    local.get 1 (f64.convert_i32_s (local.get 0)) f64.store)
+  (func (export "dconvu") (param i32 i32)
+    local.get 1 (f64.convert_i32_u (local.get 0)) f64.store)
+
+  ;; i32.trunc_f64_{s,u}(mem[0]) -> i32 — TRAPS (UDF) on NaN/out-of-range
+  ;; per WASM Core 4.3.3 (the #709 domain guard, f64 twin)
+  (func (export "dtruncs") (result i32)
+    (i32.trunc_f64_s (f64.load (i32.const 0))))
+  (func (export "dtruncu") (result i32)
+    (i32.trunc_f64_u (f64.load (i32.const 0))))
+
+  ;; the trunc encoder converts in place (source D low S-alias) — a PARAM HOME
+  ;; must survive: mem[addr] = x + convert(trunc(x)) reads x AFTER the trunc.
+  (func (export "dtrunchome") (param f64 i32)
+    local.get 1
+    local.get 0
+    (f64.convert_i32_s (i32.trunc_f64_s (local.get 0)))
+    f64.add
+    f64.store)
+
   ;; ---- GI-FPU-002 phase 3 (#369): f64 RESULT marshalled out of D0 -----------
   ;; The callee does real double-precision arithmetic (writes D0 and scratch),
   ;; so a caller that read the result from R0:R1 — or failed to spill its own

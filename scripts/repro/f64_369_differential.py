@@ -33,11 +33,12 @@ from pathlib import Path
 
 import wasmtime
 from elftools.elf.elffile import ELFFile
-from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
+from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
 from unicorn.arm_const import (
     UC_ARM_REG_D0,
     UC_ARM_REG_D1,
     UC_ARM_REG_LR,
+    UC_ARM_REG_PC,
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
     UC_ARM_REG_R2,
@@ -92,6 +93,21 @@ def bits_f32(b):
     return struct.unpack("<f", struct.pack("<I", b & 0xFFFFFFFF))[0]
 
 
+def is_nan32(bits):
+    b = bits & 0xFFFFFFFF
+    return (b & 0x7F800000) == 0x7F800000 and (b & 0x007FFFFF) != 0
+
+
+def f32_bits_eq(got, want):
+    if is_nan32(got) and is_nan32(want):
+        return True
+    return (got & 0xFFFFFFFF) == (want & 0xFFFFFFFF)
+
+
+def f32_bits(x):
+    return struct.unpack("<I", struct.pack("<f", x))[0]
+
+
 def is_nan64(bits):
     b = bits & 0xFFFFFFFFFFFFFFFF
     return (b & 0x7FF0000000000000) == 0x7FF0000000000000 and (
@@ -108,6 +124,16 @@ def f64_bits_eq(got, want):
 
 def new_uc(text, text_base):
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+    # GI-FPU-002 phase 3 (#369): the rounding/min-max lowerings use FPv5
+    # VRINT{N,P,M,Z}.F64 / VMINNM / VMAXNM (ARMv8 FP encodings) — unicorn's
+    # DEFAULT ARM model predates them (UC_ERR_INSN_INVALID), so pick the MAX
+    # feature model. Older unicorns without ctl_set_cpu_model skip (the CI
+    # runner pins a current unicorn).
+    try:
+        from unicorn.arm_const import UC_CPU_ARM_MAX
+        uc.ctl_set_cpu_model(UC_CPU_ARM_MAX)
+    except (ImportError, AttributeError):
+        pass
     map_base = text_base & ~0xFFF
     size = ((len(text) + (text_base - map_base)) + 0xFFF) & ~0xFFF
     uc.mem_map(map_base, max(size, 0x1000))
@@ -150,6 +176,25 @@ def run(text, base, addr, mem0=None, mem8=None, r0=None, r1=None, r2=None,
     return uc
 
 
+def run_or_trap(text, base, addr, mem0=None):
+    """Like `run`, but a UDF trap (the #709 domain guard) returns 'trap'
+    instead of raising — mirrors f32_mem_trunc_708_709_differential.py."""
+    uc = new_uc(text, base)
+    if mem0 is not None:
+        uc.mem_write(MEMBASE + 0, struct.pack("<Q", mem0))
+    uc.reg_write(UC_ARM_REG_LR, 0x38000 | 1)
+    try:
+        uc.emu_start(addr | 1, 0x38000, count=400)
+    except UcError as e:
+        pc = uc.reg_read(UC_ARM_REG_PC)
+        if base <= pc < base + len(text):
+            hw = struct.unpack("<H", text[pc - base:pc - base + 2])[0]
+            if hw & 0xFF00 == 0xDE00:  # Thumb UDF #imm
+                return ("trap", None)
+        return ("fault", f"{e} at pc={pc:#x} (NOT a udf trap)")
+    return ("ok", uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF)
+
+
 def wasm_instance():
     eng = wasmtime.Engine()
     mod = wasmtime.Module(eng, WAT.read_bytes())
@@ -179,6 +224,59 @@ PROMOTE_BITS = [
 
 RESULT_ADDR = 64  # where the store-result functions write
 
+# ---- GI-FPU-002 phase 3 (#369): op-tail edge tables -------------------------
+NAN = float("nan")
+INF = float("inf")
+# Rounding edges: ties (nearest is ties-to-even: 0.5->0, 1.5->2, 2.5->2),
+# signed zeros (ceil(-0.5) = -0.0), NaN/inf propagation, integral-boundary
+# magnitudes (2^52-0.5 is the largest fractional f64), subnormal.
+ROUND_BITS = [
+    D(0.5), D(-0.5), D(1.5), D(-1.5), D(2.5), D(-2.5),
+    D(0.0), D(-0.0), D(0.25), D(-0.25),
+    0x7FF8000000000000,            # NaN
+    D(INF), D(-INF),
+    D(4503599627370495.5),         # 2^52 - 0.5 (largest fractional)
+    D(-4503599627370495.5),
+    0x0000000000000001,            # +subnormal min
+    D(1.7976931348623157e308),
+]
+# min/max: the NaN and signed-zero rows are exactly where VMINNM/VMAXNM alone
+# (IEEE minNum/maxNum) and the old ordered-select pseudo-op diverge from WASM.
+MINMAX_PAIRS = PAIRS + [
+    (D(1.0), 0x7FF8000000000000),  # x op NaN -> NaN (minNum would say x)
+    (0x7FF8000000000000, 0x7FF8000000000000),
+    (D(0.0), D(-0.0)),             # min -> -0.0, max -> +0.0
+    (D(-0.0), D(0.0)),
+    (D(-INF), D(INF)),
+    (D(1.5), D(-2.5)),
+]
+# demote: overflow -> ±inf, rounding, underflow -> signed zero/subnormal.
+DEMOTE_BITS = [
+    D(1.5), D(-1.5), D(0.0), D(-0.0), 0x7FF8000000000000, D(INF), D(-INF),
+    D(1.7976931348623157e308),     # overflows f32 -> +inf
+    D(-1.7976931348623157e308),
+    D(3.4028235677973366e38),      # just above FLT_MAX -> rounds to inf
+    D(1e-45),                      # underflow -> f32 subnormal
+    D(-1e-320),                    # -> -0.0
+    D(3.141592653589793),          # rounding to nearest f32
+]
+# i32 <-> f64 conversion edges (conversions are exact; trunc traps out of range).
+CONV_INTS = [0, 1, 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF, 12345678, 0xDEADBEEF]
+TRUNC_S_TABLE = [
+    (D(2.5), "ok"), (D(-2.5), "ok"), (D(0.0), "ok"), (D(-0.5), "ok"),
+    (D(2147483647.999), "ok"), (D(-2147483648.999), "ok"),  # trunc into range
+    (0x7FF8000000000000, "trap"), (D(INF), "trap"), (D(-INF), "trap"),
+    (D(2147483648.0), "trap"),     # 2^31 exactly
+    (D(-2147483649.0), "trap"),    # -(2^31)-1 exactly
+    (D(3e9), "trap"), (D(-3e9), "trap"),
+]
+TRUNC_U_TABLE = [
+    (D(2.5), "ok"), (D(0.0), "ok"), (D(-0.5), "ok"),
+    (D(4294967295.999), "ok"),
+    (0x7FF8000000000000, "trap"), (D(INF), "trap"),
+    (D(-1.0), "trap"), (D(4294967296.0), "trap"), (D(5e9), "trap"),
+]
+
 
 def main():
     elf = "/tmp/f64_369.elf"
@@ -194,7 +292,8 @@ def main():
             leaked = [s for s in
                       ("dconst", "dadd", "dlt", "dpromote", "dxcall",
                        "dretcall", "dparam", "dparam_mix", "dcallargs",
-                       "dcallswap", "dcallmix")
+                       "dcallswap", "dcallmix", "dceil", "dmin", "dcopysign",
+                       "ddemote", "dconvs", "dtruncs", "dtrunchome")
                       if s in syms]
             if leaked:
                 sys.exit(f"FAIL: f64 functions {leaked} must be REJECTED on "
@@ -292,6 +391,108 @@ def main():
                 fail(f"{fn}(0x{a:016x}, 0x{b:016x}) -> {got} "
                      f"!= wasmtime {want}")
         print(f"[{fn}] {len(PAIRS)} edge pairs OK")
+
+    # ---- GI-FPU-002 phase 3 (#369): rounding (VRINT{P,M,Z,N}.F64) -----------
+    for fn in ("dceil", "dfloor", "dtrunc", "dnearest"):
+        if not need(fn):
+            continue
+        for a in ROUND_BITS:
+            uc = run(text, base, syms[fn], mem0=a, r0=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            set_wasm_mem(a, 0)
+            want = wasm_store_result(fn, RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"{fn}(0x{a:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+        print(f"[{fn}] {len(ROUND_BITS)} rounding edges OK "
+              f"(ties/±0.0/NaN/inf/2^52)")
+
+    # ---- min/max (VMINNM/VMAXNM + the NaN fix-up) + copysign ----------------
+    for fn in ("dmin", "dmax", "dcopysign"):
+        if not need(fn):
+            continue
+        for a, b in MINMAX_PAIRS:
+            uc = run(text, base, syms[fn], mem0=a, mem8=b, r0=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            set_wasm_mem(a, b)
+            want = wasm_store_result(fn, RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"{fn}(0x{a:016x}, 0x{b:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+        print(f"[{fn}] {len(MINMAX_PAIRS)} edge pairs OK (NaN/±0 rows incl.)")
+
+    # ---- f32.demote_f64 ------------------------------------------------------
+    if need("ddemote"):
+        for a in DEMOTE_BITS:
+            uc = run(text, base, syms["ddemote"], mem0=a)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            set_wasm_mem(a, 0)
+            want = exp["ddemote"](store) & 0xFFFFFFFF
+            checked += 1
+            if not f32_bits_eq(got, want):
+                fail(f"ddemote(0x{a:016x}) -> 0x{got:08x} "
+                     f"!= wasmtime 0x{want:08x}")
+        print(f"[ddemote] {len(DEMOTE_BITS)} edges OK "
+              f"(overflow->inf, underflow->±0/subnormal)")
+
+    # ---- i32 -> f64 conversions (exact) --------------------------------------
+    for fn in ("dconvs", "dconvu"):
+        if not need(fn):
+            continue
+        for n in CONV_INTS:
+            uc = run(text, base, syms[fn], r0=n, r1=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            want = wasm_store_result(fn, n, RESULT_ADDR)
+            checked += 1
+            if got != want:
+                fail(f"{fn}(0x{n:08x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+        print(f"[{fn}] {len(CONV_INTS)} conversions bit-exact OK")
+
+    # ---- i32.trunc_f64_{s,u}: TRAP (UDF) on NaN/out-of-range (#709 twin) ----
+    def wasm_call_or_trap(fn):
+        try:
+            return exp[fn](store) & 0xFFFFFFFF
+        except wasmtime.Trap:
+            return "trap"
+
+    for fn, table in (("dtruncs", TRUNC_S_TABLE), ("dtruncu", TRUNC_U_TABLE)):
+        if not need(fn):
+            continue
+        for a, want_kind in table:
+            kind, got = run_or_trap(text, base, syms[fn], mem0=a)
+            set_wasm_mem(a, 0)
+            wv = wasm_call_or_trap(fn)
+            checked += 1
+            if want_kind == "trap":
+                if wv != "trap":
+                    fail(f"{fn}: wasmtime did NOT trap on 0x{a:016x} — "
+                         f"trap table wrong")
+                elif kind != "trap":
+                    fail(f"{fn}(0x{a:016x}) must TRAP (UDF), got {kind}:{got}")
+            elif kind != "ok" or wv == "trap" or got != wv:
+                fail(f"{fn}(0x{a:016x}) -> {kind}:{got} != wasmtime {wv}")
+        print(f"[{fn}] {len(table)} rows OK (traps trap, in-range bit-exact)")
+
+    # the trunc encoder converts in place — the D0 PARAM HOME must survive
+    if need("dtrunchome"):
+        for a in (D(2.5), D(-1234.75), D(0.0), D(2147483000.0)):
+            uc = run(text, base, syms["dtrunchome"], d0=a, r0=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            want = wasm_store_result("dtrunchome", bits_f64(a), RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dtrunchome(0x{a:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+            else:
+                print(f"[dtrunchome] 0x{a:016x} -> 0x{got:016x} OK "
+                      f"(home survives in-place VCVT)")
 
     # ---- f64 live ACROSS an integer call (D-file caller-saved spill) --------
     if need("dxcall"):
@@ -420,10 +621,12 @@ def main():
     if fails:
         sys.exit(f"\nFAIL: {fails}/{checked} f64 #369 results diverged")
     print(f"\nGREEN: {checked}/{checked} f64 #369 results bit-exact vs wasmtime "
-          f"(const/promote/arith/compare/load/store + f64-across-call + "
-          f"phase-3 f64 param D-homes (incl. back-fill + across-call) + "
-          f"D0/D1 argument + D0 result call marshalling on cortex-m7dp; "
-          f"m4f + m3 honest-reject confirmed).")
+          f"(const/promote/arith/compare/load/store + the phase-3 op tail "
+          f"(ceil/floor/trunc/nearest via VRINT, min/max, copysign, demote, "
+          f"i32<->f64 converts, trunc trap table) + f64 param D-homes "
+          f"(incl. back-fill + across-call) + D0/D1 argument + D0 result "
+          f"call marshalling on cortex-m7dp; m4f + m3 honest-reject "
+          f"confirmed).")
 
 
 if __name__ == "__main__":

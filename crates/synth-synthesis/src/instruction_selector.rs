@@ -2498,6 +2498,27 @@ fn try_lower_f32(
             let signed = matches!(op, I32TruncF32S);
             let sm = pop_float(stack)?;
             let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+            // GI-FPU-002 phase 3 (#369, found composing the f64 twin): the
+            // encoder converts IN PLACE (`VCVT Sm, Sm` then `VMOV Rd, Sm`) —
+            // fine for a dead temp, but a pinned param/local HOME register
+            // must survive the op (a later `local.get` reads it): convert
+            // from a fresh copy instead. `rd` is a safe round-trip scratch
+            // (the guards below overwrite it anyway).
+            let sm_is_home = vfp_s_index(sm).is_some_and(|s| vfp_home[s]);
+            let work = if sm_is_home {
+                let copy = alloc_vfp_temp(vfp_used)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::I32ReinterpretF32 { rd, sm },
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32ReinterpretI32 { sd: copy, rm: rd },
+                    source_line: Some(idx),
+                });
+                copy
+            } else {
+                sm
+            };
 
             // (hi_bound, lo_bound, lower-guard-is-inclusive-GE-vs-strict-GT)
             let (hi, lo) = if signed {
@@ -2524,19 +2545,19 @@ fn try_lower_f32(
                 let cmp = if cmp_is_lt {
                     ArmOp::F32Lt {
                         rd,
-                        sn: sm,
+                        sn: work,
                         sm: s_bound,
                     }
                 } else if signed {
                     ArmOp::F32Ge {
                         rd,
-                        sn: sm,
+                        sn: work,
                         sm: s_bound,
                     }
                 } else {
                     ArmOp::F32Gt {
                         rd,
-                        sn: sm,
+                        sn: work,
                         sm: s_bound,
                     }
                 };
@@ -2570,16 +2591,19 @@ fn try_lower_f32(
             emit_guard(hi, true)?; // upper: x < hi (also traps NaN)
             emit_guard(lo, false)?; // lower: x >= lo (signed) / x > lo (unsigned)
 
-            // In-range: the saturating VCVT is now provably exact.
+            // In-range: the saturating VCVT is now provably exact (and the
+            // in-place clobber lands on `work` — a dead temp or the fresh
+            // copy, never a pinned home).
             let arm = if signed {
-                ArmOp::I32TruncF32S { rd, sm }
+                ArmOp::I32TruncF32S { rd, sm: work }
             } else {
-                ArmOp::I32TruncF32U { rd, sm }
+                ArmOp::I32TruncF32U { rd, sm: work }
             };
             instructions.push(ArmInstruction {
                 op: arm,
                 source_line: Some(idx),
             });
+            free_vfp_temp(vfp_used, vfp_home, work);
             free_vfp_temp(vfp_used, vfp_home, sm);
             stack.push(StackVal::i32(rd));
             Ok(true)
@@ -2720,7 +2744,77 @@ fn is_scope_f64_op(op: &WasmOp) -> bool {
             | F64Ge
             | F64Load { .. }
             | F64Store { .. }
+            // GI-FPU-002 phase 3 (#369): the f64 op tail — rounding (VRINT),
+            // min/max (VMINNM/VMAXNM + NaN fix-up), copysign, demote, and the
+            // i32<->f64 conversions (trunc traps out-of-range per §4.3.3).
+            | F64Ceil
+            | F64Floor
+            | F64Trunc
+            | F64Nearest
+            | F64Min
+            | F64Max
+            | F64Copysign
+            | F32DemoteF64
+            | F64ConvertI32S
+            | F64ConvertI32U
+            | I32TruncF64S
+            | I32TruncF64U
     )
+}
+
+/// GI-FPU-002 phase 3 (#369): materialize a 64-bit f64 pattern into a fresh
+/// D-temp via TWO allocator-owned core temps (MOVW/MOVT each) + `VMOV Dd,lo,hi`.
+/// Deliberately NOT `ArmOp::F64Const`: that encoder pseudo-op hardcodes R0+R12
+/// as scratch, and R0 can hold a live param/temp (the #615 class). Shared by
+/// the `F64Const` lowering and the `i32.trunc_f64_*` domain-guard bounds.
+#[allow(clippy::too_many_arguments)]
+fn materialize_f64_const(
+    bits: u64,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<VfpReg> {
+    let lo = bits as u32;
+    let hi = (bits >> 32) as u32;
+    let rlo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    // Keep `rlo` visibly live while allocating `rhi` by pushing it as
+    // a placeholder stack entry (popped right back off).
+    stack.push(StackVal::i32(rlo));
+    let rhi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx);
+    stack.pop();
+    let rhi = rhi?;
+    for (r, val) in [(rlo, lo), (rhi, hi)] {
+        instructions.push(ArmInstruction {
+            op: ArmOp::Movw {
+                rd: r,
+                imm16: (val & 0xFFFF) as u16,
+            },
+            source_line: Some(idx),
+        });
+        if (val >> 16) != 0 {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Movt {
+                    rd: r,
+                    imm16: (val >> 16) as u16,
+                },
+                source_line: Some(idx),
+            });
+        }
+    }
+    let dd = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64ReinterpretI64 {
+            dd,
+            rmlo: rlo,
+            rmhi: rhi,
+        },
+        source_line: Some(idx),
+    });
+    Ok(dd)
 }
 
 /// Lower an in-scope scalar f64 op onto the caller-saved D-register file.
@@ -2833,48 +2927,18 @@ fn try_lower_f64(
             Ok(true)
         }
         F64Const(v) => {
-            // Materialize the 64-bit pattern via TWO allocator-owned core
-            // temps (MOVW/MOVT each) + `VMOV Dd, lo, hi`. Deliberately NOT
-            // `ArmOp::F64Const`: that encoder pseudo-op hardcodes R0+R12 as
-            // scratch, and R0 can hold a live param/temp (the #615 "encoder
-            // pseudo-op clobbers allocator state" class).
-            let bits = v.to_bits();
-            let lo = bits as u32;
-            let hi = (bits >> 32) as u32;
-            let rlo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
-            // Keep `rlo` visibly live while allocating `rhi` by pushing it as
-            // a placeholder stack entry (popped right back off).
-            stack.push(StackVal::i32(rlo));
-            let rhi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx);
-            stack.pop();
-            let rhi = rhi?;
-            for (r, val) in [(rlo, lo), (rhi, hi)] {
-                instructions.push(ArmInstruction {
-                    op: ArmOp::Movw {
-                        rd: r,
-                        imm16: (val & 0xFFFF) as u16,
-                    },
-                    source_line: Some(idx),
-                });
-                if (val >> 16) != 0 {
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Movt {
-                            rd: r,
-                            imm16: (val >> 16) as u16,
-                        },
-                        source_line: Some(idx),
-                    });
-                }
-            }
-            let dd = alloc_vfp_dtemp(vfp_used)?;
-            instructions.push(ArmInstruction {
-                op: ArmOp::F64ReinterpretI64 {
-                    dd,
-                    rmlo: rlo,
-                    rmhi: rhi,
-                },
-                source_line: Some(idx),
-            });
+            // See `materialize_f64_const` — allocator-owned core temps, never
+            // the R0+R12-hardcoding `ArmOp::F64Const` pseudo-op (#615 class).
+            let dd = materialize_f64_const(
+                v.to_bits(),
+                idx,
+                vfp_used,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )?;
             stack.push(StackVal::Double { dreg: dd });
             Ok(true)
         }
@@ -2949,6 +3013,212 @@ fn try_lower_f64(
             });
             free_vfp_dtemp(vfp_used, vfp_home, dm);
             free_vfp_dtemp(vfp_used, vfp_home, dn);
+            stack.push(StackVal::i32(rd));
+            Ok(true)
+        }
+        // GI-FPU-002 phase 3 (#369): rounding — a single VRINT{P,M,Z,N}.F64
+        // each (FPv5): IEEE roundToIntegral matches WASM §4.3.3 exactly
+        // (±0.0 sign preserved, sNaN quietened, ties-to-even for `nearest`).
+        F64Ceil | F64Floor | F64Trunc | F64Nearest => {
+            let dm = pop_double(stack)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            let arm = match op {
+                F64Ceil => ArmOp::F64Ceil { dd, dm },
+                F64Floor => ArmOp::F64Floor { dd, dm },
+                F64Trunc => ArmOp::F64Trunc { dd, dm },
+                _ => ArmOp::F64Nearest { dd, dm },
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dm);
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
+        }
+        // GI-FPU-002 phase 3 (#369): min/max — VMINNM/VMAXNM (−0.0 < +0.0
+        // ordered) + the VS-guarded VADD NaN fix-up (WASM: any NaN operand ⇒
+        // NaN result; IEEE minNum/maxNum alone return the NUMBER). The fused
+        // encoder sequence clobbers only `dd` + flags, and errs if `dd`
+        // aliases a source — `alloc_vfp_dtemp` runs while both sources are
+        // still marked live, so the destination is fresh by construction.
+        F64Min | F64Max => {
+            let dm = pop_double(stack)?;
+            let dn = pop_double(stack)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            let arm = if matches!(op, F64Min) {
+                ArmOp::F64Min { dd, dn, dm }
+            } else {
+                ArmOp::F64Max { dd, dn, dm }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dm);
+            free_vfp_dtemp(vfp_used, vfp_home, dn);
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
+        }
+        // GI-FPU-002 phase 3 (#369): `f64.copysign(a, b)` — stack order is
+        // `[a, b]` (b on top), so `dm` (popped first) is the SIGN source and
+        // `dn` the MAGNITUDE, matching the encoder's `|dn| ± sign(dm)` VABS/
+        // conditional-VNEG splice (clobbers only R12 + flags + dd; bit-exact
+        // on ±0.0/NaN-sign/±inf).
+        F64Copysign => {
+            let dm = pop_double(stack)?; // sign source (b)
+            let dn = pop_double(stack)?; // magnitude source (a)
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64Copysign { dd, dn, dm },
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dm);
+            free_vfp_dtemp(vfp_used, vfp_home, dn);
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
+        }
+        // GI-FPU-002 phase 3 (#369): f64 → f32 demote — a single
+        // `VCVT.F32.F64` (round-to-nearest-even, overflow ⇒ ±inf, underflow ⇒
+        // signed zero/subnormal — exactly WASM §4.3.3 demote).
+        F32DemoteF64 => {
+            let dm = pop_double(stack)?;
+            let sd = alloc_vfp_temp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32DemoteF64 { sd, dm },
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dm);
+            stack.push(StackVal::Float { sreg: sd });
+            Ok(true)
+        }
+        // GI-FPU-002 phase 3 (#369): i32 → f64 — exact for every i32 (no
+        // rounding possible: f64 has 53 mantissa bits). The encoder stages
+        // the integer through the DESTINATION's own S-alias, never S0.
+        F64ConvertI32S | F64ConvertI32U => {
+            let rm = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            let arm = if matches!(op, F64ConvertI32S) {
+                ArmOp::F64ConvertI32S { dd, rm }
+            } else {
+                ArmOp::F64ConvertI32U { dd, rm }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
+        }
+        I32TruncF64S | I32TruncF64U => {
+            // #709-class SOUNDNESS: WASM §4.3.3 requires `i32.trunc_f64_{s,u}`
+            // to TRAP on NaN or an out-of-range operand; ARM VCVT SATURATES
+            // (NaN→0). Emit the f64 twin of the #709 f32 domain guard BEFORE
+            // the conversion — the VCVT then provably never saturates.
+            //
+            // Valid domain (every bound exactly representable in f64; the
+            // truncation itself makes the fractional part irrelevant):
+            //   trunc_f64_s: -2^31 - 1 <  x  <  2^31   (lo=-2147483649.0)
+            //   trunc_f64_u:      -1.0 <  x  <  2^32   (hi=4294967296.0)
+            // Both guards are STRICT (F64Lt/F64Gt are ordered ⇒ false on
+            // NaN, so a NaN falls to the UDF at the first guard).
+            let signed = matches!(op, I32TruncF64S);
+            let dm = pop_double(stack)?;
+            // The encoder stages the result through the SOURCE's low S-alias,
+            // clobbering half of `dm` — fine for a dead temp, but a pinned
+            // param/local HOME must survive: convert from a fresh copy.
+            let dm_is_home = vfp_d_index(dm).is_some_and(|d| vfp_home[2 * d]);
+            let work = if dm_is_home {
+                let copy = alloc_vfp_dtemp(vfp_used)?;
+                emit_d_copy(
+                    copy,
+                    dm,
+                    idx,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
+                copy
+            } else {
+                dm
+            };
+            let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+
+            let (hi, lo) = if signed {
+                (2147483648.0_f64, -2147483649.0_f64) // 2^31, -(2^31)-1
+            } else {
+                (4294967296.0_f64, -1.0_f64) // 2^32, -1.0
+            };
+            let mut emit_guard = |bound: f64, upper: bool| -> Result<()> {
+                let d_bound = materialize_f64_const(
+                    bound.to_bits(),
+                    idx,
+                    vfp_used,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
+                let cmp = if upper {
+                    ArmOp::F64Lt {
+                        rd,
+                        dn: work,
+                        dm: d_bound,
+                    }
+                } else {
+                    ArmOp::F64Gt {
+                        rd,
+                        dn: work,
+                        dm: d_bound,
+                    }
+                };
+                instructions.push(ArmInstruction {
+                    op: cmp,
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Cmp {
+                        rn: rd,
+                        op2: Operand2::Imm(0),
+                    },
+                    source_line: Some(idx),
+                });
+                // Skip the UDF when in-range (rd != 0); else trap.
+                instructions.push(ArmInstruction {
+                    op: ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Udf { imm: 0 },
+                    source_line: Some(idx),
+                });
+                free_vfp_dtemp(vfp_used, vfp_home, d_bound);
+                Ok(())
+            };
+            emit_guard(hi, true)?; // x < hi (also traps NaN)
+            emit_guard(lo, false)?; // x > lo
+
+            let arm = if signed {
+                ArmOp::I32TruncF64S { rd, dm: work }
+            } else {
+                ArmOp::I32TruncF64U { rd, dm: work }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, work);
+            if dm_is_home {
+                // `work` was the fresh copy; the untouched home stays pinned.
+            } else {
+                free_vfp_dtemp(vfp_used, vfp_home, dm);
+            }
             stack.push(StackVal::i32(rd));
             Ok(true)
         }
@@ -17637,6 +17907,155 @@ mod tests {
                     .any(|i| matches!(&i.op, ArmOp::F32Load { sd: s, .. } if *s == sd)),
                 "{what} must be reloaded after the BL: {instructions:#?}"
             );
+        }
+    }
+
+    /// GI-FPU-002 phase 3 (#369): the f64 op TAIL lowers on m7dp — rounding
+    /// (single VRINT each), min/max (fresh D-temp destination, so the fused
+    /// encoder's alias guard never fires), copysign, demote, i32→f64 — and
+    /// every tail op still honest-rejects on a single-precision target.
+    #[test]
+    fn test_369_f64_tail_ops_lower_on_m7dp() {
+        use WasmOp::*;
+        // (op stream, the ArmOp the lowering must contain)
+        let unary = |op: WasmOp| vec![F64Const(1.5), op, Drop];
+        let binary = |op: WasmOp| vec![F64Const(1.5), F64Const(2.5), op, Drop];
+        type Case = (Vec<WasmOp>, fn(&ArmOp) -> bool);
+        let cases: Vec<Case> = vec![
+            (unary(F64Ceil), |o| matches!(o, ArmOp::F64Ceil { .. })),
+            (unary(F64Floor), |o| matches!(o, ArmOp::F64Floor { .. })),
+            (unary(F64Trunc), |o| matches!(o, ArmOp::F64Trunc { .. })),
+            (unary(F64Nearest), |o| matches!(o, ArmOp::F64Nearest { .. })),
+            (binary(F64Min), |o| matches!(o, ArmOp::F64Min { .. })),
+            (binary(F64Max), |o| matches!(o, ArmOp::F64Max { .. })),
+            (binary(F64Copysign), |o| {
+                matches!(o, ArmOp::F64Copysign { .. })
+            }),
+            (unary(F32DemoteF64), |o| {
+                matches!(o, ArmOp::F32DemoteF64 { .. })
+            }),
+            (
+                vec![I32Const(7), F64ConvertI32S, Drop],
+                (|o| matches!(o, ArmOp::F64ConvertI32S { .. })) as fn(&ArmOp) -> bool,
+            ),
+            (vec![I32Const(7), F64ConvertI32U, Drop], |o| {
+                matches!(o, ArmOp::F64ConvertI32U { .. })
+            }),
+        ];
+        for (ops, has) in &cases {
+            let mut selector = fresh_selector();
+            selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+            let instructions = selector
+                .select_with_stack(ops, 0)
+                .unwrap_or_else(|e| panic!("{ops:?} must lower on m7dp: {e}"));
+            assert!(
+                instructions.iter().any(|i| has(&i.op)),
+                "expected lowered ArmOp for {ops:?}: {instructions:#?}"
+            );
+            // Fresh destination invariant for the fused min/max: dd differs
+            // from both sources (the encoder's alias guard is unreachable).
+            for i in &instructions {
+                if let ArmOp::F64Min { dd, dn, dm } | ArmOp::F64Max { dd, dn, dm } = &i.op {
+                    assert!(dd != dn && dd != dm, "min/max dest must be fresh");
+                }
+            }
+            // Single-precision target: honest-reject.
+            let mut selector = fresh_selector();
+            selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+            let r = selector.select_with_stack(ops, 0);
+            assert!(
+                r.as_ref()
+                    .is_err_and(|e| e.to_string().contains("double-precision")),
+                "{ops:?} must honest-reject on m4f: {r:?}"
+            );
+        }
+    }
+
+    /// GI-FPU-002 phase 3 (#369): `i32.trunc_f64_{s,u}` carries the #709
+    /// trap-on-out-of-range domain guard — two strict F64 compares, each
+    /// falling through to a UDF, BEFORE the saturating VCVT.
+    #[test]
+    fn test_369_i32_trunc_f64_emits_domain_guard() {
+        for (op, arm_is_signed) in [(WasmOp::I32TruncF64S, true), (WasmOp::I32TruncF64U, false)] {
+            let mut selector = fresh_selector();
+            selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+            let ops = vec![WasmOp::F64Const(1.5), op, WasmOp::Drop];
+            let instructions = selector
+                .select_with_stack(&ops, 0)
+                .expect("i32.trunc_f64 must lower on m7dp");
+            let udfs = instructions
+                .iter()
+                .filter(|i| matches!(&i.op, ArmOp::Udf { .. }))
+                .count();
+            assert_eq!(udfs, 2, "both domain guards must trap: {instructions:#?}");
+            assert!(
+                instructions
+                    .iter()
+                    .any(|i| matches!(&i.op, ArmOp::F64Lt { .. }))
+                    && instructions
+                        .iter()
+                        .any(|i| matches!(&i.op, ArmOp::F64Gt { .. })),
+                "strict upper (F64Lt) + lower (F64Gt) guards expected"
+            );
+            let has_cvt = instructions.iter().any(|i| match &i.op {
+                ArmOp::I32TruncF64S { .. } => arm_is_signed,
+                ArmOp::I32TruncF64U { .. } => !arm_is_signed,
+                _ => false,
+            });
+            assert!(has_cvt, "the guarded VCVT must follow: {instructions:#?}");
+        }
+    }
+
+    /// GI-FPU-002 phase 3 (#369): the trunc encoders convert IN PLACE
+    /// (clobbering the source S-register / the source D's low alias), so a
+    /// pinned param HOME must be copied to a fresh temp first — a later
+    /// `local.get` of the param still reads the intact home.
+    #[test]
+    fn test_369_trunc_never_clobbers_param_home() {
+        // f32: param home S0; trunc then read the param again.
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_params_f32(vec![true]);
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32TruncF32S,
+            WasmOp::Drop,
+            WasmOp::LocalGet(0),
+            WasmOp::I32ReinterpretF32,
+        ];
+        let instructions = selector
+            .select_with_stack(&ops, 1)
+            .expect("f32 trunc of a param must lower");
+        for i in &instructions {
+            if let ArmOp::I32TruncF32S { sm, .. } = &i.op {
+                assert!(
+                    *sm != VfpReg::S0,
+                    "in-place VCVT must not target the S0 param home: {instructions:#?}"
+                );
+            }
+        }
+        // f64: param home D0; trunc then read the param again.
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+        selector.set_params_i64(vec![true]);
+        selector.set_params_f64(vec![true]);
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32TruncF64S,
+            WasmOp::Drop,
+            WasmOp::LocalGet(0),
+            WasmOp::Drop,
+        ];
+        let instructions = selector
+            .select_with_stack(&ops, 1)
+            .expect("f64 trunc of a param must lower");
+        for i in &instructions {
+            if let ArmOp::I32TruncF64S { dm, .. } = &i.op {
+                assert!(
+                    *dm != VfpReg::D0,
+                    "in-place VCVT must not target the D0 param home: {instructions:#?}"
+                );
+            }
         }
     }
 

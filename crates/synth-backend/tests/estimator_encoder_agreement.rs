@@ -1059,6 +1059,7 @@ fn coverage(op: &ArmOp) -> Coverage {
         | F64ConvertI64S { .. }
         | F64ConvertI64U { .. }
         | F64PromoteF32 { .. }
+        | F32DemoteF64 { .. }
         | F64ReinterpretI64 { .. }
         | I64ReinterpretF64 { .. }
         | I64TruncF64S { .. }

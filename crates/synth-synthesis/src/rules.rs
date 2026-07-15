@@ -1137,6 +1137,10 @@ pub enum ArmOp {
         dd: VfpReg,
         sm: VfpReg,
     }, // VCVT.F64.F32 Dd, Sm
+    F32DemoteF64 {
+        sd: VfpReg,
+        dm: VfpReg,
+    }, // VCVT.F32.F64 Sd, Dm
     F64ReinterpretI64 {
         dd: VfpReg,
         rmlo: Reg,
@@ -1507,6 +1511,7 @@ impl ArmOp {
                 | ArmOp::F64ConvertI64S { .. }
                 | ArmOp::F64ConvertI64U { .. }
                 | ArmOp::F64PromoteF32 { .. }
+                | ArmOp::F32DemoteF64 { .. }
                 | ArmOp::F64ReinterpretI64 { .. }
                 | ArmOp::I64ReinterpretF64 { .. }
                 | ArmOp::I64TruncF64S { .. }
@@ -1552,6 +1557,7 @@ impl ArmOp {
                 | ArmOp::F64ConvertI64S { .. }
                 | ArmOp::F64ConvertI64U { .. }
                 | ArmOp::F64PromoteF32 { .. }
+                | ArmOp::F32DemoteF64 { .. }
                 | ArmOp::F64ReinterpretI64 { .. }
                 | ArmOp::I64ReinterpretF64 { .. }
                 | ArmOp::I64TruncF64S { .. }
@@ -1674,6 +1680,7 @@ impl ArmOp {
             ArmOp::F64ConvertI64S { .. } => "VCVT.F64.S64",
             ArmOp::F64ConvertI64U { .. } => "VCVT.F64.U64",
             ArmOp::F64PromoteF32 { .. } => "VCVT.F64.F32",
+            ArmOp::F32DemoteF64 { .. } => "VCVT.F32.F64",
             ArmOp::F64ReinterpretI64 { .. } => "VMOV (F64<-I64)",
             ArmOp::I64ReinterpretF64 { .. } => "VMOV (I64<-F64)",
             ArmOp::I64TruncF64S { .. } => "VCVT.S64.F64",
