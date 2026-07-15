@@ -4094,15 +4094,37 @@ impl ArmEncoder {
                     let instr: u16 = 0xD000 | (cond_bits << 8) | imm8;
                     Ok(instr.to_le_bytes().to_vec())
                 } else {
-                    // 32-bit B<cond>.W for larger offsets
-                    // First halfword: 1111 0 S cond imm6
+                    // 32-bit B<cond>.W (encoding T3) for larger offsets
+                    // First halfword: 1111 0 S cond(4) imm6
                     // Second halfword: 10 J1 0 J2 imm11
-                    let offset = halfword_offset >> 1;
-                    let s = if offset < 0 { 1u32 } else { 0u32 };
-                    let imm6 = ((offset >> 11) as u32) & 0x3F;
-                    let imm11 = (offset as u32) & 0x7FF;
-                    let j1 = if s == 1 { 1 } else { 0 };
-                    let j2 = if s == 1 { 1 } else { 0 };
+                    //
+                    // Per ARMv7-M, the branch BYTE offset is
+                    // SignExtend(S:J2:J1:imm6:imm11:'0'), i.e. the field value
+                    // S:J2:J1:imm6:imm11 IS the signed 20-bit HALFWORD offset —
+                    // imm11/imm6/J1/J2/S take `halfword_offset` bits [10:0],
+                    // [16:11], 17, 18 and 19 directly (mirroring the T4
+                    // unconditional arm above).
+                    //
+                    // #740: this arm previously packed `halfword_offset >> 1`
+                    // into imm6:imm11 — HALVING the displacement — so every
+                    // wide conditional branch (span > 254 bytes) landed at half
+                    // its intended offset: gust_poll's loop-head `br_if` to an
+                    // outer block end jumped mid-shape. Narrow (16-bit) B<cond>
+                    // encodings were unaffected, which is why short-range CF
+                    // fixtures never caught it.
+                    if !(-(1 << 19)..(1 << 19)).contains(&halfword_offset) {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "B<cond>.W (T3) halfword offset {halfword_offset} exceeds \
+                             the signed 20-bit encoding range (±1 MB) — refusing to \
+                             emit a truncated branch"
+                        )));
+                    }
+                    let u = halfword_offset as u32;
+                    let imm11 = u & 0x7FF; // halfword offset bits [10:0]
+                    let imm6 = (u >> 11) & 0x3F; // bits [16:11]
+                    let j1 = (u >> 17) & 1; // bit 17
+                    let j2 = (u >> 18) & 1; // bit 18
+                    let s = (u >> 19) & 1; // sign (range-checked above)
 
                     let hw1: u16 = (0xF000 | (s << 10) | ((cond_bits as u32) << 6) | imm6) as u16;
                     let hw2: u16 = (0x8000 | (j1 << 13) | (j2 << 11) | imm11) as u16;
@@ -10079,6 +10101,72 @@ mod tests {
         );
         assert_ne!(hw2, 0xF800, "0xF800 (addend 0) lands at S+4 (#174)");
         assert_ne!(hw2, 0xD000, "0xD000 bakes in a ~+0x600000 addend (#167)");
+    }
+
+    /// #740: the Thumb-2 32-bit B<cond>.W (encoding T3) must pack the
+    /// HALFWORD offset directly into S:J2:J1:imm6:imm11 — the byte offset is
+    /// SignExtend(S:J2:J1:imm6:imm11:'0'). The old arm packed
+    /// `halfword_offset >> 1`, HALVING every wide conditional branch's
+    /// displacement: gust_poll's loop-head `br_if` to an outer block end
+    /// landed mid-shape (a spurious state write + spurious calls on the
+    /// empty-budget path). Narrow (16-bit) B<cond> was unaffected — only
+    /// spans > 254 bytes hit the bug. Bytes cross-checked against the llvm
+    /// disassembler (`bne.w #0x224` = f040 8112).
+    #[test]
+    fn test_encode_thumb_bcond_wide_t3_halfword_offset_740() {
+        use synth_synthesis::Condition;
+        let encoder = ArmEncoder::new_thumb2();
+
+        // gust_poll's loop-head edge: NE, +0x112 halfwords (+0x224 bytes).
+        let code = encoder
+            .encode(&ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0x112,
+            })
+            .unwrap();
+        assert_eq!(code.len(), 4, "offset beyond ±127 halfwords must be wide");
+        let hw1 = u16::from_le_bytes([code[0], code[1]]);
+        let hw2 = u16::from_le_bytes([code[2], code[3]]);
+        assert_eq!(hw1, 0xF040, "T3 hw1: 1111 0 S=0 cond=NE imm6=0");
+        assert_eq!(
+            hw2, 0x8112,
+            "T3 hw2 imm11 must carry halfword offset bits [10:0] directly — \
+             0x8089 (offset>>1) is the halved #740 miscompile"
+        );
+
+        // Backward wide branch: EQ, -0x100 halfwords. S=1, J2=J1=1,
+        // imm6=0b111111, imm11=0x700 → f43f af00.
+        let code = encoder
+            .encode(&ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: -0x100,
+            })
+            .unwrap();
+        assert_eq!(code.len(), 4);
+        let hw1 = u16::from_le_bytes([code[0], code[1]]);
+        let hw2 = u16::from_le_bytes([code[2], code[3]]);
+        assert_eq!(hw1, 0xF43F, "T3 hw1: S=1, cond=EQ, imm6=0x3F");
+        assert_eq!(hw2, 0xAF00, "T3 hw2: J1=1 J2=1 imm11=0x700");
+
+        // Narrow encoding stays byte-identical (in-range offsets untouched).
+        let code = encoder
+            .encode(&ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 5,
+            })
+            .unwrap();
+        assert_eq!(code, vec![0x05, 0xD0], "narrow B<cond> unchanged");
+
+        // Out of the signed 20-bit T3 range: loud Err, never a truncated jump.
+        assert!(
+            encoder
+                .encode(&ArmOp::BCondOffset {
+                    cond: Condition::NE,
+                    offset: 1 << 19,
+                })
+                .is_err(),
+            "out-of-range T3 offset must be a loud decline"
+        );
     }
 
     #[test]

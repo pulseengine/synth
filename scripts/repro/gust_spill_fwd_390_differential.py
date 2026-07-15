@@ -117,20 +117,19 @@ def state_bytes(seed):
     return bytes(out)
 
 
-# (state, x, strict). strict=False marks the two zero-state cases KNOWN-
-# DIVERGENT (#740): the direct path mistargets the loop-head empty-budget
-# `br_if` to a mid-shape point after the first transition call, so synth
-# spuriously writes state+0x34 (wasmtime writes nothing). Pre-existing on
-# main v0.41.0, byte-identically in ALL lever configs — NOT a #390 regression.
-# The xfail is anti-vacuous both ways: the RETURN value must still match, and
-# the moment the memory divergence disappears (i.e. #740 is fixed) the case
-# hard-fails and demands promotion to strict.
+# (state, x). The two zero-state cases were KNOWN-DIVERGENT (#740) until the
+# encoder fix landed: the Thumb-2 B<cond>.W (T3) arm halved every wide
+# conditional-branch displacement, so the loop-head empty-budget `br_if`
+# jumped mid-shape and spuriously wrote state+0x34. The anti-vacuous xfail
+# fired the moment the divergence disappeared (FIXD), and the cases are now
+# STRICT: return value AND the full state window must match wasmtime in every
+# config. (Minimal-shape oracle for the fix: brif_outer_740_differential.py.)
 CASES = [
-    (b"\x00" * STATE_SPAN, 0, False),
-    (b"\x00" * STATE_SPAN, 7, False),
-    (state_bytes(1), 3, True),
-    (state_bytes(2), 0x1234, True),
-    (state_bytes(3), -5 & 0xFFFFFFFF, True),
+    (b"\x00" * STATE_SPAN, 0),
+    (b"\x00" * STATE_SPAN, 7),
+    (state_bytes(1), 3),
+    (state_bytes(2), 0x1234),
+    (state_bytes(3), -5 & 0xFFFFFFFF),
 ]
 
 
@@ -210,30 +209,18 @@ def main():
     fails = 0
     for label, _ in cfgs:
         text, lin_init, syms = elves[label]
-        for state, x, strict in CASES:
+        for state, x in CASES:
             gt_ret, gt_mem = wasmtime_poll(state, x)
             # Seed the unicorn state region on a COPY of the initial image.
             lin = bytearray(lin_init) if lin_init else bytearray(LIN_SIZE)
             lin[STATE_OFF:STATE_OFF + STATE_SPAN] = state
             got_ret, got_mem = unicorn_call(text, bytes(lin), syms["gust_poll"], STATE_OFF, x)
-            if strict:
-                ok = got_ret == gt_ret and got_mem == gt_mem
-                verdict = "OK  " if ok else "FAIL"
-            elif got_ret == gt_ret and got_mem != gt_mem:
-                ok = True  # the documented #740 divergence, return still exact
-                verdict = "XF40"
-            elif got_ret == gt_ret and got_mem == gt_mem:
-                ok = False  # divergence gone: #740 fixed — promote to strict!
-                verdict = "FIXD"
-            else:
-                ok = False
-                verdict = "FAIL"
+            ok = got_ret == gt_ret and got_mem == gt_mem
             fails += 0 if ok else 1
             tag = f"0x{got_ret:08X}" if isinstance(got_ret, int) else got_ret
             memtag = "mem==" if got_mem == gt_mem else "mem!="
-            print(f"{verdict} gust_poll {label:16} x={x:>10} = {tag} "
-                  f"(wasmtime 0x{gt_ret:08X}) {memtag}"
-                  + ("" if strict else "  [known-divergent #740; FIXD ⇒ make strict]"))
+            print(f"{'OK  ' if ok else 'FAIL'} gust_poll {label:16} x={x:>10} = {tag} "
+                  f"(wasmtime 0x{gt_ret:08X}) {memtag}")
         for x in (0, 1, 0x7FFF, 0x12345678, 0xFFFF_FF00):
             gt = wasmtime_mix(x)
             got, _ = unicorn_call(text, lin_init, syms["gust_mix"], x, 0)
