@@ -606,8 +606,8 @@ impl TranslationValidator {
 
         // The shipped lowering is a single pseudo-op; find it in the sequence
         // (the selector emits exactly one, possibly amid dead ops).
-        let (elide_zero, elide_overflow) = Self::i64_div_rem_guard_fields(arm_ops)
-            .ok_or_else(|| {
+        let (elide_zero, elide_overflow) =
+            Self::i64_div_rem_guard_fields(arm_ops).ok_or_else(|| {
                 VerificationError::UnsupportedOperation(format!(
                     "i64 trap gate needs an I64Div/I64Rem pseudo-op in the sequence, \
                      got {arm_ops:?}"
@@ -625,13 +625,8 @@ impl TranslationValidator {
         // ARM side: reconstruct the SAME 64-bit trap term but with each clause
         // CONDITIONALLY present per the pseudo-op's elision fields. A dropped
         // guard => a strictly weaker term => the equivalence VC is Sat.
-        let arm_trap = Self::i64_arm_trap_from_fields(
-            div_op,
-            &dividend,
-            &divisor,
-            elide_zero,
-            elide_overflow,
-        );
+        let arm_trap =
+            Self::i64_arm_trap_from_fields(div_op, &dividend, &divisor, elide_zero, elide_overflow);
 
         Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
     }
@@ -1977,7 +1972,10 @@ mod tests {
                     raw(&green),
                     raw(&red)
                 );
-                assert_ne!(green, red, "{op:?}: green and red must differ (non-vacuous)");
+                assert_ne!(
+                    green, red,
+                    "{op:?}: green and red must differ (non-vacuous)"
+                );
                 if oflow_field {
                     let red_o = validator
                         .verify_trap_preservation(&op, &shipped_i64_div_rem(&op, false, true))
@@ -2007,7 +2005,10 @@ mod tests {
                     raw(&green),
                     raw(&red)
                 );
-                assert_ne!(green, red, "{op:?}: green and red must differ (non-vacuous)");
+                assert_ne!(
+                    green, red,
+                    "{op:?}: green and red must differ (non-vacuous)"
+                );
             }
             println!("=== all rows discriminate: gate is non-vacuous ===\n");
         });

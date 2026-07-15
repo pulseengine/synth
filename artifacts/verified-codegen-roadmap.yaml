@@ -1063,7 +1063,7 @@ artifacts:
 
   - id: VCR-VER-002
     type: sys-verification
-    title: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
+    title: "Trap-preservation VC catches dropped WASM traps (i32+i64 div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
     description: >
       Make trap-preservation a checkable, oracle-gated proof obligation so a
       lowering that DROPS a WASM trap (div-by-zero / overflow guard, OOB
@@ -1117,24 +1117,35 @@ artifacts:
       certificate-checked pipeline, with a wrong-expectation non-vacuity
       control.
 
+      LIVE-VALIDATOR WIRING (v0.43+, the may_trap flag now threaded through the
+      ArmState exec model via encode_sequence_br — is_trap_gated_op MANDATORILY
+      routes these to verify_trap_preservation, so a value-only proof can no
+      longer accept a dropped trap on the live path). Classes with a DERIVED
+      ARM trap term:
+      - i32 div/rem (full VC: trap + guarded value), unreachable, i32
+        load/store (all widths), i32.trunc_f32_s/u, call_indirect (v0.43).
+      - i64 div/rem (#756): field-derived trap-condition VC. ARM32 has no
+        64-bit divide, so the shipped I64Div/I64Rem pseudo-op carries its
+        guards as elide_zero_guard/elide_overflow_guard FIELDS and leaves the
+        quotient symbolic; the ARM trap term is CONSTRUCTED from those fields
+        (a set elide_* deletes the clause), so a guard elided without a
+        discharged fact is rejected. Certifies the selector's elision decision
+        (like call_indirect); byte-expansion is execution-gated.
+      - i32.trunc_f64_s/u (#756): D-register domain guard, condition-only VC.
+        The ordered VCMP.F64 compares (F64Lt/F64Gt/F64Ge) get real f64
+        bit-pattern semantics in the executor (f64_is_nan / f64_ordered_lt),
+        the 64-bit twin of the f32 trunc wiring.
+
       DOCUMENTED GAP (why in-progress, not implemented):
-      - The live validation entry points (verify_rule -> verify_equivalence ->
-        verify_equivalence_parameterized) are STILL value-only and do NOT yet
-        invoke the new method — making it a mandatory conjunct on the live path
-        requires updating the value-only div-rule fixtures
-        (comprehensive_verification.rs) to carry the guard, so it is deferred.
-      - The validator's ARM side is value-only (ArmState has no trap flag) and
-        the div guard is an encoder-expansion artifact, so div/rem's ARM trap
-        term is a structural Udf-presence proxy — sound in the REJECT direction
-        but not a full proof the guard fires on exactly div0-or-overflow. The
-        method currently handles i32 only (32-bit operands).
-      - The other partial classes (load/store, call_indirect, unreachable,
-        float->int trunc) have
-        no ARM trap term on this path and remain gated at the unit level.
-      Closing the gap (auto-deriving opt.may_trap from the shipped lowering for
-      all classes, on the live path) needs a may_trap flag threaded through the
-      ArmState exec model, or decoding the emitted guard bytes in
-      expansion_validator.
+      - i64.trunc_f64_s/u is NOT live: the selector loud-declines it (i64
+        register pairs are unsupported on 32-bit ARM), so there is no shipped
+        lowering to derive an ARM trap term from. Its trap classifier
+        (trap_trunc(F64,I64,...), incl. the 2^63/-2^63/2^64 boundaries) stays
+        unit-gated in tests/trap_preservation.rs.
+      - The value-only div-rule fixtures (comprehensive_verification.rs) that
+        exercise verify_equivalence directly are unaffected; the i64 quotient
+        remains unmodeled (no bvsdiv term at 64-bit), so i64 div/rem carries a
+        trap-condition VC rather than the i32 full-value VC.
     status: proposed
     tags: [verification, trap-preservation, soundness, ordeal]
     links:
