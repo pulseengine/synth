@@ -3703,8 +3703,15 @@ impl InstructionSelector {
         {
             return ops;
         }
-        // Software mode emits [ADD, CMP, BLO, UDF, access] — exactly 5 ops.
-        debug_assert_eq!(ops.len(), 5, "software bounds guard shape drifted");
+        // Software mode emits [software_bounds_guard.., access] — the #752
+        // wraparound-safe guard prefix is 7 ops for `k = offset + size <=
+        // 0xFFF`, 8–9 with the MOVW/MOVT materialization, and a single
+        // unconditional UDF when `offset + size` overflows u32 (always-OOB).
+        debug_assert!(
+            matches!(ops.len(), 2 | 8..=10),
+            "software bounds guard shape drifted: {} ops",
+            ops.len()
+        );
         let last = ops.len() - 1;
         ops.into_iter().skip(last).collect()
     }
@@ -7153,16 +7160,117 @@ impl InstructionSelector {
         ops
     }
 
+    /// #752: the WRAPAROUND-SAFE software bounds guard for an access of
+    /// `access_size` bytes at `addr_reg + offset`, against the runtime linear
+    /// memory size in R10.
+    ///
+    /// WASM Core's effective-address check is EXACT arithmetic: trap iff
+    /// `addr + offset + access_size > mem_size`. The previous shape computed
+    /// the inclusive end address with a WRAPPING 32-bit `ADD`
+    /// (`addr + offset + size - 1`) and `CMP/BLO`-guarded it — for
+    /// `addr >= 2^32 - (offset + size - 1)` the end address wrapped to a
+    /// small value, the guard passed, and the OOB access escaped the trap
+    /// (found RED by the #166 derived-ARM-trap gate). This shape subtracts
+    /// the constant from the bound instead: with `k = offset + access_size`,
+    ///
+    /// ```text
+    /// SUB  R12, R10, #k    ; R12 = mem_size - k (wraps iff mem_size < k)
+    /// CMP  R10, R12        ; borrow check: R12 >u R10  <=>  mem_size < k
+    /// BHS  +0              ; no borrow -> skip the trap
+    /// UDF  #0              ; mem_size < k  =>  every access traps
+    /// CMP  addr, R12
+    /// BLS  +0              ; addr <=u mem_size - k -> in bounds, skip
+    /// UDF  #0              ; addr + k > mem_size  =>  trap
+    /// ```
+    ///
+    /// Exactness: the first trap arm discharges `mem_size < k` outright
+    /// (every access of `k` bytes is OOB in a memory smaller than `k`); on
+    /// the surviving path `mem_size >= k`, so `mem_size - k` cannot wrap and
+    /// `addr <=u mem_size - k  <=>  addr + k <= mem_size` in exact (u33)
+    /// arithmetic. Neither compare involves a wrapping add of the RUNTIME
+    /// address, so no top-of-address-space escape exists (#752).
+    ///
+    /// Immediate ranges: `k <= 0xFFF` fits `SUBW` (T4); larger constants are
+    /// materialized into R12 (`MOVW`/`MOVT`) and subtracted as a register —
+    /// same reach as the old `ADD` guard's `encode_thumb32_add_imm`
+    /// fallback. `offset + access_size > u32::MAX` cannot be in bounds for
+    /// ANY addr (wasm32 memories cap at 2^32 bytes), so it degenerates to an
+    /// unconditional trap.
+    ///
+    /// The inline-UDF trap discipline is #377's: a `BCondOffset +0` skip over
+    /// a real `UDF` traps in a self-contained image (UsageFault -> platform
+    /// handler) and identically under `--relocatable` — never the old
+    /// external-`Trap_Handler` fallthrough NO-OP.
+    pub(crate) fn software_bounds_guard(
+        addr_reg: Reg,
+        offset: i32,
+        access_size: u32,
+    ) -> Vec<ArmOp> {
+        // The wasm memarg offset is unsigned; `offset` arrives through an
+        // `as i32` cast, so round-trip it back through u32 (lossless).
+        let k = u64::from(offset as u32) + u64::from(access_size);
+        if k > u64::from(u32::MAX) {
+            // addr + offset + size > 2^32 >= mem_size for every addr.
+            return vec![ArmOp::Udf { imm: 0 }];
+        }
+        let k = k as u32;
+        let mut ops = Vec::with_capacity(9);
+        if k <= 0xFFF {
+            ops.push(ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(k as i32),
+            });
+        } else {
+            // k exceeds the SUBW imm12 reach: materialize it, subtract the reg.
+            ops.push(ArmOp::Movw {
+                rd: Reg::R12,
+                imm16: (k & 0xFFFF) as u16,
+            });
+            if k > 0xFFFF {
+                ops.push(ArmOp::Movt {
+                    rd: Reg::R12,
+                    imm16: (k >> 16) as u16,
+                });
+            }
+            ops.push(ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R12),
+            });
+        }
+        ops.push(ArmOp::Cmp {
+            rn: Reg::R10,
+            op2: Operand2::Reg(Reg::R12),
+        });
+        ops.push(ArmOp::BCondOffset {
+            cond: Condition::HS,
+            offset: 0,
+        });
+        ops.push(ArmOp::Udf { imm: 0 });
+        ops.push(ArmOp::Cmp {
+            rn: addr_reg,
+            op2: Operand2::Reg(Reg::R12),
+        });
+        ops.push(ArmOp::BCondOffset {
+            cond: Condition::LS,
+            offset: 0,
+        });
+        ops.push(ArmOp::Udf { imm: 0 });
+        ops
+    }
+
     /// Generate a load with optional bounds checking
     /// R10 = memory size, R11 = memory base
-    /// Bounds check verifies addr + offset + access_size - 1 < memory_size
+    /// Bounds check traps iff addr + offset + access_size > memory_size
+    /// (exact arithmetic, wraparound-safe — #752, see `software_bounds_guard`)
     ///
     /// # Contract (Verus-style)
     /// ```text
     /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
     /// ensures
     ///     bounds_check_mode == Software ==>
-    ///         result contains CMP(addr + access_size - 1, R10),
+    ///         result starts with software_bounds_guard(addr, offset, access_size),
     ///     result.last() is Ldr { rd, .. },
     /// ```
     fn generate_load_with_bounds_check(
@@ -7192,37 +7300,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check: verify last byte of access is in bounds
-                // ADD temp, addr_reg, #(offset + access_size - 1)
-                // CMP temp, R10 (memory size)
-                // BLO +0 (skip UDF) / UDF #0 (#377 inline trap)
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    load_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7237,14 +7323,15 @@ impl InstructionSelector {
 
     /// Generate a store with optional bounds checking
     /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base
-    /// Bounds check verifies addr + offset + access_size - 1 < memory_size
+    /// Bounds check traps iff addr + offset + access_size > memory_size
+    /// (exact arithmetic, wraparound-safe — #752, see `software_bounds_guard`)
     ///
     /// # Contract (Verus-style)
     /// ```text
     /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
     /// ensures
     ///     bounds_check_mode == Software ==>
-    ///         result contains CMP(addr + access_size - 1, R10),
+    ///         result starts with software_bounds_guard(addr, offset, access_size),
     ///     result.last() is Str { rd: value_reg, .. },
     /// ```
     fn generate_store_with_bounds_check(
@@ -7274,34 +7361,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check: verify last byte of access is in bounds
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    store_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7322,7 +7390,7 @@ impl InstructionSelector {
     /// ```text
     /// ensures
     ///     bounds_check_mode == Software ==>
-    ///         result contains CMP(addr + 8 - 1, R10),
+    ///         result starts with software_bounds_guard(addr, offset, 8),
     ///     result.last() is I64Ldr { rdlo: R0, rdhi: R1, .. },
     /// ```
     fn generate_i64_load_with_bounds_check(&self, addr_reg: Reg, offset: i32) -> Vec<ArmOp> {
@@ -7348,37 +7416,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check: verify last byte of 8-byte access is in bounds
-                // ADD temp, addr_reg, #(offset + 8 - 1)
-                // CMP temp, R10 (memory size)
-                // BLO +0 (skip UDF) / UDF #0 (#377 inline trap)
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    load_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7399,7 +7445,7 @@ impl InstructionSelector {
     /// ```text
     /// ensures
     ///     bounds_check_mode == Software ==>
-    ///         result contains CMP(addr + 8 - 1, R10),
+    ///         result starts with software_bounds_guard(addr, offset, 8),
     ///     result.last() is I64Str { rdlo: R0, rdhi: R1, .. },
     /// ```
     fn generate_i64_store_with_bounds_check(&self, addr_reg: Reg, offset: i32) -> Vec<ArmOp> {
@@ -7425,34 +7471,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check: verify last byte of 8-byte access is in bounds
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    store_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7497,33 +7524,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    load_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7568,33 +7577,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    store_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7647,33 +7638,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    load_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -7731,33 +7704,15 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
-                let temp = Reg::R12;
-                let end_offset = offset + (access_size as i32) - 1;
-                vec![
-                    ArmOp::Add {
-                        rd: temp,
-                        rn: addr_reg,
-                        op2: Operand2::Imm(end_offset),
-                    },
-                    ArmOp::Cmp {
-                        rn: temp,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
-                    // The previous `Bhs Trap_Handler` label branch resolved to
-                    // an offset-0 fallthrough NO-OP in a self-contained image
-                    // (the label is external, so `resolve_label_branches`
-                    // leaves the placeholder) — the check ran but never
-                    // trapped. Same inline pattern as the #374 bulk-memory
-                    // and div-by-zero guards; works identically under
-                    // `--relocatable` (UDF → UsageFault → platform handler).
-                    ArmOp::BCondOffset {
-                        cond: Condition::LO,
-                        offset: 0,
-                    },
-                    ArmOp::Udf { imm: 0 },
-                    store_op,
-                ]
+                // #752: wraparound-safe software bounds guard — exact against
+                // WASM's `addr + offset + size > mem_size` trap condition for
+                // EVERY addr (the previous ADD-computed end address wrapped at
+                // the top of the address space and escaped the trap). Shape and
+                // soundness argument in [`Self::software_bounds_guard`]; the
+                // inline-UDF trap discipline is #377's.
+                let mut ops = Self::software_bounds_guard(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
             BoundsCheckConfig::Masking => {
                 // #651: mask the EFFECTIVE address (operand + offset) and
@@ -16912,7 +16867,8 @@ mod tests {
 
     #[test]
     fn test_bounds_check_software() {
-        // With BoundsCheckConfig::Software, loads should generate bounds check sequence
+        // With BoundsCheckConfig::Software, loads generate the #752
+        // wraparound-safe bounds guard before the access.
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::with_bounds_check(
             db.rules().to_vec(),
@@ -16925,59 +16881,133 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // Should be: ADD temp, addr, #(offset+access_size-1); CMP temp, R10;
-        // BLO +0 (skip trap); UDF #0; LDR  (#377: inline trap, not the old
-        // `Bhs Trap_Handler` which fell through as a no-op in self-contained
-        // images)
-        assert_eq!(arm_instrs.len(), 5);
+        // #752 wraparound-safe shape (k = offset + access_size = 8):
+        // SUB R12, R10, #8 ; CMP R10, R12 ; BHS +0 ; UDF   (mem_size < k trap)
+        // CMP addr, R12    ; BLS +0       ; UDF            (addr > size-k trap)
+        // LDR
+        // The old shape ADD-computed the end address mod 2^32 and let
+        // top-of-address-space accesses escape the trap.
+        assert_eq!(arm_instrs.len(), 8);
 
-        // First: ADD to calculate end-of-access address (offset=4, access_size=4 -> 4+4-1=7)
+        // First: SUB R12, R10, #k with k = offset + access_size = 4 + 4 = 8.
         match &arm_instrs[0].op {
-            ArmOp::Add {
-                rd,
-                rn: _,
-                op2: Operand2::Imm(7),
-            } => {
-                assert_eq!(*rd, Reg::R12); // Uses R12 as temp
-            }
-            other => panic!(
-                "Expected Add with immediate 7 (offset+access_size-1), got {:?}",
-                other
-            ),
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(8),
+            } => {}
+            other => panic!("Expected SUB R12, R10, #8 (k = offset + size), got {other:?}"),
         }
 
-        // Second: CMP against R10 (memory size)
+        // Second: borrow check CMP R10, R12 (R12 >u R10 <=> mem_size < k).
         match &arm_instrs[1].op {
             ArmOp::Cmp {
-                rn,
-                op2: Operand2::Reg(Reg::R10),
-            } => {
-                assert_eq!(*rn, Reg::R12); // Compare temp
-            }
-            other => panic!("Expected Cmp against R10, got {:?}", other),
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R12),
+            } => {}
+            other => panic!("Expected CMP R10, R12, got {other:?}"),
         }
 
-        // Third: BLO +0 — skips the UDF when in-bounds (#377)
+        // Third/fourth: BHS +0 skip over the mem_size < k trap.
         match &arm_instrs[2].op {
-            ArmOp::BCondOffset { cond, offset } => {
-                assert_eq!(*cond, Condition::LO);
-                assert_eq!(*offset, 0);
-            }
-            other => panic!("Expected BCondOffset LO +0, got {:?}", other),
+            ArmOp::BCondOffset {
+                cond: Condition::HS,
+                offset: 0,
+            } => {}
+            other => panic!("Expected BCondOffset HS +0, got {other:?}"),
         }
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Udf { imm: 0 }));
 
-        // Fourth: the inline UDF trap (#377 — a real trap in a self-contained
-        // image, unlike the old external `Bhs Trap_Handler` fallthrough)
-        match &arm_instrs[3].op {
-            ArmOp::Udf { imm: 0 } => {}
-            other => panic!("Expected Udf #0, got {:?}", other),
-        }
-
-        // Fifth: The actual LDR
+        // Fifth: the exact bound compare CMP addr, R12 (addr <= mem_size - k).
         match &arm_instrs[4].op {
-            ArmOp::Ldr { .. } => {}
-            other => panic!("Expected Ldr instruction, got {:?}", other),
+            ArmOp::Cmp {
+                rn: _,
+                op2: Operand2::Reg(Reg::R12),
+            } => {}
+            other => panic!("Expected CMP addr, R12, got {other:?}"),
         }
+
+        // Sixth/seventh: BLS +0 skip over the OOB trap.
+        match &arm_instrs[5].op {
+            ArmOp::BCondOffset {
+                cond: Condition::LS,
+                offset: 0,
+            } => {}
+            other => panic!("Expected BCondOffset LS +0, got {other:?}"),
+        }
+        assert!(matches!(&arm_instrs[6].op, ArmOp::Udf { imm: 0 }));
+
+        // Eighth: the actual LDR.
+        match &arm_instrs[7].op {
+            ArmOp::Ldr { .. } => {}
+            other => panic!("Expected Ldr instruction, got {other:?}"),
+        }
+    }
+
+    /// #752: `k = offset + access_size` past the SUBW imm12 reach is
+    /// materialized (MOVW[/MOVT]) and subtracted as a register — the guard
+    /// stays exact instead of erroring or wrapping.
+    #[test]
+    fn test_bounds_check_software_large_offset_materializes_k_752() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::Software,
+        );
+        // k = 0x2000 + 4 = 0x2004 > 0xFFF -> MOVW R12, #0x2004; SUB R12, R10, R12
+        let arm_instrs = selector
+            .select(&[WasmOp::I32Load {
+                offset: 0x2000,
+                align: 4,
+            }])
+            .unwrap();
+        assert_eq!(arm_instrs.len(), 9);
+        assert!(
+            matches!(
+                &arm_instrs[0].op,
+                ArmOp::Movw {
+                    rd: Reg::R12,
+                    imm16: 0x2004
+                }
+            ),
+            "got {:?}",
+            arm_instrs[0].op
+        );
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R12)
+            }
+        ));
+        assert!(matches!(&arm_instrs[8].op, ArmOp::Ldr { .. }));
+    }
+
+    /// #752: `offset + access_size > u32::MAX` cannot be in bounds for ANY
+    /// address (wasm32 memories cap at 2^32 bytes) — the guard degenerates to
+    /// an unconditional trap instead of wrapping k mod 2^32.
+    #[test]
+    fn test_bounds_check_software_offset_overflow_always_traps_752() {
+        let ops = InstructionSelector::software_bounds_guard(Reg::R0, u32::MAX as i32, 4);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(&ops[0], ArmOp::Udf { imm: 0 }));
+    }
+
+    /// #752: the byte-at-offset-0 guard (k = 1) keeps the same shape — the
+    /// one access class that was already exact under the old ADD shape.
+    #[test]
+    fn test_bounds_check_software_byte_guard_shape_752() {
+        let ops = InstructionSelector::software_bounds_guard(Reg::R0, 0, 1);
+        assert_eq!(ops.len(), 7);
+        assert!(matches!(
+            &ops[0],
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(1)
+            }
+        ));
     }
 
     #[test]
@@ -22154,20 +22184,37 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // With software bounds checking (#377 inline trap):
-        // ADD + CMP + BLO +0 + UDF + LDRB
-        assert_eq!(arm_instrs.len(), 5);
-        assert!(matches!(&arm_instrs[0].op, ArmOp::Add { .. }));
+        // With software bounds checking (#752 wraparound-safe shape, #377
+        // inline traps): SUB + CMP + BHS + UDF + CMP + BLS + UDF + LDRB.
+        // k = offset + access_size = 4 + 1 = 5.
+        assert_eq!(arm_instrs.len(), 8);
+        assert!(matches!(
+            &arm_instrs[0].op,
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(5)
+            }
+        ));
         assert!(matches!(&arm_instrs[1].op, ArmOp::Cmp { .. }));
         assert!(matches!(
             &arm_instrs[2].op,
             ArmOp::BCondOffset {
-                cond: Condition::LO,
+                cond: Condition::HS,
                 offset: 0
             }
         ));
         assert!(matches!(&arm_instrs[3].op, ArmOp::Udf { imm: 0 }));
-        assert!(matches!(&arm_instrs[4].op, ArmOp::Ldrb { .. }));
+        assert!(matches!(&arm_instrs[4].op, ArmOp::Cmp { .. }));
+        assert!(matches!(
+            &arm_instrs[5].op,
+            ArmOp::BCondOffset {
+                cond: Condition::LS,
+                offset: 0
+            }
+        ));
+        assert!(matches!(&arm_instrs[6].op, ArmOp::Udf { imm: 0 }));
+        assert!(matches!(&arm_instrs[7].op, ArmOp::Ldrb { .. }));
     }
 
     #[test]
@@ -22184,11 +22231,20 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // With software bounds checking (#377 inline trap):
-        // ADD + CMP + BLO +0 + UDF + STRH
-        assert_eq!(arm_instrs.len(), 5);
+        // With software bounds checking (#752 wraparound-safe shape, #377
+        // inline traps): SUB + CMP + BHS + UDF + CMP + BLS + UDF + STRH.
+        assert_eq!(arm_instrs.len(), 8);
+        assert!(matches!(
+            &arm_instrs[0].op,
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(2)
+            }
+        ));
         assert!(matches!(&arm_instrs[3].op, ArmOp::Udf { imm: 0 }));
-        assert!(matches!(&arm_instrs[4].op, ArmOp::Strh { .. }));
+        assert!(matches!(&arm_instrs[6].op, ArmOp::Udf { imm: 0 }));
+        assert!(matches!(&arm_instrs[7].op, ArmOp::Strh { .. }));
     }
 
     #[test]
