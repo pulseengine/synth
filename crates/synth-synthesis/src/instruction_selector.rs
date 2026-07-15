@@ -7201,11 +7201,10 @@ impl InstructionSelector {
     /// a real `UDF` traps in a self-contained image (UsageFault -> platform
     /// handler) and identically under `--relocatable` — never the old
     /// external-`Trap_Handler` fallthrough NO-OP.
-    pub(crate) fn software_bounds_guard(
-        addr_reg: Reg,
-        offset: i32,
-        access_size: u32,
-    ) -> Vec<ArmOp> {
+    /// Public so the synth-verify trap-preservation gate can pin THE shipped
+    /// guard function itself (no hand-maintained mirror to drift, the
+    /// VCR-ORACLE lesson).
+    pub fn software_bounds_guard(addr_reg: Reg, offset: i32, access_size: u32) -> Vec<ArmOp> {
         // The wasm memarg offset is unsigned; `offset` arrives through an
         // `as i32` cast, so round-trip it back through u32 (lossless).
         let k = u64::from(offset as u32) + u64::from(access_size);

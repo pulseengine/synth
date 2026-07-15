@@ -2588,6 +2588,22 @@ impl ArmSemantics {
                 self.encode_op(op, state);
                 Ok(())
             }
+            // Subword accesses (#752 gate coverage for the guarded
+            // i32.load8/16 + i32.store8/16 shapes): same treatment as
+            // Ldr/Str — a load writes a fresh symbol (no memory-contents
+            // model), a store touches no register. Neither affects flags,
+            // so the trap derivation is untouched; modeling them here just
+            // lets guarded subword sequences through instead of a loud
+            // decline.
+            ArmOp::Ldrb { rd, .. }
+            | ArmOp::Ldrsb { rd, .. }
+            | ArmOp::Ldrh { rd, .. }
+            | ArmOp::Ldrsh { rd, .. } => {
+                let result = BV::new_const(format!("load_{rd:?}"), 32);
+                state.set_reg(rd, result);
+                Ok(())
+            }
+            ArmOp::Strb { .. } | ArmOp::Strh { .. } => Ok(()),
             other => Err(format!(
                 "op {other:?} outside the trap-derivation subset — loud decline"
             )),
