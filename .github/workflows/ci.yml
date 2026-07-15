@@ -463,6 +463,20 @@ jobs:
       # region (must stay 0). RED on v0.43.0 (4/5 read 0) -> GREEN.
       - name: Run self-contained data-segment oracle (#758, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/self_contained_data_758_differential.py
+      # #406/#739-cluster coverage WIDENER: multi-chunk / multi-segment static
+      # data across BOTH the self-contained (--cortex-m) and --relocatable
+      # paths, segments at varied offsets — low, an UNALIGNED segment
+      # straddling a 4 KiB internal page boundary (0x1000), an overlapping
+      # later-wins pair, a HIGH segment near the top of a 2-page memory (0x1FF0,
+      # approaching the globals boundary), and a long multi-word ROM->RAM copy.
+      # Self-contained side runs the REAL reset path on ZEROED RAM (a dropped/
+      # short/mis-based copy — the #758/#746/#739 family — reads 0 and goes
+      # RED); relocatable side maps memory 0 at R11 with an embedder-populated
+      # init image and .text far away (baked-absolute offsets fault). Ground
+      # truth is wasmtime. WIDENS coverage only — #757 stays OPEN (blocked on
+      # the reporter's reduced module); a divergence here is a real find.
+      - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
+        run: SYNTH=./target/debug/synth python scripts/repro/multi_segment_static_data_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
