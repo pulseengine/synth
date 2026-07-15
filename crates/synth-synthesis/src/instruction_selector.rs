@@ -13947,32 +13947,49 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let shift_op = match op {
-                        I64Shl => ArmOp::I64Shl {
-                            rd_lo: dst_lo,
-                            rd_hi: dst_hi,
-                            rn_lo: a_lo,
-                            rn_hi: a_hi,
-                            rm_lo: b_lo,
-                            rm_hi: b_hi,
-                        },
-                        I64ShrU => ArmOp::I64ShrU {
-                            rd_lo: dst_lo,
-                            rd_hi: dst_hi,
-                            rn_lo: a_lo,
-                            rn_hi: a_hi,
-                            rm_lo: b_lo,
-                            rm_hi: b_hi,
-                        },
-                        I64ShrS => ArmOp::I64ShrS {
-                            rd_lo: dst_lo,
-                            rd_hi: dst_hi,
-                            rn_lo: a_lo,
-                            rn_hi: a_hi,
-                            rm_lo: b_lo,
-                            rm_hi: b_hi,
-                        },
-                        _ => unreachable!(),
+                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
+                    // single i64 shift pseudo-op comes from the generated
+                    // Rocq-proved rule — byte-identical to the hand-written
+                    // emission below (mirror-pinned). The `rd_hi <> rd_lo` side
+                    // condition holds by construction: alloc_consecutive_pair
+                    // returns a distinct pair.
+                    let shift_op = if self.sel_dsl {
+                        crate::sel_dsl::i64_pair_bin_rule(
+                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                        )
+                        .expect("i64 shift op dispatch")
+                        .map_err(synth_core::Error::synthesis)?
+                        .into_iter()
+                        .next()
+                        .expect("i64 shift rule emits one op")
+                    } else {
+                        match op {
+                            I64Shl => ArmOp::I64Shl {
+                                rd_lo: dst_lo,
+                                rd_hi: dst_hi,
+                                rn_lo: a_lo,
+                                rn_hi: a_hi,
+                                rm_lo: b_lo,
+                                rm_hi: b_hi,
+                            },
+                            I64ShrU => ArmOp::I64ShrU {
+                                rd_lo: dst_lo,
+                                rd_hi: dst_hi,
+                                rn_lo: a_lo,
+                                rn_hi: a_hi,
+                                rm_lo: b_lo,
+                                rm_hi: b_hi,
+                            },
+                            I64ShrS => ArmOp::I64ShrS {
+                                rd_lo: dst_lo,
+                                rd_hi: dst_hi,
+                                rn_lo: a_lo,
+                                rn_hi: a_hi,
+                                rm_lo: b_lo,
+                                rm_hi: b_hi,
+                            },
+                            _ => unreachable!(),
+                        }
                     };
                     instructions.push(ArmInstruction {
                         op: shift_op,
@@ -14920,15 +14937,32 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I64Mul {
+                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
+                    // single I64Mul pseudo-op comes from the generated
+                    // Rocq-proved rule — byte-identical to the hand-written
+                    // emission below (mirror-pinned; `rd_hi <> rd_lo` holds by
+                    // construction via alloc_consecutive_pair).
+                    let mul_op = if self.sel_dsl {
+                        crate::sel_dsl::i64_pair_bin_rule(
+                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                        )
+                        .expect("i64 mul op dispatch")
+                        .map_err(synth_core::Error::synthesis)?
+                        .into_iter()
+                        .next()
+                        .expect("i64 mul rule emits one op")
+                    } else {
+                        ArmOp::I64Mul {
                             rd_lo: dst_lo,
                             rd_hi: dst_hi,
                             rn_lo: a_lo,
                             rn_hi: a_hi,
                             rm_lo: b_lo,
                             rm_hi: b_hi,
-                        },
+                        }
+                    };
+                    instructions.push(ArmInstruction {
+                        op: mul_op,
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
@@ -15064,22 +15098,35 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let arm_op = match op {
-                        I64Rotl => ArmOp::I64Rotl {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rnlo: a_lo,
-                            rnhi: a_hi,
-                            shift: b_lo,
-                        },
-                        I64Rotr => ArmOp::I64Rotr {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rnlo: a_lo,
-                            rnhi: a_hi,
-                            shift: b_lo,
-                        },
-                        _ => unreachable!(),
+                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
+                    // single i64 rotate pseudo-op comes from the generated
+                    // Rocq-proved rule — byte-identical (mirror-pinned;
+                    // `rd_hi <> rd_lo` holds by construction).
+                    let arm_op = if self.sel_dsl {
+                        crate::sel_dsl::i64_rot_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo)
+                            .expect("i64 rotate op dispatch")
+                            .map_err(synth_core::Error::synthesis)?
+                            .into_iter()
+                            .next()
+                            .expect("i64 rotate rule emits one op")
+                    } else {
+                        match op {
+                            I64Rotl => ArmOp::I64Rotl {
+                                rdlo: dst_lo,
+                                rdhi: dst_hi,
+                                rnlo: a_lo,
+                                rnhi: a_hi,
+                                shift: b_lo,
+                            },
+                            I64Rotr => ArmOp::I64Rotr {
+                                rdlo: dst_lo,
+                                rdhi: dst_hi,
+                                rnlo: a_lo,
+                                rnhi: a_hi,
+                                shift: b_lo,
+                            },
+                            _ => unreachable!(),
+                        }
                     };
                     instructions.push(ArmInstruction {
                         op: arm_op,
@@ -15118,23 +15165,37 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let arm_op = match op {
-                        I64Clz => ArmOp::I64Clz {
-                            rd: dst_lo,
-                            rnlo: src_lo,
-                            rnhi: src_hi,
-                        },
-                        I64Ctz => ArmOp::I64Ctz {
-                            rd: dst_lo,
-                            rnlo: src_lo,
-                            rnhi: src_hi,
-                        },
-                        I64Popcnt => ArmOp::I64Popcnt {
-                            rd: dst_lo,
-                            rnlo: src_lo,
-                            rnhi: src_hi,
-                        },
-                        _ => unreachable!(),
+                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
+                    // single i64 bit-count pseudo-op comes from the generated
+                    // Rocq-proved rule — byte-identical (mirror-pinned). The
+                    // trailing `Movw dst_hi, 0` (hi-half zeroing) is outside the
+                    // rule's single-pseudo-op scope, exactly as the flat-model
+                    // ancestor proves only the count pseudo-op.
+                    let arm_op = if self.sel_dsl {
+                        crate::sel_dsl::i64_unary_count_rule(op, dst_lo, src_lo, src_hi)
+                            .expect("i64 count op dispatch")
+                            .into_iter()
+                            .next()
+                            .expect("i64 count rule emits one op")
+                    } else {
+                        match op {
+                            I64Clz => ArmOp::I64Clz {
+                                rd: dst_lo,
+                                rnlo: src_lo,
+                                rnhi: src_hi,
+                            },
+                            I64Ctz => ArmOp::I64Ctz {
+                                rd: dst_lo,
+                                rnlo: src_lo,
+                                rnhi: src_hi,
+                            },
+                            I64Popcnt => ArmOp::I64Popcnt {
+                                rd: dst_lo,
+                                rnlo: src_lo,
+                                rnhi: src_hi,
+                            },
+                            _ => unreachable!(),
+                        }
                     };
                     instructions.push(ArmInstruction {
                         op: arm_op,
@@ -16530,6 +16591,131 @@ mod tests {
                     crate::sel_dsl::i64_setcond_rule(&rule.op, rd, rn_lo, rn_hi, rm_lo, rm_hi)
                         .unwrap_or_else(|| panic!("{}: setcond dispatch missing", rule.name)),
                 )
+            } else if matches!(rule.op, WasmOp::I64Clz | WasmOp::I64Ctz | WasmOp::I64Popcnt) {
+                // VCR-ISA-001 wave-2: the unary bit-count single-pseudo-op
+                // window. Extract the three registers the hand-written arm
+                // chose (rd + operand pair).
+                let i = baseline
+                    .iter()
+                    .position(|o| {
+                        matches!(
+                            o,
+                            ArmOp::I64Clz { .. } | ArmOp::I64Ctz { .. } | ArmOp::I64Popcnt { .. }
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("{}: no i64 count op in probe output", rule.name));
+                let (rd, rn_lo, rn_hi) = match &baseline[i] {
+                    ArmOp::I64Clz { rd, rnlo, rnhi }
+                    | ArmOp::I64Ctz { rd, rnlo, rnhi }
+                    | ArmOp::I64Popcnt { rd, rnlo, rnhi } => (*rd, *rnlo, *rnhi),
+                    _ => unreachable!(),
+                };
+                (
+                    baseline[i..i + 1].to_vec(),
+                    crate::sel_dsl::i64_unary_count_rule(&rule.op, rd, rn_lo, rn_hi)
+                        .unwrap_or_else(|| panic!("{}: count dispatch missing", rule.name)),
+                )
+            } else if matches!(rule.op, WasmOp::I64Rotl | WasmOp::I64Rotr) {
+                // VCR-ISA-001 wave-2: the i64 rotate single-pseudo-op window
+                // (five registers: result pair + operand pair + single shift).
+                let i = baseline
+                    .iter()
+                    .position(|o| matches!(o, ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. }))
+                    .unwrap_or_else(|| panic!("{}: no i64 rotate op in probe output", rule.name));
+                let (rd_lo, rd_hi, rn_lo, rn_hi, shift) = match &baseline[i] {
+                    ArmOp::I64Rotl {
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        shift,
+                    }
+                    | ArmOp::I64Rotr {
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        shift,
+                    } => (*rdlo, *rdhi, *rnlo, *rnhi, *shift),
+                    _ => unreachable!(),
+                };
+                (
+                    baseline[i..i + 1].to_vec(),
+                    crate::sel_dsl::i64_rot_rule(&rule.op, rd_lo, rd_hi, rn_lo, rn_hi, shift)
+                        .unwrap_or_else(|| panic!("{}: rotate dispatch missing", rule.name))
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "{}: selector regs violate rotate side condition: {e}",
+                                rule.name
+                            )
+                        }),
+                )
+            } else if matches!(
+                rule.op,
+                WasmOp::I64Mul | WasmOp::I64Shl | WasmOp::I64ShrU | WasmOp::I64ShrS
+            ) {
+                // VCR-ISA-001 wave-2: the i64 binary register-pair
+                // single-pseudo-op window (six registers).
+                let i = baseline
+                    .iter()
+                    .position(|o| {
+                        matches!(
+                            o,
+                            ArmOp::I64Mul { .. }
+                                | ArmOp::I64Shl { .. }
+                                | ArmOp::I64ShrU { .. }
+                                | ArmOp::I64ShrS { .. }
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("{}: no i64 pair-bin op in probe output", rule.name));
+                let (rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi) = match &baseline[i] {
+                    ArmOp::I64Mul {
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
+                    }
+                    | ArmOp::I64Shl {
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
+                    }
+                    | ArmOp::I64ShrU {
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
+                    }
+                    | ArmOp::I64ShrS {
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
+                    } => (*rd_lo, *rd_hi, *rn_lo, *rn_hi, *rm_lo, *rm_hi),
+                    _ => unreachable!(),
+                };
+                (
+                    baseline[i..i + 1].to_vec(),
+                    crate::sel_dsl::i64_pair_bin_rule(
+                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                    )
+                    .unwrap_or_else(|| panic!("{}: pair-bin dispatch missing", rule.name))
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{}: selector regs violate pair-bin side condition: {e}",
+                            rule.name
+                        )
+                    }),
+                )
             } else {
                 // The pair window is the two-instruction sequence starting at
                 // the first lo-half data-processing op (the probe's constant
@@ -16632,8 +16818,10 @@ mod tests {
             );
         }
         // Five binary pair rules + i64.eqz + increment 4's ten binary
-        // I64SetCond comparison rules.
-        assert_eq!(probed, 16, "unexpected i64 pair rule count");
+        // I64SetCond comparison rules + VCR-ISA-001 wave-2's nine
+        // single-pseudo-op i64 shapes (clz/ctz/popcnt/mul/shl/shr_u/shr_s/
+        // rotl/rotr).
+        assert_eq!(probed, 25, "unexpected i64 pair rule count");
     }
 
     /// VCR-SEL-001 increment 2 (#242): the #258 imm-fold comparison peephole

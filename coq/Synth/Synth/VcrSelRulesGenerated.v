@@ -152,4 +152,31 @@ Definition rule_i64_ge_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
 Definition rule_i64_ge_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
   [I64SetCond rd rnlo rnhi rmlo rmhi Cond_CS].
 
+Definition rule_i64_clz (rd rnlo rnhi : arm_reg) : arm_program :=
+  [I64ClzPseudo rd rnlo rnhi].
+
+Definition rule_i64_ctz (rd rnlo rnhi : arm_reg) : arm_program :=
+  [I64CtzPseudo rd rnlo rnhi].
+
+Definition rule_i64_popcnt (rd rnlo rnhi : arm_reg) : arm_program :=
+  [I64PopcntPseudo rd rnlo rnhi].
+
+Definition rule_i64_mul (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64MulPseudo rdlo rdhi rnlo rnhi rmlo rmhi].
+
+Definition rule_i64_shl (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64ShlPseudo rdlo rdhi rnlo rnhi rmlo rmhi].
+
+Definition rule_i64_shr_u (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64ShrUPseudo rdlo rdhi rnlo rnhi rmlo rmhi].
+
+Definition rule_i64_shr_s (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64ShrSPseudo rdlo rdhi rnlo rnhi rmlo rmhi].
+
+Definition rule_i64_rotl (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
+  [I64RotlPseudo rdlo rdhi rnlo rnhi rmlo].
+
+Definition rule_i64_rotr (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
+  [I64RotrPseudo rdlo rdhi rnlo rnhi rmlo].
+
 End Gen.

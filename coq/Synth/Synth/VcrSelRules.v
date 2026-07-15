@@ -1093,3 +1093,239 @@ Theorem rule_i64_ge_u_correct :
       (if I64.geu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
        then I32.one else I32.zero).
 Proof. synth_i64_setcond_proof_poly. Qed.
+
+(** ** VCR-ISA-001 wave-2 (v0.45): the single-pseudo-op i64 register-pair
+    shapes the selector already emits — DSL-covered here for the first time.
+
+    Each rule is ONE flat-model pseudo-op with a fixed-register ancestor in
+    CorrectnessI64.v (i64_{clz,ctz,popcnt,mul,shl,shru,shrs,rotl,rotr}_correct),
+    so — exactly like i64.eqz / the I64SetCond family — the DSL work is pure
+    register-generalization + re-export of the GENERATED [Gen.rule_X].
+
+    The pseudo-op semantics read EVERY operand half into a local BEFORE any
+    [set_reg] (ArmSemantics.v), so the value-correctness side conditions are
+    minimal:
+
+      - clz/ctz/popcnt (unary, single [rd] write): NONE — the selector's
+        [rd = rn_lo = R0] in-place emit is admitted;
+      - mul/shl/shr_u/shr_s/rotl/rotr (write the (lo, hi) result pair): a
+        SINGLE [rd_hi <> rd_lo] hypothesis — the high write must not destroy the
+        low result word. (The increment-3 three-condition pair set is NOT needed:
+        those were flags-COUPLED ADDS+ADC pairs where the low instruction wrote
+        before the high instruction re-read an operand; here one pseudo-op reads
+        all operands up front.)
+
+    Statements follow the ancestors' value-level shape (get_reg preconditions →
+    exec_program + result), with NO [exec_wasm_instr] hypothesis (the i64
+    ops are not in WasmSemantics.v, so such a hypothesis would be a
+    None-returning vacuity). The shift/rotate count is the low half only:
+    [combine_i32 cnt I32.zero], matching the [_bits_spec] axioms verbatim. *)
+
+Definition rule_i64_clz    := Gen.rule_i64_clz.
+Definition rule_i64_ctz    := Gen.rule_i64_ctz.
+Definition rule_i64_popcnt := Gen.rule_i64_popcnt.
+Definition rule_i64_mul    := Gen.rule_i64_mul.
+Definition rule_i64_shl    := Gen.rule_i64_shl.
+Definition rule_i64_shr_u  := Gen.rule_i64_shr_u.
+Definition rule_i64_shr_s  := Gen.rule_i64_shr_s.
+Definition rule_i64_rotl   := Gen.rule_i64_rotl.
+Definition rule_i64_rotr   := Gen.rule_i64_rotr.
+
+(** Unary bit counts — single pseudo-op, single [rd] write, NO side
+    condition. Discharge mirrors the fixed-register ancestors verbatim. *)
+
+Theorem rule_i64_clz_correct : forall astate lo hi rd rnlo rnhi,
+  get_reg astate rnlo = lo ->
+  get_reg astate rnhi = hi ->
+  exists astate',
+    exec_program (rule_i64_clz rd rnlo rnhi) astate = Some astate' /\
+    get_reg astate' rd = i64_to_i32 (I64.clz (combine_i32 lo hi)).
+Proof.
+  intros astate lo hi rd rnlo rnhi HR0 HR1.
+  unfold rule_i64_clz, Gen.rule_i64_clz; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_clz_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
+Qed.
+
+Theorem rule_i64_ctz_correct : forall astate lo hi rd rnlo rnhi,
+  get_reg astate rnlo = lo ->
+  get_reg astate rnhi = hi ->
+  exists astate',
+    exec_program (rule_i64_ctz rd rnlo rnhi) astate = Some astate' /\
+    get_reg astate' rd = i64_to_i32 (I64.ctz (combine_i32 lo hi)).
+Proof.
+  intros astate lo hi rd rnlo rnhi HR0 HR1.
+  unfold rule_i64_ctz, Gen.rule_i64_ctz; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_ctz_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
+Qed.
+
+Theorem rule_i64_popcnt_correct : forall astate lo hi rd rnlo rnhi,
+  get_reg astate rnlo = lo ->
+  get_reg astate rnhi = hi ->
+  exists astate',
+    exec_program (rule_i64_popcnt rd rnlo rnhi) astate = Some astate' /\
+    get_reg astate' rd = i64_to_i32 (I64.popcnt (combine_i32 lo hi)).
+Proof.
+  intros astate lo hi rd rnlo rnhi HR0 HR1.
+  unfold rule_i64_popcnt, Gen.rule_i64_popcnt; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_popcnt_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
+Qed.
+
+(** Binary register-pair shapes — single pseudo-op writing (lo, hi); the
+    lone [rd_hi <> rd_lo] hypothesis lets the low-result read past the
+    high write. Discharge mirrors [i64_mul_correct] etc., register-
+    generalized. *)
+
+Theorem rule_i64_mul_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_mul rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.mul (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.mul (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)).
+Proof.
+  intros astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi Hdd
+         HR0 HR1 HR2 HR3.
+  unfold rule_i64_mul, Gen.rule_i64_mul; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_mul_lo_bits_spec, i64_mul_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_shl_correct :
+  forall astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = cnt ->
+  get_reg astate rmhi = chi ->
+  exists astate',
+    exec_program (rule_i64_shl rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo =
+      lo_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' rdhi =
+      hi_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Proof.
+  intros astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi Hdd
+         HR0 HR1 HR2 HR3.
+  unfold rule_i64_shl, Gen.rule_i64_shl; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shl_lo_bits_spec, i64_shl_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_shr_u_correct :
+  forall astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = cnt ->
+  get_reg astate rmhi = chi ->
+  exists astate',
+    exec_program (rule_i64_shr_u rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo =
+      lo_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' rdhi =
+      hi_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Proof.
+  intros astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi Hdd
+         HR0 HR1 HR2 HR3.
+  unfold rule_i64_shr_u, Gen.rule_i64_shr_u; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shru_lo_bits_spec, i64_shru_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_shr_s_correct :
+  forall astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = cnt ->
+  get_reg astate rmhi = chi ->
+  exists astate',
+    exec_program (rule_i64_shr_s rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo =
+      lo_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' rdhi =
+      hi_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Proof.
+  intros astate lo1 hi1 cnt chi rdlo rdhi rnlo rnhi rmlo rmhi Hdd
+         HR0 HR1 HR2 HR3.
+  unfold rule_i64_shr_s, Gen.rule_i64_shr_s; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shrs_lo_bits_spec, i64_shrs_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.
+
+(** Rotates — single pseudo-op, single-register shift amount. Same
+    [rd_hi <> rd_lo] shape as the pair shifts. *)
+
+Theorem rule_i64_rotl_correct :
+  forall astate lo1 hi1 cnt rdlo rdhi rnlo rnhi rs,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rs = cnt ->
+  exists astate',
+    exec_program (rule_i64_rotl rdlo rdhi rnlo rnhi rs) astate
+      = Some astate' /\
+    get_reg astate' rdlo =
+      lo_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' rdhi =
+      hi_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Proof.
+  intros astate lo1 hi1 cnt rdlo rdhi rnlo rnhi rs Hdd HR0 HR1 HR2.
+  unfold rule_i64_rotl, Gen.rule_i64_rotl; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_rotl_lo_bits_spec, i64_rotl_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_rotr_correct :
+  forall astate lo1 hi1 cnt rdlo rdhi rnlo rnhi rs,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rs = cnt ->
+  exists astate',
+    exec_program (rule_i64_rotr rdlo rdhi rnlo rnhi rs) astate
+      = Some astate' /\
+    get_reg astate' rdlo =
+      lo_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' rdhi =
+      hi_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Proof.
+  intros astate lo1 hi1 cnt rdlo rdhi rnlo rnhi rs Hdd HR0 HR1 HR2.
+  unfold rule_i64_rotr, Gen.rule_i64_rotr; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_rotr_lo_bits_spec, i64_rotr_hi_bits_spec.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.

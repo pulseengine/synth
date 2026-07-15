@@ -310,6 +310,65 @@ pub enum TemplateOp {
         rm_hi: RegVar,
         cond: CondCode,
     },
+    /// The single-pseudo-op i64 register-pair binary shapes
+    /// (`I64Mul` / `I64Shl` / `I64ShrU` / `I64ShrS`). Each is ONE ArmOp that
+    /// reads all four operand halves into locals BEFORE writing the (lo, hi)
+    /// destination pair, so — unlike the increment-3 ADDS+ADC pair rules — the
+    /// only aliasing constraint is `rd_hi <> rd_lo` (the high write must not
+    /// destroy the low result word). Modeled by the corresponding
+    /// `I64{Mul,Shl,ShrU,ShrS}Pseudo` constructor in the flat ARM model.
+    I64PairBin {
+        kind: I64PairBinKind,
+        rd_lo: RegVar,
+        rd_hi: RegVar,
+        rn_lo: RegVar,
+        rn_hi: RegVar,
+        rm_lo: RegVar,
+        rm_hi: RegVar,
+    },
+    /// The single-pseudo-op i64 rotate shapes (`I64Rotl` / `I64Rotr`). Like
+    /// [`TemplateOp::I64PairBin`] but the rotate amount is a SINGLE register
+    /// (`shift`, the low half of the i64 amount), matching the flat model's
+    /// `I64{Rotl,Rotr}Pseudo` (5-register) constructor. Only aliasing
+    /// constraint: `rd_hi <> rd_lo`.
+    I64PairRot {
+        left: bool,
+        rd_lo: RegVar,
+        rd_hi: RegVar,
+        rn_lo: RegVar,
+        rn_hi: RegVar,
+        shift: RegVar,
+    },
+    /// The single-pseudo-op i64 unary bit-count shapes (`I64Clz` / `I64Ctz` /
+    /// `I64Popcnt`). One ArmOp reads both operand halves and writes the single
+    /// i32 count into `rd` — NO aliasing side condition (`rd` may alias `rn_lo`,
+    /// the `R0, R0, R1` shape the selector emits). Modeled by the corresponding
+    /// `I64{Clz,Ctz,Popcnt}Pseudo` constructor.
+    I64UnaryCount {
+        kind: I64CountKind,
+        rd: RegVar,
+        rn_lo: RegVar,
+        rn_hi: RegVar,
+    },
+}
+
+/// The binary i64 register-pair pseudo-op families that share the
+/// [`TemplateOp::I64PairBin`] shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I64PairBinKind {
+    Mul,
+    Shl,
+    ShrU,
+    ShrS,
+}
+
+/// The unary i64 bit-count pseudo-op families that share the
+/// [`TemplateOp::I64UnaryCount`] shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I64CountKind {
+    Clz,
+    Ctz,
+    Popcnt,
 }
 
 /// One declarative lowering rule: `op → parameterized ARM sequence`.
@@ -1067,6 +1126,166 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::Both,
         doc: "`i64.ge_u`: rd = if (rn_hi:rn_lo) >= (rm_hi:rm_lo) (unsigned) {1} else {0}",
     },
+    // ---- VCR-ISA-001 wave-2 (v0.45): the single-pseudo-op i64 register-pair
+    // shapes the selector already emits but were DSL-uncovered. Each is ONE
+    // ArmOp modeled by a dedicated flat-model pseudo-op
+    // (I64{Clz,Ctz,Popcnt,Mul,Shl,ShrU,ShrS,Rotl,Rotr}Pseudo), with a
+    // fixed-register ancestor in CorrectnessI64.v — so the DSL rule is a pure
+    // register-generalization + re-export, exactly like the increment-3/4
+    // i64.eqz / I64SetCond families. ----
+    //
+    // i64.clz / i64.ctz / i64.popcnt — unary bit counts: ONE pseudo-op reads
+    // both operand halves and writes the single i32 count into `rd`. NO
+    // aliasing side condition (the pseudo-op reads rn_lo/rn_hi before writing
+    // rd, so the selector's `rd = rn_lo = R0` in-place emit is admitted).
+    SelRule {
+        name: "rule_i64_clz",
+        op: WasmOp::I64Clz,
+        params: &[Rd, RnLo, RnHi],
+        side_conditions: &[],
+        seq: &[TemplateOp::I64UnaryCount {
+            kind: I64CountKind::Clz,
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.clz`: rd = count-leading-zeros of (rn_hi:rn_lo), as i32",
+    },
+    SelRule {
+        name: "rule_i64_ctz",
+        op: WasmOp::I64Ctz,
+        params: &[Rd, RnLo, RnHi],
+        side_conditions: &[],
+        seq: &[TemplateOp::I64UnaryCount {
+            kind: I64CountKind::Ctz,
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.ctz`: rd = count-trailing-zeros of (rn_hi:rn_lo), as i32",
+    },
+    SelRule {
+        name: "rule_i64_popcnt",
+        op: WasmOp::I64Popcnt,
+        params: &[Rd, RnLo, RnHi],
+        side_conditions: &[],
+        seq: &[TemplateOp::I64UnaryCount {
+            kind: I64CountKind::Popcnt,
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.popcnt`: rd = population-count of (rn_hi:rn_lo), as i32",
+    },
+    // i64.mul / i64.shl / i64.shr_u / i64.shr_s — binary register-pair shapes:
+    // ONE pseudo-op reads all four operand halves BEFORE writing the (lo, hi)
+    // destination pair, so the only aliasing constraint is `rd_hi <> rd_lo`.
+    SelRule {
+        name: "rule_i64_mul",
+        op: WasmOp::I64Mul,
+        params: I64_PAIR_PARAMS,
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairBin {
+            kind: I64PairBinKind::Mul,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.mul`: (rd_hi:rd_lo) = (rn_hi:rn_lo) * (rm_hi:rm_lo)",
+    },
+    SelRule {
+        name: "rule_i64_shl",
+        op: WasmOp::I64Shl,
+        params: I64_PAIR_PARAMS,
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairBin {
+            kind: I64PairBinKind::Shl,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.shl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) << (rm_lo mod 64)",
+    },
+    SelRule {
+        name: "rule_i64_shr_u",
+        op: WasmOp::I64ShrU,
+        params: I64_PAIR_PARAMS,
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairBin {
+            kind: I64PairBinKind::ShrU,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.shr_u`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (logical)",
+    },
+    SelRule {
+        name: "rule_i64_shr_s",
+        op: WasmOp::I64ShrS,
+        params: I64_PAIR_PARAMS,
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairBin {
+            kind: I64PairBinKind::ShrS,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.shr_s`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (arithmetic)",
+    },
+    // i64.rotl / i64.rotr — rotate shapes: the amount is a SINGLE register
+    // (`shift`, the low half of the i64 amount). Only aliasing constraint:
+    // `rd_hi <> rd_lo`.
+    SelRule {
+        name: "rule_i64_rotl",
+        op: WasmOp::I64Rotl,
+        params: &[RdLo, RdHi, RnLo, RnHi, RmLo],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairRot {
+            left: true,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            shift: RmLo,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.rotl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-left (shift mod 64)",
+    },
+    SelRule {
+        name: "rule_i64_rotr",
+        op: WasmOp::I64Rotr,
+        params: &[RdLo, RdHi, RnLo, RnHi, RmLo],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64PairRot {
+            left: false,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            shift: RmLo,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.rotr`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-right (shift mod 64)",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule
@@ -1196,6 +1415,65 @@ pub fn i64_setcond_rule(
     })
 }
 
+/// Dispatch a unary i64 bit-count op (`i64.clz/ctz/popcnt`) to its generated
+/// Rocq-proved single-pseudo-op rule (VCR-ISA-001 wave-2). Same contract as
+/// [`i32_unary_rule`]: `None` for ops outside the family; no side conditions
+/// (the pseudo-op reads both operand halves before writing `rd`).
+pub fn i64_unary_count_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+    rn_hi: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I64Clz => generated::rule_i64_clz(rd, rn_lo, rn_hi),
+        WasmOp::I64Ctz => generated::rule_i64_ctz(rd, rn_lo, rn_hi),
+        WasmOp::I64Popcnt => generated::rule_i64_popcnt(rd, rn_lo, rn_hi),
+        _ => return None,
+    })
+}
+
+/// Dispatch a binary i64 register-pair op (`i64.mul/shl/shr_u/shr_s`) to its
+/// generated Rocq-proved single-pseudo-op rule (VCR-ISA-001 wave-2). Each
+/// carries the single `rd_hi <> rd_lo` side condition (the high write must not
+/// destroy the low result word); violation is a loud `Err`.
+pub fn i64_pair_bin_rule(
+    op: &WasmOp,
+    rd_lo: crate::rules::Reg,
+    rd_hi: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+    rn_hi: crate::rules::Reg,
+    rm_lo: crate::rules::Reg,
+    rm_hi: crate::rules::Reg,
+) -> Option<Result<Vec<crate::rules::ArmOp>, &'static str>> {
+    Some(match op {
+        WasmOp::I64Mul => generated::rule_i64_mul(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64Shl => generated::rule_i64_shl(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64ShrU => generated::rule_i64_shr_u(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64ShrS => generated::rule_i64_shr_s(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        _ => return None,
+    })
+}
+
+/// Dispatch an i64 rotate op (`i64.rotl/rotr`) to its generated Rocq-proved
+/// single-pseudo-op rule (VCR-ISA-001 wave-2). The rotate amount is a SINGLE
+/// register (`shift`, the low half of the i64 amount). Single `rd_hi <> rd_lo`
+/// side condition; violation is a loud `Err`.
+pub fn i64_rot_rule(
+    op: &WasmOp,
+    rd_lo: crate::rules::Reg,
+    rd_hi: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+    rn_hi: crate::rules::Reg,
+    shift: crate::rules::Reg,
+) -> Option<Result<Vec<crate::rules::ArmOp>, &'static str>> {
+    Some(match op {
+        WasmOp::I64Rotl => generated::rule_i64_rotl(rd_lo, rd_hi, rn_lo, rn_hi, shift),
+        WasmOp::I64Rotr => generated::rule_i64_rotr(rd_lo, rd_hi, rn_lo, rn_hi, shift),
+        _ => return None,
+    })
+}
+
 /// Render a struct field, using field-init shorthand when the bound variable
 /// name matches the field name (keeps the generated file rustfmt/clippy-clean).
 fn field(name: &str, var: RegVar) -> String {
@@ -1272,6 +1550,78 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
                 field("rm_lo", rm_lo),
                 field("rm_hi", rm_hi),
                 cond.rust_name()
+            )
+        }
+        TemplateOp::I64PairBin {
+            kind,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => {
+            let variant = match kind {
+                I64PairBinKind::Mul => "I64Mul",
+                I64PairBinKind::Shl => "I64Shl",
+                I64PairBinKind::ShrU => "I64ShrU",
+                I64PairBinKind::ShrS => "I64ShrS",
+            };
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::{variant} {{\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n\
+                 {fld}{},\n{ind}}}",
+                field("rd_lo", rd_lo),
+                field("rd_hi", rd_hi),
+                field("rn_lo", rn_lo),
+                field("rn_hi", rn_hi),
+                field("rm_lo", rm_lo),
+                field("rm_hi", rm_hi),
+            )
+        }
+        TemplateOp::I64PairRot {
+            left,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            shift,
+        } => {
+            let variant = if left { "I64Rotl" } else { "I64Rotr" };
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::{variant} {{\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rdlo", rd_lo),
+                field("rdhi", rd_hi),
+                field("rnlo", rn_lo),
+                field("rnhi", rn_hi),
+                field("shift", shift),
+            )
+        }
+        TemplateOp::I64UnaryCount {
+            kind,
+            rd,
+            rn_lo,
+            rn_hi,
+        } => {
+            let variant = match kind {
+                I64CountKind::Clz => "I64Clz",
+                I64CountKind::Ctz => "I64Ctz",
+                I64CountKind::Popcnt => "I64Popcnt",
+            };
+            // The ArmOp field names (`rnlo`/`rnhi`) differ from the RegVar
+            // rust_names (`rn_lo`/`rn_hi`), so the fields render as
+            // `rnlo: rn_lo` (not shorthand) — rustfmt explodes the literal, so
+            // emit the exploded multi-line form directly to stay a fixpoint.
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::{variant} {{\n{fld}{},\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rd", rd),
+                field("rnlo", rn_lo),
+                field("rnhi", rn_hi),
             )
         }
         TemplateOp::Mul { rd, rn, rm } => format!(
@@ -1574,6 +1924,66 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
             r(rm_hi),
             cond.coq_condition()
         )],
+        TemplateOp::I64PairBin {
+            kind,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => {
+            let ctor = match kind {
+                I64PairBinKind::Mul => "I64MulPseudo",
+                I64PairBinKind::Shl => "I64ShlPseudo",
+                I64PairBinKind::ShrU => "I64ShrUPseudo",
+                I64PairBinKind::ShrS => "I64ShrSPseudo",
+            };
+            vec![format!(
+                "{ctor} {} {} {} {} {} {}",
+                r(rd_lo),
+                r(rd_hi),
+                r(rn_lo),
+                r(rn_hi),
+                r(rm_lo),
+                r(rm_hi)
+            )]
+        }
+        TemplateOp::I64PairRot {
+            left,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            shift,
+        } => {
+            let ctor = if left {
+                "I64RotlPseudo"
+            } else {
+                "I64RotrPseudo"
+            };
+            vec![format!(
+                "{ctor} {} {} {} {} {}",
+                r(rd_lo),
+                r(rd_hi),
+                r(rn_lo),
+                r(rn_hi),
+                r(shift)
+            )]
+        }
+        TemplateOp::I64UnaryCount {
+            kind,
+            rd,
+            rn_lo,
+            rn_hi,
+        } => {
+            let ctor = match kind {
+                I64CountKind::Clz => "I64ClzPseudo",
+                I64CountKind::Ctz => "I64CtzPseudo",
+                I64CountKind::Popcnt => "I64PopcntPseudo",
+            };
+            vec![format!("{ctor} {} {} {}", r(rd), r(rn_lo), r(rn_hi))]
+        }
     }
 }
 
