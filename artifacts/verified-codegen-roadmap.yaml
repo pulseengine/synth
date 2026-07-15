@@ -688,7 +688,7 @@ artifacts:
       Sail at the bottom via VCR-ISA-001). The Component Model layer stays an
       open problem (no mechanized semantics yet) and is explicitly out of scope
       for this item. Independent of Track A.
-    status: proposed
+    status: implemented
     tags: [semantics, wasmcert, source, rocq, track-b]
     links:
       - type: derives-from
@@ -703,6 +703,21 @@ artifacts:
         GATE ADDED (deep-research 2026-06-10): WasmCert-Coq maintenance state
         is UNVERIFIED (no surviving claim) — same bounded feasibility spike
         required before release commitment.
+      status-note: >
+        BOUNDED FIRST INCREMENT LANDED (v0.45, VCR-WASM-001). The WASM-side
+        analogue of SailArmBridge.v (VCR-ISA-001): coq/Synth/WASM/
+        WasmCertReference.v transcribes WasmCert-Coq's i32.add operational rule
+        (= CompCert Int.add, repr(unsigned x + unsigned y)) into synth's I32
+        primitives with line-level provenance; WasmCertBridge.v proves (2 Qed,
+        real — not reflexivity) that synth's exec_wasm_instr I32Add refines
+        that INDEPENDENT reference. Non-vacuous: the reference is phrased only
+        in repr/unsigned/Z, never I32.add/exec_wasm_instr, so a wrong add
+        semantics fails the proof; the raw-vs-normalized (Zplus_mod) gap is
+        genuinely discharged. SCOPE: 1 op, establishing the pattern.
+        FOLLOW-UP (status stays implemented, not verified, until then): a real
+        external WasmCert-Coq/CompCert coq dependency into the hermetic
+        bazel/nix toolchain (the transcription is the bounded scaffold), plus
+        the full integer/control-flow fragment.
 
   # ---------------------------------------------------------------------------
   # Track C — validation methodology (can start now; feeds Tracks A and B)
