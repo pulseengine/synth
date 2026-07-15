@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-07-15
+
+**Isolation + verification closure — and the biggest soundness yield of any hub
+yet.** First multi-memory support, the last i32 division admit discharged (#73
+closed after five weeks open), the trap-preservation VC goes LIVE (a dropped trap
+now fails translation validation, not just a unit gate), the falcon float story
+completes, proof-carrying bounds elision hits the theoretical floor — and the
+derived trap gate + new execution coverage caught **six latent soundness bugs**,
+each now oracle-pinned.
+
+### Fixed (soundness)
+
+- **Wide conditional branches over 254 bytes were silently halved (#740).** The
+  Thumb-2 `B<cond>.W` (T3) encoder packed `halfword_offset >> 1` into the imm
+  field, which IS the halfword offset — so every conditional branch spanning
+  > 254 B landed at half its displacement (gust_poll's loop-head `br_if` landed
+  mid-shape). Fixed to pack directly (LLVM-cross-checked bytes) + loud-decline
+  out-of-range; the anti-vacuous xfail promoted to strict.
+- **Software bounds guard wrapped at the address-space top (#752).** The end
+  address was computed with a wrapping 32-bit `ADD`, so a multi-byte access near
+  `0xFFFFFFFF` wrapped small and escaped the OOB trap. Replaced with a
+  SUB-from-bound guard (borrow-check discharges the degenerate case; can't wrap)
+  on both ARM paths + the RV32 twin. Surfaced by the new live trap-VC.
+- **Three latent VFP bugs, caught before f64 shipped (#369):** f32.copysign
+  clobbered a live R0 (#615 class); the f64 `VCVT` signed/unsigned bases were
+  swapped; in-place trunc `VCVT` corrupted a param home. All pinned.
+- **i64/wide static-region accesses were baked, not relocated (#746).** The
+  #739 sub-word fix's wide-arm residual — i64 loads/stores above sp_init under
+  `--shadow-stack-size` now relocate; gale's dissolving buffer nodes unblock.
+
+### Added
+
+- **Multi-memory phase 1 (#406, VCR-MEM-002).** N wasm memories lower to N
+  distinct native base regions (`__synth_wasm_data_K`) on the relocatable path;
+  per-memory size/grow and reservation sections. Model A (distinct,
+  MPU/PMP-protectable), the #404 decision made real. Single-memory modules are
+  byte-identical; every unsupported combination (self-contained, native-pointer,
+  cross-memory copy, riscv/aarch64) is a typed loud-decline.
+- **The trap-preservation VC is LIVE (#166).** `translation_validator` now
+  DERIVES the ARM trap condition from a branch-taking guarded executor and
+  routes partial ops through it MANDATORILY — a guard-stripped, inverted, or
+  wrong-register lowering fails validation. Live for i32 div/rem, unreachable,
+  i32 load/store, i32 trunc_f32, and call_indirect (i64 div/rem and trunc_f64
+  held unit-gated, disclosed). The derived gate immediately caught the #752
+  wraparound and ordeal#72 (their RemS builder over-traps).
+- **The last i32 division admit is discharged — #73 closed at i32.** `div_s`
+  INT_MIN/-1 is now Qed against `exec_program_br` (a genuine model fix: the old
+  overflow guard tested the raw representative and the theorem was false as
+  stated). **473 Qed / 5 Admitted, 0 division admits.**
+- **The falcon float story completes (#369).** Call-boundary marshalling (float
+  args into S/D pools, results out), f64 hard-float params, and the f64 op tail
+  (VRINT rounding, VMINNM/VMAXNM, copysign, demote, i32↔f64 converts). Hard-float
+  is the shipped path end-to-end; every remaining gap is a loud decline.
+
+### Changed
+
+- **Proof-carrying bounds-check elision (#494 × #390).** Under a loom-proven
+  ValueRange premise on the index, the software bounds guard is proven dead and
+  elided (ordeal-certified) — gust_poll's guarded path 184 → 104 B (−80 B, eight
+  guards), bit-identical to the unguarded floor. Opt-in, flag-off byte-identical.
+
+
 ## [0.42.0] - 2026-07-15
 
 **The trap-preservation + float-completion + parity hub: dropping a WASM trap
