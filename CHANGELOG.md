@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-07-15
+
+**Soundness patch — the default `--cortex-m` path now ships its initialized data.**
+One pre-existing soundness fix, plus differential-harness hardening. This is a
+patch on v0.43.0, not a feature release.
+
+### Fixed (soundness)
+
+- **Default self-contained `--cortex-m` DROPPED active `(data)` segments (#758).**
+  The self-contained ELF builder emitted `.linear_memory` as NoBits (BSS) and the
+  generated `Reset_Handler` had no data-copy loop, so active `(data)` bytes never
+  reached RAM — every load from an initialized region read **zero**, silently. This
+  is a **pre-existing** bug (the self-contained builder never had a ROM→RAM copy),
+  NOT a v0.43.0 regression. Fixed by packing the data segments into a dense blob
+  appended to `.text` and emitting a byte-granular `ldrb`/`strb` crt0 copy loop in
+  the startup (src patched to the ROM flash address post-layout; dst =
+  `optimized_linmem_base()` so copy-dst == codegen-base by construction, tracking
+  `--stack-layout=low`); u64 bounds loud-decline; empty-data modules stay
+  byte-identical to the old NoBits path. Oracle `self_contained_data_758_differential.py`
+  (RED on base, 5 divergences → GREEN 6/6), CI-wired. `--relocatable` and
+  `--native-pointer-abi` paths byte-identical; frozen anchors 10/10.
+
+### Changed (test infrastructure)
+
+- **Wide-static-copy differential hardened against vacuous gates (#760).** Added a
+  multi-chunk static-copy control fixture and a differential harness that resolves
+  `R_ARM_THM_CALL` relocations and **hard-fails on any unhandled relocation type**
+  (an oracle that silently skips the call relocation is a vacuous gate). Wired into
+  the trap-semantics-oracle CI job.
+
+### Known issues (still open)
+
+- **#757 — wide-static *copy* path carries a confirmed-on-silicon miscompile that
+  is NOT reproducible from the issue text.** gale captured wrong bytes on gust:os
+  v0.4.0, but seven faithful reconstructions of the copy shape (including the
+  value-live-across-a-call and big-literal-pool variants) all compile
+  byte-identical to wasmtime — the reported symptom decodes to `base + 12` with the
+  *correct* relocation base, i.e. a wrong runtime offset, not a wrong relocation.
+  **#757 remains OPEN**, blocked on the reporter's reduced module. v0.43.1 does NOT
+  fix it; the control fixtures above are regression guards in the meantime.
+- **#761 — latent self-contained linmem/globals top-of-SRAM overlap** (impact
+  unverified), filed for investigation.
+
 ## [0.43.0] - 2026-07-15
 
 **Isolation + verification closure — and the biggest soundness yield of any hub
