@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-14 (recount: 472 Qed / 6 Admitted, +2 admit., crude
+**Last Updated: 2026-07-15 (recount: 473 Qed / 5 Admitted, +2 admit., crude
 `grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts; the
 -40 vs the prior 512 are the retired VCR-ISA-001 #667 cross-check lemmas of
 `VcrSelRulesGenCheck.v`: `VcrSelRules.v` now DEFINES every `rule_X` as the
@@ -33,19 +33,22 @@ The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
   I64SetCond rules re-proven at EXPANSION tier — against the encoder's
   actual dual-precision chains (CMP lo,lo; SBCS/CMPEQ hi,hi; MOVcc) —
   with no `i64_setcond_bits` axiom.
-- **`i32_divu_correct` + `i32_rems_correct` + `i32_remu_correct`**
-  (CorrectnessI32.v): three of the four #73 trap-guard admits DISCHARGED,
-  each restated against `exec_program_br` (the BNE skips the UDF; extra
-  `I32.valid_unsigned` divisor hypothesis makes the raw-Z guard and the
-  mod-2^32 Z-flag agree; SDIV/UDIV then MLS computes the remainder tail).
-  Compilation.v's I32DivS guard offsets corrected for real branch
-  semantics (2→3, 0→1). Only `i32_divs_correct` — whose model carries the
-  extra INT_MIN/-1 double guard — remains Admitted.
+- **`i32_divs_correct` + `i32_divu_correct` + `i32_rems_correct` +
+  `i32_remu_correct`** (CorrectnessI32.v): ALL FOUR #73 trap-guard admits
+  DISCHARGED, each restated against `exec_program_br` (the BNE skips the
+  UDF; extra `I32.valid_unsigned` divisor hypothesis makes the raw-Z guard
+  and the mod-2^32 Z-flag agree; SDIV/UDIV then MLS computes the remainder
+  tail). Compilation.v's I32DivS guard offsets corrected for real branch
+  semantics (2→3, 0→1). `i32_divs_correct` (2026-07-15, the last of the
+  family) discharges the INT_MIN/-1 DOUBLE guard with a case split on the
+  dividend-is-INT_MIN compare; enabling model fix: `I32.divs`'s overflow
+  guard now tests the SIGNED interpretation (the old raw-representative
+  `Z.eqb x min_signed` was vacuous for register-normalized values, so the
+  model under-trapped exactly where the compiled guard and the WASM spec
+  trap — the theorem was FALSE as previously stated).
 
-**Total admits: 6** (was 8) — 1 i32 division trap guard (div_s only, #73 —
-the INT_MIN/-1 double-guard restatement against `exec_program_br` pending;
-div_u/rem_s/rem_u discharged), 2 Compilation.v, 1 CorrectnessSimple.v,
-2 ArmRefinement.v. The headline count grew 291 → 467 because the recount
+**Total admits: 5** (was 8) — 2 Compilation.v, 1 CorrectnessSimple.v,
+2 ArmRefinement.v; 0 division admits (#73 CLOSED at i32). The headline count grew 291 → 467 because the recount
 now includes everything landed since 2026-06-04 (SailArmBridge rounds 1–3,
 VcrSelRules increments, VcrSelExpansion, i64 certifying validation lemmas).
 
@@ -156,7 +159,7 @@ umbrella #147).
 |------|---------|-------|
 | **T1: Result Correspondence** | ARM output register = WASM result value | 37¹ |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139¹ |
-| **T3: Admitted / admit.** | Not yet proven | 8 (6 Admitted + 2 admit.) |
+| **T3: Admitted / admit.** | Not yet proven | 7 (5 Admitted + 2 admit.) |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
 ¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
@@ -164,7 +167,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 472 Qed / 6 Admitted (+2 admit.) across all files** (recount 2026-07-14, CI-gated via `claims.yaml`)
+**Total: 473 Qed / 5 Admitted (+2 admit.) across all files** (recount 2026-07-15, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -419,7 +422,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
-| CorrectnessI32.v | 30 | 1 | T1 + 1 admitted (div_u/rem_s/rem_u discharged against `exec_program_br` #697/#73; only i32_divs_correct — INT_MIN/-1 double guard — remains) |
+| CorrectnessI32.v | 31 | 0 | T1 — all four #73 div/rem trap-guard proofs discharged against `exec_program_br` (i32_divs_correct closed 2026-07-15 with the INT_MIN/-1 double-guard case split) |
 | CorrectnessI64.v | 46 | 0 | T1 (arith/bitwise/div/rem) + T2 (shifts/cmps/bit-manip) — 0 i64 admits since v0.11.0 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
@@ -441,7 +444,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683. VCR-ISA-001 #667 increment 2: every `rule_X` is DEFINED as the GENERATED `Gen.rule_X` of `VcrSelRulesGenerated.v` — emitted from the shipped `sel_dsl::RULES` — so the theorems are stated directly about the shipped sequences; a table change regenerates `Gen` and breaks the matching Qed. The former `VcrSelRulesGenCheck.v` 40-lemma `reflexivity` gate is retired as vacuous/subsumed) |
-| **Total** | **472** | **6** | (+2 `admit.`) |
+| **Total** | **473** | **5** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 

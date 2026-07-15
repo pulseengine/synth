@@ -2,6 +2,15 @@
 
     This file serves as the master index for all correctness proofs.
 
+    NOTE (2026-07-15): the tier tallies below are the v0.8.0-era HISTORICAL
+    snapshot; `coq/STATUS.md` (CI-gated via `claims.yaml`) is the
+    authoritative current count. Since this snapshot, the i64 div/rem +
+    i64_const admits were discharged (v0.8–v0.11), the Integers.v Z.mod_mod
+    admit was closed (v0.10.0 PR 2), and ALL FOUR i32 div/rem trap-guard
+    admits were discharged against the branch-taking `exec_program_br`
+    (#73 — divs closed 2026-07-15 with the INT_MIN/-1 double-guard case
+    split).
+
     After v0.8.0 PR 1a (Compilation.v i64 alignment) the i64 operations now
     compile to dual-register-pair sequences (R0:R1 result, R2:R3 second
     operand) matching the Rust codegen, via ADDS/ADC/SUBS/SBC for arithmetic

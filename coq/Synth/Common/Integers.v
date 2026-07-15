@@ -52,9 +52,16 @@ Module I32.
   Definition sub (x y : int) : int := repr (x - y).
   Definition mul (x y : int) : int := repr (x * y).
 
+  (** Signed division. The INT_MIN/-1 overflow trap tests the SIGNED
+      interpretation of the operands (#73): the previous raw-representative
+      guard [Z.eqb x min_signed] was vacuous for register-normalized values
+      (a normalized [int] lies in [0, 2^32), never equal to the negative
+      [min_signed]), so the model under-trapped exactly where the compiled
+      double guard — and the WASM spec — trap. [signed] is invariant across
+      representatives mod 2^32, so this guard also subsumes the old raw one. *)
   Definition divs (x y : int) : option int :=
     if Z.eqb y 0 then None
-    else if andb (Z.eqb x min_signed) (Z.eqb y (-1)) then None
+    else if andb (Z.eqb (signed x) min_signed) (Z.eqb (signed y) (-1)) then None
     else Some (repr (signed x / signed y)).
 
   Definition divu (x y : int) : option int :=
