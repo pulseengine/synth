@@ -83,8 +83,8 @@ CASES += C64("i64_clz", 64, (1,), (0x8000000000000000,), (0,))
 CASES += C64("i64_ctz", 64, (1,), (0x8000000000000000,), (0,), (256,))
 # i64 compares (result i32).
 CASES += C64("i64_eqz", 32, (0,), (1,), (M64,))
-for cmp in ("i64_eq", "i64_ne", "i64_lt_s", "i64_lt_u",
-            "i64_le_s", "i64_gt_s", "i64_ge_u"):
+for cmp in ("i64_eq", "i64_ne", "i64_lt_s", "i64_lt_u", "i64_le_s", "i64_le_u",
+            "i64_gt_s", "i64_gt_u", "i64_ge_s", "i64_ge_u"):
     CASES += C64(cmp, 32, (BIG, BIG), (2, 5), (5, 2),
                  (0x8000000000000000, 1), (1, M64))
 # i64 const materialization.
