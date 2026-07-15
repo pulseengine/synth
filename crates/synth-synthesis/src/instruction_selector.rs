@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use synth_core::Result;
 use synth_core::WasmOp;
 use synth_core::target::FPUPrecision;
+/// #369 ph3: (has_float_params, returns_float, per-arg VFP homes) for a callee.
+type FloatSig = (bool, bool, Vec<(u32, VfpReg)>);
+/// #369 ph3: (core arg regs, VFP move pairs) staged for a marshalled call.
+type MarshalPlan = (Vec<Reg>, Vec<(VfpReg, VfpReg)>);
 
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1493,6 +1497,7 @@ pub fn read_before_write_locals(
 ///   encoder, in both cases corrupting the caller's stack or the callee's
 ///   own callee-saved-register spill).
 /// - Epilogue: `add sp, sp, #frame_size` before popping registers.
+#[allow(clippy::too_many_arguments)] // f64-param threading (#369 ph3); params-struct refactor is a named follow-up
 fn compute_local_layout(
     wasm_ops: &[WasmOp],
     num_params: u32,
@@ -4090,7 +4095,7 @@ impl InstructionSelector {
     /// call takes the byte-identical legacy path. Ok-or-Err: the VFP argument
     /// pool overflowing 16 S-slots declines loudly (AAPCS-VFP would spill
     /// float args to the stack, which this increment does not marshal).
-    fn callee_float_signature(&self, func_idx: u32) -> Result<(bool, bool, Vec<(u32, VfpReg)>)> {
+    fn callee_float_signature(&self, func_idx: u32) -> Result<FloatSig> {
         let i = func_idx as usize;
         let ret_f32 = self.callee_ret_f32.get(i).copied().unwrap_or(false);
         let ret_f64 = self.callee_ret_f64.get(i).copied().unwrap_or(false);
@@ -7993,7 +7998,7 @@ impl InstructionSelector {
         arg_count: u32,
         float_dst: &std::collections::HashMap<u32, VfpReg>,
         idx: usize,
-    ) -> Result<(Vec<Reg>, Vec<(VfpReg, VfpReg)>)> {
+    ) -> Result<MarshalPlan> {
         let n = arg_count as usize;
         let mut int_srcs: Vec<Reg> = Vec::new();
         let mut float_args: Vec<(VfpReg, VfpReg)> = Vec::new();
