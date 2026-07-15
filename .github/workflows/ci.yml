@@ -415,6 +415,22 @@ jobs:
       # 32-bit T3 conditional branch. RED on v0.42.0 (5/6 cases) -> GREEN.
       - name: Run wide-B<cond>.W branch-target oracle (#740, cortex-m4)
         run: SYNTH=./target/debug/synth python scripts/repro/brif_outer_740_differential.py
+      # #406 (VCR-MEM-002 phase 1): N wasm memories = N DISTINCT native base
+      # regions. Memory 0 keeps the runtime R11 base; memory k > 0 is
+      # addressed via its own __synth_wasm_data_<k> symbol at the base of the
+      # object's .synth.wasm_mem_<k> reservation section. The oracle maps the
+      # two memories at DISTINCT unicorn bases (far apart, so residual
+      # aliasing faults or mismatches — never accidentally correct) and checks
+      # store-both aliasing discriminators, memory-1 init-data peeks (pre-#406
+      # those segments were silently DROPPED), sub-word round-trips, and
+      # per-memory size/grow against wasmtime multi-memory. RED on v0.42.0
+      # (the object has no per-memory region — every memory aliased R11);
+      # GREEN with the per-memory lowering. The decline matrix (self-contained,
+      # native-pointer-abi, shadow-stack, riscv/aarch64, cross-memory copy,
+      # wide accesses, non-const segment offsets) is the cargo test
+      # crates/synth-cli/tests/multi_memory_406.rs.
+      - name: Run multi-memory distinct-regions oracle (#406, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/multi_memory_406_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+)
