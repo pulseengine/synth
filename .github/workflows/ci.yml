@@ -320,6 +320,43 @@ jobs:
       - name: Run two-move execution oracle
         run: python scripts/repro/cmp_select_two_move_differential.py
 
+  aarch64-oracle:
+    name: aarch64 backend execution + decline oracle (#538 m2)
+    # #538 milestone-2: the host-native A64 backend broadened from the m1 i32
+    # add/sub/mul/and/or/xor core to the FULL i32 + i64 integer ALU (shifts,
+    # rotates, clz/ctz, the compare family, i64 x-forms + const). EXECUTE every
+    # covered op's emitted A64 `.text` under unicorn (UC_ARCH_ARM64) and diff vs
+    # wasmtime ground truth — the "third backend = third oracle" property — plus
+    # a decline-matrix probe asserting div/rem/popcnt/float still LOUD-decline
+    # (A64 SDIV/UDIV don't trap; a naive lowering would be a silent miscompile).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run m1 integer-core execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_add_538_differential.py
+      - name: Run m2 broadened i32+i64 ALU execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_538_differential.py
+      - name: Run m2 decline-matrix honesty oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
+
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
     # #665: wasm `unreachable` must TRAP (WASM §4.4.5) — it was decoder-dropped
