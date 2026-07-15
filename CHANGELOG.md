@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-07-15
+
+**The trap-preservation + float-completion + parity hub: dropping a WASM trap
+becomes a provable defect, the falcon float story completes (f32-across-call +
+scalar f64), the Rocq selector model is generated — not mirrored, and the
+"wasm is slower" claim gets a reproducible, falsifiable answer. Plus a silent
+shadow-stack miscompile fixed with its vacuous oracle de-blinded.**
+
+### Fixed
+
+- **Static above sp_init no longer silently miscompiles under
+  `--shadow-stack-size` (#739, soundness).** The sub-word i32 load/store arms
+  never received the #359 native-pointer static classification, so a
+  meld-fused static at an offset above sp_init was BAKED as an un-relocated
+  MOVW/MOVT immediate — invisible to the #678 rebase AND to the post-link
+  in-range oracle (which only walked relocations: a vacuous gate, the
+  #712-class lesson). Sub-word arms now emit the `__synth_wasm_data + C`
+  relocation like word accesses; the shrink additionally SCANS the encoded
+  text for surviving baked static constants and refuses loudly; a no-reloc
+  shrink now refuses instead of silently no-op'ing. i64 static-region accesses
+  decline loudly (previously silently miscompiled). Execution differential
+  CI-wired; #383/#678/#707 regressions green.
+- **f64 comparisons would have returned stale-flag garbage (#369
+  prerequisite).** `encode_thumb_f64_compare` had the exact #712 flag-clobber
+  (`MOVS` after `VMRS`) — caught and fixed BEFORE f64 shipped, execution-
+  validated non-vacuously.
+- **Mixed-pool parameter backing stored the wrong register (#719
+  prerequisite).** The #204 param-backing prologue used `index_to_reg(i)`,
+  wrong under mixed int/float pools (`(f32,i32)` homes i32 in R0, not R1);
+  the callee read garbage. Caught by a new execution row.
+
+### Added
+
+- **Trap-preservation is now a provable obligation (VCR-VER-002 Phases A+B,
+  #166, ordeal#59).** `synth-verify` consumes ordeal 0.9.1's `trap` module:
+  QF_BV trap conditions for div/rem (÷0 + INT_MIN/-1), memory OOB (symbolic
+  `mem_bound`), `call_indirect` (bounds ∨ null-slot ∨ type, with the
+  closed-world compile-time-discharge mode), `unreachable`, and all six
+  float→int trunc variants (validated against the 31-row #709 boundary table
+  through both `ordeal::eval` and the certified pipeline). The red-first gate
+  proves every trap-DROPPING lowering is caught (`Sat` + counterexample) and
+  every preserving one accepted (`Unsat`, LRAT re-checked) — the systematic
+  end of the #633/#666/#665/#642/#709 whack-a-mole. Live-validator wiring for
+  the remaining classes is the documented follow-on.
+- **The falcon float story completes (#719, #369 phase 2).** f32 live across
+  a call spills/rehomes (16-slot VFP call-spill area, the VFP #188); scalar
+  f64 on cortex-m7dp: const, promote_f32, add/sub/mul/div, abs/neg/sqrt, all
+  six compares, load/store, f64-across-call. Float-signature call boundaries
+  and f64 params decline loudly (marshalling = named next increment). 187/187
+  f32 + 126/126 f64 bit-exact vs wasmtime, CI-gated. m4f/m3 honest-reject.
+- **The Rocq selector model is generated, not mirrored (VCR-ISA-001 #667
+  increment 2).** `VcrSelRules.v` now DEFINES `rule_X := Gen.rule_X` — the
+  shipped `sel_dsl::RULES` table emits the single model source, the 40
+  correctness Qed are stated directly about it, and a selector change breaks
+  the matching proof. The interim reflexivity gate was retired as vacuous
+  (proof count 472, honestly recounted from 512).
+- **Reproducible wasm-AOT vs native-C parity benchmark (#735).**
+  `scripts/repro/parity_benchmark/` + `artifacts/parity-benchmark.md`:
+  measured bytes on pinned toolchains with one falsification command per row.
+  Headline: gust_mix clamp under a loom-proven premise = **14 B vs 26 B
+  measured `arm-none-eabi-gcc -Os` (0.54× of native)** — AOT-wasm SMALLER
+  than native because it carries a machine-checked value-range proof the C
+  compiler doesn't have. Honest gaps shown (gust_poll 3.48×, flat_flight
+  2.54×, falcon f32 1.64×); cycles marked OPEN (gale silicon).
+- **One more certified elision class: redundant-mask (#494).**
+  `SYNTH_FACT_SPEC` elides masks proven redundant by value-range premises —
+  gust_kernel 34 → 20 B, ordeal-certified per elision, sound decline without
+  the premise.
+
+### Changed
+
+- **gust_poll shrinks 740 → 724 B (#390, VCR-RA).** `forward_stack_reloads`
+  upgraded to a conditional-branch-transparent holder-lattice walk — reloads
+  across `br_if` ladders become moves or vanish. Corpus: 26 fixtures shrink,
+  0 grow; full differential sweep on the new bytes BEFORE re-pinning (the
+  refreeze ritual); `SYNTH_NO_STACK_FWD=1` opt-out pinned to old bytes.
+  Filed pre-existing #740 (gust_poll br_if mid-shape) with an anti-vacuous
+  xfail.
+
 ## [0.41.0] - 2026-07-11
 
 **f32 op-completeness for falcon + a soundness-gate hardening.**
