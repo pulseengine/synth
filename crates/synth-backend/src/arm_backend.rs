@@ -443,16 +443,17 @@ fn compile_wasm_to_arm(
         // the epilogue loudly declines a float result reaching it in a core
         // register (never a silent integer R0 return where a caller reads S0/D0).
         selector.set_ret_float(config.current_func_ret_f32, config.current_func_ret_f64);
-        // GI-FPU-002 phase 2 (#719/#369): per-callee float-signature tables, so
-        // `Call`/`CallIndirect` decline LOUDLY when the callee itself has a
-        // float ABI at the boundary (f32/f64 return in S0/D0, f32 params in the
-        // VFP pool) — the un-marshalled cases of this increment.
+        // GI-FPU-002 phase 3 (#369): per-callee float-signature tables. `Call`
+        // marshals the AAPCS-VFP boundary from these (float args into S0../D0..,
+        // float results out of S0/D0); `CallIndirect` still declines a
+        // float-returning static type loudly.
         selector.set_float_call_signatures(
             config.func_ret_f32.clone(),
             config.func_ret_f64.clone(),
             config.type_ret_f32.clone(),
             config.type_ret_f64.clone(),
             config.func_params_f32.clone(),
+            config.func_params_f64.clone(),
         );
         // #509: blocktype-arity side-table of THIS function, so value-carrying
         // br/br_if/br_table land the carried value in the target block's

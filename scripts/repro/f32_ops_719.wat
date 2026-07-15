@@ -110,14 +110,72 @@
     f32.add
     i32.reinterpret_f32)
 
-  ;; ---- #719 phase 2: float-signature callees DECLINE loudly -----------------
-  ;; These callers must be SKIPPED (absent from the symtab), never miscompiled:
-  ;; the callee's f32 result arrives in S0 / its f32 arg belongs in S0, which
-  ;; this increment does not marshal at the call boundary.
+  ;; ---- GI-FPU-002 phase 3 (#369): copysign with a LIVE core value -----------
+  ;; The pre-fix F32Copysign encoder staged the magnitude through R0 — with
+  ;; f32 params (S0/S1) and no core params, the `i32.const 41` temp lands in
+  ;; R0 and is LIVE across the copysign, so the old sequence returned
+  ;; bits(copysign)+bits(copysign) instead of 41+bits(copysign). The rewrite
+  ;; clobbers only R12 (reserved encoder scratch).
+  (func (export "cs_live") (param f32 f32) (result i32)
+    i32.const 41
+    local.get 0
+    local.get 1
+    f32.copysign i32.reinterpret_f32
+    i32.add)
+
+  ;; ---- GI-FPU-002 phase 3 (#369): the f32 call boundary is MARSHALLED -------
+  ;; Float-signature callees now LOWER: arguments move into the AAPCS-VFP
+  ;; S0.. pool, results come out of S0. Every callee below does real VFP
+  ;; arithmetic (it reads its S-register args and writes S0), so a caller that
+  ;; passed an arg in a core register or read the result from R0 diverges at
+  ;; the VALUE level — non-vacuous rows.
   (func $retf (result f32) f32.const 1.5)
-  (func (export "bad_ret_f32_call") (result i32)
-    call $retf i32.reinterpret_f32)
-  (func $takef (param f32) (result i32)
-    local.get 0 i32.reinterpret_f32)
-  (func (export "bad_f32_arg_call") (param i32) (result i32)
-    local.get 0 f32.reinterpret_i32 call $takef))
+  (func $scale (param f32 f32) (result f32)
+    local.get 0 local.get 1 f32.mul f32.const 1.5 f32.add)
+  (func $addn (param f32 i32) (result f32)
+    local.get 0 local.get 1 f32.convert_i32_s f32.add)
+
+  ;; f32 RESULT out of S0: call_ret(a) = bits($retf() + f32(a)).
+  (func (export "call_ret") (param i32) (result i32)
+    call $retf
+    local.get 0 f32.reinterpret_i32
+    f32.add
+    i32.reinterpret_f32)
+
+  ;; f32 ARGS into S0/S1: call_args(a, b) = bits($scale(f32(a), f32(b))).
+  (func (export "call_args") (param i32 i32) (result i32)
+    local.get 0 f32.reinterpret_i32
+    local.get 1 f32.reinterpret_i32
+    call $scale
+    i32.reinterpret_f32)
+
+  ;; MIXED int+float args: the core pool skips the f32 (i32 arg -> R0, not R1).
+  ;; call_mixed(n, xb) = bits($addn(f32(xb), n)).
+  (func (export "call_mixed") (param i32 i32) (result i32)
+    local.get 1 f32.reinterpret_i32
+    local.get 0
+    call $addn
+    i32.reinterpret_f32)
+
+  ;; OVERLAPPING sources: arg0's value is produced SECOND (lands in S1, must
+  ;; move to S0) while arg1 lives in the S0 local home (must move to S1) — the
+  ;; cross-swap exercises the two-phase frame staging, and the S0 home doubles
+  ;; as a home-register argument source.
+  (func (export "call_swap") (param i32 i32) (result i32)
+    (local f32)
+    local.get 1 f32.reinterpret_i32 local.set 2   ;; y -> S0 local home
+    local.get 0 f32.reinterpret_i32               ;; x -> S1 temp
+    local.get 2                                   ;; y (home S0)
+    call $scale                                   ;; wants x in S0, y in S1
+    i32.reinterpret_f32)
+
+  ;; f32 LIVE ACROSS a float-signature call: the live temp must survive both
+  ;; the callee's clobber AND the argument marshalling into its register.
+  ;; call_live(a, b) = bits(f32(a) + $scale(f32(b), 2.0)).
+  (func (export "call_live") (param i32 i32) (result i32)
+    local.get 0 f32.reinterpret_i32               ;; live f32 across the call
+    local.get 1 f32.reinterpret_i32
+    f32.const 2.0
+    call $scale
+    f32.add
+    i32.reinterpret_f32))

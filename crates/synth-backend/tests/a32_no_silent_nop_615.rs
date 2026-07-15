@@ -30,7 +30,7 @@ const NOP_WORD: [u8; 4] = [0x00, 0x00, 0xA0, 0xE1];
 
 /// Bump when adding an `ArmOp` variant — and add a representative instance to
 /// `representatives()` (the completeness check below counts unique variants).
-const ARM_OP_VARIANT_COUNT: usize = 221;
+const ARM_OP_VARIANT_COUNT: usize = 222;
 
 /// How the A32 encoder must treat each op.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -242,7 +242,10 @@ fn classify(op: &ArmOp) -> Expect {
         | ArmOp::I32TruncF64U { .. } => Real,
 
         // i64<->float conversions need register pairs — typed Err on ARM32.
-        ArmOp::F32ConvertI64S { .. }
+        // F32DemoteF64 (#369) is Thumb-2-only (no A32 target has an FPU) —
+        // typed Err too.
+        ArmOp::F32DemoteF64 { .. }
+        | ArmOp::F32ConvertI64S { .. }
         | ArmOp::F32ConvertI64U { .. }
         | ArmOp::F64ConvertI64S { .. }
         | ArmOp::F64ConvertI64U { .. }
@@ -1144,6 +1147,10 @@ fn representatives() -> Vec<ArmOp> {
         F64PromoteF32 {
             dd: VfpReg::D0,
             sm: VfpReg::S1,
+        },
+        F32DemoteF64 {
+            sd: VfpReg::S1,
+            dm: VfpReg::D0,
         },
         F64ReinterpretI64 {
             dd: VfpReg::D0,
