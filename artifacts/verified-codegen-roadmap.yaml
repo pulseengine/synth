@@ -703,7 +703,7 @@ artifacts:
         GATE ADDED (deep-research 2026-06-10): WasmCert-Coq maintenance state
         is UNVERIFIED (no surviving claim) — same bounded feasibility spike
         required before release commitment.
-      status-note: >
+
         BOUNDED FIRST INCREMENT LANDED (v0.45, VCR-WASM-001). The WASM-side
         analogue of SailArmBridge.v (VCR-ISA-001): coq/Synth/WASM/
         WasmCertReference.v transcribes WasmCert-Coq's i32.add operational rule
