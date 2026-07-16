@@ -25,15 +25,66 @@
 //!   naively is the "ARM more-total-than-WASM" silent-miscompile class; they are
 //!   left for a later milestone that adds the explicit trap guards.
 //! - `popcnt`: no scalar A64 popcount pre-SVE (needs SIMD `CNT`+`ADDV`).
-//! - floats, memory, calls, control flow, non-param locals, spilling.
+//! - memory, calls, control flow, non-param locals, spilling.
+//!
+//! **Milestone 3 adds scalar floating point** (the separate V/D/S register file):
+//! f32/f64 const, add/sub/mul/div, abs/neg/sqrt, the full compare family, the
+//! f32<->f64 conversions (promote/demote), the int->float conversions
+//! (`convert_i32_{s,u}` → SCVTF/UCVTF), and the reinterprets (FMOV GP<->FP).
+//! The value stack now tags each entry with its register FILE (GP vs FP) so an
+//! f32 param (delivered in `s0..` under AAPCS64, a counter INDEPENDENT of the
+//! GP arg registers) is never confused with a GP operand.
+//!
+//! **Still declined (loud-skip, never wrong code):** the trapping float→int
+//! truncations (`i32.trunc_f32_s`/`_u`, `i32.trunc_f64_*`): A64 `FCVTZS`/`FCVTZU`
+//! SATURATE on out-of-range/NaN whereas WASM traps — emitting them would be the
+//! #709 "more-total-than-WASM" silent miscompile, so they honest-reject. Also
+//! declined: `min`/`max`/`copysign`/rounding (`ceil`/`floor`/`trunc`/`nearest`)
+//! and the i64<->float conversions (a later increment).
 
 use crate::encoder as enc;
-use crate::encoder::{Cond, Reg};
+use crate::encoder::{Cond, FReg, Reg};
 use synth_core::WasmOp;
 
-/// The value-stack temp registers: caller-saved `w9/x9..w15/x15` (7 slots).
-/// `w0..w7` hold incoming params; results funnel back through `x0`.
+/// The GP value-stack temp registers: caller-saved `w9/x9..w15/x15` (7 slots).
+/// `w0..w7` hold incoming integer params; results funnel back through `x0`.
 const TEMPS: [Reg; 7] = [9, 10, 11, 12, 13, 14, 15];
+
+/// The FP value-stack temp registers: caller-saved `v16..v23` (the low `v0..v7`
+/// carry incoming float params, `v8..v15` are callee-saved). 8 scratch slots.
+const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
+
+/// Which register file a value-stack entry lives in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum File {
+    /// General-purpose (`w`/`x`) — integers and 0/1 compare results.
+    Gp,
+    /// Floating-point (`s`/`d`) — f32/f64 values.
+    Fp,
+}
+
+/// A value-stack entry: a register number plus which file it lives in. Widths
+/// are carried by the op (as in m2), not the entry — an FP op knows whether it
+/// wants the `s` or `d` view.
+#[derive(Clone, Copy, Debug)]
+struct Val {
+    reg: u8,
+    file: File,
+}
+impl Val {
+    fn gp(reg: Reg) -> Self {
+        Val {
+            reg,
+            file: File::Gp,
+        }
+    }
+    fn fp(reg: FReg) -> Self {
+        Val {
+            reg,
+            file: File::Fp,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SelectError(pub String);
@@ -44,63 +95,190 @@ impl std::fmt::Display for SelectError {
     }
 }
 
-/// Lower a single function body (its wasm op stream + declared param count) to a
-/// vector of A64 instruction words. `num_params` params are assumed resident in
-/// `w0/x0..w7/x7` on entry (up to 8 register params).
+/// Lower a single function body to A64 words, assuming the integer subset (m2)
+/// param convention: params in `w0/x0..` with no float params. Thin wrapper over
+/// [`select_typed`] with empty float-param masks.
 pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> {
+    select_typed(ops, num_params, &[], &[])
+}
+
+/// The parameter's assigned register + file under AAPCS64. Integer params take
+/// `x0,x1,…` in order; float params take `v0,v1,…` in order — the two counters
+/// are INDEPENDENT, so `(param i32 f32 i32)` is w0, s0, w1.
+fn param_map(num_params: u32, params_f32: &[bool], params_f64: &[bool]) -> Vec<Val> {
+    let mut out = Vec::with_capacity(num_params as usize);
+    let mut ngrn: u8 = 0; // next general (integer) arg register
+    let mut nsrn: u8 = 0; // next SIMD/FP arg register
+    for k in 0..num_params as usize {
+        let is_f32 = params_f32.get(k).copied().unwrap_or(false);
+        let is_f64 = params_f64.get(k).copied().unwrap_or(false);
+        if is_f32 || is_f64 {
+            out.push(Val::fp(nsrn));
+            nsrn += 1;
+        } else {
+            out.push(Val::gp(ngrn));
+            ngrn += 1;
+        }
+    }
+    out
+}
+
+/// Lower a single function body with per-param type info. `params_f32[k]` /
+/// `params_f64[k]` mark which params are float (delivered in V registers). The
+/// integer path (empty masks) is byte-identical to the m2 behavior.
+pub fn select_typed(
+    ops: &[WasmOp],
+    num_params: u32,
+    params_f32: &[bool],
+    params_f64: &[bool],
+) -> Result<Vec<u32>, SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
             "{num_params} params — supports at most 8 register params"
         )));
     }
+    let params = param_map(num_params, params_f32, params_f64);
     let mut words: Vec<u32> = Vec::new();
-    let mut stack: Vec<Reg> = Vec::new();
+    let mut stack: Vec<Val> = Vec::new();
 
-    // Pick a temp register not currently holding a live value-stack entry.
-    let alloc_temp = |stack: &[Reg]| -> Result<Reg, SelectError> {
+    // Pick a GP temp not holding a live GP value-stack entry.
+    let alloc_temp = |stack: &[Val]| -> Result<Reg, SelectError> {
         TEMPS
             .iter()
             .copied()
-            .find(|t| !stack.contains(t))
-            .ok_or_else(|| SelectError("value-stack too deep (temp regs exhausted)".into()))
+            .find(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t))
+            .ok_or_else(|| SelectError("value-stack too deep (GP temp regs exhausted)".into()))
+    };
+    // Pick an FP temp not holding a live FP value-stack entry.
+    let alloc_ftemp = |stack: &[Val]| -> Result<FReg, SelectError> {
+        FTEMPS
+            .iter()
+            .copied()
+            .find(|t| !stack.iter().any(|v| v.file == File::Fp && v.reg == *t))
+            .ok_or_else(|| SelectError("value-stack too deep (FP temp regs exhausted)".into()))
     };
 
-    // A binary `dst = a OP b` where `f` is the width-specialized encoder fn.
+    // Pop a GP operand, erroring if the top value is actually an FP value (a
+    // type confusion that would otherwise silently read the wrong file).
+    fn pop_gp(stack: &mut Vec<Val>, ctx: &str) -> Result<Reg, SelectError> {
+        let v = stack
+            .pop()
+            .ok_or_else(|| SelectError(format!("{ctx} underflow")))?;
+        if v.file != File::Gp {
+            return Err(SelectError(format!("{ctx}: expected GP operand, got FP")));
+        }
+        Ok(v.reg)
+    }
+    fn pop_fp(stack: &mut Vec<Val>, ctx: &str) -> Result<FReg, SelectError> {
+        let v = stack
+            .pop()
+            .ok_or_else(|| SelectError(format!("{ctx} underflow")))?;
+        if v.file != File::Fp {
+            return Err(SelectError(format!("{ctx}: expected FP operand, got GP")));
+        }
+        Ok(v.reg)
+    }
+
+    // A GP binary `dst = a OP b`.
     let binop = |words: &mut Vec<u32>,
-                 stack: &mut Vec<Reg>,
+                 stack: &mut Vec<Val>,
                  f: fn(Reg, Reg, Reg) -> u32|
      -> Result<(), SelectError> {
-        let b = stack
-            .pop()
-            .ok_or_else(|| SelectError("binop underflow".into()))?;
-        let a = stack
-            .pop()
-            .ok_or_else(|| SelectError("binop underflow".into()))?;
+        let b = pop_gp(stack, "binop")?;
+        let a = pop_gp(stack, "binop")?;
         let dst = alloc_temp(stack)?;
         words.push(f(dst, a, b));
-        stack.push(dst);
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
-    // A unary `dst = OP a`.
+    // A GP unary `dst = OP a`.
     let unop = |words: &mut Vec<u32>,
-                stack: &mut Vec<Reg>,
+                stack: &mut Vec<Val>,
                 f: fn(Reg, Reg) -> u32|
      -> Result<(), SelectError> {
-        let a = stack
-            .pop()
-            .ok_or_else(|| SelectError("unop underflow".into()))?;
+        let a = pop_gp(stack, "unop")?;
         let dst = alloc_temp(stack)?;
         words.push(f(dst, a));
-        stack.push(dst);
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // An FP binary `dst = a OP b` (both operands and result in the FP file).
+    let fbinop = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  f: fn(FReg, FReg, FReg) -> u32|
+     -> Result<(), SelectError> {
+        let b = pop_fp(stack, "fbinop")?;
+        let a = pop_fp(stack, "fbinop")?;
+        let dst = alloc_ftemp(stack)?;
+        words.push(f(dst, a, b));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+    // An FP unary `dst = OP a` (FP → FP).
+    let funop = |words: &mut Vec<u32>,
+                 stack: &mut Vec<Val>,
+                 f: fn(FReg, FReg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_fp(stack, "funop")?;
+        let dst = alloc_ftemp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+    // An FP compare `dst(GP 0/1) = (a CMP b)` — `fcmp` + `cset cond`. The result
+    // is a GP boolean; `cond` is the clang-matched (NaN-correct) condition.
+    let fcmp_op = |words: &mut Vec<u32>,
+                   stack: &mut Vec<Val>,
+                   fcmp: fn(FReg, FReg) -> u32,
+                   cond: Cond|
+     -> Result<(), SelectError> {
+        let b = pop_fp(stack, "fcompare")?;
+        let a = pop_fp(stack, "fcompare")?;
+        let dst = alloc_temp(stack)?;
+        words.push(fcmp(a, b));
+        words.push(enc::cset(dst, cond));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+    // int → float conversion: pop a GP operand, push an FP result.
+    let cvt_gp_to_fp = |words: &mut Vec<u32>,
+                        stack: &mut Vec<Val>,
+                        f: fn(FReg, Reg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_gp(stack, "convert")?;
+        let dst = alloc_ftemp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+    // reinterpret GP → FP (bit-cast, FMOV).
+    let reinterpret_gp_to_fp = |words: &mut Vec<u32>,
+                                stack: &mut Vec<Val>,
+                                f: fn(FReg, Reg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_gp(stack, "reinterpret")?;
+        let dst = alloc_ftemp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+    // reinterpret FP → GP (bit-cast, FMOV).
+    let reinterpret_fp_to_gp = |words: &mut Vec<u32>,
+                                stack: &mut Vec<Val>,
+                                f: fn(Reg, FReg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_fp(stack, "reinterpret")?;
+        let dst = alloc_temp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
     // `ctz` = `rbit` then `clz` (A64 has no direct CTZ). `sf` selects width.
-    let ctz = |words: &mut Vec<u32>, stack: &mut Vec<Reg>, sf: bool| -> Result<(), SelectError> {
-        let a = stack
-            .pop()
-            .ok_or_else(|| SelectError("ctz underflow".into()))?;
+    let ctz = |words: &mut Vec<u32>, stack: &mut Vec<Val>, sf: bool| -> Result<(), SelectError> {
+        let a = pop_gp(stack, "ctz")?;
         let dst = alloc_temp(stack)?;
         if sf {
             words.push(enc::rbit64(dst, a));
@@ -109,19 +287,15 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
             words.push(enc::rbit(dst, a));
             words.push(enc::clz(dst, dst));
         }
-        stack.push(dst);
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
     // `rotl rd, rn, rk` = `neg rtmp, rk; rorv rd, rn, rtmp` (mod-width neg gives
     // the equivalent right-rotate; correct including k=0 → neg 0 = 0).
-    let rotl = |words: &mut Vec<u32>, stack: &mut Vec<Reg>, sf: bool| -> Result<(), SelectError> {
-        let k = stack
-            .pop()
-            .ok_or_else(|| SelectError("rotl underflow".into()))?;
-        let n = stack
-            .pop()
-            .ok_or_else(|| SelectError("rotl underflow".into()))?;
+    let rotl = |words: &mut Vec<u32>, stack: &mut Vec<Val>, sf: bool| -> Result<(), SelectError> {
+        let k = pop_gp(stack, "rotl")?;
+        let n = pop_gp(stack, "rotl")?;
         let dst = alloc_temp(stack)?;
         // #776: the `neg` scratch must NOT be `dst` — `alloc_temp` can hand back
         // the register that held the computed operand `n` (n,k are already popped,
@@ -138,34 +312,28 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
             words.push(enc::neg(k, k));
             words.push(enc::rorv(dst, n, k));
         }
-        stack.push(dst);
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
-    // A comparison `dst = (a CMP b)` as `cmp` + `cset cond`. `sf` selects width.
+    // A GP comparison `dst = (a CMP b)` as `cmp` + `cset cond`. `sf` selects width.
     let cmp_op = |words: &mut Vec<u32>,
-                  stack: &mut Vec<Reg>,
+                  stack: &mut Vec<Val>,
                   sf: bool,
                   cond: Cond|
      -> Result<(), SelectError> {
-        let b = stack
-            .pop()
-            .ok_or_else(|| SelectError("compare underflow".into()))?;
-        let a = stack
-            .pop()
-            .ok_or_else(|| SelectError("compare underflow".into()))?;
+        let b = pop_gp(stack, "compare")?;
+        let a = pop_gp(stack, "compare")?;
         let dst = alloc_temp(stack)?;
         words.push(if sf { enc::cmp64(a, b) } else { enc::cmp(a, b) });
         words.push(enc::cset(dst, cond));
-        stack.push(dst);
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
     // `eqz`: `dst = (a == 0)` as `cmp a, zr` + `cset eq`.
-    let eqz = |words: &mut Vec<u32>, stack: &mut Vec<Reg>, sf: bool| -> Result<(), SelectError> {
-        let a = stack
-            .pop()
-            .ok_or_else(|| SelectError("eqz underflow".into()))?;
+    let eqz = |words: &mut Vec<u32>, stack: &mut Vec<Val>, sf: bool| -> Result<(), SelectError> {
+        let a = pop_gp(stack, "eqz")?;
         let dst = alloc_temp(stack)?;
         words.push(if sf {
             enc::cmp64(a, enc::XZR)
@@ -173,7 +341,7 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
             enc::cmp(a, enc::WZR)
         });
         words.push(enc::cset(dst, Cond::Eq));
-        stack.push(dst);
+        stack.push(Val::gp(dst));
         Ok(())
     };
 
@@ -185,22 +353,43 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
                         "local.get {i}: non-param locals not yet supported"
                     )));
                 }
-                // params are in w0/x0..w7/x7 — same architectural number.
-                stack.push(*i as Reg);
+                // Resolve the param to its AAPCS64 register + file (GP or FP).
+                stack.push(params[*i as usize]);
             }
             WasmOp::I32Const(c) => {
                 let dst = alloc_temp(&stack)?;
                 for w in enc::mov_imm32(dst, *c as u32) {
                     words.push(w);
                 }
-                stack.push(dst);
+                stack.push(Val::gp(dst));
             }
             WasmOp::I64Const(c) => {
                 let dst = alloc_temp(&stack)?;
                 for w in enc::mov_imm64(dst, *c as u64) {
                     words.push(w);
                 }
-                stack.push(dst);
+                stack.push(Val::gp(dst));
+            }
+            // f32/f64 const: materialize the bit-pattern in a GP temp, then FMOV
+            // it into an FP temp (there is no direct FP immediate for arbitrary
+            // constants). The GP temp is transient (freed before the push).
+            WasmOp::F32Const(c) => {
+                let gp = alloc_temp(&stack)?;
+                for w in enc::mov_imm32(gp, c.to_bits()) {
+                    words.push(w);
+                }
+                let dst = alloc_ftemp(&stack)?;
+                words.push(enc::fmov_s_from_w(dst, gp));
+                stack.push(Val::fp(dst));
+            }
+            WasmOp::F64Const(c) => {
+                let gp = alloc_temp(&stack)?;
+                for w in enc::mov_imm64(gp, c.to_bits()) {
+                    words.push(w);
+                }
+                let dst = alloc_ftemp(&stack)?;
+                words.push(enc::fmov_d_from_x(dst, gp));
+                stack.push(Val::fp(dst));
             }
             // #665: wasm `unreachable` traps unconditionally (WASM §4.4.5) —
             // `brk #0`, the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
@@ -262,21 +451,65 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
             WasmOp::I64GeS => cmp_op(&mut words, &mut stack, true, Cond::Ge)?,
             WasmOp::I64GeU => cmp_op(&mut words, &mut stack, true, Cond::Hs)?,
 
-            // End of the function body: move the result to x0 and return. The
-            // 64-bit `mov x0, xN` is correct for i32 results too — every w-form
-            // producer zeroes the upper half, so `w0` still reads the right
-            // low 32 bits.
+            // --- f32 arithmetic ---
+            WasmOp::F32Add => fbinop(&mut words, &mut stack, enc::fadd_s)?,
+            WasmOp::F32Sub => fbinop(&mut words, &mut stack, enc::fsub_s)?,
+            WasmOp::F32Mul => fbinop(&mut words, &mut stack, enc::fmul_s)?,
+            WasmOp::F32Div => fbinop(&mut words, &mut stack, enc::fdiv_s)?,
+            WasmOp::F32Abs => funop(&mut words, &mut stack, enc::fabs_s)?,
+            WasmOp::F32Neg => funop(&mut words, &mut stack, enc::fneg_s)?,
+            WasmOp::F32Sqrt => funop(&mut words, &mut stack, enc::fsqrt_s)?,
+
+            // --- f32 comparisons (result is a GP i32 0/1; NaN-correct conds) ---
+            WasmOp::F32Eq => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Eq)?,
+            WasmOp::F32Ne => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Ne)?,
+            WasmOp::F32Lt => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Mi)?,
+            WasmOp::F32Le => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Ls)?,
+            WasmOp::F32Gt => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Gt)?,
+            WasmOp::F32Ge => fcmp_op(&mut words, &mut stack, enc::fcmp_s, Cond::Ge)?,
+
+            // --- f64 arithmetic ---
+            WasmOp::F64Add => fbinop(&mut words, &mut stack, enc::fadd_d)?,
+            WasmOp::F64Sub => fbinop(&mut words, &mut stack, enc::fsub_d)?,
+            WasmOp::F64Mul => fbinop(&mut words, &mut stack, enc::fmul_d)?,
+            WasmOp::F64Div => fbinop(&mut words, &mut stack, enc::fdiv_d)?,
+            WasmOp::F64Abs => funop(&mut words, &mut stack, enc::fabs_d)?,
+            WasmOp::F64Neg => funop(&mut words, &mut stack, enc::fneg_d)?,
+            WasmOp::F64Sqrt => funop(&mut words, &mut stack, enc::fsqrt_d)?,
+
+            // --- f64 comparisons ---
+            WasmOp::F64Eq => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Eq)?,
+            WasmOp::F64Ne => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Ne)?,
+            WasmOp::F64Lt => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Mi)?,
+            WasmOp::F64Le => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Ls)?,
+            WasmOp::F64Gt => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Gt)?,
+            WasmOp::F64Ge => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Ge)?,
+
+            // --- float↔float precision conversions (total, never trap) ---
+            WasmOp::F64PromoteF32 => funop(&mut words, &mut stack, enc::fcvt_d_from_s)?,
+            WasmOp::F32DemoteF64 => funop(&mut words, &mut stack, enc::fcvt_s_from_d)?,
+
+            // --- int → float conversions (total, never trap) ---
+            WasmOp::F32ConvertI32S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_s_from_w)?,
+            WasmOp::F32ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_s_from_w)?,
+            WasmOp::F64ConvertI32S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_d_from_w)?,
+            WasmOp::F64ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_d_from_w)?,
+
+            // --- bit-cast reinterprets (pure FMOV, no numeric change) ---
+            WasmOp::F32ReinterpretI32 => {
+                reinterpret_gp_to_fp(&mut words, &mut stack, enc::fmov_s_from_w)?
+            }
+            WasmOp::I32ReinterpretF32 => {
+                reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_w_from_s)?
+            }
+
+            // End of the function body: funnel the result into x0/d0 and return.
             WasmOp::End => {
-                if let Some(top) = stack.last().copied()
-                    && top != 0
-                {
-                    words.push(enc::mov_reg64(0, top));
-                }
-                words.push(enc::ret());
+                epilogue(&mut words, stack.last().copied());
             }
             other => {
                 return Err(SelectError(format!(
-                    "unsupported wasm op for aarch64 integer subset: {other:?}"
+                    "unsupported wasm op for aarch64 subset: {other:?}"
                 )));
             }
         }
@@ -284,14 +517,33 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
 
     // A body without a trailing `End` still needs an epilogue.
     if !matches!(ops.last(), Some(WasmOp::End)) {
-        if let Some(top) = stack.last().copied()
-            && top != 0
-        {
-            words.push(enc::mov_reg64(0, top));
-        }
-        words.push(enc::ret());
+        epilogue(&mut words, stack.last().copied());
     }
     Ok(words)
+}
+
+/// Emit the function epilogue: move the top-of-stack result into the ABI return
+/// register (`x0` for a GP result, `d0` for a float result) and `ret`. A GP
+/// result already in `x0` / an FP result already in `v0` skips the move. The
+/// 64-bit `mov x0, xN` is correct for i32 results too (w-form producers zero the
+/// upper half); the `fmov d0, dN` likewise carries an f32's low 32 bits intact.
+fn epilogue(words: &mut Vec<u32>, top: Option<Val>) {
+    match top {
+        Some(Val {
+            reg,
+            file: File::Gp,
+        }) if reg != 0 => {
+            words.push(enc::mov_reg64(0, reg));
+        }
+        Some(Val {
+            reg,
+            file: File::Fp,
+        }) if reg != 0 => {
+            words.push(enc::fmov_d(0, reg));
+        }
+        _ => {}
+    }
+    words.push(enc::ret());
 }
 
 #[cfg(test)]
@@ -466,5 +718,187 @@ mod tests {
     fn popcnt_is_loud_declined() {
         let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Popcnt, WasmOp::End];
         assert!(select(&ops, 1).is_err());
+    }
+
+    // ---- milestone 3: scalar float ----
+
+    #[test]
+    fn f32_add_uses_v_registers_and_fmov_return() {
+        // (param f32 f32) → params in s0, s1. f32.add → fadd v16, s0, s1;
+        // fmov d0, d16; ret.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::F32Add,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[true, true], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![enc::fadd_s(16, 0, 1), enc::fmov_d(0, 16), enc::ret()]
+        );
+    }
+
+    #[test]
+    fn f64_mul_uses_d_forms() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::F64Mul,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[], &[true, true]).unwrap();
+        assert_eq!(
+            w,
+            vec![enc::fmul_d(16, 0, 1), enc::fmov_d(0, 16), enc::ret()]
+        );
+    }
+
+    #[test]
+    fn mixed_int_float_params_assign_independent_registers() {
+        // (param i32 f32 i32): AAPCS64 → w0, s0, w1. `local.get 1` (the f32)
+        // must resolve to s0, `local.get 2` (the 2nd i32) to w1.
+        let ops = vec![
+            WasmOp::LocalGet(1), // f32 → s0
+            WasmOp::F32Neg,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 3, &[false, true, false], &[]).unwrap();
+        // fneg v16, s0 ; fmov d0, d16 ; ret
+        assert_eq!(w, vec![enc::fneg_s(16, 0), enc::fmov_d(0, 16), enc::ret()]);
+    }
+
+    #[test]
+    fn f32_lt_uses_fcmp_and_mi_cond() {
+        // f32.lt → fcmp s0,s1 ; cset w9, mi (NaN-correct) → GP result.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::F32Lt,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[true, true], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fcmp_s(0, 1),
+                enc::cset(9, Cond::Mi),
+                enc::mov_reg64(0, 9),
+                enc::ret()
+            ]
+        );
+    }
+
+    #[test]
+    fn f32_const_materializes_via_gp_then_fmov() {
+        // f32.const 1.0 = 0x3F800000 → movz/movk into a GP temp, fmov s16,w9.
+        let ops = vec![WasmOp::F32Const(1.0), WasmOp::End];
+        let w = select_typed(&ops, 0, &[], &[]).unwrap();
+        let bits = 1.0f32.to_bits();
+        let mut expect = enc::mov_imm32(9, bits);
+        expect.push(enc::fmov_s_from_w(16, 9));
+        expect.push(enc::fmov_d(0, 16));
+        expect.push(enc::ret());
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn convert_i32_s_to_f32_pops_gp_pushes_fp() {
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::F32ConvertI32S, WasmOp::End];
+        // param 0 is i32 → w0; scvtf s16, w0 ; fmov d0, d16 ; ret
+        let w = select_typed(&ops, 1, &[], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![enc::scvtf_s_from_w(16, 0), enc::fmov_d(0, 16), enc::ret()]
+        );
+    }
+
+    #[test]
+    fn reinterpret_i32_to_f32_and_back() {
+        // i32 param → f32.reinterpret → i32.reinterpret round-trips through FMOV.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F32ReinterpretI32,
+            WasmOp::I32ReinterpretF32,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 1, &[], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_s_from_w(16, 0),
+                enc::fmov_w_from_s(9, 16),
+                enc::mov_reg64(0, 9),
+                enc::ret()
+            ]
+        );
+    }
+
+    #[test]
+    fn promote_demote_round_trip() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F64PromoteF32,
+            WasmOp::F32DemoteF64,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fcvt_d_from_s(16, 0),
+                enc::fcvt_s_from_d(16, 16),
+                enc::fmov_d(0, 16),
+                enc::ret()
+            ]
+        );
+    }
+
+    #[test]
+    fn trapping_float_to_int_trunc_is_loud_declined() {
+        // A64 FCVTZS/FCVTZU SATURATE where WASM traps (#709) — must refuse.
+        for op in [
+            WasmOp::I32TruncF32S,
+            WasmOp::I32TruncF32U,
+            WasmOp::I32TruncF64S,
+            WasmOp::I32TruncF64U,
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
+            assert!(
+                select_typed(&ops, 1, &[true], &[]).is_err(),
+                "trapping float→int trunc must loud-decline"
+            );
+        }
+    }
+
+    #[test]
+    fn float_min_max_copysign_are_loud_declined() {
+        for op in [
+            WasmOp::F32Min,
+            WasmOp::F32Max,
+            WasmOp::F32Copysign,
+            WasmOp::F64Min,
+            WasmOp::F64Max,
+            WasmOp::F64Copysign,
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), op, WasmOp::End];
+            assert!(
+                select_typed(&ops, 2, &[], &[true, true]).is_err(),
+                "min/max/copysign not yet supported — must loud-decline"
+            );
+        }
+    }
+
+    #[test]
+    fn type_confusion_gp_op_on_fp_value_errors() {
+        // An f32 value fed to an integer op must ERROR (never read the wrong
+        // register file) — the value-stack file tag guards this.
+        let ops = vec![
+            WasmOp::LocalGet(0), // f32 → s0
+            WasmOp::LocalGet(1), // f32 → s1
+            WasmOp::I32Add,      // GP op on FP operands → error
+            WasmOp::End,
+        ];
+        assert!(select_typed(&ops, 2, &[true, true], &[]).is_err());
     }
 }
