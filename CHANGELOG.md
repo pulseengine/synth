@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-07-16
+
+**Qualification depth + capability breadth.** The sequel to the #757 arc: synth's
+output now carries machine-checkable evidence an assessor needs — a per-compilation
+addressing validator (the #757 class unrepresentable by construction) and sound
+static WCET bounds — alongside real capability growth (AArch64 scalar floats, the
+self-contained call-graph execution-gated, and a tighter proof base).
+
+### Added (verification depth)
+
+- **VCR-VER-003 — per-compilation static-data addressing validation (#777).** The
+  construction-based answer to #757 (which survived four releases because value
+  differentials are coverage-limited): `synth_core::static_data_addr` proves, for
+  EVERY static-data relocation, that the byte the packed `.data` serves equals the
+  byte the runtime-applied linear memory (segments in declaration order,
+  later-wins) holds at that address — hard-erroring the compile on a wrong-segment
+  binding. Concrete byte-equality, **unconditional** (runs in the default shipping
+  build — a `verify`-gated check would have stayed dormant in exactly the build
+  that shipped #757). Red-first gated: the same validator returns `Mismatch` on
+  the `.position()` (first-match) resolution and `Consistent` on `.rposition()`;
+  the e2e gate compiles gale's real `loom.wasm`.
+- **Sound static per-function WCET bounds (#778).** `--emit-wcet` writes a
+  `synth-wcet-v1` JSON sidecar (`.text` byte-identical) with a per-function
+  worst-case cycle bound — gale/spar's T3/T4 `C_i` input, a *bound* rather than a
+  DWT observation. Loop-free/call-free functions get an exact conservative sum of
+  documented per-op worst-case cycles (MAX over Cortex-M3/M4; exhaustive
+  no-wildcard cycle table = new-op tripwire; i64-expansion sizes pinned to the
+  encoder-agreement oracle). Everything a sound bound can't cover **loud-declines
+  with a machine reason** — loops (needs a trip count), calls, the i64 software
+  div/rem internal loop, non-M3/M4 cores. Sound-critical constants pinned in
+  `claims.yaml`. Loop-bound inference (scry, untrusted-hint + sound-check) and
+  inter-procedural composition are named follow-ups.
+- **Verify-what-ships proof residuals closed (#166).** **485 → 489 Qed, 5 → 3
+  Admitted**: two Compilation.v admits discharged (`vm_compute` on the
+  constant-size guard) + two new Qed proving the shipped MOVW/MOVT split-immediate
+  reconstruction. The remaining three are pinned as honest T3 with in-file
+  rationale (a raw-vs-normalized representation gap with a concrete
+  counterexample — closing it needs a contract change, not a proof; and two
+  Sail-axiom placeholders superseded by `SailArmBridge.v`). The arc's named
+  control-flow/division residuals were confirmed already closed by #73.
+
+### Added (capability breadth)
+
+- **AArch64 milestone 3 — scalar floating point, 0 → 35 ops (#538).** f32/f64
+  arithmetic (add/sub/mul/div), abs/neg, f64 sqrt, const, the full NaN-correct
+  compare family, promote/demote, int→float converts, and bit-cast reinterprets —
+  on a new file-tagged (GP/FP) selector value stack with AAPCS64 float argument
+  passing. Every encoding clang-cross-verified; native+unicorn differential
+  **513/513** vs wasmtime (incl. NaN/±0/±inf). **Trapping float→int truncations
+  stay loud-declined** (A64 `FCVTZS`/`FCVTZU` saturate where WASM traps — the
+  #709 soundness class); min/max (NaN-propagation differs) and i64↔float likewise.
+  The m2 decline-matrix oracle + the #554 loudskip test were updated to assert the
+  *still-declined* floats (the CI decline-honesty gate correctly went red when m3
+  implemented ops the matrix still asserted declined).
+- **Self-contained reachable call-graph, execution-gated (#275 — refs, not
+  closes).** Finding: direct reachable-call-graph compilation already shipped
+  (#235); the genuine gap was the missing *execution* gate. Added a differential
+  that runs the self-contained image (real Reset_Handler on zeroed RAM) vs
+  wasmtime across a transitive call chain, plus a feature-gated non-vacuity probe
+  (RED when reverted to exports-only; the hatch is compiled OUT of release
+  binaries). The `call_indirect` table-dispatch residual remains open on #275.
+
 ## [0.45.2] - 2026-07-16
 
 **Soundness patch — #776 closed (aarch64 rotl clobber).**
