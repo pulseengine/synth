@@ -3584,6 +3584,30 @@ fn compile_all_exports(
     // #778: write the synth-wcet-v1 sound worst-case-cycle sidecar next to the
     // output (`<output>.wcet.json`). Additive; the ELF is byte-identical.
     if let Some(wr) = wcet_report {
+        // #778 phase 2: a --wcet-hints entry naming a function that does not
+        // exist in the module would otherwise vanish silently — an oracle typo
+        // must be LOUD (the per-loop rejections live in the sidecar; a missing
+        // function has no sidecar entry to carry one).
+        if let Some(hints) = &config.wcet_hints {
+            let compiled: std::collections::BTreeSet<&str> = wr
+                .functions
+                .iter()
+                .map(|f| match f {
+                    synth_core::wcet::WcetFunction::Bounded { name, .. }
+                    | synth_core::wcet::WcetFunction::Declined { name, .. } => name.as_str(),
+                })
+                .collect();
+            for unknown in hints
+                .functions
+                .keys()
+                .filter(|k| !compiled.contains(k.as_str()))
+            {
+                eprintln!(
+                    "warning: --wcet-hints names function '{unknown}' which is not in this \
+                     module — the hint was not consumed"
+                );
+            }
+        }
         let sidecar = synth_core::wcet::WcetReport::sidecar_path(&output);
         let json = wr
             .to_json()

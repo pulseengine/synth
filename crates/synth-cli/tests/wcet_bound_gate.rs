@@ -588,6 +588,39 @@ fn correct_hint_converts_decline_to_bound() {
     assert_trip_floor(&report, "eqexit");
 }
 
+/// A wrong hint on a STATICALLY-PROVEN loop: synth's own proof stands (the
+/// bound does not depend on the oracle), but the contradicting hint is still
+/// RECORDED as rejected so the oracle learns its claim was wrong.
+#[test]
+fn wrong_hint_on_static_loop_bound_stands_rejection_recorded() {
+    let wat = r#"
+        (module
+          (func (export "sum10") (result i32)
+            (local i32 i32)
+            (block
+              (loop
+                local.get 0 i32.const 10 i32.lt_s i32.eqz br_if 1
+                local.get 1 local.get 0 i32.add local.set 1
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            local.get 1))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"sum10":{"loop_bounds":[5]}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_bounded(&report, "sum10", 349); // static proof unaffected
+    assert_loop(&report, "sum10", 0, 10, "static");
+    let f = func(&report, "sum10");
+    let rej = f
+        .get("hint_rejections")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .unwrap_or_else(|| panic!("contradicting hint must be recorded: {f}"));
+    assert_eq!(
+        rej.get("reason").and_then(Value::as_str),
+        Some("hint-below-derived-trip")
+    );
+}
+
 /// A hint on a DATA-DEPENDENT loop (bound = runtime parameter): synth cannot
 /// verify the induction against it → REJECTED `hint-unverifiable-induction`,
 /// function stays declined. The untrusted oracle cannot smuggle in a bound.
