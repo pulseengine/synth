@@ -1242,8 +1242,19 @@ artifacts:
       linmem 0x100008 serves 0x02 but the runtime image owns 0x67` — exactly
       gale's historical got=[2,0,0,0,..] = __synth_wasm_seg_0+8.
 
-      BOUNDED (named follow-up): reloc/overlap class only. All-addressing
-      coverage and the AArch64 / RV32 static bases are a separate increment.
+      TRIGGER SCOPE: the validator runs on the native-pointer relocatable
+      mixed-split path (`--native-pointer-abi --relocatable` + the
+      mixed_separable geometry — the only path that emits per-segment
+      __synth_wasm_seg_K retargets). The #757 wrong-segment class exists ONLY on
+      that path, so "catches #757 on every module" holds: no module can exhibit
+      the wrong-segment miscompile uncaught. It is not a check that runs on every
+      compile in general.
+
+      BOUNDED (named follow-up): reloc/overlap class only. The validator checks
+      the RESOLVED byte per reloc (matching the reference oracle
+      mem757_gale_differential.py); a multi-byte access whose read spans an
+      owning segment's packed-length boundary is a named follow-up, as are
+      all-addressing coverage and the AArch64 / RV32 static bases.
     status: implemented
     tags: [verification, addressing, relocation, soundness, mem757]
     links:
