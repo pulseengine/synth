@@ -219,6 +219,13 @@ impl Cond {
             Cond::Mi => 0x5,
         }
     }
+
+    /// The ARCHITECTURAL condition encoding (`b.<cond>` bits [3:0]) — the
+    /// NON-inverted form, i.e. `cset_field() ^ 1`. Clang ground truth:
+    /// `b.mi` = cond 0x4, `b.ge` = 0xA, `b.gt` = 0xC.
+    fn bcond_field(self) -> u32 {
+        self.cset_field() ^ 1
+    }
 }
 
 /// `cmp wn, wm` — `subs wzr, wn, wm` (flags only).
@@ -251,6 +258,14 @@ pub fn movz(rd: Reg, imm16: u16) -> u32 {
     0x5280_0000 | ((imm16 as u32) << 5) | (rd as u32)
 }
 
+/// `movz wd, #imm16, lsl #(16*hw)` — zero the register and set the `hw`-th
+/// halfword. The shifted form the leading write of [`mov_imm64`] needs when the
+/// first non-zero halfword is NOT halfword 0 (e.g. f64 `-0.0` =
+/// `0x8000_0000_0000_0000`).
+pub fn movz_hw(rd: Reg, imm16: u16, hw: u8) -> u32 {
+    movz(rd, imm16) | ((hw as u32) << 21)
+}
+
 /// `movk wd, #imm16, lsl #(16*hw)` — keep other bits, set the `hw`-th halfword.
 pub fn movk(rd: Reg, imm16: u16, hw: u8) -> u32 {
     0x7280_0000 | ((hw as u32) << 21) | ((imm16 as u32) << 5) | (rd as u32)
@@ -261,11 +276,30 @@ pub fn ret() -> u32 {
     0xD65F_03C0
 }
 
-/// `brk #imm16` — A64 breakpoint/trap. Used for wasm `unreachable` (#665):
-/// WASM §4.4.5 requires an unconditional trap, the A64 analogue of Thumb-2
-/// `udf #0` / RV32 `ebreak`.
+/// `brk #imm16` — A64 breakpoint/trap. Used for wasm `unreachable` (#665) and
+/// the m4 trunc-guard trap path: WASM §4.4.5 requires an unconditional trap,
+/// the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
 pub fn brk(imm16: u16) -> u32 {
     0xD420_0000 | ((imm16 as u32) << 5)
+}
+
+/// `b.<cond> #(imm19*4)` — conditional branch, PC-relative in words. Used by
+/// the m4 trunc domain guards to SKIP the `brk` trap when the operand is
+/// proven in-range (`b.mi +2` hops exactly over the following `brk`). Clang
+/// ground truth: `b.mi .+8` = 0x5400_0044 (imm19 = 2, cond = MI = 0x4).
+pub fn bcond(cond: Cond, imm19: i32) -> u32 {
+    0x5400_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | cond.bcond_field()
+}
+
+/// `bic wd, wn, wm` — AND with complement (`wd = wn & !wm`). Used by the
+/// copysign lowering to clear the sign bit with the SAME mask register that
+/// isolates the source sign (one materialized mask instead of two).
+pub fn bic(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    dp3(0x0A20_0000, rd, rn, rm)
+}
+/// `bic xd, xn, xm`
+pub fn bic64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    dp3_sf(0x0A20_0000, true, rd, rn, rm)
 }
 
 /// Materialize a 32-bit constant into `wd` with `movz` + optional `movk`.
@@ -291,9 +325,14 @@ pub fn mov_imm64(rd: Reg, value: u64) -> Vec<u32> {
         ((value >> 32) & 0xFFFF) as u16,
         ((value >> 48) & 0xFFFF) as u16,
     ];
-    // First non-zero halfword becomes the movz; if all zero, movz #0.
+    // First non-zero halfword becomes the movz; if all zero, movz #0. The movz
+    // MUST carry the halfword's shift (`lsl #(16*first)`) — a plain `movz`
+    // would deposit it in halfword 0 (the latent m3 bug that hit every constant
+    // whose low halfwords are all zero, e.g. f64 -0.0 = 0x8000_0000_0000_0000
+    // and the 2^31 trunc-guard boundary 0x41E0_0000_0000_0000; clang ground
+    // truth: `movz x0, #0x8000, lsl #48` = 0xD2F0_0000, not 0xD290_0000).
     let first = hw.iter().position(|&h| h != 0).unwrap_or(0);
-    let mut out = vec![movz(rd, hw[first]) | SF64];
+    let mut out = vec![movz_hw(rd, hw[first], first as u8) | SF64];
     for (i, &h) in hw.iter().enumerate() {
         if i != first && h != 0 {
             out.push(movk(rd, h, i as u8) | SF64);
@@ -403,6 +442,57 @@ pub fn fcmp_s(rn: FReg, rm: FReg) -> u32 {
 /// `fcmp dn, dm`
 pub fn fcmp_d(rn: FReg, rm: FReg) -> u32 {
     0x1E60_2000 | ((rm as u32) << 16) | ((rn as u32) << 5)
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 4 — min/max + guarded trapping truncation.
+//
+// `FMIN`/`FMAX` (NOT the `NM` variants) implement IEEE 754-2019
+// minimum/maximum: either-NaN ⇒ NaN, and -0.0 < +0.0 — EXACTLY WASM
+// `f{32,64}.{min,max}` semantics (`FMINNM`/`FMAXNM` are minNum/maxNum, which
+// RETURN THE NUMBER when one operand is NaN — the wrong semantics). Verified
+// by execution against wasmtime in aarch64_m4_trunc_minmax_538_differential.py
+// (NaN + ±0 matrix), not assumed.
+//
+// `FCVTZS`/`FCVTZU` SATURATE on out-of-range/NaN where WASM TRAPS (#709), so
+// they are ONLY emitted behind the selector's fcmp+b.cond+brk domain guard —
+// on the guarded path every reachable input is in-range, where the two
+// semantics agree.
+// ---------------------------------------------------------------------------
+
+/// `fmin sd, sn, sm` — IEEE 754-2019 minimum (NaN-propagating, -0 < +0).
+pub fn fmin_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_5800, rd, rn, rm)
+}
+/// `fmax sd, sn, sm` — IEEE 754-2019 maximum (NaN-propagating, -0 < +0).
+pub fn fmax_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_4800, rd, rn, rm)
+}
+/// `fmin dd, dn, dm`
+pub fn fmin_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_5800, rd, rn, rm)
+}
+/// `fmax dd, dn, dm`
+pub fn fmax_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_4800, rd, rn, rm)
+}
+
+/// `fcvtzs wd, sn` — f32 → signed i32, round-toward-zero. SATURATES: emit only
+/// behind the trunc domain guard.
+pub fn fcvtzs_w_from_s(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x1E38_0000, rd, rn)
+}
+/// `fcvtzu wd, sn` — f32 → unsigned i32, round-toward-zero. Saturating; guarded.
+pub fn fcvtzu_w_from_s(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x1E39_0000, rd, rn)
+}
+/// `fcvtzs wd, dn` — f64 → signed i32, round-toward-zero. Saturating; guarded.
+pub fn fcvtzs_w_from_d(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x1E78_0000, rd, rn)
+}
+/// `fcvtzu wd, dn` — f64 → unsigned i32, round-toward-zero. Saturating; guarded.
+pub fn fcvtzu_w_from_d(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x1E79_0000, rd, rn)
 }
 
 /// `fmov sd, wn` — reinterpret the 32-bit GP register `wn` into `sd` (no numeric
@@ -611,5 +701,48 @@ mod tests {
         );
         // zero → a single `movz x, #0`.
         assert_eq!(mov_imm64(0, 0), vec![movz(0, 0) | 0x8000_0000]);
+    }
+
+    #[test]
+    fn mov_imm64_leading_movz_carries_the_halfword_shift() {
+        // The latent m3 bug: when the FIRST non-zero halfword is not hw 0, the
+        // leading movz must be the SHIFTED form. Clang ground truth:
+        //   mov x0, #0x8000000000000000  →  movz x0, #0x8000, lsl #48 = 0xD2F0_0000
+        //   mov x0, #0x41e0000000000000  →  movz x0, #0x41e0, lsl #48 = 0xD2E8_3C00
+        // (f64 -0.0 and the 2^31 f64 trunc-guard boundary, respectively).
+        assert_eq!(mov_imm64(0, 0x8000_0000_0000_0000), vec![0xD2F0_0000]);
+        assert_eq!(mov_imm64(0, 0x41E0_0000_0000_0000), vec![0xD2E8_3C00]);
+        // Mixed: 0x0001_0000 → movz w/ hw=1 then nothing else.
+        assert_eq!(mov_imm64(3, 0x0001_0000), vec![movz_hw(3, 1, 1) | SF64]);
+    }
+
+    // Milestone 4 — trunc guards + min/max. Ground truth from `clang -target
+    // aarch64-linux-gnu` (assemble mnemonic, `objdump -d`, read the word).
+    #[test]
+    fn m4_fcvtz_encodings_match_clang() {
+        assert_eq!(fcvtzs_w_from_s(0, 1), 0x1E38_0020);
+        assert_eq!(fcvtzu_w_from_s(0, 1), 0x1E39_0020);
+        assert_eq!(fcvtzs_w_from_d(0, 1), 0x1E78_0020);
+        assert_eq!(fcvtzu_w_from_d(0, 1), 0x1E79_0020);
+        assert_eq!(fcvtzs_w_from_s(5, 6), 0x1E38_00C5);
+    }
+
+    #[test]
+    fn m4_fmin_fmax_encodings_match_clang() {
+        assert_eq!(fmin_s(0, 1, 2), 0x1E22_5820);
+        assert_eq!(fmax_s(3, 4, 5), 0x1E25_4883);
+        assert_eq!(fmin_d(0, 1, 2), 0x1E62_5820);
+        assert_eq!(fmax_d(3, 4, 5), 0x1E65_4883);
+    }
+
+    #[test]
+    fn m4_bcond_bic_encodings_match_clang() {
+        // b.mi .+8 / b.ge .+8 / b.gt .+8 / b.mi .+12
+        assert_eq!(bcond(Cond::Mi, 2), 0x5400_0044);
+        assert_eq!(bcond(Cond::Ge, 2), 0x5400_004A);
+        assert_eq!(bcond(Cond::Gt, 2), 0x5400_004C);
+        assert_eq!(bcond(Cond::Mi, 3), 0x5400_0064);
+        assert_eq!(bic(0, 1, 2), 0x0A22_0020);
+        assert_eq!(bic64(3, 4, 5), 0x8A25_0083);
     }
 }
