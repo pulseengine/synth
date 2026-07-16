@@ -1186,6 +1186,89 @@ artifacts:
         validator obligation. Full auto-derivation for all classes is the
         documented exec-model follow-on.
 
+  - id: VCR-VER-003
+    type: sys-verification
+    title: "Static-data addressing VC catches the overlapping-segment wrong-segment miscompile (#757) at compile time on every module"
+    description: >
+      Make static-data-relocation resolution a checkable, per-compilation proof
+      obligation so the #757 silent miscompile — an overlapping active data
+      segment binding a static reloc to the WRONG (earlier) segment — can no
+      longer ship. #757 survived four releases (0.43.0/0.43.1/0.44.0/0.45.0)
+      because value-differential oracles are COVERAGE-limited: 7 synthetic
+      reconstructions were all green, and only gale's real fused gust:os node
+      (three active segments all at linmem 0x100000, string in the LAST) hit it.
+
+      Invariant (per compiled relocatable object, N data segments): for EVERY
+      emitted static-data relocation (symbol __synth_wasm_seg_K, addend A), the
+      byte the packed .data serves (seg[K].bytes[A]) EQUALS the byte the RUNTIME
+      linear-memory image holds at the original access address (seg[K].off + A),
+      where the runtime image applies every active segment in WASM declaration
+      order, later-wins. This lifts the post-hoc #757 differential
+      (scripts/repro/mem757_gale_differential.py) into a per-compilation
+      validator: a wrong-segment resolution FAILS at compile time on ANY module.
+
+      Concrete byte-equality, NOT fabricated SMT: there are no symbolic operands
+      (unlike VCR-VER-002's trap VCs), so the honest form is a direct comparison
+      against an independently reconstructed truth image. The runtime image is
+      derived ONLY from the segment list — never from the chosen K — so the
+      validator cannot be satisfied by mirroring the code under test
+      (mirror-pinning vacuity is structurally excluded).
+
+      STATUS implemented (v0.46). LANDED:
+      (1) synth_core::static_data_addr — validate_reloc_resolutions() over
+      DataSegment + the EMITTED RelocResolution (seg_index, addend), returning
+      Verdict {Consistent | Mismatch(Vec<AddrMismatch>)}. Lives in synth-core so
+      it runs UNCONDITIONALLY: the shipping build is `--features riscv`, NOT
+      `verify`, so a verify-gated check would stay dormant in exactly the build
+      that shipped #757. synth-verify::addr re-exports it (VCR-VER-002 structure
+      parity), single source, no mirror drift.
+      (2) Wired into the mixed-split reloc retargeting path (synth-cli main.rs):
+      the loop records the EMITTED (k, new_addend) per static-data reloc — never
+      recomputed — and hard-errors the compile (anyhow::bail!) on any Mismatch,
+      naming the symbol/addend/served/runtime bytes.
+      (3) RED-FIRST non-vacuity gate. Permanent discrimination unit test
+      (synth_core::static_data_addr, red_on_first_match_green_on_last_match): the
+      SAME validator, on a synthetic 3-overlap module with DISTINCT bytes, goes
+      Mismatch on the .position() (first-match, the #757 bug) resolution and
+      Consistent on the .rposition() (last-match, correct) resolution — the
+      tie-break is an ARGUMENT (resolve_owner last_wins), so no source revert.
+      Plus partial-overlap-tail-wins, non-overlapping-both-consistent,
+      out-of-range-mismatch.
+      (4) DURABLE end-to-end gate (synth-cli tests/vcr_ver_003_addr_777.rs):
+      compiles gale's REAL loom.wasm and asserts exit 0. Because the validator is
+      wired unconditionally, this GREEN goes RED the instant main.rs reverts
+      .rposition() -> .position(). That revert was demonstrated by hand for the
+      PR: compile FAILS with `func 9 reloc @ 0x250: __synth_wasm_seg_0+0x8 ->
+      linmem 0x100008 serves 0x02 but the runtime image owns 0x67` — exactly
+      gale's historical got=[2,0,0,0,..] = __synth_wasm_seg_0+8.
+
+      BOUNDED (named follow-up): reloc/overlap class only. All-addressing
+      coverage and the AArch64 / RV32 static bases are a separate increment.
+    status: implemented
+    tags: [verification, addressing, relocation, soundness, mem757]
+    links:
+      - type: verifies
+        target: VCR-001
+      - type: refines
+        target: VCR-VER-002
+    fields:
+      method: translation-validation
+      preconditions:
+        - "#354 mixed-split per-segment reloc retargeting (__synth_wasm_seg_K)"
+        - "#757 fix: overlapping addresses resolve to the last-declared owner (.rposition())"
+      steps:
+        - "synth_core::static_data_addr: runtime-image reconstruction + per-reloc byte-equality validator"
+        - "Wire the EMITTED (k, addend) into the mixed-split retarget loop; hard-error on Mismatch"
+        - "Red-first unit gate: Mismatch on .position(), Consistent on .rposition() (same validator, argument toggle)"
+        - "Durable e2e gate: real gale loom.wasm compiles exit-0; regresses to RED on the .position() revert"
+      pass-criteria: >
+        On any compiled relocatable object every static-data reloc resolves to
+        the runtime-correct byte (segments later-wins), else the compile fails.
+        The validator is Mismatch on the #757 wrong-segment (.position())
+        resolution and Consistent on the correct (.rposition()) one for an
+        overlapping-segment module; the real gale module compiles clean and
+        regresses to a hard error under the .position() revert.
+
   # ---------------------------------------------------------------------------
   # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the
   # north-star but the const-remat is partly FORCED by the 9-register pool, so

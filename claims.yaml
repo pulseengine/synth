@@ -187,6 +187,26 @@ claims:
       - kind: file-exists
         path: crates/synth-verify/tests/trap_preservation.rs
 
+  # VCR-VER-003 (#777 / #757): per-compilation static-data addressing validator.
+  # Concrete byte-equality (NOT SMT): every static-data reloc resolves to the
+  # runtime-correct byte (active segments applied in declaration order,
+  # later-wins). In synth-core so it runs on EVERY compilation (default
+  # `--features riscv`, not `verify`). Non-vacuous red-first gate: same validator
+  # Mismatch on .position() (the #757 bug) / Consistent on .rposition().
+  - id: SYNTH-VCR-VER-003-STATUS
+    doc: artifacts/verified-codegen-roadmap.yaml
+    text: "Static-data addressing VC catches the overlapping-segment wrong-segment miscompile (#757) at compile time on every module"
+    evidence:
+      - kind: yaml-field
+        path: artifacts/verified-codegen-roadmap.yaml
+        id: VCR-VER-003
+        field: status
+        equals: implemented
+      - kind: file-exists
+        path: crates/synth-core/src/static_data_addr.rs
+      - kind: file-exists
+        path: crates/synth-cli/tests/vcr_ver_003_addr_777.rs
+
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: README.md
     text: "increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`)"
