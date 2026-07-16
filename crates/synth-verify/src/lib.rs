@@ -42,6 +42,13 @@ pub mod term;
 // on `term`), so always available like `wasm_semantics`.
 pub mod trap;
 
+// Static-data addressing validation (VCR-VER-003, #777 / #757): per-compilation
+// concrete byte-equality that every static-data reloc resolves to the
+// runtime-correct byte (active segments applied in declaration order,
+// later-wins). Catches the overlapping-segment wrong-segment miscompile at
+// compile time. Backend-agnostic concrete checking, so always available.
+pub mod addr;
+
 // Verification traits (always available)
 pub mod traits;
 
@@ -80,6 +87,10 @@ pub mod properties;
 #[cfg(feature = "arm")]
 pub use properties::CompilerProperties;
 
+pub use addr::{
+    AddrMismatch, DataSegment, RelocResolution, Verdict as AddrVerdict, resolve_owner,
+    validate_reloc_resolutions,
+};
 #[cfg(feature = "arm")]
 pub use arm_semantics::{ArmSemantics, ArmState};
 #[cfg(feature = "arm")]
