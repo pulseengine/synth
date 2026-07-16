@@ -563,6 +563,16 @@ jobs:
       # the reporter's reduced module); a divergence here is a real find.
       - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
         run: SYNTH=./target/debug/synth python scripts/repro/multi_segment_static_data_differential.py
+      # #757: gale's EXACT fused os-tl node (loom.wasm) — the real miscompile that
+      # 7 synthetic reconstructions could not reproduce (PR #772). Three active data
+      # segments overlap at linmem 0x100000; the #354 reloc retargeting bound the
+      # string source to the wrong (first, stale) overlapping segment. This oracle
+      # reconstructs runtime linmem (segments applied in order, later-wins) and
+      # asserts every static-data reloc reads the runtime-correct byte. RED on the
+      # pre-fix binary (seg_0+8 reads 0x02, runtime owns 'g'); the permanent
+      # regression fixture the synthetic shapes provably don't cover.
+      - name: Run #757 gale fused-node static-data oracle (cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/mem757_gale_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)

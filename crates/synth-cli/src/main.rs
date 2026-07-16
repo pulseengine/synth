@@ -3960,9 +3960,20 @@ fn build_relocatable_elf(
                     all_code[pos + 2],
                     all_code[pos + 3],
                 ]);
+                // #757: WASM applies active data segments in declaration order,
+                // so when two segments OVERLAP the same linear-memory range the
+                // LATER one wins (overwrites). Resolve `c` to the LAST-declared
+                // segment containing it (`rposition`), not the first — else an
+                // address owned at runtime by a later segment is retargeted to a
+                // stale earlier segment's packed bytes. gale's fused os-tl node
+                // declares three segments all at 0x100000; the string lives in
+                // seg_2 (last) but `position` bound its reads to seg_0's consts
+                // (`got=[2,0,0,0,..]` = __synth_wasm_seg_0+8). For non-overlapping
+                // segments every address is in exactly one, so first==last match
+                // and this is byte-identical (no regression on the common case).
                 if let Some(k) = data_segments
                     .iter()
-                    .position(|(off, d)| c >= *off && c < *off + d.len() as u32)
+                    .rposition(|(off, d)| c >= *off && c < *off + d.len() as u32)
                 {
                     let new_addend = (c - data_segments[k].0) as i32;
                     retarget.insert(
