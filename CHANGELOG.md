@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WCET phase 2 — statically-proven loop bounds + the `--wcet-hints` seam
+  (#778).** `--emit-wcet` now BOUNDS canonical const-bound counted loops
+  instead of declining them: a conservative symbolic walk over the final
+  Thumb-2 stream (`synth-backend/src/wcet_loops.rs`) proves the counted-loop
+  induction — SP-slot counter written exactly once per iteration with a const
+  step, const init on the straight-line entry path, and an exit comparison
+  against a const bound that provably fires (exact i128 trip arithmetic with
+  static no-wrap checks) — and multiplies each region instruction's documented
+  worst-case cycles by the proven execution count (head-test `K+1`,
+  bottom-test `K`, nested regions multiplicative iff every level proves).
+  Byte layout comes from the REAL encoder (the same probe
+  `resolve_label_branches` uses), not `estimate_arm_byte_size` — the estimator
+  under-sizes a high-register `SetCond` (6 vs 10 bytes), which would shear
+  reconstructed branch targets (estimator gap left as a follow-up finding).
+  New `--wcet-hints <file>` (`synth-wcet-hints-v1`) accepts UNTRUSTED
+  per-function loop-bound hints (the scry oracle seam): each hint is verified
+  against synth's own derived trip count and otherwise REJECTED with a machine
+  reason in the sidecar (`hint-below-derived-trip`,
+  `hint-unverifiable-induction`, `hint-unknown-loop`) — never trusted into a
+  bound; equality-exit loops (the termination-brittle shape) bound only under
+  a verified hint, and the emitted trip count is always synth's derived value.
+  Data-dependent loops, non-canonical shapes, calls and i64-software-div keep
+  their loud declines. Sidecar additions are purely additive (`loops` +
+  `hint_rejections` per function); `.text` stays byte-identical with or
+  without `--emit-wcet`/`--wcet-hints`. Gated end-to-end in
+  `wcet_bound_gate.rs`: exact pinned literals + a trip-aware soundness floor
+  (`cycles ≥ trip × region_instr_count`), red-first wrong-hint rejection, and
+  the moved (never deleted) decline matrix; every bounded fixture was
+  additionally executed under unicorn at authoring time (result correct,
+  executed machine instructions ≤ bound).
+
 ## [0.46.0] - 2026-07-16
 
 **Qualification depth + capability breadth.** The sequel to the #757 arc: synth's
@@ -373,7 +406,6 @@ each now oracle-pinned.
   ValueRange premise on the index, the software bounds guard is proven dead and
   elided (ordeal-certified) — gust_poll's guarded path 184 → 104 B (−80 B, eight
   guards), bit-identical to the unguarded floor. Opt-in, flag-off byte-identical.
-
 
 ## [0.42.0] - 2026-07-15
 
@@ -2207,7 +2239,6 @@ Falsification: wrong if gale's mutex lane fails on silicon (native ref 124),
 any previously-compiling module's bytes change, or any pressure lane
 disagrees with wasmtime.
 
-
 ## [0.11.39] - 2026-06-11
 
 **The assurance carrier: a backward-dataflow translation validator now guards
@@ -2236,7 +2267,6 @@ is deleted (VCR-VER-001 executed).**
 Falsification: wrong if the validator accepts a rewrite that changes observable
 behavior (watched by the differential lanes + 98% mutant kill), or if any
 previously-compiling module's bytes change (all fixtures sha-verified).
-
 
 ## [0.11.38] - 2026-06-11
 
@@ -2270,7 +2300,6 @@ Falsification: wrong if any previously-compiling module's bytes change, or
 the high-pressure lane disagrees with wasmtime. The reciprocal-mult
 cost-gate revert experiment (VCR-VER-001 evidence) is now runnable.
 
-
 ## [0.11.37] - 2026-06-11
 
 **RV32 i64 locals + the per-op register-aliasing fix the behavioral oracle
@@ -2302,7 +2331,6 @@ signed-div-const, control_step); ARM fixtures cmp-bit-identical to v0.11.36;
 Falsification: wrong if gale's RV32 funccheck lane disagrees with wasmtime on
 the u64 family or any RV32 baseline regresses. Known + filed separately:
 pre-existing `i64.div_s/rem_s` sign clobber (#317, probe staged).
-
 
 ## [0.11.36] - 2026-06-11
 
@@ -2340,7 +2368,6 @@ unicorn check (count 0->1) and gmutex oracle on the G474RE are the decisive
 gates, plus cycle-neutrality on the rebaselined suite (241/150/151/37). New
 committed oracles: u64_unpack(+inlined).wat differentials,
 native_pointer_shadow_stack differential, test_311_* + shrink_saves_* tests.
-
 
 ## [0.11.35] - 2026-06-09
 
@@ -3190,7 +3217,6 @@ and the i64+calls `z_impl` shape now compile instead of being skipped.
 simultaneously-live i64 values fails to compile with a register-exhaustion error
 instead of spilling.
 
-
 ## [0.11.9] - 2026-05-30
 
 **Call argument marshalling (#195).** `select_with_stack`'s `Call` lowering
@@ -3214,7 +3240,6 @@ no-call param-register clobber class remains #193.
 **Falsification statement.** v0.11.9 is wrong if a call with i32 arguments
 (≤4) invokes the callee without those arguments in r0–r3, or if marshalling
 clobbers a caller-saved value the #188 preservation was meant to save.
-
 
 ## [0.11.8] - 2026-05-30
 

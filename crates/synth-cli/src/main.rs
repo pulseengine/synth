@@ -410,17 +410,20 @@ enum Commands {
         #[arg(long)]
         emit_provenance: bool,
 
-        /// #778 (v0.46): emit the `synth-wcet-v1` sound static worst-case-cycle
-        /// bound as a JSON sidecar next to the output (`<output>.wcet.json`). For
-        /// each compiled function it emits either a SOUND upper bound (the sum of
-        /// each instruction's documented Cortex-M3/M4 worst-case cycles — valid
-        /// only for a proven loop-free, call-free function) or a loud DECLINE with
-        /// a machine-readable reason (loop / call / looped-expansion i64-div /
-        /// unsupported-core M7). gale's spar T3/T4 schedulability track consumes it
-        /// as a SOUND `C_i` input (a bound, not a DWT observation). The bound is
-        /// conditional on the zero-wait-state precondition recorded in the sidecar.
-        /// Purely additive: `.text` is byte-identical; off by default. ARM(Thumb-2)
-        /// only in v1 (RISC-V/AArch64 carry no cycle model; A32/loops = follow-up).
+        /// #778 (v0.46, phase 2 v0.47): emit the `synth-wcet-v1` sound static
+        /// worst-case-cycle bound as a JSON sidecar next to the output
+        /// (`<output>.wcet.json`). For each compiled function it emits either a
+        /// SOUND upper bound — the sum of each instruction's documented
+        /// Cortex-M3/M4 worst-case cycles, multiplied by PROVEN loop trip
+        /// counts for canonical const-bound counted loops (phase 2: const
+        /// init/step/bound, head-/bottom-test, nested-multiplicative) — or a
+        /// loud DECLINE with a machine-readable reason (statically-unproven
+        /// loop / call / looped-expansion i64-div / unsupported-core M7).
+        /// gale's spar T3/T4 schedulability track consumes it as a SOUND `C_i`
+        /// input (a bound, not a DWT observation). The bound is conditional on
+        /// the zero-wait-state precondition recorded in the sidecar. Purely
+        /// additive: `.text` is byte-identical; off by default. ARM(Thumb-2)
+        /// only in v1 (RISC-V/AArch64 carry no cycle model; A32 = follow-up).
         /// Emitted on the all-exports path (the default for a plain file input);
         /// like `--emit-provenance`, it is inert on the single-function
         /// `--func-name`/`--func-index` path (a documented v1 boundary).

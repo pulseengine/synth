@@ -16,9 +16,22 @@
 //!     an independently HAND-COMPUTED worst-case sum (a literal in the test,
 //!     never re-derived from the model's own table). This validates the summation
 //!     + the loop-free classification, and regression-locks the numbers.
-//!  2. **Decline fixtures** (loop / call / i64-software-div) each emit NO bound —
-//!     a `declined` entry with the SPECIFIC machine-readable reason.
-//!  3. **Unsupported-core fixtures** (M7 dual-issue, and the ambiguous `-eabihf`
+//!  2. **Const-bound counted loops** (#778 phase 2) get a `bounded` entry with
+//!     the PROVEN trip count (head-test, bottom-test, nested-multiplicative,
+//!     memory-writing, zero-trip) — pinned exact literals + a trip-aware
+//!     soundness floor (`cycles ≥ trip × region_instr_count`).
+//!  3. **Decline fixtures** (data-dependent loop / non-canonical loop / call /
+//!     i64-software-div) each emit NO bound — a `declined` entry with the
+//!     SPECIFIC machine-readable reason. The phase-1 const-loop declines MOVED
+//!     to (2); the gate never deletes a decline, it converts it.
+//!  4. **The `--wcet-hints` seam** (#778 phase 2): RED-FIRST — a deliberately
+//!     WRONG hint (below the real trip count) is REJECTED
+//!     (`hint-below-derived-trip`) and the function stays declined; a correct
+//!     verifiable hint converts the equality-exit decline into a bound
+//!     (`hint-verified`, trip = synth's DERIVED count, never the raw hint); a
+//!     hint on a data-dependent loop is rejected `hint-unverifiable-induction`;
+//!     CLI misuse (no `--emit-wcet`, malformed JSON, wrong schema) fails loudly.
+//!  5. **Unsupported-core fixtures** (M7 dual-issue, and the ambiguous `-eabihf`
 //!     M4F triple) decline as `unsupported-core` — the conservative gap spar sees.
 //!
 //! It does NOT prove the per-op cycle NUMBERS are worst-case: it re-derives from
@@ -47,6 +60,11 @@ fn unique_id() -> u64 {
 
 /// Compile `wat` for `triple` with `--emit-wcet` and return the parsed sidecar.
 fn compile_wcet(wat: &str, triple: &str) -> Value {
+    compile_wcet_hinted(wat, triple, None)
+}
+
+/// Like [`compile_wcet`] but passing a `--wcet-hints` file (#778 phase 2).
+fn compile_wcet_hinted(wat: &str, triple: &str, hints_json: Option<&str>) -> Value {
     let dir = std::env::temp_dir().join(format!(
         "synth_wcet_gate_{}_{}_{}",
         std::process::id(),
@@ -58,16 +76,23 @@ fn compile_wcet(wat: &str, triple: &str) -> Value {
     std::fs::write(&wat_path, wat).unwrap();
     let out_path = dir.join("f.elf");
 
+    let mut args = vec![
+        "compile".to_string(),
+        wat_path.to_str().unwrap().to_string(),
+        "-o".to_string(),
+        out_path.to_str().unwrap().to_string(),
+        "-t".to_string(),
+        triple.to_string(),
+        "--emit-wcet".to_string(),
+    ];
+    if let Some(h) = hints_json {
+        let hints_path = dir.join("hints.json");
+        std::fs::write(&hints_path, h).unwrap();
+        args.push("--wcet-hints".to_string());
+        args.push(hints_path.to_str().unwrap().to_string());
+    }
     let status = Command::new(synth())
-        .args([
-            "compile",
-            wat_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-            "-t",
-            triple,
-            "--emit-wcet",
-        ])
+        .args(&args)
         .status()
         .expect("failed to run synth compile");
     assert!(status.success(), "synth compile failed for triple {triple}");
@@ -233,8 +258,12 @@ fn loop_free_if_else_is_bounded() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn loop_declines_with_loop_reason() {
-    // A data-dependent counted loop: no static trip count → must decline `loop`.
+fn data_dependent_loop_still_declines_with_loop_reason() {
+    // A DATA-DEPENDENT counted loop (bound = a runtime parameter): #778 phase 2
+    // proves const-bound counted loops, but a data-dependent bound has no
+    // statically-evident trip count → must STILL decline `loop`. (This is the
+    // decline the gate keeps — moved, never deleted: the const-bound shapes
+    // that used to sit here are now asserted BOUNDED below.)
     let wat = r#"
         (module
           (func (export "spin") (param i32) (result i32)
@@ -330,4 +359,398 @@ fn report_carries_precondition() {
             .is_some_and(|s| s.contains("zero-wait-state")),
         "the bound is conditional on a memory precondition that must be recorded"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #778 phase 2 — statically-proven loop trip counts. These shapes were
+// asserted-DECLINED in phase 1; the gate MOVES here (never deletes): they must
+// now be BOUNDED with the exact derived trip count, and the bound must clear
+// the trip-aware soundness floor. Ground truth for every fixture was executed
+// under unicorn (Thumb-2 machine-instruction counting) at authoring time:
+// bound cycles >= executed machine instructions on every fixture, and each
+// function's RESULT matched the WASM semantics (a wrong trip count would have
+// changed both). In-CI the floor below is the analytic stand-in (no
+// cycle-accurate Cortex-M oracle exists in-env — same honesty note as phase 1).
+// ---------------------------------------------------------------------------
+
+/// The canonical `for i in 0..10` counted loop (const init 0, step 1, bound 10,
+/// head-test): must be BOUNDED with trip_count == 10 and the EXACT pinned
+/// cycle literal. unicorn ground truth at authoring: r0 == 45 (correct trips),
+/// 188 executed machine insns <= 349.
+#[test]
+fn const_bound_loop_is_bounded_with_static_trip() {
+    let wat = r#"
+        (module
+          (func (export "sum10") (result i32)
+            (local i32 i32)
+            (block
+              (loop
+                local.get 0 i32.const 10 i32.lt_s i32.eqz br_if 1
+                local.get 1 local.get 0 i32.add local.set 1
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            local.get 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_bounded(&report, "sum10", 349);
+    assert_loop(&report, "sum10", 0, 10, "static");
+    assert_trip_floor(&report, "sum10");
+}
+
+/// Bottom-test form (`br_if 0` conditional backward branch): the body executes
+/// exactly trip_count times. unicorn: r0 == 45, 129 insns <= 229.
+#[test]
+fn bottom_test_loop_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "bottom") (result i32)
+            (local i32 i32)
+            (loop
+              local.get 1 local.get 0 i32.add local.set 1
+              local.get 0 i32.const 1 i32.add local.tee 0
+              i32.const 10 i32.lt_s br_if 0)
+            local.get 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_bounded(&report, "bottom", 229);
+    assert_loop(&report, "bottom", 0, 10, "static");
+    assert_trip_floor(&report, "bottom");
+}
+
+/// Nested const-bound loops: BOTH levels prove → factors multiply (5 outer ×
+/// 3 inner; the inner counter is re-initialized inside the outer body and the
+/// analyzer proves that re-init). unicorn: r0 == 15, 377 insns <= 863.
+#[test]
+fn nested_const_loops_bound_multiplicatively() {
+    let wat = r#"
+        (module
+          (func (export "nested") (result i32)
+            (local i32 i32 i32)
+            (block
+              (loop
+                local.get 0 i32.const 5 i32.lt_s i32.eqz br_if 1
+                i32.const 0 local.set 1
+                (block
+                  (loop
+                    local.get 1 i32.const 3 i32.lt_s i32.eqz br_if 1
+                    local.get 2 i32.const 1 i32.add local.set 2
+                    local.get 1 i32.const 1 i32.add local.set 1
+                    br 0))
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            local.get 2))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_bounded(&report, "nested", 863);
+    assert_loop(&report, "nested", 0, 5, "static");
+    assert_loop(&report, "nested", 1, 3, "static");
+    assert_trip_floor(&report, "nested");
+}
+
+/// A const-bound loop whose body WRITES linear memory: non-SP stores cannot
+/// alias the SP-frame counter (WASM has no address-of-local; the linear-memory
+/// image is layout-disjoint from the native stack), so the trip proof stands.
+/// unicorn: mem[44] == 11 after 16 trips, 304 insns <= 520.
+#[test]
+fn memory_writing_const_loop_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "memloop") (result i32)
+            (local i32)
+            (block
+              (loop
+                local.get 0 i32.const 16 i32.lt_s i32.eqz br_if 1
+                local.get 0 i32.const 4 i32.mul
+                local.get 0
+                i32.store
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            i32.const 44 i32.load)
+          (memory 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    let f = func(&report, "memloop");
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("bounded"),
+        "memory-writing const-bound loop must bound: {f}"
+    );
+    assert_loop(&report, "memloop", 0, 16, "static");
+    assert_trip_floor(&report, "memloop");
+}
+
+/// A zero-trip loop (bound 0 < init 0 is false immediately): trip_count == 0,
+/// the head check still executes once, so the function stays bounded and the
+/// bound covers the single head evaluation. unicorn: r0 == 0, 18 insns <= 58.
+#[test]
+fn zero_trip_loop_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "trip0") (result i32)
+            (local i32 i32)
+            (block
+              (loop
+                local.get 0 i32.const 0 i32.lt_s i32.eqz br_if 1
+                local.get 1 i32.const 1 i32.add local.set 1
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            local.get 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_loop(&report, "trip0", 0, 0, "static");
+    assert_trip_floor(&report, "trip0");
+}
+
+/// A loop whose body stores the counter TWICE on a conditional path (an `if`
+/// inside the body): the induction is NOT canonical → must stay declined. The
+/// decline-honesty counterpart to the bounded shapes above.
+#[test]
+fn conditional_counter_store_still_declines() {
+    let wat = r#"
+        (module
+          (func (export "condstore") (param i32) (result i32)
+            (local i32)
+            (block
+              (loop
+                local.get 1 i32.const 10 i32.lt_s i32.eqz br_if 1
+                (if (local.get 0)
+                  (then local.get 1 i32.const 5 i32.add local.set 1))
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "condstore", "loop");
+}
+
+// ---------------------------------------------------------------------------
+// #778 phase 2 — the --wcet-hints seam (untrusted oracle + sound checker).
+// RED-FIRST: the wrong-hint rejection is asserted BEFORE the conversion.
+// ---------------------------------------------------------------------------
+
+/// The equality-exit fixture (`br_if (i32.eq i N)`): the ONE hint-gated shape —
+/// a step that misses the bound flips terminating into infinite, so synth
+/// derives the trip (8) + divisibility but only consumes it under an explicit
+/// verified hint.
+const EQEXIT_WAT: &str = r#"
+    (module
+      (func (export "eqexit") (result i32)
+        (local i32 i32)
+        (block
+          (loop
+            local.get 0 i32.const 8 i32.eq br_if 1
+            local.get 1 local.get 0 i32.add local.set 1
+            local.get 0 i32.const 1 i32.add local.set 0
+            br 0))
+        local.get 1))
+"#;
+
+/// RED: a deliberately-WRONG hint (3 < the real trip count 8) must be REJECTED
+/// with the machine reason `hint-below-derived-trip`, and the function must
+/// stay DECLINED — a wrong oracle claim is never trusted into a bound.
+#[test]
+fn wrong_hint_below_real_trip_is_rejected_red_first() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"eqexit":{"loop_bounds":[3]}}}"#;
+    let report = compile_wcet_hinted(EQEXIT_WAT, "cortex-m4", Some(hints));
+    assert_declined(&report, "eqexit", "loop");
+    let f = func(&report, "eqexit");
+    let rej = f
+        .get("hint_rejections")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .unwrap_or_else(|| panic!("wrong hint must be RECORDED as rejected: {f}"));
+    assert_eq!(
+        rej.get("reason").and_then(Value::as_str),
+        Some("hint-below-derived-trip"),
+        "wrong hint must carry the specific machine rejection reason: {rej}"
+    );
+    assert_eq!(rej.get("hint").and_then(Value::as_u64), Some(3));
+}
+
+/// Unhinted, the equality-exit shape stays declined (the decline the hint
+/// seam converts — asserted so the conversion below is non-vacuous).
+#[test]
+fn equality_exit_unhinted_still_declines() {
+    let report = compile_wcet(EQEXIT_WAT, "cortex-m4");
+    assert_declined(&report, "eqexit", "loop");
+}
+
+/// GREEN: a correct, verifiable hint (8 >= derived 8) converts the decline into
+/// a bound. The emitted trip count is synth's DERIVED value (8) with source
+/// `hint-verified` — never the raw hint. unicorn ground truth at authoring:
+/// r0 == 28 (= 0+1+..+7), 126 executed machine insns <= 254.
+#[test]
+fn correct_hint_converts_decline_to_bound() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"eqexit":{"loop_bounds":[8]}}}"#;
+    let report = compile_wcet_hinted(EQEXIT_WAT, "cortex-m4", Some(hints));
+    assert_bounded(&report, "eqexit", 254);
+    assert_loop(&report, "eqexit", 0, 8, "hint-verified");
+    assert_trip_floor(&report, "eqexit");
+}
+
+/// A hint on a DATA-DEPENDENT loop (bound = runtime parameter): synth cannot
+/// verify the induction against it → REJECTED `hint-unverifiable-induction`,
+/// function stays declined. The untrusted oracle cannot smuggle in a bound.
+#[test]
+fn data_dependent_hint_is_rejected_unverifiable() {
+    let wat = r#"
+        (module
+          (func (export "spin") (param i32) (result i32)
+            (local i32)
+            (block
+              (loop
+                local.get 1 local.get 0 i32.lt_s i32.eqz br_if 1
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 1))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"spin":{"loop_bounds":[100]}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "spin", "loop");
+    let f = func(&report, "spin");
+    let rej = f
+        .get("hint_rejections")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .unwrap_or_else(|| panic!("unverifiable hint must be RECORDED as rejected: {f}"));
+    assert_eq!(
+        rej.get("reason").and_then(Value::as_str),
+        Some("hint-unverifiable-induction"),
+        "data-dependent bound: hint must be rejected as unverifiable: {rej}"
+    );
+}
+
+/// `--wcet-hints` without `--emit-wcet` is a usage error (hints only affect the
+/// sidecar), and a malformed hints file fails LOUDLY before compiling.
+#[test]
+fn hints_cli_misuse_fails_loudly() {
+    let dir = std::env::temp_dir().join(format!(
+        "synth_wcet_gate_cli_{}_{}",
+        std::process::id(),
+        unique_id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wat_path = dir.join("f.wat");
+    std::fs::write(
+        &wat_path,
+        r#"(module (func (export "k") (result i32) i32.const 1))"#,
+    )
+    .unwrap();
+    let hints_path = dir.join("hints.json");
+    std::fs::write(
+        &hints_path,
+        r#"{"schema":"synth-wcet-hints-v1","functions":{}}"#,
+    )
+    .unwrap();
+    let out = dir.join("f.elf");
+
+    // Without --emit-wcet → refused.
+    let status = Command::new(synth())
+        .args([
+            "compile",
+            wat_path.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "-t",
+            "cortex-m4",
+            "--wcet-hints",
+            hints_path.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "--wcet-hints without --emit-wcet must fail"
+    );
+
+    // Malformed JSON → refused loudly.
+    std::fs::write(&hints_path, "{not json").unwrap();
+    let status = Command::new(synth())
+        .args([
+            "compile",
+            wat_path.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "-t",
+            "cortex-m4",
+            "--emit-wcet",
+            "--wcet-hints",
+            hints_path.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(!status.success(), "malformed --wcet-hints must fail loudly");
+
+    // Wrong schema string → refused loudly.
+    std::fs::write(&hints_path, r#"{"schema":"bogus-v9","functions":{}}"#).unwrap();
+    let status = Command::new(synth())
+        .args([
+            "compile",
+            wat_path.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "-t",
+            "cortex-m4",
+            "--emit-wcet",
+            "--wcet-hints",
+            hints_path.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(!status.success(), "wrong hints schema must fail loudly");
+}
+
+// ---------------------------------------------------------------------------
+// Phase-2 assertion helpers.
+// ---------------------------------------------------------------------------
+
+/// Assert loop `idx` of `name` has EXACTLY `trip` and `source`.
+fn assert_loop(report: &Value, name: &str, idx: usize, trip: u64, source: &str) {
+    let f = func(report, name);
+    let l = f
+        .get("loops")
+        .and_then(Value::as_array)
+        .and_then(|a| a.get(idx))
+        .unwrap_or_else(|| panic!("{name}: no loop record #{idx} (entry: {f})"));
+    assert_eq!(
+        l.get("trip_count").and_then(Value::as_u64),
+        Some(trip),
+        "{name} loop {idx}: trip count drifted (record: {l})"
+    );
+    assert_eq!(
+        l.get("source").and_then(Value::as_str),
+        Some(source),
+        "{name} loop {idx}: wrong bound source (record: {l})"
+    );
+}
+
+/// The trip-aware soundness floor: every instruction costs at least 1 cycle
+/// and each loop's region instructions execute trip_count times, so the bound
+/// must satisfy both `cycles ≥ instr_count` and, per loop,
+/// `cycles ≥ trip_count × region_instr_count`. A bound below either is
+/// arithmetically impossible for a sound model — this floor is independent of
+/// the per-op cycle table (the phase-2 cross-check: instruction count × known
+/// trip count).
+fn assert_trip_floor(report: &Value, name: &str) {
+    let f = func(report, name);
+    let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
+    let instrs = f.get("instr_count").and_then(Value::as_u64).unwrap();
+    assert!(
+        cycles >= instrs,
+        "{name}: bound {cycles} < instr_count {instrs} — unsound"
+    );
+    for l in f
+        .get("loops")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let trip = l.get("trip_count").and_then(Value::as_u64).unwrap();
+        let region = l.get("region_instr_count").and_then(Value::as_u64).unwrap();
+        assert!(
+            cycles >= trip.saturating_mul(region),
+            "{name}: bound {cycles} < trip {trip} × region {region} — the loop's \
+             instructions alone execute more times than the bound allows: unsound"
+        );
+    }
 }
