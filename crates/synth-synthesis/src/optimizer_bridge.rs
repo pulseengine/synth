@@ -4041,6 +4041,14 @@ impl OptimizerBridge {
                             op2: Operand2::Imm(*value),
                         });
                     }
+                    // #791: a bare const can BE the function result. This was
+                    // the ONLY value-producing arm that did not record its
+                    // dest as `last_result_vreg`, so for a const-only body the
+                    // epilogue's move-result-to-R0 pass never fired — the
+                    // constant stayed in its callee-saved temp (r4) and the
+                    // export returned caller residue from R0. Track it like
+                    // every other producer (Load, Add, Select, Call, ...).
+                    last_result_vreg = Some(dest.0);
                 }
 
                 // Arithmetic operations
