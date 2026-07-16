@@ -123,14 +123,20 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
             .pop()
             .ok_or_else(|| SelectError("rotl underflow".into()))?;
         let dst = alloc_temp(stack)?;
-        // `dst` is free of live entries here (n,k already popped); reuse it as
-        // the neg scratch, then as the result.
+        // #776: the `neg` scratch must NOT be `dst` — `alloc_temp` can hand back
+        // the register that held the computed operand `n` (n,k are already popped,
+        // so n's reg is free to reuse), and `neg(dst, k)` would then destroy `n`
+        // before `rorv` reads it (silent wrong result; param-only rotates escaped
+        // because their `n` sits in a distinct arg register). Compute `-k` in `k`'s
+        // own now-dead register instead; `rorv` then reads `n` (intact) + `-k` and
+        // writes `dst` safely — reads-before-write holds even if `dst` aliases an
+        // input, and n/k are distinct stack slots so `neg(k,k)` never touches `n`.
         if sf {
-            words.push(enc::neg64(dst, k));
-            words.push(enc::rorv64(dst, n, dst));
+            words.push(enc::neg64(k, k));
+            words.push(enc::rorv64(dst, n, k));
         } else {
-            words.push(enc::neg(dst, k));
-            words.push(enc::rorv(dst, n, dst));
+            words.push(enc::neg(k, k));
+            words.push(enc::rorv(dst, n, k));
         }
         stack.push(dst);
         Ok(())
@@ -427,11 +433,13 @@ mod tests {
             WasmOp::End,
         ];
         let w = select(&ops, 2).unwrap();
+        // #776: -k is computed in k's own register (1), NOT in dst (9) — so a
+        // computed `n` reused as dst is never clobbered before rorv reads it.
         assert_eq!(
             w,
             vec![
-                enc::neg(9, 1),
-                enc::rorv(9, 0, 9),
+                enc::neg(1, 1),
+                enc::rorv(9, 0, 1),
                 enc::mov_reg64(0, 9),
                 enc::ret()
             ]
