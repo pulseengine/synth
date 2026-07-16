@@ -157,10 +157,125 @@ Qed.
 
 (** ** Constants *)
 
-(** i32.const now branches on the constant size (MOVW for <= 65535, MOVW+MOVT
-    for larger values). The small-constant case is straightforward; the
-    large-constant case requires showing MOVW+MOVT reconstructs the original
-    value via bitwise composition, which needs Z.land/Z.shiftr arithmetic. *)
+(** #166 verify-what-ships: the MOVW+MOVT large-constant reconstruction lemma.
+
+    The large-constant compilation path emits
+      MOVW R0 (repr (land u 65535))    (* low 16 bits *)
+      MOVT R0 (repr (shiftr u 16))     (* high 16 bits into bits 31..16 *)
+    where [u = I32.unsigned n]. This is the exact byte-level lowering the Rust
+    encoder ships (instruction_selector: split-immediate MOVW/MOVT). We prove,
+    by bit extensionality, that composing the two halves reconstructs [u]:
+
+      or (and (repr (land u 65535)) (repr 0xFFFF)) (shl (repr (shiftr u 16)) 16)
+        = repr u.
+
+    Everything on the left is [_ mod 2^32], so the reconstruction produces the
+    register-normalized value [repr u = repr (unsigned n) = unsigned n], NOT the
+    raw representative [n]. That distinction is the crux of the [i32_const_correct]
+    modeling gap documented below. *)
+
+Local Open Scope Z_scope.
+
+Lemma movw_movt_reconstruct_Z : forall u : Z,
+  Z.lor
+    (Z.land (Z.land u 65535 mod 2 ^ 32) (65535 mod 2 ^ 32) mod 2 ^ 32)
+    (Z.shiftl (Z.shiftr u 16 mod 2 ^ 32) 16 mod 2 ^ 32) mod 2 ^ 32
+  = u mod 2 ^ 32.
+Proof.
+  intros u.
+  change (65535 mod 2 ^ 32) with (Z.ones 16).
+  change 65535 with (Z.ones 16).
+  rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros i Hi.
+  (* Peel outer [land (ones32)] (final mod), the [lor], and the left operand's
+     [land]s down to [testbit u i]. The right operand's [shiftl] is handled per
+     half below (its argument's [land] only reduces after [Z.shiftl_spec]). *)
+  rewrite Z.land_spec, Z.lor_spec.
+  rewrite !Z.land_spec.
+  rewrite (Z.testbit_ones 32 i) by lia.
+  rewrite !(Z.testbit_ones 16 i) by lia.
+  (* Case on whether bit [i] lands in the low half (< 16) or high half (>= 16). *)
+  destruct (Z.ltb_spec i 16) as [Hlo | Hhi].
+  - (* low half: the shifted high part contributes 0 (bit index i-16 < 0). *)
+    rewrite Z.shiftl_spec by lia.
+    rewrite (Z.testbit_neg_r _ (i - 16)) by lia.
+    rewrite Bool.orb_false_r.
+    destruct (Z.testbit u i);
+      destruct (i <? 32) eqn:E32, (i <? 16) eqn:E16, (0 <=? i) eqn:E0;
+      cbn; try reflexivity;
+      (try (exfalso; apply Z.ltb_ge in E16; lia));
+      (try (exfalso; apply Z.leb_gt in E0; lia)).
+  - (* high half: the low-16 mask contributes 0 at bit i (i >= 16). *)
+    rewrite Z.shiftl_spec by lia.
+    rewrite Z.land_spec, (Z.testbit_ones 32 (i - 16)) by lia.
+    rewrite Z.shiftr_spec by lia.
+    replace (i - 16 + 16) with i by lia.
+    destruct (Z.testbit u i);
+      destruct (i <? 32) eqn:E32, (i <? 16) eqn:E16, (0 <=? i - 16) eqn:El,
+               (i - 16 <? 32) eqn:Eh, (0 <=? i) eqn:E0;
+      cbn; try reflexivity;
+      (try (exfalso; apply Z.ltb_lt in E16; lia));
+      (try (exfalso; apply Z.ltb_ge in E32; lia));
+      (try (exfalso; apply Z.leb_gt in El; lia));
+      (try (exfalso; apply Z.ltb_ge in Eh; lia)).
+Qed.
+
+(** ARM-level reconstruction: after the shipped MOVW+MOVT large-constant
+    sequence, R0 holds the register-normalized constant [I32.repr (I32.unsigned n)].
+    This is a real, unconditional Qed about the exact instructions that ship. *)
+Lemma i32_const_large_reconstruct : forall astate n,
+  I32.unsigned n > 65535 ->
+  exists astate',
+    exec_program (compile_wasm_to_arm (I32Const n)) astate = Some astate' /\
+    get_reg astate' R0 = I32.repr (I32.unsigned n).
+Proof.
+  intros astate n Hbig.
+  unfold compile_wasm_to_arm.
+  (* the guard [Z.leb (I32.unsigned n) 65535] is false *)
+  replace (Z.leb (I32.unsigned n) 65535) with false
+    by (symmetry; apply Z.leb_gt; lia).
+  (* Execute the two-instruction [MOVW; MOVT] program. *)
+  cbn [exec_program exec_instr].
+  eexists. split; [reflexivity|].
+  (* Reduce every [get_reg (set_reg _ R0 _) R0] (final get + MOVT's read). *)
+  rewrite !get_set_reg_eq.
+  unfold I32.or, I32.and, I32.shl, I32.repr, I32.unsigned.
+  (* shift amount: (16 mod 2^32) mod 32 = 16 *)
+  change ((16 mod 2 ^ 32) mod 32) with 16.
+  apply movw_movt_reconstruct_Z.
+Qed.
+
+Local Close Scope Z_scope.
+
+(** i32.const branches on the constant size: MOVW for [unsigned n <= 65535],
+    MOVW+MOVT otherwise.
+
+    T3 — DOCUMENTED MODELING GAP (NOT a division admit, NOT an unproven bit fact).
+    The reconstruction arithmetic IS proven (see [movw_movt_reconstruct_Z] and
+    [i32_const_large_reconstruct] above, both real Qed). The residual is a
+    value-representation mismatch, not a missing proof:
+
+    - [exec_wasm_instr (I32Const n)] pushes [VI32 n] with the RAW [Z]
+      representative [n] (WasmSemantics does not normalize constants).
+    - The MOVW+MOVT ship path (large branch) necessarily normalizes: it yields
+      [I32.repr (I32.unsigned n) = I32.unsigned n], proven above.
+
+    So [get_reg astate' R0 = n] holds UNCONDITIONALLY only in the small (MOVW)
+    branch; in the large branch it holds iff [n] is register-normalized
+    ([I32.valid_unsigned n], i.e. [n = I32.unsigned n]). The theorem as stated
+    (no normalization hypothesis) is therefore FALSE for out-of-range
+    representatives with [unsigned n > 65535] — a real counterexample exists
+    (e.g. [n = 2^32 + 0x10000]).
+
+    Two ways to close it, both a change of contract rather than a new proof:
+      (a) normalize [I32Const] at the WASM boundary in the model
+          (push [VI32 (I32.repr n)]), then [i32_const_large_reconstruct]
+          discharges it directly; or
+      (b) add the [I32.valid_unsigned n] register-normalization hypothesis
+          (the same explicit contract the #73 div_s proof adopted).
+    Per the #166 "never weaken a theorem to force a Qed" gate, neither is
+    applied here silently; the theorem stays honestly Admitted with the
+    reconstruction fact already discharged. *)
 Theorem i32_const_correct : forall wstate astate n,
   exec_wasm_instr (I32Const n) wstate =
     Some (mkWasmState
@@ -172,11 +287,9 @@ Theorem i32_const_correct : forall wstate astate n,
     exec_program (compile_wasm_to_arm (I32Const n)) astate = Some astate' /\
     get_reg astate' R0 = n.
 Proof.
-  (* Admitted: compilation now branches on I32.unsigned n <= 65535.
-     Small case: same as before (MOVW).
-     Large case: MOVW+MOVT reconstruct value from low/high halves.
-     Proving the large case requires: I32.or (I32.and (I32.repr low) 0xFFFF)
-       (I32.shl (I32.repr high) 16) = n, which needs Z.land/Z.shiftr lemmas. *)
+  (* See the T3 rationale above: false in the large branch for un-normalized
+     [n]; the reconstruction arithmetic itself is proven in
+     [i32_const_large_reconstruct]. *)
 Admitted.
 
 (** v0.9.0 PR 1 (precursor + discharge): I64Const compiles to
