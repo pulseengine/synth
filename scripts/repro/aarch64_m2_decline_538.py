@@ -41,10 +41,16 @@ DECLINED = [
                    '(i32.popcnt (local.get 0)))'),
     ("i64.popcnt", '(func (export "f") (param i64) (result i64) '
                    '(i64.popcnt (local.get 0)))'),
-    ("f32.add", '(func (export "f") (param f32 f32) (result f32) '
-                '(f32.add (local.get 0) (local.get 1)))'),
-    ("f64.mul", '(func (export "f") (param f64 f64) (result f64) '
-                '(f64.mul (local.get 0) (local.get 1)))'),
+    # m3 (#787) landed non-trapping scalar floats (add/sub/mul/div/cmp/convert/
+    # reinterpret) — those are now SUPPORTED, so the honesty gate moves to the
+    # floats that DELIBERATELY stay declined:
+    #   - trapping float→int truncation: A64 FCVTZS/FCVTZU SATURATE where WASM
+    #     TRAPS (the #709 more-total-than-WASM soundness class) — must NOT lower.
+    #   - min/max: WASM NaN-propagation semantics differ from A64 FMIN/FMAX.
+    ("i32.trunc_f32_s", '(func (export "f") (param f32) (result i32) '
+                        '(i32.trunc_f32_s (local.get 0)))'),
+    ("f32.min", '(func (export "f") (param f32 f32) (result f32) '
+                '(f32.min (local.get 0) (local.get 1)))'),
 ]
 
 

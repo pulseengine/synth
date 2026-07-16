@@ -1,19 +1,15 @@
-//! synth#554 — `-b aarch64` must fail HONESTLY on a scalar f32 op, never emit a
-//! silent miscompile.
+//! synth#554 — `-b aarch64` must fail HONESTLY on an UNSUPPORTED float op, never
+//! emit a silent miscompile.
 //!
-//! Scalar `f32.*` is dropped by the wasm decoder (`_ => None`), so it is absent
-//! from the op stream the backend selector sees — it never reaches the selector's
-//! `unsupported wasm op` guard. Before the fix the aarch64 backend lowered the
-//! remaining `[LocalGet, LocalGet, End]` into `mov w0, w1 ; ret` (returns the 2nd
-//! operand instead of the sum) and reported success. That is strictly worse than
-//! the honest "unsupported milestone-1 op" error the integer ops produce.
+//! m3 (#787) landed the non-trapping scalar floats, so this test now targets a
+//! float op that DELIBERATELY stays declined: `i32.trunc_f32_s`. A64 `FCVTZS`
+//! SATURATES where WASM TRAPS (out-of-range input) — the #709 more-total-than-WASM
+//! soundness class — so lowering it would silently return a wrong (saturated)
+//! value. The backend must loud-decline (`unsupported wasm op`) instead.
 //!
-//! The fix honors the decoder's `func.unsupported` loud-skip marker (#369) at the
-//! single-function CLI boundary (and in `AArch64Backend::compile_module`). These
-//! tests lock: (1) the f32 function is REJECTED with a non-zero exit and an
-//! "unsupported" diagnostic; (2) a supported integer function still compiles (the
-//! guard does not over-reject); (3) `--all-exports` loud-skips f32 while still
-//! emitting the integer function.
+//! These tests lock: (1) the declined-float function is REJECTED with a non-zero
+//! exit and an "unsupported" diagnostic; (2) a supported integer function still
+//! compiles (the guard does not over-reject).
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -36,7 +32,7 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
             "-b",
             "aarch64",
             "-n",
-            "f32add",
+            "f32trunc",
             "-o",
             "/tmp/aarch64_f32_554.o",
         ])
@@ -44,8 +40,8 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
         .expect("run synth");
     assert!(
         !out.status.success(),
-        "expected a non-zero exit for an f32 function on -b aarch64; got success \
-         (silent miscompile). stdout={} stderr={}",
+        "expected a non-zero exit for a declined float op (i32.trunc_f32_s) on \
+         -b aarch64; got success (silent miscompile). stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
