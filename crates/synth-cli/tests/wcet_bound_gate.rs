@@ -197,6 +197,37 @@ fn loop_free_const_exact_literal() {
     );
 }
 
+/// A loop-free function WITH a forward conditional branch (an `if/else`). This is
+/// the load-bearing soundness case: the bound SUMS BOTH arms (every instruction
+/// executes at most once), which over-approximates the real max-over-arms — sound
+/// by construction. The function must stay `bounded` (a forward `BCondOffset` is
+/// NOT a loop) and its bound must clear the always-true instr_count floor.
+#[test]
+fn loop_free_if_else_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "sel") (param i32 i32 i32) (result i32)
+            local.get 0
+            (if (result i32)
+              (then local.get 1)
+              (else local.get 2))))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    let f = func(&report, "sel");
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("bounded"),
+        "an if/else with a FORWARD branch is loop-free and must be bounded (summing \
+         both arms over-approximates the max — sound): {f}"
+    );
+    let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
+    let instrs = f.get("instr_count").and_then(Value::as_u64).unwrap();
+    assert!(
+        cycles >= instrs,
+        "sel: bound {cycles} < instr_count {instrs} — unsound"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Decline matrix — NO bound, loud decline with the SPECIFIC reason.
 // ---------------------------------------------------------------------------

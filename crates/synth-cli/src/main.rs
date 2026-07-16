@@ -421,6 +421,9 @@ enum Commands {
         /// conditional on the zero-wait-state precondition recorded in the sidecar.
         /// Purely additive: `.text` is byte-identical; off by default. ARM(Thumb-2)
         /// only in v1 (RISC-V/AArch64 carry no cycle model; A32/loops = follow-up).
+        /// Emitted on the all-exports path (the default for a plain file input);
+        /// like `--emit-provenance`, it is inert on the single-function
+        /// `--func-name`/`--func-index` path (a documented v1 boundary).
         #[arg(long)]
         emit_wcet: bool,
 

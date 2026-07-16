@@ -64,8 +64,14 @@ use synth_synthesis::{ArmInstruction, ArmOp};
 /// `0xB438`/`0xBC38`.
 const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 5;
 
-/// Worst-case cycles for a straight-line expansion of `byte_len` bytes.
-fn straightline_expansion(byte_len: u64) -> u64 {
+/// Worst-case cycles for a straight-line multi-byte expansion, sized from the
+/// op's ENCODER byte length (via `estimate_arm_byte_size`, which the
+/// `estimator_encoder_agreement` oracle pins exactly to the real encoder). Using
+/// the estimator rather than a hand literal makes the bound provably ≥ the real
+/// straight-line cost and self-maintaining: a future encoder change to a priced
+/// expansion moves the estimator and the bound rides it.
+fn straightline_expansion(op: &ArmOp) -> u64 {
+    let byte_len = synth_synthesis::estimate_arm_byte_size(op) as u64;
     (byte_len / 2) * STRAIGHTLINE_CEIL_PER_HALFWORD
 }
 
@@ -159,30 +165,37 @@ fn op_cost(op: &ArmOp) -> OpCost {
         SelectMove { .. } => Cycles(2),
         Select { .. } => Unmodeled, // pseudo, lowered upstream — never in final stream
 
-        // --- Popcnt: fixed SWAR bit-twiddle (84/86 B), straight-line ---
-        Popcnt { rd, rm } => {
-            let bytes = if rd == rm { 84 } else { 86 };
-            Cycles(straightline_expansion(bytes))
-        }
+        // --- Popcnt: fixed SWAR bit-twiddle, straight-line. Sized by the
+        // estimator (encoder-pinned, below) — never a hand literal. ---
+        Popcnt { .. } => Cycles(straightline_expansion(op)),
         // UDF trap: 1 cycle to fault (worst-case reach; execution ends there).
         Udf { .. } => Cycles(1),
 
         // === i64 SOFTWARE div/rem: internal 64-iteration runtime loop → decline ===
         I64DivU { .. } | I64DivS { .. } | I64RemU { .. } | I64RemS { .. } => LoopedExpansion,
 
-        // === i64 straight-line expansions (fixed byte size, no internal loop) ===
-        // Sized by the estimator's exact byte lengths (optimizer_bridge) × the
-        // straight-line ceiling; each is a single-execution block in a loop-free fn.
-        I64SetCond { .. } => Cycles(straightline_expansion(12)),
-        I64SetCondZ { .. } => Cycles(straightline_expansion(12)),
-        I64Mul { .. } => Cycles(straightline_expansion(20)),
-        I64Shl { .. } | I64ShrU { .. } | I64ShrS { .. } => Cycles(straightline_expansion(40)),
-        I64Rotl { .. } | I64Rotr { .. } => Cycles(straightline_expansion(102)),
-        I64Clz { .. } | I64Ctz { .. } => Cycles(straightline_expansion(40)),
-        I64Popcnt { .. } => Cycles(straightline_expansion(180)),
-        I64Extend8S { .. } | I64Extend16S { .. } | I64Extend32S { .. } => {
-            Cycles(straightline_expansion(8))
-        }
+        // === i64 straight-line expansions (fixed byte size, NO internal loop) ===
+        // Sized by `estimate_arm_byte_size` — NOT a hand-transcribed literal. That
+        // estimator is pinned EXACTLY to the real encoder length for every one of
+        // these ops by the `estimator_encoder_agreement` oracle, so
+        // `(len/2) × CEIL` is provably ≥ the real straight-line cost AND cannot go
+        // stale: a future encoder change to any of these expansions moves the
+        // estimator (or breaks the oracle) and the bound tracks it automatically —
+        // exactly the drift a hand literal could not catch.
+        I64SetCond { .. }
+        | I64SetCondZ { .. }
+        | I64Mul { .. }
+        | I64Shl { .. }
+        | I64ShrU { .. }
+        | I64ShrS { .. }
+        | I64Rotl { .. }
+        | I64Rotr { .. }
+        | I64Clz { .. }
+        | I64Ctz { .. }
+        | I64Popcnt { .. }
+        | I64Extend8S { .. }
+        | I64Extend16S { .. }
+        | I64Extend32S { .. } => Cycles(straightline_expansion(op)),
 
         // === prologue/epilogue stack ops: real, straight-line, single-execution ===
         // Cortex-M4 STM/LDM (PUSH/POP) = 1 + N cycles for N registers. A POP that
