@@ -287,22 +287,27 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (13)
+## T3: Admitted (3 Admitted + 2 admit., #166 recount)
 
-> v0.10.0 PR 1: `i64_add_correct` / `i64_sub_correct` moved out of T3 to T1
-> (Qed via the ADDS/ADC + SUBS/SBC carry/borrow-propagation lemmas). The
-> remaining i64 admits are the And/Or/Xor halves-distribute trio.
+> History (all now Qed, kept for the audit trail): v0.10.0 PR 1 lifted
+> `i64_add_correct` / `i64_sub_correct`; v0.10.0 PR 2 closed
+> `i64_to_i32_to_i64_wrap` (Integers.v); v0.11.0 closed the i64 And/Or/Xor
+> trio; #73 (v0.43) closed all four i32 div/rem trap guards including
+> `i32_divs_correct` against `exec_program_br`; #166 (v0.46) discharged the
+> 2 `Compilation.v` example admits. **No remaining control-flow-model or
+> division admits.** The 3 residuals below are one constant-representation
+> modeling gap and two Sail-axiom placeholders.
 
 | File | Count | Root Cause | Unblocking Strategy |
 |------|-------|------------|---------------------|
-| ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
-| Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
-| CorrectnessI32.v | 1 | `i32_divs_correct` — the INT_MIN/-1 double-guard trap sequence; div_u/rem_s/rem_u discharged against `exec_program_br` (#697/#73) | Restate against `exec_program_br` (as div_u/rem_s/rem_u) with the second (INT_MIN/-1) guard |
 | CorrectnessSimple.v | 1 | `i32_const_correct` — **#166 DOCUMENTED MODELING-GAP T3, not a missing proof.** The MOVW+MOVT reconstruction arithmetic IS proven (`movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`, both real Qed): the shipped large-constant path yields `I32.repr (I32.unsigned n) = I32.unsigned n`. The residual is a value-representation mismatch — `exec_wasm_instr (I32Const n)` pushes the RAW `Z` representative `n` (WasmSemantics does not normalize), so the theorem's `= n` is FALSE in the large branch for out-of-range `n` (concrete counterexample: `n = 2^32 + 0x10000`). | Change of contract (not a new proof): normalize `I32Const` at the WASM boundary (push `VI32 (I32.repr n)`), then `i32_const_large_reconstruct` discharges it; OR add the `I32.valid_unsigned n` register-normalization hypothesis (the #73 div_s precedent). Neither applied silently per the #166 no-weakening gate. |
-| CorrectnessSimple.v | 1 | `i64_const_correct` — v0.8.0 PR 1a aligned codegen to `I64ConstPseudo` (loads both halves); proof claimed R0 = low 16 bits via stale MOVW model | v0.8.0 PR 5: concrete `i64_const_lo`/`i64_const_hi` definitions |
-| CorrectnessI64.v | 3 | `i64_and/or/xor_correct` — halves-distribute-over-bitwise decomposition blocked by the same Rocq 9 `Z.mod_mod` rewrite issue as `i64_to_i32_to_i64_wrap` | Rework with new Z.mod_mod API (separate PR) |
-| Compilation.v | 0 | ~~`ex_compile_simple_add`, `ex_compile_increment_local`~~ — **#166 DISCHARGED** (Qed): `vm_compute` evaluates the `Z.leb (I32.unsigned n) 65535` constant-size guard that `simpl` could not reduce | (done) |
-| ArmRefinement.v | 2 | `arm_refines_sail`, `add_refines_sail` — **#166 confirmed GENUINE T3**: `SailARM.sail_exec_instr` is an opaque `Axiom` (no defining equation), so the required `= Some s_sail'` witness is not derivable | Replace the axiom with a real computational Sail semantics; the live per-instruction ADD/ADDS/CMP correspondence already exists in `SailArmBridge.v` (this placeholder is superseded) |
+| ArmRefinement.v | 2 (Admitted) + 2 (`admit.`) | `arm_refines_sail`, `add_refines_sail` — **#166 confirmed GENUINE T3**: `SailARM.sail_exec_instr` is an opaque `Axiom` (no defining equation), so the required `= Some s_sail'` witness is not derivable. Each theorem also carries one `admit.` tactic (the 2 disclosed `admit.`). | Replace the axiom with a real computational Sail semantics; the live per-instruction ADD/ADDS/CMP correspondence already exists in `SailArmBridge.v` (this placeholder file is superseded). |
+
+**Discharged since the table's original "(13)" snapshot** (all now Qed, no longer
+admitted): `Integers.v` `i64_to_i32_to_i64_wrap`; `CorrectnessI64.v`
+`i64_and/or/xor_correct`; `CorrectnessSimple.v` `i64_const_correct`;
+`CorrectnessI32.v` all four i32 div/rem trap guards (`i32_divs_correct` last, #73);
+`Compilation.v` `ex_compile_simple_add` + `ex_compile_increment_local` (#166).
 
 ## VFP Semantics (Phase 5 — New)
 
