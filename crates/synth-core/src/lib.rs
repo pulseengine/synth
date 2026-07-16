@@ -12,6 +12,7 @@ pub mod ir;
 pub mod provenance;
 pub mod safety_manifest;
 pub mod sbom;
+pub mod static_data_addr;
 pub mod target;
 pub mod wasm_decoder;
 pub mod wasm_op;

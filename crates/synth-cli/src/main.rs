@@ -3961,6 +3961,12 @@ fn build_relocatable_elf(
     // by (func index, reloc offset) -> (new symbol, new addend). The addend C is
     // read from the in-place `.text` literal word (Abs32 is REL — `S + A`).
     let mut retarget: HashMap<(usize, u32), (String, i32)> = HashMap::new();
+    // VCR-VER-003 (#777 / #757): collect the retargeting the compiler ACTUALLY
+    // emits so a per-compilation validator can prove every static-data reloc
+    // resolves to the runtime-correct byte (segments applied later-wins). Built
+    // from the emitted `(k, new_addend)` — never recomputed — so the check
+    // consumes the real output and cannot be mirror-pinned vacuous.
+    let mut addr_resolutions: Vec<synth_core::static_data_addr::RelocResolution> = Vec::new();
     if do_mixed_split {
         for (i, func) in funcs.iter().enumerate() {
             for reloc in &func.relocations {
@@ -4000,8 +4006,48 @@ fn build_relocatable_elf(
                         (format!("__synth_wasm_seg_{k}"), new_addend),
                     );
                     all_code[pos..pos + 4].copy_from_slice(&new_addend.to_le_bytes());
+                    // VCR-VER-003: record the EMITTED (k, addend) for validation.
+                    addr_resolutions.push(synth_core::static_data_addr::RelocResolution {
+                        seg_index: k,
+                        addend: new_addend as u32,
+                        label: format!("func {i} reloc @ 0x{:x} (linmem 0x{c:x})", reloc.offset),
+                    });
                 }
             }
+        }
+
+        // VCR-VER-003 (#777 / #757): per-compilation validation — prove every
+        // retargeted static-data reloc resolves to the runtime-correct byte
+        // (active data segments applied in declaration order, later-wins). The
+        // runtime image is reconstructed independently of the chosen segment, so
+        // a wrong-segment resolution (the #757 miscompile) FAILS here at compile
+        // time on ANY module. Unconditional — runs in the default `--features
+        // riscv` shipping build, not just `verify`.
+        let val_segments: Vec<synth_core::static_data_addr::DataSegment> = data_segments
+            .iter()
+            .map(|(off, d)| synth_core::static_data_addr::DataSegment {
+                linmem_off: *off,
+                bytes: d.clone(),
+            })
+            .collect();
+        if let synth_core::static_data_addr::Verdict::Mismatch(mismatches) =
+            synth_core::static_data_addr::validate_reloc_resolutions(
+                &val_segments,
+                &addr_resolutions,
+            )
+        {
+            let detail = mismatches
+                .iter()
+                .map(|m| format!("  {}", m.describe()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "VCR-VER-003: static-data addressing validation FAILED — {} \
+                 relocation(s) resolve to the wrong overlapping-segment byte \
+                 (this is the #757 silent-miscompile class; segments must apply \
+                 in declaration order, later-wins):\n{detail}",
+                mismatches.len()
+            );
         }
     }
 
