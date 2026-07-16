@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.2] - 2026-07-16
+
+**Soundness patch — #776 closed (aarch64 rotl clobber).**
+
+### Fixed (soundness)
+
+- **aarch64 `i32.rotl`/`i64.rotl` clobbered a computed rotate operand (#776).**
+  Rotate-left lowers to `neg + rorv` (A64 has no native rotate-left). The pre-fix
+  code reused `dst = alloc_temp()` as the `neg` scratch (`neg(dst,k);
+  rorv(dst,n,dst)`); when the rotated operand `n` is a **computed** value,
+  `alloc_temp` can return n's freed register, so `neg(dst,k)` destroyed `n` before
+  `rorv` read it — a silent wrong result. Param-only rotates escaped it (n sits in
+  a distinct argument register), which is why it slipped through #769's
+  param-operand differential. Fix: compute `-k` in `k`'s own now-dead register
+  (`neg(k,k); rorv(dst,n,k)`) — reads-before-write safe for any `dst` aliasing.
+  Red-first `i32_rotl_computed`/`i64_rotl_computed` cases added to the aarch64 m2
+  differential (n = an add temp): RED on the pre-fix binary (7 cases, e.g.
+  `A64=-49` vs `wasmtime=1183502082`), GREEN after (182/182). Introduced by #769
+  (aarch64 milestone 2, v0.45.0).
+
 ## [0.45.1] - 2026-07-16
 
 **Soundness patch — #757 closed (root-caused + fixed on gale's exact module).**
