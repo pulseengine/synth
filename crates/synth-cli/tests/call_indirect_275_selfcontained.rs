@@ -134,6 +134,82 @@ fn test_275_selfcontained_a32_still_declines_loudly() {
     );
 }
 
+/// RESIDUAL decline: a self-contained module with IMPORTED functions keeps
+/// the loud #275 decline — imports force ET_REL output, whose host runtime
+/// owns the R11 table region; the flash-table lowering must not fire there.
+#[test]
+fn test_275_selfcontained_with_imports_still_declines_loudly() {
+    let wat = r#"(module
+      (import "env" "ext" (func $ext (param i32) (result i32)))
+      (memory 1)
+      (type $un (func (param i32) (result i32)))
+      (func $easy (type $un) (i32.add (local.get 0) (i32.const 1)))
+      (func (export "go") (param i32 i32) (result i32)
+        (call_indirect (type $un) (local.get 0) (local.get 1)))
+      (table 1 funcref) (elem (i32.const 0) $easy))"#;
+    let src = "/tmp/ci275_imports.wat";
+    std::fs::write(src, wat).expect("write fixture");
+    let out = Command::new(synth())
+        .args([
+            "compile",
+            src,
+            "--cortex-m",
+            "--target",
+            "cortex-m3",
+            "-o",
+            "/tmp/ci275_imports.elf",
+        ])
+        .output()
+        .expect("run synth");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("skipping function 'go'") && stderr.contains("#275"),
+        "a self-contained module WITH imports must keep the loud #275 \
+         call_indirect decline (ET_REL output owns the table region), got:\n{stderr}"
+    );
+}
+
+/// LOUD bail (never a silent zero-linked slot): a funcref-table slot whose
+/// target function was loud-skipped (uncompilable) fails the whole compile
+/// with a named error — linking 0 would silently turn a callable slot into a
+/// trap.
+#[test]
+fn test_275_skipped_table_target_fails_loudly() {
+    let wat = r#"(module
+      (memory 1)
+      (type $un (func (param i32) (result i32)))
+      (func $hard (type $un)
+        (i32.trunc_f64_s (f64.sqrt (f64.convert_i32_s (local.get 0)))))
+      (func $easy (type $un) (i32.add (local.get 0) (i32.const 1)))
+      (func (export "go") (param i32 i32) (result i32)
+        (call_indirect (type $un) (local.get 0) (local.get 1)))
+      (table 2 funcref) (elem (i32.const 0) $easy $hard))"#;
+    let src = "/tmp/ci275_skiptarget.wat";
+    std::fs::write(src, wat).expect("write fixture");
+    let out = Command::new(synth())
+        .args([
+            "compile",
+            src,
+            "--cortex-m",
+            "--target",
+            "cortex-m3", // soft-float: the f64 target function loud-skips (#369)
+            "-o",
+            "/tmp/ci275_skiptarget.elf",
+        ])
+        .output()
+        .expect("run synth");
+    assert!(
+        !out.status.success(),
+        "a dispatch table with a skipped target must FAIL the compile, not \
+         link a broken table"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to link a broken dispatch table"),
+        "the failure must name the broken-table refusal (#275), got:\n{stderr}"
+    );
+}
+
 /// The `--relocatable` (host-linked) path is UNTOUCHED: the same module still
 /// emits `entry` with its guarded dispatch — the runtime places the R11 table
 /// region there, so the dispatch is sound (the #642/#650/#664/#676 oracles
