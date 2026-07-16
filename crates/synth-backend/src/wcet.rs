@@ -164,11 +164,20 @@ fn op_cost(op: &ArmOp) -> OpCost {
             Cycles(straightline_expansion(8))
         }
 
-        // === off-path pseudo-ops: never appear in the final encoded stream ===
-        // (Lowered to primitives upstream, or inserted by non-optimized paths this
-        // model does not price. Conservatively Unmodeled = decline the function.)
-        Label { .. } | Nop => Cycles(0), // zero-length / no-op, sound to price as 0
-        Push { .. } | Pop { .. } => Unmodeled,
+        // === prologue/epilogue stack ops: real, straight-line, single-execution ===
+        // Cortex-M4 STM/LDM (PUSH/POP) = 1 + N cycles for N registers. A POP that
+        // writes PC is also a branch (pipeline refill up to 3). We price BOTH as
+        // `1 + N + 3` — a sound over-estimate for PUSH (no refill) and the exact
+        // worst case for POP-to-PC (function return, the common epilogue).
+        Push { regs } => Cycles(1 + regs.len() as u64 + 3),
+        Pop { regs } => Cycles(1 + regs.len() as u64 + 3),
+
+        // === off-path pseudo-ops ===
+        // Label/Nop are zero-cost real placeholders. The rest are verification-only
+        // pseudo-ops the encoder REFUSES (Ok-or-Err, #615): a compile that reached
+        // one would already have errored, so they cannot appear in a stream we are
+        // pricing. Classified Unmodeled = decline as a belt-and-braces guard.
+        Label { .. } | Nop => Cycles(0),
         B { .. } | Bcc { .. } | Bhs { .. } | Blo { .. } => Unmodeled, // residual label branch
         LocalGet { .. }
         | LocalSet { .. }
@@ -335,12 +344,12 @@ pub fn op_worst_case_cycles(op: &ArmOp) -> u64 {
 /// to sum) from the dual-issue M7 (NOT sound: cache wait-states can make actual
 /// cycles exceed a zero-wait sum). Rather than risk pricing an M7 with the M4
 /// table, this DECLINES the ambiguous `-eabihf` triple entirely. Only the two
-/// unambiguous integer triples are accepted:
-///   - `thumbv7m-none-eabi`   → Cortex-M3 (ARMv7-M, in-order, no FPU)
-///   - `thumbv7em-none-eabi`  → Cortex-M4 no-FPU (ARMv7E-M, in-order)
-/// This is conservative for M4F (which is soundly summable) but never unsound —
-/// distinguishing M4F from M7 needs a discriminator the config does not carry here
-/// (a named follow-up: thread the `CortexMVariant` so M4F is bounded too).
+/// unambiguous integer triples are accepted: `thumbv7m-none-eabi` → Cortex-M3
+/// (ARMv7-M, in-order, no FPU) and `thumbv7em-none-eabi` → Cortex-M4 no-FPU
+/// (ARMv7E-M, in-order). This is conservative for M4F (which is soundly summable)
+/// but never unsound — distinguishing M4F from M7 needs a discriminator the config
+/// does not carry here (a named follow-up: thread the `CortexMVariant` so M4F is
+/// bounded too).
 pub fn sound_core_class(triple: &str) -> Option<&'static str> {
     match triple {
         "thumbv7m-none-eabi" | "cortex-m3" => Some("cortex-m3"),
