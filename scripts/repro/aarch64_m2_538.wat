@@ -20,6 +20,11 @@
     (i32.rotr (local.get 0) (local.get 1)))
   (func (export "i32_rotl") (param i32 i32) (result i32)
     (i32.rotl (local.get 0) (local.get 1)))
+  ;; #776: rotate a COMPUTED value — n is a temp (add result). The pre-fix
+  ;; neg(dst,k);rorv(dst,n,dst) clobbered n when alloc_temp reused its register
+  ;; as dst. Param-only rotl (above) escaped this because n sits in an arg reg.
+  (func (export "i32_rotl_computed") (param i32 i32) (result i32)
+    (i32.rotl (i32.add (local.get 0) (local.get 0)) (local.get 1)))
 
   ;; ---- i32 clz / ctz ----
   (func (export "i32_clz") (param i32) (result i32)
@@ -76,6 +81,8 @@
     (i64.rotr (local.get 0) (local.get 1)))
   (func (export "i64_rotl") (param i64 i64) (result i64)
     (i64.rotl (local.get 0) (local.get 1)))
+  (func (export "i64_rotl_computed") (param i64 i64) (result i64)
+    (i64.rotl (i64.add (local.get 0) (local.get 0)) (local.get 1)))
 
   ;; ---- i64 clz / ctz ----
   (func (export "i64_clz") (param i64) (result i64)

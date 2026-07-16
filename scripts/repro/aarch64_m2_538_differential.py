@@ -60,6 +60,9 @@ CASES += C32("i32_shr_u", (0x80000000, 4), (0xFFFFFFFF, 31), (1, 32))
 CASES += C32("i32_shr_s", (0x80000000, 4), (0xFFFFFFFF, 3), (0x7FFFFFFF, 1))
 CASES += C32("i32_rotr", (0x12345678, 4), (1, 1), (1, 0), (1, 33))
 CASES += C32("i32_rotl", (0x12345678, 4), (1, 31), (1, 0), (0x80000000, 1))
+# #776: computed rotate operand (n = a temp) — RED on the pre-fix binary
+# (neg scratch aliased n and destroyed it before rorv), GREEN after.
+CASES += C32("i32_rotl_computed", (0x12345678, 4), (1, 31), (0x80000000, 1), (3, 5))
 # i32 clz/ctz — zero input is the edge case (32).
 CASES += C32("i32_clz", (1,), (0x80000000,), (0,), (0xFFFFFFFF,))
 CASES += C32("i32_ctz", (1,), (0x80000000,), (0,), (8,))
@@ -78,6 +81,7 @@ CASES += C64("i64_shr_u", 64, (0x8000000000000000, 4), (M64, 63))
 CASES += C64("i64_shr_s", 64, (0x8000000000000000, 4), (M64, 3))
 CASES += C64("i64_rotr", 64, (0x0123456789ABCDEF, 8), (1, 0), (1, 65))
 CASES += C64("i64_rotl", 64, (0x0123456789ABCDEF, 8), (1, 63), (1, 0))
+CASES += C64("i64_rotl_computed", 64, (0x0123456789ABCDEF, 8), (1, 63), (3, 5))
 # i64 clz/ctz.
 CASES += C64("i64_clz", 64, (1,), (0x8000000000000000,), (0,))
 CASES += C64("i64_ctz", 64, (1,), (0x8000000000000000,), (0,), (256,))
