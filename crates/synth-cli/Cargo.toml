@@ -45,6 +45,12 @@ awsm = ["synth-backend-awsm"]
 wasker = ["synth-backend-wasker"]
 riscv = ["synth-backend-riscv"]
 verify = ["synth-verify"]
+# #275 non-vacuity probe (NEVER default): builds an `EXPORTS_ONLY_275` env hatch
+# that reverts compile_all_exports to the pre-#235 exports-only drop, so the
+# reachable-callgraph EXECUTION differential can prove it catches the historical
+# #275 drop (the RED direction). Excluded from every release/default build — the
+# release binary physically cannot carry a "regress to a fixed defect" switch.
+exports_only_275_probe = []
 # Uncomment when loom crate is available:
 # loom = ["dep:loom-opt"]
 
