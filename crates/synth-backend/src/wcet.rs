@@ -26,12 +26,14 @@
 //!
 //! ## Cycle numbers — provenance
 //!
-//! The per-instruction worst cases below are the documented Cortex-M4 figures
-//! (ARM Cortex-M4 Technical Reference Manual, "Instruction timings", and the
-//! Cortex-M3 TRM for the M3 subset — the two share the timing model for this
-//! integer subset). Loads/stores are 2 cycles (pipelined single access), taken
-//! branches add a pipeline-refill penalty (up to 3 → we use the worst), `SDIV`/
-//! `UDIV` are 2–12 (we use 12). Where an op EXPANDS to a fixed straight-line
+//! The per-instruction worst cases below are the MAX over the documented
+//! Cortex-M3 and Cortex-M4 figures (ARM Cortex-M3 / Cortex-M4 Technical Reference
+//! Manuals, "Instruction timings"), because a SINGLE shared table serves both
+//! cover cores (STM32F100 = M3, NUCLEO-G474RE = M4). Where the two diverge the M3
+//! (slower) number wins: `MLA`/`MLS` = 2 (M3; 1 on M4), `UMULL` = 5 (M3 3–5; 1 on
+//! M4). Loads/stores are 2 cycles (pipelined single access), taken branches add a
+//! pipeline-refill penalty (up to 3 → we use the worst), `SDIV`/`UDIV` are 2–12
+//! (we use 12). Where an op EXPANDS to a fixed straight-line
 //! sequence (Popcnt SWAR, i64 shift/rotate/clz/ctz/setcond), the entry is a
 //! conservative over-estimate of that sequence's summed worst case; each such
 //! entry is justified inline. Since a loop-free function executes every
@@ -41,14 +43,26 @@ use synth_core::wcet::{WcetDecline, WcetFunction};
 use synth_synthesis::{ArmInstruction, ArmOp};
 
 /// A conservative per-16-bit-halfword ceiling for a straight-line multi-byte
-/// encoder expansion built from simple ALU/shift/compare/move instructions. Every
-/// Thumb-2 instruction those expansions use retires in ≤ 3 cycles (a taken
-/// conditional inside the expansion is a forward skip; its refill is bounded by
-/// the pipeline depth). 4 cycles/halfword is therefore a safe over-estimate of any
-/// straight-line block, used to size the fixed bit-twiddle sequences without
-/// hand-counting each — sound because the block executes exactly once in a
-/// loop-free function.
-const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 4;
+/// encoder expansion built from ALU/shift/compare/move/short-multiply plus the
+/// occasional small register-list `PUSH`/`POP`. It is sound iff EVERY instruction
+/// in a priced expansion has a worst case ≤ `CEIL × (its halfword span)`:
+///
+///  - a 16-bit (1-halfword) ALU/shift/mov/cmp/forward-branch is ≤ 3 cycles → ≤ 5;
+///  - a 32-bit (2-halfword) op — including UMULL/MLA (M3 worst ≈ 5) — is priced at
+///    2×5 = 10 ≥ its worst;
+///  - a 16-bit `PUSH`/`POP` of up to 4 registers is 1+4 = 5 cycles → exactly ≤ 5
+///    (the audited expansions push at most 3 registers, so this holds with margin;
+///    the i64 software div/rem, which pushes 4, is a LoopedExpansion decline and
+///    is never priced here).
+///
+/// Hardware `SDIV`/`UDIV` (up to 12) do NOT appear in any priced expansion — the
+/// only i64 division is the looped-expansion decline — so no single instruction
+/// exceeds the ceiling. 5 cycles/halfword is therefore a sound over-estimate of any
+/// priced straight-line block; the block executes exactly once in a loop-free
+/// function, so summing the ceiling stays sound. Audited against `arm_encoder.rs`
+/// (#778): the only 16-bit `PUSH`/`POP` in a priced arm is I64Popcnt's 3-register
+/// `0xB438`/`0xBC38`.
+const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 5;
 
 /// Worst-case cycles for a straight-line expansion of `byte_len` bytes.
 fn straightline_expansion(byte_len: u64) -> u64 {
@@ -105,11 +119,17 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | AsrReg { .. }
         | RorReg { .. } => Cycles(1),
 
-        // --- multiply / multiply-accumulate: 1 cycle (M4 single-cycle MUL) ---
-        Mul { .. } | Mls { .. } | Mla { .. } => Cycles(1),
-        // UMULL is a long multiply: worst case 1 cycle issue on M4, but be
-        // conservative at 2 (it writes a 64-bit result pair).
-        Umull { .. } => Cycles(2),
+        // --- multiply / multiply-accumulate: MAX over {M3, M4} ---
+        // MUL is single-cycle on M3 and M4. MLA/MLS: 1 on M4E, but 2 on M3
+        // (ARMv7-M) — take 2 so the single shared table is sound on both cover
+        // cores (STM32F100 = M3, NUCLEO-G474RE = M4).
+        Mul { .. } => Cycles(1),
+        Mls { .. } | Mla { .. } => Cycles(2),
+        // UMULL long multiply: 1 cycle on M4, but 3–5 (data-dependent) on M3.
+        // Take the M3 MAX (5). REACHABLE: synth emits UMULL for the
+        // reciprocal-multiply divide-by-constant (the cost-gate was deleted, PR
+        // #322), so `x / 10` on `-t cortex-m3` must not undercount.
+        Umull { .. } => Cycles(5),
 
         // --- hardware divide: DATA-DEPENDENT 2..12, take the MAX (12) ---
         Sdiv { .. } | Udiv { .. } => Cycles(12),
