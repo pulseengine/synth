@@ -154,7 +154,7 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let (code, relocations, line_map) =
+        let (code, relocations, line_map, branch_map) =
             compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 
         Ok(CompiledFunction {
@@ -163,6 +163,7 @@ impl Backend for ArmBackend {
             wasm_ops: ops.to_vec(),
             relocations,
             line_map,
+            branch_map,
         })
     }
 
@@ -293,7 +294,15 @@ fn has_value_carrying_branch(wasm_ops: &[WasmOp], block_arity: &[(u8, u8)]) -> b
 fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
-) -> Result<(Vec<u8>, Vec<CodeRelocation>, LineMap), String> {
+) -> Result<
+    (
+        Vec<u8>,
+        Vec<CodeRelocation>,
+        LineMap,
+        synth_core::backend::BranchMap,
+    ),
+    String,
+> {
     // #539: `memory.grow(0)` must return the CURRENT page count, not the
     // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
     // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly
@@ -1312,6 +1321,9 @@ fn compile_wasm_to_arm(
     // the end; the LDR patch below is in-place/length-preserving). Purely
     // additive: it does not touch `code`, so `.text` is byte-identical.
     let mut line_map: LineMap = Vec::new();
+    // VCR-DEC-003 (#396): object-branch class per emitted instruction, parallel
+    // to `line_map`. Cheap, additive, does not touch `code`.
+    let mut branch_map: synth_core::backend::BranchMap = Vec::new();
 
     for instr in &arm_instrs {
         // Record a relocation for every BL: the encoder emits `bl #0` and
@@ -1357,6 +1369,7 @@ fn compile_wasm_to_arm(
         // The machine offset of this instruction is the current code length,
         // captured before the bytes are appended.
         line_map.push((code.len() as u32, instr.source_line));
+        branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
 
         let encoded = encoder
             .encode(&instr.op)
@@ -1416,7 +1429,24 @@ fn compile_wasm_to_arm(
         }
     }
 
-    Ok((code, relocations, line_map))
+    Ok((code, relocations, line_map, branch_map))
+}
+
+/// VCR-DEC-003 (#396): classify one emitted `ArmOp` into its object-level
+/// control-flow role for the `synth-provenance-v1` map. Conditional branches are
+/// the object decision points MC/DC must reconcile; `SelectMove` is the folded
+/// (IT-block) predicated form the cmp→select fuse produces — a decision with no
+/// branch.
+fn classify_arm_branch(op: &ArmOp) -> synth_core::backend::BranchClass {
+    use synth_core::backend::BranchClass;
+    match op {
+        ArmOp::Bcc { .. } | ArmOp::Bhs { .. } | ArmOp::Blo { .. } | ArmOp::BCondOffset { .. } => {
+            BranchClass::CondBranch
+        }
+        ArmOp::B { .. } | ArmOp::BOffset { .. } => BranchClass::UncondBranch,
+        ArmOp::SelectMove { .. } => BranchClass::Predicated,
+        _ => BranchClass::Other,
+    }
 }
 
 /// Resolve local label branches to byte-accurate offsets (#202).

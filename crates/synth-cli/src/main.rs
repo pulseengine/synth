@@ -397,6 +397,19 @@ enum Commands {
         #[arg(long)]
         debug_line: bool,
 
+        /// VCR-DEC-003 (#396, witness#130): emit the `synth-provenance-v1`
+        /// branch-transformation map as a JSON sidecar next to the output
+        /// (`<output>.provenance.json`). For each source WASM branch/condition it
+        /// records what object branch(es)/predicated-instruction(s) it became —
+        /// preserved (br_if/br), folded-predication (select→IT move),
+        /// split-into-object-branches (br_table), eliminated-constant — plus the
+        /// real object conditional branches reconciled back to their source
+        /// condition. witness's MC/DC reconciler consumes it to certify the
+        /// OBJECT. Purely additive: `.text` is byte-identical; off by default.
+        /// ARM(Thumb) only in v1 (RISC-V/AArch64 carry no branch_map).
+        #[arg(long)]
+        emit_provenance: bool,
+
         /// #543 (Phase 1): mark a linear-memory segment as VOLATILE — the DMA
         /// transfer window. Format `<base>:<len>`; both accept hex (`0x…`) or
         /// decimal, e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark
@@ -553,6 +566,7 @@ fn main() -> Result<()> {
             sign_output,
             shadow_stack_size,
             debug_line,
+            emit_provenance,
             volatile_segment,
             stack_layout,
             stack_size,
@@ -606,6 +620,7 @@ fn main() -> Result<()> {
                 sign_output,
                 shadow_stack_size,
                 debug_line,
+                emit_provenance,
                 volatile_segments,
                 stack_layout,
             )?;
@@ -1337,6 +1352,9 @@ fn compile_command(
     shadow_stack_size: Option<u32>,
     // VCR-DBG-001 step 4 (#394): `--debug-line` — emit `.debug_line` DWARF.
     debug_line: bool,
+    // VCR-DEC-003 (#396): `--emit-provenance` — write the synth-provenance-v1
+    // branch-transformation JSON sidecar.
+    emit_provenance: bool,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -1391,6 +1409,7 @@ fn compile_command(
             sign_output,
             shadow_stack_size,
             debug_line,
+            emit_provenance,
             volatile_segments,
             stack_layout,
         );
@@ -2430,6 +2449,8 @@ fn compile_all_exports(
     // VCR-DBG-001 step 4 (#394): emit a `.debug_line` section from the input
     // wasm's DWARF + the ARM line_maps. Default off ⇒ output byte-identical.
     debug_line: bool,
+    // VCR-DEC-003 (#396): write the synth-provenance-v1 JSON sidecar.
+    emit_provenance: bool,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -2440,6 +2461,15 @@ fn compile_all_exports(
     let path = input.context("--all-exports requires an input file")?;
 
     info!("Compiling all exports from: {}", path.display());
+
+    // VCR-DEC-003 (#396): accumulate the branch-transformation map across
+    // functions as they compile, then serialize the sidecar at the end.
+    let module_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "module".to_string());
+    let mut provenance_map =
+        emit_provenance.then(|| synth_core::provenance::ProvenanceMap::new(module_name));
 
     let file_bytes =
         std::fs::read(&path).context(format!("Failed to read input file: {}", path.display()))?;
@@ -3032,6 +3062,67 @@ fn compile_all_exports(
         };
         info!("  {} bytes of machine code", compiled.code.len());
 
+        // VCR-DEC-003 (#396): derive this function's branch-transformation map
+        // from the ops it compiled + the ARM line_map/branch_map it produced.
+        if let Some(pm) = provenance_map.as_mut() {
+            // Loud-decline (frozen-safe: only affects the sidecar): a lowering
+            // path that dropped source_line (the optimized `ir_to_arm` on some
+            // op shapes) yields an all-`None` line_map. Object branches then
+            // cannot be reconciled to a source condition — emitting entries
+            // anyway would be a map that LIES to witness. Warn and skip this
+            // function rather than serialize a misleading one.
+            let has_branch = compiled
+                .branch_map
+                .iter()
+                .any(|(_, c)| *c == synth_core::backend::BranchClass::CondBranch);
+            let all_none = !compiled.line_map.is_empty()
+                && compiled.line_map.iter().all(|(_, oi)| oi.is_none());
+            if has_branch && all_none {
+                eprintln!(
+                    "warning: provenance: skipping '{name}' — its lowering path carries no \
+                     source map (line_map all-None), so object branches cannot be reconciled \
+                     to source conditions (VCR-DEC-003 v1 covers the ARM direct/Thumb selector \
+                     path; #396 follow-up: optimized ir_to_arm source_line)"
+                );
+            } else {
+                // Eliminated-constant: original-stream branch/condition ops the
+                // fact-spec dropped (present in func.ops, absent from `kept`).
+                // The join key is the ORIGINAL-stream byte offset (func.op_offsets
+                // is unfiltered; `orig_idx` indexes it directly).
+                let eliminated: Vec<(usize, String, u32)> = match &spec {
+                    Some(s) => {
+                        let kept: std::collections::HashSet<usize> =
+                            s.kept.iter().copied().collect();
+                        func.ops
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| !kept.contains(i))
+                            .filter_map(|(i, op)| {
+                                synth_core::provenance::covered_source_op_name(op).map(|n| {
+                                    (
+                                        i,
+                                        n.to_string(),
+                                        func.op_offsets.get(i).copied().unwrap_or(0),
+                                    )
+                                })
+                            })
+                            .collect()
+                    }
+                    None => Vec::new(),
+                };
+                pm.functions
+                    .push(synth_core::provenance::derive_function_provenance(
+                        func.index,
+                        &name,
+                        ops_for_compile,
+                        &op_offsets_for_elf,
+                        &compiled.line_map,
+                        &compiled.branch_map,
+                        &eliminated,
+                    ));
+            }
+        }
+
         if !compiled.relocations.is_empty() {
             info!(
                 "  {} relocations (external symbol references)",
@@ -3356,7 +3447,27 @@ fn compile_all_exports(
         output.display()
     );
 
+    // VCR-DEC-003 (#396): write the synth-provenance-v1 sidecar next to the
+    // output (`<output>.provenance.json`). Additive; the ELF is unchanged.
+    if let Some(pm) = provenance_map {
+        let sidecar = provenance_sidecar_path(&output);
+        std::fs::write(&sidecar, pm.to_json())
+            .with_context(|| format!("Failed to write provenance map: {}", sidecar.display()))?;
+        println!(
+            "  Provenance: wrote {} ({} functions) — synth-provenance-v1",
+            sidecar.display(),
+            pm.functions.len()
+        );
+    }
+
     Ok(())
+}
+
+/// VCR-DEC-003 (#396): `<output>` → `<output>.provenance.json`.
+fn provenance_sidecar_path(output: &std::path::Path) -> PathBuf {
+    let mut s = output.as_os_str().to_os_string();
+    s.push(".provenance.json");
+    PathBuf::from(s)
 }
 
 /// Build a simple multi-function ELF

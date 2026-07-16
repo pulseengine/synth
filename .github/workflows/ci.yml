@@ -320,6 +320,36 @@ jobs:
       - name: Run two-move execution oracle
         run: python scripts/repro/cmp_select_two_move_differential.py
 
+  provenance-gate:
+    name: synth-provenance-v1 reconciliation gate (#396)
+    # VCR-DEC-003 (#396, witness#130): the source-to-object branch-transformation
+    # map. Compiles a fixture that FOLDS (select->IT predication) and SPLITS
+    # (br_table) branches, then reconciles every REAL object conditional branch
+    # (from the BranchMap side-table) back to its source WASM condition. The gate
+    # is the non-vacuous check that a folded/eliminated condition is recorded AS
+    # folded with its object realization, never silently dropped. Runs in the
+    # workspace test set too, but named here so a provenance regression is a
+    # visible, self-describing red — witness's MC/DC object-certification depends
+    # on this contract holding.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Run reconciliation gate + emitter unit tests
+        run: |
+          cargo test -p synth-cli --test provenance_reconciliation_396
+          cargo test -p synth-core --lib provenance
+
   aarch64-oracle:
     name: aarch64 backend execution + decline oracle (#538 m2)
     # #538 milestone-2: the host-native A64 backend broadened from the m1 i32
