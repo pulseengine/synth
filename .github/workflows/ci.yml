@@ -990,6 +990,55 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/call_indirect_676_differential.py
 
+  call-indirect-275-selfcontained-oracle:
+    name: self-contained call_indirect oracle (execution + residual declines)
+    # #275 finale (v0.47): the SELF-CONTAINED Thumb-2 `--cortex-m` image now
+    # lowers `call_indirect` through a flash-resident funcref table addressed
+    # PC-relative (`__synth_func_table` literal, patched post-layout) — never
+    # via R11, the linear-memory base the v0.42 #717 collision corrupted.
+    # Two gates:
+    #  1. EXECUTION differential (falcon shape): the default self-contained
+    #     image (its OWN Reset_Handler startup, nothing fabricated) runs a
+    #     heterogeneous 5-slot dispatch under unicorn vs the wasmtime oracle —
+    #     matching dispatches must return wasmtime's values (incl. a
+    #     linear-memory-reading target: the #717 non-collision proof), and
+    #     OOB / type-mismatch / null-slot cases must all stop AT A UDF
+    #     (§4.4.8). Red on <= v0.46: the dispatchers loud-declined (the #717
+    #     interim), so the harness fails at the symbol probe.
+    #  2. Emission + RESIDUAL declines: cortex-m emits the table; the
+    #     A32/Cortex-R5 self-contained path (no flash-table builder) still
+    #     LOUD-declines with #275; `--relocatable` stays untouched on both
+    #     ISAs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run self-contained call_indirect EXECUTION differential
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_275_selfcontained_execution_differential.py
+      - name: Run emission + residual-decline oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_275_selfcontained_differential.py
+
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
     # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward
