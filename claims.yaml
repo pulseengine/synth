@@ -328,3 +328,45 @@ claims:
         pattern: '^pub open spec fn '
         glob: ['crates/synth-synthesis/src/contracts.rs']
         expect: 8
+
+  # ---------------------------------------------------------------------------
+  # #778 WCET — the SOUND-critical per-op cycle model constants. These numbers
+  # are load-bearing: a bound that undercounts real cycles is disqualifying, and
+  # the summation gate (wcet_bound_gate.rs) re-derives from THIS same table so it
+  # cannot flag a wrong number. Pinning the constants here is the honest
+  # substitute for the cycle-accurate oracle that does not exist in-env: any edit
+  # to a sound-critical entry reddens the claim-check and forces a conscious
+  # re-derivation against the Cortex-M3/M4 TRM (max over {M3, M4}). The doc text
+  # lives in CLAUDE.md's Track D.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-WCET-CYCLE-MODEL
+    doc: CLAUDE.md
+    text: "`STRAIGHTLINE_CEIL_PER_HALFWORD = 5`"
+    evidence:
+      # The straight-line-expansion ceiling — bumped 4→5 after auditing a 3-reg
+      # 16-bit PUSH/POP in I64Popcnt (1+3=4 cyc/halfword had zero margin).
+      - kind: count-eq
+        pattern: 'const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 5;'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
+      # UMULL = M3-worst 5 (reachable via reciprocal-multiply div-by-const, #322).
+      - kind: count-eq
+        pattern: 'Umull \{ \.\. \} => Cycles\(5\),'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
+      # MLA/MLS = M3-worst 2 (1 on M4).
+      - kind: count-eq
+        pattern: 'Mls \{ \.\. \} \| Mla \{ \.\. \} => Cycles\(2\),'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
+      # Hardware divide = data-dependent MAX 12.
+      - kind: count-eq
+        pattern: 'Sdiv \{ \.\. \} \| Udiv \{ \.\. \} => Cycles\(12\),'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
+      # The four i64 SOFTWARE div/rem = LoopedExpansion decline (internal 64-iter
+      # runtime loop; a straight sum would undercount).
+      - kind: count-eq
+        pattern: 'I64DivU \{ \.\. \} \| I64DivS \{ \.\. \} \| I64RemU \{ \.\. \} \| I64RemS \{ \.\. \} => LoopedExpansion,'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1

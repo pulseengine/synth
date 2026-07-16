@@ -154,6 +154,17 @@ frozen and oracle-gated every step:
   wrong-segment miscompile. Concrete byte-equality (not SMT), unconditional
   (runs in the default `--features riscv` build), red-first gated (same
   validator Mismatch on `.position()` / Consistent on `.rposition()`).
+- **Track D (schedulability, #778):** `--emit-wcet` emits a SOUND static
+  per-function worst-case cycle bound (`synth-wcet-v1` sidecar) as gale spar's
+  T3/T4 `C_i` input — a bound, not a DWT observation. Loop-free functions get an
+  EXACT sum of documented Cortex-M3/M4 worst-case per-op cycles (MAX over {M3,M4};
+  the sound-critical model constants are `STRAIGHTLINE_CEIL_PER_HALFWORD = 5`,
+  `Umull = 5`, `Mls/Mla = 2`, `Sdiv/Udiv = 12`, and the four i64 software
+  div/rem = `LoopedExpansion` decline, pinned in `claims.yaml`); loops, calls,
+  i64-software-div and non-M3/M4 cores (incl. the ambiguous `-eabihf` M4F/M7
+  triple) LOUD-DECLINE with a machine reason. Frozen-safe (`.text` unchanged);
+  gated by `wcet_bound_gate.rs` (bound ≥ actual + decline matrix). Loop-bound
+  inference (scry) + inter-procedural composition are named follow-ups.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the
