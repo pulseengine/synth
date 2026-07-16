@@ -195,6 +195,10 @@ pub enum Cond {
     Hi,
     Ls,
     Hs,
+    /// `mi` — N set. WASM float `lt` lowers to `cset mi` after `fcmp`: ordered
+    /// less-than sets N=1, while an unordered (NaN) compare sets C=1,V=1 ⇒ N=0,
+    /// so `mi` correctly yields 0 (matching clang's f32/f64 `<` lowering).
+    Mi,
 }
 
 impl Cond {
@@ -212,6 +216,7 @@ impl Cond {
             Cond::Lt => 0xA,
             Cond::Gt => 0xD,
             Cond::Le => 0xC,
+            Cond::Mi => 0x5,
         }
     }
 }
@@ -295,6 +300,165 @@ pub fn mov_imm64(rd: Reg, value: u64) -> Vec<u32> {
         }
     }
     out
+}
+
+// ===========================================================================
+// Milestone 3 — scalar floating point (V/D/S register file).
+//
+// A64 keeps floats in a SEPARATE register file (V0..V31; the `s`/`d` views are
+// the low 32/64 bits). Data-processing float ops name V registers by number in
+// the same [20:16]/[9:5]/[4:0] fields as the integer forms, but the opcode's
+// `ftype` field at bits [23:22] selects single (00) vs double (01) precision —
+// NOT the `sf` bit. `FMOV` between the GP and FP files is the only bridge.
+//
+// Every base below is derived from `clang -target aarch64-linux-gnu` ground
+// truth (see the `fp_*` tests): assemble the mnemonic, read the 32-bit word,
+// subtract the operand fields.
+//
+// SOUNDNESS: the float→int truncations that TRAP in WASM on out-of-range /NaN
+// (`i32.trunc_f32_s` and friends) are NOT encoded here — A64 `FCVTZS`/`FCVTZU`
+// SATURATE instead of trapping (the #709 "more-total-than-WASM" class), so the
+// selector loud-declines them rather than emit a silently-wrong saturating
+// result. Only the total, non-trapping float ops live here.
+// ===========================================================================
+
+/// A float register operand (`0..=31`; the `s`/`d` view is width-selected by the
+/// op's `ftype` field, not by the register number).
+pub type FReg = u8;
+
+/// A two-source float data-processing op (`Fd = Fn OP Fm`). `base` is the 32-bit
+/// single-precision opcode with all operand fields zero; the double-precision
+/// twin sets `ftype=01` (bit 22).
+fn fp3(base: u32, rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    base | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+/// A one-source float op (`Fd = OP Fn`).
+fn fp2(base: u32, rd: FReg, rn: FReg) -> u32 {
+    base | ((rn as u32) << 5) | (rd as u32)
+}
+
+/// `fadd sd, sn, sm`
+pub fn fadd_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_2800, rd, rn, rm)
+}
+/// `fsub sd, sn, sm`
+pub fn fsub_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_3800, rd, rn, rm)
+}
+/// `fmul sd, sn, sm`
+pub fn fmul_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_0800, rd, rn, rm)
+}
+/// `fdiv sd, sn, sm`
+pub fn fdiv_s(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E20_1800, rd, rn, rm)
+}
+/// `fadd dd, dn, dm`
+pub fn fadd_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_2800, rd, rn, rm)
+}
+/// `fsub dd, dn, dm`
+pub fn fsub_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_3800, rd, rn, rm)
+}
+/// `fmul dd, dn, dm`
+pub fn fmul_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_0800, rd, rn, rm)
+}
+/// `fdiv dd, dn, dm`
+pub fn fdiv_d(rd: FReg, rn: FReg, rm: FReg) -> u32 {
+    fp3(0x1E60_1800, rd, rn, rm)
+}
+
+/// `fabs sd, sn`
+pub fn fabs_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E20_C000, rd, rn)
+}
+/// `fneg sd, sn`
+pub fn fneg_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E21_4000, rd, rn)
+}
+/// `fsqrt sd, sn`
+pub fn fsqrt_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E21_C000, rd, rn)
+}
+/// `fabs dd, dn`
+pub fn fabs_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E60_C000, rd, rn)
+}
+/// `fneg dd, dn`
+pub fn fneg_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E61_4000, rd, rn)
+}
+/// `fsqrt dd, dn`
+pub fn fsqrt_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E61_C000, rd, rn)
+}
+
+/// `fcmp sn, sm` — sets NZCV (unordered ⇒ C=1,V=1). The WASM float predicate is
+/// then materialized with a `cset` of the clang-matched condition (see selector).
+pub fn fcmp_s(rn: FReg, rm: FReg) -> u32 {
+    0x1E20_2000 | ((rm as u32) << 16) | ((rn as u32) << 5)
+}
+/// `fcmp dn, dm`
+pub fn fcmp_d(rn: FReg, rm: FReg) -> u32 {
+    0x1E60_2000 | ((rm as u32) << 16) | ((rn as u32) << 5)
+}
+
+/// `fmov sd, wn` — reinterpret the 32-bit GP register `wn` into `sd` (no numeric
+/// conversion). Bridges the GP→FP files; used for `f32.reinterpret_i32`, moving a
+/// materialized f32 const bit-pattern into an S register, and float param setup.
+pub fn fmov_s_from_w(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x1E27_0000, rd, rn)
+}
+/// `fmov wd, sn` — reinterpret `sn`'s 32 bits into GP `wd` (`i32.reinterpret_f32`,
+/// and funneling a float result to `w0`).
+pub fn fmov_w_from_s(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x1E26_0000, rd, rn)
+}
+/// `fmov dd, xn` — reinterpret 64-bit GP `xn` into `dd` (`f64.reinterpret_i64`).
+pub fn fmov_d_from_x(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x9E67_0000, rd, rn)
+}
+/// `fmov xd, dn` — reinterpret `dn` into GP `xd` (`i64.reinterpret_f64`, and
+/// funneling an f64 result to `x0`).
+pub fn fmov_x_from_d(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x9E66_0000, rd, rn)
+}
+/// `fmov sd, sn` — copy between S registers.
+pub fn fmov_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E20_4000, rd, rn)
+}
+/// `fmov dd, dn` — copy between D registers.
+pub fn fmov_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E60_4000, rd, rn)
+}
+
+/// `fcvt dd, sn` — single→double (`f64.promote_f32`). Exact, never traps.
+pub fn fcvt_d_from_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E22_C000, rd, rn)
+}
+/// `fcvt sd, dn` — double→single (`f32.demote_f64`). Round-to-nearest, never
+/// traps (overflow ⇒ ±inf, matching WASM demote).
+pub fn fcvt_s_from_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E62_4000, rd, rn)
+}
+
+/// `scvtf sd, wn` — signed i32 → f32 (`f32.convert_i32_s`). Total.
+pub fn scvtf_s_from_w(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x1E22_0000, rd, rn)
+}
+/// `ucvtf sd, wn` — unsigned i32 → f32 (`f32.convert_i32_u`). Total.
+pub fn ucvtf_s_from_w(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x1E23_0000, rd, rn)
+}
+/// `scvtf dd, wn` — signed i32 → f64 (`f64.convert_i32_s`). Exact, total.
+pub fn scvtf_d_from_w(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x1E62_0000, rd, rn)
+}
+/// `ucvtf dd, wn` — unsigned i32 → f64 (`f64.convert_i32_u`). Exact, total.
+pub fn ucvtf_d_from_w(rd: FReg, rn: Reg) -> u32 {
+    fp2(0x1E63_0000, rd, rn)
 }
 
 /// Append a 32-bit instruction word to a little-endian byte buffer.
@@ -382,6 +546,58 @@ mod tests {
         assert_eq!(cset(0, Cond::Hi), 0x1A9F_97E0);
         assert_eq!(cset(0, Cond::Ls), 0x1A9F_87E0);
         assert_eq!(cset(0, Cond::Hs), 0x1A9F_37E0);
+    }
+
+    // Milestone 3 — scalar float. Ground truth from `clang -target
+    // aarch64-linux-gnu` (assemble mnemonic, `objdump -d`, read the word).
+    #[test]
+    fn fp_arith_encodings_match_clang() {
+        assert_eq!(fadd_s(0, 1, 2), 0x1E22_2820);
+        assert_eq!(fsub_s(3, 4, 5), 0x1E25_3883);
+        assert_eq!(fmul_s(6, 7, 8), 0x1E28_08E6);
+        assert_eq!(fdiv_s(9, 10, 11), 0x1E2B_1949);
+        assert_eq!(fadd_d(0, 1, 2), 0x1E62_2820);
+        assert_eq!(fsub_d(3, 4, 5), 0x1E65_3883);
+        assert_eq!(fmul_d(6, 7, 8), 0x1E68_08E6);
+        assert_eq!(fdiv_d(9, 10, 11), 0x1E6B_1949);
+    }
+
+    #[test]
+    fn fp_unary_encodings_match_clang() {
+        assert_eq!(fabs_s(0, 1), 0x1E20_C020);
+        assert_eq!(fneg_s(2, 3), 0x1E21_4062);
+        assert_eq!(fsqrt_s(4, 5), 0x1E21_C0A4);
+        assert_eq!(fabs_d(0, 1), 0x1E60_C020);
+        assert_eq!(fneg_d(2, 3), 0x1E61_4062);
+        assert_eq!(fsqrt_d(4, 5), 0x1E61_C0A4);
+    }
+
+    #[test]
+    fn fp_cmp_and_mi_cond_match_clang() {
+        assert_eq!(fcmp_s(0, 1), 0x1E21_2000);
+        assert_eq!(fcmp_d(0, 1), 0x1E61_2000);
+        // WASM float `lt` → `cset mi` (clang f32/f64 `<` lowering).
+        assert_eq!(cset(0, Cond::Mi), 0x1A9F_57E0);
+    }
+
+    #[test]
+    fn fmov_bridge_encodings_match_clang() {
+        assert_eq!(fmov_s_from_w(0, 1), 0x1E27_0020);
+        assert_eq!(fmov_w_from_s(0, 1), 0x1E26_0020);
+        assert_eq!(fmov_d_from_x(0, 1), 0x9E67_0020);
+        assert_eq!(fmov_x_from_d(0, 1), 0x9E66_0020);
+        assert_eq!(fmov_s(5, 6), 0x1E20_40C5);
+        assert_eq!(fmov_d(5, 6), 0x1E60_40C5);
+    }
+
+    #[test]
+    fn fp_convert_encodings_match_clang() {
+        assert_eq!(fcvt_d_from_s(0, 1), 0x1E22_C020);
+        assert_eq!(fcvt_s_from_d(0, 1), 0x1E62_4020);
+        assert_eq!(scvtf_s_from_w(0, 1), 0x1E22_0020);
+        assert_eq!(ucvtf_s_from_w(0, 1), 0x1E23_0020);
+        assert_eq!(scvtf_d_from_w(0, 1), 0x1E62_0020);
+        assert_eq!(ucvtf_d_from_w(0, 1), 0x1E63_0020);
     }
 
     #[test]

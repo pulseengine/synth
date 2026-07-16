@@ -85,8 +85,15 @@ impl Backend for AArch64Backend {
             Some(declared) => inferred.min(declared),
             None => inferred,
         };
-        let words = selector::select(ops, num_params)
-            .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
+        // m3: thread the per-param float masks so float params resolve to their
+        // AAPCS64 V registers (an independent counter from the GP arg registers).
+        let words = selector::select_typed(
+            ops,
+            num_params,
+            &config.current_func_params_f32,
+            &config.current_func_params_f64,
+        )
+        .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         Ok(CompiledFunction {
             name: name.to_string(),
