@@ -27,8 +27,20 @@
 //!   (`div`/`rem`), `popcnt`, and floats are DELIBERATELY still declined — A64
 //!   `SDIV`/`UDIV` don't trap, so a naive division lowering would be a silent
 //!   miscompile; those need explicit trap guards in a later milestone.
-//! - **later:** division-with-trap-guards, floats, spilling, memory, control
-//!   flow, calls, DWARF.
+//! - **3:** scalar floating point — f32/f64 const/add/sub/mul/div, abs/neg/sqrt,
+//!   the full compare family, promote/demote, i32→float converts, and the
+//!   f32↔i32 reinterprets, on a register-FILE-tagged value stack (GP vs FP).
+//! - **4 (this milestone):** the #709-class SOUNDNESS conversions — the
+//!   trapping float→int truncations (`i32.trunc_f32_{s,u}`,
+//!   `i32.trunc_f64_{s,u}`) lowered behind an explicit WASM §4.3.3 domain guard
+//!   (`fcmp` exact boundary + ordered `b.cond` + `brk`; A64 `FCVTZS`/`FCVTZU`
+//!   alone SATURATE where WASM traps), plus `f32/f64.min/max` (A64
+//!   `FMIN`/`FMAX` = IEEE 754-2019 minimum/maximum ≡ WASM NaN-propagation and
+//!   -0<+0, execution-verified vs wasmtime) and `f32/f64.copysign` (GP-file bit
+//!   surgery). Boundary-table execution differential:
+//!   `scripts/repro/aarch64_m4_trunc_minmax_538_differential.py`.
+//! - **later:** division-with-trap-guards, rounding ops, i64↔float converts,
+//!   spilling, memory, control flow, calls, DWARF.
 
 pub mod backend;
 pub mod elf;

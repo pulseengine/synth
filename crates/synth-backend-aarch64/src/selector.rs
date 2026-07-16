@@ -35,12 +35,27 @@
 //! f32 param (delivered in `s0..` under AAPCS64, a counter INDEPENDENT of the
 //! GP arg registers) is never confused with a GP operand.
 //!
-//! **Still declined (loud-skip, never wrong code):** the trapping float→int
-//! truncations (`i32.trunc_f32_s`/`_u`, `i32.trunc_f64_*`): A64 `FCVTZS`/`FCVTZU`
-//! SATURATE on out-of-range/NaN whereas WASM traps — emitting them would be the
-//! #709 "more-total-than-WASM" silent miscompile, so they honest-reject. Also
-//! declined: `min`/`max`/`copysign`/rounding (`ceil`/`floor`/`trunc`/`nearest`)
-//! and the i64<->float conversions (a later increment).
+//! **Milestone 4 converts the #709-class declines into SOUND capabilities:**
+//!
+//! - The trapping float→int truncations (`i32.trunc_f32_{s,u}`,
+//!   `i32.trunc_f64_{s,u}`): A64 `FCVTZS`/`FCVTZU` SATURATE on out-of-range/NaN
+//!   whereas WASM traps (§4.3.3) — the #709 "more-total-than-WASM" silent
+//!   miscompile class. m4 lowers them with an EXPLICIT domain guard (the A64
+//!   twin of the Thumb-2 `f32_trunc_range_guard`): `fcmp` against the exact
+//!   WASM boundary constant, an ORDERED `b.cond` that skips a `brk #0` only
+//!   when the operand is proven in-range (NaN fails every ordered condition ⇒
+//!   falls into the trap), then the saturating convert on the proven-in-range
+//!   path where the two semantics agree.
+//! - `f32/f64.min/max`: A64 `FMIN`/`FMAX` (NOT `FMINNM`/`FMAXNM`) implement
+//!   IEEE 754-2019 minimum/maximum — either-NaN ⇒ NaN, `-0.0 < +0.0` — exactly
+//!   WASM's semantics; execution-verified against wasmtime (NaN/±0 matrix) in
+//!   `aarch64_m4_trunc_minmax_538_differential.py`, not assumed.
+//! - `f32/f64.copysign`: pure bit surgery through the GP file (`fmov` out,
+//!   one sign mask + `bic`/`and`/`orr`, `fmov` back).
+//!
+//! **Still declined (loud-skip, never wrong code):** the rounding ops
+//! (`ceil`/`floor`/`trunc`/`nearest`) and the i64<->float conversions
+//! (a later increment).
 
 use crate::encoder as enc;
 use crate::encoder::{Cond, FReg, Reg};
@@ -253,6 +268,121 @@ pub fn select_typed(
         stack.push(Val::fp(dst));
         Ok(())
     };
+    // m4: trapping float→int truncation with the #709 WASM domain guard
+    // (§4.3.3). A64 FCVTZS/FCVTZU SATURATE where WASM must TRAP, so the
+    // convert is emitted ONLY behind two fcmp + b.cond + brk range checks:
+    //
+    //   mov  dst, #hi_bits ; fmov bound, dst ; fcmp a, bound
+    //   b.mi +2                      // x < hi (ORDERED: NaN ⇒ fall through)
+    //   brk  #0                      // trap: NaN or too large
+    //   mov  dst, #lo_bits ; fmov bound, dst ; fcmp a, bound
+    //   b.<ge|gt> +2                 // x >= lo (signed f32) / x > lo (strict)
+    //   brk  #0                      // trap: too small
+    //   fcvtz[su] dst, a             // proven in-range: saturate == trunc
+    //
+    // Boundary table (WASM Core §4.3.3, mirrored from the Thumb-2 #709 guard):
+    //   f32→s: hi 2^31 (0x4F000000, exclusive), lo -2^31 (0xCF000000,
+    //          INCLUSIVE — -2^31 is representable and in-range; no f32 exists
+    //          strictly between -2^31-1 and -2^31, so `ge` is exact).
+    //   f32→u: hi 2^32 (0x4F800000, exclusive), lo -1.0 (0xBF800000, STRICT —
+    //          trunc(-0.5) = 0 is valid, trunc(-1.0) = -1 traps).
+    //   f64→s: hi 2^31 (0x41E0...0, exclusive), lo -(2^31)-1 (0xC1E0...0020_0000,
+    //          STRICT — f64 CAN represent values in (-2^31-1, -2^31), e.g.
+    //          -2147483648.5, which truncate to -2^31 and are IN-range; an
+    //          inclusive -2^31 bound would wrongly trap them).
+    //   f64→u: hi 2^32 (0x41F0...0, exclusive), lo -1.0 (0xBFF0...0, strict).
+    let trunc_guarded = |words: &mut Vec<u32>,
+                         stack: &mut Vec<Val>,
+                         is_f64: bool,
+                         signed: bool|
+     -> Result<(), SelectError> {
+        let a = pop_fp(stack, "trunc")?;
+        // Keep `a` live across temp allocation: it is read by both fcmps and
+        // the final convert, so the bound register must never alias it.
+        stack.push(Val::fp(a));
+        let dst = alloc_temp(stack)?; // GP: const scratch, then the result
+        let bound = alloc_ftemp(stack)?;
+        stack.pop();
+        let (hi_bits, lo_bits, lo_cond): (u64, u64, Cond) = match (is_f64, signed) {
+            (false, true) => (0x4F00_0000, 0xCF00_0000, Cond::Ge),
+            (false, false) => (0x4F80_0000, 0xBF80_0000, Cond::Gt),
+            (true, true) => (0x41E0_0000_0000_0000, 0xC1E0_0000_0020_0000, Cond::Gt),
+            (true, false) => (0x41F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
+        };
+        let check = |words: &mut Vec<u32>, bits: u64, cond: Cond| {
+            if is_f64 {
+                for w in enc::mov_imm64(dst, bits) {
+                    words.push(w);
+                }
+                words.push(enc::fmov_d_from_x(bound, dst));
+                words.push(enc::fcmp_d(a, bound));
+            } else {
+                for w in enc::mov_imm32(dst, bits as u32) {
+                    words.push(w);
+                }
+                words.push(enc::fmov_s_from_w(bound, dst));
+                words.push(enc::fcmp_s(a, bound));
+            }
+            words.push(enc::bcond(cond, 2)); // skip the brk when in-range
+            words.push(enc::brk(0));
+        };
+        check(words, hi_bits, Cond::Mi);
+        check(words, lo_bits, lo_cond);
+        words.push(match (is_f64, signed) {
+            (false, true) => enc::fcvtzs_w_from_s(dst, a),
+            (false, false) => enc::fcvtzu_w_from_s(dst, a),
+            (true, true) => enc::fcvtzs_w_from_d(dst, a),
+            (true, false) => enc::fcvtzu_w_from_d(dst, a),
+        });
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // m4: copysign(z1, z2) — the magnitude of z1 with the sign of z2, a pure
+    // bit operation (WASM §4.3.3 fcopysign; NaN payloads pass through intact).
+    // Route both operands through the GP file, isolate the sign with ONE
+    // materialized mask (`and` for the sign, `bic` for the magnitude), merge,
+    // and move back.
+    let copysign =
+        |words: &mut Vec<u32>, stack: &mut Vec<Val>, is_f64: bool| -> Result<(), SelectError> {
+            let b = pop_fp(stack, "copysign")?; // z2: sign source
+            let a = pop_fp(stack, "copysign")?; // z1: magnitude
+            // Three DISTINCT free GP temps (a-bits, b-bits, mask).
+            let mut free = TEMPS
+                .iter()
+                .copied()
+                .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+            let (Some(ta), Some(tb), Some(tm)) = (free.next(), free.next(), free.next()) else {
+                return Err(SelectError(
+                    "value-stack too deep (copysign needs 3 GP temps)".into(),
+                ));
+            };
+            let dst = alloc_ftemp(stack)?; // may alias a/b: written last, from GP
+            if is_f64 {
+                words.push(enc::fmov_x_from_d(ta, a));
+                words.push(enc::fmov_x_from_d(tb, b));
+                for w in enc::mov_imm64(tm, 0x8000_0000_0000_0000) {
+                    words.push(w);
+                }
+                words.push(enc::and64(tb, tb, tm)); // sign of z2
+                words.push(enc::bic64(ta, ta, tm)); // magnitude of z1
+                words.push(enc::orr64(ta, ta, tb));
+                words.push(enc::fmov_d_from_x(dst, ta));
+            } else {
+                words.push(enc::fmov_w_from_s(ta, a));
+                words.push(enc::fmov_w_from_s(tb, b));
+                for w in enc::mov_imm32(tm, 0x8000_0000) {
+                    words.push(w);
+                }
+                words.push(enc::and(tb, tb, tm));
+                words.push(enc::bic(ta, ta, tm));
+                words.push(enc::orr(ta, ta, tb));
+                words.push(enc::fmov_s_from_w(dst, ta));
+            }
+            stack.push(Val::fp(dst));
+            Ok(())
+        };
+
     // reinterpret GP → FP (bit-cast, FMOV).
     let reinterpret_gp_to_fp = |words: &mut Vec<u32>,
                                 stack: &mut Vec<Val>,
@@ -484,6 +614,24 @@ pub fn select_typed(
             WasmOp::F64Le => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Ls)?,
             WasmOp::F64Gt => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Gt)?,
             WasmOp::F64Ge => fcmp_op(&mut words, &mut stack, enc::fcmp_d, Cond::Ge)?,
+
+            // --- f32/f64 min/max (m4): A64 FMIN/FMAX are IEEE 754-2019
+            // minimum/maximum — NaN-propagating, -0.0 < +0.0 — exactly WASM's
+            // semantics (execution-verified vs wasmtime, NaN/±0 matrix). ---
+            WasmOp::F32Min => fbinop(&mut words, &mut stack, enc::fmin_s)?,
+            WasmOp::F32Max => fbinop(&mut words, &mut stack, enc::fmax_s)?,
+            WasmOp::F64Min => fbinop(&mut words, &mut stack, enc::fmin_d)?,
+            WasmOp::F64Max => fbinop(&mut words, &mut stack, enc::fmax_d)?,
+
+            // --- copysign (m4): pure bit surgery through the GP file ---
+            WasmOp::F32Copysign => copysign(&mut words, &mut stack, false)?,
+            WasmOp::F64Copysign => copysign(&mut words, &mut stack, true)?,
+
+            // --- trapping float→int truncations (m4): domain-guarded #709 ---
+            WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true)?,
+            WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
+            WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true)?,
+            WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false)?,
 
             // --- float↔float precision conversions (total, never trap) ---
             WasmOp::F64PromoteF32 => funop(&mut words, &mut stack, enc::fcvt_d_from_s)?,
@@ -854,37 +1002,176 @@ mod tests {
         );
     }
 
+    // ---- milestone 4: guarded trunc, min/max, copysign ----
+
     #[test]
-    fn trapping_float_to_int_trunc_is_loud_declined() {
-        // A64 FCVTZS/FCVTZU SATURATE where WASM traps (#709) — must refuse.
-        for op in [
-            WasmOp::I32TruncF32S,
-            WasmOp::I32TruncF32U,
-            WasmOp::I32TruncF64S,
-            WasmOp::I32TruncF64U,
-        ] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
-            assert!(
-                select_typed(&ops, 1, &[true], &[]).is_err(),
-                "trapping float→int trunc must loud-decline"
-            );
-        }
+    fn i32_trunc_f32_s_emits_domain_guard_then_fcvtzs() {
+        // #709: the saturating FCVTZS must sit BEHIND the two-sided WASM
+        // range guard (fcmp bound; ordered b.cond skips the brk; NaN falls
+        // through every ordered condition into the trap).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I32TruncF32S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        let mut expect = Vec::new();
+        // hi bound: 2^31 (0x4F000000, exclusive, b.mi)
+        expect.extend(enc::mov_imm32(9, 0x4F00_0000));
+        expect.push(enc::fmov_s_from_w(16, 9));
+        expect.push(enc::fcmp_s(0, 16));
+        expect.push(enc::bcond(Cond::Mi, 2));
+        expect.push(enc::brk(0));
+        // lo bound: -2^31 (0xCF000000, INCLUSIVE, b.ge)
+        expect.extend(enc::mov_imm32(9, 0xCF00_0000));
+        expect.push(enc::fmov_s_from_w(16, 9));
+        expect.push(enc::fcmp_s(0, 16));
+        expect.push(enc::bcond(Cond::Ge, 2));
+        expect.push(enc::brk(0));
+        expect.push(enc::fcvtzs_w_from_s(9, 0));
+        expect.push(enc::mov_reg64(0, 9));
+        expect.push(enc::ret());
+        assert_eq!(w, expect);
     }
 
     #[test]
-    fn float_min_max_copysign_are_loud_declined() {
-        for op in [
+    fn i32_trunc_f64_s_lower_bound_is_strict_minus_2pow31_minus_1() {
+        // f64 CAN represent values in (-2^31-1, -2^31) (e.g. -2147483648.5)
+        // which truncate IN-range — the lower bound must be the STRICT
+        // -(2^31)-1 (0xC1E0_0000_0020_0000, b.gt), not an inclusive -2^31.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I32TruncF64S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[], &[true]).unwrap();
+        let lo = enc::mov_imm64(9, 0xC1E0_0000_0020_0000);
+        assert!(
+            w.windows(lo.len()).any(|win| win == lo.as_slice()),
+            "must materialize the strict -(2^31)-1 f64 bound; got {w:#010X?}"
+        );
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)));
+        assert!(w.contains(&enc::fcvtzs_w_from_d(9, 0)));
+        assert_eq!(w.iter().filter(|&&x| x == enc::brk(0)).count(), 2);
+    }
+
+    #[test]
+    fn i32_trunc_f32_u_uses_strict_minus_one_lower_bound_and_fcvtzu() {
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I32TruncF32U, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        // hi 2^32 = 0x4F800000; lo -1.0 = 0xBF800000 with STRICT b.gt.
+        assert!(w.contains(&enc::movz(9, 0)), "movz low half of 0x4F800000");
+        assert!(w.contains(&enc::movk(9, 0x4F80, 1)));
+        assert!(w.contains(&enc::movk(9, 0xBF80, 1)));
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)));
+        assert!(w.contains(&enc::fcvtzu_w_from_s(9, 0)));
+    }
+
+    #[test]
+    fn f32_min_max_use_fmin_fmax() {
+        // WASM min/max ≡ A64 FMIN/FMAX (IEEE 754-2019 minimum/maximum) — a
+        // single instruction each; FMINNM/FMAXNM would be the WRONG (minNum)
+        // NaN semantics.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
             WasmOp::F32Min,
-            WasmOp::F32Max,
-            WasmOp::F32Copysign,
-            WasmOp::F64Min,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[true, true], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![enc::fmin_s(16, 0, 1), enc::fmov_d(0, 16), enc::ret()]
+        );
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
             WasmOp::F64Max,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[], &[true, true]).unwrap();
+        assert_eq!(
+            w,
+            vec![enc::fmax_d(16, 0, 1), enc::fmov_d(0, 16), enc::ret()]
+        );
+    }
+
+    #[test]
+    fn f32_copysign_is_bit_surgery_through_gp() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::F32Copysign,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[true, true], &[]).unwrap();
+        let mut expect = vec![
+            enc::fmov_w_from_s(9, 0),  // z1 bits (magnitude)
+            enc::fmov_w_from_s(10, 1), // z2 bits (sign)
+        ];
+        expect.extend(enc::mov_imm32(11, 0x8000_0000));
+        expect.extend([
+            enc::and(10, 10, 11),
+            enc::bic(9, 9, 11),
+            enc::orr(9, 9, 10),
+            enc::fmov_s_from_w(16, 9),
+            enc::fmov_d(0, 16),
+            enc::ret(),
+        ]);
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn f64_copysign_uses_x_forms_and_shifted_movz_mask() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
             WasmOp::F64Copysign,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 2, &[], &[true, true]).unwrap();
+        // The 0x8000_0000_0000_0000 mask must be ONE shifted movz (the
+        // mov_imm64 halfword fix), clang: movz x11, #0x8000, lsl #48.
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_x_from_d(9, 0),
+                enc::fmov_x_from_d(10, 1),
+                0xD2F0_000B, // movz x11, #0x8000, lsl #48
+                enc::and64(10, 10, 11),
+                enc::bic64(9, 9, 11),
+                enc::orr64(9, 9, 10),
+                enc::fmov_d_from_x(16, 9),
+                enc::fmov_d(0, 16),
+                enc::ret()
+            ]
+        );
+    }
+
+    #[test]
+    fn rounding_and_i64_float_converts_are_loud_declined() {
+        // The m4 honesty frontier: rounding ops and i64<->float conversions
+        // stay DECLINED (never silent wrong code) until a later increment.
+        for op in [
+            WasmOp::F32Ceil,
+            WasmOp::F32Floor,
+            WasmOp::F32Trunc,
+            WasmOp::F32Nearest,
+            WasmOp::F64Ceil,
+            WasmOp::F64Floor,
+            WasmOp::F64Trunc,
+            WasmOp::F64Nearest,
         ] {
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), op, WasmOp::End];
+            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
             assert!(
-                select_typed(&ops, 2, &[], &[true, true]).is_err(),
-                "min/max/copysign not yet supported — must loud-decline"
+                select_typed(&ops, 1, &[true], &[true]).is_err(),
+                "rounding ops not yet supported — must loud-decline"
+            );
+        }
+        for op in [WasmOp::I64TruncF64S, WasmOp::I64TruncF64U] {
+            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
+            assert!(
+                select_typed(&ops, 1, &[], &[true]).is_err(),
+                "i64<->float conversions not yet supported — must loud-decline"
+            );
+        }
+        for op in [WasmOp::F64ConvertI64S, WasmOp::F32ConvertI64U] {
+            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
+            assert!(
+                select_typed(&ops, 1, &[], &[]).is_err(),
+                "i64<->float conversions not yet supported — must loud-decline"
             );
         }
     }
