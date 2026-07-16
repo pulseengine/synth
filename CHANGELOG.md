@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-07-16
+
+**Soundness patch — #757 closed (root-caused + fixed on gale's exact module).**
+After surviving four releases as "unreproducible," gale delivered the exact fused
+`gust:os` node (`loom.wasm`) and it cracked immediately.
+
+### Fixed (soundness)
+
+- **Overlapping active data segments bound a static reloc to the wrong segment
+  (#757).** `loom.wasm` declares three active data segments **all at wasm linear
+  memory `0x100000`**. WASM applies active segments in declaration order, so a
+  later segment overwrites an earlier one — the last (`seg_2`, 24 B) owns those
+  bytes at runtime and holds `"gust:os up\n"` at linmem `0x100008`. The `#354`
+  mixed-split relocation retargeting resolved each `__synth_wasm_data + C` static
+  access to its owning `__synth_wasm_seg_K` via `.position()` (**first** match),
+  so the string source at `0x100008` bound to `__synth_wasm_seg_0 + 8` (seg_0's
+  stale const `0x02`) instead of `__synth_wasm_seg_2 + 8` (the string). Runtime:
+  `got=[2,0,0,0,1,0,0,32,…]` instead of `"gust:os up\n"` — a silent miscompile,
+  byte-identical across 0.43.0/0.43.1/0.44.0/0.45.0, and **not reproducible by
+  synthetic reconstructions** (v0.45.0 PR #772: 7 faithful shapes all green, because
+  a non-overlapping module has one segment per range where first==last match).
+  Fix: `.position()` → `.rposition()` — resolve overlapping addresses to the
+  last-declared owning segment, matching WASM overwrite semantics. **Byte-identical
+  for non-overlapping segments** (frozen anchors 10/10; `#739`/`#746`/`#758`/`#406`
+  static-data differentials all green). gale's `loom.wasm` is pinned as a permanent,
+  non-vacuous CI regression fixture (`mem757_gale_differential.py`, RED on the
+  pre-fix binary).
+
+### Note (North Star follow-up)
+
+- Filed **VCR-VER-003 (#777)** — per-compilation translation validation of
+  static-data addressing, to make the `#739`/`#746`/`#757`/`#758` patch-accretion
+  class unrepresentable by construction (the addressing analogue of VCR-VER-002's
+  trap validator). #757 slipped four releases because value-differential oracles
+  are coverage-limited; construction-based validation closes the gap.
+
 ## [0.45.0] - 2026-07-16
 
 **The Mega-Hub epic — all three North-Star tracks advanced at once.** Five
