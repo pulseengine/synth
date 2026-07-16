@@ -1,6 +1,6 @@
 {
   "name": "@pulseengine/synth",
-  "version": "0.44.0",
+  "version": "0.45.0",
   "description": "synth — a WebAssembly-to-ARM/RISC-V/AArch64 compiler with mechanized correctness proofs. Produces bare-metal ELF binaries for embedded targets.",
   "bin": {
     "synth": "./run.js"

@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-07-16
+
+**The Mega-Hub epic — all three North-Star tracks advanced at once.** Five
+oracle-gated feature lanes plus an honest negative result on a shipped miscompile.
+Semantics (a WasmCert-Coq source anchor + 9 more verified-selector ops → 485 Qed),
+capability (AArch64 7→50 ops), performance (a proof-carrying 12× beat over clang),
+and assurance (MC/DC source-to-object provenance). Coordinator re-verified each
+lane's oracle before merge; cold-reviewed SAFE-TO-TAG.
+
+### Added (semantics — Track B)
+
+- **WASM source semantics anchored on WasmCert-Coq (VCR-WASM-001, #771).** New
+  `coq/Synth/WASM/WasmCertBridge.v` proves synth's `exec_wasm_instr I32Add`
+  refines the WasmCert-Coq operational rule — the WASM-side analogue of
+  `SailArmBridge.v`. Non-vacuous (the reference normalizes operands first; synth
+  adds raw representatives — the proof discharges the raw-vs-normalized gap via
+  `Zplus_mod`, not reflexivity). **Bounded first increment**: 1 op, establishes
+  the refinement pattern. The reference is a hand transcription with line-level
+  provenance to WasmCert-Coq/CompCert (importing the real dep drags mathcomp +
+  CompCert into the hermetic toolchain — the named follow-up).
+- **Verified-selector model extended 41 → 50 ops (VCR-ISA-001, #773).** Nine i64
+  pseudo-ops (`clz`, `ctz`, `popcnt`, `mul`, `shl`, `shr_u`, `shr_s`, `rotl`,
+  `rotr`) join the generate-not-mirror Rocq model. **476 → 485 Qed.** Byte-invisible
+  (bit-identical under `SYNTH_NO_SEL_DSL=1`); drift-guard holds (flipping a
+  generated rule breaks its Qed).
+
+### Added (capability — Track A)
+
+- **AArch64 backend milestone 2 — 7 → 50 covered ops (#769).** Full i32+i64 integer
+  ALU (24 i32 + 26 i64): arithmetic, bitwise, variable shifts/rotates, `clz`/`ctz`,
+  the compare family + `eqz`. Every new encoding clang-cross-verified; native
+  differential 175/175 vs wasmtime. **div/rem loud-declined** (A64 `SDIV`/`UDIV`
+  don't trap on `/0` or `INT_MIN÷-1` — the more-total-than-WASM soundness class,
+  deferred until explicit trap guards); popcnt/floats also declined (decline
+  matrix 10/10).
+
+### Added (performance — Track C)
+
+- **Proof-carrying specialization that beats LLVM (#770).** A const-divisor
+  `rem_u` identity elision: `x rem_u 1000` with the ingested fact `x ∈ [0,999]`
+  compiles to **2 B** (`bx lr`) vs **clang -Os 24 B** — a measured **12×** on
+  `gust_scale` (public cover target). Licensed by ordeal `UNSAT(P ∧
+  (x bvurem 1000) ≠ x)` with an LRAT certificate (proof-carrying, not heuristic);
+  absent/too-wide fact → loud decline. Flag-gated (`SYNTH_FACT_SPEC`); flag-off
+  byte-identical.
+
+### Added (assurance — Track C)
+
+- **MC/DC source-to-object provenance (#396 / VCR-DEC-003, #774).** The
+  `synth-provenance-v1` branch-transformation map (`--emit-provenance` JSON
+  sidecar; ELF byte-identical with/without the flag) records how each source WASM
+  branch/condition maps to object branches — `preserved`, `folded-predication`
+  (cmp→select), `split-into-object-branches` (br_table), `eliminated-constant`.
+  Closes the source-to-object gap that synth's branch folding/splitting opened for
+  witness MC/DC (witness#130). Reconciliation gate verified non-vacuous (RED under
+  an adversarial mislabel); uncovered object branches surfaced `resolved:false`,
+  never hidden. Bounded v1 — common transformations covered; i64-expansion /
+  trap-guard branches surfaced-unresolved as named follow-up.
+
+### Known issues (still open)
+
+- **#757 — accepted residual (second disproof).** The wide-static *copy* path
+  carries a miscompile confirmed on gale's silicon, re-characterized on 0.43.1 as
+  a multi-chunk memmove reading `data_base + small` instead of `data_base + 0x20`
+  in the RawVec-grow + memmove shape. **Seven faithful reconstructions of that
+  exact shape all compile byte-correct vs wasmtime** (#772) — the miscompile is
+  not reproducible from the description; it needs the reporter's exact
+  `loom.wasm`/`os-tl-cm3.o` (re-requested). #757 stays OPEN; this release lands the
+  7 shapes as regression guards but does NOT fix it.
+- **i64.trunc_f64 live trap-VC** — still not wireable (the selector loud-declines
+  the op ⇒ no shipped lowering to validate); blocked on selector support, not VC
+  work (carried from v0.44).
+- **#761 — latent self-contained linmem/globals overlap** (impact unverified).
+
 ## [0.44.0] - 2026-07-15
 
 **Five-lane hub: two more live trap classes, an extended verified-selector model,
