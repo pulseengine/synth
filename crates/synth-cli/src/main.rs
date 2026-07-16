@@ -410,6 +410,23 @@ enum Commands {
         #[arg(long)]
         emit_provenance: bool,
 
+        /// #778 (v0.46): emit the `synth-wcet-v1` sound static worst-case-cycle
+        /// bound as a JSON sidecar next to the output (`<output>.wcet.json`). For
+        /// each compiled function it emits either a SOUND upper bound (the sum of
+        /// each instruction's documented Cortex-M3/M4 worst-case cycles — valid
+        /// only for a proven loop-free, call-free function) or a loud DECLINE with
+        /// a machine-readable reason (loop / call / looped-expansion i64-div /
+        /// unsupported-core M7). gale's spar T3/T4 schedulability track consumes it
+        /// as a SOUND `C_i` input (a bound, not a DWT observation). The bound is
+        /// conditional on the zero-wait-state precondition recorded in the sidecar.
+        /// Purely additive: `.text` is byte-identical; off by default. ARM(Thumb-2)
+        /// only in v1 (RISC-V/AArch64 carry no cycle model; A32/loops = follow-up).
+        /// Emitted on the all-exports path (the default for a plain file input);
+        /// like `--emit-provenance`, it is inert on the single-function
+        /// `--func-name`/`--func-index` path (a documented v1 boundary).
+        #[arg(long)]
+        emit_wcet: bool,
+
         /// #543 (Phase 1): mark a linear-memory segment as VOLATILE — the DMA
         /// transfer window. Format `<base>:<len>`; both accept hex (`0x…`) or
         /// decimal, e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark
@@ -567,6 +584,7 @@ fn main() -> Result<()> {
             shadow_stack_size,
             debug_line,
             emit_provenance,
+            emit_wcet,
             volatile_segment,
             stack_layout,
             stack_size,
@@ -621,6 +639,7 @@ fn main() -> Result<()> {
                 shadow_stack_size,
                 debug_line,
                 emit_provenance,
+                emit_wcet,
                 volatile_segments,
                 stack_layout,
             )?;
@@ -1355,6 +1374,8 @@ fn compile_command(
     // VCR-DEC-003 (#396): `--emit-provenance` — write the synth-provenance-v1
     // branch-transformation JSON sidecar.
     emit_provenance: bool,
+    // #778: `--emit-wcet` — write the synth-wcet-v1 sound worst-case-cycle sidecar.
+    emit_wcet: bool,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -1410,6 +1431,7 @@ fn compile_command(
             shadow_stack_size,
             debug_line,
             emit_provenance,
+            emit_wcet,
             volatile_segments,
             stack_layout,
         );
@@ -2451,6 +2473,8 @@ fn compile_all_exports(
     debug_line: bool,
     // VCR-DEC-003 (#396): write the synth-provenance-v1 JSON sidecar.
     emit_provenance: bool,
+    // #778: write the synth-wcet-v1 sound worst-case-cycle JSON sidecar.
+    emit_wcet: bool,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -2469,7 +2493,17 @@ fn compile_all_exports(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "module".to_string());
     let mut provenance_map =
-        emit_provenance.then(|| synth_core::provenance::ProvenanceMap::new(module_name));
+        emit_provenance.then(|| synth_core::provenance::ProvenanceMap::new(module_name.clone()));
+
+    // #778: accumulate the synth-wcet-v1 report across functions. The core class
+    // labels the sound cores (M3/M4); an unsupported/ambiguous target falls back to
+    // the raw triple so the sidecar records what the (all-declined) bounds are
+    // conditional on.
+    let wcet_core_class = synth_backend::wcet::sound_core_class(&target_spec.triple)
+        .map(str::to_string)
+        .unwrap_or_else(|| target_spec.triple.clone());
+    let mut wcet_report =
+        emit_wcet.then(|| synth_core::wcet::WcetReport::new(module_name, wcet_core_class));
 
     let file_bytes =
         std::fs::read(&path).context(format!("Failed to read input file: {}", path.display()))?;
@@ -3142,6 +3176,21 @@ fn compile_all_exports(
             }
         }
 
+        // #778: collect this function's sound WCET bound (or loud decline). The
+        // ARM backend attaches it on `compiled.wcet` for the Thumb-2 path; if the
+        // backend produced none (RISC-V/AArch64/A32), record a decline so the map
+        // stays COMPLETE (every compiled function is bounded-or-explicitly-unbounded,
+        // never silently missing).
+        if let Some(wr) = wcet_report.as_mut() {
+            match &compiled.wcet {
+                Some(wf) => wr.functions.push(wf.clone()),
+                None => wr.functions.push(synth_core::wcet::WcetFunction::declined(
+                    &name,
+                    synth_core::wcet::WcetDecline::UnsupportedCore,
+                )),
+            }
+        }
+
         if !compiled.relocations.is_empty() {
             info!(
                 "  {} relocations (external symbol references)",
@@ -3476,6 +3525,30 @@ fn compile_all_exports(
             "  Provenance: wrote {} ({} functions) — synth-provenance-v1",
             sidecar.display(),
             pm.functions.len()
+        );
+    }
+
+    // #778: write the synth-wcet-v1 sound worst-case-cycle sidecar next to the
+    // output (`<output>.wcet.json`). Additive; the ELF is byte-identical.
+    if let Some(wr) = wcet_report {
+        let sidecar = synth_core::wcet::WcetReport::sidecar_path(&output);
+        let json = wr
+            .to_json()
+            .with_context(|| "Failed to serialize WCET report".to_string())?;
+        std::fs::write(&sidecar, json)
+            .with_context(|| format!("Failed to write WCET report: {}", sidecar.display()))?;
+        let bounded = wr
+            .functions
+            .iter()
+            .filter(|f| matches!(f, synth_core::wcet::WcetFunction::Bounded { .. }))
+            .count();
+        let declined = wr.functions.len() - bounded;
+        println!(
+            "  WCET: wrote {} ({} bounded, {} declined, core {}) — synth-wcet-v1",
+            sidecar.display(),
+            bounded,
+            declined,
+            wr.core_class
         );
     }
 

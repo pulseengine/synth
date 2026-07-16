@@ -28,6 +28,7 @@ pub use w2c2_wrapper::{TranspileOptions, TranspileResult, W2C2Backend, W2C2Trans
 pub mod arm_backend;
 #[cfg(feature = "arm-cortex-m")]
 pub mod arm_encoder;
+
 #[cfg(feature = "arm-cortex-m")]
 pub mod arm_startup;
 #[cfg(feature = "arm-cortex-m")]
@@ -36,6 +37,7 @@ pub mod cortex_m;
 pub mod reset_handler;
 #[cfg(feature = "arm-cortex-m")]
 pub mod vector_table;
+pub mod wcet;
 
 #[cfg(feature = "arm-cortex-m")]
 pub use arm_backend::ArmBackend;

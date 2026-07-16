@@ -17,6 +17,7 @@ pub mod target;
 pub mod wasm_decoder;
 pub mod wasm_op;
 pub mod wasm_stack_check;
+pub mod wcet;
 pub mod wsc_facts;
 
 pub use backend::*;

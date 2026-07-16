@@ -197,6 +197,9 @@ fn compile_function_with_opts(
         line_map: Vec::new(),
         // VCR-DEC-003 (#396): provenance is ARM-only in v1 (empty ⇒ skipped).
         branch_map: Vec::new(),
+        // #778: WCET cycle model is ARM(Thumb-2)-only in v1 (RISC-V has no
+        // per-op cycle table yet) — no bound emitted for this backend.
+        wcet: None,
     })
 }
 
@@ -452,6 +455,7 @@ mod tests {
             relocations: Vec::new(),
             line_map: Vec::new(),
             branch_map: Vec::new(),
+            wcet: None,
         };
         let cfg = CompileConfig {
             target: TargetSpec::riscv32imac(),

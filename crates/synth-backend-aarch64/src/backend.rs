@@ -97,6 +97,8 @@ impl Backend for AArch64Backend {
             line_map: Vec::new(),
             // VCR-DEC-003 (#396): provenance is ARM(Thumb)-only in v1.
             branch_map: Vec::new(),
+            // #778: WCET cycle model is ARM(Thumb-2)-only in v1.
+            wcet: None,
         })
     }
 
