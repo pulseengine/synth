@@ -3293,6 +3293,17 @@ pub struct InstructionSelector {
     /// Set by the backend from `!config.relocatable`; the selector's own unit
     /// tests construct it directly (default `false`) and are unaffected.
     reject_self_contained_call_indirect: bool,
+    /// #275: lower `call_indirect` for the SELF-CONTAINED Thumb-2 image via
+    /// the flash-resident funcref table (`FUNC_TABLE_SYMBOL`), addressed
+    /// PC-relative through an `LdrSym` literal-pool pointer — NEVER via
+    /// R11/R9/R10/R12 base registers (R11 is the linear-memory base; the #717
+    /// collision this replaces). The backend sets it from
+    /// `config.self_contained_funcref_table` ONLY when the image builder that
+    /// emits and patches the table will run (Thumb-2 `--cortex-m`, no
+    /// imports, not `--relocatable`); it is mutually exclusive with
+    /// `reject_self_contained_call_indirect`. Only `select_with_stack`
+    /// implements this lowering — `select_default` declines it loudly.
+    self_contained_funcref_table: bool,
     /// #237: native-pointer ABI — wasm statics become `__synth_wasm_data`-
     /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
     /// mis-address them.
@@ -3533,6 +3544,7 @@ impl InstructionSelector {
             num_imports: 0,
             relocatable: false,
             reject_self_contained_call_indirect: false,
+            self_contained_funcref_table: false,
             native_pointer_abi: false,
             memory_pages: Vec::new(),
             linear_memory_bytes: 0,
@@ -3583,6 +3595,7 @@ impl InstructionSelector {
             num_imports: 0,
             relocatable: false,
             reject_self_contained_call_indirect: false,
+            self_contained_funcref_table: false,
             native_pointer_abi: false,
             memory_pages: Vec::new(),
             linear_memory_bytes: 0,
@@ -3777,12 +3790,13 @@ impl InstructionSelector {
         if self.reject_self_contained_call_indirect {
             return Err(synth_core::Error::synthesis(format!(
                 "call_indirect (table {table_index}, expected type {type_index}): \
-                 the self-contained Cortex-M image has no runtime to populate the \
+                 this self-contained path has no runtime to populate the \
                  R11 funcref-table region (R11 is the linear-memory base), so the \
-                 dispatch would read function pointers from linear-memory data — a \
-                 silent miscompile. Declining (use --relocatable for a host-linked \
-                 object whose runtime places the table region, or await the \
-                 dedicated func-table fix) — #275"
+                 R11 dispatch would read function pointers from linear-memory data \
+                 — a silent miscompile. The dedicated flash-resident funcref table \
+                 covers only the Thumb-2 --cortex-m image path with no imported \
+                 functions; declining here (use --relocatable for a host-linked \
+                 object whose runtime places the table region) — #275"
             )));
         }
         let n_tables = self.call_indirect_guards.tables.len();
@@ -3920,6 +3934,171 @@ impl InstructionSelector {
         ))
     }
 
+    /// #275: emit the SELF-CONTAINED `call_indirect` dispatch — the funcref
+    /// table lives in FLASH (appended to `.text` by
+    /// `build_multi_func_cortex_m_elf`, the #758 ROM-image pattern) and is
+    /// reached PC-relative through an `LdrSym` literal-pool pointer carrying
+    /// an `Abs32` relocation against `FUNC_TABLE_SYMBOL`, which the image
+    /// builder patches to the table's laid-out address. No reserved base
+    /// register is touched: NOT R11 (linear-memory base — the #717 silent
+    /// miscompile this lowering replaces), NOT R9/R10 (globals / mem-size),
+    /// NOT R12 (encoder scratch, #212). Two callee-saved scratch registers
+    /// are taken via `free_callee_saved` (loud `Err` on exhaustion — an
+    /// honest decline, never a corrupted dispatch).
+    ///
+    /// The sequence (same WASM Core §4.4.8 trap semantics as the R11
+    /// expansion in `arm_encoder.rs`, same `UDF #0` trap idiom as the div
+    /// guards):
+    ///
+    /// ```text
+    ///   MOVW s_idx, #size_lo [; MOVT s_idx, #size_hi]
+    ///   CMP  idx, s_idx ; BLO +1 ; UDF #0            (OOB index trap, #642)
+    ///   LSL  s_idx, idx, #2                          (slot byte offset)
+    ///   [heterogeneous table (#676):
+    ///     LDR  s_addr, =__synth_func_table           (LdrSym literal)
+    ///     ADD  s_addr, s_addr, s_idx
+    ///     LDR  s_addr, [s_addr, #type_id_off]
+    ///     CMP  s_addr, #expected_id ; BEQ +1 ; UDF #0 (type-mismatch trap)]
+    ///   LDR  s_addr, =__synth_func_table             (LdrSym literal)
+    ///   ADD  s_addr, s_addr, s_idx
+    ///   LDR  s_addr, [s_addr, #table_byte_offset]
+    ///   [null slots (#664):
+    ///     CMP  s_addr, #0 ; BNE +1 ; UDF #0           (null-funcref trap)]
+    ///   BLX  s_addr
+    /// ```
+    ///
+    /// Returns the number of instructions pushed (for the caller's
+    /// control-flow bookkeeping).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_self_contained_call_indirect(
+        &mut self,
+        instructions: &mut Vec<ArmInstruction>,
+        table_idx_reg: Reg,
+        live_regs: &[Reg],
+        local_to_reg: &std::collections::HashMap<u32, Reg>,
+        layout: &LocalLayout,
+        table_size: u32,
+        table_byte_offset: u32,
+        null_check: bool,
+        type_check: Option<(u32, u32)>,
+        idx: usize,
+    ) -> Result<usize> {
+        // Two callee-saved scratches, excluding everything live PLUS the
+        // table-index register (it must stay readable until the LSL).
+        let mut protected: Vec<Reg> = live_regs.to_vec();
+        protected.push(table_idx_reg);
+        let s_addr = self.free_callee_saved(&protected, local_to_reg, layout)?;
+        protected.push(s_addr);
+        let s_idx = self.free_callee_saved(&protected, local_to_reg, layout)?;
+
+        let before = instructions.len();
+        let mut push = |op: ArmOp| {
+            instructions.push(ArmInstruction {
+                op,
+                source_line: Some(idx),
+            });
+        };
+
+        // Bounds guard (#642): trap when index >= table size. MOVT only when
+        // the size exceeds 16 bits (mirrors the R11 expansion; never in
+        // practice, but the guard must not compare against a truncated size).
+        push(ArmOp::Movw {
+            rd: s_idx,
+            imm16: (table_size & 0xFFFF) as u16,
+        });
+        if table_size >> 16 != 0 {
+            push(ArmOp::Movt {
+                rd: s_idx,
+                imm16: (table_size >> 16) as u16,
+            });
+        }
+        push(ArmOp::Cmp {
+            rn: table_idx_reg,
+            op2: Operand2::Reg(s_idx),
+        });
+        // Skip the UDF when index < size — the div-guard `BCondOffset 0`
+        // idiom (offset 0 ⇒ target = branch + 4, one 16-bit insn).
+        push(ArmOp::BCondOffset {
+            cond: Condition::LO,
+            offset: 0,
+        });
+        push(ArmOp::Udf { imm: 0 });
+
+        // Slot byte offset — the index register is dead after this (both the
+        // sidecar and the pointer load index with s_idx).
+        push(ArmOp::Lsl {
+            rd: s_idx,
+            rn: table_idx_reg,
+            shift: 2,
+        });
+
+        // #676: heterogeneous table — runtime type check against the type-id
+        // sidecar (id 0 = null slot, subsuming the #664 null trap; the
+        // selector guards `expected_id <= 255` and `type_id_off <= 4095`).
+        if let Some((expected_id, type_id_off)) = type_check {
+            push(ArmOp::LdrSym {
+                rd: s_addr,
+                symbol: synth_core::backend::FUNC_TABLE_SYMBOL.to_string(),
+                addend: 0,
+            });
+            push(ArmOp::Add {
+                rd: s_addr,
+                rn: s_addr,
+                op2: Operand2::Reg(s_idx),
+            });
+            push(ArmOp::Ldr {
+                rd: s_addr,
+                addr: MemAddr::imm(s_addr, type_id_off as i32),
+            });
+            push(ArmOp::Cmp {
+                rn: s_addr,
+                op2: Operand2::Imm(expected_id as i32),
+            });
+            push(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            });
+            push(ArmOp::Udf { imm: 0 });
+        }
+
+        // Pointer load: table base (PC-relative literal) + slot offset, then
+        // the #650 constant table base offset folded into the LDR immediate
+        // (the selector guards `table_byte_offset <= 4095`).
+        push(ArmOp::LdrSym {
+            rd: s_addr,
+            symbol: synth_core::backend::FUNC_TABLE_SYMBOL.to_string(),
+            addend: 0,
+        });
+        push(ArmOp::Add {
+            rd: s_addr,
+            rn: s_addr,
+            op2: Operand2::Reg(s_idx),
+        });
+        push(ArmOp::Ldr {
+            rd: s_addr,
+            addr: MemAddr::imm(s_addr, table_byte_offset as i32),
+        });
+
+        // #664: null-slot trap — the image builder links uninitialized slots
+        // as ZERO words; calling one must trap, not branch to address 0.
+        if null_check {
+            push(ArmOp::Cmp {
+                rn: s_addr,
+                op2: Operand2::Imm(0),
+            });
+            push(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            });
+            push(ArmOp::Udf { imm: 0 });
+        }
+
+        // Indirect call — the table words carry the Thumb bit (builder-set).
+        push(ArmOp::Blx { rm: s_addr });
+
+        Ok(instructions.len() - before)
+    }
+
     /// Enable relocatable host-link mode (#197): import calls emit a direct
     /// `BL func_N` (rewritten to the wasm field name by the relocatable-ELF
     /// builder) instead of dispatching through `__meld_dispatch_import`.
@@ -3936,6 +4115,15 @@ impl InstructionSelector {
     /// region) leaves it `false` and keeps emitting the guarded dispatch.
     pub fn set_reject_self_contained_call_indirect(&mut self, reject: bool) {
         self.reject_self_contained_call_indirect = reject;
+    }
+
+    /// #275: enable the SELF-CONTAINED funcref-table `call_indirect` lowering
+    /// (see the field doc). The backend sets this ONLY when the Thumb-2
+    /// `--cortex-m` image builder that emits and patches the
+    /// `FUNC_TABLE_SYMBOL` table will run; it replaces (and must be mutually
+    /// exclusive with) `reject_self_contained_call_indirect`.
+    pub fn set_self_contained_funcref_table(&mut self, enabled: bool) {
+        self.self_contained_funcref_table = enabled;
     }
 
     /// #237: enable the native-pointer ABI and supply the active data-segment
@@ -4918,6 +5106,19 @@ impl InstructionSelector {
                 // guard), a constant table base offset, and a verified
                 // closed-world type verdict for THAT table, decline loudly
                 // rather than emit an unchecked indirect branch.
+                // #275: the SELF-CONTAINED funcref-table lowering (PC-relative
+                // flash table) is implemented only by `select_with_stack` —
+                // this legacy/demo arm emits the R11 dispatch, which would be
+                // the #717 linear-memory collision on a self-contained image.
+                // Decline loudly rather than emit it.
+                if self.self_contained_funcref_table {
+                    return Err(synth_core::Error::synthesis(
+                        "call_indirect: the self-contained funcref-table dispatch \
+                         is a select_with_stack lowering; this selector path \
+                         would emit the colliding R11 dispatch — declining (#275)"
+                            .to_string(),
+                    ));
+                }
                 let (table_size, table_byte_offset, null_check, type_check) =
                     self.resolve_call_indirect_guards(*table_index, *type_index)?;
                 vec![ArmOp::CallIndirect {
@@ -12845,27 +13046,54 @@ impl InstructionSelector {
                         stack.pop();
                     }
 
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::CallIndirect {
-                            rd: Reg::R0,
-                            type_idx: *type_index,
-                            table_index_reg: table_idx_reg,
-                            // #642: the encoder emits `CMP idx, size; BLO ok;
-                            // UDF #0` before the table load. #650: a non-zero
-                            // offset routes the load through the table's base
-                            // within the contiguous R11 region. #664: a table
-                            // with null slots gets a runtime null check on
-                            // the loaded pointer (zero-linked slot → trap).
-                            // #676: a heterogeneous table gets the runtime
-                            // type check against the type-id sidecar.
+                    if self.self_contained_funcref_table {
+                        // #275: SELF-CONTAINED image — dispatch through the
+                        // flash-resident funcref table (`FUNC_TABLE_SYMBOL`),
+                        // reached PC-relative via an `LdrSym` literal-pool
+                        // pointer the image builder patches post-layout.
+                        // NEVER via R11 (linear-memory base — the #717
+                        // collision), R9/R10 (globals / mem-size), or R12
+                        // (encoder scratch). Same §4.4.8 guard semantics as
+                        // the R11 expansion: OOB index → UDF, #676 type
+                        // mismatch → UDF, #664 null slot → UDF.
+                        let n = self.emit_self_contained_call_indirect(
+                            &mut instructions,
+                            table_idx_reg,
+                            &stack_live_regs(&stack),
+                            &local_to_reg,
+                            &layout,
                             table_size,
                             table_byte_offset,
                             null_check,
                             type_check,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                            idx,
+                        )?;
+                        for _ in 0..n {
+                            cf.add_instruction();
+                        }
+                    } else {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::CallIndirect {
+                                rd: Reg::R0,
+                                type_idx: *type_index,
+                                table_index_reg: table_idx_reg,
+                                // #642: the encoder emits `CMP idx, size; BLO ok;
+                                // UDF #0` before the table load. #650: a non-zero
+                                // offset routes the load through the table's base
+                                // within the contiguous R11 region. #664: a table
+                                // with null slots gets a runtime null check on
+                                // the loaded pointer (zero-linked slot → trap).
+                                // #676: a heterogeneous table gets the runtime
+                                // type check against the type-id sidecar.
+                                table_size,
+                                table_byte_offset,
+                                null_check,
+                                type_check,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     // #311: tag an i64 result as the R0:R1 pair (static type).
                     let ret_i64 = self
                         .type_ret_i64
