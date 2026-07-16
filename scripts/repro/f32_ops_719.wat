@@ -20,6 +20,11 @@
     local.get 0 f32.reinterpret_i32 f32.abs i32.reinterpret_f32)
   (func (export "neg") (param i32) (result i32)
     local.get 0 f32.reinterpret_i32 f32.neg i32.reinterpret_f32)
+  ;; #538 m4: f32.sqrt un-dropped at decode (single VSQRT.F32; negative
+  ;; operand => quiet NaN, never traps). Bits-in/bits-out like abs/neg, but
+  ;; compared NaN-leniently (sqrt is ARITHMETIC: NaN payload not pinned).
+  (func (export "sqrt") (param i32) (result i32)
+    local.get 0 f32.reinterpret_i32 f32.sqrt i32.reinterpret_f32)
   ;; copysign(a, b) = |a| with sign of b. a=param0 (magnitude), b=param1 (sign).
   (func (export "copysign") (param i32 i32) (result i32)
     local.get 0 f32.reinterpret_i32

@@ -1,11 +1,13 @@
 //! synth#554 — `-b aarch64` must fail HONESTLY on an UNSUPPORTED float op, never
 //! emit a silent miscompile.
 //!
-//! m3 (#787) landed the non-trapping scalar floats, so this test now targets a
-//! float op that DELIBERATELY stays declined: `i32.trunc_f32_s`. A64 `FCVTZS`
-//! SATURATES where WASM TRAPS (out-of-range input) — the #709 more-total-than-WASM
-//! soundness class — so lowering it would silently return a wrong (saturated)
-//! value. The backend must loud-decline (`unsupported wasm op`) instead.
+//! m3 (#787) landed the non-trapping scalar floats; m4 (#538) landed the
+//! #709-class conversions (domain-guarded `i32.trunc_f32/f64_{s,u}`, FMIN/FMAX
+//! min/max, copysign), so this test now targets a float op that DELIBERATELY
+//! stays declined: `f64.floor` (rounding). It is DECODED (the ARM32 m7dp
+//! backend lowers it), so it reaches the aarch64 SELECTOR, which must
+//! loud-decline (`unsupported wasm op`) — the strongest form of the honesty
+//! check (nothing upstream masks it).
 //!
 //! These tests lock: (1) the declined-float function is REJECTED with a non-zero
 //! exit and an "unsupported" diagnostic; (2) a supported integer function still
@@ -32,7 +34,7 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
             "-b",
             "aarch64",
             "-n",
-            "f32trunc",
+            "f64floor",
             "-o",
             "/tmp/aarch64_f32_554.o",
         ])
@@ -40,7 +42,7 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
         .expect("run synth");
     assert!(
         !out.status.success(),
-        "expected a non-zero exit for a declined float op (i32.trunc_f32_s) on \
+        "expected a non-zero exit for a declined float op (f64.floor) on \
          -b aarch64; got success (silent miscompile). stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),

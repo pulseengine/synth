@@ -41,16 +41,21 @@ DECLINED = [
                    '(i32.popcnt (local.get 0)))'),
     ("i64.popcnt", '(func (export "f") (param i64) (result i64) '
                    '(i64.popcnt (local.get 0)))'),
-    # m3 (#787) landed non-trapping scalar floats (add/sub/mul/div/cmp/convert/
-    # reinterpret) — those are now SUPPORTED, so the honesty gate moves to the
+    # m3 (#787) landed non-trapping scalar floats; m4 landed the #709-class
+    # conversions (domain-guarded i32.trunc_f32/f64_s/u, FMIN/FMAX min/max,
+    # copysign) — those are now SUPPORTED, so the honesty gate moves to the
     # floats that DELIBERATELY stay declined:
-    #   - trapping float→int truncation: A64 FCVTZS/FCVTZU SATURATE where WASM
-    #     TRAPS (the #709 more-total-than-WASM soundness class) — must NOT lower.
-    #   - min/max: WASM NaN-propagation semantics differ from A64 FMIN/FMAX.
-    ("i32.trunc_f32_s", '(func (export "f") (param f32) (result i32) '
-                        '(i32.trunc_f32_s (local.get 0)))'),
-    ("f32.min", '(func (export "f") (param f32 f32) (result f32) '
-                '(f32.min (local.get 0) (local.get 1)))'),
+    #   - rounding (ceil/floor/trunc/nearest): f64.floor is DECODED and must
+    #     loud-decline at the aarch64 SELECTOR; f32.floor is dropped at decode
+    #     (both paths must stay loud, never silent).
+    #   - i64<->float conversions: need i64-width FCVTZS/SCVTF forms + the
+    #     64-bit boundary guards (a later increment).
+    ("f64.floor", '(func (export "f") (param f64) (result f64) '
+                  '(f64.floor (local.get 0)))'),
+    ("f32.floor", '(func (export "f") (param f32) (result f32) '
+                  '(f32.floor (local.get 0)))'),
+    ("i64.trunc_f64_s", '(func (export "f") (param f64) (result i64) '
+                        '(i64.trunc_f64_s (local.get 0)))'),
 ]
 
 

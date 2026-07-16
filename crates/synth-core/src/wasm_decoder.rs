@@ -2160,6 +2160,17 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F32Abs => Some(WasmOp::F32Abs),
         F32Neg => Some(WasmOp::F32Neg),
         F32Copysign => Some(WasmOp::F32Copysign),
+        // #538 m4: f32.sqrt / f32.min / f32.max un-dropped. sqrt is a single
+        // IEEE-754 VSQRT/FSQRT everywhere (sqrt of a negative ⇒ quiet NaN,
+        // never traps — exactly WASM). min/max lower on aarch64 (A64 FMIN/FMAX
+        // = IEEE 754-2019 minimum/maximum ≡ WASM NaN-propagation + -0<+0);
+        // ARM32 LOUD-declines them (its legacy compare-select pseudo-op is
+        // NaN/±0-wrong — see the selector's F32Min/F32Max reject arm) and
+        // RV32 loud-declines all floats. The f32 rounding ops stay at
+        // `_ => None` until a later increment.
+        F32Sqrt => Some(WasmOp::F32Sqrt),
+        F32Min => Some(WasmOp::F32Min),
+        F32Max => Some(WasmOp::F32Max),
         // #708 (phase 1b): the f32<->i32 bit-casts. Pure `VMOV` between a core
         // register and a single-precision S-register — no numeric conversion.
         F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),
