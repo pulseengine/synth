@@ -2679,14 +2679,18 @@ fn compile_all_exports(
         // num_imports) stay external — the linker resolves them. A module whose
         // exports call no internal function (every leaf fixture) yields exactly
         // the exports, so existing output stays bit-identical.
+        #[cfg_attr(not(feature = "exports_only_275_probe"), allow(unused_mut))]
         let mut reachable =
             reachable_from_exports(&module.functions, num_imports, &elem_func_indices);
-        // #275 non-vacuity hatch (TEST ONLY): `EXPORTS_ONLY_275=1` reverts to the
-        // pre-#235 exports-only behavior (drop every non-exported reachable
-        // callee) so the reachable-callgraph EXECUTION differential can prove it
-        // catches the historical drop — a self-contained export whose BL targets
-        // a now-absent helper. Never set in production; default path is the full
-        // reachable closure.
+        // #275 non-vacuity probe (feature `exports_only_275_probe`, NEVER in a
+        // default/release build): `EXPORTS_ONLY_275=1` reverts to the pre-#235
+        // exports-only behavior (drop every non-exported reachable callee) so the
+        // reachable-callgraph EXECUTION differential can prove it catches the
+        // historical drop — a self-contained export whose BL targets a now-absent
+        // helper (the image then degrades to a link-me ET_REL object). The default
+        // path is the full reachable closure and this block does not exist in the
+        // shipped binary.
+        #[cfg(feature = "exports_only_275_probe")]
         if std::env::var_os("EXPORTS_ONLY_275").is_some() {
             reachable.retain(|idx| {
                 module

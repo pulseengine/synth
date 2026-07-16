@@ -560,14 +560,20 @@ jobs:
       # EXECUTION gate.
       - name: Run self-contained reachable-callgraph oracle (#275, cortex-m3, GREEN)
         run: SYNTH=./target/debug/synth python scripts/repro/reachable_callgraph_275_selfcontained_differential.py
-      # Non-vacuity: EXPORTS_ONLY_275=1 reverts to the pre-#235 exports-only drop
-      # (non-exported reachable callees removed). `entry`'s BL then becomes an
-      # external relocation and the builder degrades to a link-me ET_REL object
-      # with no Reset_Handler — NOT self-contained. The gate MUST go RED, proving
-      # it catches the historical #275 drop. `! ...` because RED = expected here.
+      # Non-vacuity: a SEPARATE probe binary (feature `exports_only_275_probe`,
+      # NEVER in the default/release build) exposes an `EXPORTS_ONLY_275=1` env
+      # hatch that reverts to the pre-#235 exports-only drop (non-exported
+      # reachable callees removed). `entry`'s BL then becomes an external
+      # relocation and the builder degrades to a link-me ET_REL object with no
+      # Reset_Handler — NOT self-contained. The gate MUST go RED, proving it
+      # catches the historical #275 drop. `! ...` because RED = expected here.
+      # The probe binary goes to a distinct target dir so it never shadows the
+      # default binary the GREEN steps use.
+      - name: Build #275 non-vacuity probe binary (non-default feature)
+        run: cargo build -p synth-cli --features exports_only_275_probe --target-dir target-275probe
       - name: Reachable-callgraph oracle catches the pre-#235 drop (#275, RED)
         run: |
-          ! EXPORTS_ONLY_275=1 SYNTH=./target/debug/synth \
+          ! EXPORTS_ONLY_275=1 SYNTH=./target-275probe/debug/synth \
             python scripts/repro/reachable_callgraph_275_selfcontained_differential.py
       # #406/#739-cluster coverage WIDENER: multi-chunk / multi-segment static
       # data across BOTH the self-contained (--cortex-m) and --relocatable
