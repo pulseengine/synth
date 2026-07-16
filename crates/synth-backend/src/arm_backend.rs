@@ -159,9 +159,16 @@ impl Backend for ArmBackend {
 
         // #778: derive the SOUND static WCET bound from the final Thumb-2 stream.
         // Only present for the Thumb-2 path; the core class (from the triple)
-        // decides whether the bound is sound (M3/M4) or declined (M7).
-        let wcet = final_instrs
-            .map(|instrs| crate::wcet::function_wcet(name, &instrs, &config.target.triple));
+        // decides whether the bound is sound (M3/M4) or declined (M7). Phase 2:
+        // any --wcet-hints entry for THIS function is verified (never trusted)
+        // by the loop analyzer.
+        let wcet = final_instrs.map(|instrs| {
+            let hints = config
+                .wcet_hints
+                .as_ref()
+                .and_then(|h| h.functions.get(name));
+            crate::wcet::function_wcet_with_hints(name, &instrs, &config.target.triple, hints)
+        });
 
         Ok(CompiledFunction {
             name: name.to_string(),

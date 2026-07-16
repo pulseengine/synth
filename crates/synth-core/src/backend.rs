@@ -303,6 +303,14 @@ pub struct CompileConfig {
     /// `VCR-DMA-001`.
     pub volatile_segments: Vec<VolatileRange>,
 
+    /// #778 phase 2 — the parsed `--wcet-hints` file (UNTRUSTED per-function
+    /// loop-bound hints, the scry seam). Consulted ONLY by the WCET sidecar
+    /// computation over the final instruction stream; NEVER by codegen — the
+    /// emitted bytes are byte-identical with or without hints. Every hint is
+    /// soundly verified before use and rejected with a machine reason
+    /// otherwise.
+    pub wcet_hints: Option<crate::wcet::WcetHints>,
+
     /// VCR-PERF-002 Phase 1 (#494) — proven invariants forwarded by loom in
     /// the `wsc.facts` custom section (encoding:
     /// `docs/design/wsc-facts-encoding.md`; program:
@@ -457,6 +465,10 @@ impl Default for CompileConfig {
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.
             call_indirect_guards: crate::wasm_decoder::CallIndirectGuards::default(),
+            // #778 phase 2: no --wcet-hints file ⇒ no hints. Consulted ONLY by
+            // the WCET sidecar computation — never by codegen (the emitted
+            // bytes are byte-identical with or without hints).
+            wcet_hints: None,
         }
     }
 }

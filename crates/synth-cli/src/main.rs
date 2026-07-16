@@ -427,6 +427,19 @@ enum Commands {
         #[arg(long)]
         emit_wcet: bool,
 
+        /// #778 phase 2 (v0.47): a `synth-wcet-hints-v1` JSON file of UNTRUSTED
+        /// per-function loop-trip-count hints (the scry oracle seam). Requires
+        /// `--emit-wcet`. Every hint is soundly CHECKED against synth's own
+        /// loop-induction proof over the final instruction stream: it is
+        /// consumed only when synth's derived trip count respects it, and
+        /// REJECTED with a machine-readable reason in the sidecar otherwise
+        /// (wrong hints — smaller than the derived trip — and unverifiable
+        /// hints — data-dependent bounds, non-canonical shapes — are NEVER
+        /// trusted into a bound). Hints never affect codegen: the emitted
+        /// bytes are byte-identical with or without them.
+        #[arg(long, value_name = "FILE")]
+        wcet_hints: Option<PathBuf>,
+
         /// #543 (Phase 1): mark a linear-memory segment as VOLATILE — the DMA
         /// transfer window. Format `<base>:<len>`; both accept hex (`0x…`) or
         /// decimal, e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark
@@ -585,12 +598,36 @@ fn main() -> Result<()> {
             debug_line,
             emit_provenance,
             emit_wcet,
+            wcet_hints,
             volatile_segment,
             stack_layout,
             stack_size,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
+
+            // #778 phase 2: parse + schema-validate the UNTRUSTED hints file up
+            // front so a malformed oracle input fails loudly, not mid-compile.
+            let wcet_hints = wcet_hints
+                .map(|p| -> Result<synth_core::wcet::WcetHints> {
+                    anyhow::ensure!(
+                        emit_wcet,
+                        "--wcet-hints requires --emit-wcet (hints only affect the WCET sidecar)"
+                    );
+                    let text = std::fs::read_to_string(&p)
+                        .context(format!("failed to read --wcet-hints file: {}", p.display()))?;
+                    let hints: synth_core::wcet::WcetHints = serde_json::from_str(&text)
+                        .context(format!("--wcet-hints {} is not valid JSON", p.display()))?;
+                    anyhow::ensure!(
+                        hints.schema == synth_core::wcet::HINTS_SCHEMA,
+                        "--wcet-hints {}: schema '{}' != required '{}'",
+                        p.display(),
+                        hints.schema,
+                        synth_core::wcet::HINTS_SCHEMA
+                    );
+                    Ok(hints)
+                })
+                .transpose()?;
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
 
@@ -640,6 +677,7 @@ fn main() -> Result<()> {
                 debug_line,
                 emit_provenance,
                 emit_wcet,
+                wcet_hints,
                 volatile_segments,
                 stack_layout,
             )?;
@@ -1376,6 +1414,9 @@ fn compile_command(
     emit_provenance: bool,
     // #778: `--emit-wcet` — write the synth-wcet-v1 sound worst-case-cycle sidecar.
     emit_wcet: bool,
+    // #778 phase 2: parsed --wcet-hints (UNTRUSTED; verified per loop, never
+    // trusted). Only consulted by the WCET sidecar computation.
+    wcet_hints: Option<synth_core::wcet::WcetHints>,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -1432,6 +1473,7 @@ fn compile_command(
             debug_line,
             emit_provenance,
             emit_wcet,
+            wcet_hints,
             volatile_segments,
             stack_layout,
         );
@@ -2475,6 +2517,10 @@ fn compile_all_exports(
     emit_provenance: bool,
     // #778: write the synth-wcet-v1 sound worst-case-cycle JSON sidecar.
     emit_wcet: bool,
+    // #778 phase 2: parsed --wcet-hints (UNTRUSTED; verified per loop, never
+    // trusted into a bound). Threaded to the CompileConfig for the per-function
+    // WCET computation only — codegen never reads it.
+    wcet_hints: Option<synth_core::wcet::WcetHints>,
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
@@ -2971,6 +3017,10 @@ fn compile_all_exports(
         // reserved stack size under --stack-layout=low; default = 0x2000_0100
         // (byte-identical).
         linmem_base: stack_layout.optimized_linmem_base(),
+        // #778 phase 2: UNTRUSTED --wcet-hints — consulted only by the WCET
+        // sidecar computation (each hint verified per loop, never trusted);
+        // codegen is byte-identical with or without it.
+        wcet_hints,
         ..CompileConfig::default()
     };
 
