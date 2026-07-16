@@ -555,6 +555,15 @@ pub struct CompiledFunction {
     /// are byte-identical with or without it. Empty for backends/paths that do
     /// not produce it (RISC-V, the optimized ARM path).
     pub branch_map: BranchMap,
+    /// #778 (v0.46): the SOUND static worst-case-cycle bound for this function,
+    /// or a loud decline, computed over the final Thumb-2 instruction stream (see
+    /// [`crate::wcet`]). `Some` only when the ARM backend produced it (the RISC-V
+    /// and AArch64 backends carry no cycle model yet → `None`). Purely additive
+    /// metadata: derived from the already-decided instruction list, never
+    /// serialized into `.text`, so emitted bytes are byte-identical with or
+    /// without it (frozen-safe). Emitted as the `<output>.wcet.json` sidecar only
+    /// under `--emit-wcet`.
+    pub wcet: Option<crate::wcet::WcetFunction>,
 }
 
 /// Result of compiling a full module

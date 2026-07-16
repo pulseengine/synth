@@ -154,8 +154,14 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let (code, relocations, line_map, branch_map) =
+        let (code, relocations, line_map, branch_map, final_instrs) =
             compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
+
+        // #778: derive the SOUND static WCET bound from the final Thumb-2 stream.
+        // Only present for the Thumb-2 path; the core class (from the triple)
+        // decides whether the bound is sound (M3/M4) or declined (M7).
+        let wcet = final_instrs
+            .map(|instrs| crate::wcet::function_wcet(name, &instrs, &config.target.triple));
 
         Ok(CompiledFunction {
             name: name.to_string(),
@@ -164,6 +170,7 @@ impl Backend for ArmBackend {
             relocations,
             line_map,
             branch_map,
+            wcet,
         })
     }
 
@@ -291,18 +298,21 @@ fn has_value_carrying_branch(wasm_ops: &[WasmOp], block_arity: &[(u8, u8)]) -> b
 ///
 /// Returns (code_bytes, relocations) where relocations record BL instructions
 /// that target external symbols (e.g., `__meld_dispatch_import` for import calls).
+type CompileArmOutput = (
+    Vec<u8>,
+    Vec<CodeRelocation>,
+    LineMap,
+    synth_core::backend::BranchMap,
+    // #778: the SOUND static WCET result over the final Thumb-2 stream, computed
+    // by `compile_function` (which knows the function name); `None` for the A32
+    // path. Purely additive metadata — does not touch `code`.
+    Option<Vec<synth_synthesis::ArmInstruction>>,
+);
+
 fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
-) -> Result<
-    (
-        Vec<u8>,
-        Vec<CodeRelocation>,
-        LineMap,
-        synth_core::backend::BranchMap,
-    ),
-    String,
-> {
+) -> Result<CompileArmOutput, String> {
     // #539: `memory.grow(0)` must return the CURRENT page count, not the
     // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
     // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly
@@ -1300,6 +1310,17 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // #778: capture the FINAL Thumb-2 instruction stream (post label-resolution,
+    // the exact list the encode loop below consumes) so `compile_function` can
+    // derive the sound WCET bound. Cheap clone; frozen-safe (the WCET walk is a
+    // pure observation and never touches `code`). Only the Thumb-2 path — the A32
+    // (Cortex-R5) cycle model is a follow-up.
+    let final_instrs_for_wcet: Option<Vec<synth_synthesis::ArmInstruction>> = if use_thumb2 {
+        Some(arm_instrs.clone())
+    } else {
+        None
+    };
+
     let mut code = Vec::new();
     let mut relocations = Vec::new();
 
@@ -1429,7 +1450,13 @@ fn compile_wasm_to_arm(
         }
     }
 
-    Ok((code, relocations, line_map, branch_map))
+    Ok((
+        code,
+        relocations,
+        line_map,
+        branch_map,
+        final_instrs_for_wcet,
+    ))
 }
 
 /// VCR-DEC-003 (#396): classify one emitted `ArmOp` into its object-level

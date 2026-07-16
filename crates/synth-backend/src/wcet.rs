@@ -326,12 +326,27 @@ pub fn op_worst_case_cycles(op: &ArmOp) -> u64 {
     }
 }
 
-/// True iff `core_class` (a `config.target.triple`-derived string) is soundly
-/// summable with the zero-wait per-op table: the in-order single-issue
-/// Cortex-M3 / Cortex-M4(F) cores. Cortex-M7 (dual-issue + cache wait-states) is
-/// NOT — it is declined, not approximated.
-pub fn core_is_soundly_summable(core_class: &str) -> bool {
-    matches!(core_class, "cortex-m3" | "cortex-m4")
+/// Map a target `triple` to the SOUND core class the zero-wait per-op table holds
+/// for, or `None` if the core is not soundly summable and must be declined.
+///
+/// SOUNDNESS NOTE — the `-eabihf` ambiguity: the Cortex-M4F, Cortex-M7 and
+/// Cortex-M7dp `TargetSpec`s ALL carry the triple `thumbv7em-none-eabihf`, so once
+/// inside compilation the triple alone CANNOT distinguish the in-order M4F (sound
+/// to sum) from the dual-issue M7 (NOT sound: cache wait-states can make actual
+/// cycles exceed a zero-wait sum). Rather than risk pricing an M7 with the M4
+/// table, this DECLINES the ambiguous `-eabihf` triple entirely. Only the two
+/// unambiguous integer triples are accepted:
+///   - `thumbv7m-none-eabi`   → Cortex-M3 (ARMv7-M, in-order, no FPU)
+///   - `thumbv7em-none-eabi`  → Cortex-M4 no-FPU (ARMv7E-M, in-order)
+/// This is conservative for M4F (which is soundly summable) but never unsound —
+/// distinguishing M4F from M7 needs a discriminator the config does not carry here
+/// (a named follow-up: thread the `CortexMVariant` so M4F is bounded too).
+pub fn sound_core_class(triple: &str) -> Option<&'static str> {
+    match triple {
+        "thumbv7m-none-eabi" | "cortex-m3" => Some("cortex-m3"),
+        "thumbv7em-none-eabi" | "cortex-m4" => Some("cortex-m4"),
+        _ => None,
+    }
 }
 
 /// Reconstruct byte positions and detect whether any branch in `instrs` is a
@@ -402,14 +417,15 @@ fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
 }
 
 /// Compute the sound per-function WCET result over the FINAL Thumb-2 instruction
-/// stream `instrs` (the list the encoder consumes). `core_class` is the
-/// `config.target.triple`-derived core name.
+/// stream `instrs` (the list the encoder consumes). `triple` is
+/// `config.target.triple`; a non-soundly-summable core (see [`sound_core_class`])
+/// declines with [`WcetDecline::UnsupportedCore`].
 ///
 /// Returns a [`WcetFunction::Bounded`] with the summed worst-case cycles when the
 /// function is proven loop-free / call-free on a soundly-summable core, else a
 /// [`WcetFunction::Declined`] with a machine-readable reason.
-pub fn function_wcet(name: &str, instrs: &[ArmInstruction], core_class: &str) -> WcetFunction {
-    if !core_is_soundly_summable(core_class) {
+pub fn function_wcet(name: &str, instrs: &[ArmInstruction], triple: &str) -> WcetFunction {
+    if sound_core_class(triple).is_none() {
         return WcetFunction::declined(name, WcetDecline::UnsupportedCore);
     }
     if let Some(reason) = scan_for_decline(instrs) {
