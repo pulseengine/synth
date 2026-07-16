@@ -75,6 +75,31 @@ End SailARM.
    This is the key correctness property connecting our verification to
    the official ARM architecture specification.
 *)
+(**
+   T3 — GENUINELY UNPROVABLE AS STATED (opaque-axiom placeholder), NOT a
+   tractable residual. [SailARM.sail_exec_instr] (line 59) is declared as an
+   [Axiom], i.e. an opaque function symbol with NO computational content and NO
+   defining equations. The conclusion here requires exhibiting a concrete
+   witness [s_sail'] together with a proof that
+   [SailARM.sail_exec_instr instr s_sail = Some s_sail'] — but nothing in the
+   context can reduce or constrain an opaque axiom to [Some _], so no such
+   witness is derivable. This is a modeling-scaffold limitation, not a missing
+   arithmetic lemma: it cannot be closed without REPLACING the axiom with a
+   real, computational Sail semantics.
+
+   WHAT WOULD CLOSE IT / WHERE THE REAL WORK LIVES. The Sail anchoring the North
+   Star calls for (VCR-ISA-001, epic #242) has since landed as
+   [Synth.ARM.SailArmBridge] — a per-instruction hand-transcription of the
+   rems-project/sail-arm arm-v9.4-a execute clauses with line-level provenance,
+   plus BRIDGE lemmas proving [ArmSemantics.v]'s instruction equals the Sail
+   transcription on the shared state projection (92 Qed, real, actively
+   extended round by round). That file, not this placeholder, is the live Sail
+   correspondence; the spike (docs/design/vcr-isa-001-spike.md) measured that
+   importing the 42 MB Sail-generated Rocq model wholesale is infeasible at
+   synth's scale, which is exactly why [sail_exec_instr] here stays an opaque
+   axiom rather than a real definition. This theorem is retained only as the
+   historical statement of the intended global refinement shape; it is honestly
+   Admitted (T3), superseded by the SailArmBridge per-instruction bridges. *)
 Theorem arm_refines_sail : forall (instr : arm_instr) (s : arm_state) (s_sail : SailARM.sail_state),
   SailARM.state_corresponds s s_sail ->
   exists s_sail',
@@ -83,7 +108,10 @@ Theorem arm_refines_sail : forall (instr : arm_instr) (s : arm_state) (s_sail : 
                 exists s_sail'',
                   SailARM.state_corresponds s' s_sail'').
 Proof.
-  (* TODO: Prove after importing real Sail definitions *)
+  (* T3: [SailARM.sail_exec_instr] is an opaque Axiom (line 59) — the required
+     [= Some s_sail'] witness is not derivable. Superseded by the real
+     per-instruction bridges in [Synth.ARM.SailArmBridge]. See the block
+     comment above for the full rationale and closure path. *)
   admit.
 Admitted.
 
@@ -92,7 +120,19 @@ Admitted.
    We prove refinement for each instruction category.
 *)
 
-(** Arithmetic instructions refine Sail *)
+(** Arithmetic instructions refine Sail.
+
+    T3 — same opaque-axiom obstacle as [arm_refines_sail]. Unfolding [refines],
+    when [exec_instr (ADD ..) s = Some r] the goal reduces to
+    [Some r = match SailARM.sail_exec_instr (ADD ..) s_sail with
+              | Some _ => Some r | None => None end],
+    which holds iff [SailARM.sail_exec_instr (ADD ..) s_sail = Some _]. That is
+    again a claim about the opaque [Axiom] with no defining equation, so it is
+    not derivable. Closure requires replacing [sail_exec_instr] with a real
+    computational Sail semantics; the live per-instruction ADD/ADDS/CMP bridges
+    already exist in [Synth.ARM.SailArmBridge] (Round 1+), which is where the
+    genuine ADD↔Sail correspondence is proved. Honestly Admitted (T3),
+    superseded. *)
 Theorem add_refines_sail : forall rd rn op2 s s_sail,
   SailARM.state_corresponds s s_sail ->
   exec_instr (ADD rd rn op2) s ⊑
@@ -101,7 +141,8 @@ Theorem add_refines_sail : forall rd rn op2 s s_sail,
      | None => None
      end).
 Proof.
-  (* TODO: Prove after Sail integration *)
+  (* T3: opaque [SailARM.sail_exec_instr] Axiom; superseded by the real ADD/ADDS
+     bridges in [Synth.ARM.SailArmBridge]. See the comment above. *)
   admit.
 Admitted.
 

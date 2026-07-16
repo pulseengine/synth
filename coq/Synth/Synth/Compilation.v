@@ -546,25 +546,27 @@ Definition compile_wasm_program (prog : wasm_program) : arm_program :=
 (** ** Examples **)
 
 (** WASM: i32.const 5; i32.const 3; i32.add
-    Note: These examples are Admitted because compile_wasm_to_arm now branches
-    on [Z.leb (I32.unsigned n) 65535], and [simpl] cannot fully reduce
-    [I32.unsigned (I32.repr 5)] without unfolding the integer representation.
-    The compilation is still correct — the small-constant path produces [MOVW]. *)
+    [compile_wasm_to_arm] branches on [Z.leb (I32.unsigned n) 65535]; for the
+    small constants 5 and 3 the guard reduces to [true], selecting the [MOVW]
+    path. [simpl] cannot reduce [I32.unsigned (I32.repr 5) <=? 65535] because
+    the [mod 2^32] in [unsigned]/[repr] blocks it, but [vm_compute] evaluates
+    the guard to [true] and the whole program to the expected sequence. *)
 Example ex_compile_simple_add :
   compile_wasm_program ([I32Const (I32.repr 5); I32Const (I32.repr 3); I32Add]) =
   ([MOVW R0 (I32.repr 5);
    MOVW R0 (I32.repr 3);
    ADD R0 R0 (Reg R1)]).
-Proof. Admitted.
+Proof. vm_compute. reflexivity. Qed.
 
-(** WASM: local.get 0; i32.const 1; i32.add; local.set 0 *)
+(** WASM: local.get 0; i32.const 1; i32.add; local.set 0
+    [I32.one = I32.repr 1] is likewise in the small-constant branch. *)
 Example ex_compile_increment_local :
   compile_wasm_program ([LocalGet 0%nat; I32Const I32.one; I32Add; LocalSet 0%nat]) =
   ([MOV R0 (Reg R4);
    MOVW R0 I32.one;
    ADD R0 R0 (Reg R1);
    MOV R4 (Reg R0)]).
-Proof. Admitted.
+Proof. vm_compute. reflexivity. Qed.
 
 (** ** Compilation Invariants **)
 

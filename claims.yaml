@@ -29,20 +29,20 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "485 Qed / 5 Admitted"
+    text: "489 Qed / 3 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '485 Qed / 5 Admitted'      # a verbatim check alone greens if one
+        pattern: '489 Qed / 3 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 485
+        expect: 489
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 5
+        expect: 3
       - kind: count-eq                       # the "+2 admit. tactics" disclosure
         pattern: '^\s*admit\.'
         glob: ['coq/Synth/**/*.v']
@@ -50,33 +50,33 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "485 Qed / 5 Admitted"
+    text: "489 Qed / 3 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 485
+        expect: 489
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 5
+        expect: 3
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "485 Qed / 5 Admitted"
+    text: "489 Qed / 3 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '485 Qed / 5 Admitted'
+        pattern: '489 Qed / 3 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 485
+        expect: 489
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 5
+        expect: 3
 
   # ---------------------------------------------------------------------------
   # The admit breakdown the docs disclose — per-file, so a new admit anywhere
@@ -93,7 +93,7 @@ claims:
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/Compilation.v']
-        expect: 2
+        expect: 0
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/CorrectnessSimple.v']
