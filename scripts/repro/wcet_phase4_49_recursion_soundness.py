@@ -79,6 +79,25 @@ FIB_WAT = r"""
 """
 
 
+# ADVERSARIAL: masked base guard, but the decrement is applied only under a SECOND
+# guard on the RAW param (param > 100). A path with param <= 100 recurses with the
+# masked value UNCHANGED → unbounded. Must REJECT (region not straight-line).
+COND_DECR_WAT = r"""
+(module
+  (func $f (export "f") (param i32) (result i32)
+    (local i32)
+    local.get 0 i32.const 15 i32.and
+    (if (result i32)
+      (then
+        (local.set 1 (i32.and (local.get 0) (i32.const 15)))
+        (if (i32.gt_s (local.get 0) (i32.const 100))
+          (then (local.set 1 (i32.sub (local.get 1) (i32.const 1)))))
+        (call $f (local.get 1))
+        i32.const 1 i32.add)
+      (else i32.const 0))))
+"""
+
+
 def wat_file(name, wat):
     p = os.path.join(TMP, name + ".wat")
     open(p, "w").write(wat)
@@ -167,6 +186,20 @@ def main():
     reasons = [r["reason"] for r in f.get("hint_rejections", [])]
     assert "hint-below-derived-depth" in reasons, f
     print("  OK md + too-low hint(3<15): declined `recursion` + hint-below-derived-depth")
+
+    # ADVERSARIAL: conditional decrement (masked value + a decrement gated on a
+    # SECOND guard over the RAW param). A path that skips the decrement recurses
+    # unbounded — the straight-line/single-entry region check must REJECT it.
+    p, e = wat_file("cond", COND_DECR_WAT)
+    hints = write_hints("cond", "f", 15)
+    rep = compile_wat(p, e, hints=hints, relocatable=True)
+    f = sidecar_entry(rep, "f")
+    assert f["status"] == "declined" and f["reason"] == "recursion", \
+        f"UNSOUND — conditional-decrement recursion was BOUNDED: {f}"
+    reasons = [r["reason"] for r in f.get("hint_rejections", [])]
+    assert "hint-unverifiable-recursion" in reasons, f
+    print("  OK cond: declined `recursion` + hint-unverifiable-recursion "
+          "(conditional decrement — arg region not straight-line/single-entry)")
 
     print("\nALL PHASE-4 (#49) RECURSION SOUNDNESS CHECKS PASSED")
 

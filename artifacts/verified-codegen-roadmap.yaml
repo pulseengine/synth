@@ -3388,9 +3388,15 @@ artifacts:
       (const step); and the self-call is proven CONTROL-DEPENDENT on the guard (the
       guard's taken target is a base block that does NOT contain the self-call, so
       the self-call is unreachable when the guard fires — this is what stops the
-      dangerous (base−step)&K re-mask from diverging). synth then DERIVES its own
-      maximum depth via the loop trip machinery (wcet_loops::exit_index, seeded at
-      init = mask — the worst case over all inputs; wrap/divisibility-safe), and the
+      dangerous (base−step)&K re-mask from diverging). The guard→self-call arg
+      region must ALSO be STRAIGHT-LINE + SINGLE-ENTRY (no branch inside it, no
+      branch targeting into it) so the decrement is provably UNCONDITIONAL — a
+      conditional decrement (gated on a second guard) would let a runtime path skip
+      it and recurse unbounded while the linear walk still saw m−step. synth then
+      DERIVES its own maximum depth via the loop trip machinery
+      (wcet_loops::exit_index, evaluated at BOTH init endpoints 0 and mask — the max
+      is the entry-independent worst case regardless of step direction;
+      wrap/divisibility-safe; Eq/Ne base guards restricted to step ±1), and the
       composer folds the certified self-edge as (max_depth+1) × frame_cost instead
       of declining. The +1 counts the BASE frame (runs own_cycles, no self-call);
       omitting it undercounts by one frame → the fold is pinned sound-critical in
@@ -3440,6 +3446,10 @@ artifacts:
         tree_recursion_two_self_calls_rejected_even_with_hint (fib → declined +
         hint-unverifiable-recursion — the fib-trap guard),
         uncapped_countdown_recursion_hint_rejected_unverifiable,
+        conditional_decrement_recursion_rejected_unverifiable (the decrement is
+        gated on a SECOND guard over the raw param → a path skips it → unbounded;
+        the straight-line/single-entry region check REJECTS it — the adversarial
+        guard against modeling a conditional decrement as unconditional),
         mutual_recursion_stays_declined_even_with_hint. 3 pure-composer unit tests
         in wcet_compose.rs (certified self folds depth frames / folds non-self
         callee per-frame / a distinct mutual cycle STILL declines). Execution-side

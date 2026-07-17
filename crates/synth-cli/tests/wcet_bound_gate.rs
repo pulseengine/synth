@@ -1095,6 +1095,37 @@ fn mutual_recursion_stays_declined_even_with_hint() {
     assert_declined(&report, "pong", "recursion");
 }
 
+/// DECLINE-HONESTY (conditional decrement): the controlling value is masked
+/// (`m = param & 15`) and the base guard is on it, BUT the decrement is applied
+/// only under a SECOND guard on the RAW param (`param > 100`). A runtime path with
+/// `param ≤ 100` recurses with `m` UNCHANGED → unbounded. The straight-line +
+/// single-entry region check (the guard→self-call arg computation must be
+/// unconditional) catches this: REJECTED `hint-unverifiable-recursion`, declined.
+/// This is the adversarial guard against modeling a conditional decrement as
+/// unconditional — without the region check this fixture would emit a bound < a
+/// real (infinite) execution.
+#[test]
+fn conditional_decrement_recursion_rejected_unverifiable() {
+    let wat = r#"
+        (module
+          (func $f (export "f") (param i32) (result i32)
+            (local i32)
+            local.get 0 i32.const 15 i32.and
+            (if (result i32)
+              (then
+                (local.set 1 (i32.and (local.get 0) (i32.const 15)))
+                (if (i32.gt_s (local.get 0) (i32.const 100))
+                  (then (local.set 1 (i32.sub (local.get 1) (i32.const 1)))))
+                (call $f (local.get 1))
+                i32.const 1 i32.add)
+              (else i32.const 0))))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"f":{"recursion_depth":15}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "f", "recursion");
+    assert_hint_rejection(&report, "f", "hint-unverifiable-recursion", 15);
+}
+
 /// Assert `name` carries a hint rejection with EXACTLY `reason` and `hint`.
 fn assert_hint_rejection(report: &Value, name: &str, reason: &str, hint: u64) {
     let f = func(report, name);

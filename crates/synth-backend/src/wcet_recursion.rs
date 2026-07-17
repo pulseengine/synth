@@ -223,23 +223,42 @@ pub(crate) fn analyze_recursion(
         return reject(WcetHintReject::HintUnverifiableRecursion);
     };
 
-    // Derive max depth via the loop trip machinery, seeded with the worst-case
-    // entry-independent init = mask. The recursion continues while the base guard
-    // is FALSE; it exits (base) when the guard is TRUE. `exit_index` returns the
-    // number of steps until a predicate first HOLDS, so we pass the base predicate
-    // directly (predicate TRUE ⇒ base ⇒ stop) — its result is the count of
-    // recursive frames (steps taken before the base fires).
+    // Derive max depth via the loop trip machinery. The controlling value at the
+    // first frame is `m ∈ [0, mask]` (any runtime input, by the mask); the recursion
+    // continues while the base guard is FALSE and stops when it holds. `exit_index`
+    // returns the number of steps until the base predicate first HOLDS for a GIVEN
+    // init, so the true worst-case depth is the MAX over the valid init domain
+    // `[0, mask]`. For a monotone counter that max is at an ENDPOINT (0 or mask)
+    // depending on step direction — but rather than reason about which, we evaluate
+    // BOTH endpoints and require BOTH terminate, taking the max. (Seeding only `mask`
+    // would UNDER-estimate a count-up whose worst case is init 0.) If either
+    // endpoint fails to terminate (step walks away, or a wrap), the chain is not
+    // guaranteed-terminating for all inputs → decline.
     let p = Pred {
         off: 0, // synthetic — exit_index reads only add/rel/rhs
         add: base_pred.add,
         rel: base_pred.rel,
         rhs: base_pred.rhs,
     };
-    let Some((derived_depth, _requires_hint)) = exit_index(base_pred.mask, step, &p) else {
-        // Step does not divide the distance, or the walk would wrap — not a
-        // guaranteed-terminating chain.
+    // Endpoint reasoning is sound only when `exit_index` is MONOTONE in init over
+    // `[0, mask]`. For a threshold predicate (<, <=, >, >=) it is. For an
+    // equality/inequality base guard, an INTERIOR init can diverge (miss the target
+    // residue class) even when both endpoints land — so restrict Eq/Ne base guards
+    // to step magnitude 1, where EVERY init in `[0, mask]` reaches the target and
+    // monotonicity holds. (A larger step with an Eq guard is exactly the
+    // divisibility-divergence trap; refusing it keeps the endpoint bound sound.)
+    if matches!(base_pred.rel, Rel::Eq | Rel::Ne) && step.abs() != 1 {
+        return reject(WcetHintReject::HintUnverifiableRecursion);
+    }
+    let (Some((d_hi, _)), Some((d_lo, _))) = (
+        exit_index(base_pred.mask, step, &p),
+        exit_index(0, step, &p),
+    ) else {
+        // An endpoint does not terminate (step does not divide the distance, walks
+        // away, or wraps) → not a bounded chain for all inputs.
         return reject(WcetHintReject::HintUnverifiableRecursion);
     };
+    let derived_depth = d_hi.max(d_lo);
 
     // Gate 4 (the scry seam): a bound this consequential is HINT-GATED. No hint ⇒
     // keep the `recursion` decline (nothing rejected — none was offered).
@@ -358,6 +377,37 @@ fn prove_masked_chain(
     // dangerous `base - step` from ever re-entering the mask.
     if !(guard_idx < self_idx && self_idx < taken_idx) {
         return None;
+    }
+
+    // STRAIGHT-LINE + SINGLE-ENTRY region `(guard_idx, self_idx]`. The linear walk
+    // applied the arg computation (the decrement) UNCONDITIONALLY; that is only a
+    // valid model if the region between the guard and the self-call has NO control
+    // flow — otherwise a runtime path could SKIP the decrement (passing `m`
+    // unchanged) and recurse unbounded while the walk still saw `m - step`. Two
+    // hard checks, the linear-body analog of the loop analyzer's branch discipline:
+    //   (a) no branch instruction sits inside the region (unconditional body), and
+    //   (b) no branch ANYWHERE targets a byte strictly inside the region (single
+    //       entry — control cannot jump PAST the decrement into the self-call).
+    if instrs[(guard_idx + 1)..=self_idx]
+        .iter()
+        .any(|ins| matches!(&ins.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }))
+    {
+        return None; // (a) conditional/unconditional flow inside the region
+    }
+    let region_lo = byte[guard_idx + 1];
+    let region_hi = byte[self_idx]; // byte of the self-call BL
+    for (i, ins) in instrs.iter().enumerate() {
+        let off = match &ins.op {
+            ArmOp::BOffset { offset } => *offset,
+            ArmOp::BCondOffset { offset, .. } => *offset,
+            _ => continue,
+        };
+        let tgt = target_byte(i, off);
+        // A target strictly INSIDE the region (after its first instruction, at or
+        // before the self-call) is a second entry that could bypass the decrement.
+        if tgt > region_lo && tgt <= region_hi {
+            return None; // (b) mid-region entry — not single-entry
+        }
     }
 
     // The self-call argument in R0 must be the SAME masked quantity minus a const
