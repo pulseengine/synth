@@ -652,17 +652,21 @@ pub fn function_wcet_intermediate(
     // merged into this function's hint rejections.
     let mult_at_fn = |i: usize| mult_at(i);
     let recursion_hint = hints.and_then(|h| h.recursion_depth);
-    let (recursion_cert, mut rec_rejections) =
-        match crate::wcet_recursion::analyze_recursion(instrs, self_label, &mult_at_fn, recursion_hint) {
-            crate::wcet_recursion::RecursionAnalysis::NotRecursive => (None, Vec::new()),
-            crate::wcet_recursion::RecursionAnalysis::Unprovable { hint_rejections } => {
-                (None, hint_rejections)
-            }
-            crate::wcet_recursion::RecursionAnalysis::Certified {
-                cert,
-                hint_rejections,
-            } => (Some(cert), hint_rejections),
-        };
+    let (recursion_cert, mut rec_rejections) = match crate::wcet_recursion::analyze_recursion(
+        instrs,
+        self_label,
+        &mult_at_fn,
+        recursion_hint,
+    ) {
+        crate::wcet_recursion::RecursionAnalysis::NotRecursive => (None, Vec::new()),
+        crate::wcet_recursion::RecursionAnalysis::Unprovable { hint_rejections } => {
+            (None, hint_rejections)
+        }
+        crate::wcet_recursion::RecursionAnalysis::Certified {
+            cert,
+            hint_rejections,
+        } => (Some(cert), hint_rejections),
+    };
     let mut hint_rejections = hint_rejections;
     hint_rejections.append(&mut rec_rejections);
 

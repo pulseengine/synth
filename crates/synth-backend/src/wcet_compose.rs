@@ -124,8 +124,9 @@ pub fn compose(
             // back-edge to a certified self is NOT a Recursion decline. Any OTHER
             // cycle (mutual recursion, an uncertified self) still declines.
             let self_label: Option<&str> = recursion_cert.as_ref().map(|c| c.self_label.as_str());
-            let is_self_site =
-                |site: &synth_core::wcet::WcetCallSite| Some(site.callee_label.as_str()) == self_label;
+            let is_self_site = |site: &synth_core::wcet::WcetCallSite| {
+                Some(site.callee_label.as_str()) == self_label
+            };
 
             if !second {
                 // First visit: mark on-stack, schedule the second visit AFTER all
@@ -258,13 +259,13 @@ pub fn compose(
                         loops.clone(),
                         // #778 phase 4 (#49): surface the derived depth + frame count
                         // when this bound was composed via a self-recursion cert.
-                        recursion_cert.as_ref().map(|c| {
-                            synth_core::wcet::WcetRecursionBound {
+                        recursion_cert
+                            .as_ref()
+                            .map(|c| synth_core::wcet::WcetRecursionBound {
                                 max_depth: c.max_depth,
                                 frame_count: c.max_depth.saturating_add(1),
                                 hint: c.hint,
-                            }
-                        }),
+                            }),
                         hint_rejections.clone(),
                     ),
                     // A Bounded state always comes from a Composable node.

@@ -949,6 +949,170 @@ fn hints_cli_misuse_fails_loudly() {
 }
 
 // ---------------------------------------------------------------------------
+// #778 phase 4 (#49) — bounded self-recursion via a VERIFIED depth-hint.
+//
+// The `recursion` decline is CONVERTED for exactly ONE provably-sound shape: a
+// single-self-call chain whose controlling value is entry-independently bounded by
+// a mask (`m = param & K ∈ [0,K]`), decreasing by a const step toward a base guard
+// on the SAME masked quantity. synth DERIVES its own max depth (never the raw
+// hint); the hint only gates consumption. RED-FIRST: the wrong/unverifiable
+// rejections are asserted alongside the conversion, and the tree/uncapped/mutual
+// shapes STILL decline (decline-honesty MOVED, not deleted).
+// ---------------------------------------------------------------------------
+
+/// The masked-recursion ACCEPT fixture: `m = param & 15 ∈ [0,15]`; recurse while
+/// `m != 0` passing `m-1`; base returns 0. Depth ≤ 15 for ANY i32 input (the mask
+/// buys an entry-independent ceiling). Own body 47 cyc × 16 frames = 752.
+const MASKED_REC_WAT: &str = r#"
+    (module
+      (func $md (export "md") (param i32) (result i32)
+        local.get 0 i32.const 15 i32.and
+        (if (result i32)
+          (then
+            local.get 0 i32.const 15 i32.and i32.const 1 i32.sub call $md i32.const 1 i32.add)
+          (else i32.const 0))))
+"#;
+
+/// GREEN: a correct depth hint (15 ≥ synth's DERIVED ceiling 15) converts the
+/// `recursion` decline into a bound. The emitted `max_depth` is synth's DERIVED
+/// value 15, `frame_count` 16 (the +1 base frame), never the raw hint. The exact
+/// bound literal (752 = 16 × 47) is pinned — a lowering change fails loud.
+/// unicorn ground truth (phase-4 harness): md(0xFFFFFFFF)=r0 15, 267 executed
+/// machine insns across all frames ≤ 752 (entry-independent).
+#[test]
+fn masked_recursion_correct_hint_converts_to_bound() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"md":{"recursion_depth":15}}}"#;
+    let report = compile_wcet_hinted(MASKED_REC_WAT, "cortex-m4", Some(hints));
+    assert_bounded(&report, "md", 752);
+    let f = func(&report, "md");
+    let rec = f
+        .get("recursion")
+        .unwrap_or_else(|| panic!("bounded recursion must carry a `recursion` record: {f}"));
+    assert_eq!(
+        rec.get("max_depth").and_then(Value::as_u64),
+        Some(15),
+        "emitted depth must be synth's DERIVED ceiling (15), not the raw hint: {rec}"
+    );
+    assert_eq!(
+        rec.get("frame_count").and_then(Value::as_u64),
+        Some(16),
+        "frame_count must be max_depth+1 (the base frame counts): {rec}"
+    );
+    // Trip-aware floor: 16 frames each running the whole body must not exceed the
+    // bound (every instruction costs ≥ 1 cycle).
+    let instrs = f.get("instr_count").and_then(Value::as_u64).unwrap();
+    assert!(
+        752 >= 16 * instrs,
+        "bound 752 < 16 frames × {instrs} instrs — unsound"
+    );
+}
+
+/// Unhinted, the masked shape STAYS declined `recursion` — the decline the hint
+/// seam converts (asserted so the conversion above is non-vacuous). A bound this
+/// consequential is opt-in (mirroring the equality-exit loop-hint gate).
+#[test]
+fn masked_recursion_unhinted_still_declines() {
+    let report = compile_wcet(MASKED_REC_WAT, "cortex-m4");
+    assert_declined(&report, "md", "recursion");
+}
+
+/// RED: a too-LOW depth hint (3 < synth's derived ceiling 15) is REJECTED
+/// `hint-below-derived-depth` and the function STAYS declined — a wrong oracle
+/// claim never becomes a bound.
+#[test]
+fn masked_recursion_too_low_hint_rejected_red_first() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"md":{"recursion_depth":3}}}"#;
+    let report = compile_wcet_hinted(MASKED_REC_WAT, "cortex-m4", Some(hints));
+    assert_declined(&report, "md", "recursion");
+    assert_hint_rejection(&report, "md", "hint-below-derived-depth", 3);
+}
+
+/// DECLINE-HONESTY (tree recursion): a TWO-self-call fixture (fib-shaped) — even
+/// masked and hinted — is REJECTED `hint-unverifiable-recursion` and stays
+/// declined. `depth × per-frame` would under-count the exponential frame tree; the
+/// single-self-call gate is the direct guard against that fatal class.
+#[test]
+fn tree_recursion_two_self_calls_rejected_even_with_hint() {
+    let wat = r#"
+        (module
+          (func $fib (export "fib") (param i32) (result i32)
+            local.get 0 i32.const 15 i32.and i32.const 2 i32.lt_s
+            (if (result i32)
+              (then i32.const 1)
+              (else
+                local.get 0 i32.const 15 i32.and i32.const 1 i32.sub call $fib
+                local.get 0 i32.const 15 i32.and i32.const 2 i32.sub call $fib
+                i32.add))))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"fib":{"recursion_depth":15}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "fib", "recursion");
+    assert_hint_rejection(&report, "fib", "hint-unverifiable-recursion", 15);
+}
+
+/// DECLINE-HONESTY (uncapped countdown): base at `param == 0`, recursive arg
+/// `param - 1` with NO mask on the arg path → the controlling value is a raw
+/// runtime param, unbounded at one end of i32 (negative entries diverge). A depth
+/// hint is REJECTED `hint-unverifiable-recursion`; the function stays declined.
+#[test]
+fn uncapped_countdown_recursion_hint_rejected_unverifiable() {
+    let wat = r#"
+        (module
+          (func $count (export "count") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 0)
+              (else local.get 0 i32.const 1 i32.sub call $count i32.const 1 i32.add))))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"count":{"recursion_depth":100}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "count", "recursion");
+    assert_hint_rejection(&report, "count", "hint-unverifiable-recursion", 100);
+}
+
+/// DECLINE-HONESTY (mutual recursion): a two-function cycle — even if one carries a
+/// (self-shaped) depth hint — declines `recursion` on BOTH. The certificate only
+/// exempts a function's OWN self-edge; a distinct cross-function cycle is not a
+/// self-recursion and is never converted.
+#[test]
+fn mutual_recursion_stays_declined_even_with_hint() {
+    let wat = r#"
+        (module
+          (func $ping (export "ping") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 0)
+              (else local.get 0 i32.const 1 i32.sub call $pong)))
+          (func $pong (export "pong") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 1)
+              (else local.get 0 i32.const 1 i32.sub call $ping))))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"ping":{"recursion_depth":50}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "ping", "recursion");
+    assert_declined(&report, "pong", "recursion");
+}
+
+/// Assert `name` carries a hint rejection with EXACTLY `reason` and `hint`.
+fn assert_hint_rejection(report: &Value, name: &str, reason: &str, hint: u64) {
+    let f = func(report, name);
+    let rej = f
+        .get("hint_rejections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|r| r.get("reason").and_then(Value::as_str) == Some(reason))
+        .unwrap_or_else(|| panic!("{name}: expected a hint rejection `{reason}` (entry: {f})"));
+    assert_eq!(
+        rej.get("hint").and_then(Value::as_u64),
+        Some(hint),
+        "{name}: rejection carries the offered hint value (record: {rej})"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Phase-2 assertion helpers.
 // ---------------------------------------------------------------------------
 

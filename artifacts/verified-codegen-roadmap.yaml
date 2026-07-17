@@ -3368,3 +3368,83 @@ artifacts:
         recursion/propagation/external). claims.yaml pins
         BL_BLX_CALL_OVERHEAD_CYCLES = 4 (SYNTH-WCET-CYCLE-MODEL); claim_check green.
         Frozen anchors 10/10 untouched (WCET is a byte-invisible sidecar).
+
+  - id: VCR-WCET-002
+    type: sys-verification
+    title: "WCET bounded self-recursion via a verified depth-hint (#778 phase 4 / #49)"
+    description: >
+      Phase 4 (#49) CONVERTS the phase-3 `recursion` decline for exactly ONE
+      provably-sound shape, keeping every other recursion a LOUD decline (the
+      decline is MOVED, never deleted — the v0.46 doctrine). SOUNDNESS = decline >
+      guess: a depth × per-frame bound is emitted only when synth can PROVE the
+      recursion cannot exceed the derived depth for ANY i32 input.
+
+      THE PROVABLE SHAPE (crates/synth-backend/src/wcet_recursion.rs): a
+      SINGLE-self-call chain (exactly one BL to the function's own func_<idx>,
+      executed at most once per frame — loop multiplier 1) whose controlling value
+      is ENTRY-INDEPENDENTLY bounded by a mask: m = (param & K) ∈ [0,K] for any
+      runtime param. The base guard and the recursive argument read the SAME masked
+      quantity (identical base register + mask constant); the argument is m − step
+      (const step); and the self-call is proven CONTROL-DEPENDENT on the guard (the
+      guard's taken target is a base block that does NOT contain the self-call, so
+      the self-call is unreachable when the guard fires — this is what stops the
+      dangerous (base−step)&K re-mask from diverging). synth then DERIVES its own
+      maximum depth via the loop trip machinery (wcet_loops::exit_index, seeded at
+      init = mask — the worst case over all inputs; wrap/divisibility-safe), and the
+      composer folds the certified self-edge as (max_depth+1) × frame_cost instead
+      of declining. The +1 counts the BASE frame (runs own_cycles, no self-call);
+      omitting it undercounts by one frame → the fold is pinned sound-critical in
+      claims.yaml (SYNTH-WCET-CYCLE-MODEL).
+
+      THE HINT SEAM (untrusted oracle + sound checker, no scry dependency): a
+      --wcet-hints `recursion_depth` entry only GATES consumption (a bound this
+      consequential is opt-in, mirroring the equality-exit loop-hint gate). The
+      emitted depth is ALWAYS synth's DERIVED ceiling, never the raw hint. Rejected
+      with machine reasons otherwise: a hint below the derived depth →
+      `hint-below-derived-depth`; a shape synth cannot prove →
+      `hint-unverifiable-recursion`.
+
+      NAMED RESIDUAL DECLINES (decline-honesty, nothing deleted):
+        - TREE recursion (≥2 self-calls per frame, e.g. fib): depth × per-frame
+          would under-count the exponential frame tree → reject
+          `hint-unverifiable-recursion` (the single-self-call gate is the direct
+          guard against this fatal class).
+        - UNCAPPED countdown (recursive arg is a raw runtime param, no mask):
+          runtime-unbounded at one end of i32 (negative entries diverge) → reject
+          `hint-unverifiable-recursion`.
+        - MUTUAL / INDIRECT recursion: the certificate exempts only a function's OWN
+          self-edge; a distinct cross-function cycle still declines `recursion`.
+
+      Frozen-safe: .text byte-identical (frozen 10/10; the only codegen-adjacent
+      change is a new current_func_index config field, byte-invisible). Richer
+      recursion certificates (clamp-bounded controlling values, data-dependent
+      depths, scry-supplied bounds) and inter-procedural recursion composition are
+      named follow-ups.
+
+    links:
+      - type: verifies
+        target: VCR-001
+      - type: refines
+        target: VCR-WCET-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        crates/synth-cli/tests/wcet_bound_gate.rs (CI-gated, cargo test + explicit
+        ci.yml step) — 5 phase-4 fixtures: masked_recursion_correct_hint_converts_to_bound
+        (BOUNDED, derived max_depth 15 / frame_count 16 / 752 cyc EXACT literal +
+        frame floor; emitted depth is DERIVED not the raw hint),
+        masked_recursion_unhinted_still_declines (the decline the seam converts —
+        non-vacuity), masked_recursion_too_low_hint_rejected_red_first
+        (hint 3<15 → declined + hint-below-derived-depth, RED-FIRST),
+        tree_recursion_two_self_calls_rejected_even_with_hint (fib → declined +
+        hint-unverifiable-recursion — the fib-trap guard),
+        uncapped_countdown_recursion_hint_rejected_unverifiable,
+        mutual_recursion_stays_declined_even_with_hint. 3 pure-composer unit tests
+        in wcet_compose.rs (certified self folds depth frames / folds non-self
+        callee per-frame / a distinct mutual cycle STILL declines). Execution-side
+        cross-check: scripts/repro/wcet_phase4_49_recursion_soundness.py under
+        unicorn — md(0xFFFFFFFF) and md(0x7FFFFFFF) each execute 267 machine insns
+        across all 16 frames ≤ 752 cyc (entry-independent, the mask soundness
+        empirically confirmed). claims.yaml pins the (max_depth+1) frame fold;
+        claim_check green. Frozen anchors 10/10 untouched.

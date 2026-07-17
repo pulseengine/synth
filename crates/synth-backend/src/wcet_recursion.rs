@@ -85,10 +85,17 @@ enum Sym {
     /// by its origin register, so `Param(r)` means "the entry value of register r".
     Param(Reg),
     /// `(param_of(base) & mask)` — the masked controlling quantity, `∈ [0, mask]`.
-    Masked { base: Reg, mask: i32 },
+    Masked {
+        base: Reg,
+        mask: i32,
+    },
     /// `(param_of(base) & mask) + add` — the masked quantity shifted by a const
     /// (the recursive-argument shape `m - step`).
-    MaskedStep { base: Reg, mask: i32, add: i64 },
+    MaskedStep {
+        base: Reg,
+        mask: i32,
+        add: i64,
+    },
 }
 
 /// Per-instruction walk state: symbolic registers + word SP slots + last compare.
@@ -456,7 +463,11 @@ fn masked_shift(a: Sym, b: Sym, sign: i64) -> Sym {
         }
         (Sym::MaskedStep { base, mask, add }, Sym::Const(y)) => {
             match add.checked_add(sign * y as i64) {
-                Some(na) if na.abs() <= 1 << 20 => Sym::MaskedStep { base, mask, add: na },
+                Some(na) if na.abs() <= 1 << 20 => Sym::MaskedStep {
+                    base,
+                    mask,
+                    add: na,
+                },
                 _ => Sym::Top,
             }
         }
@@ -497,11 +508,29 @@ fn eval_guard(cond: Condition, flags: &Option<(Sym, Sym)>) -> Option<GuardPred> 
 fn dest_reg(op: &ArmOp) -> Option<Reg> {
     use ArmOp::*;
     match op {
-        Add { rd, .. } | Sub { rd, .. } | Adds { rd, .. } | Subs { rd, .. } | And { rd, .. }
-        | Orr { rd, .. } | Eor { rd, .. } | Mov { rd, .. } | Movw { rd, .. } | Movt { rd, .. }
-        | Lsl { rd, .. } | Lsr { rd, .. } | Asr { rd, .. } | Ror { rd, .. } | Mul { rd, .. }
-        | Rsb { rd, .. } | Mvn { rd, .. } | Clz { rd, .. } | Uxtb { rd, .. } | Uxth { rd, .. }
-        | Sxtb { rd, .. } | Sxth { rd, .. } | SetCond { rd, .. } => Some(*rd),
+        Add { rd, .. }
+        | Sub { rd, .. }
+        | Adds { rd, .. }
+        | Subs { rd, .. }
+        | And { rd, .. }
+        | Orr { rd, .. }
+        | Eor { rd, .. }
+        | Mov { rd, .. }
+        | Movw { rd, .. }
+        | Movt { rd, .. }
+        | Lsl { rd, .. }
+        | Lsr { rd, .. }
+        | Asr { rd, .. }
+        | Ror { rd, .. }
+        | Mul { rd, .. }
+        | Rsb { rd, .. }
+        | Mvn { rd, .. }
+        | Clz { rd, .. }
+        | Uxtb { rd, .. }
+        | Uxth { rd, .. }
+        | Sxtb { rd, .. }
+        | Sxth { rd, .. }
+        | SetCond { rd, .. } => Some(*rd),
         _ => None,
     }
 }

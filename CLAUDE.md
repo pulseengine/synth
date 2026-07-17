@@ -199,14 +199,31 @@ frozen and oracle-gated every step:
   counted `trip×` (never once). Decline-honesty residuals (moved, never deleted):
   recursion / any call-graph cycle → `recursion`, indirect `Blx`/`call_indirect`
   → `indirect-call`, external/import direct call → `call`, a declined callee →
-  `callee-unbounded` (a decline propagates UP). Data-dependent loops,
-  non-canonical shapes, i64-software-div and non-M3/M4 cores (incl. the
-  ambiguous `-eabihf` M4F/M7 triple) still LOUD-DECLINE with a machine reason.
-  Frozen-safe (`.text` unchanged, hints/sidecar byte-invisible); gated by
-  `wcet_bound_gate.rs` (bound ≥ actual + trip-aware floor + red-first hint
-  rejection + decline matrix + composed exact-literal chain + recursion/indirect
-  decline honesty). Richer hint certificates (data-dependent bounds, scry) are a
-  named follow-up.
+  `callee-unbounded` (a decline propagates UP). Phase 4 (#49): BOUNDED
+  SELF-RECURSION via a VERIFIED depth-hint (`wcet_recursion.rs`) — the `recursion`
+  decline is CONVERTED for exactly one provably-sound shape: a SINGLE-self-call
+  chain (mult 1) whose controlling value is ENTRY-INDEPENDENTLY bounded by a mask
+  (`m = param & K ∈ [0,K]`), decreasing by a const step toward a base guard on the
+  SAME masked quantity, with the self-call proven control-dependent on that guard.
+  synth DERIVES its own max depth (`exit_index` seeded at `init = mask`, wrap/
+  divisibility-safe) and the composer folds the self-edge as `(max_depth+1) ×
+  frame_cost` (the `+1` base frame is sound-critical, pinned in `claims.yaml`); a
+  `--wcet-hints` `recursion_depth` entry only GATES consumption (opt-in, mirroring
+  the equality-exit loop gate) — the emitted depth is always synth's DERIVED
+  ceiling, never the raw hint. Decline-honesty MOVED not deleted: a too-low hint →
+  `hint-below-derived-depth`; a TREE recursion (two self-calls, e.g. fib — `depth ×
+  per-frame` would under-count exponentially), an UNCAPPED runtime-param countdown
+  (unbounded at one end of i32), mutual / indirect recursion → still LOUD-decline
+  `recursion` + `hint-unverifiable-recursion`. Data-dependent loops, non-canonical
+  shapes, i64-software-div and non-M3/M4 cores (incl. the ambiguous `-eabihf`
+  M4F/M7 triple) still LOUD-DECLINE with a machine reason. Frozen-safe (`.text`
+  unchanged, hints/sidecar byte-invisible); gated by `wcet_bound_gate.rs` (bound ≥
+  actual + trip-aware floor + red-first hint rejection + decline matrix + composed
+  exact-literal chain + recursion/indirect decline honesty + masked-recursion
+  accept/reject) and the `wcet_phase4_49_recursion_soundness.py` unicorn cross-
+  check (`md(0xFFFFFFFF)` executes 267 insns across all 16 frames ≤ 752 cyc,
+  entry-independent). Richer recursion certificates (clamp-bounded controlling
+  values, data-dependent depths, scry) are a named follow-up.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the
