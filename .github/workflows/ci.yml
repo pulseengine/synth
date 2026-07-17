@@ -479,6 +479,16 @@ jobs:
       # calls).
       - name: Run f64 const/promote/arith/compare/mem + across-call oracle (#369, m7dp)
         run: SYNTH=./target/debug/synth python scripts/repro/f64_369_differential.py
+      # #782a: the NONTRAPPING trunc_sat family (§4.3.2 — NaN→0, out-of-range
+      # saturates, NEVER traps). Full boundary table (NaN/±inf/exact
+      # INT_MIN-INT_MAX bounds/±0.5) vs wasmtime on BOTH prioritized backends:
+      # ARM32 m7dp+m4f (bare RZ VCVT — the guard-free dual of the #709 trapping
+      # forms) and aarch64 (bare FCVTZS/FCVTZU, all 8 forms incl. i64 targets).
+      # Also pins falcon's exact flags (-t cortex-m7dp --relocatable): the i32
+      # forms must NOT skip, the ARM32 i64 forms MUST decline loudly by name.
+      # This gate caught the optimized-path silent-NOP drop at land time.
+      - name: Run trunc_sat boundary oracle (#782a, m7dp+m4f+aarch64)
+        run: SYNTH=./target/debug/synth python scripts/repro/trunc_sat_782_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values

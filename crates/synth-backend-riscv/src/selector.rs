@@ -4973,6 +4973,32 @@ mod tests {
     }
 
     #[test]
+    fn trunc_sat_782_loud_declines_on_rv32() {
+        // #782a: the decoder now delivers the trunc_sat family; RV32 has no
+        // float lowering at all, so every form must LOUD-decline through the
+        // catch-all `Unsupported` arm — never silent wrong code.
+        for op in [
+            WasmOp::I32TruncSatF32S,
+            WasmOp::I32TruncSatF32U,
+            WasmOp::I32TruncSatF64S,
+            WasmOp::I32TruncSatF64U,
+            WasmOp::I64TruncSatF32S,
+            WasmOp::I64TruncSatF32U,
+            WasmOp::I64TruncSatF64S,
+            WasmOp::I64TruncSatF64U,
+        ] {
+            let ops = [WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            match select(&ops, 1) {
+                Ok(_) => panic!("{op:?} must decline on RV32, but compiled"),
+                Err(err) => assert!(
+                    matches!(err, SelectorError::Unsupported(_)),
+                    "{op:?} must surface as Unsupported, got: {err:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn div_emits_zero_trap() {
         let out = s(
             &[

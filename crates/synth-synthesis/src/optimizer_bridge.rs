@@ -1044,6 +1044,17 @@ impl OptimizerBridge {
                 | WasmOp::I32ReinterpretF32
                 | WasmOp::I32TruncF32S
                 | WasmOp::I32TruncF32U
+                // #782a: the f32-source trunc_sat forms consume a float-typed
+                // value the optimized path cannot map — bail to
+                // `select_with_stack` (which lowers the i32 targets and
+                // loud-declines the i64 targets). Omitting these from this
+                // list let the optimized path silently DROP the op (a 2-byte
+                // `bx lr` stub — the #615 silent-NOP class), caught by the
+                // trunc_sat_782 differential before it ever shipped.
+                | WasmOp::I32TruncSatF32S
+                | WasmOp::I32TruncSatF32U
+                | WasmOp::I64TruncSatF32S
+                | WasmOp::I64TruncSatF32U
                 // f64 arithmetic
                 | WasmOp::F64Add
                 | WasmOp::F64Sub
@@ -1083,6 +1094,11 @@ impl OptimizerBridge {
                 | WasmOp::I64TruncF64U
                 | WasmOp::I32TruncF64S
                 | WasmOp::I32TruncF64U
+                // #782a: f64-source trunc_sat twins (see the f32 group above).
+                | WasmOp::I32TruncSatF64S
+                | WasmOp::I32TruncSatF64U
+                | WasmOp::I64TruncSatF64S
+                | WasmOp::I64TruncSatF64U
         )
     }
 

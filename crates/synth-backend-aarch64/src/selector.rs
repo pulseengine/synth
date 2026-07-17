@@ -338,6 +338,27 @@ pub fn select_typed(
         Ok(())
     };
 
+    // #782a: NONTRAPPING saturating float→int truncation (WASM §4.3.2
+    // trunc_sat — the 0xFC-prefixed family). A64 FCVTZS/FCVTZU already
+    // implement it EXACTLY: round-toward-zero, out-of-range saturates to the
+    // integer bound, NaN → 0 (FPToFixed) — the very "more-total-than-WASM"
+    // behavior the m4 `trunc_guarded` domain guard defends the TRAPPING forms
+    // against is the REQUIRED semantics here, so the lowering is one bare
+    // convert. All eight forms land (A64 is 64-bit native, so the i64 targets
+    // are the same one-instruction shape with an x destination).
+    // Execution-verified vs wasmtime (NaN/±inf/exact-boundary table) in
+    // `scripts/repro/trunc_sat_782_differential.py`.
+    let trunc_sat = |words: &mut Vec<u32>,
+                     stack: &mut Vec<Val>,
+                     f: fn(Reg, FReg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_fp(stack, "trunc_sat")?;
+        let dst = alloc_temp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
     // m4: copysign(z1, z2) — the magnitude of z1 with the sign of z2, a pure
     // bit operation (WASM §4.3.3 fcopysign; NaN payloads pass through intact).
     // Route both operands through the GP file, isolate the sign with ONE
@@ -632,6 +653,16 @@ pub fn select_typed(
             WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
             WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true)?,
             WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false)?,
+
+            // --- nontrapping saturating truncations (#782a): bare FCVTZ ---
+            WasmOp::I32TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_s)?,
+            WasmOp::I32TruncSatF32U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_w_from_s)?,
+            WasmOp::I32TruncSatF64S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_d)?,
+            WasmOp::I32TruncSatF64U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_w_from_d)?,
+            WasmOp::I64TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_x_from_s)?,
+            WasmOp::I64TruncSatF32U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_x_from_s)?,
+            WasmOp::I64TruncSatF64S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_x_from_d)?,
+            WasmOp::I64TruncSatF64U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_x_from_d)?,
 
             // --- float↔float precision conversions (total, never trap) ---
             WasmOp::F64PromoteF32 => funop(&mut words, &mut stack, enc::fcvt_d_from_s)?,
@@ -1057,6 +1088,70 @@ mod tests {
         assert!(w.contains(&enc::movk(9, 0xBF80, 1)));
         assert!(w.contains(&enc::bcond(Cond::Gt, 2)));
         assert!(w.contains(&enc::fcvtzu_w_from_s(9, 0)));
+    }
+
+    #[test]
+    fn trunc_sat_782_i32_forms_are_one_bare_fcvtz() {
+        // §4.3.2 trunc_sat is TOTAL — A64 FCVTZS/FCVTZU already saturate and
+        // give 0 for NaN, so the lowering is ONE bare convert: no bound
+        // materialization, no b.cond, and above all NO brk (a guard would
+        // spuriously trap where WASM saturates).
+        for (op, f32_src, cvt) in [
+            (
+                WasmOp::I32TruncSatF32S,
+                true,
+                enc::fcvtzs_w_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I32TruncSatF32U, true, enc::fcvtzu_w_from_s),
+            (WasmOp::I32TruncSatF64S, false, enc::fcvtzs_w_from_d),
+            (WasmOp::I32TruncSatF64U, false, enc::fcvtzu_w_from_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f32_src {
+                (&[true], &[])
+            } else {
+                (&[], &[true])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![cvt(9, 0), enc::mov_reg64(0, 9), enc::ret()],
+                "{op:?} must be one bare saturating convert"
+            );
+            assert!(
+                !w.contains(&enc::brk(0)),
+                "{op:?} is total — a brk guard would spuriously trap"
+            );
+        }
+    }
+
+    #[test]
+    fn trunc_sat_782_i64_forms_use_x_destination_fcvtz() {
+        // A64 is 64-bit native: the i64-target forms are the same
+        // one-instruction shape with an x (sf=1) destination.
+        for (op, f32_src, cvt) in [
+            (
+                WasmOp::I64TruncSatF32S,
+                true,
+                enc::fcvtzs_x_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I64TruncSatF32U, true, enc::fcvtzu_x_from_s),
+            (WasmOp::I64TruncSatF64S, false, enc::fcvtzs_x_from_d),
+            (WasmOp::I64TruncSatF64U, false, enc::fcvtzu_x_from_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f32_src {
+                (&[true], &[])
+            } else {
+                (&[], &[true])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![cvt(9, 0), enc::mov_reg64(0, 9), enc::ret()],
+                "{op:?} must be one bare x-destination saturating convert"
+            );
+        }
     }
 
     #[test]
