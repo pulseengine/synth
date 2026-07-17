@@ -1,0 +1,108 @@
+diff --git a/rocq/extensions.bzl b/rocq/extensions.bzl
+index 603482b..abcac0f 100644
+--- a/rocq/extensions.bzl
++++ b/rocq/extensions.bzl
+@@ -32,6 +32,52 @@ _RocqToolchainTag = tag_class(
+     },
+ )
+ 
++# Tag class for declaring EXTRA Rocq/Coq packages from the pinned nixpkgs.
++# This is the generic "extra-coq-package hook": a consuming module can pull an
++# arbitrary coqPackages.<attr> into the hermetic toolchain by declaring a tag,
++# without editing this ruleset. Each declared package becomes its own
++# nixpkgs_package repo (@<name>) exposing a `:vo` filegroup of compiled .vo/.glob
++# files plus a `:sources` filegroup of .v sources, so a rocq_library can depend
++# on it. Inert when no tag is declared (empty list -> zero repos emitted).
++_ExtraCoqPackageTag = tag_class(
++    doc = "Declare an extra Rocq/Coq package from the pinned nixpkgs (generic hook).",
++    attrs = {
++        "name": attr.string(
++            doc = "Bazel repository name to create (e.g. 'rocq_wasmcert').",
++            mandatory = True,
++        ),
++        "attribute_path": attr.string(
++            doc = "nixpkgs attribute path (e.g. 'coqPackages.wasmcert').",
++            mandatory = True,
++        ),
++    },
++)
++
++# Generic BUILD file for an extra coq package: exposes compiled artifacts as
++# `:vo` and sources as `:sources`, mirroring the coqutil layout so a
++# rocq_library dep sees the same shape regardless of which package it is.
++_EXTRA_COQ_PKG_BUILD_FILE = '''
++package(default_visibility = ["//visibility:public"])
++
++filegroup(
++    name = "vo",
++    srcs = glob([
++        "lib/coq/**/*.vo",
++        "lib/coq/**/*.glob",
++        "lib/rocq/**/*.vo",
++        "lib/rocq/**/*.glob",
++    ], allow_empty = True),
++)
++
++filegroup(
++    name = "sources",
++    srcs = glob([
++        "lib/coq/**/*.v",
++        "lib/rocq/**/*.v",
++    ], allow_empty = True),
++)
++'''
++
+ def _get_rocq_attr(version):
+     """Map Rocq/Coq version to nixpkgs attribute path."""
+     version_map = {
+@@ -235,9 +281,12 @@ def _rocq_impl(module_ctx):
+     """
+     # Collect toolchain configurations from all modules
+     toolchains = []
++    extra_coq_packages = []
+     for mod in module_ctx.modules:
+         for toolchain in mod.tags.toolchain:
+             toolchains.append(toolchain)
++        for extra in mod.tags.extra_coq_package:
++            extra_coq_packages.append(extra)
+ 
+     # Use the first toolchain configuration
+     if toolchains:
+@@ -316,6 +365,30 @@ import (builtins.fetchTarball {{
+             branch = "rocq-9.0",
+         )
+ 
++    # Generic extra-coq-package hook: emit one nixpkgs_package per declared tag.
++    # Inert when no `extra_coq_package` tag is present (empty list). This is what
++    # lets a consuming module (e.g. synth's VCR-WASM-001) wire an external Rocq
++    # package such as coqPackages.wasmcert into the hermetic toolchain WITHOUT
++    # forking this ruleset — subject, of course, to that package's license being
++    # acceptable to the consumer's CI policy (unfree deps must be refused there).
++    _seen_extra = {}
++    for extra in extra_coq_packages:
++        if extra.name in _seen_extra:
++            if _seen_extra[extra.name] != extra.attribute_path:
++                fail("extra_coq_package '%s' declared twice with different attribute_path ('%s' vs '%s')" % (
++                    extra.name,
++                    _seen_extra[extra.name],
++                    extra.attribute_path,
++                ))
++            continue
++        _seen_extra[extra.name] = extra.attribute_path
++        nixpkgs_package(
++            name = extra.name,
++            repository = nixpkgs_repo,
++            attribute_path = extra.attribute_path,
++            build_file_content = _EXTRA_COQ_PKG_BUILD_FILE,
++        )
++
+     # Return extension metadata (reproducible for caching)
+     return module_ctx.extension_metadata(reproducible = True)
+ 
+@@ -325,5 +398,6 @@ rocq = module_extension(
+     implementation = _rocq_impl,
+     tag_classes = {
+         "toolchain": _RocqToolchainTag,
++        "extra_coq_package": _ExtraCoqPackageTag,
+     },
+ )

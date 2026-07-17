@@ -23,13 +23,27 @@
     dependency is NIX-FEASIBLE — [coqPackages.wasmcert] (coq9.0-wasm-2.2.0)
     exists in the exact nixpkgs commit the rules_rocq_rust toolchain pins
     (88d3861a) and nix-builds green against the same Rocq 9.0.1 — but
-    bazel-wiring is DEFERRED on three named blockers: (1) rules_rocq_rust has
+    bazel-wiring was DEFERRED on three named blockers: (1) rules_rocq_rust had
     no generic extra-coq-package hook (fork change required); (2) nixpkgs
     wasmcert 2.2.0 depends on CompCert 3.16, whose license (inria-compcert)
     is unfree — a policy decision, not a code change; (3) upstream WasmCert
     2.2.1 drops the CompCert dependency, so the next nixpkgs bump removes (2).
-    Until then this file remains a hand transcription, now pinned to the
-    EXACT nix-built sources.
+
+    PHASE-3 STATUS (v0.48, #242): blocker (1) is CLOSED — the generic
+    extra-coq-package HOOK is LANDED (patches/rules_rocq_rust_extra_coq_pkg.patch,
+    a `rocq.extra_coq_package(name=, attribute_path=)` bzlmod tag). Blockers
+    (2)+(3) remain, so the REAL DEPENDENCY IS NOT YET WIRED and this file STAYS
+    a hand transcription. Re-verified 2026-07-17 by nix eval against pin
+    88d3861a: [coqPackages.wasmcert] is 2.2.0 (MIT) but PROPAGATES
+    [coqPackages.compcert] 3.16 (license inria-compcert, meta.license.free =
+    false, meta.unfree = true), which CI's no-unfree-dependency policy refuses;
+    wasmcert >= 2.2.1 (which drops CompCert) is NOT yet in the pin. When a
+    nixpkgs rev carrying wasmcert >= 2.2.1 lands, the migration is mechanical:
+    declare the `extra_coq_package` tag, `Require` the real WasmCert
+    numerics/operations modules from WasmCertBridge.v, and delete this file —
+    at which point the "trusted transcription" caveat DIES. Until then it does
+    NOT: the reference below remains a hand transcription pinned to the EXACT
+    nix-built 2.2.0 sources.
 
     PROVENANCE (pinned). All citations below refer to:
 

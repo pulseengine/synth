@@ -744,6 +744,35 @@ artifacts:
         provenance, CompCert 3.16 lib/Integers.v for the underlying ops) with
         a real-Qed refinement lemma per op in WasmCertBridge.v.
 
+        PHASE 3 (v0.48, #242): the extra-coq-package HOOK is LANDED — blocker
+        (1) is CLOSED; the dep stays PENDING on blockers (2)+(3). Delivered as
+        patches/rules_rocq_rust_extra_coq_pkg.patch (applied via the existing
+        MODULE.bazel git_override patch list): a new
+        `rocq.extra_coq_package(name=, attribute_path=)` bzlmod tag that emits
+        one nixpkgs_package per declaration (exposing `:vo` compiled artifacts +
+        `:sources`), letting a module pull an arbitrary coqPackages.<attr> from
+        the pinned nixpkgs into the hermetic Rocq toolchain WITHOUT forking the
+        ruleset — the generic mechanism the coqutil/hammer/smpl hard-coded attrs
+        lacked. The hook is INERT as shipped: NO extra_coq_package tag is
+        declared, zero repos are emitted, //coq:verify_proofs stays GREEN and
+        the 536 Qed are untouched. The REAL WasmCert-Coq dep is NOT wired,
+        because it is refused by CI's no-unfree-dependency policy: re-verified
+        2026-07-17 by nix eval against pin 88d3861a — coqPackages.wasmcert is
+        version 2.2.0 (meta.license MIT, free) but PROPAGATES coqPackages.
+        compcert 3.16 (meta.license inria-compcert, meta.license.free = false,
+        meta.unfree = true), and wasmcert 2.2.0's Int32 IS CompCert's
+        Integers.Make, so compcert cannot be dropped from the 2.2.0 build graph.
+        wasmcert >= 2.2.1 (which removes the CompCert dep) is NOT yet in the
+        pin. REMAINING WORK to retire the transcription (all mechanical once a
+        pin ships wasmcert >= 2.2.1): (a) bump the nixpkgs pin in
+        rules_rocq_rust to a rev carrying wasmcert >= 2.2.1 — removes blockers
+        (2)+(3); (b) uncomment the `rocq.extra_coq_package(name="rocq_wasmcert",
+        attribute_path="coqPackages.wasmcert")` tag + `use_repo` in MODULE.bazel;
+        (c) swap WasmCertBridge.v's `Require Import Synth.WASM.WasmCertReference`
+        for a `Require` of the real WasmCert numerics/operations modules and
+        delete WasmCertReference.v. Until (a) lands upstream, the transcription
+        stays — the "trusted transcription" caveat is NOT yet retired.
+
   # ---------------------------------------------------------------------------
   # Track C — validation methodology (can start now; feeds Tracks A and B)
   # ---------------------------------------------------------------------------
