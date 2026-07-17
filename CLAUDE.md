@@ -152,13 +152,21 @@ frozen and oracle-gated every step:
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
   symtab-based frozen-fixture differentials). `VCR-VER-003` (#777, implemented
-  v0.46) is a per-compilation *static-data addressing* validator
+  v0.46; phase 2 v0.47) is a per-compilation *static-data addressing* validator
   (`synth_core::static_data_addr`): for every static-data reloc it proves the
-  byte the packed `.data` serves equals the runtime-image byte (overlapping
+  bytes the packed `.data` serves equal the runtime-image bytes (overlapping
   active segments applied later-wins), hard-erroring the compile on the #757
   wrong-segment miscompile. Concrete byte-equality (not SMT), unconditional
   (runs in the default `--features riscv` build), red-first gated (same
   validator Mismatch on `.position()` / Consistent on `.rposition()`).
+  Phase 2 (#777 follow-ups): conservative multi-byte SPAN validation against
+  the shipped init blob on the mixed split (the staggered-overlap straddle is
+  refused with a span diagnostic); the self-contained `--cortex-m` #758 ROM
+  image is packed by a shared later-wins packer and validated unconditionally;
+  RV32 (single-base s11, ships no initializer image) warns loudly on nonzero
+  dropped initializer bytes (hard decline + initializer shipping = named
+  follow-up, held on the frozen control_step fixture); AArch64 is N/A (no
+  linear-memory ops in the integer subset).
 - **Track D (schedulability, #778):** `--emit-wcet` emits a SOUND static
   per-function worst-case cycle bound (`synth-wcet-v1` sidecar) as gale spar's
   T3/T4 `C_i` input — a bound, not a DWT observation. Loop-free functions get an
