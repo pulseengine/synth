@@ -559,6 +559,39 @@ artifacts:
       deferral is closable by routing i32 rotate through the same shift+or sequence
       the i64 path already uses (sharpens the FOLLOW-UP's first target; byte-changing
       codegen, gated — NOT in this test-only increment).
+
+      UNIVERSE-COMPLETENESS UPGRADE (2026-07-17, #49, frozen-safe test-only): the
+      oracle was hardened from a CURATED integer probe list (whose vacuity trap is
+      that a new WasmOp variant is silently never probed) to a COMPILER-ENFORCED
+      universe-complete gate. Every WasmOp variant is now assigned a ParityClass by
+      a NO-WILDCARD match (classify()); a new op fails to COMPILE until classified
+      (the #615 no-wildcard tripwire). Integer-core ops carry a probe and are
+      asserted; float/f64/SIMD are StructurallyExcluded with a written reason —
+      their ARM lowering is TARGET-PARAMETERIZED (measured: f32.add DECLINES with
+      fpu=None, LOWERS with FPUPrecision::Single/Double; f64.add needs Double), so
+      asserting "ARM lowers float" at a fixed no-FPU probe would be FALSE; float/SIMD
+      parity stays a separately-tracked gap. Enumerating the FULL universe surfaced
+      SIXTEEN previously-unprobed ARM-lowers / RV32-loud-declines one-sided gaps
+      (each confirmed END-TO-END via `synth compile -b riscv`, "unsupported wasm op
+      for RV32 skeleton: …"): global.get, global.set, memory.size, memory.grow,
+      memory.copy, memory.fill, br_table, and the nine sub-word i64 loads/stores
+      (i64.load8_s/u, i64.load16_s/u, i64.load32_s/u, i64.store8/16/32 — the
+      full-word i64.load/i64.store DO lower on both; only the sub-word extend/
+      truncate variants are the gap). All sixteen are now ledgered VCR-SEL-005
+      RV32-selector DEFERRALS (a gated, owned fact instead of a silicon surprise) —
+      the KNOWN_DIVERGENCES ledger is now 5 Zbb + 16 new = 21 entries. RED-FIRST
+      non-vacuity is now a first-class companion test
+      (red_first_unledgered_one_sided_gap_is_caught): it drops the real i32.rotl
+      ledger entry and asserts the gate reports it as an unexpected divergence on
+      the REAL backends (no synthetic op, no shipping-code change). A
+      ledger-liveness test guards drift. The gate is now WIRED as a named CI job
+      (vcr-sel-005-cross-backend-op-parity-gate) so a regression is visible on its
+      own failing check.
+
+      FOLLOW-UP EXPANDED: the RV32 sequence-lowering backlog this oracle drives now
+      also covers globals, the memory intrinsics (size/grow/copy/fill), br_table,
+      and the sub-word i64 memory variants — each landing retires its ledger line
+      via the stale-entry check.
     status: implemented
     tags: [codegen, selector, riscv, parity, oracle, track-a, release-v0.11.51]
     links:
@@ -570,10 +603,15 @@ artifacts:
       req-type: functional
       priority: should
       verification-criteria: >
-        cross_backend_integer_op_parity_242 is green: every integer-core probe is
-        at ARM/RV32 parity OR carries a reasoned KNOWN_DIVERGENCES entry, with the
-        at-parity floor (>=30 common-core ops) guarding against a construction
-        regression that would let "everything errors" masquerade as parity.
+        cross_backend_integer_op_parity_242 is green: every WasmOp variant is
+        classified by a no-wildcard match (universe-complete by construction), and
+        every integer-core probe is at ARM/RV32 parity OR carries a reasoned
+        KNOWN_DIVERGENCES entry, with the at-parity floor (>=65 common-core ops)
+        guarding against a construction regression that would let "everything
+        errors" masquerade as parity. The red-first companion
+        (red_first_unledgered_one_sided_gap_is_caught) proves non-vacuity by
+        surfacing the real i32.rotl gap once its ledger entry is removed, and the
+        gate is CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
 
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
