@@ -86,10 +86,35 @@ git_override(
     module_name = "rules_rocq_rust",
     remote = "https://github.com/pulseengine/rules_rocq_rust.git",
     commit = "090b875c6e83e32e25918f31b8c58919ff16467e",  # 2026-02-04
-    patches = ["//patches:rules_rocq_rust_nix_name.patch"],
+    patches = [
+        "//patches:rules_rocq_rust_nix_name.patch",
+        # VCR-WASM-001 phase 3 (#242): generic extra-coq-package hook. Lets a
+        # module pull an arbitrary coqPackages.<attr> from the pinned nixpkgs
+        # into the hermetic toolchain via a `rocq.extra_coq_package(...)` tag,
+        # without forking this ruleset. Inert unless such a tag is declared —
+        # closes named blocker (1) for wiring the REAL WasmCert-Coq dependency.
+        # The dep itself stays PENDING on blockers (2)+(3): nixpkgs pin
+        # 88d3861a ships coqPackages.wasmcert 2.2.0, which propagates
+        # coqPackages.compcert 3.16 (license inria-compcert, unfree) — refused
+        # by CI's no-unfree-dep policy. Upstream wasmcert 2.2.1 drops CompCert;
+        # the next nixpkgs bump carrying >=2.2.1 removes (2)+(3), at which
+        # point a single `rocq.extra_coq_package(name=..., attribute_path=
+        # "coqPackages.wasmcert")` tag + a Require swap retires the
+        # transcription. See coq/Synth/WASM/WasmCertReference.v header and the
+        # VCR-WASM-001 entry in artifacts/verified-codegen-roadmap.yaml.
+        "//patches:rules_rocq_rust_extra_coq_pkg.patch",
+    ],
     patch_strip = 1,
 )
 rocq = use_extension("@rules_rocq_rust//rocq:extensions.bzl", "rocq")
 rocq.toolchain(version = "9.0", strategy = "nix", with_rocq_of_rust_deps = True)
+
+# The generic extra-coq-package hook (VCR-WASM-001 phase 3) is LANDED and inert:
+# no `rocq.extra_coq_package(...)` tag is declared here because the only intended
+# consumer — the real WasmCert-Coq dependency — stays PENDING on the unfree
+# CompCert 3.16 that wasmcert 2.2.0 propagates in the current nixpkgs pin. When a
+# pin carrying wasmcert >= 2.2.1 lands, uncomment:
+#   rocq.extra_coq_package(name = "rocq_wasmcert", attribute_path = "coqPackages.wasmcert")
+# and add `use_repo(rocq, "rocq_wasmcert")`.
 use_repo(rocq, "rocq_toolchains")
 register_toolchains("@rocq_toolchains//:all")

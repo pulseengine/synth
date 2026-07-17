@@ -481,7 +481,13 @@ claims:
   # are hand transcriptions of the PINNED coq9.0-wasm-2.2.0 sources with
   # line-level provenance (WasmCertReference.v); the real external dep is
   # nix-FEASIBLE but bazel-deferred on three named blockers (see the roadmap
-  # entry). The WASM-side analogue of SailArmBridge.v (ISA-001). Lemma count
+  # entry). Phase 3 (v0.48, #242): the extra-coq-package bazel/nix HOOK is
+  # LANDED (patches/rules_rocq_rust_extra_coq_pkg.patch) — blocker (1) closed —
+  # but the REAL dep stays PENDING and the transcription stays UNCHANGED,
+  # because nixpkgs pin 88d3861a ships wasmcert 2.2.0 propagating the UNFREE
+  # compcert 3.16 (blockers (2)+(3)); wasmcert >= 2.2.1 (drops CompCert) not
+  # yet in the pin. So the transcription status here is INTENTIONALLY
+  # unchanged. The WASM-side analogue of SailArmBridge.v (ISA-001). Lemma count
   # flows via status.json (wasmcert_bridge_qed).
   - id: SYNTH-VCR-WASM-001-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml

@@ -11,10 +11,15 @@
 
     SCOPE (honest, named): the reference is still a hand TRANSCRIPTION of the
     pinned coq9.0-wasm-2.2.0 sources, not the real external dependency — see
-    WasmCertReference.v's header for the phase-2 feasibility verdict
-    (nix-feasible, bazel-deferred on three named blockers). Remaining op
-    coverage (div/rem trap rules, clz/ctz/popcnt, rotl/rotr, i64, memory,
-    control flow) is the named follow-up.
+    WasmCertReference.v's header for the full feasibility verdict. PHASE-3
+    UPDATE (v0.48, #242): the extra-coq-package bazel/nix HOOK is now LANDED
+    (blocker (1) closed), but the real dep STAYS PENDING on the unfree CompCert
+    3.16 that wasmcert 2.2.0 propagates in the current nixpkgs pin (blockers
+    (2)+(3)) — so this file continues to [Require Import
+    Synth.WASM.WasmCertReference] and the "trusted transcription" caveat is NOT
+    yet retired. It retires (mechanically) when a nixpkgs rev ships
+    wasmcert >= 2.2.1. Remaining op coverage (div/rem trap rules, clz/ctz/
+    popcnt, rotl/rotr, i64, memory, control flow) is the named follow-up.
 
     NON-VACUITY (why a WRONG synth semantics fails this file):
     - No op-level lemma is [reflexivity]-only where a real gap exists:
