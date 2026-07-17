@@ -137,8 +137,6 @@ readme_link_coverage:
       rationale: forward-looking requirements draft (marked Draft in the doc); aspirational by nature, not a current-state claim surface
     - path: scripts/repro/vcr_ver_001_gate.md
       rationale: frozen repro evidence transcript for VCR-VER-001; existence pinned by SYNTH-VCR-VER-001-DEMONSTRATED
-    - path: ARCHITECTURE.md
-      rationale: TEMPORARY — validity-check pass lands later in this PR and replaces this entry with pattern claims
 
 # -----------------------------------------------------------------------------
 # repo_metadata — the GitHub About surface (description + topics), pinned
@@ -304,6 +302,48 @@ claims:
         path: scripts/repro/call_indirect_275_selfcontained_execution_differential.py
       - kind: file-exists
         path: scripts/repro/call_indirect_275_selfcontained_execution.wat
+
+  # ---------------------------------------------------------------------------
+  # ARCHITECTURE.md — validity-checked in the claim-surface extension PR
+  # (April-era single-backend + benchmark-relic content removed). The pins
+  # below hold the load-bearing structural statements to the tree.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ARCH-BACKENDS
+    doc: ARCHITECTURE.md
+    text: "four backends"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-backend
+      - kind: file-exists
+        path: crates/synth-backend-riscv
+      - kind: file-exists
+        path: crates/synth-backend-aarch64
+      - kind: verbatim
+        text: "| AArch64 (host-native) | `synth-backend-aarch64` | A64 |"
+
+  # The register-allocation description was WRONG for months ("R0-R12 for
+  # temporaries" — R12 is encoder scratch, R9/R10/R11 are reserved bases; the
+  # #212/#215 corruption class). Bind the prose to the actual pool constant.
+  - id: SYNTH-ARCH-REGISTER-POOL
+    doc: ARCHITECTURE.md
+    text: "Allocatable pool: R0–R8"
+    evidence:
+      - kind: count-eq
+        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = \['
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: verbatim
+        text: "R12 (encoder scratch — never allocated)"
+
+  # The honesty rule the whole doc leans on: undecodable ops loud-skip.
+  - id: SYNTH-ARCH-LOUD-DECLINE
+    doc: ARCHITECTURE.md
+    text: "declines loudly"
+    evidence:
+      - kind: count-eq                       # the deliberate-ignore predicate
+        pattern: 'fn is_intentionally_ignored'
+        glob: ['crates/synth-core/src/wasm_decoder.rs']
+        expect: 1
 
   # ---------------------------------------------------------------------------
   # "verified"/"implemented" wording — bound to the roadmap yaml's status

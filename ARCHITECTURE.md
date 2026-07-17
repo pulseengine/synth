@@ -1,6 +1,10 @@
 # Synth Architecture
 
-Complete architectural overview of the Synth WASM-to-ARM compiler for embedded systems.
+Architectural overview of the Synth WASM-to-native compiler for embedded
+systems. Every claim in this document is checked against the tree —
+load-bearing statements are pinned in `claims.yaml` (CI job `claim-check`),
+and anything numeric lives in the machine-derived
+[`artifacts/status.json`](artifacts/status.json), not in prose.
 
 ## Table of Contents
 1. [Overview](#overview)
@@ -10,61 +14,81 @@ Complete architectural overview of the Synth WASM-to-ARM compiler for embedded s
 5. [Code Generation](#code-generation)
 6. [Optimization](#optimization)
 7. [Binary Emission](#binary-emission)
-8. [Performance](#performance)
+8. [Verification Architecture](#verification-architecture)
+9. [Testing](#testing)
+10. [Supported Targets](#supported-targets)
 
 ## Overview
 
-Synth is a WebAssembly-to-ARM compiler designed specifically for embedded systems. It transforms WebAssembly bytecode into native ARM machine code suitable for deployment on ARM Cortex-M microcontrollers.
+Synth is an ahead-of-time compiler from WebAssembly to bare-metal native code.
+It carries **four backends**:
 
-**Key Features:**
-- Direct WASM → ARM code generation
-- Hardware acceleration support (division, CLZ, rotation)
-- Peephole optimization (achieving up to 25% code reduction)
-- Complete startup code generation (vector tables, reset handlers)
-- Linker script generation for multiple ARM targets
-- **0.85x native code size** (better than typical native compilation!)
+| Backend | Crate | ISA | Primary targets |
+|---------|-------|-----|-----------------|
+| ARM Cortex-M (primary) | `synth-backend` | Thumb-2 | cortex-m3/m4/m4f/m7/m7dp (+ m55 experimental MVE) |
+| ARM Cortex-R | `synth-backend` | A32 | cortex-r5 |
+| RISC-V | `synth-backend-riscv` | RV32IMAC | qemu_riscv32, ESP32-C3 |
+| AArch64 (host-native) | `synth-backend-aarch64` | A64 | cortex-a53 (host-linkable ET_REL) |
+
+**Key properties:**
+
+- Direct WASM → native code generation (no C or LLVM intermediary)
+- Hardware acceleration where the target has it (SDIV/UDIV, CLZ, RBIT)
+- Mechanized Rocq correctness proofs on the integer instruction selection,
+  plus per-compilation validators (translation validation, trap preservation,
+  static-data addressing) — see [Verification Architecture](#verification-architecture)
+- Complete firmware image generation: vector table, reset handler, linker
+  scripts, MPU configuration
+- Sound static WCET bounds (`--emit-wcet`)
+- The honesty rule: a construct without a lowering **declines loudly** with a
+  machine reason — never silent wrong code
 
 ### Synth and Loom
 
-Synth works alongside [Loom](https://github.com/pulseengine/loom), our open-source WebAssembly optimizer:
-
-| Project | Purpose | Verification | Output |
-|---------|---------|--------------|--------|
-| **Loom** | WASM optimization | Z3 SMT (ASIL B) | Optimized WASM |
-| **Synth** | Native code synthesis | Rocq proofs (ASIL D) | ARM ELF |
-
-Synth can optionally use Loom to optimize WASM before native code generation. See [SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
+Synth works alongside [Loom](https://github.com/pulseengine/loom), the
+PulseEngine WebAssembly optimizer: Loom transforms WASM → optimized WASM
+(Z3-validated); Synth transforms WASM → native ELF (Rocq proofs +
+per-compilation validators). Synth can consume Loom-optimized modules and,
+with `SYNTH_FACT_SPEC`, use Loom's exported `wsc.facts` invariants as premises
+for certificate-checked specializations. See
+[SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md).
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Synth Compiler                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐      ┌──────────────┐      ┌───────────┐ │
-│  │  WASM Input  │─────▶│  Synthesis   │─────▶│  Backend  │ │
-│  │  (.wasm/.wat)│      │   Engine     │      │ Codegen   │ │
-│  └──────────────┘      └──────────────┘      └───────────┘ │
-│                               │                      │       │
-│                               ▼                      ▼       │
-│                     ┌──────────────────┐   ┌──────────────┐ │
-│                     │  Pattern Matcher │   │ ARM Encoder  │ │
-│                     │  Rule Database   │   │  ELF Builder │ │
-│                     └──────────────────┘   └──────────────┘ │
-│                               │                      │       │
-│                               ▼                      ▼       │
-│                     ┌──────────────────┐   ┌──────────────┐ │
-│                     │    Peephole      │   │ Linker Script│ │
-│                     │   Optimizer      │   │  Generator   │ │
-│                     └──────────────────┘   └──────────────┘ │
-│                                                      │       │
-│                                                      ▼       │
-│                                            ┌──────────────┐  │
-│                                            │  ARM Binary  │  │
-│                                            │  (.elf)      │  │
-│                                            └──────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+                 ┌──────────────────────────────────────────────┐
+                 │                synth-cli                      │
+                 │  compile · verify · disasm · parse · backends │
+                 └──────────────────────┬───────────────────────┘
+                                        │
+   ┌────────────────────────────────────┼─────────────────────────────┐
+   │ synth-core: WasmOp, decoder, Backend trait, target specs,        │
+   │             static-data addressing validator (VCR-VER-003)       │
+   └────────────────────────────────────┬─────────────────────────────┘
+                                        │
+        ┌──────────────┬────────────────┼──────────────────┐
+        ▼              ▼                ▼                  ▼
+ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐ ┌──────────────────┐
+ │synth-backend│ │synth-backend-│ │synth-backend- │ │ integration      │
+ │ Thumb-2+A32 │ │riscv RV32IMAC│ │aarch64 A64    │ │ backends (aWsm,  │
+ │ ELF, vector │ │ relocatable  │ │ host-linkable │ │ wasker) — stubs  │
+ │ table, MPU, │ │ ELF          │ │ ET_REL        │ └──────────────────┘
+ │ WCET        │ └──────────────┘ └───────────────┘
+ └──────┬──────┘
+        │ uses
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ synth-synthesis: instruction selection        │
+ │ (verified selector DSL + direct selector),    │
+ │ liveness/Belady allocation, peephole          │
+ └──────────────────────────────────────────────┘
+        │ validated by
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ synth-verify: ordeal QF_BV translation        │
+ │ validation (Z3 = differential oracle),        │
+ │ trap-preservation VC, fact-spec certificates  │
+ └──────────────────────────────────────────────┘
 ```
 
 ## Compilation Pipeline
@@ -73,25 +97,40 @@ Synth can optionally use Loom to optimize WASM before native code generation. Se
 ```
 Input: WASM Module (.wasm or .wat)
   │
-  ├─▶ Parse WASM bytecode
-  ├─▶ Extract function signatures
-  ├─▶ Identify memory requirements
-  └─▶ Build control flow graph
+  ├─▶ Parse via wasmparser/wat
+  ├─▶ Decode to WasmOp (synth-core) — undecodable ops mark the function
+  │   for a LOUD skip (#369/#554 gate class), never a silent drop
+  ├─▶ Extract signatures, locals, memory/table/global sections
+  └─▶ Module-level gates (e.g. multi-memory declines with a machine reason)
 ```
 
 ### Phase 2: Instruction Selection
+
+Two selector paths exist in `synth-synthesis` (they have different ABIs —
+`--relocatable` forces the full-featured one):
+
+- **`select_with_stack`** — the real compiler: value-stack tracking, control
+  flow, locals/globals, calls, memory; used for relocatable output and all
+  multi-function/self-contained compilation.
+- **`select_default`** — the minimal demo path for trivial single-function
+  modules.
+
+Within `select_with_stack`, ops covered by the **verified selector DSL**
+(`sel_dsl`, VCR-SEL-001) lower through Rocq-proved rules — the shipped rule
+table *generates* the Rocq model (`VcrSelRulesGenerated.v`, #667), so a rule
+change breaks its matching proof. Remaining ops use the hand-written arms.
+
 ```
 WASM Operations
   │
-  ├─▶ Pattern Matching (ISLE-inspired rules)
-  │   ├─ Match operation sequences
-  │   ├─ Apply cost model
-  │   └─ Select optimal ARM instructions
+  ├─▶ Verified DSL rules (covered ops) / direct selection (rest)
   │
   ├─▶ Register Allocation
-  │   ├─ Allocate R0-R12 for temporaries
-  │   ├─ Reserve SP, LR, PC
-  │   └─ Manage register pressure
+  │   ├─ Allocatable pool: R0–R8
+  │   ├─ Reserved: R9 (globals base), R10 (memory size), R11 (memory base,
+  │   │  base-CSE), R12 (encoder scratch — never allocated), SP/LR/PC
+  │   ├─ Liveness-based Belady spilling (VCR-RA-001, verified, default-on)
+  │   └─ i32 local promotion into callee-saved R4–R8 (leaf-aware)
   │
   └─▶ ARM Instruction Stream
 ```
@@ -100,350 +139,207 @@ WASM Operations
 ```
 ARM Instructions (unoptimized)
   │
-  ├─▶ Peephole Optimization
-  │   ├─ Redundant operation elimination
-  │   ├─ NOP removal
-  │   ├─ Instruction fusion
-  │   └─ Constant propagation
+  ├─▶ Peephole + shipped lever ladder (see Optimization below)
   │
   └─▶ ARM Instructions (optimized)
-      - Typical reduction: 0-25%
 ```
 
 ### Phase 4: Code Generation
 ```
 Optimized ARM Instructions
   │
-  ├─▶ ARM Encoding
-  │   ├─ 32-bit ARM mode encoding
-  │   ├─ Thumb-2 mode encoding (optional)
-  │   └─ Branch target resolution
+  ├─▶ Encoding
+  │   ├─ Thumb-2 (Cortex-M, primary) — 16/32-bit mixed; high-register
+  │   │  operands force wide forms (encoder is Ok-or-Err, never corrupting)
+  │   ├─ A32 (Cortex-R5)
+  │   └─ Branch target resolution over real encoded byte layout
   │
-  ├─▶ Startup Code Generation
-  │   ├─ Vector Table (128-byte aligned)
-  │   ├─ Reset Handler (.data copy, .bss zero)
-  │   └─ Exception handlers
+  ├─▶ Per-compilation validators (see Verification Architecture)
+  │
+  ├─▶ Startup Code Generation (self-contained --cortex-m)
+  │   ├─ Vector table
+  │   ├─ Reset handler (.data copy, .bss zero)
+  │   └─ Funcref table in flash for call_indirect (PC-relative dispatch)
   │
   └─▶ Binary Emission
-      ├─ ELF32 file generation
-      ├─ Section placement
-      └─ Symbol table creation
+      ├─ ELF32 executable image, or ET_REL relocatable object
+      ├─ Section placement + symbol table
+      └─ Optional: DWARF line info, WCET sidecar (--emit-wcet)
 ```
 
 ## Core Components
 
 ### 1. Synthesis Engine (`synth-synthesis`)
 
-The synthesis engine performs intelligent WASM-to-ARM translation using pattern matching and cost models.
+**Modules** (as in the tree):
+- `instruction_selector.rs` — WASM → ARM selection, both selector paths
+- `sel_dsl/` — the verified selector DSL rule table (emits the Rocq model)
+- `rules.rs`, `pattern_matcher.rs` — rule database and pattern matching
+- `liveness.rs` — liveness analysis backing Belady spilling
+- `peephole.rs` — local optimization passes
+- `optimizer_bridge.rs` — wires selection into the pipeline
+- `control_flow.rs`, `parallel_move.rs`, `contracts.rs` (Verus specs)
 
-**Modules:**
-- `rules.rs`: Transformation rules and ARM operations
-- `pattern_matcher.rs`: ISLE-inspired pattern matching
-- `instruction_selector.rs`: WASM → ARM instruction selection
-- `peephole.rs`: Local optimization passes
-
-**Key Data Structures:**
+**Example** (real APIs, spot-checked against the tree):
 ```rust
-pub enum WasmOp {
-    // Arithmetic
-    I32Add, I32Sub, I32Mul, I32DivS, I32DivU,
-
-    // Bitwise
-    I32And, I32Or, I32Xor, I32Shl, I32ShrS, I32ShrU,
-    I32Rotl, I32Rotr, I32Clz, I32Ctz, I32Popcnt,
-
-    // Memory
-    I32Load, I32Store,
-
-    // Control Flow
-    Block, Loop, Br, BrIf, Return, Call,
-
-    // ... and more
-}
-
-pub enum ArmOp {
-    // Data Processing
-    Add, Sub, Mul, Sdiv, Udiv,
-    And, Orr, Eor,
-    Lsl, Lsr, Asr, Ror,
-
-    // Bit Manipulation
-    Clz, Rbit,
-
-    // Memory
-    Ldr, Str,
-
-    // Control Flow
-    B, Bl, Bx,
-
-    // ... and more
-}
-```
-
-### 2. Backend (`synth-backend`)
-
-The backend handles code generation, binary emission, and target-specific details.
-
-**Modules:**
-- `arm_encoder.rs`: ARM instruction encoding
-- `elf_builder.rs`: ELF file generation
-- `vector_table.rs`: Cortex-M vector table generation
-- `reset_handler.rs`: Startup code generation
-- `linker_script.rs`: Linker script generation
-- `memory_layout.rs`: Memory analysis
-- `mpu.rs`: Memory Protection Unit support
-
-**Example Usage:**
-```rust
-// Generate ARM code
 let db = RuleDatabase::with_standard_rules();
-let mut selector = InstructionSelector::new(db.rules().to_vec());
-let arm_instrs = selector.select(&wasm_ops)?;
-
-// Optimize
 let optimizer = PeepholeOptimizer::new();
 let (optimized, stats) = optimizer.optimize_with_stats(&arm_instrs);
-
-// Encode
-let encoder = ArmEncoder::new_arm32();
-let code = encoder.encode_sequence(&optimized)?;
-
-// Build ELF
-let elf = ElfBuilder::new_arm32()
-    .with_entry(0x08000000)
-    .with_section(text_section)
-    .build()?;
+let encoder = ArmEncoder::new_arm32();      // A32; Thumb-2 has its own path
+let elf = ElfBuilder::new_arm32();
 ```
 
-### 3. Core (`synth-core`)
+### 2. ARM Backend (`synth-backend`)
 
-Common utilities, error handling, and shared types.
+- `arm_encoder.rs` — A32 + Thumb-2 instruction encoding
+- `elf_builder.rs` — ELF generation (executable + relocatable)
+- `vector_table.rs`, `reset_handler.rs`, `arm_startup.rs` — Cortex-M startup
+- `linker_script.rs` — linker script generation (STM32, nRF52840, generic)
+- `memory_layout.rs`, `mpu.rs`, `mpu_allocator.rs` — memory analysis + MPU
+- `wcet.rs`, `wcet_loops.rs` — sound worst-case cycle model + proven loop
+  bounds (sound-critical constants pinned in `claims.yaml`)
+
+### 3. Other backends
+
+- `synth-backend-riscv` — RV32IMAC selector/encoder/relocatable ELF, PMP
+  support, own linker scripts and startup
+- `synth-backend-aarch64` — A64 encoder (clang-cross-verified), EM_AARCH64
+  ELF64 emitter; straight-line integer + scalar-float subset (see the
+  [Feature Matrix](docs/status/FEATURE_MATRIX.md))
+- `synth-backend-awsm`, `synth-backend-wasker` — external-toolchain
+  integration stubs
+
+### 4. Core (`synth-core`)
+
+Shared types (`WasmOp`), the WASM decoder with the loud-skip contract, the
+`Backend` trait + registry, target specs, and the static-data addressing
+validator that runs on every compilation.
 
 ## Code Generation
 
-### WASM to ARM Mapping
+### WASM to ARM Mapping (representative)
 
-| WASM Operation | ARM Instruction | Cycles | Notes |
-|----------------|-----------------|--------|-------|
-| `i32.add` | `ADD Rd, Rn, Rm` | 1 | Single-cycle |
-| `i32.sub` | `SUB Rd, Rn, Rm` | 1 | Single-cycle |
-| `i32.mul` | `MUL Rd, Rn, Rm` | 1-3 | Depends on CPU |
-| `i32.div_s` | `SDIV Rd, Rn, Rm` | 2-12 | Hardware div |
-| `i32.div_u` | `UDIV Rd, Rn, Rm` | 2-12 | Hardware div |
-| `i32.and` | `AND Rd, Rn, Rm` | 1 | Bitwise |
-| `i32.or` | `ORR Rd, Rn, Rm` | 1 | Bitwise |
-| `i32.xor` | `EOR Rd, Rn, Rm` | 1 | Bitwise |
-| `i32.shl` | `LSL Rd, Rn, #shift` | 1 | Logical shift |
-| `i32.shr_s` | `ASR Rd, Rn, #shift` | 1 | Arithmetic shift |
-| `i32.shr_u` | `LSR Rd, Rn, #shift` | 1 | Logical shift |
-| `i32.rotl` | `ROR Rd, Rn, #(32-n)` | 1 | Rotate left |
-| `i32.rotr` | `ROR Rd, Rn, #shift` | 1 | Rotate right |
-| `i32.clz` | `CLZ Rd, Rm` | 1 | Count leading zeros |
-| `i32.ctz` | `RBIT + CLZ` | 2 | Reverse + CLZ |
-| `i32.load` | `LDR Rd, [Rn, #offset]` | 2 | Memory load |
-| `i32.store` | `STR Rd, [Rn, #offset]` | 2 | Memory store |
-| `local.get` | `LDR Rd, [SP, #offset]` | 2 | Stack load |
-| `local.set` | `STR Rd, [SP, #offset]` | 2 | Stack store |
+Per-op worst-case cycle accounting lives in the sound WCET model
+(`synth-backend/src/wcet.rs`), not in this table.
 
-### ARM Instruction Encoding
+| WASM Operation | ARM Instruction | Notes |
+|----------------|-----------------|-------|
+| `i32.add` | `ADD Rd, Rn, Rm` | |
+| `i32.div_s` | `SDIV Rd, Rn, Rm` | preceded by WASM trap guards (div-by-zero, overflow) |
+| `i32.shl` | `LSL` | immediate-shift folding when the amount is const |
+| `i32.rotl` | `ROR Rd, Rn, #(32-n)` | |
+| `i32.ctz` | `RBIT + CLZ` | |
+| `i32.load` | `LDR Rd, [Rn, #offset]` | R11-based linear-memory addressing; const addresses fold to `[R11, #imm]` |
+| `local.get` | register or `LDR [SP, #offset]` | i32 locals promote to R4–R8 in eligible functions |
+| `select` | `CMP` + IT/`CSEL`-style predication | cmp→select fusion default-on |
 
-All ARM instructions use specific 32-bit encodings:
+### Instruction Encoding
+
+Thumb-2 is the primary Cortex-M encoding (16/32-bit mixed); A32 is used for
+Cortex-R5. Illustrative A32 data-processing encodings (as in
+`arm_encoder.rs`):
 
 ```rust
-// ADD encoding
-0xE0800000 | (Rn << 16) | (Rd << 12) | Rm
-
-// SDIV encoding (ARMv7-M+)
-0xE710F010 | (Rd << 16) | (Rm << 8) | Rn
-
-// CLZ encoding (ARMv5T+)
-0xE16F0F10 | (Rd << 12) | Rm
+// ADD (A32): 0xE0800000 | (Rn << 16) | (Rd << 12) | Rm
+// SDIV (A32): 0xE710F010 | (Rd << 16) | (Rm << 8) | Rn
 ```
+
+The Thumb-2 encoder refuses (returns `Err`) rather than emit a 16-bit form
+with a high register — the #180/#185 corruption class is structurally gated.
 
 ## Optimization
 
-### Peephole Optimization Patterns
+### Peephole patterns
 
-The optimizer applies local transformations:
+1. Redundant-operation elimination (`MOV R0, R0` → removed)
+2. NOP removal
+3. Instruction fusion (shift-into-operand, `ADD R0, R2, R1, LSL #2`)
+4. Constant propagation/folding
 
-1. **Redundant Operation Elimination**
-   ```
-   MOV R0, R0  →  NOP (removed)
-   ```
+### Shipped optimization levers
 
-2. **NOP Removal**
-   ```
-   ADD R0, R1, R2
-   NOP            →  ADD R0, R1, R2
-   SUB R3, R4, R5     SUB R3, R4, R5
-   ```
+All default-on, each evidence-gated with a CI-pinned opt-out (see the README
+North-Star section for the history):
 
-3. **Instruction Fusion**
-   ```
-   LSL R0, R1, #2
-   ADD R0, R2, R0  →  ADD R0, R2, R1, LSL #2
-   ```
-
-4. **Constant Propagation**
-   ```
-   MOV R0, #10
-   MOV R1, #20
-   ADD R2, R0, R1  →  MOV R2, #30
-   ```
-
-### Optimization Results
-
-From our benchmark suite:
-- **Average reduction:** 0-25% depending on code pattern
-- **Loop optimization:** 18.2% reduction (11 → 9 instructions)
-- **No degradation:** Optimization never makes code worse
-- **Code density:** 0.25-0.42 operations per byte
+- Liveness-based Belady spill/realloc (VCR-RA-001, `verified`)
+- cmp→select fusion (ARM + RV32)
+- i32 local promotion into callee-saved registers
+- Immediate-shift folding (ARM + RV32)
+- Linear-memory base-CSE into R11 + const-address folding
+- Constant-CSE, dead-frame elimination, uxth-fold
+- Frame-slot DCE (dead-store elimination + control-flow-transparent reload
+  forwarding)
 
 ## Binary Emission
 
-### ELF File Structure
+### ELF File Structure (self-contained `--cortex-m`)
 
 ```
-ELF Header (52 bytes)
-├─ Magic: 0x7F 'E' 'L' 'F'
-├─ Class: 32-bit
-├─ Endian: Little-endian
-├─ Machine: ARM (0x28)
-└─ Entry: 0x08000000
-
+ELF Header (ELF32, little-endian, EM_ARM)
 Program Headers
 ├─ LOAD: .isr_vector + .text (FLASH)
 └─ LOAD: .data + .bss (RAM)
-
 Section Headers
-├─ .isr_vector (128-byte aligned)
-│  └─ Vector table with ISR addresses
-├─ .text (code section)
-│  ├─ Reset_Handler
-│  └─ Application code
-├─ .rodata (constants)
-├─ .data (initialized data, copied from FLASH)
-├─ .bss (zero-initialized data)
-├─ .symtab (symbol table)
-└─ .strtab (string table)
+├─ .isr_vector — vector table (initial SP, Reset_Handler, exception vectors)
+├─ .text — reset handler + compiled functions (+ flash funcref table when
+│          the module uses call_indirect)
+├─ .rodata / .data / .bss
+├─ .symtab / .strtab / .shstrtab (function symbols carry the Thumb bit)
+└─ optional .rel.* / .debug_* (relocatable + DWARF paths)
 ```
 
-### Vector Table Layout
+`--relocatable` (or any module with imports) emits an ET_REL object with
+`R_ARM_THM_CALL` relocations and `func_N` symbols for linking against a
+runtime (e.g. Kiln).
 
-```
-Offset  | Entry                | Address
---------|---------------------|----------
-0x00    | Initial SP          | 0x20010000
-0x04    | Reset_Handler       | 0x08000101 (Thumb bit set)
-0x08    | NMI_Handler         | 0x00000000 (weak)
-0x0C    | HardFault_Handler   | 0x00000000
-0x10    | MemManage_Handler   | 0x00000000 (weak)
-...     | ...                 | ...
-0x3C    | SysTick_Handler     | 0x00000000 (weak)
-0x40+   | IRQ0-15_Handler     | 0x00000000 (weak)
-```
+### Memory Layout (defaults — configurable via linker scripts)
 
-### Memory Layout
+Flash at `0x08000000` (vector table first, code after), RAM at `0x20000000`
+(.data, .bss, heap, stack; initial SP at the RAM top). The concrete values
+are produced by `memory_layout.rs` + the generated linker scripts — consult
+those, not this document, for exact addresses.
 
-```
-FLASH (0x08000000 - 0x0807FFFF, 512KB)
-├─ 0x08000000: Vector Table (.isr_vector, 128 bytes)
-├─ 0x08000080: Padding for alignment
-├─ 0x08000100: Reset Handler + Code (.text)
-├─ 0x080XXXXX: Read-only data (.rodata)
-└─ 0x080YYYYY: .data load address (LMA)
+## Verification Architecture
 
-RAM (0x20000000 - 0x2001FFFF, 128KB)
-├─ 0x20000000: Initialized data (.data, VMA)
-├─ 0x20000100: Zero-initialized data (.bss)
-├─ 0x20000XXX: Heap (optional)
-├─ 0x2000YYYY: Stack (grows downward)
-└─ 0x20010000: Initial SP (top of stack)
-```
+Three layers, complementary by design:
 
-## Performance
-
-### Benchmark Results
-
-Comprehensive benchmarking across 12 operation categories:
-
-| Category | WASM Ops | ARM Instructions | Code Size | Native Est | Ratio |
-|----------|----------|------------------|-----------|------------|-------|
-| Arithmetic | 7 | 7 | 28 bytes | 28 bytes | 1.00x |
-| Bitwise | 7 | 7 | 28 bytes | 28 bytes | 1.00x |
-| Division | 7 | 7 | 28 bytes | 28 bytes | 1.00x |
-| Bit Manipulation | 9 | 9 | 36 bytes | 36 bytes | 1.00x |
-| Memory | 6 | 6 | 24 bytes | 24 bytes | 1.00x |
-| Loop | 11 | 9 (opt) | 36 bytes | 28 bytes | 1.29x |
-| GPIO Pattern | 6 | 6 | 24 bytes | 24 bytes | 1.00x |
-| Fixed-Point | 5 | 5 | 20 bytes | 20 bytes | 1.00x |
-
-**Aggregate Results:**
-- **Total generated:** 44 bytes
-- **Total native estimate:** 52 bytes
-- **Overall ratio:** **0.85x** (our code is SMALLER!)
-- **Average optimization:** 0-18% reduction
-
-### LED Blink Example
-
-Complete real-world example:
-```
-24 WASM operations
-  ↓ Instruction Selection
-24 ARM instructions
-  ↓ Peephole Optimization (25% reduction)
-18 ARM instructions
-  ↓ Encoding
-72 bytes of ARM code
-  ↓ Complete Binary
-728 bytes ELF file (including vector table, reset handler, sections)
-
-Ready for deployment to ARM Cortex-M!
-```
-
-### Code Quality Metrics
-
-- **Code density:** 0.25-0.42 operations per byte
-- **Optimization effectiveness:** Up to 25% reduction
-- **Size efficiency:** 0.85x native (15% smaller on average)
-- **No bloat:** All code within 5x of native (typically 1x)
+1. **Mechanized proofs (Rocq)** — `coq/Synth/`: per-op correctness theorems
+   over the compilation model; the verified selector DSL's rules are proven
+   against a model *generated from the shipped rule table*. Counts:
+   [`artifacts/status.json`](artifacts/status.json) /
+   [coq/STATUS.md](coq/STATUS.md).
+2. **Per-compilation validators** — run on every build, not once:
+   translation validation (ordeal, pure-Rust QF_BV; Z3 as feature-gated
+   differential oracle), trap-preservation VC (dropped-trap classes),
+   static-data addressing VC (byte-equality of served vs runtime image),
+   and the sound WCET bound with statically-proven loop trips.
+3. **Differential oracles (CI)** — frozen-fixture byte differentials
+   (symtab-based, host-independent), execution differentials vs wasmtime
+   under unicorn/QEMU/Renode, and fixture-scoped silicon gates (gale).
 
 ## Testing
 
-### Test Coverage
+- `cargo test --workspace` — unit + integration suites
+- `bazel test //coq:verify_proofs` — the full Rocq proof suite (hermetic, Nix)
+- `bazel test //tests/...` — Renode ARM Cortex-M4 emulation tests
+- `scripts/repro/` — execution/byte differentials, CI-gated
+- Silicon: fixture-scoped cycle + correctness gates on NUCLEO-G474RE /
+  STM32F100 via the gale loop — there is **no broad board matrix yet**
 
-- **Total tests:** 895+ passing across 16 crates
-- **Categories:** instruction selection, ARM encoding, peephole optimization, ELF emission, Z3 verification, register allocation, ABI, WIT, WAST compilation, Renode emulation
-- **Verification:** 53 Z3 SMT tests, 233 closed Rocq proofs (10 admitted), 55+ Renode ARM Cortex-M4 emulation tests
+Test/proof counts are deliberately not written here — they are machine-derived
+into [`artifacts/status.json`](artifacts/status.json) and rendered into the
+generated [Feature Matrix](docs/status/FEATURE_MATRIX.md).
 
-## Supported Platforms
+## Supported Targets
 
-### ARM Cortex-M Series
+| Family | Profiles | Notes |
+|--------|----------|-------|
+| ARM Cortex-M (Thumb-2) | `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m7dp` | f32/f64 VFP requires an FPU profile (`-f`/`dp` suffixes) |
+| ARM Cortex-M55 | `cortex-m55` | experimental Helium/MVE encoding — untested on silicon |
+| ARM Cortex-R (A32) | `cortex-r5` | integer family |
+| RISC-V | `rv32imac`, `rv32imc`, `rv32im`, `rv32i`, `rv32gc`, `esp32c3` | `-b riscv` |
+| AArch64 | `cortex-a53` | `-b aarch64`, host-native ET_REL |
 
-| Platform | Flash | RAM | Status |
-|----------|-------|-----|--------|
-| STM32F4 | 512KB | 128KB | Emulation only |
-| STM32F1 | 64KB | 20KB | Emulation only |
-| RP2040 | 2MB | 264KB | Emulation only |
-| nRF52 | 512KB | 64KB | Emulation only |
-
-### Feature Requirements
-
-| Feature | ARMv6-M | ARMv7-M | ARMv7E-M |
-|---------|---------|---------|----------|
-| Hardware Divide | ✗ | ✓ | ✓ |
-| CLZ | ✗ | ✓ | ✓ |
-| RBIT | ✗ | ✓ | ✓ |
-| DSP Extension | ✗ | ✗ | ✓ |
-
-## Conclusion
-
-Synth demonstrates that WebAssembly can be efficiently compiled for embedded ARM targets, achieving:
-
-- **Competitive code size** (0.85x native)
-- **Efficient instruction selection** (1:1 WASM:ARM ratio in many cases)
-- **Effective optimization** (up to 25% reduction)
-- **Complete toolchain** (vector tables, startup code, linker scripts)
-- **Approaching initial release** (895+ passing tests, Renode emulation validation, no hardware testing yet)
-
-The architecture is modular, extensible, and suitable for real-world embedded deployment.
+Hardware evidence today is emulation (Renode/QEMU/unicorn) plus gale's
+fixture-scoped silicon gates; linker scripts exist for STM32-class parts,
+nRF52840, and a generic profile.
