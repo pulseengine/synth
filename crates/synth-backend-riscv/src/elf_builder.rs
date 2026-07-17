@@ -87,6 +87,23 @@ impl RiscVElfBuilder {
     /// each function is independently resolved (no cross-function branch
     /// labels — those will need a second pass once we add `Call`).
     pub fn build(&self, functions: &[RiscVElfFunction]) -> Result<Vec<u8>, ElfBuildError> {
+        self.build_with_data(functions, &[])
+    }
+
+    /// Build the full ELF blob, shipping `wasm_data` (the #798 packed
+    /// active-data-segment records — see
+    /// `synth_core::static_data_addr::pack_segment_records`) as a `.wasm_data`
+    /// PROGBITS section. The generated linker script places it in flash and
+    /// the generated startup copies each record to
+    /// `__linear_memory_base + off` at reset. An EMPTY `wasm_data` omits the
+    /// section entirely, producing bytes identical to the pre-#798 layout —
+    /// data-free modules (and every frozen fixture without segments) are
+    /// untouched.
+    pub fn build_with_data(
+        &self,
+        functions: &[RiscVElfFunction],
+        wasm_data: &[u8],
+    ) -> Result<Vec<u8>, ElfBuildError> {
         let encoder = RiscVEncoder::new_rv32();
 
         // 1. Resolve labels per-function, accumulate code bytes & symbols.
@@ -104,12 +121,15 @@ impl RiscVElfBuilder {
             symbols.push((f.name.clone(), function_offset, function_size));
         }
 
-        // 2. Section ordering:
+        // 2. Section ordering (— entries marked § exist only when `wasm_data`
+        //    is non-empty; without it the layout is bit-identical to pre-#798):
         //    [0]  null
         //    [1]  .text (PROGBITS, AX)
-        //    [2]  .symtab (SYMTAB)
-        //    [3]  .strtab (STRTAB) — symbol names
-        //    [4]  .shstrtab (STRTAB) — section names
+        //    [2]§ .wasm_data (PROGBITS, A) — packed segment records
+        //    [·]  .symtab (SYMTAB)
+        //    [·]  .strtab (STRTAB) — symbol names
+        //    [·]  .shstrtab (STRTAB) — section names
+        let has_wasm_data = !wasm_data.is_empty();
         let mut elf = Vec::new();
         let ehsize = 52usize;
         let shentsize = 40usize;
@@ -121,9 +141,20 @@ impl RiscVElfBuilder {
         let text_offset = elf.len();
         elf.extend_from_slice(&text);
 
-        // Pad to 4-byte alignment for the symbol table.
+        // Pad to 4-byte alignment for what follows (.wasm_data / .symtab).
         while elf.len() % 4 != 0 {
             elf.push(0);
+        }
+
+        // .wasm_data — packed active-segment records (#798), 4-aligned.
+        let wasm_data_offset = elf.len();
+        if has_wasm_data {
+            elf.extend_from_slice(wasm_data);
+            // pack_segment_records pads each record to 4 bytes, but stay
+            // robust to arbitrary blobs: re-align for the symbol table.
+            while elf.len() % 4 != 0 {
+                elf.push(0);
+            }
         }
 
         // .strtab — built first so we know offsets for .symtab.
@@ -165,7 +196,7 @@ impl RiscVElfBuilder {
 
         // .shstrtab — fixed contents
         let shstrtab_offset = elf.len();
-        let shstrtab_data = build_shstrtab();
+        let shstrtab_data = build_shstrtab(has_wasm_data);
         elf.extend_from_slice(&shstrtab_data.bytes);
 
         // Pad to 4-byte for the section header table.
@@ -177,8 +208,11 @@ impl RiscVElfBuilder {
 
         // Section headers
         let text_size = text.len() as u32;
-        let symtab_link = 3u32; // index of .strtab
-        let shdrs = vec![
+        // .wasm_data (when present) sits between .text and .symtab, shifting
+        // the string/symbol-table indices up by one.
+        let wasm_data_shift = if has_wasm_data { 1u32 } else { 0 };
+        let symtab_link = 3u32 + wasm_data_shift; // index of .strtab
+        let mut shdrs = vec![
             // [0] null
             ShEntry::null(),
             // [1] .text
@@ -198,7 +232,26 @@ impl RiscVElfBuilder {
                 sh_addralign: 4,
                 sh_entsize: 0,
             },
-            // [2] .symtab
+        ];
+        if has_wasm_data {
+            // [2] .wasm_data — SHF_ALLOC only (a read-only flash image; the
+            // startup copies it into linear-memory RAM, code never executes
+            // or writes it in place).
+            shdrs.push(ShEntry {
+                sh_name: shstrtab_data.wasm_data_off,
+                sh_type: 1,    // SHT_PROGBITS
+                sh_flags: 0x2, // SHF_ALLOC
+                sh_addr: 0,
+                sh_offset: wasm_data_offset as u32,
+                sh_size: wasm_data.len() as u32,
+                sh_link: 0,
+                sh_info: 0,
+                sh_addralign: 4,
+                sh_entsize: 0,
+            });
+        }
+        shdrs.extend([
+            // [2/3] .symtab
             ShEntry {
                 sh_name: shstrtab_data.symtab_off,
                 sh_type: 2, // SHT_SYMTAB
@@ -211,7 +264,7 @@ impl RiscVElfBuilder {
                 sh_addralign: 4,
                 sh_entsize: 16,
             },
-            // [3] .strtab
+            // [3/4] .strtab
             ShEntry {
                 sh_name: shstrtab_data.strtab_off,
                 sh_type: 3, // SHT_STRTAB
@@ -224,7 +277,7 @@ impl RiscVElfBuilder {
                 sh_addralign: 1,
                 sh_entsize: 0,
             },
-            // [4] .shstrtab
+            // [4/5] .shstrtab
             ShEntry {
                 sh_name: shstrtab_data.shstrtab_off,
                 sh_type: 3, // SHT_STRTAB
@@ -237,7 +290,7 @@ impl RiscVElfBuilder {
                 sh_addralign: 1,
                 sh_entsize: 0,
             },
-        ];
+        ]);
 
         for sh in &shdrs {
             sh.write_into(&mut elf);
@@ -254,7 +307,7 @@ impl RiscVElfBuilder {
             shentsize as u16,
             ehsize as u16,
             phentsize as u16,
-            4u16, // shstrtab index
+            (4 + wasm_data_shift) as u16, // shstrtab index
         );
 
         Ok(elf)
@@ -398,15 +451,25 @@ impl ShEntry {
 struct ShstrtabData {
     bytes: Vec<u8>,
     text_off: u32,
+    wasm_data_off: u32,
     symtab_off: u32,
     strtab_off: u32,
     shstrtab_off: u32,
 }
 
-fn build_shstrtab() -> ShstrtabData {
+fn build_shstrtab(with_wasm_data: bool) -> ShstrtabData {
     let mut bytes = vec![0u8];
     let text_off = bytes.len() as u32;
     bytes.extend_from_slice(b".text\0");
+    // Only present when the object ships data (#798) — keeps data-free
+    // objects bit-identical to the pre-#798 layout.
+    let wasm_data_off = if with_wasm_data {
+        let off = bytes.len() as u32;
+        bytes.extend_from_slice(b".wasm_data\0");
+        off
+    } else {
+        0
+    };
     let symtab_off = bytes.len() as u32;
     bytes.extend_from_slice(b".symtab\0");
     let strtab_off = bytes.len() as u32;
@@ -416,6 +479,7 @@ fn build_shstrtab() -> ShstrtabData {
     ShstrtabData {
         bytes,
         text_off,
+        wasm_data_off,
         symtab_off,
         strtab_off,
         shstrtab_off,
@@ -616,6 +680,100 @@ mod tests {
             builder.build(&[f]),
             Err(ElfBuildError::UndefinedLabel(_))
         ));
+    }
+
+    /// #798: `build` (no data) and `build_with_data(&[], …)` are BYTE-identical
+    /// — the `.wasm_data` section, its shstrtab name, and the index shift only
+    /// exist when there are records to ship. Frozen data-free objects are
+    /// untouched by construction.
+    #[test]
+    fn empty_wasm_data_is_byte_identical_798() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let plain = builder.build(std::slice::from_ref(&f)).unwrap();
+        let with_empty = builder.build_with_data(&[f], &[]).unwrap();
+        assert_eq!(plain, with_empty, "empty wasm_data must not perturb bytes");
+        assert!(!plain.windows(10).any(|w| w == b".wasm_data"));
+    }
+
+    /// #798: a non-empty record blob ships as a `.wasm_data` PROGBITS section
+    /// (SHF_ALLOC, 4-aligned) holding the blob verbatim, `.text` unchanged,
+    /// and the trailing string/symbol sections still resolve (shstrndx shift).
+    #[test]
+    fn wasm_data_section_ships_records_verbatim_798() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let records = synth_core::static_data_addr::pack_segment_records(&[
+            synth_core::static_data_addr::DataSegment {
+                linmem_off: 16,
+                bytes: vec![1, 2, 3, 4],
+            },
+            synth_core::static_data_addr::DataSegment {
+                linmem_off: 0x10000,
+                bytes: vec![0xAA, 0xBB, 0xCC],
+            },
+        ]);
+        let plain = builder.build(std::slice::from_ref(&f)).unwrap();
+        let elf = builder.build_with_data(&[f], &records).unwrap();
+
+        // Walk the section headers by hand (mirrors what a linker does).
+        let shoff = u32::from_le_bytes(elf[32..36].try_into().unwrap()) as usize;
+        let shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap()) as usize;
+        let shstrndx = u16::from_le_bytes(elf[50..52].try_into().unwrap()) as usize;
+        assert_eq!(shnum, 6, "null/.text/.wasm_data/.symtab/.strtab/.shstrtab");
+        assert_eq!(shstrndx, 5);
+        let shdr = |i: usize| &elf[shoff + i * 40..shoff + (i + 1) * 40];
+        let field =
+            |h: &[u8], o: usize| u32::from_le_bytes(h[o..o + 4].try_into().unwrap()) as usize;
+        let shstr = shdr(shstrndx);
+        let (stroff, strsz) = (field(shstr, 16), field(shstr, 20));
+        let names = &elf[stroff..stroff + strsz];
+        let name_of = |h: &[u8]| {
+            let n = field(h, 0);
+            let end = names[n..].iter().position(|&b| b == 0).unwrap() + n;
+            std::str::from_utf8(&names[n..end]).unwrap().to_string()
+        };
+        let wd = shdr(2);
+        assert_eq!(name_of(wd), ".wasm_data");
+        assert_eq!(field(wd, 4), 1, "SHT_PROGBITS");
+        assert_eq!(field(wd, 8), 0x2, "SHF_ALLOC only");
+        assert_eq!(field(wd, 32), 4, "sh_addralign");
+        let (off, sz) = (field(wd, 16), field(wd, 20));
+        assert_eq!(&elf[off..off + sz], &records[..], "records verbatim");
+        assert_eq!(off % 4, 0, "records 4-aligned in the file");
+        // .text bytes identical to the data-free build.
+        let text = shdr(1);
+        let plain_shoff = u32::from_le_bytes(plain[32..36].try_into().unwrap()) as usize;
+        let plain_text = &plain[plain_shoff + 40..plain_shoff + 80];
+        assert_eq!(
+            &elf[field(text, 16)..field(text, 16) + field(text, 20)],
+            &plain[field(plain_text, 16)..field(plain_text, 16) + field(plain_text, 20)],
+            ".text must be unchanged by shipping data"
+        );
+        // symtab still links to the (shifted) strtab: symbol 1 is "f".
+        let symtab = shdr(3);
+        assert_eq!(name_of(symtab), ".symtab");
+        assert_eq!(field(symtab, 24), 4, "sh_link -> .strtab at index 4");
     }
 
     #[test]

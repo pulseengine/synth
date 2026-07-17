@@ -1301,17 +1301,28 @@ artifacts:
       the straddle fixture that the mixed split refuses compiles CORRECTLY
       here (e2e green gate).
       (7) RV32 single-base scheme (s11 = __linear_memory_base, zeroed RAM):
-      the object ships NO static-data initializer image at all — probing found
-      active nonzero data segments are silently DROPPED (loads read 0x00).
-      validate_served_image with an EMPTY image now runs unconditionally on
-      the RV32 emit path and WARNS LOUDLY per nonzero un-served byte
-      (all-zero / zero-overwritten runtime images genuinely ARE served by
-      zeroed RAM and stay silent — a later-wins check, not a bytes grep).
-      HELD AT WARNING, not a hard decline: the CI-pinned RV32 frozen fixture
-      (control_step.wasm carries a nonzero segment its differential never
-      reads) freezes compile-success on this path; the hard decline +
-      initializer shipping (the RV32 analogue of #758: linker-script
-      placement + startup copy) is the named follow-up.
+      the object used to ship NO static-data initializer image at all —
+      probing found active nonzero data segments were silently DROPPED (loads
+      read 0x00); v0.47 held a loud warning. SHIPPED in v0.48 (#798, the RV32
+      analogue of #758): active segments pack into sparse per-segment records
+      ([u32 off][u32 len][bytes][pad4], declaration order — synth_core::
+      static_data_addr::pack_segment_records) emitted as a `.wasm_data`
+      PROGBITS section; the generated linker.ld places it in flash
+      (__wasm_data_records_start/end, before _data_load) and the generated
+      startup.c byte-copies each record to `__linear_memory_base + off` at
+      reset (record order ⇒ later-wins). The VCR-VER-003 arm READS BACK the
+      emitted blob (served_image_from_records — never a recompute) and
+      hard-errors the compile on any served/runtime disagreement; a segment
+      past the declared memory is refused (instantiation would trap, #758
+      parity). Gated red-first: the control_step RV32 differential was
+      DE-VACUATED (linmem init now comes from the shipped records, not
+      wasmtime's memory image — pre-fix object FAILS loud, 0x00000000 vs
+      0x00210a55) and a full-boot oracle
+      (rv32_data_798_boot_differential.py: clang riscv32 + ld.lld + unicorn
+      from _reset) proves the REAL startup copy loop serves the later-wins
+      image for overlapping segments. Data-free modules ship no section and
+      stay byte-identical (frozen fixtures' .text unchanged — no re-pin
+      needed; a reversed-order pack is RED in the permanent unit gate).
       (8) AArch64: N/A, verified — the -b aarch64 integer subset has no
       linear-memory loads/stores (every memory op loud-declines at selection:
       "unsupported wasm op for aarch64 subset"), so compiled code cannot
@@ -1319,10 +1330,10 @@ artifacts:
 
       BOUNDED (named follow-ups after phase 2): recorded per-reloc access
       widths (removes the uncovered-span-byte tolerance and the conservative
-      8-byte widening); RV32 initializer shipping + hard decline (needs a
-      frozen-fixture refreeze ritual); all-addressing coverage (dynamic
-      base+index accesses that cross packed-segment boundaries at runtime are
-      out of static reach on the mixed split).
+      8-byte widening); all-addressing coverage (dynamic base+index accesses
+      that cross packed-segment boundaries at runtime are out of static reach
+      on the mixed split). RV32 initializer shipping landed v0.48 (#798,
+      item 7 above).
     status: implemented
     tags: [verification, addressing, relocation, soundness, mem757]
     links:
@@ -1343,6 +1354,7 @@ artifacts:
         - "Phase 2: spanned reloc check against the SHIPPED init blob (straddle refused e2e, owner access green)"
         - "Phase 2: #758 dense ROM image packed via pack_rom_image + validate_served_image (first-wins pack RED in the unit gate)"
         - "Phase 2: RV32 zero-served-image check — nonzero dropped initializers WARN loudly; zero-overwritten silent"
+        - "#798 (v0.48): RV32 ships .wasm_data records (linker placement + startup copy); read-back validate_served_image hard-errors; de-vacuated control_step differential + full-boot unicorn oracle"
       pass-criteria: >
         On any compiled relocatable object every static-data reloc resolves to
         the runtime-correct byte (segments later-wins), else the compile fails.
@@ -1353,9 +1365,12 @@ artifacts:
         staggered-overlap straddle fixture is REFUSED on the mixed split with
         a span diagnostic (and compiles CORRECTLY self-contained); the #758
         ROM image validates on every self-contained build (first-wins pack is
-        Mismatch in the unit gate); RV32 warns loudly on nonzero un-served
-        initializer bytes and stays silent on zero-served runtime images;
-        AArch64 is documented N/A (no linear-memory ops in the subset).
+        Mismatch in the unit gate); RV32 SHIPS its active segments as
+        .wasm_data records whose read-back served image must equal the
+        runtime image (hard error on mismatch; reversed-order pack is
+        Mismatch in the unit gate; de-vacuated control_step differential +
+        full-boot oracle green); AArch64 is documented N/A (no linear-memory
+        ops in the subset).
 
   # ---------------------------------------------------------------------------
   # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the

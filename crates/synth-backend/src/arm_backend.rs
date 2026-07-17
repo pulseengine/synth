@@ -707,6 +707,32 @@ fn compile_wasm_to_arm(
         .iter()
         .take(num_params as usize)
         .any(|&w| w);
+    // #782(b): a HARD-float (FPU) target passes f32 args in VFP S-registers
+    // and returns floats in S0/D0 (AAPCS-VFP) — but the optimized path's
+    // param/return homing is float-naive (integer R0..R3 args, R0 return). A
+    // function whose ops ALL lower on the optimized path but whose SIGNATURE
+    // carries a float — e.g. the pure value-pick
+    // `(param f32 f32 i32) (result f32) select`, no float OP to trip the
+    // issue-#120 ir_to_arm fallback — was silently compiled with the integer
+    // ABI: callers marshal S0/S1, the body reads R0/R1. Route every
+    // float-signature function to the direct selector (AAPCS-VFP homing, or
+    // an honest decline). Soft-float targets (no FPU) keep the optimized
+    // path: the integer treatment IS the ABI there — byte-identical. (f64
+    // params already route direct via `has_wide_param`; this adds f32 params
+    // and f32/f64 returns.)
+    let has_float_sig = config.target.fpu.is_some()
+        && (config.current_func_ret_f32
+            || config.current_func_ret_f64
+            || config
+                .current_func_params_f32
+                .iter()
+                .take(num_params as usize)
+                .any(|&f| f)
+            || config
+                .current_func_params_f64
+                .iter()
+                .take(num_params as usize)
+                .any(|&f| f));
     // #494 phase 2b: div/rem guard-elision marks are consumed by the DIRECT
     // selector only — the optimized path's IR passes (const-fold/CSE/DCE)
     // renumber instructions, so an op-index-keyed mark cannot soundly survive
@@ -741,6 +767,7 @@ fn compile_wasm_to_arm(
         || has_br_table
         || has_value_carry
         || has_wide_param
+        || has_float_sig
         || has_global_access
         || has_fact_div_elide
         // #457: route read-before-write non-param locals to the direct

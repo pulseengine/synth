@@ -489,6 +489,19 @@ jobs:
       # This gate caught the optimized-path silent-NOP drop at land time.
       - name: Run trunc_sat boundary oracle (#782a, m7dp+m4f+aarch64)
         run: SYNTH=./target/debug/synth python scripts/repro/trunc_sat_782_differential.py
+      # #782(b): float `select` + explicit float `return` — the dominant class
+      # on the real falcon fused core (12/26 skips incl. run-stabilization was
+      # "an integer operation popped an f32"): select over two f32/f64 values
+      # (the clamp idiom) and `return` of an f32 result. Bit-exact (selects
+      # NaN-payload-STRICT — a select picks, never computes) vs wasmtime on
+      # m7dp; m3/m4f capability gates pinned. Also pins the WIDE (i64) select
+      # hi-half SILENT miscompile found adversarially (cond==0 returned val2's
+      # lo paired with val1's hi — soft-float f64 select rode the same path)
+      # and the hard-float SIGNATURE-only ABI hole (a float-signature function
+      # with no float op stayed on the float-naive optimized path: callers
+      # marshal S0/S1, the body read R0/R1).
+      - name: Run float select + explicit float return oracle (#782b, m7dp+m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/float_select_return_782_differential.py
       # #739: static ABOVE sp_init under --shadow-stack-size — the sub-word
       # load/store arms previously BAKED the linmem offset as an un-relocated
       # MOVW/MOVT immediate (invisible to the #678 reloc-walking rebase AND to

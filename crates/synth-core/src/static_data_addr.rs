@@ -68,11 +68,18 @@
 //!    (#758) serves linear memory from ONE dense flash blob copied to RAM at
 //!    reset — index = linmem offset, so spans/overlaps are structurally
 //!    preserved and the whole obligation reduces to "every blob byte equals
-//!    the runtime image byte (later-wins, zero elsewhere)". The same function
-//!    with an EMPTY image validates the RISC-V single-base scheme, where the
-//!    object ships NO initializer bytes at all and zeroed RAM serves every
-//!    address: any nonzero runtime-image byte is then a served/runtime
-//!    mismatch (the silent initializer-drop).
+//!    the runtime image byte (later-wins, zero elsewhere)". The RISC-V
+//!    single-base scheme (#798) ships its active segments as SPARSE
+//!    per-segment records ([`pack_segment_records`], a `.wasm_data` PROGBITS
+//!    section in flash) which the generated startup copies to `s11 + off` in
+//!    record order at reset; the emit path READS BACK the emitted blob
+//!    ([`served_image_from_records`] — never a recompute, that would
+//!    mirror-pin the check) into the dense served image and runs the same
+//!    gate, hard-erroring the compile on any served/runtime disagreement.
+//!    An EMPTY image models a target that ships no initializer bytes at all
+//!    (zeroed RAM serves every address): any nonzero runtime-image byte is
+//!    then a served/runtime mismatch (the silent initializer-drop this
+//!    validator caught on the pre-#798 RV32 path).
 //! 3. **AArch64: N/A** — the `-b aarch64` integer subset has no linear-memory
 //!    loads/stores (every memory op loud-declines at selection), so compiled
 //!    code cannot observe static data; there is nothing to validate.
@@ -493,6 +500,99 @@ pub fn validate_served_image(segments: &[DataSegment], image: &[u8]) -> ImageVer
     } else {
         ImageVerdict::Mismatch(bad)
     }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// #798: sparse per-segment records — the RV32 `.wasm_data` shipping format
+// ────────────────────────────────────────────────────────────────────
+
+/// Pack active data segments into the sparse per-segment record blob the RV32
+/// backend ships as its `.wasm_data` PROGBITS section (#798). Format, repeated
+/// per segment in DECLARATION order:
+///
+/// ```text
+///   u32 LE  linmem_off     (wasm i32.const segment offset)
+///   u32 LE  len            (initializer byte count)
+///   len     bytes          (the segment's initializer, verbatim)
+///   pad     0..3 zero bytes (4-align the next record header)
+/// ```
+///
+/// The generated startup (`synth riscv-runtime`) walks the records at reset
+/// and byte-copies each to `__linear_memory_base + linmem_off` in record
+/// order, so WASM's later-wins overlap semantics are preserved structurally
+/// by the copy order — iff the records are packed in declaration order (the
+/// red-first unit gate pins that: a reversed pack fails
+/// [`validate_served_image`] on overlapping segments).
+///
+/// Sparse-by-construction: a segment at linmem 1 MiB costs `8 + len` flash
+/// bytes, not a 1 MiB dense image. Zero segments ⇒ empty blob ⇒ the ELF
+/// builder omits the section entirely (byte-identical objects for data-free
+/// modules).
+pub fn pack_segment_records(segments: &[DataSegment]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for s in segments {
+        out.extend_from_slice(&s.linmem_off.to_le_bytes());
+        out.extend_from_slice(&(s.bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&s.bytes);
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+    }
+    out
+}
+
+/// Parse a `.wasm_data` record blob back into `(linmem_off, bytes)` records,
+/// in record order. Returns `None` on a malformed blob (truncated header or
+/// payload, misaligned trailing bytes) — the read-back side of the #798
+/// served-image gate must fail LOUDLY on garbage, never "best-effort" it.
+pub fn parse_segment_records(blob: &[u8]) -> Option<Vec<DataSegment>> {
+    let mut recs = Vec::new();
+    let mut i = 0usize;
+    while i < blob.len() {
+        let hdr = blob.get(i..i + 8)?;
+        let off = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
+        let len = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
+        i += 8;
+        let bytes = blob.get(i..i + len)?.to_vec();
+        i += len;
+        // Consume the 4-align padding (must exist and be within the blob).
+        let aligned = i.next_multiple_of(4);
+        if aligned > blob.len() {
+            return None;
+        }
+        i = aligned;
+        recs.push(DataSegment {
+            linmem_off: off,
+            bytes,
+        });
+    }
+    Some(recs)
+}
+
+/// Reconstruct the dense image the shipped records SERVE: apply every record
+/// to `__linear_memory_base`-relative addresses in RECORD order (later
+/// overwrites earlier), exactly what the generated startup's copy loop does
+/// at reset. This is the read-back side of the #798 gate — it consumes the
+/// EMITTED blob, so feeding it to [`validate_served_image`] against the
+/// declared segment list cannot be satisfied by mirroring the packer.
+/// Returns `None` on a malformed blob, or when a record's `off + len`
+/// overflows `u32` (a hostile extent that could never be served).
+pub fn served_image_from_records(blob: &[u8]) -> Option<Vec<u8>> {
+    let recs = parse_segment_records(blob)?;
+    let extent = recs
+        .iter()
+        .map(|r| r.linmem_off as u64 + r.bytes.len() as u64)
+        .max()
+        .unwrap_or(0);
+    if extent > u32::MAX as u64 {
+        return None;
+    }
+    let mut image = vec![0u8; extent as usize];
+    for r in &recs {
+        let at = r.linmem_off as usize;
+        image[at..at + r.bytes.len()].copy_from_slice(&r.bytes);
+    }
+    Some(image)
 }
 
 #[cfg(test)]
@@ -977,5 +1077,108 @@ mod tests {
             validate_reloc_resolutions(&segs, &[bad]),
             Verdict::Mismatch(_)
         ));
+    }
+
+    // ─── #798 sparse per-segment records (RV32 `.wasm_data`) ───────────
+
+    /// Round trip: pack → parse recovers the declaration-order records
+    /// verbatim (offsets, lengths, bytes), across 4-align padding.
+    #[test]
+    fn segment_records_round_trip() {
+        let segs = vec![
+            DataSegment {
+                linmem_off: 16,
+                bytes: vec![1, 2, 3], // len 3 → 1 pad byte
+            },
+            DataSegment {
+                linmem_off: 0x10000,
+                bytes: vec![0xAA; 8],
+            },
+            DataSegment {
+                linmem_off: 4,
+                bytes: vec![9], // len 1 → 3 pad bytes
+            },
+        ];
+        let blob = pack_segment_records(&segs);
+        assert_eq!(blob.len() % 4, 0, "records blob is 4-aligned throughout");
+        let back = parse_segment_records(&blob).expect("well-formed blob parses");
+        assert_eq!(back.len(), 3);
+        for (a, b) in segs.iter().zip(back.iter()) {
+            assert_eq!(a.linmem_off, b.linmem_off);
+            assert_eq!(a.bytes, b.bytes);
+        }
+    }
+
+    /// RED-FIRST (#798 shipping gate, the #757 lesson applied to the copy
+    /// order): the startup copies records in RECORD order, so a pack that
+    /// stores overlapping segments in REVERSED declaration order serves the
+    /// FIRST-declared bytes (first-wins) — the served image read back from
+    /// that blob must FAIL validate_served_image, and the declaration-order
+    /// pack must PASS. Green on both would make the read-back gate vacuous.
+    #[test]
+    fn records_red_on_reversed_pack_green_on_declaration_order() {
+        let segs = overlapping_segments();
+        let mut reversed = segs.clone();
+        reversed.reverse();
+        let wrong_blob = pack_segment_records(&reversed);
+        let wrong_served = served_image_from_records(&wrong_blob).unwrap();
+        match validate_served_image(&segs, &wrong_served) {
+            ImageVerdict::Mismatch(m) => {
+                let at8 = m.iter().find(|x| x.addr == 0x100008).expect("addr 8");
+                assert_eq!(at8.served, 0xAA, "reversed pack serves seg_0's stale byte");
+                assert_eq!(at8.runtime, b'u', "runtime image owns seg_2's byte");
+            }
+            ImageVerdict::Consistent => {
+                panic!("VACUOUS: read-back gate accepted a reversed (first-wins) pack")
+            }
+        }
+        let right_blob = pack_segment_records(&segs);
+        let right_served = served_image_from_records(&right_blob).unwrap();
+        assert_eq!(
+            validate_served_image(&segs, &right_served),
+            ImageVerdict::Consistent,
+            "declaration-order records must serve the later-wins image"
+        );
+    }
+
+    /// The served image is SPARSE-tolerant: gaps between records read zero,
+    /// matching implicit-zero linear memory (zeroed RAM under the RV32
+    /// scheme), so a far-offset segment validates without a dense flash blob.
+    #[test]
+    fn records_far_offset_segment_served_correctly() {
+        let segs = vec![DataSegment {
+            linmem_off: 0x10000,
+            bytes: vec![7, 8, 9, 10],
+        }];
+        let blob = pack_segment_records(&segs);
+        assert_eq!(blob.len(), 12, "8-byte header + 4 bytes, no dense image");
+        let served = served_image_from_records(&blob).unwrap();
+        assert_eq!(served.len(), 0x10004);
+        assert_eq!(
+            validate_served_image(&segs, &served),
+            ImageVerdict::Consistent
+        );
+    }
+
+    /// Malformed blobs (truncated header, truncated payload, missing align
+    /// padding) parse to None — the read-back must fail loudly, not
+    /// best-effort.
+    #[test]
+    fn records_malformed_blobs_rejected() {
+        let segs = vec![DataSegment {
+            linmem_off: 4,
+            bytes: vec![1, 2, 3, 4, 5],
+        }];
+        let blob = pack_segment_records(&segs);
+        assert!(parse_segment_records(&blob[..4]).is_none(), "cut header");
+        assert!(parse_segment_records(&blob[..10]).is_none(), "cut payload");
+        assert!(
+            parse_segment_records(&blob[..blob.len() - 1]).is_none(),
+            "cut align padding"
+        );
+        assert!(served_image_from_records(&blob[..10]).is_none());
+        // Empty blob = zero segments: parses to nothing, serves nothing.
+        assert_eq!(parse_segment_records(&[]).unwrap().len(), 0);
+        assert_eq!(served_image_from_records(&[]).unwrap().len(), 0);
     }
 }
