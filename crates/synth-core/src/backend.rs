@@ -124,6 +124,17 @@ pub struct CompileConfig {
     /// instead of `__meld_dispatch_import`. (#197 — follow-up to #188/#171.)
     pub relocatable: bool,
 
+    /// #275: the SELF-CONTAINED Thumb-2 `--cortex-m` image path lowers
+    /// `call_indirect` through a flash-resident funcref table addressed
+    /// PC-RELATIVE (an `LdrSym` literal-pool pointer to
+    /// [`FUNC_TABLE_SYMBOL`]) — NEVER through R11, which is the linear-memory
+    /// base (the v0.42 #717 collision). Set by the CLI ONLY when the image
+    /// builder that emits and patches that table
+    /// (`build_multi_func_cortex_m_elf`) will run: Cortex-M family, not
+    /// `--relocatable`, no imported functions. Every other self-contained
+    /// configuration keeps the loud #275 decline. Default `false`.
+    pub self_contained_funcref_table: bool,
+
     /// #687 (`--stack-layout=low`): the absolute linear-memory base the
     /// OPTIMIZED ARM path materializes into user code. Defaults to
     /// [`OPTIMIZED_LINMEM_BASE`] (`0x2000_0100`, byte-identical to every
@@ -412,6 +423,9 @@ impl Default for CompileConfig {
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             relocatable: false,
+            // #275: self-contained funcref-table dispatch is opt-in by the
+            // CLI's cortex-m image path; everything else keeps the decline.
+            self_contained_funcref_table: false,
             // #687: the historical optimized-path absolute base — every
             // default compile stays byte-identical.
             linmem_base: OPTIMIZED_LINMEM_BASE,
@@ -472,6 +486,18 @@ impl Default for CompileConfig {
         }
     }
 }
+
+/// #275: the base symbol of the SELF-CONTAINED funcref table — the
+/// flash-resident region `build_multi_func_cortex_m_elf` appends after the
+/// function code: one 4-byte code pointer per table slot across ALL tables in
+/// declaration order (the same contiguous layout the `--relocatable` R11
+/// contract uses — `TableGuards::base_byte_offset` stays valid verbatim),
+/// null slots as ZERO words (#664), followed by the #676 type-id sidecar at
+/// `type_ids_byte_offset` when a heterogeneous table needs it. The dispatch
+/// reaches it through an `LdrSym` literal-pool word (an `Abs32` reloc against
+/// this symbol) that the image builder patches post-layout — never through
+/// R11, which is the linear-memory base (the #717 collision).
+pub const FUNC_TABLE_SYMBOL: &str = "__synth_func_table";
 
 /// A relocation entry produced during compilation
 ///

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Self-contained `--cortex-m` `call_indirect` — the #275 finale (falcon's
+  blocker).** The v0.42 #717 loud-decline is converted into a real lowering:
+  the funcref table ships in FLASH (appended after the function code, the
+  #758 ROM-image pattern — pointer words with the Thumb bit set, null slots
+  as zero words, then the #676 type-id sidecar) and the dispatch reaches it
+  **PC-relative** through an `LdrSym` literal-pool pointer
+  (`__synth_func_table`, `Abs32` reloc patched post-layout by
+  `build_multi_func_cortex_m_elf`) — never via R11 (the linear-memory base
+  the #717 collision corrupted), R9/R10, or R12. Same WASM Core §4.4.8 trap
+  semantics as the relocatable R11 expansion: OOB index, #676 type mismatch,
+  and #664 null slot all `UDF`-trap. Gated by a red-first EXECUTION
+  differential (`call_indirect_275_selfcontained_execution_differential.py`):
+  the default image under unicorn vs wasmtime, 14/14 incl. a
+  linear-memory-reading dispatch target (non-collision proof) and every trap
+  class. Residual declines stay loud and gated: A32/Cortex-R5 self-contained
+  (no flash-table builder), imports present (ET_REL output), and the
+  `select_default` demo path. `--relocatable` output is byte-identical;
+  self-contained modules without `call_indirect` are byte-identical.
+
+### Found (tracked separately)
+
+- **#791: the optimized path miscompiles const-only-body functions** (result
+  materialized in r4, never moved to R0) — surfaced by the first execution
+  gate that runs dispatch targets in a default self-contained image; present
+  on main independent of this change (`--no-optimize` is correct).
+
 - **WCET phase 2 — statically-proven loop bounds + the `--wcet-hints` seam
   (#778).** `--emit-wcet` now BOUNDS canonical const-bound counted loops
   instead of declining them: a conservative symbolic walk over the final

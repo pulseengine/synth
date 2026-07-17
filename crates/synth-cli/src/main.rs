@@ -2587,6 +2587,7 @@ fn compile_all_exports(
         all_extra_memory_segments, // #406: (mem_idx>0, offset, bytes) init segments on non-default memories
         multi_memory_decline,      // #406: decode-level reason multi-memory must decline (if any)
         all_call_indirect_guards,  // #642: table size + closed-world type verdicts
+        all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2697,6 +2698,8 @@ fn compile_all_exports(
             // verify — the default guards DECLINE any call_indirect (the WAST
             // fixture suite carries none), never an unchecked branch.
             synth_core::CallIndirectGuards::default(),
+            // #275: no guards ⇒ no dispatch ⇒ no funcref-region image.
+            Vec::new(),
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -2717,6 +2720,10 @@ fn compile_all_exports(
         // #642: call_indirect guard inputs — computed while the module is
         // still whole (before its vectors are moved out below).
         let guards = module.call_indirect_guards();
+        // #275: the static funcref-region image (slot -> initializing function
+        // index) — the self-contained image builder resolves these to laid-out
+        // function addresses and ships the table in flash.
+        let funcref_slots = module.funcref_region_slots();
         let func_arg_counts = module.func_arg_counts;
         let type_arg_counts = module.type_arg_counts;
         let memories = module.memories;
@@ -2818,7 +2825,8 @@ fn compile_all_exports(
             // decline reason (e.g. a non-const segment offset on memory k).
             module.extra_memory_data_segments,
             module.multi_memory_decline,
-            guards, // #642
+            guards,        // #642
+            funcref_slots, // #275
         )
     };
 
@@ -3016,6 +3024,14 @@ fn compile_all_exports(
         // #642: call_indirect guard inputs (compile-time table size for the
         // bounds guard + closed-world type verdicts). Default = decline.
         call_indirect_guards: all_call_indirect_guards,
+        // #275: self-contained funcref-table dispatch — enabled ONLY when the
+        // builder that emits and patches the flash-resident table
+        // (`build_multi_func_cortex_m_elf`) will run: Cortex-M image, not
+        // --relocatable, and no imported functions (imports force ET_REL
+        // output, whose host runtime owns the R11 table region instead). The
+        // ARM backend additionally gates on Thumb-2; every other
+        // configuration keeps the loud #275 decline.
+        self_contained_funcref_table: cortex_m && !relocatable && max_num_imported_funcs == 0,
         // #687: shift the optimized path's absolute linmem base up by the
         // reserved stack size under --stack-layout=low; default = 0x2000_0100
         // (byte-identical).
@@ -3321,6 +3337,14 @@ fn compile_all_exports(
     for label in &func_index_labels {
         internal_labels.insert(label.as_str());
     }
+    // #275: the self-contained funcref table is emitted and patched by the
+    // cortex-m image builder itself — a reloc against its base symbol is
+    // INTERNAL (it must not flip the output to ET_REL). Relocs against it
+    // exist only when `config.self_contained_funcref_table` enabled the
+    // lowering, which already required the cortex-m/self-contained path.
+    if config.self_contained_funcref_table {
+        internal_labels.insert(synth_core::backend::FUNC_TABLE_SYMBOL);
+    }
     let has_external_relocations = compiled_funcs
         .iter()
         .flat_map(|f| &f.relocations)
@@ -3490,6 +3514,14 @@ fn compile_all_exports(
             // now ships them in flash and copies ROM→RAM at reset. Empty ⇒ the
             // NoBits linear-memory path is byte-identical to before.
             &all_data_segments,
+            // #275: the static funcref-region image + the #676 type-id sidecar
+            // inputs — the builder ships the table in flash (after the function
+            // code) and patches every `FUNC_TABLE_SYMBOL` literal to its
+            // address. Consulted ONLY when a compiled function carries such a
+            // reloc; images without call_indirect are byte-identical.
+            &all_funcref_slots,
+            &config.call_indirect_guards.type_ids_image,
+            config.call_indirect_guards.type_ids_byte_offset,
         )?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
@@ -5113,6 +5145,17 @@ fn build_multi_func_cortex_m_elf(
     // ROM→RAM at reset (the classic crt0 `.data` init). Empty ⇒ the linear
     // memory stays NoBits and the whole image is byte-identical to before.
     data_segments: &[(u32, Vec<u8>)],
+    // #275: the static funcref-region image — one slot per table entry across
+    // all tables in declaration order; `Some(func_index)` is resolved to the
+    // laid-out function address (Thumb bit set), `None` links as a ZERO word
+    // (null slot — the dispatch's runtime checks trap on it). Consulted ONLY
+    // when a compiled function carries a `FUNC_TABLE_SYMBOL` relocation.
+    funcref_slots: &[Option<u32>],
+    // #676/#275: the type-id sidecar words appended after the pointer words
+    // (one u32 structural class id per slot) and the sidecar's declared byte
+    // offset within the region — cross-checked against the pointer-word count.
+    type_ids_image: &[u32],
+    type_ids_byte_offset: Option<u32>,
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -5261,6 +5304,22 @@ fn build_multi_func_cortex_m_elf(
     // The caller routes here only when all relocations are internal (no
     // imports); we map each relocation symbol (export name or `func_{index}`)
     // to the callee's laid-out address and patch the 4 BL bytes.
+    //
+    // #275: a `call_indirect` dispatch additionally references the
+    // flash-resident funcref table through `Abs32` literal-pool relocations
+    // against `FUNC_TABLE_SYMBOL`. The table is laid out immediately after
+    // the function code (4-aligned, the #758 ROM-image pattern): one 4-byte
+    // code pointer per slot (Thumb bit set; null slots as ZERO words, #664),
+    // followed by the #676 type-id sidecar words. Its address is known here
+    // (`funcs_base + len(all_func_code)` rounded up), so the literal words
+    // are patched in place exactly like the internal BLs. Images without a
+    // `call_indirect` carry no such reloc and are byte-identical.
+    let needs_func_table = funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .any(|r| r.symbol == synth_core::backend::FUNC_TABLE_SYMBOL);
+    let func_table_addr = (funcs_base + all_func_code.len() as u32 + 3) & !3;
+    let mut func_table_blob: Vec<u8> = Vec::new();
     {
         use std::collections::HashMap;
         let mut label_to_addr: HashMap<&str, u32> = HashMap::new();
@@ -5283,8 +5342,110 @@ fn build_multi_func_cortex_m_elf(
             label_to_addr.insert(label.as_str(), *addr);
         }
 
+        // #275: build the funcref-table blob — every `Some(func_index)` slot
+        // must resolve to a COMPILED function (the #235 reachability walk
+        // pulls every table entry in once a call_indirect is reached); a
+        // missing one means the target was loud-skipped, and linking a zero
+        // word would silently turn a callable slot into a trap — refuse.
+        if needs_func_table {
+            if funcref_slots.is_empty() {
+                anyhow::bail!(
+                    "call_indirect compiled but the module has no statically \
+                     verifiable funcref-table image — refusing to emit an \
+                     unpopulated table (#275)"
+                );
+            }
+            for (slot, entry) in funcref_slots.iter().enumerate() {
+                let word: u32 = match entry {
+                    None => 0, // null slot — the dispatch's runtime checks trap
+                    Some(fidx) => {
+                        let label = format!("func_{fidx}");
+                        let Some(&addr) = label_to_addr.get(label.as_str()) else {
+                            anyhow::bail!(
+                                "funcref table slot {slot} references function \
+                                 {fidx}, which is not in the compiled output \
+                                 (loud-skipped or imported) — refusing to link \
+                                 a broken dispatch table (#275)"
+                            );
+                        };
+                        addr | 1 // Thumb bit — BLX to an even address faults
+                    }
+                };
+                func_table_blob.extend_from_slice(&word.to_le_bytes());
+            }
+            // #676: the type-id sidecar sits immediately after the pointer
+            // words. Cross-check the decoder-declared offset against the
+            // actual pointer-region size — a drift here would misplace every
+            // runtime type check.
+            match type_ids_byte_offset {
+                Some(off) if off as usize != func_table_blob.len() => {
+                    anyhow::bail!(
+                        "type-id sidecar offset {off} != pointer-region size {} \
+                         — funcref-region layout drift (#275/#676)",
+                        func_table_blob.len()
+                    );
+                }
+                None if !type_ids_image.is_empty() => {
+                    anyhow::bail!(
+                        "type-id sidecar image present without a declared \
+                         offset — funcref-region layout drift (#275/#676)"
+                    );
+                }
+                _ => {}
+            }
+            for id in type_ids_image {
+                func_table_blob.extend_from_slice(&id.to_le_bytes());
+            }
+            info!(
+                "  #275 funcref table: {} slot(s) + {} sidecar word(s) at 0x{:08x}",
+                funcref_slots.len(),
+                type_ids_image.len(),
+                func_table_addr
+            );
+        }
+
         for (i, func) in funcs.iter().enumerate() {
             for reloc in &func.relocations {
+                // #275: patch the funcref-table literal words (REL semantics:
+                // the in-place word is the addend, the final value is S + A).
+                if reloc.symbol == synth_core::backend::FUNC_TABLE_SYMBOL {
+                    if !matches!(reloc.kind, synth_core::backend::RelocKind::Abs32) {
+                        anyhow::bail!(
+                            "funcref-table relocation at offset {} in '{}' has \
+                             kind {:?}, expected Abs32 — unknown dispatch shape \
+                             (#275)",
+                            reloc.offset,
+                            func.name,
+                            reloc.kind
+                        );
+                    }
+                    let pos = (func_offsets[i] + reloc.offset) as usize;
+                    let addend =
+                        u32::from_le_bytes(all_func_code[pos..pos + 4].try_into().unwrap());
+                    let value = func_table_addr.wrapping_add(addend);
+                    all_func_code[pos..pos + 4].copy_from_slice(&value.to_le_bytes());
+                    info!(
+                        "  patched funcref-table literal at 0x{:08x} -> 0x{:08x}",
+                        funcs_base + func_offsets[i] + reloc.offset,
+                        value
+                    );
+                    continue;
+                }
+                // Every other relocation on this path is an internal BL call
+                // site. A non-ThmCall kind here would be silently corrupted by
+                // the BL patch below — refuse loudly instead (#275 hardening).
+                if !matches!(reloc.kind, synth_core::backend::RelocKind::ThmCall) {
+                    anyhow::bail!(
+                        "relocation against '{}' at offset {} in '{}' has kind \
+                         {:?}, which the standalone Cortex-M builder cannot \
+                         patch (only ThmCall BLs and funcref-table Abs32 \
+                         literals) — refusing a silent mis-patch",
+                        reloc.symbol,
+                        reloc.offset,
+                        func.name,
+                        reloc.kind
+                    );
+                }
                 let Some(&callee_addr) = label_to_addr.get(reloc.symbol.as_str()) else {
                     // Should not happen: the dispatcher only routes here when
                     // every relocation is internal. Be loud rather than emit a
@@ -5376,6 +5537,25 @@ fn build_multi_func_cortex_m_elf(
 
     // All function code
     flash_image.extend_from_slice(&all_func_code);
+
+    // #275: append the funcref table (4-aligned) immediately after the
+    // function code — the address every patched `FUNC_TABLE_SYMBOL` literal
+    // now carries. Empty for every image without a call_indirect dispatch
+    // (byte-identical). Placed BEFORE the #758 data ROM image, whose address
+    // is computed dynamically below and shifts harmlessly.
+    if !func_table_blob.is_empty() {
+        while !flash_image.len().is_multiple_of(4) {
+            flash_image.push(0);
+        }
+        let laid_out = flash_base + flash_image.len() as u32;
+        if laid_out != func_table_addr {
+            anyhow::bail!(
+                "funcref table laid out at 0x{laid_out:08x} but literals were \
+                 patched with 0x{func_table_addr:08x} — layout drift (#275)"
+            );
+        }
+        flash_image.extend_from_slice(&func_table_blob);
+    }
 
     // #758: append the data ROM init image (4-aligned) after the function
     // code. It lands INSIDE `.text` (the `.text` section IS `flash_image`), so

@@ -1,18 +1,21 @@
-;; #275 — self-contained `--cortex-m` call_indirect silent-miscompile repro.
+;; #275 — self-contained call_indirect emission/decline fixture.
 ;;
 ;; `entry` dispatches through a constant table (index loaded from linmem[100]).
-;; wasmtime stores 100/200/300 to linmem[0] for table indices 0/1/2.
 ;;
-;; On the SELF-CONTAINED image path (build_multi_func_cortex_m_elf, i.e. NO
-;; --relocatable) the dispatch loads the function pointer from the contiguous
-;; R11 table region — but R11 is the LINEAR-MEMORY base and NOTHING populates
-;; that region in a self-contained image, so `ldr ip,[r11,idx*4]` reads
-;; function pointers from linear-memory DATA (a silent miscompile). Until the
-;; dedicated func-table fix (silicon-gated) lands, the self-contained path must
-;; DECLINE this loudly (AFD-008) rather than emit the colliding dispatch.
+;; HISTORY: the naive self-contained dispatch loaded the function pointer from
+;; the contiguous R11 table region — but R11 is the LINEAR-MEMORY base and
+;; NOTHING populates that region in a self-contained image, so
+;; `ldr ip,[r11,idx*4]` read function pointers from linear-memory DATA (a
+;; silent miscompile). v0.42 (#717) loud-declined; v0.47 CONVERTED the
+;; Thumb-2 `--cortex-m` path: the funcref table now ships in FLASH and the
+;; dispatch reaches it PC-relative (`__synth_func_table`), never via R11 —
+;; `entry` EMITS again. The A32/Cortex-R5 self-contained path (no flash-table
+;; builder) keeps the loud decline (AFD-008).
 ;;
 ;; The `--relocatable` path (where a runtime places the table region at R11)
 ;; keeps emitting the guarded dispatch — see the #642/#650/#664/#676 oracles.
+;; Execution semantics are gated by the companion
+;; call_indirect_275_selfcontained_execution_differential.py.
 (module
   (memory (export "memory") 1)
   (type $ret (func (result i32)))

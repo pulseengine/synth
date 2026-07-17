@@ -515,6 +515,60 @@ impl DecodedModule {
         }
     }
 
+    /// #275: the STATIC image of the contiguous funcref region — one slot per
+    /// table entry across ALL tables in declaration order (the exact layout
+    /// [`CallIndirectGuards`]' `base_byte_offset` contract describes), each
+    /// `Some(full_function_index)` for a statically-known initialized slot
+    /// and `None` for a null (or not statically attributable) slot. The
+    /// self-contained image builder resolves each `Some` to the laid-out
+    /// function address (Thumb bit set) and links every `None` as a ZERO
+    /// word, which the dispatch's #664 null check / #676 id-0 compare traps.
+    ///
+    /// Mirrors the reconstruction in [`Self::call_indirect_guards`]:
+    ///  - stops at the first table with no compile-time size (later tables
+    ///    have no constant base offset, so no dispatch can reach them);
+    ///  - a table whose segments are not statically verifiable (non-const
+    ///    offset, non-`ref.func` entry, out-of-range write) contributes
+    ///    all-`None` slots — every dispatch into it declines at the lowering
+    ///    anyway, and a rogue read traps on the zero word rather than branch.
+    pub fn funcref_region_slots(&self) -> Vec<Option<u32>> {
+        let mut region: Vec<Option<u32>> = Vec::new();
+        for (n, &size) in self.table_sizes.iter().enumerate() {
+            let Some(size) = size else { break };
+            let mut slots: Vec<Option<u32>> = vec![None; size as usize];
+            let mut verifiable = true;
+            for seg in self
+                .elem_segments
+                .iter()
+                .filter(|s| s.table_index == n as u32)
+            {
+                let (Some(off), Some(funcs)) = (seg.offset, seg.funcs.as_ref()) else {
+                    verifiable = false;
+                    break;
+                };
+                for (k, &f) in funcs.iter().enumerate() {
+                    match slots.get_mut(off as usize + k) {
+                        Some(slot) => *slot = Some(f),
+                        None => {
+                            // Writes past the declared size: the guards
+                            // reject this table; ship all-null slots.
+                            verifiable = false;
+                            break;
+                        }
+                    }
+                }
+                if !verifiable {
+                    break;
+                }
+            }
+            if !verifiable {
+                slots = vec![None; size as usize];
+            }
+            region.extend(slots);
+        }
+        region
+    }
+
     /// #642/#650: the closed-world type verdicts for ONE table — `None` per
     /// expected type when every INITIALIZED slot of table `n` verifiably
     /// holds a function of that exact structural signature; `Some(reason)`

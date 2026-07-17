@@ -441,13 +441,24 @@ fn compile_wasm_to_arm(
         // bounds guard + closed-world type verdicts). Without them, every
         // call_indirect lowering declines loudly.
         selector.set_call_indirect_guards(config.call_indirect_guards.clone());
-        // #275: on the self-contained image path (NOT --relocatable) decline
-        // call_indirect loudly — the R11 funcref-table region is only populated
-        // by an external runtime, which a self-contained ELF does not have, so
-        // the dispatch would read function pointers from linear-memory data (a
-        // silent miscompile). The host-linked (--relocatable) path keeps the
-        // guarded dispatch: there a runtime places the table region at R11.
-        selector.set_reject_self_contained_call_indirect(!config.relocatable);
+        // #275: on the self-contained image path (NOT --relocatable) the R11
+        // funcref-table dispatch is a silent miscompile — the region is only
+        // populated by an external runtime, which a self-contained ELF does
+        // not have, so the dispatch would read function pointers from
+        // linear-memory data. Two outcomes:
+        //  - the Thumb-2 `--cortex-m` image path (CLI-flagged: the builder
+        //    that emits and patches the flash-resident funcref table will
+        //    run) lowers call_indirect through that table, PC-relative,
+        //    never via R11;
+        //  - every OTHER self-contained configuration (A32/Cortex-R5, the
+        //    simple-ELF builder, imports present) keeps the loud decline.
+        // The host-linked (--relocatable) path keeps the guarded R11
+        // dispatch: there a runtime places the table region at R11.
+        let self_contained_table = config.self_contained_funcref_table
+            && matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
+        selector
+            .set_reject_self_contained_call_indirect(!config.relocatable && !self_contained_table);
+        selector.set_self_contained_funcref_table(self_contained_table);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
         // VCR-MEM-002 phase 1 (#406): per-memory initial page counts — enables
