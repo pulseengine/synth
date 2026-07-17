@@ -267,6 +267,13 @@ pub struct CompileConfig {
     /// `None` → declared signature unknown (hand-built op streams, direct
     /// `compile_function` callers) → pure inference, the legacy behaviour.
     pub current_func_param_count: Option<u32>,
+    /// (#778 phase 4 / #49) The WASM index of the function CURRENTLY being compiled,
+    /// so the WCET pass can identify this function's OWN `func_<idx>` self-call label
+    /// (a self-recursive `BL func_N` where N == this index) and prove/decline the
+    /// self-recursion depth. Set per function by the driver loop (like
+    /// [`current_func_params_i64`]). `None` → unknown (hand-built op streams, direct
+    /// `compile_function` callers) → no self-recursion certificate is attempted.
+    pub current_func_index: Option<u32>,
     /// #509: blocktype-arity side-table of the function CURRENTLY being compiled
     /// — `(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in its op
     /// stream (ordinal-keyed; see [`FunctionOps::block_arity`]). Set per function
@@ -458,6 +465,7 @@ impl Default for CompileConfig {
             // #457: None ⇒ declared signature unknown ⇒ param-count inference
             // only (unit tests / hand-built op streams); driver loops fill it.
             current_func_param_count: None,
+            current_func_index: None,
             // #509: empty ⇒ legacy void-block lowering (unit tests / hand-built
             // op streams); the driver loops fill it per function.
             current_func_block_arity: Vec::new(),

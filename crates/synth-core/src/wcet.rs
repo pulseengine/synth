@@ -216,6 +216,18 @@ pub enum WcetHintReject {
     /// The hint indexes a loop that does not exist in this function's final
     /// instruction stream.
     HintUnknownLoop,
+    /// A recursion-depth hint (`recursion_depth`) was offered but synth could NOT
+    /// verify the self-recursion is a single-self-call chain whose controlling
+    /// value is entry-independently bounded (a masked-slot counter decreasing by a
+    /// const step toward a base guard on the SAME masked quantity). Without an
+    /// entry-independent ceiling the true depth is runtime-unbounded, so the hint
+    /// is never trusted into a bound. (#778 phase 4 / #49.)
+    HintUnverifiableRecursion,
+    /// A recursion-depth hint is SMALLER than synth's own DERIVED maximum depth
+    /// (the entry-independent ceiling proven from the masked-slot induction). A
+    /// hint below the derived depth is a wrong oracle claim — trusting it would
+    /// emit a bound < a real execution (the fatal class). (#778 phase 4 / #49.)
+    HintBelowDerivedDepth,
 }
 
 impl WcetHintReject {
@@ -234,6 +246,18 @@ impl WcetHintReject {
             WcetHintReject::HintUnknownLoop => {
                 "hint indexes a loop that does not exist in the final \
                  instruction stream"
+            }
+            WcetHintReject::HintUnverifiableRecursion => {
+                "recursion-depth hint not verifiable — the self-recursion is not a \
+                 single-self-call chain whose controlling value is entry-independently \
+                 bounded (masked-slot counter decreasing by a const step toward a base \
+                 guard on the same masked quantity); depth is runtime-unbounded, so \
+                 the hint is never trusted into a bound"
+            }
+            WcetHintReject::HintBelowDerivedDepth => {
+                "recursion-depth hint is below synth's derived maximum depth (the \
+                 entry-independent ceiling proven from the masked-slot induction) — \
+                 a wrong hint; trusting it would emit an unsound bound"
             }
         }
     }
@@ -257,6 +281,22 @@ pub struct WcetHintRejection {
     pub note: String,
 }
 
+/// (#778 phase 4 / #49) The self-recursion record carried on a bounded function
+/// whose bound was composed via a verified recursion-depth certificate, so the
+/// sidecar states exactly how the frame count was established (and that a hint gated
+/// it — the derived depth is still synth's own).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetRecursionBound {
+    /// The DERIVED maximum recursion depth (entry-independent ceiling).
+    pub max_depth: u64,
+    /// The number of frames folded into the bound (`max_depth + 1`, counting the
+    /// base frame). Diagnostic — lets a consumer cross-check `cycles ≥ frames`.
+    pub frame_count: u64,
+    /// The `--wcet-hints` `recursion_depth` value that gated the certificate (the
+    /// emitted `max_depth` is synth's DERIVED value, never this raw hint).
+    pub hint: u64,
+}
+
 /// The per-function result: either a sound cycle bound or a loud decline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -277,6 +317,10 @@ pub enum WcetFunction {
         /// Proven loops (empty for a loop-free function), ascending head offset.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         loops: Vec<WcetLoopBound>,
+        /// (#778 phase 4 / #49) Present iff this bound was composed via a verified
+        /// self-recursion certificate; states the derived depth + frame count.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recursion: Option<WcetRecursionBound>,
         /// Hints that were rejected (the static proof stands independently).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hint_rejections: Vec<WcetHintRejection>,
@@ -324,6 +368,32 @@ impl WcetFunction {
             hint_rejections,
         }
     }
+}
+
+/// (#778 phase 4 / #49) A proven SELF-recursion certificate: the function is a
+/// single-self-call chain whose controlling value is entry-independently bounded
+/// (a masked-slot counter decreasing by a const step toward a base guard on the
+/// SAME masked quantity), so its maximum recursion DEPTH is DERIVED (not
+/// hint-supplied) as an entry-independent ceiling. The composer folds the self-edge
+/// as `frame_count × frame_cost` (`frame_count = max_depth + 1`, counting the base
+/// frame) instead of declining `Recursion`.
+///
+/// A certificate is attached ONLY after the depth was cross-checked against a
+/// `--wcet-hints` `recursion_depth` entry (the untrusted oracle asserts intent;
+/// synth's derived ceiling is what is emitted). Without a hint the recursion still
+/// declines (a bound this consequential is opt-in, mirroring the equality-exit
+/// loop-hint gate). `self_label` is the function's own `func_<idx>` self-call label
+/// so the composer can identify and special-case exactly that edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WcetRecursionCert {
+    /// The self-call `BL` label (`func_<idx>`) this certificate authorizes.
+    pub self_label: String,
+    /// The DERIVED maximum recursion depth (entry-independent ceiling). The base
+    /// frame is NOT included here — the composer uses `max_depth + 1` frames.
+    pub max_depth: u64,
+    /// The hint value that gated this certificate (recorded for the sidecar; the
+    /// emitted depth is always the derived `max_depth`, never the raw hint).
+    pub hint: u64,
 }
 
 /// One direct call site inside a composable function (#778 phase 3). Records the
@@ -380,6 +450,12 @@ pub enum WcetIntermediate {
         call_sites: Vec<WcetCallSite>,
         /// Proven loops inside this function (carried to the bound unchanged).
         loops: Vec<WcetLoopBound>,
+        /// (#778 phase 4 / #49) A proven self-recursion certificate, when this
+        /// function is a bounded single-self-call chain with a verified depth hint.
+        /// The composer folds the self-edge as `(max_depth+1) × frame_cost` instead
+        /// of declining `Recursion`. `None` for a non-recursive function or an
+        /// unverifiable/unhinted recursion (which still declines).
+        recursion_cert: Option<WcetRecursionCert>,
         /// Hints rejected while analyzing this function (carried to the bound).
         hint_rejections: Vec<WcetHintRejection>,
     },
@@ -420,6 +496,16 @@ pub struct WcetFunctionHints {
     /// order; `null` leaves that loop unhinted.
     #[serde(default)]
     pub loop_bounds: Vec<Option<u64>>,
+    /// (#778 phase 4 / #49) An UNTRUSTED claimed maximum SELF-recursion depth for
+    /// this function. Consulted only when synth has proven the function is a
+    /// single-self-call chain whose controlling value is entry-independently bounded
+    /// (a masked-slot counter): synth then DERIVES its own maximum depth from the
+    /// mask+step+base induction and cross-checks this hint (`hint < derived` →
+    /// `hint-below-derived-depth`). A hint on a function whose recursion synth cannot
+    /// so verify is REJECTED (`hint-unverifiable-recursion`) and never trusted. The
+    /// emitted bound always uses synth's DERIVED depth, never the raw hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursion_depth: Option<u64>,
 }
 
 /// The full `synth-wcet-v1` sidecar: schema header, precondition, and per-function
@@ -483,6 +569,7 @@ mod tests {
             cycles: 42,
             instr_count: 7,
             loops: Vec::new(),
+            recursion: None,
             hint_rejections: Vec::new(),
         });
         r.functions

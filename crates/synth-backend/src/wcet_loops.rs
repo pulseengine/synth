@@ -91,7 +91,7 @@ pub(crate) enum LoopAnalysis {
 
 /// Comparison relation of a predicate over the counter, by signedness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Rel {
+pub(crate) enum Rel {
     Eq,
     Ne,
     LtS,
@@ -105,7 +105,7 @@ enum Rel {
 }
 
 impl Rel {
-    fn of(cond: Condition) -> Rel {
+    pub(crate) fn of(cond: Condition) -> Rel {
         match cond {
             Condition::EQ => Rel::Eq,
             Condition::NE => Rel::Ne,
@@ -121,7 +121,7 @@ impl Rel {
     }
 
     /// Logical negation over the same operands.
-    fn negate(self) -> Rel {
+    pub(crate) fn negate(self) -> Rel {
         match self {
             Rel::Eq => Rel::Ne,
             Rel::Ne => Rel::Eq,
@@ -140,17 +140,17 @@ impl Rel {
 /// A boolean predicate over the counter slot's REGION-ENTRY value `v`:
 /// `(v + add) REL rhs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Pred {
+pub(crate) struct Pred {
     /// SP-relative byte offset of the counter slot this predicate reads.
-    off: i64,
+    pub(crate) off: i64,
     /// Constant added to the entry value before the comparison.
-    add: i64,
-    rel: Rel,
-    rhs: i32,
+    pub(crate) add: i64,
+    pub(crate) rel: Rel,
+    pub(crate) rhs: i32,
 }
 
 impl Pred {
-    fn negate(self) -> Pred {
+    pub(crate) fn negate(self) -> Pred {
         Pred {
             rel: self.rel.negate(),
             ..self
@@ -1148,7 +1148,7 @@ fn shift_slots(st: &mut WalkState, delta: i64) {
 /// predicate's signedness domain. Returns `(n, requires_hint)`; equality exits
 /// set `requires_hint` (consumed only under a verified `--wcet-hints` entry).
 /// `None` = exit not statically guaranteed (or a possible wrap) → unproven.
-fn exit_index(init: i32, step: i64, p: &Pred) -> Option<(u64, bool)> {
+pub(crate) fn exit_index(init: i32, step: i64, p: &Pred) -> Option<(u64, bool)> {
     let s = step;
     debug_assert!(s != 0);
     let signed = matches!(
