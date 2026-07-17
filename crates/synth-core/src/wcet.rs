@@ -19,15 +19,26 @@
 //!   instruction's documented worst-case cycles. Summing every instruction
 //!   (including both arms of an `if/else`) is an over-estimate, hence sound; no
 //!   path enumeration is needed.
-//! - **Everything else** — any backward branch (a loop), any residual/external
+//! - **Loops with statically-evident trip counts** (#778 phase 2): a canonical
+//!   counted loop — const-initialized counter, const step, const bound, single
+//!   backward branch — whose trip count synth PROVES from the final instruction
+//!   stream gets `trip × body-worst + overhead` as an upper bound; every
+//!   instruction's cost is multiplied by its proven worst-case execution count.
+//!   Nested loops multiply only when EVERY level proves.
+//! - **Everything else** — any loop synth cannot prove a trip count for
+//!   (data-dependent bounds, non-canonical shapes), any residual/external
 //!   label branch (unknown direction), any call (`Bl`/`Blx`, inter-procedural),
 //!   any op whose encoder expansion contains an internal runtime loop
 //!   (`i64` software div/rem), any unsupported core class — is DECLINED with a
 //!   machine-readable reason. gale cannot size a budget from an unsound number,
 //!   so a decline is strictly better than a guess.
 //!
-//! Loop-bound INFERENCE (recovering an unknown trip count) and inter-procedural
-//! composition are the named scry / spar follow-ups, explicitly OUT of scope.
+//! `--wcet-hints` (#778 phase 2, the scry seam) supplies UNTRUSTED per-loop
+//! trip-count hints; each is soundly CHECKED against synth's own induction
+//! proof before use and REJECTED with a machine reason otherwise (see
+//! [`WcetHints`] / [`WcetHintReject`]). Richer hint certificates (data-dependent
+//! bounds) and inter-procedural composition remain the named scry / spar
+//! follow-ups, explicitly OUT of scope.
 //!
 //! ## Precondition — a bound without its assumptions is not a safety input
 //!
@@ -52,15 +63,20 @@ use serde::{Deserialize, Serialize};
 /// The schema version string embedded at the top of the sidecar.
 pub const SCHEMA: &str = "synth-wcet-v1";
 
+/// The schema string a `--wcet-hints` file must carry (#778 phase 2).
+pub const HINTS_SCHEMA: &str = "synth-wcet-hints-v1";
+
 /// Why a function could not receive a sound static cycle bound. Each variant is a
 /// distinct, machine-readable decline reason so a consumer (spar T4) can tell an
 /// unbounded loop from an inter-procedural edge from an unsupported core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WcetDecline {
-    /// A backward branch in the final instruction stream — a loop. Bounding it
-    /// requires a trip count, which WASM does not carry; that is the scry
-    /// loop-bound-inference follow-up.
+    /// A backward branch in the final instruction stream — a loop — whose trip
+    /// count synth could NOT statically prove (#778 phase 2 proves canonical
+    /// const-init/const-step/const-bound counted loops; equality-exit shapes
+    /// additionally need a verified `--wcet-hints` entry). Data-dependent
+    /// bounds remain the scry loop-bound-inference follow-up.
     Loop,
     /// A call (`Bl`/`Blx`) — the bound is per-function (intra-procedural). Summing
     /// a callee's cost is the spar inter-procedural-composition follow-up.
@@ -88,8 +104,10 @@ impl WcetDecline {
     pub fn note(&self) -> &'static str {
         match self {
             WcetDecline::Loop => {
-                "backward branch (loop) — a sound bound needs a trip count \
-                 (scry loop-bound-inference follow-up)"
+                "backward branch (loop) without a statically-proven trip count — \
+                 canonical const-bound counted loops are proven automatically; \
+                 equality-exit shapes need a verified --wcet-hints entry; \
+                 data-dependent bounds are the scry loop-bound-inference follow-up"
             }
             WcetDecline::Call => {
                 "call (Bl/Blx) — per-function bound is intra-procedural \
@@ -112,6 +130,100 @@ impl WcetDecline {
     }
 }
 
+/// How a loop's trip count was established (#778 phase 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WcetLoopBoundSource {
+    /// Fully static proof: const-initialized counter, const step, const bound,
+    /// exit-guaranteeing comparison — the trip count is derived by synth alone.
+    Static,
+    /// The loop is an equality-exit shape synth only bounds under an explicit
+    /// `--wcet-hints` assertion; the hint was CHECKED against synth's own derived
+    /// trip count (divisibility + monotonicity + derived ≤ hint) before use. The
+    /// emitted trip count is still synth's DERIVED value, never the raw hint.
+    HintVerified,
+}
+
+/// One proven-bounded loop inside a bounded function (#778 phase 2). Loops are
+/// listed in ascending `head_offset` order — the SAME order `--wcet-hints`
+/// `loop_bounds` entries are matched by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetLoopBound {
+    /// Byte offset of the loop head (backward-branch target) within the function.
+    pub head_offset: u64,
+    /// The PROVEN maximum number of body executions (full iterations).
+    pub trip_count: u64,
+    /// Number of instructions inside the loop region (head..=backward branch),
+    /// so a consumer can cross-check `cycles ≥ trip_count × region_instr_count`
+    /// (every instruction costs ≥ 1 cycle).
+    pub region_instr_count: usize,
+    /// How the trip count was established.
+    pub source: WcetLoopBoundSource,
+    /// The hint value consumed (present iff `source == HintVerified` or a
+    /// redundant hint was cross-checked against a static proof).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<u64>,
+}
+
+/// Machine-readable reason a `--wcet-hints` entry was REJECTED (#778 phase 2).
+/// The hint file is UNTRUSTED input: a hint is only ever consumed after synth
+/// verifies the loop's induction against it; everything else lands here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WcetHintReject {
+    /// The hint is SMALLER than synth's own derived trip count — a wrong hint.
+    /// Trusting it would emit a bound < a real execution (the fatal class).
+    HintBelowDerivedTrip,
+    /// synth could not verify the loop's induction against the hint (counter not
+    /// provably monotonic toward a statically-known bound ≤ hint — e.g. a
+    /// data-dependent bound register, a non-canonical shape, or an equality exit
+    /// whose step does not divide the distance). An unverifiable hint is never
+    /// trusted into a bound.
+    HintUnverifiableInduction,
+    /// The hint indexes a loop that does not exist in this function's final
+    /// instruction stream.
+    HintUnknownLoop,
+}
+
+impl WcetHintReject {
+    /// A short human-readable explanation, embedded alongside the machine reason.
+    pub fn note(&self) -> &'static str {
+        match self {
+            WcetHintReject::HintBelowDerivedTrip => {
+                "hint is below synth's derived trip count — a wrong hint; \
+                 trusting it would emit an unsound bound"
+            }
+            WcetHintReject::HintUnverifiableInduction => {
+                "loop induction not verifiable against the hint (counter not \
+                 provably monotonic toward a statically-known bound ≤ hint) — \
+                 an unverifiable hint is never trusted into a bound"
+            }
+            WcetHintReject::HintUnknownLoop => {
+                "hint indexes a loop that does not exist in the final \
+                 instruction stream"
+            }
+        }
+    }
+}
+
+/// One rejected hint, recorded in the sidecar so the oracle (scry) sees exactly
+/// which of its claims synth refused and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetHintRejection {
+    /// Index into the function's `loop_bounds` hint array (== loop order by
+    /// ascending head offset).
+    pub loop_index: usize,
+    /// Byte offset of the loop head this hint addressed, when the loop exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_offset: Option<u64>,
+    /// The rejected hint value.
+    pub hint: u64,
+    /// Machine-readable rejection reason.
+    pub reason: WcetHintReject,
+    /// Human-readable note (`reason.note()`).
+    pub note: String,
+}
+
 /// The per-function result: either a sound cycle bound or a loud decline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -120,13 +232,21 @@ pub enum WcetFunction {
     Bounded {
         /// Function name (WASM export or generated).
         name: String,
-        /// The sound worst-case cycle bound: for a loop-free function this is the
+        /// The sound worst-case cycle bound. For a loop-free function this is the
         /// SUM of each instruction's documented worst-case cycles (each executes
-        /// at most once). Always ≥ any real execution under the stated
-        /// precondition.
+        /// at most once). For a function whose loops ALL have proven trip counts
+        /// (#778 phase 2) each instruction's cost is multiplied by its proven
+        /// worst-case execution count. Always ≥ any real execution under the
+        /// stated precondition.
         cycles: u64,
         /// Number of ARM instructions summed (diagnostic).
         instr_count: usize,
+        /// Proven loops (empty for a loop-free function), ascending head offset.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        loops: Vec<WcetLoopBound>,
+        /// Hints that were rejected (the static proof stands independently).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hint_rejections: Vec<WcetHintRejection>,
     },
     /// No bound emitted — a loud decline with a machine-readable reason. A decline
     /// is emitted (rather than the function omitted) so the map is COMPLETE: a
@@ -139,6 +259,9 @@ pub enum WcetFunction {
         reason: WcetDecline,
         /// Human-readable note (`reason.note()`).
         note: String,
+        /// Hints that were offered for this function and rejected.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hint_rejections: Vec<WcetHintRejection>,
     },
 }
 
@@ -150,8 +273,50 @@ impl WcetFunction {
             name: name.into(),
             reason,
             note,
+            hint_rejections: Vec::new(),
         }
     }
+
+    /// Construct a decline carrying rejected-hint records.
+    pub fn declined_with_rejections(
+        name: impl Into<String>,
+        reason: WcetDecline,
+        hint_rejections: Vec<WcetHintRejection>,
+    ) -> Self {
+        let note = reason.note().to_string();
+        WcetFunction::Declined {
+            name: name.into(),
+            reason,
+            note,
+            hint_rejections,
+        }
+    }
+}
+
+/// The parsed `--wcet-hints` file (`synth-wcet-hints-v1`) — an UNTRUSTED oracle
+/// input (#778 phase 2, the scry integration seam). Per function, an ordered
+/// array of claimed loop-trip-count upper bounds, matched to loops by ascending
+/// head offset (entry N = N-th loop head in the function; `null` skips a loop).
+/// Every entry is soundly CHECKED before use: synth re-derives the loop's trip
+/// count from its own induction proof and consumes the hint only when the
+/// derived count is ≤ the hint. A wrong or unverifiable hint is rejected with a
+/// machine reason ([`WcetHintReject`]) — never trusted into a bound.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetHints {
+    /// Must equal [`HINTS_SCHEMA`].
+    pub schema: String,
+    /// Per-function hint arrays, keyed by the compiled function name.
+    #[serde(default)]
+    pub functions: std::collections::BTreeMap<String, WcetFunctionHints>,
+}
+
+/// Per-function loop-bound hints.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetFunctionHints {
+    /// Claimed trip-count upper bounds, one per loop in ascending-head-offset
+    /// order; `null` leaves that loop unhinted.
+    #[serde(default)]
+    pub loop_bounds: Vec<Option<u64>>,
 }
 
 /// The full `synth-wcet-v1` sidecar: schema header, precondition, and per-function
@@ -214,6 +379,8 @@ mod tests {
             name: "leaf".into(),
             cycles: 42,
             instr_count: 7,
+            loops: Vec::new(),
+            hint_rejections: Vec::new(),
         });
         r.functions
             .push(WcetFunction::declined("spins", WcetDecline::Loop));

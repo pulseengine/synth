@@ -165,11 +165,23 @@ frozen and oracle-gated every step:
   EXACT sum of documented Cortex-M3/M4 worst-case per-op cycles (MAX over {M3,M4};
   the sound-critical model constants are `STRAIGHTLINE_CEIL_PER_HALFWORD = 5`,
   `Umull = 5`, `Mls/Mla = 2`, `Sdiv/Udiv = 12`, and the four i64 software
-  div/rem = `LoopedExpansion` decline, pinned in `claims.yaml`); loops, calls,
-  i64-software-div and non-M3/M4 cores (incl. the ambiguous `-eabihf` M4F/M7
-  triple) LOUD-DECLINE with a machine reason. Frozen-safe (`.text` unchanged);
-  gated by `wcet_bound_gate.rs` (bound ≥ actual + decline matrix). Loop-bound
-  inference (scry) + inter-procedural composition are named follow-ups.
+  div/rem = `LoopedExpansion` decline, pinned in `claims.yaml`). Phase 2
+  (v0.47): canonical const-bound counted loops (const init/step/bound, head- or
+  bottom-test, nested-multiplicative, memory-writing bodies) are PROVEN by a
+  conservative symbolic walk over the final stream (`wcet_loops.rs`, real-
+  encoder byte layout — NOT the estimator, whose high-reg `SetCond` sizes
+  drift) and bounded `trip × per-op worst cases`; `--wcet-hints`
+  (`synth-wcet-hints-v1`, UNTRUSTED scry seam) entries are verified against
+  synth's own derived trip and REJECTED with machine reasons
+  (`hint-below-derived-trip` / `hint-unverifiable-induction`) otherwise —
+  equality-exit shapes bound only under a verified hint. Data-dependent
+  loops, non-canonical shapes, calls, i64-software-div and non-M3/M4 cores
+  (incl. the ambiguous `-eabihf` M4F/M7 triple) still LOUD-DECLINE with a
+  machine reason. Frozen-safe (`.text` unchanged, hints byte-invisible);
+  gated by `wcet_bound_gate.rs` (bound ≥ actual + trip-aware floor +
+  red-first hint rejection + decline matrix). Richer hint certificates
+  (data-dependent bounds, scry) + inter-procedural composition are named
+  follow-ups.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the

@@ -12,13 +12,17 @@
 //!    given a worst-case number or classified as a looped expansion — the same
 //!    tripwire discipline as `estimator_encoder_agreement.rs`.
 //!
-//! 2. [`function_wcet`] — the loop-free classifier + summation. It reconstructs
-//!    byte positions over the final `arm_instrs` list (the same list the encoder
-//!    consumes), detects any BACKWARD branch (a loop), any residual label branch,
-//!    any call, and any op whose encoder expansion contains an internal runtime
-//!    loop; on any of these it DECLINES. Only a proven-loop-free function — where
-//!    every instruction executes at most once — receives the SUM bound, which is
-//!    then ≥ any real execution.
+//! 2. [`function_wcet`] — the classifier + summation. It reconstructs byte
+//!    positions over the final `arm_instrs` list (the same list the encoder
+//!    consumes), detects any residual label branch, any call, and any op whose
+//!    encoder expansion contains an internal runtime loop; on any of these it
+//!    DECLINES. Backward branches (loops) are handed to the
+//!    [`crate::wcet_loops`] analyzer (#778 phase 2): a loop whose trip count is
+//!    STATICALLY PROVEN (const-initialized counter, const step, const bound,
+//!    canonical single-backward-branch shape) multiplies its instructions'
+//!    worst cases by the proven execution count; anything unproven keeps the
+//!    loud `loop` decline. `--wcet-hints` entries are verified there (and
+//!    rejected with machine reasons when wrong/unverifiable — never trusted).
 //!
 //! The whole computation is a pure observation of an already-decided instruction
 //! list: it touches no `.text`, so the emitted bytes are byte-identical whether or
@@ -39,8 +43,10 @@
 //! entry is justified inline. Since a loop-free function executes every
 //! instruction at most once, a per-instruction over-estimate keeps the SUM sound.
 
-use synth_core::wcet::{WcetDecline, WcetFunction};
+use synth_core::wcet::{WcetDecline, WcetFunction, WcetFunctionHints};
 use synth_synthesis::{ArmInstruction, ArmOp};
+
+use crate::wcet_loops::{LoopAnalysis, analyze_loops};
 
 /// A conservative per-16-bit-halfword ceiling for a straight-line multi-byte
 /// encoder expansion built from ALU/shift/compare/move/short-multiply plus the
@@ -391,27 +397,12 @@ pub fn sound_core_class(triple: &str) -> Option<&'static str> {
     }
 }
 
-/// Reconstruct byte positions and detect whether any branch in `instrs` is a
-/// BACKWARD branch (a loop). Returns the first decline reason found, or `None` if
-/// the function is proven loop-free / call-free / straight-line-priceable.
-///
-/// Byte positions are computed with the SAME `estimate_arm_byte_size` the encoder
-/// agreement oracle pins to the real encoder, so this walk sees the exact final
-/// layout. For each resolved `BOffset`/`BCondOffset` the target is reconstructed
-/// as `branch_pos + 4 + offset*2` (Thumb-2 PC-relative: PC = branch + 4, offset in
-/// halfwords); a target AT OR BEFORE the branch is a backward edge → `Loop`.
+/// Scan for op-class declines: calls, residual label branches, looped
+/// expansions, unmodeled ops. Returns the first decline reason found, or `None`
+/// if every instruction is straight-line-priceable (backward branches — loops —
+/// are NOT a decline here; they are handed to [`crate::wcet_loops`]).
 fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
-    use synth_synthesis::estimate_arm_byte_size;
-
-    // First pass: byte position of each instruction.
-    let mut positions = Vec::with_capacity(instrs.len());
-    let mut pos: i64 = 0;
     for instr in instrs {
-        positions.push(pos);
-        pos += estimate_arm_byte_size(&instr.op) as i64;
-    }
-
-    for (i, instr) in instrs.iter().enumerate() {
         // Op-class declines (call / looped-expansion / unmodeled) come first.
         match &instr.op {
             ArmOp::Bl { .. }
@@ -444,16 +435,6 @@ fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
             }
             _ => {}
         }
-        // Backward-branch (loop) detection on the resolved offset forms.
-        if let ArmOp::BOffset { offset } | ArmOp::BCondOffset { offset, .. } = &instr.op {
-            // Thumb-2 PC-relative: target = (branch_pos + 4) + offset*2 halfwords.
-            // offset is in halfwords; a target <= this branch's position is a loop.
-            // (offset == -1 lands at branch_pos + 2 = the NEXT halfword = forward.)
-            let target = positions[i] + 4 + (*offset as i64) * 2;
-            if target <= positions[i] {
-                return Some(WcetDecline::Loop);
-            }
-        }
     }
     None
 }
@@ -464,22 +445,67 @@ fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
 /// declines with [`WcetDecline::UnsupportedCore`].
 ///
 /// Returns a [`WcetFunction::Bounded`] with the summed worst-case cycles when the
-/// function is proven loop-free / call-free on a soundly-summable core, else a
+/// function is proven loop-free / call-free — or when every loop's trip count is
+/// statically proven (#778 phase 2) — on a soundly-summable core, else a
 /// [`WcetFunction::Declined`] with a machine-readable reason.
 pub fn function_wcet(name: &str, instrs: &[ArmInstruction], triple: &str) -> WcetFunction {
+    function_wcet_with_hints(name, instrs, triple, None)
+}
+
+/// [`function_wcet`] with an optional UNTRUSTED `--wcet-hints` entry for this
+/// function (#778 phase 2, the scry seam). Every hint is soundly verified by
+/// [`crate::wcet_loops`] before use; wrong/unverifiable hints are rejected with
+/// machine reasons in the returned record — never trusted into a bound.
+pub fn function_wcet_with_hints(
+    name: &str,
+    instrs: &[ArmInstruction],
+    triple: &str,
+    hints: Option<&WcetFunctionHints>,
+) -> WcetFunction {
     if sound_core_class(triple).is_none() {
         return WcetFunction::declined(name, WcetDecline::UnsupportedCore);
     }
     if let Some(reason) = scan_for_decline(instrs) {
         return WcetFunction::declined(name, reason);
     }
-    // Proven loop-free: every instruction executes at most once, so the SUM of
-    // per-instruction worst cases is ≥ any real execution.
-    let cycles: u64 = instrs.iter().map(|i| op_worst_case_cycles(&i.op)).sum();
+    // Loop analysis: prove a trip count for every backward-branch region, or
+    // keep the loud `loop` decline.
+    let (multipliers, loops, hint_rejections) = match analyze_loops(instrs, hints) {
+        LoopAnalysis::NoLoops { hint_rejections } => (None, Vec::new(), hint_rejections),
+        LoopAnalysis::Proven {
+            multipliers,
+            loops,
+            hint_rejections,
+        } => (Some(multipliers), loops, hint_rejections),
+        LoopAnalysis::Unproven { hint_rejections } => {
+            return WcetFunction::declined_with_rejections(
+                name,
+                WcetDecline::Loop,
+                hint_rejections,
+            );
+        }
+    };
+    // Every instruction's documented worst case × its proven worst-case
+    // execution count (1 everywhere for a loop-free function). u128 through the
+    // sum so deep nesting cannot silently wrap; an astronomically large product
+    // declines rather than emitting a truncated (unsound) number.
+    let cycles_wide: u128 = instrs
+        .iter()
+        .enumerate()
+        .map(|(i, instr)| {
+            let mult = multipliers.as_ref().map_or(1u128, |m| m[i]);
+            (op_worst_case_cycles(&instr.op) as u128).saturating_mul(mult)
+        })
+        .fold(0u128, u128::saturating_add);
+    let Ok(cycles) = u64::try_from(cycles_wide) else {
+        return WcetFunction::declined_with_rejections(name, WcetDecline::Loop, hint_rejections);
+    };
     WcetFunction::Bounded {
         name: name.to_string(),
         cycles,
         instr_count: instrs.len(),
+        loops,
+        hint_rejections,
     }
 }
 
