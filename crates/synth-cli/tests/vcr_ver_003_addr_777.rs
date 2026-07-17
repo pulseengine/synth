@@ -236,21 +236,33 @@ fn span_straddle_module_selfcontained_rom_image_validates() {
     );
 }
 
-/// RV32 class: the single-base scheme (s11, zeroed RAM) ships NO initializer
-/// image, so a module with NONZERO active data is a silent-drop risk — the
-/// (unconditional) zero-served-image validator must WARN LOUDLY. It is a
-/// warning, not a hard error: the CI-pinned RV32 frozen fixture
-/// (control_step.wasm) freezes compile-success on this path; the hard decline
-/// + initializer shipping is the named follow-up.
+/// Read a named section's bytes out of an ELF object on disk.
+fn section_bytes(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    use object::{Object, ObjectSection};
+    let bytes = std::fs::read(path).expect("read object");
+    let obj = object::File::parse(&*bytes).expect("parse object");
+    obj.section_by_name(name)
+        .map(|s| s.data().expect("section data").to_vec())
+}
+
+/// RV32 class (#798, SHIPPED in v0.48): the single-base scheme used to ship a
+/// `.text`-only object — nonzero active data was silently dropped (v0.47
+/// warned loudly). Now the segments ship as `.wasm_data` records
+/// ([u32 off][u32 len][bytes][pad4], declaration order) which the generated
+/// startup copies to `__linear_memory_base + off` at reset. The compile is
+/// GREEN, the old warning is GONE, and the object carries the exact record
+/// bytes for the segment.
 #[test]
-fn rv32_nonzero_data_segment_warns_loudly() {
+fn rv32_nonzero_data_segment_ships_wasm_data_records() {
     let wat = r#"(module
   (memory 1)
   (data (i32.const 16) "\01\02\03\04")
   (func (export "get") (result i32) i32.const 16 i32.load))"#;
     let fixture = wat_file("rv32_data_777.wat", wat);
+    let out_path = std::env::temp_dir()
+        .join("synth_vcr_ver_003_ph2")
+        .join("rv32_data_777.o");
     let out = compile(&fixture, "rv32_data_777.o", &["-b", "riscv"]);
-    // The warn! goes to stdout (tracing's default writer); scan both streams.
     let all = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -258,22 +270,41 @@ fn rv32_nonzero_data_segment_warns_loudly() {
     );
     assert!(out.status.success(), "RV32 compile stays green:\n{all}");
     assert!(
-        all.contains("VCR-VER-003") && all.contains("read as 0x00"),
-        "nonzero dropped initializers must warn loudly:\n{all}"
+        !all.contains("read as 0x00"),
+        "the silent-drop warning must be gone — the data SHIPS now (#798):\n{all}"
+    );
+    assert!(
+        all.contains("Shipping 1 wasm data segment(s)"),
+        "the shipping info line names the segment count:\n{all}"
+    );
+    // The object carries the record verbatim: off=16, len=4, bytes 01020304.
+    let records = section_bytes(&out_path, ".wasm_data")
+        .expect("the object must ship a .wasm_data section");
+    assert_eq!(
+        records,
+        [16u32.to_le_bytes(), 4u32.to_le_bytes()].concat().iter().copied()
+            .chain([1u8, 2, 3, 4])
+            .collect::<Vec<u8>>(),
+        "record = [u32 off=16][u32 len=4][01 02 03 04]"
     );
 }
 
-/// RV32 non-vacuity: an all-zero runtime image (here a nonzero segment
-/// OVERWRITTEN to zero by a later one — later-wins, not a bytes-grep) IS
-/// served correctly by zeroed RAM, so the validator must stay silent.
+/// RV32 later-wins (#798 + the #757 lesson): overlapping segments ship BOTH
+/// records in declaration order — the startup's record-order copy leaves the
+/// LAST-declared bytes in linear memory, exactly WASM instantiation
+/// semantics. The read-back gate (validate_served_image over the emitted
+/// blob) is green, so the compile succeeds with no VCR-VER-003 error.
 #[test]
-fn rv32_zero_overwritten_data_stays_silent() {
+fn rv32_zero_overwritten_data_ships_both_records_in_order() {
     let wat = r#"(module
   (memory 1)
   (data (i32.const 16) "\01\02\03\04")
   (data (i32.const 16) "\00\00\00\00")
   (func (export "get") (result i32) i32.const 16 i32.load))"#;
     let fixture = wat_file("rv32_zero_777.wat", wat);
+    let out_path = std::env::temp_dir()
+        .join("synth_vcr_ver_003_ph2")
+        .join("rv32_zero_777.o");
     let out = compile(&fixture, "rv32_zero_777.o", &["-b", "riscv"]);
     let all = format!(
         "{}{}",
@@ -283,6 +314,65 @@ fn rv32_zero_overwritten_data_stays_silent() {
     assert!(out.status.success(), "RV32 compile stays green:\n{all}");
     assert!(
         !all.contains("VCR-VER-003"),
-        "zeroed RAM serves the all-zero runtime image — no warning:\n{all}"
+        "the read-back gate must be silent on a correct pack:\n{all}"
+    );
+    let records = section_bytes(&out_path, ".wasm_data").expect(".wasm_data present");
+    let mut expect = Vec::new();
+    for seg in [[1u8, 2, 3, 4], [0u8, 0, 0, 0]] {
+        expect.extend_from_slice(&16u32.to_le_bytes());
+        expect.extend_from_slice(&4u32.to_le_bytes());
+        expect.extend_from_slice(&seg);
+    }
+    assert_eq!(
+        records, expect,
+        "both records ship, declaration order (later-wins by copy order)"
+    );
+}
+
+/// RV32 data-free modules ship NO `.wasm_data` section and stay byte-stable:
+/// the empty-blob path is the pre-#798 layout exactly (the frozen RV32
+/// fixtures without segments are untouched by construction — also unit-gated
+/// in the ELF builder).
+#[test]
+fn rv32_data_free_module_has_no_wasm_data_section() {
+    let wat = r#"(module
+  (memory 1)
+  (func (export "get") (result i32) i32.const 16 i32.load))"#;
+    let fixture = wat_file("rv32_nodata_798.wat", wat);
+    let out_path = std::env::temp_dir()
+        .join("synth_vcr_ver_003_ph2")
+        .join("rv32_nodata_798.o");
+    let out = compile(&fixture, "rv32_nodata_798.o", &["-b", "riscv"]);
+    assert!(out.status.success());
+    assert!(
+        section_bytes(&out_path, ".wasm_data").is_none(),
+        "no segments => no .wasm_data section (byte-identical layout)"
+    );
+}
+
+/// RV32 instantiation-trap guard (#798, #758 parity): a segment extending
+/// past the declared linear memory can never be instantiated — refuse loudly
+/// instead of shipping a layout whose startup copy would scribble past the
+/// linear-memory window.
+#[test]
+fn rv32_segment_past_memory_is_refused() {
+    let wat = r#"(module
+  (memory 1)
+  (data (i32.const 65534) "\01\02\03\04")
+  (func (export "get") (result i32) i32.const 65534 i32.load))"#;
+    let fixture = wat_file("rv32_oob_798.wat", wat);
+    let out = compile(&fixture, "rv32_oob_798.o", &["-b", "riscv"]);
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "segment past linear memory must be refused:\n{all}"
+    );
+    assert!(
+        all.contains("instantiation would trap"),
+        "the refusal names the reason:\n{all}"
     );
 }
