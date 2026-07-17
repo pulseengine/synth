@@ -72,3 +72,4 @@ result-*
 # Stray ELF/object output at repo root (e.g. `synth compile ... -o output.elf`)
 /*.elf
 output.elf
+__pycache__/
