@@ -1401,6 +1401,98 @@ artifacts:
         full-boot oracle green); AArch64 is documented N/A (no linear-memory
         ops in the subset).
 
+  - id: VCR-VER-761
+    type: sys-verification
+    title: "Self-contained --cortex-m linmem<->globals disjointness geometry gate catches the R9-overlap alias (#761)"
+    description: >
+      Extend the VCR-VER-003 static-data addressing validator with a
+      per-compilation GEOMETRY invariant that closes the #761 latent-soundness
+      hazard: on the self-contained --cortex-m image the full-page linear-memory
+      view can OVERLAP the R9 globals table at the top of SRAM, so a store to the
+      top of the first page silently ALIASES a global slot (or vice versa) — a
+      wrong-value miscompile, the worst class for a safety backend.
+
+      ROOT CAUSE (a single off-by-0x100 in the layout, not a fundamental
+      infeasibility): the compiled functions address linear memory at
+      optimized_linmem_base (= the startup R11 base + 0x100, the #687 gap), but
+      the startup materialized the R9 globals table at `R11_base + memory_size`,
+      forgetting that 0x100 shift. For a `(memory 1)` module the table landed at
+      0x2001_0000 while a function's store to wasm offset 0xFF00 lands at
+      0x2000_0100 + 0xFF00 = 0x2001_0000 — exactly global slot 0. The top 0x100
+      of the page aliased the table, in BOTH stack layouts (--stack-layout=low
+      shifts both bases equally, so the gap persists — the issue's guess that
+      low sidesteps it is FALSE, disproven by the boot oracle).
+
+      REPRODUCED end-to-end (not a synthetic reconstruction, the #757 lesson):
+      scripts/repro/mem761_linmem_r9_overlap.wat stores 0xDEADBEEF to mem[0xFF00]
+      then returns global 0 (init 0xABCD); the boot oracle
+      (mem761_linmem_r9_overlap_differential.py) boots the REAL self-contained
+      image through its reset path (materializing R9) under unicorn and calls the
+      export. PRE-FIX: 0xDEADBEEF (the store landed on the global) vs wasmtime
+      0xABCD — a live alias, in high AND low layouts. A disjoint witness (store
+      at offset 0) is unaffected either way.
+
+      FIX (separate the bases, not a decline — `(memory 1)` + a global is the
+      most common self-contained shape): base R9 at
+      `func_visible_linmem_base + memory_size` (= the page ceiling the functions
+      can reach), so the table sits AT/above the ceiling and the regions are
+      disjoint. One change fixes both stack layouts (func_visible base already
+      carries the low-layout stack reserve). RAM sizing raised by the same 0x100
+      gap so the auto-scaled RAM/SP stays above the table. POST-FIX: R9 =
+      0x2001_0100 (high) / 0x2001_1100 (low); the oracle returns 0xABCD in both.
+
+      LANDED:
+      (1) synth_core::static_data_addr::validate_linmem_globals_disjoint —
+      a pure geometry check returning LayoutVerdict {Disjoint | Overlap{..}}:
+      the globals table base must be >= func_visible_linmem_base + linmem_bytes
+      (half-open page; no-globals modules trivially disjoint). Lives in
+      synth-core so it runs UNCONDITIONALLY (shipping build is --features riscv,
+      not verify). Concrete geometry, no bytes — complements the byte-equality
+      served-image gate; catches the placement bug, not a packing bug.
+      (2) Wired into build_multi_func_cortex_m_elf (synth-cli): hard-errors the
+      compile (anyhow::bail!) on any Overlap, naming the table base, the page
+      window and the overlap byte count. Runs on every self-contained image.
+      (3) RED-FIRST non-vacuity unit gate (5 tests): the EXACT pre-fix
+      R11-based geometry is caught as a 0x100 Overlap; the fixed
+      func-visible-based geometry is Disjoint; the ceiling boundary is exclusive
+      (exact-ceiling = Disjoint, one below = 1-byte Overlap); no-globals is
+      trivially Disjoint; the --stack-layout=low shape is Disjoint when fixed and
+      still a 0x100 Overlap under the pre-fix placement.
+      (4) DURABLE end-to-end boot oracle
+      (scripts/repro/mem761_linmem_r9_overlap_differential.py): the real
+      self-contained image, booted from reset under unicorn, RED pre-fix
+      (0xDEADBEEF vs 0xABCD) and GREEN post-fix in both stack layouts; wired as a
+      CI oracle step. Frozen fixtures' .text is byte-identical (the R9 base lives
+      in the self-contained startup blob, not the --relocatable .text the frozen
+      hashes cover; the #649 boot oracle stays green with the shifted R9), so no
+      re-pin was needed.
+    status: implemented
+    tags: [verification, addressing, soundness, layout, mem761, cortex-m]
+    links:
+      - type: verifies
+        target: VCR-001
+      - type: refines
+        target: VCR-VER-003
+    fields:
+      method: static-analysis
+      preconditions:
+        - "#687 optimized_linmem_base = R11 base + 0x100 (the function-visible linmem gap)"
+        - "#649 R9 globals-table materialization in the self-contained startup"
+      steps:
+        - "synth_core::static_data_addr::validate_linmem_globals_disjoint: globals_base >= func_visible_linmem_base + linmem_bytes"
+        - "Fix: base R9 at func_visible_linmem_base + memory_size (both stack layouts); raise RAM sizing by the 0x100 gap"
+        - "Wire the geometry gate into build_multi_func_cortex_m_elf; hard-error on Overlap"
+        - "Red-first unit gate: pre-fix R11-based geometry = 0x100 Overlap, fixed = Disjoint (high + low)"
+        - "Durable e2e boot oracle: real image from reset under unicorn, RED pre-fix (0xDEADBEEF vs 0xABCD), GREEN post-fix"
+      pass-criteria: >
+        On every self-contained --cortex-m image the R9 globals table sits at or
+        above the function-visible linear-memory page ceiling, else the compile
+        hard-errors. The validator is Overlap on the pre-fix R11-based placement
+        and Disjoint on the fixed func-visible-based placement, in both stack
+        layouts; the boot oracle returns the correct global value (0xABCD) after
+        the aliasing store in high and low layouts (RED pre-fix). Frozen
+        fixtures' .text stays byte-identical (no re-pin).
+
   # ---------------------------------------------------------------------------
   # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the
   # north-star but the const-remat is partly FORCED by the 9-register pool, so

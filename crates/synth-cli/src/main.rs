@@ -5431,12 +5431,23 @@ fn build_multi_func_cortex_m_elf(
     // linmem + globals shifted up by stack_size (already counted in `needed`).
     let stack_reserve = stack_layout.stack_reserve();
     let linmem_base = stack_layout.startup_linmem_base(ram_base);
+    // #761: the R9 globals table is based at the FUNCTION-visible linmem base
+    // (`optimized_linmem_base`, 0x100 above R11 — the #687 gap), not R11, so the
+    // top of the linmem page cannot alias it. The table therefore occupies
+    // `[func_visible_linmem_base + linear_memory_size, .. + globals_table_bytes)`
+    // — 0x100 higher than the old R11-based placement. Include that gap in the
+    // RAM sizing so the auto-scaled RAM (and SP init) stays above the table.
+    let func_visible_gap = stack_layout
+        .optimized_linmem_base()
+        .wrapping_sub(linmem_base);
     let needed = match stack_layout {
         StackLayout::High => {
             let min_stack_headroom: u32 = 8 * 1024;
-            linear_memory_size + globals_table_bytes + min_stack_headroom
+            func_visible_gap + linear_memory_size + globals_table_bytes + min_stack_headroom
         }
-        StackLayout::Low { stack_size } => stack_size + linear_memory_size + globals_table_bytes,
+        StackLayout::Low { stack_size } => {
+            stack_size + func_visible_gap + linear_memory_size + globals_table_bytes
+        }
     };
     let ram_size: u32 = std::cmp::max(128 * 1024, (needed + 0xFFFF) & !0xFFFF);
 
@@ -5465,7 +5476,8 @@ fn build_multi_func_cortex_m_elf(
     let vector_table_size: u32 = 128;
 
     let startup_addr = flash_base + vector_table_size;
-    let (startup_code, data_src_patch_off) = generate_minimal_startup(
+    let func_visible_linmem_base = stack_layout.optimized_linmem_base();
+    let (startup_code, data_src_patch_off, r9_movw_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         linmem_base,
@@ -5476,9 +5488,48 @@ fn build_multi_func_cortex_m_elf(
         // #758: copy destination = the base the compiled functions address
         // linear memory at (same expression used to compile them, so the two
         // can't drift under --stack-layout=low or a future base change).
-        stack_layout.optimized_linmem_base(),
+        func_visible_linmem_base,
     );
     let startup_size = startup_code.len() as u32;
+
+    // VCR-VER-003 geometry gate (#761): the R9 globals table MUST sit at or
+    // above the function-visible linear-memory page ceiling, or a store to the
+    // top of the first page silently aliases a global slot (the #761 alias).
+    // The checked base is READ BACK from the EMITTED startup bytes (never a
+    // re-derivation of the intended formula — that would be a tautology): a
+    // regression in the R9-base emission changes these bytes, so the gate
+    // catches it. The ceiling is derived INDEPENDENTLY from the function-
+    // addressing contract (`func_visible_linmem_base + linear_memory_size`).
+    // Unconditional; no-globals modules emit no R9 block (`r9_movw_off = None`)
+    // and pass trivially.
+    if let Some(off) = r9_movw_off {
+        let emitted_globals_base = read_back_r9_base(&startup_code, off).ok_or_else(|| {
+            anyhow::anyhow!(
+                "VCR-VER-003: could not decode the emitted MOVW/MOVT R9 globals \
+                 base from the startup blob (#761) — malformed startup emission"
+            )
+        })?;
+        if let synth_core::static_data_addr::LayoutVerdict::Overlap {
+            globals_base,
+            overlap_bytes,
+            ..
+        } = synth_core::static_data_addr::validate_linmem_globals_disjoint(
+            func_visible_linmem_base,
+            linear_memory_size,
+            emitted_globals_base,
+            globals_table_bytes,
+        ) {
+            anyhow::bail!(
+                "VCR-VER-003: self-contained Cortex-M layout OVERLAP — the emitted \
+                 R9 globals table at 0x{globals_base:08x} falls inside the \
+                 function-visible linear-memory page [0x{func_visible_linmem_base:08x}, \
+                 0x{:08x}) by {overlap_bytes} bytes; a store to the top of the page \
+                 would alias a global slot (a silent global<->linmem miscompile). \
+                 This is a compiler layout bug (#761).",
+                func_visible_linmem_base.wrapping_add(linear_memory_size)
+            );
+        }
+    }
 
     let default_handler_addr = startup_addr + startup_size;
     let default_handler = generate_default_handler();
@@ -6528,7 +6579,8 @@ fn build_cortex_m_elf(
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let (startup_code, _data_src_patch_off) = generate_minimal_startup(
+    let func_visible_linmem_base = stack_layout.optimized_linmem_base();
+    let (startup_code, _data_src_patch_off, r9_movw_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         linmem_base,
@@ -6538,9 +6590,40 @@ fn build_cortex_m_elf(
         // so no ROM→RAM copy loop — byte-identical to before. dst is inert
         // (data_copy_bytes = 0 suppresses the whole copy block).
         0,
-        stack_layout.optimized_linmem_base(),
+        func_visible_linmem_base,
     );
     let startup_size = startup_code.len() as u32;
+
+    // VCR-VER-003 geometry gate (#761): same read-back check as the
+    // multi-function builder — the emitted R9 globals base must sit at or above
+    // the function-visible linmem page ceiling. Read the base back from the
+    // startup bytes; ceiling derived independently from the addressing contract.
+    if let Some(off) = r9_movw_off {
+        let emitted_globals_base = read_back_r9_base(&startup_code, off).ok_or_else(|| {
+            anyhow::anyhow!(
+                "VCR-VER-003: could not decode the emitted MOVW/MOVT R9 globals \
+                 base from the startup blob (#761) — malformed startup emission"
+            )
+        })?;
+        if let synth_core::static_data_addr::LayoutVerdict::Overlap {
+            globals_base,
+            overlap_bytes,
+            ..
+        } = synth_core::static_data_addr::validate_linmem_globals_disjoint(
+            func_visible_linmem_base,
+            linear_memory_size,
+            emitted_globals_base,
+            (globals_words.len() as u32) * 4,
+        ) {
+            anyhow::bail!(
+                "VCR-VER-003: self-contained Cortex-M layout OVERLAP — the emitted \
+                 R9 globals table at 0x{globals_base:08x} falls inside the \
+                 function-visible linear-memory page [0x{func_visible_linmem_base:08x}, \
+                 0x{:08x}) by {overlap_bytes} bytes (#761).",
+                func_visible_linmem_base.wrapping_add(linear_memory_size)
+            );
+        }
+    }
 
     let default_handler_addr = startup_addr + startup_size;
     let default_handler = generate_default_handler();
@@ -6708,12 +6791,25 @@ fn build_cortex_m_elf(
 /// * R11 = `linmem_base` (linear memory base — `0x20000000` under the default
 ///   high stack layout; `0x20000000 + stack_size` under `--stack-layout=low`,
 ///   #687)
-/// * R9  = `linmem_base` + memory_size (globals table; only when globals exist)
+/// * R9  = `func_visible_linmem_base` + memory_size (globals table; only when
+///   globals exist). #761: this MUST be based on the FUNCTION-visible base
+///   (`optimized_linmem_base` = R11 + 0x100), NOT R11 itself — the compiled
+///   functions address their linear-memory page at R11 + 0x100 (the #687 gap),
+///   so `R11 + memory_size` would place the table 0x100 BELOW the page ceiling
+///   the functions can reach, and a store to the top 0x100 of the first page
+///   would silently ALIAS the globals table (`= data_copy_dst`, the same
+///   function-visible base the ROM copy uses).
 ///
-/// Returns the startup blob and, when a #758 ROM→RAM data-copy loop was
-/// emitted, the byte offset of the src-address `MOVW` within the blob so the
-/// caller can patch the ROM image's flash address once the layout is known
-/// (`None` = no copy loop, e.g. no data segments / single-function twin).
+/// Returns `(blob, data_src_patch_off, r9_movw_off)`:
+/// * `data_src_patch_off` — when a #758 ROM→RAM data-copy loop was emitted, the
+///   byte offset of the src-address `MOVW` within the blob so the caller can
+///   patch the ROM image's flash address once the layout is known (`None` = no
+///   copy loop, e.g. no data segments / single-function twin).
+/// * `r9_movw_off` (#761) — when an R9 globals table was materialized, the byte
+///   offset of its `MOVW R9` so the caller can READ the emitted globals base
+///   back out of the blob for the VCR-VER-003 geometry gate (`None` = no
+///   globals). Reading it back (rather than re-deriving the intended value)
+///   makes the gate non-vacuous: an R9-base emission regression is caught.
 fn generate_minimal_startup(
     memory_size: u32,
     globals_words: &[u32],
@@ -6722,14 +6818,16 @@ fn generate_minimal_startup(
     // #758: number of bytes to copy from the flash ROM image to linear memory
     // at reset. 0 = no copy loop; startup is byte-identical to before.
     data_copy_bytes: u32,
-    // #758: destination base of that copy — the base the COMPILED FUNCTIONS
-    // address linear memory at (`stack_layout.optimized_linmem_base()` =
-    // 0x2000_0100 + stack_reserve), which is 0x100 ABOVE the startup's R11
-    // `linmem_base` (0x2000_0000) by design (#687). The R11-relative load fold
-    // folds that 0x100 into its immediate, so a function's wasm-offset X lands
-    // at data_copy_dst + X — that is where the ROM bytes must go.
-    data_copy_dst: u32,
-) -> (Vec<u8>, Option<usize>) {
+    // #758/#761: the base the COMPILED FUNCTIONS address linear memory at
+    // (`stack_layout.optimized_linmem_base()` = 0x2000_0100 + stack_reserve),
+    // which is 0x100 ABOVE the startup's R11 `linmem_base` (0x2000_0000) by
+    // design (#687). The R11-relative load fold folds that 0x100 into its
+    // immediate, so a function's wasm-offset X lands at
+    // `func_visible_linmem_base + X`. This is BOTH the #758 ROM-copy
+    // destination AND (#761) the base the R9 globals table must sit ABOVE, so
+    // the top of the linmem page cannot alias the table.
+    func_visible_linmem_base: u32,
+) -> (Vec<u8>, Option<usize>, Option<usize>) {
     // This startup code:
     // 0. (#758) When there are active data segments, copy `data_copy_bytes`
     //    from the flash ROM image (appended to `.text`) into linear memory —
@@ -6764,7 +6862,7 @@ fn generate_minimal_startup(
     // literal. `data_copy_bytes` is known-nonzero here, so a do-while loop
     // (no zero-guard) is sound.
     //   R0 = src (flash ROM addr, PATCHED post-layout — starts #0)
-    //   R1 = dst = data_copy_dst (the base the functions address)
+    //   R1 = dst = func_visible_linmem_base (the base the functions address)
     //   R2 = count = data_copy_bytes
     // copy: LDRB R3,[R0],#1 ; STRB R3,[R1],#1 ; SUBS R2,R2,#1 ; BNE copy
     let src_patch_off: Option<usize> = if data_copy_bytes > 0 {
@@ -6772,9 +6870,15 @@ fn generate_minimal_startup(
         // MOVW/MOVT R0, #0 (src placeholder; patched with the ROM flash addr)
         code.extend_from_slice(&encode_thumb2_movw(0, 0));
         code.extend_from_slice(&encode_thumb2_movt(0, 0));
-        // MOVW/MOVT R1, #data_copy_dst (dst — the function-visible linmem base)
-        code.extend_from_slice(&encode_thumb2_movw(1, (data_copy_dst & 0xFFFF) as u16));
-        code.extend_from_slice(&encode_thumb2_movt(1, (data_copy_dst >> 16) as u16));
+        // MOVW/MOVT R1, #func_visible_linmem_base (dst — the base functions use)
+        code.extend_from_slice(&encode_thumb2_movw(
+            1,
+            (func_visible_linmem_base & 0xFFFF) as u16,
+        ));
+        code.extend_from_slice(&encode_thumb2_movt(
+            1,
+            (func_visible_linmem_base >> 16) as u16,
+        ));
         // MOVW/MOVT R2, #data_copy_bytes (count)
         code.extend_from_slice(&encode_thumb2_movw(2, (data_copy_bytes & 0xFFFF) as u16));
         code.extend_from_slice(&encode_thumb2_movt(2, (data_copy_bytes >> 16) as u16));
@@ -6828,9 +6932,24 @@ fn generate_minimal_startup(
     // init word is stored via the R12 scratch (IP — reserved to the encoder,
     // never live here: this runs before any user code). Every insn is 4 bytes,
     // so the LDR-literal alignment below is undisturbed.
+    //
+    // #761: the table base is `func_visible_linmem_base + memory_size`, NOT
+    // `linmem_base (R11) + memory_size`. The compiled functions address their
+    // linear-memory page starting at `func_visible_linmem_base` (= R11 + 0x100,
+    // the #687 gap), so the page's function-reachable ceiling is
+    // `func_visible_linmem_base + memory_size`. Basing R9 on R11 placed the
+    // table 0x100 below that ceiling, so a store to the top 0x100 of the first
+    // page landed on global slot 0 — a silent global<->linmem alias. Placing
+    // the table AT the page ceiling makes the two regions disjoint. (Fixes both
+    // stack layouts: `func_visible_linmem_base` already carries the low-layout
+    // stack reserve, so the +0x100 gap is closed in both.)
+    let mut r9_movw_off: Option<usize> = None;
     if !globals_words.is_empty() {
-        let base = linmem_base.wrapping_add(memory_size);
-        // MOVW/MOVT R9, #base
+        let base = func_visible_linmem_base.wrapping_add(memory_size);
+        // MOVW/MOVT R9, #base — record the MOVW offset so the caller can READ
+        // the emitted base back out for the #761 geometry gate (a check against
+        // a re-derivation of `base` here would be a tautology).
+        r9_movw_off = Some(code.len());
         code.extend_from_slice(&encode_thumb2_movw(9, (base & 0xFFFF) as u16));
         code.extend_from_slice(&encode_thumb2_movt(9, (base >> 16) as u16));
         for (i, w) in globals_words.iter().enumerate() {
@@ -6858,7 +6977,7 @@ fn generate_minimal_startup(
     code.extend_from_slice(&[0x00, 0x00]);
     // Literal pool placeholder — LAST word, patched with func_addr | 1
     code.extend_from_slice(&[0x91, 0x00, 0x00, 0x00]);
-    (code, src_patch_off)
+    (code, src_patch_off, r9_movw_off)
 }
 
 /// Encode Thumb-2 MOVW instruction (move 16-bit immediate to low half of register)
@@ -6895,6 +7014,38 @@ fn encode_thumb2_movt(rd: u8, imm16: u16) -> [u8; 4] {
     let hw1_bytes = hw1.to_le_bytes();
     let hw2_bytes = hw2.to_le_bytes();
     [hw1_bytes[0], hw1_bytes[1], hw2_bytes[0], hw2_bytes[1]]
+}
+
+/// #761: decode the 16-bit immediate a Thumb-2 MOVW (0xF240 base) or MOVT
+/// (0xF2C0 base) at `code[off..off+4]` carries. Returns `None` if the four
+/// bytes are not the expected MOVW/MOVT form (so a mislocated read-back can't
+/// silently succeed). Used to RECOVER the R9 globals-table base from the
+/// EMITTED startup bytes for the VCR-VER-003 geometry gate — the checked value
+/// must be the artifact's, not a re-derivation of the intended answer.
+fn decode_thumb2_movw_movt_imm16(code: &[u8], off: usize, movt: bool) -> Option<u16> {
+    let bytes: [u8; 4] = code.get(off..off + 4)?.try_into().ok()?;
+    let hw1 = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let hw2 = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let base = if movt { 0xF2C0 } else { 0xF240 };
+    // hw1 = base | (i<<10) | imm4; the fixed opcode bits above imm4/i must match.
+    if (hw1 & 0xFBF0) != base {
+        return None;
+    }
+    let imm4 = hw1 & 0xF;
+    let i = (hw1 >> 10) & 0x1;
+    let imm3 = (hw2 >> 12) & 0x7;
+    let imm8 = hw2 & 0xFF;
+    Some((imm4 << 12) | (i << 11) | (imm3 << 8) | imm8)
+}
+
+/// #761: recover the absolute R9 globals-table base the startup ACTUALLY
+/// emitted, by decoding the MOVW/MOVT R9 pair at `r9_movw_off`. Independent of
+/// the intended-value formula — a startup-formula regression changes these
+/// bytes, so the geometry gate sees the real base.
+fn read_back_r9_base(code: &[u8], r9_movw_off: usize) -> Option<u32> {
+    let lo = decode_thumb2_movw_movt_imm16(code, r9_movw_off, false)? as u32;
+    let hi = decode_thumb2_movw_movt_imm16(code, r9_movw_off + 4, true)? as u32;
+    Some((hi << 16) | lo)
 }
 
 /// Generate default exception handler (infinite loop)
@@ -7956,9 +8107,10 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // #758: no data segments ⇒ data_copy_bytes = 0, no copy loop, and the
         // src-patch offset is None — the blob is byte-identical to before.
-        let (startup, patch) =
+        let (startup, patch, r9_off) =
             generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100);
         assert!(patch.is_none(), "no copy loop when data_copy_bytes == 0");
+        assert!(r9_off.is_none(), "no R9 block when there are no globals");
 
         // Should be 28 bytes:
         // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
@@ -7998,17 +8150,28 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
         let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
-        let startup =
-            generate_minimal_startup(memory_size, &words, 0x2000_0000, false, 0, 0x2000_0100).0;
+        let (startup, _, r9_off) =
+            generate_minimal_startup(memory_size, &words, 0x2000_0000, false, 0, 0x2000_0100);
         let empty =
             generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100).0;
+
+        // #761: the read-back decoder recovers the emitted R9 base = the
+        // function-visible base (0x2000_0100) + memory_size (64KB) = 0x2001_0100.
+        let r9_off = r9_off.expect("R9 block present with globals");
+        assert_eq!(
+            read_back_r9_base(&startup, r9_off),
+            Some(0x2001_0100),
+            "read-back R9 base must decode to func_visible + memory_size"
+        );
 
         // 16 scaffold + 8 (R9 movw/movt) + 3 * 12 (movw/movt/str) + 12 tail
         assert_eq!(startup.len(), 16 + 8 + 36 + 12, "materializer size");
         // R10/R11 init unchanged.
         assert_eq!(&startup[..16], &empty[..16], "R10/R11 scaffold unchanged");
-        // R9 = 0x2001_0000 (ram_base + 64KB linear memory).
-        assert_eq!(&startup[16..20], &encode_thumb2_movw(9, 0x0000));
+        // #761: R9 = 0x2001_0100 (func_visible_linmem_base 0x2000_0100 + 64KB
+        // linear memory), NOT 0x2001_0000 — the table must sit ABOVE the
+        // function-visible page ceiling so its top cannot alias a global slot.
+        assert_eq!(&startup[16..20], &encode_thumb2_movw(9, 0x0100));
         assert_eq!(&startup[20..24], &encode_thumb2_movt(9, 0x2001));
         // First word: MOVW/MOVT R12, #0x9ABCDEF0; STR.W R12, [R9, #0].
         assert_eq!(&startup[24..28], &encode_thumb2_movw(12, 0xDEF0));

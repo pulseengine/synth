@@ -654,6 +654,19 @@ jobs:
       # regression fixture the synthetic shapes provably don't cover.
       - name: Run #757 gale fused-node static-data oracle (cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/mem757_gale_differential.py
+      # VCR-VER-761: the self-contained --cortex-m full-page linmem view could
+      # OVERLAP the R9 globals table at the top of SRAM — a store to the top of
+      # the first page silently ALIASED a global slot (the R9 base was placed at
+      # R11_base + memory_size, forgetting the #687 0x100 function-visible gap).
+      # This boots the REAL self-contained image from reset under unicorn:
+      # overlap_probe stores 0xDEADBEEF at mem[0xFF00] then reads global 0 (init
+      # 0xABCD). RED pre-fix (0xDEADBEEF vs wasmtime 0xABCD); GREEN with the fix
+      # (R9 based at func_visible + memory_size, above the page ceiling). Runs
+      # BOTH stack layouts (--stack-layout=low does NOT sidestep the overlap).
+      - name: Run #761 linmem<->globals overlap oracle (cortex-m4, high layout)
+        run: SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
+      - name: Run #761 linmem<->globals overlap oracle (cortex-m4, low layout)
+        run: EXTRA_SYNTH_FLAGS="--stack-layout low" SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
