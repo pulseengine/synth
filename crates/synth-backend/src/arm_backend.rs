@@ -1360,28 +1360,55 @@ fn compile_wasm_to_arm(
 
     // VCR-RA-003 (epic #242): UNCONDITIONAL per-compilation register-allocation
     // validation. The register allocator is the last major unverified codegen
-    // component; this single-stream backward-dataflow checker proves — by
-    // construction, on the EXACT emitted stream about to be encoded — that the
-    // allocation preserves the two invariants whose reference lives in the
-    // stream: callee-saved preservation (#490) and spill-slot non-aliasing
-    // (#331). It runs on every ARM compile in the DEFAULT shipping build (NOT
-    // behind `--features verify`; a verify-gated check would be dormant in
-    // exactly the build that ships — the #757 / VCR-VER-003 lesson) and
-    // hard-errors the compile on a violation. Branches / CF joins and unmodeled
-    // ops (calls, i64-pair, FP) are the named PHASE-2 boundary: the spill check
-    // segments at them (never reasoning across a join), so this is honest — it
-    // never claims coherence it cannot prove. Frozen-safe: it emits nothing, so
-    // `.text` is byte-identical (proven by the frozen suite).
-    if let synth_synthesis::liveness::RaFinalVerdict::Violation(v) =
-        synth_synthesis::liveness::validate_final_allocation(&arm_instrs)
-    {
-        return Err(format!(
-            "VCR-RA-003: register-allocation validation FAILED — {v:?}. \
-             The emitted stream violates a register-allocation invariant \
-             (callee-saved preservation #490 / spill-slot non-aliasing #331); \
-             this is a compiler bug, not a program error. Refusing to emit a \
-             miscompiled object."
-        ));
+    // component; this whole-function checker proves — by construction, on the
+    // EXACT emitted stream about to be encoded — that the allocation preserves
+    // FOUR invariants whose reference lives in the stream (or the ABI): (1)
+    // callee-saved preservation (#490), (2) spill-slot non-aliasing (#331), and
+    // — PHASE 2 (#49), extending past straight-line — (3) caller-saved
+    // preservation across calls (a value in R2/R3/R12 live across a `bl` the
+    // AAPCS boundary destroys), and (4) value availability across control-flow
+    // joins (a live-in to a join must be defined on every incoming edge). It runs
+    // on every ARM compile in the DEFAULT shipping build (NOT behind
+    // `--features verify`; a verify-gated check would be dormant in exactly the
+    // build that ships — the #757 / VCR-VER-003 lesson) and hard-errors the
+    // compile on a VIOLATION. A `NotAttempted` verdict (the join check declines
+    // on an unmodeled-CF function: numeric branch, `BrTable`, etc.) is NON-FATAL
+    // — the compile proceeds; the other three invariants were still checked and
+    // held. This is the decline>guess doctrine applied to the checker itself: it
+    // never claims join coherence it cannot prove, but it also never blocks a
+    // correct compile for a construct it simply doesn't model yet. Frozen-safe:
+    // it emits nothing, so `.text` is byte-identical (proven by the frozen suite).
+    match synth_synthesis::liveness::validate_final_allocation(&arm_instrs) {
+        synth_synthesis::liveness::RaFinalVerdict::Violation(v) => {
+            return Err(format!(
+                "VCR-RA-003: register-allocation validation FAILED — {v:?}. \
+                 The emitted stream violates a register-allocation invariant \
+                 (callee-saved preservation #490 / spill-slot non-aliasing #331 \
+                 / caller-saved-across-call / join-value-availability); this is a \
+                 compiler bug, not a program error. Refusing to emit a \
+                 miscompiled object."
+            ));
+        }
+        // Loud honest decline (join reasoning skipped for an unmodeled-CF
+        // function). Non-fatal — the straight-line / callee-saved / across-call
+        // invariants still ran and held; only the across-JOIN availability
+        // reasoning is skipped (the optimized path pre-resolves branches to
+        // NUMERIC offsets, outside the label-form CFG the join check needs, so
+        // this is the COMMON case on the default path — ~41/130 repro fixtures).
+        // Surfaced only under `SYNTH_RA003_VERBOSE` so a production compile stays
+        // quiet: emitting it unconditionally would print on every branchy
+        // optimized-path compile (new stderr noise phase 1 never produced), yet
+        // it must remain observable on demand for the honest-scope audit.
+        synth_synthesis::liveness::RaFinalVerdict::NotAttempted { reason } => {
+            if std::env::var_os("SYNTH_RA003_VERBOSE").is_some() {
+                eprintln!(
+                    "VCR-RA-003: across-join validation NOT ATTEMPTED ({reason}) — \
+                     straight-line / callee-saved / across-call invariants held; \
+                     join-availability reasoning declined on this control-flow shape."
+                );
+            }
+        }
+        synth_synthesis::liveness::RaFinalVerdict::Consistent => {}
     }
 
     // Encode to binary — use Thumb-2 for Cortex-M targets
