@@ -2,52 +2,191 @@
 #
 # Per the pulseengine-claude `claim-verification` skill: a README is a claim
 # about the system — the same species as a requirement, pointing the other way.
-# Each entry pins (a) the verbatim string as it appears in the doc, (b) evidence
-# a machine RE-DERIVES from source (never a number typed only in prose), and
-# (c) thereby the honest wording. CI runs `scripts/claim_check.py claims.yaml`;
-# drift = red.
+# CI runs `scripts/claim_check.py claims.yaml`; drift = red.
 #
-# When a proof lands / a rule lands / a roadmap status changes: update the doc
-# AND this ledger in the same PR. Never "fix" a red gate by loosening the
-# ledger while leaving the prose overclaim in place.
+# DESIGN (since the claim-surface extension PR):
 #
-# Not bound here (deliberately — narrative or runtime-derived, gated elsewhere):
-# the 141/141 ordeal-vs-Z3 agreement and 139/139 validator counts (re-derived
-# by the CI `verify` job that actually runs them), the wasm spec-suite 227/257
-# compile rate, and cycle/size numbers (gale silicon + differential jobs).
+#   * Numbers live in ONE machine-derived artifact — `artifacts/status.json`,
+#     emitted from the `status_fields:` derivations below by
+#     `scripts/claim_check.py claims.yaml --emit-status` and STALENESS-GATED
+#     (the committed file must equal re-derivation, byte for byte). README
+#     badges (shields.io dynamic-JSON) and the GENERATED
+#     `docs/status/FEATURE_MATRIX.md` surface them; README/linked-doc prose
+#     stays number-free.
+#   * Qualitative prose claims ("all i32/i64 ops have T1 proofs", "f64
+#     complete", "verified" wording) stay in prose ONLY when pinned here as
+#     pattern-claims.
+#   * CLAUDE.md and coq/STATUS.md still hand-carry headline numbers (they are
+#     working documents, not README-linked marketing surface); their numbers
+#     stay count-eq-pinned so a proof landing must update doc + ledger in the
+#     same PR.
+#   * The README's linked-doc surface is closed: every relative .md link must
+#     be claim-covered, generated, or allowlisted with a rationale
+#     (`readme_link_coverage:` below).
+#   * GitHub repo metadata (description/topics) is pinned under
+#     `repo_metadata:` and checked by `scripts/repo_metadata_check.py`
+#     (CI step in the claim-check job; API failure = loud SKIP, never a
+#     false red).
+#
+# When a proof lands / a rule lands / a roadmap status changes: regenerate the
+# derived artifacts (`--emit-status`), and update CLAUDE.md/coq/STATUS.md AND
+# this ledger in the same PR. Never "fix" a red gate by loosening the ledger
+# while leaving a prose overclaim in place.
+#
+# Not bound here (deliberately — runtime-derived, gated elsewhere): the
+# 141/141 ordeal-vs-Z3 agreement and 139/139 validator counts (re-derived by
+# the CI `verify` job that actually runs them), the wasm spec-suite compile
+# rate (CI-tracked), and cycle/size numbers (gale silicon + differential
+# jobs).
+
+# -----------------------------------------------------------------------------
+# status_fields — the derivations behind artifacts/status.json (the single
+# machine-derived numbers artifact). Each field is re-computed from source on
+# every claim_check run; the committed status.json and the generated
+# docs/status/FEATURE_MATRIX.md must match exactly.
+# -----------------------------------------------------------------------------
+status_fields:
+  version:
+    kind: capture
+    file: Cargo.toml
+    pattern: '^version = "([^"]+)"'   # [workspace.package].version (pin-swept)
+  rocq_qed:
+    kind: count
+    pattern: 'Qed\.'
+    glob: ['coq/Synth/**/*.v']
+  rocq_admitted:
+    kind: count
+    pattern: 'Admitted\.'
+    glob: ['coq/Synth/**/*.v']
+  rocq_admit_tactics:
+    kind: count
+    pattern: '^\s*admit\.'
+    glob: ['coq/Synth/**/*.v']
+  rocq_axioms:
+    kind: count
+    pattern: '^\s*(?:Axiom|Parameter) '
+    glob: ['coq/Synth/**/*.v']
+  sel_dsl_rules:
+    kind: count
+    pattern: '^rule_'
+    glob: ['coq/vcr_sel_rules.manifest']
+  sel_dsl_rule_qed:
+    kind: count
+    pattern: '^(?:Theorem|Lemma) rule_\w+_correct'
+    glob: ['coq/Synth/Synth/VcrSelRules.v']
+  sel_dsl_pilot_qed:
+    kind: count
+    pattern: 'Qed\.'
+    glob: ['coq/Synth/Synth/VcrSelPilot.v']
+  sail_bridge_qed:
+    kind: count
+    pattern: 'Qed\.'
+    glob: ['coq/Synth/ARM/SailArmBridge.v']
+  wasmcert_bridge_qed:
+    kind: count
+    pattern: 'Qed\.'
+    glob: ['coq/Synth/WASM/WasmCertBridge.v']
+  kani_harnesses:
+    kind: count
+    pattern: '#\[kani::proof\]'
+    glob: ['crates/**/*.rs']
+  verus_spec_fns:
+    kind: count
+    pattern: '^pub open spec fn '
+    glob: ['crates/synth-synthesis/src/contracts.rs']
+  # Distinct WasmOp variants the AArch64 selector implementation references
+  # (truncated before its test module — decline-list mentions live in tests).
+  # This is the mechanical "ops handled" figure for the host-native backend.
+  aarch64_selector_ops:
+    kind: distinct-tokens
+    file: crates/synth-backend-aarch64/src/selector.rs
+    pattern: 'WasmOp::([A-Za-z0-9]+)'
+    before: 'mod tests'
+  # Names, not numbers — const is allowed here, but the supporting crates must
+  # exist on disk or the derivation fails.
+  backends:
+    kind: const
+    value:
+      - arm-thumb2-cortex-m
+      - arm-a32-cortex-r5
+      - riscv32-rv32imac
+      - aarch64-a64
+    require:
+      - crates/synth-backend
+      - crates/synth-backend-riscv
+      - crates/synth-backend-aarch64
+
+# -----------------------------------------------------------------------------
+# readme_link_coverage — the README-linked .md surface is CLOSED. A linked doc
+# must be claim-covered (some claim's `doc:`), listed as generated, or
+# allowlisted here WITH a rationale. New links fail CI until classified.
+# -----------------------------------------------------------------------------
+readme_link_coverage:
+  generated:
+    - docs/status/FEATURE_MATRIX.md         # rendered by --emit-status; staleness-gated
+  unpinned_ok:
+    - path: CHANGELOG.md
+      rationale: append-only release narrative; historical record, no live current-state claims
+    - path: CONTRIBUTING.md
+      rationale: process document; carries no capability or verification claims
+    - path: docs/spectre-policy.md
+      rationale: normative policy statement reviewed per lowering-rule PR; qualitative, no derived counts
+    - path: docs/architecture/SYNTH_LOOM_RELATIONSHIP.md
+      rationale: qualitative two-tier (loom optimizes / synth compiles) design note; no derived counts
+    - path: docs/requirements/REQUIREMENTS.md
+      rationale: forward-looking requirements draft (marked Draft in the doc); aspirational by nature, not a current-state claim surface
+    - path: scripts/repro/vcr_ver_001_gate.md
+      rationale: frozen repro evidence transcript for VCR-VER-001; existence pinned by SYNTH-VCR-VER-001-DEMONSTRATED
+
+# -----------------------------------------------------------------------------
+# repo_metadata — the GitHub About surface (description + topics), pinned
+# verbatim. `scripts/repo_metadata_check.py` fetches the live values and fails
+# on mismatch (API/network failure = loud SKIP so a flake can't block merges).
+# -----------------------------------------------------------------------------
+repo_metadata:
+  repo: pulseengine/synth
+  description: "Synth — WebAssembly-to-native compiler for ARM Cortex-M/R (Thumb-2/A32), RISC-V RV32, and AArch64, with mechanized Rocq correctness proofs, per-compilation translation validation, and sound WCET bounds. Part of the PulseEngine toolchain."
+  topics:
+    - aarch64
+    - arm
+    - compiler
+    - embedded
+    - formal-verification
+    - pulseengine
+    - riscv
+    - rust
+    - wcet
+    - webassembly
 
 claims:
   # ---------------------------------------------------------------------------
-  # Headline Rocq proof counts — the number that drifts fastest.
-  # Was "298 Qed / 8 Admitted" in README/CLAUDE.md and "291" in coq/STATUS.md
-  # while the tree held 470 (v0.31–v0.37 churn: VcrSelRules increments 2–4,
-  # SailArmBridge, i64/flag lemmas). Fixed to derived truth in this PR.
-  # 512 → 472 (#667 increment 2): the 40 VcrSelRulesGenCheck.v reflexivity
-  # gate lemmas were retired when VcrSelRules.v started DEFINING rule_X :=
-  # Gen.rule_X (generated single source) — the cross-check became vacuous and
-  # its gate is subsumed by the 40 correctness Qed themselves.
+  # README badges — the number surface. The README carries NO hand-typed proof
+  # counts; it carries shields.io dynamic-JSON badges whose JSONPath queries
+  # must point at fields status.json actually derives. History: was
+  # "298 Qed / 8 Admitted" prose while the tree held 470; prose numbers are
+  # now banned from the README entirely.
   # ---------------------------------------------------------------------------
-  - id: SYNTH-PROOF-COUNT-README
+  - id: SYNTH-README-STATUS-BADGES
     doc: README.md
-    text: "536 Qed / 3 Admitted"
+    text: "artifacts/status.json"
     evidence:
-      - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '536 Qed / 3 Admitted'      # a verbatim check alone greens if one
-        glob: ['README.md']                  # of them drifts while another matches
-        expect: 3
-      - kind: count-eq
-        pattern: 'Qed\.'
-        glob: ['coq/Synth/**/*.v']
-        expect: 536
-      - kind: count-eq
-        pattern: 'Admitted\.'
-        glob: ['coq/Synth/**/*.v']
-        expect: 3
-      - kind: count-eq                       # the "+2 admit. tactics" disclosure
-        pattern: '^\s*admit\.'
-        glob: ['coq/Synth/**/*.v']
-        expect: 2
+      - kind: verbatim                       # badge query → derived field, 1:1
+        text: "query=%24.rocq_qed"
+      - kind: status-field
+        name: rocq_qed
+      - kind: verbatim
+        text: "query=%24.rocq_admitted"
+      - kind: status-field
+        name: rocq_admitted
+      - kind: verbatim
+        text: "query=%24.sel_dsl_rules"
+      - kind: status-field
+        name: sel_dsl_rules
 
+  # ---------------------------------------------------------------------------
+  # Headline Rocq proof counts — CLAUDE.md and coq/STATUS.md still hand-carry
+  # them (working docs); count-eq keeps doc + ledger moving together.
+  # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
     text: "536 Qed / 3 Admitted"
@@ -77,10 +216,16 @@ claims:
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
         expect: 3
+      - kind: count-eq                       # the "+2 admit. tactics" disclosure
+        pattern: '^\s*admit\.'
+        glob: ['coq/Synth/**/*.v']
+        expect: 2
 
   # ---------------------------------------------------------------------------
-  # The admit breakdown the docs disclose — per-file, so a new admit anywhere
-  # (or a silent move between files) is visible, not just the total.
+  # The admit breakdown the README discloses — per-file, so a new admit
+  # anywhere (or a silent move between files) is visible, not just the total.
+  # The prose statement is qualitative ("0 division admits"); the per-file
+  # numbers live HERE, not in prose.
   # ---------------------------------------------------------------------------
   - id: SYNTH-ADMIT-BREAKDOWN
     doc: README.md
@@ -128,6 +273,77 @@ claims:
         path: coq/Synth/Synth/CorrectnessI64.v
       - kind: verbatim                       # the honest scoping must stay next to it
         text: "float/SIMD selection has existence-only (T2) proofs"
+
+  # ---------------------------------------------------------------------------
+  # f32/f64 capability — the README stated "rejected loudly" three releases
+  # after real VFP lowering shipped (v0.41 f32, v0.43 f64, #369 closed). The
+  # claim binds the prose to selector anchors AND keeps the honest residual
+  # (#782: trunc_sat undecoded + a pressure-dependent f32 class) next to it.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-F32-F64-VFP
+    doc: README.md
+    text: "scalar f32/f64 via VFP on FPU targets"
+    evidence:
+      - kind: count-eq                       # a real f64 arithmetic lowering arm
+        pattern: 'F64Add \| F64Sub \| F64Mul \| F64Div => \{'
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: verbatim                       # the honest residual stays adjacent
+        text: "#782"
+
+  # call_indirect: self-contained dispatch shipped v0.47 (#275 closed) with a
+  # red-first execution differential; the README must not regress to either the
+  # old loud-decline wording or an unevidenced blanket claim.
+  - id: SYNTH-CALL-INDIRECT-SELFCONTAINED
+    doc: README.md
+    text: "self-contained `--cortex-m` dispatch via a PC-relative flash funcref table since v0.47 (#275)"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/call_indirect_275_selfcontained_execution_differential.py
+      - kind: file-exists
+        path: scripts/repro/call_indirect_275_selfcontained_execution.wat
+
+  # ---------------------------------------------------------------------------
+  # ARCHITECTURE.md — validity-checked in the claim-surface extension PR
+  # (April-era single-backend + benchmark-relic content removed). The pins
+  # below hold the load-bearing structural statements to the tree.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ARCH-BACKENDS
+    doc: ARCHITECTURE.md
+    text: "four backends"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-backend
+      - kind: file-exists
+        path: crates/synth-backend-riscv
+      - kind: file-exists
+        path: crates/synth-backend-aarch64
+      - kind: verbatim
+        text: "| AArch64 (host-native) | `synth-backend-aarch64` | A64 |"
+
+  # The register-allocation description was WRONG for months ("R0-R12 for
+  # temporaries" — R12 is encoder scratch, R9/R10/R11 are reserved bases; the
+  # #212/#215 corruption class). Bind the prose to the actual pool constant.
+  - id: SYNTH-ARCH-REGISTER-POOL
+    doc: ARCHITECTURE.md
+    text: "Allocatable pool: R0–R8"
+    evidence:
+      - kind: count-eq
+        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = \['
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: verbatim
+        text: "R12 (encoder scratch — never allocated)"
+
+  # The honesty rule the whole doc leans on: undecodable ops loud-skip.
+  - id: SYNTH-ARCH-LOUD-DECLINE
+    doc: ARCHITECTURE.md
+    text: "declines loudly"
+    evidence:
+      - kind: count-eq                       # the deliberate-ignore predicate
+        pattern: 'fn is_intentionally_ignored'
+        glob: ['crates/synth-core/src/wasm_decoder.rs']
+        expect: 1
 
   # ---------------------------------------------------------------------------
   # "verified"/"implemented" wording — bound to the roadmap yaml's status
@@ -255,21 +471,18 @@ claims:
         id: VCR-ISA-001
         field: status
         equals: approved
-      - kind: count-eq                       # "92 Qed" bridge lemmas
-        pattern: 'Qed\.'
-        glob: ['coq/Synth/ARM/SailArmBridge.v']
-        expect: 92
+      - kind: file-exists                    # lemma count flows via status.json
+        path: coq/Synth/ARM/SailArmBridge.v
 
   # VCR-WASM-001 (Track B): WASM source semantics anchored on WasmCert-Coq.
-  # Phase 1 (v0.45): 1 op (i32.add), 2 real-Qed refinement lemmas. Phase 2
-  # (v0.47): the i32 integer fragment batch — 19 ops (add/sub/mul, and/or/
-  # xor, shl/shr_u/shr_s, eqz/eq/ne, lt/gt/le/ge u+s), 49 Qed in
-  # WasmCertBridge.v (op-level + executor-level per op, + encoding/bit-level
-  # helpers). The reference rules are hand transcriptions of the PINNED
-  # coq9.0-wasm-2.2.0 sources with line-level provenance
-  # (WasmCertReference.v); the real external dep is nix-FEASIBLE but
-  # bazel-deferred on three named blockers (see the roadmap entry). The
-  # WASM-side analogue of SailArmBridge.v (ISA-001).
+  # Phase 1 (v0.45): i32.add. Phase 2 (v0.47): the i32 integer fragment batch
+  # (arithmetic/bitwise/shifts/eqz/comparisons) in WasmCertBridge.v (op-level +
+  # executor-level per op, + encoding/bit-level helpers). The reference rules
+  # are hand transcriptions of the PINNED coq9.0-wasm-2.2.0 sources with
+  # line-level provenance (WasmCertReference.v); the real external dep is
+  # nix-FEASIBLE but bazel-deferred on three named blockers (see the roadmap
+  # entry). The WASM-side analogue of SailArmBridge.v (ISA-001). Lemma count
+  # flows via status.json (wasmcert_bridge_qed).
   - id: SYNTH-VCR-WASM-001-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
     text: "PHASE 2 (v0.47): real-dependency FEASIBILITY SPIKE result"
@@ -279,34 +492,35 @@ claims:
         id: VCR-WASM-001
         field: status
         equals: implemented
-      - kind: count-eq                       # the refinement bridge lemmas
-        pattern: 'Qed\.'
-        glob: ['coq/Synth/WASM/WasmCertBridge.v']
-        expect: 49
+      - kind: file-exists
+        path: coq/Synth/WASM/WasmCertBridge.v
       - kind: file-exists
         path: coq/Synth/WASM/WasmCertReference.v
 
   # ---------------------------------------------------------------------------
   # Verified selector DSL coverage — the rule table, its manifest, and the
-  # Qed theorems must stay 1:1. The STATUS.md coverage percentage's numerator
-  # is the manifest rule count, never a prose number.
+  # Qed theorems must stay 1:1. The VALUE is not pinned in prose (it flows to
+  # status.json / the badge); the INVARIANT — every manifest rule has exactly
+  # one correctness theorem and the table carries no admits — is.
   # ---------------------------------------------------------------------------
   - id: SYNTH-SEL-DSL-RULES
     doc: README.md
-    text: "50 rules / 50 Qed theorems"
+    text: "every manifest rule has a 1:1 Qed correctness theorem"
     evidence:
-      - kind: count-eq                       # rules in the manifest
-        pattern: '^rule_'
-        glob: ['coq/vcr_sel_rules.manifest']
-        expect: 50
-      - kind: count-eq                       # 1:1 Qed theorems in VcrSelRules.v
-        pattern: '^(?:Theorem|Lemma) rule_\w+_correct'
-        glob: ['coq/Synth/Synth/VcrSelRules.v']
-        expect: 50
+      - kind: count-same
+        legs:
+          - name: manifest-rules
+            pattern: '^rule_'
+            glob: ['coq/vcr_sel_rules.manifest']
+          - name: rule-correct-theorems
+            pattern: '^(?:Theorem|Lemma) rule_\w+_correct'
+            glob: ['coq/Synth/Synth/VcrSelRules.v']
       - kind: count-max                      # the rule table carries no admits
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
         max: 0
+      - kind: status-field                   # the value the badge surfaces
+        name: sel_dsl_rules
 
   - id: SYNTH-SEL-DSL-COVERAGE-STATUS-MD
     doc: coq/STATUS.md
@@ -318,15 +532,6 @@ claims:
         expect: 50
       - kind: verbatim
         text: "**50 Qed / 0 Admitted**"
-
-  - id: SYNTH-SEL-DSL-PILOT
-    doc: README.md
-    text: "7 Qed pilot lemmas"
-    evidence:
-      - kind: count-eq
-        pattern: 'Qed\.'
-        glob: ['coq/Synth/Synth/VcrSelPilot.v']
-        expect: 7
 
   # ---------------------------------------------------------------------------
   # Trusted base — the axioms the Rocq suite rests on, re-counted, never
@@ -342,25 +547,28 @@ claims:
         expect: 93
 
   # ---------------------------------------------------------------------------
-  # Other verification-track counts stated in the README.
+  # Other verification tracks stated in the README — wording pinned, counts
+  # via status.json.
   # ---------------------------------------------------------------------------
   - id: SYNTH-KANI-HARNESSES
     doc: README.md
-    text: "18 bounded model checking harnesses for ARM encoder"
+    text: "Bounded model checking harnesses for the ARM encoder"
     evidence:
-      - kind: count-eq
+      - kind: count-min                      # the track must not silently empty out
         pattern: '#\[kani::proof\]'
         glob: ['crates/**/*.rs']
-        expect: 18
+        min: 1
+      - kind: status-field
+        name: kani_harnesses
 
   - id: SYNTH-VERUS-SPECS
     doc: README.md
-    text: "8 spec functions in `synth-synthesis/src/contracts.rs`"
+    text: "Spec functions in `synth-synthesis/src/contracts.rs`"
     evidence:
-      - kind: count-eq
-        pattern: '^pub open spec fn '
-        glob: ['crates/synth-synthesis/src/contracts.rs']
-        expect: 8
+      - kind: file-exists
+        path: crates/synth-synthesis/src/contracts.rs
+      - kind: status-field
+        name: verus_spec_fns
 
   # ---------------------------------------------------------------------------
   # #778 WCET — the SOUND-critical per-op cycle model constants. These numbers

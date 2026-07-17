@@ -2,7 +2,7 @@
 
 # Synth
 
-<sup>WebAssembly-to-ARM/RISC-V AOT compiler with mechanized correctness proofs</sup>
+<sup>WebAssembly-to-native AOT compiler (ARM Cortex-M/R &middot; RISC-V &middot; AArch64) with mechanized correctness proofs</sup>
 
 &nbsp;
 
@@ -11,6 +11,12 @@
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
+
+[![Rocq Qed](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fpulseengine%2Fsynth%2Fmain%2Fartifacts%2Fstatus.json&query=%24.rocq_qed&label=Rocq%20Qed&color=blueviolet&style=flat-square&labelColor=1a1b27)](coq/STATUS.md)
+[![Rocq Admitted](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fpulseengine%2Fsynth%2Fmain%2Fartifacts%2Fstatus.json&query=%24.rocq_admitted&label=Admitted&color=orange&style=flat-square&labelColor=1a1b27)](coq/STATUS.md)
+[![Verified selector rules](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fpulseengine%2Fsynth%2Fmain%2Fartifacts%2Fstatus.json&query=%24.sel_dsl_rules&label=verified%20selector%20rules&color=blue&style=flat-square&labelColor=1a1b27)](artifacts/status.json)
+
+<sub>Badge numbers are machine-derived into [`artifacts/status.json`](artifacts/status.json) and CI-staleness-gated — never hand-typed.</sub>
 
 &nbsp;
 
@@ -30,7 +36,7 @@
 
 &nbsp;
 
-Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code, with additional backends for ARM Cortex-R5 (A32, `--target cortex-r5`), RISC-V RV32IMAC (qemu_riscv32 / ESP32-C3), and AArch64 (host-native, integer subset, `-b aarch64`). It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), control flow, and memory operations; scalar float ops are rejected loudly rather than miscompiled (#369, #554). Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 and i64 instruction selection with result-correspondence (T1) proofs; float/SIMD selection has existence-only (T2) proofs.
+Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code, with additional backends for ARM Cortex-R5 (A32, `--target cortex-r5`), RISC-V RV32IMAC (qemu_riscv32 / ESP32-C3), and AArch64 (host-native, `-b aarch64`). It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), scalar f32/f64 via VFP on FPU targets (f32 complete v0.41, f64 complete v0.43 — #369 closed; open residuals tracked in #782), control flow, and memory operations; any construct without a lowering declines loudly rather than miscompiling (the #369/#554 gate class). Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 and i64 instruction selection with result-correspondence (T1) proofs; float/SIMD selection has existence-only (T2) proofs.
 
 **This is pre-release software.** Generated code is validated by unit tests, Renode/QEMU emulation, execution differentials against wasmtime, and — for specific fixtures — cycle- and correctness-gated runs on real Cortex-M silicon (NUCLEO-G474RE, STM32F100, via the gale test loop). Broad hardware validation is still missing. Use at your own risk.
 
@@ -100,25 +106,25 @@ synth verify examples/wat/simple_add.wat firmware.elf
 |----------|--------|-------|
 | i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
 | i64 (register pairs): arithmetic, shifts, rotates, div/rem, compare | **Tested** | full pair lowering — right shifts fixed v0.28.0 (#599), rot/div/rem v0.30.1 (#610), A32 completeness v0.30.2 (#615); differential vs wasmtime |
-| f32/f64 via VFP | Not implemented | Decoded → loud reject, never silent miscompile (#369, #554); VFP encoder exists as a disconnected prototype |
+| Scalar f32/f64 via VFP on FPU targets | **Implemented** | Complete f32 (v0.41) + f64 (v0.43, #369 closed) incl. AAPCS-VFP marshalling; execution differentials vs wasmtime; non-FPU targets loud-reject; residuals: `trunc_sat` not decoded (loud skip) + a pressure-dependent f32 class (#782) |
 | WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
 | Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
-| Function calls (direct, indirect) | Implemented | Unit tests; inter-function calls not Renode-tested |
+| Function calls (direct, indirect) | Implemented | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained `--cortex-m` dispatch via a PC-relative flash funcref table since v0.47 (#275), execution-differential-gated vs wasmtime |
 | Memory (load/store, sub-word, size/grow) | Implemented | memory.grow returns -1 on embedded (fixed memory) |
 | Globals, select | Implemented | R9-based globals; unit tests only |
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 536 Qed / 3 Admitted | i32 + i64 T1 correctness proofs; the 50 selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73) |
+| Rocq mechanized proofs | CI-derived (badges above) | i32 + i64 T1 correctness proofs; the selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73); counts re-derived into `artifacts/status.json` on every commit |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
-| WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
+| WebAssembly spec test suite | CI-tracked compile rate | Compilation only — not executed on emulator |
 
 ### What doesn't work yet
 
 - **Narrow hardware coverage** — silicon validation is fixture-scoped (gale's NUCLEO-G474RE / STM32F100 cycle and correctness gates); there is no broad board matrix
 - **No multi-memory** — fused components from meld need single-memory mode
 - **No WASI on embedded** — kiln-builtins crate doesn't exist yet
-- **No component model execution** — components compile but can't run without kiln-builtins + cabi_realloc
+- **No component model execution** — components compile but can't run without kiln-builtins; `cabi_realloc` binds natively (synthesized in-module arena allocator) on self-contained dissolves since v0.47, with #418 still open for the real dissolved fixture
 - **Spill-on-exhaustion is opt-in** — Belady spilling is default-on (v0.24.0, VCR-RA-001), but replacing the register-exhaustion decline with allocation-time spilling (`SYNTH_SPILL_ON_EXHAUST`, #580) is held for silicon numbers
 - **No tail call optimization** — return_call compiles but doesn't optimize the call frame
 - **SIMD/Helium is untested** — MVE instruction encoding implemented but never run on M55 silicon or emulator
@@ -194,9 +200,9 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 536 Qed / 3 Admitted (50 selector-DSL rule theorems stated directly about the GENERATED model, VCR-ISA-001 #667) — all four i32 div/rem trap guards discharged (#73) |
-| **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
-| **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
+| **Rocq** | Partial | i32 + i64 T1 result-correspondence; float/SIMD T2; selector-DSL rule theorems stated directly about the GENERATED model (VCR-ISA-001 #667); all four i32 div/rem trap guards discharged (#73). Counts: `artifacts/status.json` (CI-re-derived; badges above) |
+| **Kani** | Starting | Bounded model checking harnesses for the ARM encoder (count: `artifacts/status.json`) |
+| **Verus** | Starting | Spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` (count: `artifacts/status.json`) |
 | **Lean** | Not started | — |
 
 See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 through VG-008).
@@ -206,11 +212,12 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-536 Qed / 3 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
+Qed/Admitted counts: artifacts/status.json — machine-derived and CI-gated
+(claims.yaml + scripts/claim_check.py); surfaced by the badges at the top.
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories
-  T3 admitted (3): 1 CorrectnessSimple.v, 2 ArmRefinement.v
+  T3 admitted: 1 CorrectnessSimple.v, 2 ArmRefinement.v
      (0 division admits — all four i32 div/rem trap guards discharged against
      exec_program_br, #73 closed at i32; #166 discharged the 2 Compilation.v
      example admits via vm_compute; the CorrectnessSimple.v i32_const_correct
@@ -218,16 +225,17 @@ Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM seman
      arithmetic is proven, the gap is the un-normalized-Z WASM-constant
      representation; the 2 ArmRefinement.v admits are opaque-sail_exec_instr-
      axiom placeholders superseded by SailArmBridge.v)
-  incl. 50 Qed selector-DSL rule theorems (Synth/VcrSelRules.v, 1:1 with
+  incl. the selector-DSL rule theorems (Synth/VcrSelRules.v — every manifest
+     rule has a 1:1 Qed correctness theorem, count-same CI-gated against
      coq/vcr_sel_rules.manifest) — stated directly about the GENERATED model
      (VCR-ISA-001 #667: rule_X := Gen.rule_X, single source
      Synth/VcrSelRulesGenerated.v emitted from the shipped sel_dsl::RULES, so
-     a selector-table change breaks the matching Qed), 7 Qed VCR-SEL-001
-     pilot lemmas (Synth/VcrSelPilot.v, #386), and 92 Qed Sail/ASL bridge
+     a selector-table change breaks the matching Qed), the VCR-SEL-001
+     pilot lemmas (Synth/VcrSelPilot.v, #386), and the Sail/ASL bridge
      lemmas (ARM/SailArmBridge.v, VCR-ISA-001)
 ```
 
-i32 and i64 operations have full T1 (result-correspondence) proofs; i64 parity landed in v0.11.0. Division proofs were re-admitted after updating Compilation.v to emit trap guard sequences (CMP+BCondOffset+UDF) matching the actual compiler — the sequential exec_program model needs PC-relative branching support to verify these. The f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.
+i32 and i64 operations have full T1 (result-correspondence) proofs; i64 parity landed in v0.11.0. The four i32 div/rem trap-guard proofs are discharged against the branch-taking executor `exec_program_br` (#73). The f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.
 
 Build the proofs:
 
@@ -267,14 +275,14 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 
 | Track | Item | What it does | Status |
 |-------|------|--------------|--------|
-| **A — codegen core** | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`): 50 rules / 50 Qed theorems in `coq/Synth/Synth/VcrSelRules.v` (1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated), plus 7 Qed pilot lemmas in `coq/Synth/Synth/VcrSelPilot.v`; the DSL is now the SHIPPED lowering path for its 50 covered ops (byte-invisible flip — every rule was mirror-pinned byte-identical to the hand-written arm it replaces, frozen anchors unmoved) |
+| **A — codegen core** | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`): every manifest rule has a 1:1 Qed correctness theorem in `coq/Synth/Synth/VcrSelRules.v` (count-same CI-gated against `coq/vcr_sel_rules.manifest`; current counts: `artifacts/status.json`), plus pilot lemmas in `coq/Synth/Synth/VcrSelPilot.v`; the DSL is now the SHIPPED lowering path for its covered ops (byte-invisible flip — every rule was mirror-pinned byte-identical to the hand-written arm it replaces, frozen anchors unmoved) |
 | | `VCR-PERF-002` | Proof-carrying specialization (#494): loom's `wsc.facts` invariants become premises for per-elision proof obligations, certificate-checked by the ordeal-backed validator — toward gale's measured **0.45× (below-native) floor** | design traced (v0.30.0); phase 1 (facts ingestion) landed ([PR #624](https://github.com/pulseengine/synth/pull/624), v0.31.0) |
 | | `SYNTH_SPILL_ON_EXHAUST` | Replace the register-exhaustion decline with allocation-time Belady spilling (#580) — the last piece of the exhaustion hard-fail | built, flag-off; default-on held for silicon cycle numbers |
-| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec); generate the selector model, don't mirror it (#667) | approved — Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`); #667 "generate, don't mirror" landed: the shipped `sel_dsl::RULES` table emits the 50 covered ops' Rocq lowerings (`coq/Synth/Synth/VcrSelRulesGenerated.v`), and `VcrSelRules.v` DEFINES `rule_X := Gen.rule_X` — the generated file is the single model source, the 50 correctness Qed are stated directly about it, and a selector-table change breaks the matching proof (no hand-written copy left to drift) |
-| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | phases 1+2 landed: the i32 integer fragment (19 ops — arithmetic/bitwise/shifts/eqz/comparisons) transcribed from the pinned coq9.0-wasm-2.2.0 sources with line-level provenance (`coq/Synth/WASM/WasmCertReference.v`) and proven refined by `exec_wasm_instr` (49 Qed, `WasmCertBridge.v`); the real external dep is nix-feasible, bazel-deferred on three named blockers (roadmap entry) |
+| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec); generate the selector model, don't mirror it (#667) | approved — Sail/ASL bridge spike landed (`coq/Synth/ARM/SailArmBridge.v`); #667 "generate, don't mirror" landed: the shipped `sel_dsl::RULES` table emits the covered ops' Rocq lowerings (`coq/Synth/Synth/VcrSelRulesGenerated.v`), and `VcrSelRules.v` DEFINES `rule_X := Gen.rule_X` — the generated file is the single model source, the per-rule correctness Qed are stated directly about it, and a selector-table change breaks the matching proof (no hand-written copy left to drift) |
+| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | phases 1+2 landed: the i32 integer fragment (arithmetic/bitwise/shifts/eqz/comparisons) transcribed from the pinned coq9.0-wasm-2.2.0 sources with line-level provenance (`coq/Synth/WASM/WasmCertReference.v`) and proven refined by `exec_wasm_instr` (`WasmCertBridge.v`; lemma count: `artifacts/status.json`); the real external dep is nix-feasible, bazel-deferred on three named blockers (roadmap entry) |
 | **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | **demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md)): the v0.11.20 reciprocal-mult cost-gate deleted outright (PR #322, bit-identical); the #496 exhaustion decline revertable behind `SYNTH_SPILL_ON_EXHAUST` — red case green, anchors byte-identical, declines 14→8; flip held on a measured i32-shape cycle regression |
 
-Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); f32/f64 remain loud-reject (#369); SIMD/Helium is untested on hardware.
+Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); float residuals — `trunc_sat` (0xFC prefix) is not decoded (functions using it loud-skip) and a pressure-dependent f32 class is open (#782); SIMD/Helium is untested on hardware.
 
 **What it buys us:** synth stops being a real-ish compiler held together by oracle-gated patches and becomes a genuinely best-in-class *verified* compiler — and the verified selector DSL is the part that is potentially novel/publishable, not just catching up to Cranelift.
 
@@ -318,14 +326,13 @@ bazel test //tests/...
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md) -- compilation pipeline, ARM instruction mapping, benchmarks
-- [Architecture Vision](docs/architecture/ARCHITECTURE_VISION.md) -- full system design and roadmap
+- [Architecture](ARCHITECTURE.md) -- compilation pipeline, components, binary emission
 - [Synth & Loom](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) -- two-tier architecture
-- [Feature Matrix](docs/status/FEATURE_MATRIX.md) -- what works, what doesn't
+- [Feature Matrix](docs/status/FEATURE_MATRIX.md) -- what works, what doesn't (generated; numbers from `artifacts/status.json`)
+- [Status (machine-derived)](artifacts/status.json) -- CI-re-derived counts: proofs, verified rules, backend coverage
 - [Requirements](docs/requirements/REQUIREMENTS.md) -- functional and non-functional requirements
 - [Research](docs/research/) -- literature review, formal methods, Sail/ARM analysis
-- [Roadmap](ROADMAP.md) -- development phases
-- [Changelog](CHANGELOG.md) -- version history
+- [Roadmap](artifacts/verified-codegen-roadmap.yaml) -- the VCR-* program (single source of truth for roadmap status; see also the [North Star section](#roadmap--north-star) and [Changelog](CHANGELOG.md))
 - [Contributing](CONTRIBUTING.md) -- how to contribute
 
 ## License
