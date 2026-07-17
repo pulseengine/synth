@@ -82,6 +82,8 @@ impl RiscVStartupGenerator {
         out.push_str("extern uint32_t __linear_memory_base;\n");
         out.push_str("extern uint32_t _data_start, _data_end, _data_load;\n");
         out.push_str("extern uint32_t _bss_start, _bss_end;\n");
+        out.push_str("/* #798: wasm active-segment records (.wasm_data, flash) */\n");
+        out.push_str("extern uint32_t __wasm_data_records_start, __wasm_data_records_end;\n");
         out.push_str("extern int main(void);\n\n");
 
         out.push_str("/* Default trap handler — overridable by user code. */\n");
@@ -146,6 +148,36 @@ impl RiscVStartupGenerator {
         out.push_str("        \"addi t0, t0, 4\\n\"\n");
         out.push_str("        \"j 3b\\n\"\n");
         out.push_str("        \"4:\\n\"\n");
+        out.push('\n');
+        // #798: apply the wasm active data segments. The object's `.wasm_data`
+        // section (placed in flash by the generated linker script) holds
+        // repeated [u32 linmem_off][u32 len][len bytes][pad to 4] records in
+        // declaration order; copying them in record order preserves WASM's
+        // later-wins overlap semantics. Byte-granular copy — segment offsets
+        // and lengths have no alignment guarantee. A data-free object has
+        // start == end and the loop no-ops.
+        out.push_str("        /* Copy wasm data segments to __linear_memory_base + off (#798). */\n");
+        out.push_str("        \"la t0, __wasm_data_records_start\\n\"\n");
+        out.push_str("        \"la t1, __wasm_data_records_end\\n\"\n");
+        out.push_str("        \"6:\\n\"\n");
+        out.push_str("        \"bgeu t0, t1, 9f\\n\"\n");
+        out.push_str("        \"lw t2, 0(t0)\\n\"\n"); // linmem offset
+        out.push_str("        \"lw t3, 4(t0)\\n\"\n"); // byte length
+        out.push_str("        \"addi t0, t0, 8\\n\"\n");
+        out.push_str("        \"add t2, t2, s11\\n\"\n"); // dest = base + off
+        out.push_str("        \"7:\\n\"\n");
+        out.push_str("        \"beqz t3, 8f\\n\"\n");
+        out.push_str("        \"lbu t4, 0(t0)\\n\"\n");
+        out.push_str("        \"sb t4, 0(t2)\\n\"\n");
+        out.push_str("        \"addi t0, t0, 1\\n\"\n");
+        out.push_str("        \"addi t2, t2, 1\\n\"\n");
+        out.push_str("        \"addi t3, t3, -1\\n\"\n");
+        out.push_str("        \"j 7b\\n\"\n");
+        out.push_str("        \"8:\\n\"\n");
+        out.push_str("        \"addi t0, t0, 3\\n\"\n"); // 4-align to the
+        out.push_str("        \"andi t0, t0, -4\\n\"\n"); // next record header
+        out.push_str("        \"j 6b\\n\"\n");
+        out.push_str("        \"9:\\n\"\n");
         out.push('\n');
         out.push_str("        /* Jump to main. If main returns, spin. */\n");
         out.push_str("        \"call main\\n\"\n");
@@ -261,6 +293,26 @@ mod tests {
         assert!(code.contains("la t0, _data_load"));
         assert!(code.contains("_bss_start"));
         assert!(code.contains("_bss_end"));
+    }
+
+    /// #798: the reset path walks the `.wasm_data` records and byte-copies
+    /// each segment to `__linear_memory_base + off` BEFORE calling main —
+    /// record order (declaration order) preserves later-wins overlap
+    /// semantics.
+    #[test]
+    fn generates_wasm_data_segment_copy_loop_798() {
+        let g = RiscVStartupGenerator::new(rv32imac_caps());
+        let code = g.generate();
+        assert!(code.contains("la t0, __wasm_data_records_start"));
+        assert!(code.contains("la t1, __wasm_data_records_end"));
+        // dest = linmem base + record offset, byte-granular copy
+        assert!(code.contains("add t2, t2, s11"));
+        assert!(code.contains("lbu t4, 0(t0)"));
+        assert!(code.contains("sb t4, 0(t2)"));
+        // the copy must run BEFORE main
+        let copy = code.find("__wasm_data_records_start").unwrap();
+        let call_main = code.find("call main").unwrap();
+        assert!(copy < call_main, "segment copy must precede main");
     }
 
     #[test]

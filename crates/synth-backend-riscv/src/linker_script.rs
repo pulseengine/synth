@@ -122,6 +122,22 @@ impl RiscVLinkerScriptGenerator {
         out.push_str("    *(.text*)\n");
         out.push_str("  } > flash\n\n");
 
+        // ── .wasm_data — packed wasm active-segment records (#798) ──
+        // Flash-resident (XIP): repeated [u32 off][u32 len][bytes][pad4]
+        // records emitted by synth into the object's `.wasm_data` section.
+        // The startup walks them at reset and copies each to
+        // `__linear_memory_base + off` (record order = declaration order,
+        // so WASM's later-wins overlap semantics hold). A data-free object
+        // has no input section and the two symbols collapse (start == end,
+        // the copy loop no-ops).
+        out.push_str("  /* Wasm active data segments — copied to s11 + off at reset */\n");
+        out.push_str("  .wasm_data : {\n");
+        out.push_str("    . = ALIGN(4);\n");
+        out.push_str("    PROVIDE(__wasm_data_records_start = .);\n");
+        out.push_str("    KEEP(*(.wasm_data*))\n");
+        out.push_str("    PROVIDE(__wasm_data_records_end = .);\n");
+        out.push_str("  } > flash\n\n");
+
         // ── .rodata — read-only constants in flash ──────────────────
         out.push_str("  .rodata : {\n");
         out.push_str("    *(.rodata*)\n");
@@ -232,6 +248,25 @@ mod tests {
         let g = RiscVLinkerScriptGenerator::new(rv32imac_caps());
         let s = g.generate();
         assert!(s.contains(".data : AT(_data_load)"));
+    }
+
+    /// #798: the wasm active-segment records get a flash-resident output
+    /// section with start/end symbols for the startup copy loop, placed
+    /// BEFORE `_data_load` is pinned (so the `.data` flash load image cannot
+    /// overlap the records).
+    #[test]
+    fn wasm_data_records_in_flash_before_data_load_798() {
+        let g = RiscVLinkerScriptGenerator::new(rv32imac_caps());
+        let s = g.generate();
+        assert!(s.contains("KEEP(*(.wasm_data*))"));
+        assert!(s.contains("PROVIDE(__wasm_data_records_start = .);"));
+        assert!(s.contains("PROVIDE(__wasm_data_records_end = .);"));
+        let records = s.find(".wasm_data : {").unwrap();
+        let data_load = s.find("PROVIDE(_data_load = .);").unwrap();
+        assert!(
+            records < data_load,
+            ".wasm_data must be placed before _data_load is pinned"
+        );
     }
 
     #[test]
