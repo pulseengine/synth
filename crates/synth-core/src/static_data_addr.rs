@@ -419,6 +419,69 @@ impl ImageMismatch {
     }
 }
 
+/// The verdict of the self-contained linmem↔globals disjointness geometry gate
+/// ([`validate_linmem_globals_disjoint`], VCR-VER-003 / #761).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayoutVerdict {
+    /// The globals table sits entirely at or above the function-visible linear
+    /// memory page ceiling — the two regions cannot alias.
+    Disjoint,
+    /// The globals table base falls INSIDE the function-visible linmem page:
+    /// a store to the overlapping tail of the page would alias a global slot
+    /// (or vice versa) — a silent wrong-value miscompile.
+    Overlap {
+        /// The base the compiled functions address linear memory at
+        /// (`optimized_linmem_base`, = R11 + 0x100 under the #687 contract).
+        func_visible_linmem_base: u32,
+        /// The size of the function-visible linear-memory page in bytes
+        /// (`initial_pages * 64 KiB`).
+        linmem_bytes: u32,
+        /// The absolute base the startup points R9 at (the globals table).
+        globals_base: u32,
+        /// How many bytes the two regions overlap by (the tail of the page
+        /// that aliases the table).
+        overlap_bytes: u32,
+    },
+}
+
+/// VCR-VER-003 geometry gate (#761): on the self-contained `--cortex-m` image
+/// the R9 globals table MUST sit entirely at or above the function-visible
+/// linear-memory page ceiling. The compiled functions address linear memory
+/// starting at `func_visible_linmem_base` (= the startup R11 base + 0x100, the
+/// #687 gap) and can reach any byte in `[base, base + linmem_bytes)`; the
+/// startup materializes the globals table at `globals_base`. If
+/// `globals_base < func_visible_linmem_base + linmem_bytes`, a store to the
+/// overlapping tail of the page lands on a global slot — a silent
+/// global↔linmem ALIAS (the worst class). This is a pure geometry invariant
+/// (no bytes involved), unconditional, and complements the served-image byte
+/// gate above: it catches the placement bug, not a packing bug.
+///
+/// `globals_base == func_visible_linmem_base + linmem_bytes` (table exactly at
+/// the ceiling) is DISJOINT — the page is `[base, base + linmem_bytes)`,
+/// half-open, so its last addressable byte is `base + linmem_bytes - 1`.
+/// No-globals modules (`globals_bytes == 0`) are trivially disjoint.
+pub fn validate_linmem_globals_disjoint(
+    func_visible_linmem_base: u32,
+    linmem_bytes: u32,
+    globals_base: u32,
+    globals_bytes: u32,
+) -> LayoutVerdict {
+    if globals_bytes == 0 {
+        return LayoutVerdict::Disjoint;
+    }
+    // u64 so a hostile base + size cannot wrap and pass the check spuriously.
+    let ceiling = func_visible_linmem_base as u64 + linmem_bytes as u64;
+    if (globals_base as u64) < ceiling {
+        return LayoutVerdict::Overlap {
+            func_visible_linmem_base,
+            linmem_bytes,
+            globals_base,
+            overlap_bytes: (ceiling - globals_base as u64) as u32,
+        };
+    }
+    LayoutVerdict::Disjoint
+}
+
 /// Total extent of the runtime image: `max(off + len)` over the segments
 /// (u64, so a hostile `off + len` cannot wrap — callers bound-check against
 /// the linear-memory size before packing).
@@ -1180,5 +1243,89 @@ mod tests {
         // Empty blob = zero segments: parses to nothing, serves nothing.
         assert_eq!(parse_segment_records(&[]).unwrap().len(), 0);
         assert_eq!(served_image_from_records(&[]).unwrap().len(), 0);
+    }
+
+    // ---- VCR-VER-003 #761: linmem<->globals disjointness geometry gate ----
+
+    /// RED-FIRST non-vacuity: the EXACT pre-fix geometry — `(memory 1)`,
+    /// function-visible base 0x2000_0100, globals table based (wrongly) on the
+    /// R11 base 0x2000_0000 + 64 KiB = 0x2001_0000 — must be caught as an
+    /// OVERLAP of 0x100 bytes (the top of the page aliases the table).
+    #[test]
+    fn layout_gate_761_red_r11_based_globals_overlap() {
+        let func_visible = 0x2000_0100u32;
+        let linmem = 64 * 1024;
+        // The BUG: globals based on R11 (0x2000_0000), not the func-visible base.
+        let bad_globals_base = 0x2000_0000u32 + linmem; // 0x2001_0000
+        let v = validate_linmem_globals_disjoint(func_visible, linmem, bad_globals_base, 4);
+        assert_eq!(
+            v,
+            LayoutVerdict::Overlap {
+                func_visible_linmem_base: func_visible,
+                linmem_bytes: linmem,
+                globals_base: bad_globals_base,
+                overlap_bytes: 0x100,
+            }
+        );
+    }
+
+    /// GREEN: the FIXED geometry — globals based on the function-visible base +
+    /// memory size (0x2000_0100 + 64 KiB = 0x2001_0100) sits exactly AT the page
+    /// ceiling, so the regions are disjoint.
+    #[test]
+    fn layout_gate_761_green_func_visible_based_globals_disjoint() {
+        let func_visible = 0x2000_0100u32;
+        let linmem = 64 * 1024;
+        let good_globals_base = func_visible + linmem; // 0x2001_0100 == ceiling
+        assert_eq!(
+            validate_linmem_globals_disjoint(func_visible, linmem, good_globals_base, 4),
+            LayoutVerdict::Disjoint
+        );
+    }
+
+    /// Boundary: table exactly at the ceiling is disjoint (half-open page); one
+    /// byte below the ceiling is a 1-byte overlap.
+    #[test]
+    fn layout_gate_761_ceiling_boundary_is_exclusive() {
+        let base = 0x2000_0100u32;
+        let linmem = 0x1000;
+        let ceiling = base + linmem;
+        assert_eq!(
+            validate_linmem_globals_disjoint(base, linmem, ceiling, 8),
+            LayoutVerdict::Disjoint
+        );
+        match validate_linmem_globals_disjoint(base, linmem, ceiling - 1, 8) {
+            LayoutVerdict::Overlap { overlap_bytes, .. } => assert_eq!(overlap_bytes, 1),
+            v => panic!("expected 1-byte overlap, got {v:?}"),
+        }
+    }
+
+    /// A module with NO globals is trivially disjoint regardless of the bases —
+    /// the startup emits no R9 block at all.
+    #[test]
+    fn layout_gate_761_no_globals_is_disjoint() {
+        assert_eq!(
+            validate_linmem_globals_disjoint(0x2000_0100, 64 * 1024, 0x2000_0000, 0),
+            LayoutVerdict::Disjoint
+        );
+    }
+
+    /// The `--stack-layout=low` shape: both bases shift up by the stack reserve,
+    /// so a func-visible-based table stays disjoint (the fix covers both layouts).
+    #[test]
+    fn layout_gate_761_low_layout_func_visible_based_disjoint() {
+        let stack = 0x1000u32;
+        let func_visible = 0x2000_0100 + stack; // optimized_linmem_base under low
+        let linmem = 64 * 1024;
+        assert_eq!(
+            validate_linmem_globals_disjoint(func_visible, linmem, func_visible + linmem, 4),
+            LayoutVerdict::Disjoint
+        );
+        // ... and the pre-fix R11-based placement would still overlap under low.
+        let bad = (0x2000_0000 + stack) + linmem;
+        match validate_linmem_globals_disjoint(func_visible, linmem, bad, 4) {
+            LayoutVerdict::Overlap { overlap_bytes, .. } => assert_eq!(overlap_bytes, 0x100),
+            v => panic!("expected 0x100 overlap under low, got {v:?}"),
+        }
     }
 }
