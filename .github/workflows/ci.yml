@@ -72,7 +72,7 @@ jobs:
         # Red-first unit tests (both directions of each invariant); covered by
         # `cargo test --workspace` above, run explicitly so a regression in the
         # space-consistency model is unmissable in the log.
-        run: cargo test -p synth-memory --features std space::
+        run: cargo test -p synth-memory --features std 'space::'
       - name: P3 async intrinsic honest-degradation gate (#80)
         # The #80 gate: the ONE lowered async op (error-context.drop) compiles
         # to a field-name BL call site; every declined intrinsic (error-context.new

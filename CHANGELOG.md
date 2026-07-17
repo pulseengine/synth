@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-07-17
+
+**"Phase-2 frontier + falcon to zero" — the verified allocation validator went
+straight-line → whole-function, the source-semantics proof base grew to 585 Qed,
+and a real self-contained silent-alias soundness bug was reproduced-first and
+fixed.** Seven lanes: four closed the real-module/soundness frontier (Wave 1),
+three deepened the verified core (Wave 2). Every lane oracle-gated red-first;
+frozen anchors byte-identical throughout.
+
+### Added
+
+- **VCR-RA-003 phase 2 (#242): the register-allocation validator is now
+  WHOLE-FUNCTION.** v0.48 bounded it to straight-line segments; this adds two
+  invariants over the whole control-flow graph, both keyed on real in-stream
+  contracts (not vacuous liveness): **across-CALL** — an AAPCS caller-saved reg
+  (R2/R3/R12) held live across a `bl`/`blx` is a `CallerSavedLiveAcrossCall`
+  violation; **across-JOIN** — a reg live-in to a control-flow join (≥2 preds)
+  must be available on every path (a forward MUST-availability fixpoint over a
+  join CFG), else `JoinValueNotAvailable`. Unconditional (default build,
+  hard-errors on a real violation); unverifiable shapes loud-flag
+  `NotAttempted` rather than false-pass. Red-first: a synthetic across-call and
+  across-join clobber are each caught naming the specific violation; 0 false
+  positives across a 130-fixture sweep (found + fixed one real would-be false
+  positive — the R11 linmem base live at a join, by seeding the reserved
+  registers). Residual: optimized-path pre-resolved numeric-branch joins and the
+  RV32/AArch64 arms loud-flag `NotAttempted` (named follow-ups).
+- **VCR-WASM-001 i64 transcription batch (#242): Rocq 536 → 585 Qed.** The i64
+  integer family (add/sub/mul/and/or/xor/shl/shr_s/shr_u/rotl/rotr/eqz + the ten
+  i64 comparisons — 22 ops) transcribed from the pinned coq9.0-wasm-2.2.0
+  WasmCert-Coq sources with line-level provenance and proven refined by
+  `exec_wasm_instr` (bazel-verified green). Still a hand transcription (the real
+  dep stays blocked on unfree CompCert until nixpkgs ships wasmcert ≥ 2.2.1); 6
+  i64 arithmetic/bitwise ops are op-level-only where `exec_wasm_instr` returns
+  `None` (named residual, no `admit`/axiom — the rotate `n=0` boundary was
+  discharged with a real bit-level proof).
+- **Cross-backend op-parity gate (VCR-SEL-005, #223/#232): 16 hidden silent
+  ARM/RV32 op-divergences surfaced and ledgered.** A universe-complete gate now
+  asserts every WASM op is either lowered by BOTH the ARM and RV32 backends or an
+  explicitly-ledgered decline on the one that lacks it — a previously-invisible
+  one-sided gap (ARM lowers X, RV32 silently declines X) now fails CI. Enumeration
+  surfaced 16 gaps beyond the known 5 Zbb declines (`global.get/set`,
+  `memory.size/grow/copy/fill`, `br_table`, the nine sub-word i64 loads/stores),
+  now in a 21-entry rationale'd allowlist; floats/SIMD are structurally excluded
+  (target-parameterized). Red-first: dropping a real ledger entry makes the gate
+  report the divergence. (RV32 allocation-validator reach filed as follow-up #815.)
+- **WCET phase 4 (#778): bounded self-recursion via a verified depth-hint.** The
+  `recursion` decline is converted for the boundable case — an untrusted
+  recursion-depth hint (extending the `--wcet-hints` scry seam) is admissible only
+  if synth verifies the recursion cannot exceed it (straight-line single-entry
+  const-decrement), bounding `depth × per-frame`; otherwise the hint is REJECTED
+  (`hint-below-derived-depth` / `hint-unverifiable-recursion`) and the function
+  still declines. Unbounded/mutual/indirect recursion still LOUD-DECLINE.
+  Byte-invisible sidecar; frozen 10/10.
+- **Sound ARM32 i64 `trunc_sat` (#782): falcon skip 4 → 0.** The four ARM32
+  `i64.trunc_sat_f32/f64_{s,u}` forms (previously loud-declined) now lower as a
+  branch-free FP word-decompose — unsigned via a saturating 2^±32 split, signed
+  via an XOR-signmask conditional two's-complement negate + saturation blend
+  (no register pairs). NaN→0, out-of-range saturates to i64 MIN/MAX, never traps.
+  192,000-random-pattern fuzz bit-identical to wasmtime across ARM32 m7dp, aarch64,
+  and native arm64. (m4f i64 forms still assert-decline. The falcon fused-core's
+  own skip delta is unmeasured — the asset is unfetchable; the skip-class proxy is
+  reported instead of a fabricated number.)
+- **Platform space-consistency invariant (#77) + P3 async intrinsic gate (#80).**
+  #77: `PlatformSpaces::validate()` rejects an execution/memory-space mismatch (a
+  bare-metal core requesting an OS-mapped space; an FP-requiring space on an
+  FPU-less core), red-first. #80: `error-context.drop` lowered (scalar handle);
+  `error-context.new`/`.debug-message`/`stream`/`future`/`waitable-set`/`task`
+  loud-decline by name (the advisor narrowed the lowering to `.drop` — the others
+  take linmem message pointers and would have silently miscompiled).
+
+### Fixed
+
+- **#761 (SOUNDNESS): self-contained `--cortex-m` R9 globals base overlapped the
+  linear-memory page.** The startup placed the R9 globals table at
+  `R11_base + memory_size` while functions addressed linmem at `R11 + 0x100`, so
+  for `(memory 1)` a store to wasm offset `0xFF00` landed exactly on global slot 0
+  — a live global↔linmem alias (a unicorn boot oracle showed `0xDEADBEEF` where
+  wasmtime returns `0xABCD`), in BOTH stack layouts (disproving the issue's
+  `--stack-layout=low` guess). Reproduced-first on the real reset path, then fixed
+  by re-basing R9 above the function-visible page ceiling; guarded by a
+  non-vacuous read-back geometry validator (`validate_linmem_globals_disjoint`,
+  unconditional) whose checked base is read back from the emitted startup bytes —
+  reverting only the R9 formula makes the compile hard-error. Frozen byte-identical
+  (the R9 base lives in the self-contained startup blob, not the `.text` anchors).
+
+### Changed
+
+- **CI**: quoted the `space::` test filter in `ci.yml` — the unquoted `::`
+  tripped strict YAML parsers (PyYAML failed to load the workflow); GitHub Actions'
+  lenient parser accepted it, but any actionlint/PyYAML-based tooling choked.
+
 ## [0.48.0] - 2026-07-17
 
 **"Real modules, verified allocator" — the real falcon fused core drove the
