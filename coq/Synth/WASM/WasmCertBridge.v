@@ -1,13 +1,20 @@
-(** * VCR-WASM-001 — WasmCert-Coq refinement bridge (phase 2: i32 batch)
+(** * VCR-WASM-001 — WasmCert-Coq refinement bridge (i32 + i64 batches)
 
     This file proves that synth's stack-machine executor [exec_wasm_instr]
-    AGREES with the WasmCert-Coq reference rules (WasmCertReference.v) for the
-    i32 integer fragment: add, sub, mul, and, or, xor, shl, shr_u, shr_s,
-    eqz, eq, ne, lt_u, lt_s, gt_u, gt_s, le_u, le_s, ge_u — 19 ops, each with
-    an op-level refinement theorem ([I32.op = wasmcert_i32_op]) and an
-    executor-level theorem routing the claim through the REAL
-    [exec_wasm_instr]. It is the WASM-side analogue of SailArmBridge.v's
-    per-instruction bridge lemmas (VCR-ISA-001 / #667).
+    AGREES with the WasmCert-Coq reference rules (WasmCertReference.v).
+    - PHASE 2 (i32, 19 ops): add, sub, mul, and, or, xor, shl, shr_u, shr_s,
+      eqz, eq, ne, lt_u, lt_s, gt_u, gt_s, le_u, le_s, ge_u — each with an
+      op-level refinement theorem ([I32.op = wasmcert_i32_op]) and an
+      executor-level theorem routing the claim through the REAL
+      [exec_wasm_instr].
+    - PHASE 3 (i64 batch, #242): add, sub, mul, and, or, xor, shl, shr_u,
+      shr_s, rotl, rotr, eqz, eq, ne, lt_u, lt_s, gt_u, gt_s, le_u, le_s,
+      ge_u, ge_s — op-level refinement for all 22, plus executor-level for the
+      16 ops WIRED in [exec_wasm_instr] (the shifts, the two rotates, and the
+      11 comparisons (incl. eqz); see the named residual below for the 6 arithmetic/
+      bitwise ops the model does not yet route).
+    It is the WASM-side analogue of SailArmBridge.v's per-instruction bridge
+    lemmas (VCR-ISA-001 / #667).
 
     SCOPE (honest, named): the reference is still a hand TRANSCRIPTION of the
     pinned coq9.0-wasm-2.2.0 sources, not the real external dependency — see
@@ -18,8 +25,15 @@
     (2)+(3)) — so this file continues to [Require Import
     Synth.WASM.WasmCertReference] and the "trusted transcription" caveat is NOT
     yet retired. It retires (mechanically) when a nixpkgs rev ships
-    wasmcert >= 2.2.1. Remaining op coverage (div/rem trap rules, clz/ctz/
-    popcnt, rotl/rotr, i64, memory, control flow) is the named follow-up.
+    wasmcert >= 2.2.1.
+
+    NAMED RESIDUALS (not forced, not admitted):
+    - i64 add/sub/mul/and/or/xor have OP-LEVEL refinement only: synth's
+      [exec_wasm_instr] returns [None] for the [I64Add]/…/[I64Xor] constructors
+      (they are not wired in the model's match, unlike their i32 twins). Wiring
+      them is a semantics-model change, out of scope for a transcription batch.
+    - Remaining op coverage (div/rem trap rules, clz/ctz/popcnt, memory,
+      control flow) is the named follow-up for both widths.
 
     NON-VACUITY (why a WRONG synth semantics fails this file):
     - No op-level lemma is [reflexivity]-only where a real gap exists:
@@ -629,4 +643,589 @@ Proof.
   rewrite Hstack.
   rewrite <- i32_ge_s_refines_wasmcert_op.
   reflexivity.
+Qed.
+
+(** * VCR-WASM-001 — i64 refinement bridge (phase 3 batch)
+
+    Proves synth's [exec_wasm_instr] AGREES with the WasmCert i64 reference
+    (WasmCertReference.v's [wasmcert_i64_*]) for the i64 integer fragment. The
+    helpers below are the wordsize-64 duplicates of the i32 helpers (the same
+    raw-vs-normalized [Z.testbit] / shift-count-collapse content, at 2^64).
+
+    HONEST SCOPE (named residuals). Two classes are DELIBERATELY not given
+    executor-level refinement:
+    - i64 add/sub/mul/and/or/xor: synth's [exec_wasm_instr] returns [None] for
+      these constructors ([I64Add]/[I64Sub]/…/[I64Xor] are not wired in the
+      model's match, unlike their i32 counterparts). We prove the OP-LEVEL
+      refinement ([I64.op = wasmcert_i64_op], genuine raw-vs-normalized content),
+      and NAME the missing executor routing as a residual — wiring them into the
+      model is a semantics change, out of scope for a transcription batch.
+    - i64 rotl/rotr: transcribed at the reference level (WasmCertReference.v) and
+      proven op-level here; see the note at the rotate lemmas for the [n = 0]
+      boundary discharge. *)
+
+(** ** i64 encoding + normalization helpers (wordsize-64 duplicates) *)
+
+Lemma i64_signed_refines_wasmcert : forall n,
+  I64.signed n = wasmcert_i64_signed n.
+Proof.
+  intros n. unfold I64.signed, wasmcert_i64_signed. cbv zeta.
+  rewrite zltb_lt_dec. destruct (Z_lt_dec _ _); reflexivity.
+Qed.
+
+Lemma i64_unsigned_repr_small : forall k,
+  0 <= k < I64.modulus -> I64.unsigned (I64.repr k) = k.
+Proof.
+  intros k H. unfold I64.unsigned, I64.repr.
+  rewrite Z.mod_mod by (unfold I64.modulus; lia).
+  apply Z.mod_small. exact H.
+Qed.
+
+Lemma i64_shift_count_range : forall y,
+  0 <= I64.unsigned y mod 64 < 64.
+Proof.
+  intros y. apply Z.mod_pos_bound. lia.
+Qed.
+
+Lemma i64_shift_count_collapse : forall y,
+  I64.unsigned (I64.repr (I64.unsigned y mod 64)) = I64.unsigned y mod 64.
+Proof.
+  intros y. apply i64_unsigned_repr_small.
+  pose proof (i64_shift_count_range y). unfold I64.modulus. lia.
+Qed.
+
+Lemma i64_land_mod_modulus : forall a b,
+  Z.land a b mod I64.modulus =
+  Z.land (a mod I64.modulus) (b mod I64.modulus) mod I64.modulus.
+Proof.
+  intros a b. change I64.modulus with (2 ^ 64).
+  apply Z.bits_inj'. intros n Hn.
+  destruct (Z_lt_dec n 64) as [H | H].
+  - rewrite !Z.mod_pow2_bits_low by lia.
+    rewrite !Z.land_spec.
+    rewrite !Z.mod_pow2_bits_low by lia.
+    reflexivity.
+  - rewrite !Z.mod_pow2_bits_high by lia. reflexivity.
+Qed.
+
+Lemma i64_lor_mod_modulus : forall a b,
+  Z.lor a b mod I64.modulus =
+  Z.lor (a mod I64.modulus) (b mod I64.modulus) mod I64.modulus.
+Proof.
+  intros a b. change I64.modulus with (2 ^ 64).
+  apply Z.bits_inj'. intros n Hn.
+  destruct (Z_lt_dec n 64) as [H | H].
+  - rewrite !Z.mod_pow2_bits_low by lia.
+    rewrite !Z.lor_spec.
+    rewrite !Z.mod_pow2_bits_low by lia.
+    reflexivity.
+  - rewrite !Z.mod_pow2_bits_high by lia. reflexivity.
+Qed.
+
+Lemma i64_lxor_mod_modulus : forall a b,
+  Z.lxor a b mod I64.modulus =
+  Z.lxor (a mod I64.modulus) (b mod I64.modulus) mod I64.modulus.
+Proof.
+  intros a b. change I64.modulus with (2 ^ 64).
+  apply Z.bits_inj'. intros n Hn.
+  destruct (Z_lt_dec n 64) as [H | H].
+  - rewrite !Z.mod_pow2_bits_low by lia.
+    rewrite !Z.lxor_spec.
+    rewrite !Z.mod_pow2_bits_low by lia.
+    reflexivity.
+  - rewrite !Z.mod_pow2_bits_high by lia. reflexivity.
+Qed.
+
+(** ** i64 op-level refinement: arithmetic (raw vs normalized) *)
+
+Theorem i64_add_refines_wasmcert_op : forall x y,
+  I64.add x y = wasmcert_i64_add x y.
+Proof.
+  intros x y.
+  unfold I64.add, wasmcert_i64_add, I64.repr, I64.unsigned.
+  rewrite Zplus_mod. reflexivity.
+Qed.
+
+Theorem i64_sub_refines_wasmcert_op : forall x y,
+  I64.sub x y = wasmcert_i64_sub x y.
+Proof.
+  intros x y.
+  unfold I64.sub, wasmcert_i64_sub, I64.repr, I64.unsigned.
+  rewrite Zminus_mod. reflexivity.
+Qed.
+
+Theorem i64_mul_refines_wasmcert_op : forall x y,
+  I64.mul x y = wasmcert_i64_mul x y.
+Proof.
+  intros x y.
+  unfold I64.mul, wasmcert_i64_mul, I64.repr, I64.unsigned.
+  rewrite Zmult_mod. reflexivity.
+Qed.
+
+(** ** i64 op-level refinement: bitwise (raw vs normalized, bit-level) *)
+
+Theorem i64_and_refines_wasmcert_op : forall x y,
+  I64.and x y = wasmcert_i64_and x y.
+Proof.
+  intros x y.
+  unfold I64.and, wasmcert_i64_and, I64.repr, I64.unsigned.
+  apply i64_land_mod_modulus.
+Qed.
+
+Theorem i64_or_refines_wasmcert_op : forall x y,
+  I64.or x y = wasmcert_i64_or x y.
+Proof.
+  intros x y.
+  unfold I64.or, wasmcert_i64_or, I64.repr, I64.unsigned.
+  apply i64_lor_mod_modulus.
+Qed.
+
+Theorem i64_xor_refines_wasmcert_op : forall x y,
+  I64.xor x y = wasmcert_i64_xor x y.
+Proof.
+  intros x y.
+  unfold I64.xor, wasmcert_i64_xor, I64.repr, I64.unsigned.
+  apply i64_lxor_mod_modulus.
+Qed.
+
+(** ** i64 op-level refinement: shifts *)
+
+Theorem i64_shl_refines_wasmcert_op : forall x y,
+  I64.shl x y = wasmcert_i64_shl x y.
+Proof.
+  intros x y. unfold wasmcert_i64_shl. cbv zeta.
+  rewrite i64_shift_count_collapse.
+  pose proof (i64_shift_count_range y) as Hk.
+  unfold I64.shl, I64.repr, I64.unsigned. unfold I64.unsigned in Hk.
+  rewrite !Z.shiftl_mul_pow2 by lia.
+  rewrite Zmult_mod_idemp_l. reflexivity.
+Qed.
+
+Theorem i64_shr_u_refines_wasmcert_op : forall x y,
+  I64.shru x y = wasmcert_i64_shr_u x y.
+Proof.
+  intros x y. unfold wasmcert_i64_shr_u. cbv zeta.
+  rewrite i64_shift_count_collapse. reflexivity.
+Qed.
+
+Theorem i64_shr_s_refines_wasmcert_op : forall x y,
+  I64.shrs x y = wasmcert_i64_shr_s x y.
+Proof.
+  intros x y. unfold wasmcert_i64_shr_s. cbv zeta.
+  rewrite i64_shift_count_collapse.
+  unfold I64.shrs. rewrite i64_signed_refines_wasmcert. reflexivity.
+Qed.
+
+(** ** i64 op-level refinement: equality tests *)
+
+Theorem i64_eq_refines_wasmcert_op : forall x y,
+  I64.eq x y = wasmcert_i64_eq x y.
+Proof.
+  intros x y. unfold I64.eq, wasmcert_i64_eq. apply zeqb_eq_dec.
+Qed.
+
+Theorem i64_eqz_refines_wasmcert_op : forall v,
+  I64.eq v I64.zero = wasmcert_i64_eqz v.
+Proof.
+  intros v. unfold I64.eq, wasmcert_i64_eqz, wasmcert_i64_eq, I64.zero.
+  rewrite Z.eqb_sym. apply zeqb_eq_dec.
+Qed.
+
+Theorem i64_ne_refines_wasmcert_op : forall x y,
+  I64.ne x y = wasmcert_i64_ne x y.
+Proof.
+  intros x y. unfold I64.ne, wasmcert_i64_ne.
+  rewrite i64_eq_refines_wasmcert_op. reflexivity.
+Qed.
+
+(** ** i64 op-level refinement: order comparisons *)
+
+Theorem i64_lt_u_refines_wasmcert_op : forall x y,
+  I64.ltu x y = wasmcert_i64_lt_u x y.
+Proof.
+  intros x y. unfold I64.ltu, wasmcert_i64_lt_u. apply zltb_lt_dec.
+Qed.
+
+Theorem i64_lt_s_refines_wasmcert_op : forall x y,
+  I64.lts x y = wasmcert_i64_lt_s x y.
+Proof.
+  intros x y. unfold I64.lts, wasmcert_i64_lt_s.
+  rewrite !i64_signed_refines_wasmcert. apply zltb_lt_dec.
+Qed.
+
+Theorem i64_gt_u_refines_wasmcert_op : forall x y,
+  I64.gtu x y = wasmcert_i64_gt_u x y.
+Proof.
+  intros x y. unfold I64.gtu, wasmcert_i64_gt_u, wasmcert_i64_lt_u.
+  rewrite Z.gtb_ltb. apply zltb_lt_dec.
+Qed.
+
+Theorem i64_gt_s_refines_wasmcert_op : forall x y,
+  I64.gts x y = wasmcert_i64_gt_s x y.
+Proof.
+  intros x y. unfold I64.gts, wasmcert_i64_gt_s, wasmcert_i64_lt_s.
+  rewrite Z.gtb_ltb. rewrite !i64_signed_refines_wasmcert. apply zltb_lt_dec.
+Qed.
+
+Theorem i64_le_u_refines_wasmcert_op : forall x y,
+  I64.leu x y = wasmcert_i64_le_u x y.
+Proof.
+  intros x y. unfold I64.leu, wasmcert_i64_le_u, wasmcert_i64_lt_u.
+  rewrite Z.leb_antisym. rewrite zltb_lt_dec. reflexivity.
+Qed.
+
+Theorem i64_le_s_refines_wasmcert_op : forall x y,
+  I64.les x y = wasmcert_i64_le_s x y.
+Proof.
+  intros x y. unfold I64.les, wasmcert_i64_le_s, wasmcert_i64_lt_s.
+  rewrite Z.leb_antisym. rewrite !i64_signed_refines_wasmcert.
+  rewrite zltb_lt_dec. reflexivity.
+Qed.
+
+Theorem i64_ge_u_refines_wasmcert_op : forall x y,
+  I64.geu x y = wasmcert_i64_ge_u x y.
+Proof.
+  intros x y. unfold I64.geu, wasmcert_i64_ge_u, wasmcert_i64_lt_u.
+  rewrite Z.geb_leb. rewrite Z.leb_antisym. rewrite zltb_lt_dec. reflexivity.
+Qed.
+
+Theorem i64_ge_s_refines_wasmcert_op : forall x y,
+  I64.ges x y = wasmcert_i64_ge_s x y.
+Proof.
+  intros x y. unfold I64.ges, wasmcert_i64_ge_s, wasmcert_i64_lt_s.
+  rewrite Z.geb_leb. rewrite Z.leb_antisym. rewrite !i64_signed_refines_wasmcert.
+  rewrite zltb_lt_dec. reflexivity.
+Qed.
+
+(** ** i64 op-level refinement: rotates.
+
+    synth's [I64.rotl x y = or (shl x (repr n)) (shru x (repr (64 - n)))] with
+    [n = unsigned y mod 64], where [or]/[shl]/[shru] each apply [repr] and
+    re-normalize their shift count mod 64. The reference (CompCert [rol],
+    Integers.v:217-219) [repr]s ONCE over the whole [Z.lor] and uses the RAW
+    sub-count [64 - n]. Three gaps discharged:
+    (a) the inner double-[repr] on each [Z.lor] operand — [i64_lor_mod_modulus];
+    (b) [shl]'s raw operand [x] vs the reference's [unsigned x] —
+        [Z.shiftl_mul_pow2] + [Zmult_mod_idemp_l];
+    (c) the [n = 0] boundary: synth's [shru x (repr 64)] re-normalizes
+        [64 mod 64 = 0] to a shiftr-by-0 (= [unsigned x]), while the reference
+        shiftr-by-64 = 0 — reconciled because at [n = 0] the [Z.shiftl]
+        operand is also [unsigned x] (shiftl-by-0) and [Z.lor] is idempotent.
+    Case-split on [n = 0] handles (c); [n ∈ [1,63]] makes [(64-n) mod 64 = 64-n]. *)
+
+Lemma i64_shl_by_repr : forall x n,
+  0 <= n < 64 ->
+  I64.shl x (I64.repr n) = I64.repr (Z.shiftl (I64.unsigned x) n).
+Proof.
+  intros x n Hn. unfold I64.shl.
+  rewrite (i64_unsigned_repr_small n) by (unfold I64.modulus; lia).
+  rewrite (Z.mod_small n 64) by lia.
+  unfold I64.repr, I64.unsigned.
+  rewrite !Z.shiftl_mul_pow2 by lia.
+  rewrite Zmult_mod_idemp_l. reflexivity.
+Qed.
+
+Lemma i64_shru_by_repr : forall x n,
+  0 <= n < 64 ->
+  I64.shru x (I64.repr n) = I64.repr (Z.shiftr (I64.unsigned x) n).
+Proof.
+  intros x n Hn. unfold I64.shru.
+  rewrite (i64_unsigned_repr_small n) by (unfold I64.modulus; lia).
+  rewrite (Z.mod_small n 64) by lia. reflexivity.
+Qed.
+
+(** At n=0 the reference shiftr-by-64 vanishes; synth's shru-by-(repr 64)
+    collapses to shiftr-by-0 = unsigned x, which lor-idempotently equals the
+    shiftl-by-0 operand.  Proven as a bit-level Z fact. *)
+Lemma shiftr_64_zero : forall u,
+  0 <= u < I64.modulus -> Z.shiftr u 64 = 0.
+Proof.
+  intros u Hu. change I64.modulus with (2 ^ 64) in Hu.
+  rewrite Z.shiftr_div_pow2 by lia.
+  apply Z.div_small. lia.
+Qed.
+
+Lemma rotl_boundary_zero : forall u,
+  0 <= u < I64.modulus ->
+  Z.lor (Z.shiftl u 0) (Z.shiftr u 0) = Z.lor (Z.shiftl u 0) (Z.shiftr u 64).
+Proof.
+  intros u Hu. rewrite Z.shiftr_0_r. rewrite (shiftr_64_zero u Hu).
+  rewrite Z.lor_0_r. rewrite Z.shiftl_0_r. rewrite Z.lor_diag. reflexivity.
+Qed.
+
+Theorem i64_rotl_refines_wasmcert_op : forall x y,
+  I64.rotl x y = wasmcert_i64_rotl x y.
+Proof.
+  intros x y. unfold I64.rotl, wasmcert_i64_rotl. cbv zeta.
+  set (n := I64.unsigned y mod 64).
+  assert (Hn : 0 <= n < 64) by (apply Z.mod_pos_bound; lia).
+  destruct (Z.eq_dec n 0) as [Hz | Hnz].
+  - (* n = 0: 64 - n = 64; shru re-normalizes to 0 *)
+    rewrite Hz. rewrite i64_shl_by_repr by lia.
+    replace (64 - 0) with 64 by lia.
+    unfold I64.shru, I64.or.
+    change (I64.unsigned (I64.repr 64)) with (64 mod I64.modulus).
+    change I64.modulus with (2 ^ 64).
+    replace (64 mod 2 ^ 64) with 64 by (rewrite Z.mod_small; lia).
+    replace (64 mod 64) with 0 by reflexivity.
+    unfold I64.repr.
+    rewrite <- (i64_lor_mod_modulus (Z.shiftl (I64.unsigned x) 0)
+                 (Z.shiftr (I64.unsigned x) 0)).
+    change (2 ^ 64) with I64.modulus.
+    rewrite (rotl_boundary_zero (I64.unsigned x))
+      by (unfold I64.unsigned, I64.modulus; apply Z.mod_pos_bound; lia).
+    reflexivity.
+  - (* n in [1,63]: (64 - n) mod 64 = 64 - n *)
+    rewrite i64_shl_by_repr by lia.
+    rewrite i64_shru_by_repr by lia.
+    unfold I64.or, I64.repr.
+    rewrite <- (i64_lor_mod_modulus (Z.shiftl (I64.unsigned x) n)
+                 (Z.shiftr (I64.unsigned x) (64 - n))).
+    reflexivity.
+Qed.
+
+Theorem i64_rotr_refines_wasmcert_op : forall x y,
+  I64.rotr x y = wasmcert_i64_rotr x y.
+Proof.
+  intros x y. unfold I64.rotr, wasmcert_i64_rotr. cbv zeta.
+  set (n := I64.unsigned y mod 64).
+  assert (Hn : 0 <= n < 64) by (apply Z.mod_pos_bound; lia).
+  destruct (Z.eq_dec n 0) as [Hz | Hnz].
+  - (* n = 0: 64 - n = 64; synth shl-by-(repr 64) collapses to shl-by-0 = x *)
+    rewrite Hz. rewrite i64_shru_by_repr by lia.
+    replace (64 - 0) with 64 by lia.
+    unfold I64.shl, I64.or.
+    change (I64.unsigned (I64.repr 64)) with (64 mod I64.modulus).
+    change I64.modulus with (2 ^ 64).
+    replace (64 mod 2 ^ 64) with 64 by (rewrite Z.mod_small; lia).
+    replace (64 mod 64) with 0 by reflexivity.
+    unfold I64.repr.
+    rewrite <- (i64_lor_mod_modulus (Z.shiftr (I64.unsigned x) 0)
+                 (Z.shiftl x 0)).
+    change (2 ^ 64) with I64.modulus.
+    rewrite Z.shiftl_0_r. rewrite Z.shiftr_0_r.
+    (* LHS: (lor (unsigned x) x) mod M ; RHS: (lor (unsigned x) (shiftl (unsigned x) 64)) mod M *)
+    unfold I64.unsigned.
+    change I64.modulus with (2 ^ 64).
+    (* both sides: bit-level equality of the low 64 bits *)
+    apply Z.bits_inj'. intros i Hi.
+    destruct (Z_lt_dec i 64) as [Hlt | Hge].
+    + rewrite !Z.mod_pow2_bits_low by lia.
+      rewrite !Z.lor_spec.
+      rewrite !Z.mod_pow2_bits_low by lia.
+      (* shiftl (x mod M) 64 has no bit below 64 *)
+      rewrite (Z.shiftl_spec (x mod 2 ^ 64) 64 i) by lia.
+      rewrite (Z.testbit_neg_r (x mod 2 ^ 64) (i - 64)) by lia.
+      (* low bits: x and (x mod M) agree below 64 *)
+      rewrite <- (Z.mod_pow2_bits_low x 64 i) by lia.
+      rewrite Bool.orb_false_r. rewrite Bool.orb_diag. reflexivity.
+    + rewrite !Z.mod_pow2_bits_high by lia. reflexivity.
+  - rewrite i64_shru_by_repr by lia.
+    rewrite i64_shl_by_repr by lia.
+    unfold I64.or, I64.repr.
+    rewrite <- (i64_lor_mod_modulus (Z.shiftr (I64.unsigned x) n)
+                 (Z.shiftl (I64.unsigned x) (64 - n))).
+    reflexivity.
+Qed.
+
+(** ** i64 executor-level refinement: shifts.
+    [exec_wasm_instr] pushes exactly the WasmCert reference result. Mirrors the
+    i32 exec lemmas but through the i64 stack path (pop2_i64 / VI64). *)
+
+Theorem i64_shl_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Shl s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_shl v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_shl_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_shr_u_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64ShrU s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_shr_u v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_shr_u_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_shr_s_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64ShrS s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_shr_s v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_shr_s_refines_wasmcert_op. reflexivity.
+Qed.
+
+(** ** i64 executor-level refinement: rotates *)
+
+Theorem i64_rotl_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Rotl s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_rotl v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_rotl_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_rotr_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Rotr s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_rotr v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_rotr_refines_wasmcert_op. reflexivity.
+Qed.
+
+(** ** i64 executor-level refinement: equality tests + comparisons.
+    i64 compares pop two i64 and push an I32 [wasm_bool] ([if b then I32.one
+    else I32.zero], numerics.v:1952-1953) — the pushed value is a VI32. *)
+
+Theorem i64_eqz_exec_refines_wasmcert : forall v s stack',
+  s.(stack) = VI64 v :: stack' ->
+  exec_wasm_instr I64Eqz s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_eqz v then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v s stack' Hstack.
+  unfold exec_wasm_instr, pop_i64, pop_value, pop. rewrite Hstack.
+  rewrite <- i64_eqz_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_eq_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Eq s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_eq v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_eq_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_ne_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Ne s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_ne v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_ne_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_lt_u_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64LtU s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_lt_u v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_lt_u_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_lt_s_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64LtS s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_lt_s v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_lt_s_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_gt_u_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64GtU s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_gt_u v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_gt_u_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_gt_s_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64GtS s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_gt_s v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_gt_s_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_le_u_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64LeU s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_le_u v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_le_u_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_le_s_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64LeS s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_le_s v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_le_s_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_ge_u_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64GeU s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_ge_u v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_ge_u_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_ge_s_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64GeS s =
+  Some (mkWasmState
+          (VI32 (if wasmcert_i64_ge_s v1 v2 then I32.one else I32.zero) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_ge_s_refines_wasmcert_op. reflexivity.
 Qed.
