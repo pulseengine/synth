@@ -387,3 +387,78 @@ artifacts:
         MOV R11, R0; weak symbol default returns 0x20000000 when
         kiln-builtins is not linked; Renode test verifies R11 is set
         correctly at user code entry.
+
+  # ---------------------------------------------------------------------------
+  # #80: P3 async host-intrinsic compilation (honest degradation)
+  # ---------------------------------------------------------------------------
+
+  - id: KB-010
+    type: system-req
+    title: P3 async intrinsic compilation with honest degradation
+    description: >
+      When Meld lowers a P3 (Component Model async) component, the core module
+      imports RFC #46 async host intrinsics under the `pulseengine:async`
+      module (error-context.*, stream.*, future.*, waitable-set.*, task.*).
+      Synth shall compile the call sites it can lower CORRECTLY and LOUD-DECLINE
+      the rest by name, rather than emit a call that silently miscompiles.
+      Bounded initial scope (#80): synth lowers exactly ONE op —
+      error-context.drop, a pure scalar handle op (one i32 handle in, nothing
+      out) that marshals as an ordinary AAPCS C call through the existing
+      relocatable field-name BL host-link path (#197), producing an UNDEF
+      `error-context.drop` symbol the host linker resolves against
+      kiln-builtins. The lowering decision is PER OP, not per family:
+      error-context.new and error-context.debug-message carry a linmem message
+      pointer (canonical ABI) and are DECLINED alongside the buffer families —
+      lowering them as if scalar would silently miscompile the pointer
+      argument. The `stream`, `future`, and `waitable-set`/`task` families are
+      DECLINED with a machine reason naming the missing capability
+      (bounds-checked linear-memory buffer layout for stream / future /
+      error-context.new / .debug-message; register save/restore across the
+      scheduler yield for waitable-set/task). An unknown intrinsic in the async
+      namespace is also declined rather than blindly called. Non-async imports
+      are untouched (byte-invisible). The declined ops are named follow-ups
+      once the buffer/yield capabilities land.
+    status: implemented
+    tags: [p3-async, rfc46, honest-degradation, kiln-builtins, error-context]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-003
+      - type: traces-to
+        target: KB-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        synth_core::async_intrinsics::classify() returns Lowered ONLY for
+        error-context.drop, Declined (naming the family/reason) for
+        error-context.new / .debug-message / stream / future / waitable-set /
+        task and unknown async intrinsics, NotAsync for non-async imports; the
+        CLI end-to-end gate compiles async_error_context.wat to a relocatable
+        ELF carrying the `error-context.drop` BL target symbol and FAILS the
+        compile on each declined-op fixture with the #80 machine reason.
+
+  - id: KB-VER-001
+    type: sys-verification
+    title: "P3 async intrinsic gate: error-context.drop lowered, other intrinsics declined"
+    description: >
+      Machine-checked verification of the #80 honest-degradation gate (KB-010).
+      Unit tests (synth-core async_intrinsics, 7 tests) assert the
+      classification of every op, including the soundness case that
+      error-context.new / .debug-message are DECLINED (linmem buffer) and NOT
+      lowered as if scalar. The CLI integration test (async_intrinsics_gate,
+      2 tests) exercises the real `synth compile` binary: (a) the lowered op
+      compiles to a relocatable ELF whose symbol table carries
+      `error-context.drop` as the AAPCS BL target the host linker resolves (the
+      executes-vs-reference ABI contract, checked via the ELF symtab); (b) each
+      declined-op fixture (stream / future / waitable-set / task /
+      error-context.new) FAILS the compile with a diagnostic carrying the "#80
+      async-intrinsic decline" machine reason. Frozen fixtures unchanged (the
+      gate fires only on the pulseengine:async namespace). CI oracle step
+      "P3 async intrinsic honest-degradation gate (#80)" runs both.
+    status: implemented
+    tags: [p3-async, red-first, symtab-oracle, honest-degradation]
+    links:
+      - type: verifies
+        target: KB-010

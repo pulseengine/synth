@@ -269,3 +269,74 @@ artifacts:
       verification-criteria: >
         MemoryLayout::generic() returns correct values;
         Renode cortex_m_test.robot passes with synth_cortex_m.repl platform.
+
+  # ---------------------------------------------------------------------------
+  # #77: Platform space-consistency model (RAJA/Kokkos execution+memory space)
+  # ---------------------------------------------------------------------------
+
+  - id: TP-009
+    type: system-req
+    title: Execution-space / memory-space consistency invariant
+    description: >
+      Synth shall model the target's execution space (where code runs — the
+      Cortex-M core / bare-metal vs hosted) and its memory spaces (where data
+      lives — Flash / SRAM / TCM / ExternalRAM / OS-mapped) as first-class
+      concepts (RAJA/Kokkos pattern, #77), and shall CHECK — not merely
+      assume by convention — that a selected execution space and the memory
+      spaces it is asked to use are mutually consistent. Two consistency
+      invariants are enforced (bounded initial scope): (1) OS-mapping
+      consistency — a bare-metal execution space cannot be paired with an
+      OS-mapped (Linux-only) memory space, and a hosted execution space cannot
+      claim a physical on-silicon space (Flash/TCM/ExternalRAM); (2) FPU
+      capability consistency — a memory space that declares an FP working set
+      cannot be hosted by a core with no FPU (Cortex-M0). An inconsistent
+      configuration is REJECTED with a machine reason naming the offending
+      space, rather than producing a silently miscompiled or unbootable image.
+      Geometry consistency (linmem base vs globals region, static-data
+      addressing) is OUT of scope here — it is owned by the static-data
+      addressing validator (synth_core::static_data_addr). This is a
+      standalone model in
+      synth-memory (synth_memory::space); wiring it into the live target
+      selection path is a named follow-up.
+    status: implemented
+    tags: [platform-abstraction, memory-space, execution-space, kokkos, raja]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        synth_memory::space::PlatformSpaces::validate() returns Err for every
+        inconsistent execution/memory-space pairing (bare-metal + OS-mapped;
+        hosted + physical; FP-requiring space + FPU-less core) and Ok for
+        consistent ones; red-first unit tests in crates/synth-memory/src/space.rs
+        (7 tests) enforce both directions of each invariant.
+
+  - id: TP-VER-001
+    type: sys-verification
+    title: "Space-consistency invariant: violating configs rejected, consistent accepted"
+    description: >
+      Machine-checked verification of the #77 execution/memory-space
+      consistency invariant (TP-009). The Rust validator
+      synth_memory::space::PlatformSpaces::validate() is exercised by
+      red-first unit tests that assert: (a) a bare-metal execution space
+      paired with an OS-mapped memory space is rejected with
+      SpaceError::BareMetalCannotUseOsSpace naming the space; (b) a hosted
+      execution space paired with a physical (Flash/TCM/ExternalRAM) space is
+      rejected with HostedCannotUsePhysicalSpace; (c) an FP-requiring memory
+      space on a Cortex-M0 (no FPU) is rejected with FpuRequiredButAbsent;
+      (d) the corresponding well-formed configurations validate Ok (invariant
+      is non-vacuous in both directions); (e) the first violation in
+      declaration order is reported deterministically. Red-first evidence:
+      neutering validate() to always-Ok fails four rejection tests.
+      Covered by crates/synth-memory/src/space.rs::tests (7 tests); CI oracle
+      step "space-consistency (#77)" runs
+      `cargo test -p synth-memory --features std space::`.
+    status: implemented
+    tags: [space-consistency, red-first, unit-test]
+    links:
+      - type: verifies
+        target: TP-009
