@@ -338,12 +338,22 @@ pub fn validate_reloc_resolutions_spanned(
         let Some(&poff) = packed.seg_packed_off.get(r.seg_index) else {
             continue; // impossible when layout and segments are parallel
         };
-        for j in 1..MAX_ACCESS_BYTES {
+        for j in 0..MAX_ACCESS_BYTES {
             let access_addr = seg.linmem_off.wrapping_add(r.addend).wrapping_add(j);
-            // Unknown-width tolerance: runtime-uncovered ⇒ implicit zero ⇒ skip.
+            // Unknown-width tolerance: runtime-uncovered ⇒ implicit zero ⇒ skip
+            // (for j = 0 a missing runtime byte was already flagged by the
+            // strict phase-1 pass above).
             let Some(&runtime_byte) = runtime.get(&access_addr) else {
                 continue;
             };
+            // j = 0: the phase-1 pass already reported a divergent SEGMENT
+            // byte; re-checking here would double-report it. Only the blob
+            // side remains to pin — fall through when the segment byte is
+            // phase-1-green so a blob-fill bug (blob ≠ seg[K].bytes at the
+            // addend byte) still fails.
+            if j == 0 && seg.bytes.get(r.addend as usize) != Some(&runtime_byte) {
+                continue;
+            }
             let p = poff as usize + r.addend as usize + j as usize;
             // Served byte: the emitted blob, or "not linear memory at all"
             // when the span escapes the init region (globals slots / past the
@@ -818,6 +828,38 @@ mod tests {
                 assert_eq!(m[0].runtime, 0x11);
             }
             Verdict::Consistent => panic!("VACUOUS: init-region escape accepted"),
+        }
+    }
+
+    /// The blob-fill pin at the addend byte: segments and resolution are
+    /// phase-1-green, but the SHIPPED blob was corrupted at the served
+    /// position — the spanned validator must flag it at span byte 0 (phase 1
+    /// reads segment bytes and cannot see it).
+    #[test]
+    fn span_red_on_blob_fill_corruption_at_addend_byte() {
+        let segs = vec![DataSegment {
+            linmem_off: 0x100,
+            bytes: vec![1, 2, 3, 4],
+        }];
+        let (offs, mut blob) = mixed_pack(&segs);
+        let r = resolve_owner(&segs, 0x102, true).unwrap();
+        assert_eq!(
+            validate_reloc_resolutions(&segs, std::slice::from_ref(&r)),
+            Verdict::Consistent,
+            "phase 1 (segment bytes) cannot see a blob-fill bug"
+        );
+        blob[2] = 0xEE; // corrupt the byte the reloc actually serves
+        let packed = PackedInit {
+            seg_packed_off: &offs,
+            bytes: &blob,
+        };
+        match validate_reloc_resolutions_spanned(&segs, std::slice::from_ref(&r), &packed) {
+            Verdict::Mismatch(m) => {
+                assert_eq!(m[0].span_byte, 0);
+                assert_eq!(m[0].served, 0xEE);
+                assert_eq!(m[0].runtime, 3);
+            }
+            Verdict::Consistent => panic!("VACUOUS: corrupted shipped blob accepted"),
         }
     }
 
