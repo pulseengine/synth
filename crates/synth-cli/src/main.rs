@@ -2783,6 +2783,27 @@ fn compile_all_exports(
         let memories = module.memories;
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
+        // #80: P3 async host-intrinsic honest-degradation gate. Meld lowers P3
+        // async components with imports under the `pulseengine:async` module
+        // (RFC #46). Synth lowers exactly ONE op — `error-context.drop` (a
+        // scalar handle op that marshals like any AAPCS C call through the
+        // existing field-name BL path) — and LOUD-DECLINES the rest
+        // (`error-context.new`/`.debug-message`, `stream`, `future`,
+        // `waitable-set`, `task`) by name, because they need bounds-checked
+        // linmem buffer layout or register save/restore across a scheduler
+        // yield that synth does not yet generate. A blind BL would silently
+        // miscompile; refusing is the #275-style honest degradation.
+        // Non-async imports classify NotAsync and are untouched (byte-invisible).
+        for imp in &imports {
+            if !matches!(imp.kind, synth_core::wasm_decoder::ImportKind::Function(_)) {
+                continue;
+            }
+            if let synth_core::async_intrinsics::AsyncClassification::Declined(d) =
+                synth_core::async_intrinsics::classify(&imp.module, &imp.name)
+            {
+                anyhow::bail!("{d}");
+            }
+        }
         let data_segs = module.data_segments; // #237: capture before `functions` is moved
         let elem_func_indices = module.elem_func_indices; // #275: call_indirect targets
         // #237: identify the stack-pointer global for native-pointer promotion.

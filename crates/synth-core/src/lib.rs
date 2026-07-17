@@ -5,6 +5,7 @@
 //! representation (IR) used for synthesis.
 
 pub mod arena_bind;
+pub mod async_intrinsics;
 pub mod backend;
 pub mod component;
 pub mod dwarf_line;

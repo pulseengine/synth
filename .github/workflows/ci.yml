@@ -65,6 +65,23 @@ jobs:
         # by `cargo test --workspace` above; run explicitly so a WCET-soundness
         # regression is unmissable in the log.
         run: cargo test -p synth-cli --test wcet_bound_gate
+      - name: Space-consistency invariant (#77 — execution+memory space)
+        # The #77 checked property: an inconsistent execution/memory-space
+        # pairing (bare-metal + OS-mapped, hosted + physical, FP-requiring space
+        # on an FPU-less core) is REJECTED by synth_memory::space::validate().
+        # Red-first unit tests (both directions of each invariant); covered by
+        # `cargo test --workspace` above, run explicitly so a regression in the
+        # space-consistency model is unmissable in the log.
+        run: cargo test -p synth-memory --features std space::
+      - name: P3 async intrinsic honest-degradation gate (#80)
+        # The #80 gate: the ONE lowered async op (error-context.drop) compiles
+        # to a field-name BL call site; every declined intrinsic (error-context.new
+        # /.debug-message, stream, future, waitable-set, task) LOUD-DECLINES the
+        # compile by name. Runs the classifier unit tests + the CLI end-to-end
+        # gate so an accidental silent-lower of a declined op is unmissable.
+        run: |
+          cargo test -p synth-core --lib async_intrinsics
+          cargo test -p synth-cli --features riscv --test async_intrinsics_gate
 
   clippy:
     name: Clippy
