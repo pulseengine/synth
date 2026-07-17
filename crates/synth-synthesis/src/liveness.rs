@@ -14433,4 +14433,49 @@ mod tests {
             "an unmodeled-CF function must LOUD-decline the join check, not pass silently"
         );
     }
+
+    // ---- across-JOIN: GREEN back-edge (the UNIVERSE-init correctness case) ---
+    #[test]
+    fn ra003_green_loop_back_edge_preserves_availability() {
+        // A LOOP: a value (R4) is defined BEFORE the loop and read INSIDE the
+        // body. The loop header is a join whose predecessors are the preheader
+        // AND the back-edge (body-tail). This is the exact case the forward
+        // MUST/intersection fixpoint's UNIVERSE-init protects: if the back-edge
+        // block were initialised to EMPTY (the liveness template's MAY/union
+        // init), the header's avail_in = avail_out[preheader] ∩ avail_out[back]
+        // would drop R4 on the first iteration and false-positive. With
+        // universe-init the back-edge starts full and shrinks only to what it
+        // genuinely lacks, so R4 (dominator-defined) stays available across the
+        // merge → Consistent.
+        //
+        //   push {r4,r5,lr}
+        //   movw r4,#7          ; R4 defined before the loop (dominator)
+        //   movw r5,#0          ; counter
+        //  .head:               ; loop header — JOIN of preheader + back-edge
+        //   add  r0,r4,r4       ; reads R4 inside the body (live-in to header)
+        //   add  r5,r5,r5       ; mutate counter
+        //   cmp  r5,#0
+        //   bne  .head          ; back-edge to the header
+        //   pop  {r4,r5,pc}
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            movi(Reg::R4, 7), // dominator-defines R4 before the loop
+            movi(Reg::R5, 0),
+            label(".head"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4), // reads R4 in the body
+            add_rr(Reg::R5, Reg::R5, Reg::R5),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::NE, ".head"), // back-edge to the header (join)
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value read across a loop back-edge must stay \
+             available (the universe-init correctness case) — got a false positive"
+        );
+    }
 }
