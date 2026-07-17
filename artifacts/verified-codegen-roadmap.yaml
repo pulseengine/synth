@@ -811,6 +811,25 @@ artifacts:
         delete WasmCertReference.v. Until (a) lands upstream, the transcription
         stays — the "trusted transcription" caveat is NOT yet retired.
 
+        PHASE 3 TRANSCRIPTION BATCH (#242): while the real dep stays blocked, the
+        hand transcription is EXTENDED to the i64 integer family (22 ops:
+        add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/eq/ne/lt_u/lt_s/
+        gt_u/gt_s/le_u/le_s/ge_u/ge_s), from the SAME pinned coq9.0-wasm-2.2.0
+        sources — arithmetic/bitwise/shift/compare cite the same generic Make
+        functor lines as i32 (read at wordsize 64, Int64 at numerics.v:1038-1039);
+        the two rotates newly cite CompCert 3.16 Integers.v:217-222 (rol/ror).
+        Each op has a real-Qed op-level refinement lemma; the 16 ops WIRED in
+        exec_wasm_instr (shifts + rotates + 11 comparisons (incl. eqz)) also get an
+        executor-level Qed. NAMED RESIDUAL (not forced): i64 add/sub/mul/and/or/xor
+        have op-level refinement ONLY — exec_wasm_instr returns None for those
+        constructors (unwired in the model), so no executor-level lemma is
+        claimed; wiring them is a semantics-model change, out of scope for a
+        transcription batch. Rocq Qed total 536 -> 585 (WasmCertBridge.v 49 -> 98);
+        the rotate proofs discharge a genuine n=0 boundary gap (synth re-normalizes
+        the [64-n] sub-shift count while the reference's is raw, reconciled via
+        lor-idempotence at the boundary). Still a hand transcription — the caveat
+        stands.
+
   # ---------------------------------------------------------------------------
   # Track C — validation methodology (can start now; feeds Tracks A and B)
   # ---------------------------------------------------------------------------
