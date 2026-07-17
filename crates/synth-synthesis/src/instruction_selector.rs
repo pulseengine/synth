@@ -6502,12 +6502,18 @@ impl InstructionSelector {
                 vec![ArmOp::I32TruncF32U { rd, sm }]
             }
 
-            // #782a: i64-target trunc_sat from f32 — no i64 register-pair
-            // conversion path on 32-bit ARM. Loud decline (decline > wrong).
+            // #782: i64-target trunc_sat — SELECTOR ASYMMETRY. The shipping
+            // path `select_with_stack` LOWERS all four i64 forms (v0.49 finale,
+            // `lower_i64_trunc_sat_from_f64`, branch-free FP decompose). This
+            // register-blind `select_default` fallback has no i64 register-pair
+            // machinery, so it still LOUD-declines here (decline > wrong). Both
+            // CLI paths (self-contained `--all-exports` and `--relocatable`)
+            // route these ops through `select_with_stack`, so this arm is not
+            // reached for a normal compile; it remains an honest safety net.
             op @ (I64TruncSatF32S | I64TruncSatF32U) if self.fpu.is_some() => {
                 return Err(synth_core::Error::synthesis(format!(
-                    "{op:?} not supported on 32-bit ARM: no i64 register-pair \
-                     float→int conversion path (#782a)"
+                    "{op:?}: select_default has no i64 register-pair path — the \
+                     shipping select_with_stack selector lowers it (#782)"
                 )));
             }
 
@@ -6813,8 +6819,13 @@ impl InstructionSelector {
             }
 
             // F64 i64 conversions: VCVT.{F64,S32}.{S32,F64} with i64 register
-            // pairs is not implemented in the backend. Surface a typed error.
-            // (#782a: the i64-target trunc_sat forms decline identically.)
+            // pairs is not implemented in this register-blind `select_default`
+            // fallback. Surface a typed error. NOTE (#782): the two
+            // `I64TruncSatF64*` forms ARE lowered on the shipping
+            // `select_with_stack` path (v0.49 finale); they decline here only
+            // because select_default lacks the pair machinery, and a normal
+            // compile never routes them through this arm. The trapping
+            // `I64TruncF64*` and `F64ConvertI64*` remain genuinely unimplemented.
             op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U
             | I64TruncSatF64S | I64TruncSatF64U)
                 if self.has_double_fpu() =>

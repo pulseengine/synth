@@ -46,7 +46,7 @@ soundness feature, not an absence.
 | f32 scalar via VFP | Y (FPU targets) | Complete op set incl. all six comparisons, NaN-aware (v0.41); requires an FPU target (e.g. `cortex-m4f`) |
 | f64 scalar via VFP | Y (FPU targets) | Complete (v0.43, #369 closed); marshalling + AAPCS-VFP mixed params |
 | Trapping float→int truncations | Y | Domain-guarded (trap, not saturate) — the #709 soundness class |
-| Non-trapping `trunc_sat` (0xFC prefix) | D | Not decoded — functions using it loud-skip; tracked in #782 |
+| Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residuals: i64-from-f32 declines on single-precision (needs the f64 promote); a pressure-dependent f32 class on `--relocatable cortex-m7dp` still tracked in #782 |
 | Control flow (block, loop, if/else, br, br_if, br_table) | Y | Renode execution tests |
 | Function calls (direct + `call_indirect`) | Y | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained dispatch is PC-relative via a flash funcref table (v0.47) |
 | Memory (load/store incl. sub-word, size/grow) | Y | `memory.grow` returns -1 on fixed-memory embedded targets; grow(0) ≡ size |

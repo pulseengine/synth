@@ -478,6 +478,20 @@ def main():
             elif got != want:
                 fails += 1
                 print(f"BUG [m4f] {fn}({v!r}) = {got:#x} != wasmtime {want:#x}")
+    # DECLINE-HONESTY (the v0.46 lesson — this residual must still assert):
+    # ALL FOUR i64-target forms need a DOUBLE FPU. The f32-source pair promotes
+    # to f64 (VCVT.F64.F32) and the f64-source pair needs f64 arithmetic — both
+    # are genuinely absent on a single-precision m4f, so all four must be
+    # loud-declined (absent from the symbol table) here. This is the ONLY gate
+    # on the f32-source i64 decline, which surfaces at ISA validation (below the
+    # selector-level Rust unit test).
+    for fn in I64_FNS:
+        total += 1
+        if fn in m4f_syms:
+            fails += 1
+            print(f"FAIL [m4f] {fn}: an i64 trunc_sat form compiled on a "
+                  f"single-precision target — expected a LOUD decline "
+                  f"(no double FPU for the f64 decompose)")
 
     # ==== aarch64: all eight, unicorn + native ==============================
     compile_or_die("/tmp/trunc_sat_782_a64.o",
