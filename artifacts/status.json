@@ -10,12 +10,12 @@
   "rocq_admit_tactics": 2,
   "rocq_admitted": 3,
   "rocq_axioms": 93,
-  "rocq_qed": 585,
+  "rocq_qed": 591,
   "sail_bridge_qed": 92,
   "sel_dsl_pilot_qed": 7,
   "sel_dsl_rule_qed": 50,
   "sel_dsl_rules": 50,
   "version": "0.49.0",
   "verus_spec_fns": 8,
-  "wasmcert_bridge_qed": 98
+  "wasmcert_bridge_qed": 104
 }

@@ -324,6 +324,56 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  (* i64 arithmetic operations (mirror the i32 arms via pop2_i64 / VI64) *)
+  | I64Add =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.add v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Sub =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.sub v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Mul =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.mul v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  (* i64 bitwise operations *)
+  | I64And =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.and v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Or =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.or v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Xor =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.xor v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
   (* i64 comparison operations *)
   | I64Eqz =>
       match pop_i64 s with

@@ -1,16 +1,17 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-17 (VCR-WASM-001 phase 3: recount 585 Qed / 3 Admitted,
-+2 admit., crude `grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior
-recounts; +49 vs the prior 536 are the WasmCert-Coq i64 refinement batch in
-`WasmCertBridge.v` (22 i64 ops transcribed from the same pinned
-coq9.0-wasm-2.2.0 sources with line-level provenance: op-level refinement for
-all 22 add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/eq/ne/lt/gt/le/ge,
-plus executor-level for the 16 WIRED ops — the shifts, the two rotates, the 12
-comparisons; the 6 i64 arithmetic/bitwise ops are op-level-only, a NAMED
-residual because `exec_wasm_instr` returns `None` for those constructors; still
-a hand transcription, not the real external dep). The prior +47 vs 489 was the
-i32 batch (19 ops);
+**Last Updated: 2026-07-17 (VCR-WASM-001 phase 3 wiring: recount 591 Qed / 3 Admitted,
++2 admit., crude `grep "Qed\."` over `coq/Synth/**/*.v` — same method
+as prior recounts; +6 vs the prior 585 are the six i64 arithmetic/bitwise
+executor-level refinement theorems in `WasmCertBridge.v`
+(add/sub/mul/and/or/xor). Those six ops are now WIRED in `exec_wasm_instr`
+(pop2_i64 / VI64, mirroring their i32 twins), so their executor-level
+refinement lands — the former "op-level-only" residual is CLOSED and ALL 22 i64
+integer ops now carry BOTH op-level and executor-level refinement. Still a hand
+transcription, not the real external dep. The prior +49 vs 536 was the
+WasmCert-Coq i64 op-level batch (22 ops transcribed from the same pinned
+coq9.0-wasm-2.2.0 sources with line-level provenance); the +47 vs 489 before
+that was the i32 batch (19 ops);
 prior recount context (#166): the
 -40 vs the prior 512 are the retired VCR-ISA-001 #667 cross-check lemmas of
 `VcrSelRulesGenCheck.v`: `VcrSelRules.v` now DEFINES every `rule_X` as the
@@ -183,7 +184,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 585 Qed / 3 Admitted (+2 admit.) across all files** (recount 2026-07-17, CI-gated via `claims.yaml`)
+**Total: 591 Qed / 3 Admitted (+2 admit.) across all files** (recount 2026-07-17, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -465,7 +466,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | StateMonad.v | 3 | 0 | Infra |
 | WasmValues.v | 2 | 0 | Infra |
 | WasmCertReference.v | 0 | 0 | definitions only (VCR-WASM-001: WasmCert-Coq i32 AND i64 rules transcribed from the pinned coq9.0-wasm-2.2.0 sources with line-level provenance). PHASE 3 (v0.48, #242): the extra-coq-package bazel/nix HOOK is LANDED (blocker (1) closed) but the REAL dep stays PENDING and this file stays a hand transcription — nixpkgs pin 88d3861a ships wasmcert 2.2.0, which propagates the UNFREE compcert 3.16 (inria-compcert, meta.license.free=false); wasmcert >= 2.2.1 (drops CompCert) not yet in the pin, so the "trusted transcription" caveat is NOT yet retired |
-| WasmCertBridge.v | 98 | 0 | Infra/T1-analogue (VCR-WASM-001 phase 2: 19 i32 ops; phase 3 (#242): 22 i64 ops — add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/eq/ne/lt/gt/le/ge, each with an op-level refinement Qed against the WasmCert reference, plus an executor-level Qed through the real `exec_wasm_instr` for the 16 WIRED ops (shifts + 2 rotates + 11 comparisons (incl. eqz)); the 6 i64 arithmetic/bitwise ops are op-level-only, a NAMED residual because `exec_wasm_instr` returns `None` for those constructors — plus the i64 encoding/bit-level/rotate-boundary helper Qed) |
+| WasmCertBridge.v | 104 | 0 | Infra/T1-analogue (VCR-WASM-001 phase 2: 19 i32 ops; phase 3 (#242): 22 i64 ops — add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/eq/ne/lt/gt/le/ge, each with an op-level refinement Qed against the WasmCert reference, PLUS an executor-level Qed through the real `exec_wasm_instr` for ALL 22 ops. The v0.50 wiring batch (#242) WIRED the six arithmetic/bitwise ops (add/sub/mul/and/or/xor) into `exec_wasm_instr` (pop2_i64 / VI64), closing the former op-level-only residual — plus the i64 encoding/bit-level/rotate-boundary helper Qed) |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683. VCR-ISA-001 #667 increment 2: every `rule_X` is DEFINED as the GENERATED `Gen.rule_X` of `VcrSelRulesGenerated.v` — emitted from the shipped `sel_dsl::RULES` — so the theorems are stated directly about the shipped sequences; a table change regenerates `Gen` and breaks the matching Qed. The former `VcrSelRulesGenCheck.v` 40-lemma `reflexivity` gate is retired as vacuous/subsumed) |
 | **Total** | **585** | **3** | (+2 `admit.`; headline re-derived by the claim gate) |
