@@ -579,7 +579,7 @@ artifacts:
       full-word i64.load/i64.store DO lower on both; only the sub-word extend/
       truncate variants are the gap). All sixteen are now ledgered VCR-SEL-005
       RV32-selector DEFERRALS (a gated, owned fact instead of a silicon surprise) —
-      the KNOWN_DIVERGENCES ledger is now 5 Zbb + 12 new = 17 entries. RED-FIRST
+      the KNOWN_DIVERGENCES ledger is now 5 Zbb + 16 new = 21 entries. RED-FIRST
       non-vacuity is now a first-class companion test
       (red_first_unledgered_one_sided_gap_is_caught): it drops the real i32.rotl
       ledger entry and asserts the gate reports it as an unexpected divergence on

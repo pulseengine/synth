@@ -13,11 +13,15 @@
 //! op-PARITY gate.
 //!
 //! WHAT IT ASSERTS. Every `WasmOp` variant is assigned a [`ParityClass`] by a
-//! no-wildcard `match` (see [`classify`]). This makes the universe
+//! no-wildcard `match` (see [`classify`]). The `classify` match is
 //! COMPILER-ENFORCED complete: a new `WasmOp` variant fails to compile until
-//! someone classifies it — you cannot add an op that silently escapes the gate
-//! (the #615 "expand-or-loud-reject, no-wildcard tripwire" discipline). Two
-//! classes:
+//! someone classifies it — you cannot add an op that silently escapes
+//! classification (the #615 "expand-or-loud-reject, no-wildcard tripwire"
+//! discipline). The op-list fed through it (`all_wasm_op_representatives`) is
+//! hand-maintained (WasmOp's `Vec`/`Box`/`f32` fields rule out a derive-based
+//! iterator), but a new variant's compile error lands in `classify` and points
+//! the author to add both the arm and its representative — see that function's
+//! note. Two classes:
 //!   * [`ParityClass::IntegerCore`] — the integer op core where the #223/#232
 //!     gaps lived. Each carries a self-contained, minimally-valid probe
 //!     sequence; both backends are lowered against it and the result must be at
@@ -594,9 +598,15 @@ fn classify(op: &WasmOp) -> ParityClass {
 }
 
 /// The complete universe of `WasmOp` variants, one representative each, fed
-/// through the no-wildcard [`classify`]. A new variant added to `WasmOp` must
-/// appear here (the enumeration drives it) AND be classified (the match enforces
-/// it) — the two together give compiler-enforced universe-completeness.
+/// through the no-wildcard [`classify`].
+///
+/// HONEST completeness story: the [`classify`] match is COMPILER-ENFORCED
+/// complete (no wildcard — a new `WasmOp` variant fails to compile there until
+/// classified). This `Vec`, by contrast, is HAND-MAINTAINED: `WasmOp` carries
+/// `Vec`/`Box`/`f32` fields so a derive-based `EnumIter` cannot drop in. The two
+/// compose safely because a new variant's compile error lands in `classify()`,
+/// which points the author HERE to add both the arm and the representative — you
+/// cannot add a silently-unclassified op, and the natural fix adds its probe.
 ///
 /// Note the representative values are irrelevant to classification (the match
 /// ignores payloads); they exist only so the vector enumerates every variant.
@@ -686,12 +696,16 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
 ///
 /// MEASURED 2026-07-17 (universe-completeness upgrade #242): making the probe
 /// enumerate the FULL `WasmOp` universe (not a curated integer list) surfaced
-/// SEVEN more integer-core one-sided gaps the old curated set never probed —
+/// SIXTEEN more integer-core one-sided gaps the old curated set never probed —
 /// ARM lowers, RV32 loud-declines (`unsupported wasm op for RV32 skeleton: …`),
 /// confirmed end-to-end via `synth compile -b riscv`. These are exactly the
 /// #223 silent-cross-backend-divergence class the oracle exists to surface:
-/// globals, memory management, bulk memory, and br_table. Each is a TRACKED
-/// RV32-selector DEFERRAL under VCR-SEL-005, not a permanent ISA limit.
+/// globals (get/set), memory management (size/grow), bulk memory (copy/fill),
+/// br_table, and the nine sub-word i64 loads/stores (load8/16/32_s/u,
+/// store8/16/32 — the full-word i64.load/i64.store DO lower on both; only the
+/// sub-word extend/truncate variants are the gap). Each is a TRACKED
+/// RV32-selector DEFERRAL under VCR-SEL-005, not a permanent ISA limit. Ledger
+/// total: 5 Zbb + 16 new = 21 entries.
 fn known_divergences() -> &'static [(&'static str, &'static str)] {
     &[
         // ---- Zbb bit-manipulation class (measured 2026-06-20) ----
