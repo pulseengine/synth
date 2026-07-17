@@ -57,9 +57,12 @@ pub const ARENA_IMPORT_FIELD: &str = "__cabi_arena_realloc";
 /// Outcome of [`bind_cabi_arena_realloc`].
 #[derive(Debug)]
 pub enum ArenaBind {
-    /// The binding does not apply — the caller MUST keep the original bytes
-    /// (byte-identical pass-through; the reason is for logging).
-    NotApplicable(&'static str),
+    /// No arena import in the module — silent byte-identical pass-through
+    /// (the overwhelmingly common case; not worth a log line).
+    NoArenaImport,
+    /// The arena import is present but the module keeps the host-linked
+    /// seam (reason worth logging); byte-identical pass-through.
+    KeptHostSeam(&'static str),
     /// The import was bound: compile `bytes` instead of the input.
     Bound(BoundArena),
 }
@@ -376,8 +379,9 @@ fn cursor_global_entry(arena_base: u32) -> Vec<u8> {
 /// Bind a sole `env::__cabi_arena_realloc` function import to a synthesized
 /// in-module arena allocator (#418). See the module docs for the contract.
 ///
-/// - `Ok(NotApplicable)` — no arena import, or the module has OTHER imports
-///   too (it cannot self-contain regardless; pass the bytes through).
+/// - `Ok(NoArenaImport)` / `Ok(KeptHostSeam)` — pass the original bytes
+///   through byte-identically (the latter: arena import present but the
+///   module has OTHER imports too, so it cannot self-contain regardless).
 /// - `Ok(Bound)` — compile the returned bytes instead.
 /// - `Err` — the arena import is present and this is the self-contained
 ///   path, but the module is not soundly bindable: refuse LOUDLY rather
@@ -385,13 +389,13 @@ fn cursor_global_entry(arena_base: u32) -> Vec<u8> {
 pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
     let s = scan(wasm)?;
     let Some(arena_type_idx) = s.arena_type_idx else {
-        return Ok(ArenaBind::NotApplicable("no arena import"));
+        return Ok(ArenaBind::NoArenaImport);
     };
     if s.total_imports > 1 {
         // Other embedder imports remain — the image cannot self-contain, so
         // the arena import stays on the documented pass-through seam
         // (undefined symbol, host-linked) alongside them.
-        return Ok(ArenaBind::NotApplicable(
+        return Ok(ArenaBind::KeptHostSeam(
             "module has other imports — keeping the host-linked seam",
         ));
     }
@@ -615,7 +619,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             bind_cabi_arena_realloc(&wasm).unwrap(),
-            ArenaBind::NotApplicable(_)
+            ArenaBind::NoArenaImport
         ));
     }
 
@@ -633,7 +637,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             bind_cabi_arena_realloc(&wasm).unwrap(),
-            ArenaBind::NotApplicable(_)
+            ArenaBind::KeptHostSeam(_)
         ));
     }
 

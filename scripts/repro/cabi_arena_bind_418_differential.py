@@ -42,6 +42,7 @@ from unicorn.arm_const import (
     UC_ARM_REG_R1,
     UC_ARM_REG_R2,
     UC_ARM_REG_R3,
+    UC_ARM_REG_R11,
     UC_ARM_REG_SP,
 )
 
@@ -164,7 +165,12 @@ def fresh_machine(blobs, syms):
     image = blobs[0][1]
     sp_init = int.from_bytes(image[0:4], "little")
     reset = int.from_bytes(image[4:8], "little")
-    first_func = min(syms.values()) & ~1
+    # First COMPILED function (the startup's final jump target) — exclude the
+    # image-infrastructure symbols, or `min` lands on Reset_Handler and the
+    # startup never executes (a vacuous machine: R9/R10/R11 all zero).
+    infra = {"Reset_Handler", "Default_Handler", "Trap_Handler",
+             "__linear_memory_base"}
+    first_func = min(v for k, v in syms.items() if k not in infra) & ~1
     mu.reg_write(UC_ARM_REG_SP, sp_init)
     mu.emu_start(reset, first_func, timeout=5_000_000)
     if mu.reg_read(UC_ARM_REG_PC) & ~1 != first_func:
@@ -172,6 +178,10 @@ def fresh_machine(blobs, syms):
             f"startup did not reach the first function "
             f"(pc={mu.reg_read(UC_ARM_REG_PC):#x}, want {first_func:#x})"
         )
+    # Anti-vacuity: the startup must have established the linmem base in R11.
+    r11 = mu.reg_read(UC_ARM_REG_R11)
+    if r11 != syms["__linear_memory_base"]:
+        sys.exit(f"startup left R11={r11:#x}, want __linear_memory_base")
     return mu, sp_init
 
 
