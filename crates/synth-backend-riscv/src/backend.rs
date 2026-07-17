@@ -102,9 +102,43 @@ impl Backend for RiscVBackend {
             functions.push(compiled);
         }
 
+        // #798: ship the module's active data segments as `.wasm_data` records
+        // (declaration order — the startup's record-order copy preserves
+        // later-wins), then READ BACK the emitted blob and validate the image
+        // it serves against the declared segments. Empty segments ⇒ empty blob
+        // ⇒ byte-identical object.
+        let segments: Vec<synth_core::static_data_addr::DataSegment> = module
+            .data_segments
+            .iter()
+            .map(|(off, d)| synth_core::static_data_addr::DataSegment {
+                linmem_off: *off,
+                bytes: d.clone(),
+            })
+            .collect();
+        let wasm_data = synth_core::static_data_addr::pack_segment_records(&segments);
+        let served = synth_core::static_data_addr::served_image_from_records(&wasm_data)
+            .ok_or_else(|| {
+                BackendError::CompilationFailed(
+                    "VCR-VER-003 (#798): emitted .wasm_data records failed to parse back \
+                     — this is a compiler bug in the record packing"
+                        .into(),
+                )
+            })?;
+        if let synth_core::static_data_addr::ImageVerdict::Mismatch(m) =
+            synth_core::static_data_addr::validate_served_image(&segments, &served)
+        {
+            return Err(BackendError::CompilationFailed(format!(
+                "VCR-VER-003 (#798): the shipped .wasm_data records serve {} byte(s) that \
+                 disagree with the runtime linear-memory image (first: {}) — compiler bug \
+                 in the record packing",
+                m.len(),
+                m[0].describe()
+            )));
+        }
+
         let builder = RiscVElfBuilder::new_relocatable();
         let elf = builder
-            .build(&elf_funcs)
+            .build_with_data(&elf_funcs, &wasm_data)
             .map_err(|e| BackendError::CompilationFailed(format!("RISC-V ELF emit: {e}")))?;
 
         Ok(CompilationResult {
