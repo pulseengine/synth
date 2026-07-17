@@ -12584,7 +12584,9 @@ impl InstructionSelector {
                             )));
                         }
                     }
-                    if self.ret_f64 && let Some(dreg) = ret_top_f64 {
+                    if self.ret_f64
+                        && let Some(dreg) = ret_top_f64
+                    {
                         // Home to D0 via the core round-trip (bit-exact; no
                         // D→D move in the ArmOp set). R0/R1 are dead at the
                         // return of an f64-returning function.
@@ -12610,7 +12612,9 @@ impl InstructionSelector {
                         }
                         stack.pop();
                         free_vfp_dtemp(&mut vfp_used, &vfp_home, dreg);
-                    } else if self.ret_f32 && let Some(sreg) = ret_top_f32 {
+                    } else if self.ret_f32
+                        && let Some(sreg) = ret_top_f32
+                    {
                         // Home to S0 via the R12 (IP scratch) round-trip.
                         if vfp_s_index(sreg) != Some(0) {
                             instructions.push(ArmInstruction {
