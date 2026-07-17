@@ -13412,6 +13412,86 @@ impl InstructionSelector {
                         stack.push(StackVal::Double { dreg: dd });
                         continue;
                     }
+                    // #782(b): WIDE (i64) select — BOTH halves must be picked.
+                    // The narrow path below moves only the lo register and
+                    // pushed the result as i32, silently keeping the WRONG hi
+                    // half whenever cond == 0 (found adversarially while
+                    // clearing the float-select class; also covers a soft-float
+                    // f64 select, which rides the i64-pair treatment). Width is
+                    // read BEFORE the pops (pop_operand returns only the lo).
+                    let v2_wide = stack.last().is_some_and(|v| v.is_i64());
+                    let v1_wide = stack.len() >= 2 && stack[stack.len() - 2].is_i64();
+                    if v2_wide || v1_wide {
+                        if v2_wide != v1_wide {
+                            return Err(synth_core::Error::synthesis(
+                                "select value operands disagree on width \
+                                 (i32 vs i64) — invalid wasm"
+                                    .to_string(),
+                            ));
+                        }
+                        // Destination pair FIRST, while both values are still
+                        // stack-live (the allocator cannot hand out their
+                        // registers; a pressure spill of them reloads on pop).
+                        let mut resv = live_params.clone();
+                        resv.push(cond_reg);
+                        let (dlo, dhi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            &resv,
+                            idx,
+                        )?;
+                        // Reserve the dst pair through the (possibly reloading)
+                        // pops so a spilled operand cannot reload into it.
+                        resv.push(dlo);
+                        resv.push(dhi);
+                        let val2 = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        let hi2 = i64_pair_hi(val2)?;
+                        let val1 = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        let hi1 = i64_pair_hi(val1)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: cond_reg,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // Four IT;MOVs (the flag-preserving 0x46xx MOV — the
+                        // CMP flags survive all four). dst is disjoint from
+                        // both source pairs by construction, so the NE/EQ
+                        // moves never clobber a source half they still need.
+                        for (rd, rm, cond) in [
+                            (dlo, val1, Condition::NE),
+                            (dhi, hi1, Condition::NE),
+                            (dlo, val2, Condition::EQ),
+                            (dhi, hi2, Condition::EQ),
+                        ] {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::SelectMove { rd, rm, cond },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        stack.push(StackVal::i64(dlo));
+                        continue;
+                    }
                     let val2 = pop_operand(
                         &mut stack,
                         &mut next_temp,
