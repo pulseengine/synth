@@ -14,5 +14,7 @@
 //! tests.
 
 pub use synth_core::static_data_addr::{
-    AddrMismatch, DataSegment, RelocResolution, Verdict, resolve_owner, validate_reloc_resolutions,
+    AddrMismatch, DataSegment, ImageMismatch, ImageVerdict, MAX_ACCESS_BYTES, PackedInit,
+    RelocResolution, Verdict, image_extent, pack_rom_image, resolve_owner,
+    validate_reloc_resolutions, validate_reloc_resolutions_spanned, validate_served_image,
 };

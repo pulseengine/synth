@@ -3480,6 +3480,42 @@ fn compile_all_exports(
         info!("Building AArch64 multi-function relocatable object (EM_AARCH64)");
         build_multi_func_aarch64_elf(&compiled_funcs)?
     } else if is_riscv {
+        // VCR-VER-003 phase 2 (#777): the RV32 single-base scheme (s11 =
+        // __linear_memory_base, zeroed RAM at reset) ships NO static-data
+        // initializer image — the object is `.text`-only, and neither the
+        // generated startup.c nor linker.ld carries the wasm data segments.
+        // Validate what zeroed RAM actually serves against the runtime image:
+        // any NONZERO later-wins byte is un-served (a load there returns 0x00
+        // instead of the initializer — the silent-drop analogue of #757).
+        // All-zero or zero-overwritten segments genuinely ARE served correctly
+        // and stay silent. This is a LOUD WARNING, not (yet) a hard error:
+        // the CI-pinned RV32 frozen fixture (control_step.wasm, which carries
+        // a nonzero active segment its differential never reads) freezes
+        // compile-success on this path; the hard-decline + initializer
+        // shipping (the RV32 analogue of #758) is the named follow-up.
+        let rv_segments: Vec<synth_core::static_data_addr::DataSegment> = all_data_segments
+            .iter()
+            .map(|(off, d)| synth_core::static_data_addr::DataSegment {
+                linmem_off: *off,
+                bytes: d.clone(),
+            })
+            .collect();
+        if let synth_core::static_data_addr::ImageVerdict::Mismatch(mismatches) =
+            synth_core::static_data_addr::validate_served_image(&rv_segments, &[])
+        {
+            let first = &mismatches[0];
+            warn!(
+                "VCR-VER-003 (#777 phase 2): the RISC-V object ships NO \
+                 static-data initializer image — {} nonzero initializer byte(s) \
+                 (first: {}) will read as 0x00 from zeroed RAM at runtime. Any \
+                 load from those addresses is a SILENT MISCOMPILE; use the ARM \
+                 relocatable (--native-pointer-abi) or self-contained \
+                 (--cortex-m) paths for modules whose code reads its data \
+                 segments.",
+                mismatches.len(),
+                first.describe()
+            );
+        }
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs)?
     } else if has_external_relocations || relocatable {
@@ -4203,6 +4239,12 @@ fn build_relocatable_elf(
     // from the emitted `(k, new_addend)` — never recomputed — so the check
     // consumes the real output and cannot be mirror-pinned vacuous.
     let mut addr_resolutions: Vec<synth_core::static_data_addr::RelocResolution> = Vec::new();
+    // #777 phase 2: the packed init region (segments at their 4-aligned packed
+    // offsets, NO globals slots yet) is built ONCE here — the span validator
+    // reads the same bytes the `.data` section will ship (the emission below
+    // extends this very blob with the globals slots), so the served side of
+    // the check is the real artifact, not a recompute.
+    let mut mixed_init_blob: Option<Vec<u8>> = None;
     if do_mixed_split {
         for (i, func) in funcs.iter().enumerate() {
             for reloc in &func.relocations {
@@ -4259,6 +4301,15 @@ fn build_relocatable_elf(
         // a wrong-segment resolution (the #757 miscompile) FAILS here at compile
         // time on ANY module. Unconditional — runs in the default `--features
         // riscv` shipping build, not just `verify`.
+        //
+        // Phase 2 (#777): the check is SPANNED — beyond the addend byte, every
+        // runtime-covered byte a conservatively-widened access (up to
+        // MAX_ACCESS_BYTES; the reloc records no width) could read must equal
+        // what the packed init blob actually serves at that position. This
+        // catches the staggered-overlap straddle (addend byte correct, tail
+        // bytes runtime-owned by a LATER segment) and the packed-boundary
+        // crossing (4-align padding / next-declared segment / init-region
+        // escape) that phase 1's single-byte check accepted.
         let val_segments: Vec<synth_core::static_data_addr::DataSegment> = data_segments
             .iter()
             .map(|(off, d)| synth_core::static_data_addr::DataSegment {
@@ -4266,10 +4317,19 @@ fn build_relocatable_elf(
                 bytes: d.clone(),
             })
             .collect();
+        let (packed, globals_off, _data_size) = mixed_layout.as_ref().unwrap();
+        let mut init_blob = vec![0u8; *globals_off as usize];
+        for ((_off, d), &poff) in data_segments.iter().zip(packed.iter()) {
+            init_blob[poff as usize..poff as usize + d.len()].copy_from_slice(d);
+        }
         if let synth_core::static_data_addr::Verdict::Mismatch(mismatches) =
-            synth_core::static_data_addr::validate_reloc_resolutions(
+            synth_core::static_data_addr::validate_reloc_resolutions_spanned(
                 &val_segments,
                 &addr_resolutions,
+                &synth_core::static_data_addr::PackedInit {
+                    seg_packed_off: packed,
+                    bytes: &init_blob,
+                },
             )
         {
             let detail = mismatches
@@ -4279,12 +4339,15 @@ fn build_relocatable_elf(
                 .join("\n");
             anyhow::bail!(
                 "VCR-VER-003: static-data addressing validation FAILED — {} \
-                 relocation(s) resolve to the wrong overlapping-segment byte \
-                 (this is the #757 silent-miscompile class; segments must apply \
-                 in declaration order, later-wins):\n{detail}",
+                 relocation byte(s) disagree with the runtime linear-memory \
+                 image (this is the #757 silent-miscompile class; segments must \
+                 apply in declaration order, later-wins — a span mismatch means \
+                 an access starting in one packed segment would read stale or \
+                 non-adjacent bytes the runtime image does not hold):\n{detail}",
                 mismatches.len()
             );
         }
+        mixed_init_blob = Some(init_blob);
     }
 
     // #383 (VCR-MEM-001 layer-1 + #678 layer-2): shrink the [0, sp_init)
@@ -4518,17 +4581,19 @@ fn build_relocatable_elf(
             // #354: zero reservation -> NOBITS `.bss` (section 5),
             // `__synth_wasm_data` = 0; init segments packed into a small PROGBITS
             // `.data` (section 6), each under its own `__synth_wasm_seg_K`.
-            let (packed, globals_off, data_size) = mixed_layout.as_ref().unwrap();
+            let (_packed, globals_off, data_size) = mixed_layout.as_ref().unwrap();
             let bss = Section::new(".bss", ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
                 .with_align(4)
                 .with_size(reserved_extent);
             elf_builder.add_section(bss);
-            let mut blob = vec![0u8; *data_size as usize];
-            for ((_off, d), &poff) in data_segments.iter().zip(packed.iter()) {
-                blob[poff as usize..poff as usize + d.len()].copy_from_slice(d);
-            }
+            // #777 phase 2: ship the VALIDATED init blob (the span check above
+            // ran against these exact bytes), extended with the globals slots.
+            let mut blob = mixed_init_blob
+                .take()
+                .expect("mixed_init_blob is built whenever do_mixed_split");
+            blob.resize(*data_size as usize, 0);
             if let Some(ng) = &native_layout {
                 // #383: re-based SP slot when the shadow-stack shrink fired.
                 let globals = rebased_globals.as_ref().unwrap_or(&ng.globals);
@@ -5258,15 +5323,41 @@ fn build_multi_func_cortex_m_elf(
         );
     }
     let data_extent: u32 = data_extent_u64 as u32;
-    let data_rom_image: Vec<u8> = if data_extent == 0 {
-        Vec::new()
-    } else {
-        let mut blob = vec![0u8; data_extent as usize];
-        for (off, d) in data_segments {
-            blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
-        }
-        blob
-    };
+    // VCR-VER-003 phase 2 (#777): pack the dense image via the shared
+    // declaration-order (later-wins) packer, then VALIDATE it against the
+    // independently reconstructed runtime linear-memory image — every blob
+    // byte must equal the byte WASM instantiation leaves there (later
+    // segments overwrite earlier on overlap; gaps are zero). The dense layout
+    // (index = linmem offset) preserves spans and adjacency structurally, so
+    // this one obligation covers the whole self-contained static-data story.
+    // Unconditional; a mismatch is a compiler bug, never a module property.
+    let rom_segments: Vec<synth_core::static_data_addr::DataSegment> = data_segments
+        .iter()
+        .map(|(off, d)| synth_core::static_data_addr::DataSegment {
+            linmem_off: *off,
+            bytes: d.clone(),
+        })
+        .collect();
+    let data_rom_image: Vec<u8> =
+        synth_core::static_data_addr::pack_rom_image(&rom_segments, /* last_wins */ true);
+    debug_assert_eq!(data_rom_image.len() as u64, data_extent_u64);
+    if let synth_core::static_data_addr::ImageVerdict::Mismatch(mismatches) =
+        synth_core::static_data_addr::validate_served_image(&rom_segments, &data_rom_image)
+    {
+        let detail = mismatches
+            .iter()
+            .take(8)
+            .map(|m| format!("  {}", m.describe()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "VCR-VER-003: self-contained ROM data image validation FAILED — {} \
+             byte(s) of the #758 flash init image disagree with the runtime \
+             linear-memory image (segments applied in declaration order, \
+             later-wins). This is a compiler bug in the ROM packing:\n{detail}",
+            mismatches.len()
+        );
+    }
 
     // RAM layout — see the SRAM layout contract in this function's doc (#687).
     //
