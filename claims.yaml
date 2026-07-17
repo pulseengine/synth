@@ -29,16 +29,16 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "489 Qed / 3 Admitted"
+    text: "536 Qed / 3 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '489 Qed / 3 Admitted'      # a verbatim check alone greens if one
+        pattern: '536 Qed / 3 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 489
+        expect: 536
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -50,12 +50,12 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "489 Qed / 3 Admitted"
+    text: "536 Qed / 3 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 489
+        expect: 536
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -63,16 +63,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "489 Qed / 3 Admitted"
+    text: "536 Qed / 3 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '489 Qed / 3 Admitted'
+        pattern: '536 Qed / 3 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 489
+        expect: 536
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -232,24 +232,28 @@ claims:
         expect: 92
 
   # VCR-WASM-001 (Track B): WASM source semantics anchored on WasmCert-Coq.
-  # Bounded first increment — 1 op (i32.add), 2 real-Qed refinement lemmas
-  # (WasmCertBridge.v), establishing the pattern. The reference rule is a
-  # hand transcription of WasmCert-Coq/CompCert Int.add with line-level
-  # provenance (WasmCertReference.v); a real external dep + full fragment is
-  # the named follow-up. The WASM-side analogue of SailArmBridge.v (ISA-001).
+  # Phase 1 (v0.45): 1 op (i32.add), 2 real-Qed refinement lemmas. Phase 2
+  # (v0.47): the i32 integer fragment batch — 19 ops (add/sub/mul, and/or/
+  # xor, shl/shr_u/shr_s, eqz/eq/ne, lt/gt/le/ge u+s), 49 Qed in
+  # WasmCertBridge.v (op-level + executor-level per op, + encoding/bit-level
+  # helpers). The reference rules are hand transcriptions of the PINNED
+  # coq9.0-wasm-2.2.0 sources with line-level provenance
+  # (WasmCertReference.v); the real external dep is nix-FEASIBLE but
+  # bazel-deferred on three named blockers (see the roadmap entry). The
+  # WASM-side analogue of SailArmBridge.v (ISA-001).
   - id: SYNTH-VCR-WASM-001-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
-    text: "BOUNDED FIRST INCREMENT LANDED (v0.45, VCR-WASM-001)"
+    text: "PHASE 2 (v0.47): real-dependency FEASIBILITY SPIKE result"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
         id: VCR-WASM-001
         field: status
         equals: implemented
-      - kind: count-eq                       # the 2 refinement bridge lemmas
+      - kind: count-eq                       # the refinement bridge lemmas
         pattern: 'Qed\.'
         glob: ['coq/Synth/WASM/WasmCertBridge.v']
-        expect: 2
+        expect: 49
       - kind: file-exists
         path: coq/Synth/WASM/WasmCertReference.v
 
