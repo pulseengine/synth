@@ -2233,6 +2233,19 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
         I32TruncF32S => Some(WasmOp::I32TruncF32S),
         I32TruncF32U => Some(WasmOp::I32TruncF32U),
+        // #782a: the nontrapping trunc_sat family (0xFC-prefixed,
+        // saturating-float-to-int proposal) — TOTAL ops (§4.3.2: NaN → 0,
+        // out-of-range saturates to INT_MIN/INT_MAX, no traps). Un-dropped so
+        // the selectors see them: ARM32 lowers the i32-target forms as a bare
+        // VCVT (round-toward-zero VCVT already saturates and gives 0 for NaN —
+        // exactly trunc_sat, the very behavior the #709 guard exists to keep
+        // away from the TRAPPING forms); aarch64 lowers all eight via
+        // FCVTZS/FCVTZU. The i64-target forms LOUD-decline on 32-bit ARM (no
+        // i64 register-pair conversion path) and RV32 (no floats at all).
+        I32TruncSatF32S => Some(WasmOp::I32TruncSatF32S),
+        I32TruncSatF32U => Some(WasmOp::I32TruncSatF32U),
+        I64TruncSatF32S => Some(WasmOp::I64TruncSatF32S),
+        I64TruncSatF32U => Some(WasmOp::I64TruncSatF32U),
 
         // === Scalar f64 (GI-FPU-002 phase 2, #369) ===
         // Un-dropped for the DOUBLE-precision FPU target (cortex-m7dp D0..D15);
@@ -2285,6 +2298,13 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F64ConvertI32U => Some(WasmOp::F64ConvertI32U),
         I32TruncF64S => Some(WasmOp::I32TruncF64S),
         I32TruncF64U => Some(WasmOp::I32TruncF64U),
+        // #782a: f64-source trunc_sat twins (see the f32 group above). falcon
+        // v1.123 carries 7× i32.trunc_sat_f64_s — the m7dp double-precision
+        // VCVT twins lower the i32-target forms; i64 targets loud-decline.
+        I32TruncSatF64S => Some(WasmOp::I32TruncSatF64S),
+        I32TruncSatF64U => Some(WasmOp::I32TruncSatF64U),
+        I64TruncSatF64S => Some(WasmOp::I64TruncSatF64S),
+        I64TruncSatF64U => Some(WasmOp::I64TruncSatF64U),
 
         // f32x4
         F32x4Add => Some(WasmOp::F32x4Add),

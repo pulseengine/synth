@@ -495,6 +495,27 @@ pub fn fcvtzu_w_from_d(rd: Reg, rn: FReg) -> u32 {
     fp2(0x1E79_0000, rd, rn)
 }
 
+// #782a: the 64-bit-destination (`x`) FCVTZ forms (sf=1). The saturating
+// behavior (NaN → 0, out-of-range → INT64_MIN/MAX / 0/UINT64_MAX) that the
+// TRAPPING trunc lowerings must guard against is EXACTLY the WASM §4.3.2
+// `trunc_sat` semantics, so the i64 trunc_sat lowerings emit these bare.
+/// `fcvtzs xd, sn` — f32 → signed i64, round-toward-zero, saturating.
+pub fn fcvtzs_x_from_s(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x9E38_0000, rd, rn)
+}
+/// `fcvtzu xd, sn` — f32 → unsigned i64, round-toward-zero, saturating.
+pub fn fcvtzu_x_from_s(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x9E39_0000, rd, rn)
+}
+/// `fcvtzs xd, dn` — f64 → signed i64, round-toward-zero, saturating.
+pub fn fcvtzs_x_from_d(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x9E78_0000, rd, rn)
+}
+/// `fcvtzu xd, dn` — f64 → unsigned i64, round-toward-zero, saturating.
+pub fn fcvtzu_x_from_d(rd: Reg, rn: FReg) -> u32 {
+    fp2(0x9E79_0000, rd, rn)
+}
+
 /// `fmov sd, wn` — reinterpret the 32-bit GP register `wn` into `sd` (no numeric
 /// conversion). Bridges the GP→FP files; used for `f32.reinterpret_i32`, moving a
 /// materialized f32 const bit-pattern into an S register, and float param setup.
@@ -725,6 +746,18 @@ mod tests {
         assert_eq!(fcvtzs_w_from_d(0, 1), 0x1E78_0020);
         assert_eq!(fcvtzu_w_from_d(0, 1), 0x1E79_0020);
         assert_eq!(fcvtzs_w_from_s(5, 6), 0x1E38_00C5);
+    }
+
+    // #782a — the x-destination (i64-target) FCVTZ forms. Ground truth from
+    // `clang -target aarch64-none-elf` + objdump on this exact operand set.
+    #[test]
+    fn trunc_sat_782_fcvtz_x_encodings_match_clang() {
+        assert_eq!(fcvtzs_x_from_s(0, 1), 0x9E38_0020);
+        assert_eq!(fcvtzu_x_from_s(0, 1), 0x9E39_0020);
+        assert_eq!(fcvtzs_x_from_d(0, 1), 0x9E78_0020);
+        assert_eq!(fcvtzu_x_from_d(0, 1), 0x9E79_0020);
+        assert_eq!(fcvtzs_x_from_s(5, 6), 0x9E38_00C5);
+        assert_eq!(fcvtzu_x_from_d(9, 15), 0x9E79_01E9);
     }
 
     #[test]

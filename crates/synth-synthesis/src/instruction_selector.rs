@@ -2005,8 +2005,9 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
         F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U | F32DemoteF64
         | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
         | I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U | I64TruncF64S
-        | I64TruncF64U | F32ReinterpretI32 | I32ReinterpretF32 | F64ReinterpretI64
-        | I64ReinterpretF64 => (1, 1),
+        | I64TruncF64U | I32TruncSatF32S | I32TruncSatF32U | I32TruncSatF64S | I32TruncSatF64U
+        | I64TruncSatF32S | I64TruncSatF32U | I64TruncSatF64S | I64TruncSatF64U
+        | F32ReinterpretI32 | I32ReinterpretF32 | F64ReinterpretI64 | I64ReinterpretF64 => (1, 1),
 
         // Constants: push 1
         I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => (0, 1),
@@ -2286,6 +2287,14 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
             | F32ConvertI32U
             | I32TruncF32S
             | I32TruncF32U
+            // #782a: the nontrapping trunc_sat forms with an f32 SOURCE. The
+            // i32-target pair lowers (bare saturating VCVT); the i64-target
+            // pair is listed so the FPU gate + the loud i64 decline in
+            // `try_lower_f32` fire instead of the register-blind fallback.
+            | I32TruncSatF32S
+            | I32TruncSatF32U
+            | I64TruncSatF32S
+            | I64TruncSatF32U
             // #708 (phase 1b): un-dropped f32 memory-load + f32<->i32 bitcasts.
             // `F32Load` itself is lowered in the main `select_with_stack` match
             // (it needs `self`'s bounds/base-rewrite machinery); listing it here
@@ -2634,6 +2643,65 @@ fn try_lower_f32(
             stack.push(StackVal::i32(rd));
             Ok(true)
         }
+        I32TruncSatF32S | I32TruncSatF32U => {
+            // #782a: `i32.trunc_sat_f32_{s,u}` — the NONTRAPPING saturating
+            // truncation (WASM §4.3.2 trunc_sat: NaN → 0, out-of-range
+            // saturates to the integer bound, never traps). ARM
+            // `VCVT.{S32,U32}.F32` in its round-toward-zero form saturates on
+            // out-of-range AND yields 0 for NaN (FPToFixed, ARM ARM) — exactly
+            // trunc_sat's semantics, so the bare conversion (the very lowering
+            // the #709 guard forbids for the TRAPPING forms) is the correct,
+            // guard-free lowering here. Execution-verified against wasmtime
+            // over the full boundary table (NaN/±inf/exact bounds/±0.5) in
+            // `scripts/repro/trunc_sat_782_differential.py`.
+            let signed = matches!(op, I32TruncSatF32S);
+            let sm = pop_float(stack)?;
+            let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+            // Same encoder hazard as the trapping twin: the encoder converts
+            // IN PLACE (`VCVT Sm, Sm` then `VMOV Rd, Sm`), so a pinned
+            // param/local HOME register must survive — convert from a fresh
+            // copy staged through `rd` (a safe round-trip scratch: the VCVT
+            // overwrites it with the result anyway).
+            let sm_is_home = vfp_s_index(sm).is_some_and(|s| vfp_home[s]);
+            let work = if sm_is_home {
+                let copy = alloc_vfp_temp(vfp_used)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::I32ReinterpretF32 { rd, sm },
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32ReinterpretI32 { sd: copy, rm: rd },
+                    source_line: Some(idx),
+                });
+                copy
+            } else {
+                sm
+            };
+            let arm = if signed {
+                ArmOp::I32TruncF32S { rd, sm: work }
+            } else {
+                ArmOp::I32TruncF32U { rd, sm: work }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, work);
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            stack.push(StackVal::i32(rd));
+            Ok(true)
+        }
+        op @ (I64TruncSatF32S | I64TruncSatF32U) => {
+            // #782a: the i64-target trunc_sat forms need an i64 register-pair
+            // conversion path that 32-bit ARM VFP does not provide (VCVT
+            // targets a single 32-bit register). LOUD-decline the function —
+            // decline > wrong (falcon needs only the i32-target forms, #782).
+            Err(synth_core::Error::synthesis(format!(
+                "{op:?} not supported on 32-bit ARM: no i64 register-pair \
+                 float→int conversion path — declining the function loudly \
+                 (#782a; the i32-target trunc_sat forms are lowered)"
+            )))
+        }
         F32ReinterpretI32 => {
             // #708: i32 bits → f32 (VMOV Sd, Rm). Pure bit-cast, no conversion.
             let rm = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
@@ -2785,6 +2853,13 @@ fn is_scope_f64_op(op: &WasmOp) -> bool {
             | F64ConvertI32U
             | I32TruncF64S
             | I32TruncF64U
+            // #782a: the nontrapping trunc_sat forms with an f64 SOURCE (the
+            // i32-target pair lowers as a bare saturating VCVT.{S32,U32}.F64;
+            // the i64-target pair loud-declines in `try_lower_f64`).
+            | I32TruncSatF64S
+            | I32TruncSatF64U
+            | I64TruncSatF64S
+            | I64TruncSatF64U
     )
 }
 
@@ -3247,6 +3322,67 @@ fn try_lower_f64(
             }
             stack.push(StackVal::i32(rd));
             Ok(true)
+        }
+        I32TruncSatF64S | I32TruncSatF64U => {
+            // #782a: `i32.trunc_sat_f64_{s,u}` — the NONTRAPPING saturating
+            // truncation (§4.3.2 trunc_sat: NaN → 0, out-of-range saturates,
+            // never traps). ARM `VCVT.{S32,U32}.F64` (round-toward-zero)
+            // saturates on out-of-range and yields 0 for NaN — exactly
+            // trunc_sat, so the bare conversion needs NO #709-style domain
+            // guard (the guard exists to make the TRAPPING forms trap).
+            // falcon v1.123 carries 7× of the signed form (#782).
+            // Execution-verified vs wasmtime over the boundary table in
+            // `scripts/repro/trunc_sat_782_differential.py`.
+            let signed = matches!(op, I32TruncSatF64S);
+            let dm = pop_double(stack)?;
+            // Same encoder hazard as the trapping twin: the result is staged
+            // through the SOURCE's low S-alias, clobbering half of `dm` —
+            // convert a pinned param/local HOME from a fresh copy.
+            let dm_is_home = vfp_d_index(dm).is_some_and(|d| vfp_home[2 * d]);
+            let work = if dm_is_home {
+                let copy = alloc_vfp_dtemp(vfp_used)?;
+                emit_d_copy(
+                    copy,
+                    dm,
+                    idx,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
+                copy
+            } else {
+                dm
+            };
+            let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+            let arm = if signed {
+                ArmOp::I32TruncF64S { rd, dm: work }
+            } else {
+                ArmOp::I32TruncF64U { rd, dm: work }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, work);
+            if dm_is_home {
+                // `work` was the fresh copy; the untouched home stays pinned.
+            } else {
+                free_vfp_dtemp(vfp_used, vfp_home, dm);
+            }
+            stack.push(StackVal::i32(rd));
+            Ok(true)
+        }
+        op @ (I64TruncSatF64S | I64TruncSatF64U) => {
+            // #782a: no i64 register-pair float→int conversion path on 32-bit
+            // ARM — LOUD-decline (decline > wrong; falcon needs only the
+            // i32-target forms, #782).
+            Err(synth_core::Error::synthesis(format!(
+                "{op:?} not supported on 32-bit ARM: no i64 register-pair \
+                 float→int conversion path — declining the function loudly \
+                 (#782a; the i32-target trunc_sat forms are lowered)"
+            )))
         }
         _ => Ok(false),
     }
@@ -5962,6 +6098,29 @@ impl InstructionSelector {
                 seq
             }
 
+            // #782a: the NONTRAPPING trunc_sat forms — bare saturating VCVT,
+            // deliberately WITHOUT the #709 range guard (§4.3.2 trunc_sat:
+            // NaN → 0, out-of-range saturates; VCVT round-toward-zero does
+            // exactly that). Guard-free is the CORRECT lowering here, not a
+            // soundness hole.
+            I32TruncSatF32S if self.fpu.is_some() => {
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::I32TruncF32S { rd, sm }]
+            }
+            I32TruncSatF32U if self.fpu.is_some() => {
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::I32TruncF32U { rd, sm }]
+            }
+
+            // #782a: i64-target trunc_sat from f32 — no i64 register-pair
+            // conversion path on 32-bit ARM. Loud decline (decline > wrong).
+            op @ (I64TruncSatF32S | I64TruncSatF32U) if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported on 32-bit ARM: no i64 register-pair \
+                     float→int conversion path (#782a)"
+                )));
+            }
+
             // F32 rounding pseudo-ops — emit ArmOp variants, encoder expands to
             // multi-instruction sequences using FPSCR rounding-mode manipulation
             F32Ceil if self.fpu.is_some() => {
@@ -6054,7 +6213,11 @@ impl InstructionSelector {
             | F32ReinterpretI32
             | I32ReinterpretF32
             | I32TruncF32S
-            | I32TruncF32U) => {
+            | I32TruncF32U
+            | I32TruncSatF32S
+            | I32TruncSatF32U
+            | I64TruncSatF32S
+            | I64TruncSatF32U) => {
                 return Err(synth_core::Error::synthesis(format!(
                     "target {} has no FPU; cannot compile {op:?}",
                     self.target_name
@@ -6204,6 +6367,18 @@ impl InstructionSelector {
                 vec![ArmOp::I32TruncF64U { rd, dm }]
             }
 
+            // #782a: nontrapping trunc_sat from f64 — bare saturating
+            // VCVT.{S32,U32}.F64, guard-free BY DESIGN (§4.3.2: NaN → 0,
+            // out-of-range saturates — exactly what the VCVT does).
+            I32TruncSatF64S if self.has_double_fpu() => {
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::I32TruncF64S { rd, dm }]
+            }
+            I32TruncSatF64U if self.has_double_fpu() => {
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::I32TruncF64U { rd, dm }]
+            }
+
             // F64 rounding pseudo-ops — emit ArmOp variants; encoder expands
             // them into FPSCR-rounding-mode + VCVT sequences.
             F64Ceil if self.has_double_fpu() => {
@@ -6249,7 +6424,9 @@ impl InstructionSelector {
 
             // F64 i64 conversions: VCVT.{F64,S32}.{S32,F64} with i64 register
             // pairs is not implemented in the backend. Surface a typed error.
-            op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U)
+            // (#782a: the i64-target trunc_sat forms decline identically.)
+            op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U
+            | I64TruncSatF64S | I64TruncSatF64U)
                 if self.has_double_fpu() =>
             {
                 return Err(synth_core::Error::synthesis(format!(
@@ -6295,7 +6472,11 @@ impl InstructionSelector {
             | I64TruncF64S
             | I64TruncF64U
             | I32TruncF64S
-            | I32TruncF64U) => {
+            | I32TruncF64U
+            | I32TruncSatF64S
+            | I32TruncSatF64U
+            | I64TruncSatF64S
+            | I64TruncSatF64U) => {
                 let msg = if self.fpu.is_some() {
                     // Single-precision FPU target (e.g., Cortex-M4F): VFP-D
                     // instructions exist as encodings but the hardware lacks

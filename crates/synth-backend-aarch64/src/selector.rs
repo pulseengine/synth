@@ -338,6 +338,27 @@ pub fn select_typed(
         Ok(())
     };
 
+    // #782a: NONTRAPPING saturating float→int truncation (WASM §4.3.2
+    // trunc_sat — the 0xFC-prefixed family). A64 FCVTZS/FCVTZU already
+    // implement it EXACTLY: round-toward-zero, out-of-range saturates to the
+    // integer bound, NaN → 0 (FPToFixed) — the very "more-total-than-WASM"
+    // behavior the m4 `trunc_guarded` domain guard defends the TRAPPING forms
+    // against is the REQUIRED semantics here, so the lowering is one bare
+    // convert. All eight forms land (A64 is 64-bit native, so the i64 targets
+    // are the same one-instruction shape with an x destination).
+    // Execution-verified vs wasmtime (NaN/±inf/exact-boundary table) in
+    // `scripts/repro/trunc_sat_782_differential.py`.
+    let trunc_sat = |words: &mut Vec<u32>,
+                     stack: &mut Vec<Val>,
+                     f: fn(Reg, FReg) -> u32|
+     -> Result<(), SelectError> {
+        let a = pop_fp(stack, "trunc_sat")?;
+        let dst = alloc_temp(stack)?;
+        words.push(f(dst, a));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
     // m4: copysign(z1, z2) — the magnitude of z1 with the sign of z2, a pure
     // bit operation (WASM §4.3.3 fcopysign; NaN payloads pass through intact).
     // Route both operands through the GP file, isolate the sign with ONE
@@ -632,6 +653,16 @@ pub fn select_typed(
             WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
             WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true)?,
             WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false)?,
+
+            // --- nontrapping saturating truncations (#782a): bare FCVTZ ---
+            WasmOp::I32TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_s)?,
+            WasmOp::I32TruncSatF32U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_w_from_s)?,
+            WasmOp::I32TruncSatF64S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_d)?,
+            WasmOp::I32TruncSatF64U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_w_from_d)?,
+            WasmOp::I64TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_x_from_s)?,
+            WasmOp::I64TruncSatF32U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_x_from_s)?,
+            WasmOp::I64TruncSatF64S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_x_from_d)?,
+            WasmOp::I64TruncSatF64U => trunc_sat(&mut words, &mut stack, enc::fcvtzu_x_from_d)?,
 
             // --- float↔float precision conversions (total, never trap) ---
             WasmOp::F64PromoteF32 => funop(&mut words, &mut stack, enc::fcvt_d_from_s)?,

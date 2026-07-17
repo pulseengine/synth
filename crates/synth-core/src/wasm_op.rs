@@ -302,6 +302,16 @@ pub enum WasmOp {
     I32TruncF32S,      // Truncate f32 to signed i32
     I32TruncF32U,      // Truncate f32 to unsigned i32
 
+    // Nontrapping float→int (WASM saturating-float-to-int proposal, 0xFC
+    // prefix). TOTAL ops — never trap: NaN → 0, below INT_MIN → INT_MIN,
+    // above INT_MAX → INT_MAX, else truncate toward zero (§4.3.2 trunc_sat).
+    // Rust emits these for `as` casts, so real modules (falcon, #782) carry
+    // them even when the trapping forms are absent.
+    I32TruncSatF32S, // Saturating truncate f32 to signed i32
+    I32TruncSatF32U, // Saturating truncate f32 to unsigned i32
+    I64TruncSatF32S, // Saturating truncate f32 to signed i64
+    I64TruncSatF32U, // Saturating truncate f32 to unsigned i64
+
     // ========================================================================
     // f64 Operations
     // ========================================================================
@@ -355,6 +365,13 @@ pub enum WasmOp {
     I64TruncF64U,      // Truncate f64 to unsigned i64
     I32TruncF64S,      // Truncate f64 to signed i32
     I32TruncF64U,      // Truncate f64 to unsigned i32
+
+    // Nontrapping f64→int (saturating-float-to-int, §4.3.2 trunc_sat — see
+    // the f32 group above for the semantics).
+    I32TruncSatF64S, // Saturating truncate f64 to signed i32
+    I32TruncSatF64U, // Saturating truncate f64 to unsigned i32
+    I64TruncSatF64S, // Saturating truncate f64 to signed i64
+    I64TruncSatF64U, // Saturating truncate f64 to unsigned i64
 
     // ========================================================================
     // v128 SIMD Operations (WASM SIMD proposal)
