@@ -136,20 +136,31 @@ fn func_sizes(elf: &[u8]) -> HashMap<String, usize> {
 /// previously appeared to read (−20 B): 342 → 326 B. New opt-out bytes
 /// execution-validated (spill_frame_499_differential.py +
 /// base_cse_differential.py, unicorn vs wasmtime) before re-pinning.
+///
+/// RE-PIN (#791): `Opcode::Const` now records its dest as `last_result_vreg`
+/// like every other value-producing arm (a const-only body previously never
+/// moved its result to R0 — the export returned caller residue from r4).
+/// Both fixtures here are single VOID functions whose final IR values are
+/// stored consts, so the epilogue now appends one spurious-but-harmless
+/// `mov r0, rX` (+2 B on BOTH arms) — the behavior void functions ending in
+/// any OTHER producer (Add, Select, ...) always had. Full scripts/repro
+/// differential sweep re-run green on the new bytes (incl.
+/// base_cse_differential.py + volatile_segment_543_differential.py, unicorn
+/// vs wasmtime) before re-pinning.
 const GOLDENS: [(&str, &str, usize, &str, usize); 2] = [
     (
         "scripts/repro/redundant_base_materialization.wat",
-        "a0f684bcfaaece182b55fdb2e98b94d54bbeab72243764ff354ed67b79a56aef",
-        224,
-        "b44084bebcc57701b39510d365a7e066d62f9bfae5a6f93a7860fe6e87f90a05",
-        326,
+        "5bba0a12d79c6bf9667f863afd4ca6127b52b5d859368904b8f2530b2a40a7f4",
+        226,
+        "7e4bbca6bc82dca2bd1fe1697baea4150a001561a605e3e5d48f78f038005e56",
+        328,
     ),
     (
         "scripts/repro/volatile_segment_543.wat",
-        "86af859f443eaaddf01a2a99811b81a60c66b6fe4118b53ceea121511c88070b",
-        194,
-        "eb9c8355416778fba8bedc26d1cf672a6f0334d915492f5cdffd95381d7572f7",
-        256,
+        "ca0da92e7d7328db90edcd250dbe568176358b0fc28d1b662205ceb3b928223d",
+        196,
+        "b63f4644cfeff637923230240ee665c8097055c56e4cca09f9ecfc7cfc247ecd",
+        258,
     ),
 ];
 
