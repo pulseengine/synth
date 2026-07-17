@@ -1,8 +1,9 @@
 //! #80 P3 async intrinsic honest-degradation gate (CLI end-to-end).
 //!
-//! Synth lowers exactly ONE async intrinsic family — `error-context` — and
-//! LOUD-DECLINES the rest by name. This test exercises the real `synth compile`
-//! binary:
+//! Synth lowers exactly ONE async intrinsic op — `error-context.drop` (a
+//! scalar handle op) — and LOUD-DECLINES the rest by name, INCLUDING the other
+//! error-context ops (`.new`/`.debug-message`) which carry a linmem message
+//! pointer. This test exercises the real `synth compile` binary:
 //!
 //! - the LOWERED family (`error-context.drop`) compiles to a relocatable ELF
 //!   whose symtab carries the field-name as an UNDEFINED symbol — the AAPCS
@@ -90,6 +91,9 @@ fn declined_families_reject_loudly() {
         ("async_future_declined.wat", "future"),
         ("async_waitable_declined.wat", "waitable"),
         ("async_task_declined.wat", "task"),
+        // SOUNDNESS: error-context.new carries a linmem message pointer — it is
+        // NOT the scalar op error-context.drop, so it is declined (buffer class).
+        ("async_error_context_new_declined.wat", "buffer"),
     ];
     for (fixture_name, family) in cases {
         let wat = fixture(fixture_name);

@@ -17,18 +17,19 @@
 //!
 //! ## Bounded scope (#80)
 //!
-//! - **Lowered family: `error-context`.** Its intrinsics are pure scalar
-//!   handle operations (`error-context.new`, `error-context.debug-message`,
-//!   `error-context.drop`) — no linear-memory buffer transfer, no scheduler
-//!   yield, no callback trampoline. They marshal like any AAPCS C call
-//!   (handle in `r0`, result in `r0`), so the existing field-name `BL` path
-//!   compiles them correctly today. This is the ONE family we can honestly
-//!   claim.
-//! - **Declined families:** `stream` (needs bounds-checked buffer memory
-//!   layout — issue §3), `future` (needs the readable/writable-end buffer
-//!   protocol), `waitable`/`task` (needs register save/restore across the
-//!   `waitable-set.wait` yield — issue §4). Each is refused with a named
-//!   [`AsyncDecline`] carrying the exact reason.
+//! - **Lowered op: `error-context.drop`.** This is a pure scalar handle
+//!   operation — it takes one error-context handle (`i32`) and returns nothing,
+//!   touching no linear-memory buffer and never yielding. It marshals like any
+//!   AAPCS C call (handle in `r0`), so the existing field-name `BL` path
+//!   compiles it correctly today. This is the ONE op we can honestly claim.
+//!   The lowering decision is made PER OP, not per family (see
+//!   [`LOWERED_FIELDS`]).
+//! - **Declined (everything else), each with a named [`AsyncDecline`]:**
+//!   `error-context.new` / `.debug-message` (they pass a linmem message
+//!   pointer — the SAME bounds-checked buffer class as stream, NOT scalar),
+//!   `stream` (bounds-checked buffer memory layout — issue §3), `future`
+//!   (readable/writable-end buffer protocol), `waitable`/`task` (register
+//!   save/restore across the `waitable-set.wait` yield — issue §4).
 //!
 //! The intrinsic namespace and per-family field prefixes are the CONTRACT
 //! synth compiles against; they are pinned here (single source) citing
@@ -43,9 +44,16 @@
 pub const ASYNC_MODULE: &str = "pulseengine:async";
 
 /// The async intrinsic families synth distinguishes (#80).
+///
+/// The lowered/declined decision is made PER OP (field name), not per family
+/// — within `error-context` only `.drop` is a scalar handle op; `.new` and
+/// `.debug-message` transfer a message string through linear memory (canonical
+/// ABI) and are declined alongside the buffer families. See [`is_lowered_field`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsyncFamily {
-    /// `error-context.*` — pure scalar handle ops. **Lowered.**
+    /// `error-context.*` — error-context resource ops. Only `.drop` (scalar
+    /// handle) is lowered; `.new` / `.debug-message` are declined (linmem
+    /// message buffer, same class as stream).
     ErrorContext,
     /// `stream.*` — typed stream read/write over linear-memory buffers.
     /// **Declined** (buffer memory layout + bounds checks unimplemented).
@@ -55,6 +63,21 @@ pub enum AsyncFamily {
     /// `waitable-set.*` / `task.*` — scheduler yield points. **Declined**
     /// (register save/restore across yield unimplemented).
     WaitableTask,
+}
+
+/// The exact intrinsic FIELDS synth lowers today (#80). Deliberately a single
+/// unambiguously-scalar op: `error-context.drop` takes one error-context handle
+/// (i32) and returns nothing — it touches no linear-memory buffer and does not
+/// yield, so the existing AAPCS field-name BL path compiles it correctly. Every
+/// other async intrinsic (including `error-context.new` /
+/// `error-context.debug-message`, which pass a linmem message pointer) is
+/// declined. Widening this set requires an end-to-end test proving the pointer
+/// arguments lower against the linmem base — a named follow-up.
+pub const LOWERED_FIELDS: &[&str] = &["error-context.drop"];
+
+/// Whether synth currently lowers this exact intrinsic field to native ARM.
+pub fn is_lowered_field(field: &str) -> bool {
+    LOWERED_FIELDS.contains(&field)
 }
 
 impl AsyncFamily {
@@ -73,11 +96,6 @@ impl AsyncFamily {
             "waitable-set" | "waitable" | "task" => Some(AsyncFamily::WaitableTask),
             _ => None,
         }
-    }
-
-    /// Whether synth can currently lower this family to native ARM.
-    pub const fn is_lowered(self) -> bool {
-        matches!(self, AsyncFamily::ErrorContext)
     }
 
     /// A stable machine-readable family tag for diagnostics.
@@ -141,11 +159,18 @@ pub fn classify(module: &str, field: &str) -> AsyncClassification {
     if module != ASYNC_MODULE {
         return AsyncClassification::NotAsync;
     }
-    match AsyncFamily::from_field(field) {
-        Some(fam) if fam.is_lowered() => AsyncClassification::Lowered {
-            family: fam,
+    // Lowering is decided PER OP, not per family: only the exact scalar ops in
+    // LOWERED_FIELDS pass; a recognized family with an unlowered field (e.g.
+    // error-context.new, which carries a linmem message pointer) is declined.
+    if is_lowered_field(field) {
+        let family = AsyncFamily::from_field(field)
+            .expect("a LOWERED_FIELDS entry must classify into a family");
+        return AsyncClassification::Lowered {
+            family,
             field: field.to_string(),
-        },
+        };
+    }
+    match AsyncFamily::from_field(field) {
         Some(fam) => AsyncClassification::Declined(AsyncDecline {
             field: field.to_string(),
             family: Some(fam),
@@ -168,26 +193,31 @@ pub fn classify(module: &str, field: &str) -> AsyncClassification {
 fn decline_reason(family: AsyncFamily, field: &str) -> String {
     let ns = ASYNC_MODULE;
     match family {
-        AsyncFamily::ErrorContext => {
-            // Unreachable — error-context is lowered — but keep total.
-            format!("'{ns}::{field}' unexpectedly declined (error-context is lowered)")
-        }
+        AsyncFamily::ErrorContext => format!(
+            "'{ns}::{field}' (error-context family) not compiled: only \
+             error-context.drop (a scalar handle op) is lowered. This op \
+             transfers a message string through linear memory (canonical ABI), \
+             which needs the same bounds-checked linmem-base-relative buffer \
+             lowering as the stream family that synth does not yet generate \
+             (#80). Use error-context.drop, or link this op against a host that \
+             owns the buffer protocol."
+        ),
         AsyncFamily::Stream => format!(
             "'{ns}::{field}' (stream family) not compiled: synth does not yet \
              generate the bounds-checked linear-memory buffer layout the stream \
-             read/write intrinsics require (#80 §3). Lower only error-context \
+             read/write intrinsics require (#80 §3). Lower only error-context.drop \
              for now, or link the stream intrinsic against a host that owns the \
              buffer protocol."
         ),
         AsyncFamily::Future => format!(
             "'{ns}::{field}' (future family) not compiled: the readable/writable-\
              end buffer transfer protocol is unimplemented (#80 §3). Only \
-             error-context is lowered."
+             error-context.drop is lowered."
         ),
         AsyncFamily::WaitableTask => format!(
             "'{ns}::{field}' (waitable/task family) not compiled: synth does not \
              yet save/restore register state across the scheduler yield at \
-             waitable-set.wait (#80 §4). Only error-context is lowered."
+             waitable-set.wait (#80 §4). Only error-context.drop is lowered."
         ),
     }
 }
@@ -196,23 +226,35 @@ fn decline_reason(family: AsyncFamily, field: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The lowered family: error-context intrinsics are recognized and pass
-    /// through to the field-name BL path.
+    /// The lowered op: `error-context.drop` (scalar handle) is recognized and
+    /// passes through to the field-name BL path.
     #[test]
-    fn error_context_is_lowered() {
-        for field in [
-            "error-context.new",
-            "error-context.debug-message",
-            "error-context.drop",
-        ] {
-            assert_eq!(
-                classify(ASYNC_MODULE, field),
-                AsyncClassification::Lowered {
-                    family: AsyncFamily::ErrorContext,
-                    field: field.to_string(),
-                },
-                "{field} should be lowered"
-            );
+    fn error_context_drop_is_lowered() {
+        assert_eq!(
+            classify(ASYNC_MODULE, "error-context.drop"),
+            AsyncClassification::Lowered {
+                family: AsyncFamily::ErrorContext,
+                field: "error-context.drop".to_string(),
+            }
+        );
+        assert!(is_lowered_field("error-context.drop"));
+    }
+
+    /// RED-FIRST soundness (#80): the OTHER error-context ops carry a linmem
+    /// message pointer and are DECLINED with the buffer reason — NOT lowered as
+    /// if scalar (would silently miscompile the pointer arg).
+    #[test]
+    fn error_context_buffer_ops_are_declined() {
+        for field in ["error-context.new", "error-context.debug-message"] {
+            match classify(ASYNC_MODULE, field) {
+                AsyncClassification::Declined(d) => {
+                    assert_eq!(d.family, Some(AsyncFamily::ErrorContext));
+                    assert!(d.reason.contains("buffer"), "{field}: {}", d.reason);
+                    assert!(d.reason.contains("linear memory"), "{field}: {}", d.reason);
+                }
+                other => panic!("{field} must be declined (linmem buffer), got {other:?}"),
+            }
+            assert!(!is_lowered_field(field));
         }
     }
 
@@ -278,12 +320,21 @@ mod tests {
         );
     }
 
-    /// The lowered family flips the is_lowered predicate; declined ones do not.
+    /// The per-op lowered set is exactly `error-context.drop` and nothing
+    /// else — non-vacuous in both directions.
     #[test]
-    fn is_lowered_predicate_is_non_vacuous() {
-        assert!(AsyncFamily::ErrorContext.is_lowered());
-        assert!(!AsyncFamily::Stream.is_lowered());
-        assert!(!AsyncFamily::Future.is_lowered());
-        assert!(!AsyncFamily::WaitableTask.is_lowered());
+    fn lowered_field_set_is_exact() {
+        assert_eq!(LOWERED_FIELDS, &["error-context.drop"]);
+        assert!(is_lowered_field("error-context.drop"));
+        for f in [
+            "error-context.new",
+            "error-context.debug-message",
+            "stream.read",
+            "future.read",
+            "waitable-set.wait",
+            "task.return",
+        ] {
+            assert!(!is_lowered_field(f), "{f} must not be lowered");
+        }
     }
 }
