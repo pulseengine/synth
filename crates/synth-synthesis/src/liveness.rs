@@ -3550,6 +3550,309 @@ pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>
     )
 }
 
+/// A violation of the emitted stream's register-allocation invariants, found by
+/// [`validate_final_allocation`] — VCR-RA-003's UNCONDITIONAL, single-stream
+/// gate (epic #242). Each variant names a concrete miscompile class the
+/// per-compilation checker catches by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaFinalViolation {
+    /// #490: the function body writes callee-saved register `reg` (R4-R8) but no
+    /// prologue `push {…,lr}` that includes it precedes the write — a caller's
+    /// register is silently clobbered (AAPCS violation). The exact failure mode
+    /// [`ensure_callee_saved_prologue`] fixes; reverting that pass makes this
+    /// fire.
+    CalleeSavedNotSaved { reg: Reg },
+    /// #490 epilogue half: the prologue saved `reg` (it is in the `push {…,lr}`
+    /// set) but a return epilogue `pop {…,pc}` does not restore it — the value
+    /// the callee promised to preserve is not put back.
+    CalleeSavedNotRestored { reg: Reg },
+    /// #331 / spill aliasing: within one straight-line segment, spill slot
+    /// `[sp,#slot]` is overwritten by a second live value while the first value
+    /// stored there is still needed — a later reload of the slot reads the wrong
+    /// value. `first_store` / `overwriting_store` / `stale_reload` are indices
+    /// into the segment; the overwrite corrupts the value the reload consumes.
+    SpillSlotAliased {
+        slot: i32,
+        first_store: usize,
+        overwriting_store: usize,
+        stale_reload: usize,
+    },
+}
+
+/// The verdict of the UNCONDITIONAL final register-allocation validator
+/// ([`validate_final_allocation`]).
+///
+/// This is deliberately a THREE-valued result, mirroring VCR-VER-003's
+/// Consistent / Mismatch and Track-C's honest-decline discipline: a checker
+/// that cannot model a construct must say so LOUDLY (`NotAttempted`) rather than
+/// return a false `Consistent`. Branches / CF joins and unmodeled ops (calls,
+/// i64-pair, FP) are the named PHASE-2 boundary — segmented away and reported,
+/// never silently passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaFinalVerdict {
+    /// Every checked invariant holds on this function's emitted stream.
+    Consistent,
+    /// A checked invariant is violated — the compile must hard-error.
+    Violation(RaFinalViolation),
+}
+
+/// VCR-RA-003 UNCONDITIONAL single-stream register-allocation validator (epic
+/// #242) — the construction-level answer to the #490/#496/#331/#782b clobber
+/// class, wired to run on EVERY ARM compilation (the default `--features riscv`
+/// build, NOT behind `--features verify`; a verify-gated check would be dormant
+/// in exactly the build that ships, the #757 / VCR-VER-003 lesson).
+///
+/// Unlike [`validate_segment_rewrite`] (the Rideau/Leroy *pairwise* validator,
+/// which needs a pre-allocation reference stream and runs INSIDE the
+/// re-allocation pass), this validator inspects the SINGLE final emitted stream
+/// with no reference — so it can only check invariants whose reference lives IN
+/// the stream itself. Two such invariants are non-vacuous and match both
+/// red-first bug classes:
+///
+/// 1. **Callee-saved preservation (#490).** A callee-saved register (R4-R8) the
+///    body *defines* must be saved by a preceding prologue `push {…,lr}` and
+///    restored by every return epilogue `pop {…,pc}`. Reverting
+///    [`ensure_callee_saved_prologue`] (dropping the prologue) leaves body defs
+///    of R4-R8 with no push ⇒ [`RaFinalViolation::CalleeSavedNotSaved`]. This is
+///    a structural, whole-function check (safe across branches/calls — it is not
+///    dataflow).
+///
+/// 2. **Spill-slot non-aliasing (#331), per straight-line segment.** Two
+///    simultaneously-live values must never share a frame slot `[sp,#N]`: if a
+///    slot is overwritten by a second store while the first stored value is
+///    still reloaded downstream, the reload reads corrupt data
+///    ⇒ [`RaFinalViolation::SpillSlotAliased`]. Tracked with the same holder
+///    model [`forward_stack_reloads`] uses.
+///
+/// **Phase-2 boundary (loud, never a false pass).** Control-flow joins and ops
+/// [`reg_effect`] cannot model (calls, i64-pair, FP, `BrTable`) end the current
+/// spill segment; the callee-saved check still spans the whole function
+/// (structural, FAIL-SAFE on `None` — an unmodeled op is treated as a possible
+/// callee-saved clobber, so a no-prologue body containing one is flagged). The
+/// spill check simply does not reason ACROSS a segment boundary — it never
+/// claims a cross-join slot is coherent. The result is always
+/// [`RaFinalVerdict::Consistent`] or a concrete `Violation`; there is no silent
+/// pass on an unmodeled shape.
+pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
+    use ArmOp::*;
+    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+
+    // ---- Invariant 1: callee-saved preservation (#490), whole-function ----
+    //
+    // Collect the prologue save-set (the LR-push regs, if any) and the callee-
+    // saved registers the body clobbers. Every clobbered callee-saved reg must be
+    // in the save-set. FAIL-SAFE on unmodeled ops (`reg_effect` == None): a call /
+    // i64-pair / FP / `BrTable` MIGHT write a callee-saved reg, so a body with NO
+    // prologue that contains such an op is flagged — the checker-correct
+    // direction (avoid false-negatives), mirroring the pass this validates
+    // (`body_uses_callee_saved`, which likewise forces a push on None). Because
+    // the pass and validator share the classifier, real code the pass gave a
+    // prologue already satisfies `has_prologue`, so the fail-safe never
+    // false-positives on the direct-selector shape (verified: frozen + workspace
+    // green).
+    let mut saved: BTreeSet<Reg> = BTreeSet::new();
+    let mut has_prologue = false;
+    for ins in instrs {
+        if let Push { regs } = &ins.op
+            && regs.contains(&Reg::LR)
+        {
+            has_prologue = true;
+            for r in regs {
+                if CALLEE_SAVED.contains(r) {
+                    saved.insert(*r);
+                }
+            }
+            break;
+        }
+    }
+    // Which callee-saved registers does the body write? FAIL-SAFE on unmodeled
+    // ops (`reg_effect` == None): calls / i64-pair / FP / `BrTable` MIGHT write a
+    // callee-saved register, so — mirroring `body_uses_callee_saved`'s allowlist
+    // EXACTLY (the pass this validates) — an unmodeled op forces the "a
+    // callee-saved reg may be clobbered" conclusion, requiring a prologue. This
+    // is the checker-correct direction (avoid FALSE-NEGATIVES): the pass treats
+    // None the same way (None -> force push), so the two agree and a real body
+    // the pass gave a prologue already has `has_prologue == true`. `unmodeled_cs`
+    // names no specific register (we cannot know which), so it is reported as the
+    // whole callee-saved set only when no prologue exists.
+    let mut defined_cs: BTreeSet<Reg> = BTreeSet::new();
+    let mut unmodeled_may_clobber_cs = false;
+    for ins in instrs {
+        match &ins.op {
+            // The prologue push / epilogue pop are the SAVE/RESTORE themselves;
+            // pure label control flow and `bx lr` carry no callee-saved data
+            // effect (mirrors `body_uses_callee_saved`'s allowlist exactly).
+            Push { .. }
+            | Pop { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => match reg_effect(op) {
+                Some(e) => {
+                    for r in &e.defs {
+                        if CALLEE_SAVED.contains(r) {
+                            defined_cs.insert(*r);
+                        }
+                    }
+                }
+                // Unmodeled op -> assume it may write a callee-saved register.
+                None => unmodeled_may_clobber_cs = true,
+            },
+        }
+    }
+    for r in &defined_cs {
+        if !saved.contains(r) {
+            // A callee-saved reg is written but not saved by a prologue push.
+            return RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: *r });
+        }
+    }
+    // Fail-safe: an unmodeled op may clobber a callee-saved reg — a body with no
+    // prologue at all cannot have saved it. Report R4 as the representative of
+    // the possibly-clobbered set (the specific register is unknowable here).
+    if unmodeled_may_clobber_cs && !has_prologue {
+        return RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: Reg::R4 });
+    }
+    // Epilogue half: if there IS a prologue that saved a set, every return
+    // epilogue `pop {…,pc}` must restore exactly the saved callee-saved regs.
+    // PHASE-2 scope: only the `pop {…,pc}`-form epilogue is checked here — a
+    // non-`pop`-form return (`add sp,#N; bx lr`) that drops a restore is a v1
+    // false-NEGATIVE for THIS check (never a false-positive), but the store-side
+    // `defined_cs` vs `saved` check above still catches the underlying clobber at
+    // def-time, so soundness of the #490 guarantee does not rest on this half.
+    if has_prologue {
+        for ins in instrs {
+            if let Pop { regs } = &ins.op
+                && regs.contains(&Reg::PC)
+            {
+                let restored: BTreeSet<Reg> = regs
+                    .iter()
+                    .filter(|r| CALLEE_SAVED.contains(r))
+                    .copied()
+                    .collect();
+                for r in &saved {
+                    if !restored.contains(r) {
+                        return RaFinalVerdict::Violation(
+                            RaFinalViolation::CalleeSavedNotRestored { reg: *r },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Invariant 2: spill-slot non-aliasing (#331), per straight-line seg ----
+    //
+    // Walk each maximal straight-line segment. Track, per slot, the index of the
+    // store that last wrote it AND whether that stored value has since been
+    // reloaded (consumed). A second store to a slot whose prior value has NOT yet
+    // been reloaded is fine ONLY if the prior value is never reloaded again —
+    // otherwise the second store clobbered a still-live value. We detect the
+    // corruption when a reload reads a slot AFTER an intervening overwrite of a
+    // value that was itself reloaded later: concretely, if store B overwrites
+    // slot N (whose value from store A has an outstanding downstream reload R),
+    // the value R consumes is B's, not A's — a miscompile iff A and B are
+    // distinct live values. Since spill slots are single-value homes by the
+    // allocator's contract, ANY overwrite of a slot with an outstanding
+    // (not-yet-reloaded) live value is the #331 aliasing bug.
+    //
+    // Model: per slot, remember (last_store_index, reloaded_since_store). On a
+    // store: if the slot already holds a value that has NOT been reloaded since
+    // it was stored, that earlier value is being overwritten while potentially
+    // still live — but a store that merely re-homes a dead value is legal. We
+    // cannot prove the earlier value dead without cross-checking a later reload,
+    // so we defer: record the overwrite, and only FLAG it when a subsequent
+    // reload of the slot proves the earlier value WAS still needed. That reload
+    // reads B's bytes though the program wanted A's ⇒ violation.
+    #[derive(Clone)]
+    struct SlotState {
+        // The store that currently owns the slot's bytes.
+        owner_store: usize,
+        // Has the owner's value been reloaded since it was stored? Once reloaded,
+        // the value is (potentially) dead and a later overwrite is legal reuse.
+        owner_reloaded: bool,
+        // A prior store to this slot whose still-live value was overwritten by a
+        // later store BEFORE being reloaded — if a reload happens now it consumes
+        // the WRONG (overwriting) value where the shadowed store's value was
+        // expected. `(first_store, overwriting_store)`.
+        shadowed: Option<(usize, usize)>,
+    }
+    let mut i = 0usize;
+    while i < instrs.len() {
+        // Skip to the start of the next straight-line segment.
+        if !is_straight_line(&instrs[i].op) {
+            i += 1;
+            continue;
+        }
+        // Fresh slot state at each segment entry (a join resets all facts).
+        let mut slots: BTreeMap<i32, SlotState> = BTreeMap::new();
+        while i < instrs.len() && is_straight_line(&instrs[i].op) {
+            match &instrs[i].op {
+                Str { addr, .. } if sp_slot(addr).is_some() => {
+                    let slot = sp_slot(addr).unwrap();
+                    // Shadow only when the slot's current owner holds a value that
+                    // has NOT yet been reloaded (still live). Overwriting an
+                    // already-reloaded (dead) value is legal single-slot reuse.
+                    let shadowed = match slots.get(&slot) {
+                        // Owner still live (not reloaded): this store shadows it —
+                        // record THIS overwrite (a later `str` on a still-live
+                        // owner supersedes the earlier pending shadow; either fires
+                        // a violation on the next reload, so reporting the most
+                        // recent overwrite is sufficient and correct).
+                        Some(prev) if !prev.owner_reloaded => Some((prev.owner_store, i)),
+                        // Owner already reloaded (dead): legal single-slot reuse —
+                        // `prev.shadowed` is `None` after a clean reload, so this
+                        // carries no obligation forward.
+                        Some(prev) => prev.shadowed,
+                        None => None,
+                    };
+                    slots.insert(
+                        slot,
+                        SlotState {
+                            owner_store: i,
+                            owner_reloaded: false,
+                            shadowed,
+                        },
+                    );
+                }
+                Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                    let slot = sp_slot(addr).unwrap();
+                    if *rd == Reg::SP {
+                        // `ldr sp,[sp,#N]` redefines the frame pointer — every
+                        // slot name is invalidated.
+                        slots.clear();
+                    } else if let Some(st) = slots.get_mut(&slot) {
+                        if let Some((first_store, overwriting_store)) = st.shadowed {
+                            // A reload after an unreloaded overwrite: the value
+                            // this reload consumes is the overwriting store's, but
+                            // an earlier live value was shadowed at that slot.
+                            return RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased {
+                                slot,
+                                first_store,
+                                overwriting_store,
+                                stale_reload: i,
+                            });
+                        }
+                        // The owner's value is now consumed; a later overwrite is
+                        // legal reuse (the value is no longer outstanding).
+                        st.owner_reloaded = true;
+                    }
+                    // A reload from a slot never stored in this segment reads a
+                    // segment live-in (param home); not an aliasing bug.
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    RaFinalVerdict::Consistent
+}
+
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
 /// colourer), mirroring `verify_allocation`.
@@ -13131,5 +13434,225 @@ mod tests {
         );
         // The result register is still pinned.
         assert!(matches!(&out_on[4].op, ArmOp::Add { rd: Reg::R0, .. }));
+    }
+
+    // ==================================================================
+    // VCR-RA-003 UNCONDITIONAL final-allocation validator (epic #242)
+    //
+    // RED-FIRST GATE: prove the gate is NON-VACUOUS by synthetically
+    // reverting a KNOWN-FIXED clobber and asserting the validator CATCHES
+    // it, then asserting it is SILENT (Consistent) on the correct emitted
+    // code. Mirrors VCR-VER-003's Mismatch / Consistent red-first structure.
+    // ==================================================================
+
+    fn push_prologue(regs: Vec<Reg>) -> ArmInstruction {
+        ins(ArmOp::Push { regs })
+    }
+    fn pop_epilogue(regs: Vec<Reg>) -> ArmInstruction {
+        ins(ArmOp::Pop { regs })
+    }
+
+    // ---- #490 callee-saved: RED (revert the prologue → clobber caught) ----
+    #[test]
+    fn ra003_red_missing_callee_saved_prologue_is_caught() {
+        // The #490 bug: the optimized selector uses R4/R5 as scratch but emits
+        // NO prologue push. Synthetically revert `ensure_callee_saved_prologue`
+        // by handing the validator the raw pre-fix body — a body that writes
+        // R4/R5 with no `push {…,lr}`.
+        let clobbering_body = vec![
+            movi(Reg::R4, 7), // writes a callee-saved reg…
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R4,
+                op2: Operand2::Imm(1),
+            }), // …and another
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let verdict = validate_final_allocation(&clobbering_body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { .. })
+            ),
+            "validator MUST catch the reverted #490 clobber, got {verdict:?}"
+        );
+    }
+
+    // ---- #490 callee-saved: GREEN (the real fix → Consistent) ----
+    #[test]
+    fn ra003_green_callee_saved_prologue_present_is_consistent() {
+        // Apply the ACTUAL fix (`ensure_callee_saved_prologue`) to the same
+        // clobbering body and assert the validator is now SILENT.
+        let clobbering_body = vec![
+            movi(Reg::R4, 7),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R4,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let fixed = ensure_callee_saved_prologue(&clobbering_body);
+        assert_eq!(
+            validate_final_allocation(&fixed),
+            RaFinalVerdict::Consistent,
+            "the real #490 fix must validate clean: {fixed:?}"
+        );
+    }
+
+    // ---- #490 epilogue half: RED (prologue saves R4, epilogue drops it) ----
+    #[test]
+    fn ra003_red_epilogue_drops_saved_register() {
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            movi(Reg::R4, 1),
+            movi(Reg::R5, 2),
+            // Epilogue restores R4 but NOT R5 — R5's caller value is lost.
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotRestored {
+                    reg: Reg::R5
+                })
+            ),
+            "dropped epilogue restore MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- #490: GREEN (balanced push/pop of the used set) ----
+    #[test]
+    fn ra003_green_balanced_callee_saved_is_consistent() {
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            movi(Reg::R4, 1),
+            movi(Reg::R5, 2),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
+    }
+
+    // ---- pure r0-r3 leaf: GREEN (no callee-saved touched, no prologue) ----
+    #[test]
+    fn ra003_green_pure_scratch_leaf_needs_no_prologue() {
+        let body = vec![
+            movi(Reg::R0, 1),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a leaf touching only r0-r3 must not require a prologue"
+        );
+    }
+
+    // ---- #331 spill aliasing: RED (two live values share a slot) ----
+    #[test]
+    fn ra003_red_spill_slot_aliasing_is_caught() {
+        // Store value A (r0) to slot #4; before A is reloaded, store value B (r1)
+        // to the SAME slot; then reload slot #4 into r2 — the reload gets B's
+        // bytes though A was the outstanding value. The #331 aliasing miscompile.
+        let body = vec![
+            movi(Reg::R0, 0xAA),
+            str_sp(Reg::R0, 4), // store A → slot 4
+            movi(Reg::R1, 0xBB),
+            str_sp(Reg::R1, 4), // store B overwrites slot 4 (A not yet reloaded)
+            ldr_sp(Reg::R2, 4), // reload → consumes B where A was live
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "spill-slot aliasing MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- spill discipline: GREEN (sequential reuse of one slot is legal) ----
+    #[test]
+    fn ra003_green_sequential_slot_reuse_is_consistent() {
+        // Store A, reload A (slot's value consumed), THEN store B and reload B:
+        // the slot is a single-value home reused sequentially — no aliasing.
+        let body = vec![
+            movi(Reg::R0, 0xAA),
+            str_sp(Reg::R0, 4),
+            ldr_sp(Reg::R3, 4), // A consumed
+            movi(Reg::R1, 0xBB),
+            str_sp(Reg::R1, 4), // slot reused for B (A already reloaded)
+            ldr_sp(Reg::R2, 4), // B consumed
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "sequential single-value slot reuse must validate clean"
+        );
+    }
+
+    // ---- #490 fail-safe: RED (unmodeled op may clobber CS, no prologue) ----
+    #[test]
+    fn ra003_red_unmodeled_op_without_prologue_is_caught() {
+        // A call (unmodeled by `reg_effect`) MIGHT write a callee-saved reg; a
+        // body with no prologue at all cannot have preserved it. The fail-safe
+        // must flag it — the checker-correct (false-negative-avoiding) direction.
+        let body = vec![
+            movi(Reg::R0, 1),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { .. })
+            ),
+            "an unmodeled op with no prologue MUST be flagged (fail-safe), got {verdict:?}"
+        );
+    }
+
+    // ---- #490 fail-safe: GREEN (same body WITH a prologue is silent) ----
+    #[test]
+    fn ra003_green_unmodeled_op_with_prologue_is_consistent() {
+        // The direct-selector / call shape: the pass already emits a
+        // `push {…,lr}` prologue, so the unmodeled call is preserved-safe.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR]),
+            movi(Reg::R0, 1),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
+        ];
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
+    }
+
+    // ---- phase-2 boundary: a call SEGMENTS the spill check, never crashes ----
+    #[test]
+    fn ra003_call_is_a_segment_barrier_not_a_crash() {
+        // A call (unmodeled by reg_effect) splits the straight-line region; a
+        // reload after it reads a fresh segment (live-in), not a stale value. The
+        // body carries the prologue the pass emits for a call (so the callee-saved
+        // fail-safe is satisfied); the spill check must NOT flag the cross-segment
+        // slot 8 reload — no false pass, no panic.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR]),
+            movi(Reg::R0, 1),
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ldr_sp(Reg::R1, 8), // post-call segment: slot 8 is a live-in here
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
+        ];
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
     }
 }

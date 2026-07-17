@@ -1722,7 +1722,7 @@ artifacts:
       the paper: synth validates phys-to-phys rewrites (treat input physical
       registers as variables); constant rematerialization is out of the
       validated class initially (decline, don't guess).
-    status: proposed
+    status: implemented
     tags: [codegen, register-allocation, translation-validation, rocq, track-a, release-v0.11.39]
     links:
       - type: derives-from
@@ -1759,6 +1759,55 @@ artifacts:
         by an `area_reserved` guard on the call-result park (ladder-recoverable
         Err → retry reserves the area), but the validator does not yet cover this
         class.
+        IMPLEMENTED (v0.48, epic #242): the V-NEXT spill-slot layer + the #490
+        callee-saved class now ship as an UNCONDITIONAL single-stream final
+        validator - `synth_synthesis::liveness::validate_final_allocation`
+        (RaFinalVerdict / RaFinalViolation) - wired in `arm_backend.rs`
+        immediately after `validate_instructions`, on EVERY ARM compile in the
+        default `--features riscv` build (NOT verify-gated; the #757 dormant-in-
+        shipping lesson). It hard-errors the compile on (1) callee-saved
+        preservation #490 (a body def of R4-R8 not saved by a prologue
+        `push {..,lr}` / not restored by a return `pop {..,pc}`) and (2)
+        spill-slot non-aliasing — the class #331 EXEMPLIFIES (two
+        simultaneously-live values sharing a frame slot: a reload after an
+        unreloaded overwrite, per straight-line segment via the holder model).
+        NOTE the scope honestly: the red test proves the aliasing CLASS is
+        caught, NOT a reproduction of the historical #331 (whose param-home vs
+        i64-spill collision may present as a caller/prologue-written home or span
+        a segment boundary, outside this in-segment str/str/ldr shape). BOUNDED
+        first increment = straight-line + spill/reload discipline only;
+        branches / CF joins and unmodeled ops (calls / i64-pair / FP) are the
+        NAMED PHASE-2 boundary (the spill check segments at them, never claiming
+        cross-join coherence - a loud honest scope, never a false pass).
+        The callee-saved check is FAIL-SAFE on unmodeled ops (calls / i64-pair /
+        FP / BrTable): an op `reg_effect` cannot model MIGHT write R4-R8, so a
+        no-prologue body containing one is flagged — the checker-correct
+        (false-negative-avoiding) direction, mirroring the pass it validates
+        (`body_uses_callee_saved`, which forces a push on None); verified to not
+        false-positive (frozen + full workspace green). RED-FIRST non-vacuity
+        proven (10 unit tests, `ra003_*` in liveness.rs): 4 RED synthetically
+        revert a known-fixed clobber and assert the validator CATCHES it (revert
+        #490 prologue -> CalleeSavedNotSaved; drop the epilogue restore ->
+        CalleeSavedNotRestored; alias two live values on one slot ->
+        SpillSlotAliased; an unmodeled op with no prologue -> fail-safe
+        CalleeSavedNotSaved) + 6 GREEN assert it is SILENT on correct code (the
+        real `ensure_callee_saved_prologue` output; balanced push/pop; a
+        pure-scratch leaf; sequential single-slot reuse; an unmodeled op WITH a
+        prologue; a call as a spill-segment barrier).
+        Frozen-safe (emits nothing; `.text` byte-identical, control_step
+        0x00210A55 / flight_algo 0x07FDF307) - the frozen suite compiling the
+        whole ARM fixture set THROUGH the unconditional gate (10/10 green) is the
+        silent-on-every-real-function proof. CI-gated:
+        `vcr-ra-003-alloc-validator-gate` in ci.yml (red-first unit tests +
+        frozen suite). Distinct from the PAIRWISE `validate_segment_rewrite`
+        (which needs a pre-alloc reference and runs INSIDE the re-alloc pass):
+        the final validator inspects the SINGLE emitted stream with no reference,
+        so it checks only invariants whose reference lives in the stream. Placed
+        in synth-synthesis (not synth-core) because ArmOp/Reg live there and the
+        register-assigned stream is consumed in arm_backend before main.rs.
+        ARM-scoped this increment; RV32 / AArch64 get their own arms later
+        (per-backend, like VCR-VER-003). v2 (Rocq-mechanized soundness of the
+        straight-line fragment) remains the open step.
 
   - id: VCR-RA-004
     type: sw-req

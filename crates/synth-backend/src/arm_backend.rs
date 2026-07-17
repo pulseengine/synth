@@ -1351,6 +1351,32 @@ fn compile_wasm_to_arm(
     validate_instructions(&arm_instrs, config.target.fpu, &config.target.triple)
         .map_err(|e| format!("ISA validation failed: {}", e))?;
 
+    // VCR-RA-003 (epic #242): UNCONDITIONAL per-compilation register-allocation
+    // validation. The register allocator is the last major unverified codegen
+    // component; this single-stream backward-dataflow checker proves — by
+    // construction, on the EXACT emitted stream about to be encoded — that the
+    // allocation preserves the two invariants whose reference lives in the
+    // stream: callee-saved preservation (#490) and spill-slot non-aliasing
+    // (#331). It runs on every ARM compile in the DEFAULT shipping build (NOT
+    // behind `--features verify`; a verify-gated check would be dormant in
+    // exactly the build that ships — the #757 / VCR-VER-003 lesson) and
+    // hard-errors the compile on a violation. Branches / CF joins and unmodeled
+    // ops (calls, i64-pair, FP) are the named PHASE-2 boundary: the spill check
+    // segments at them (never reasoning across a join), so this is honest — it
+    // never claims coherence it cannot prove. Frozen-safe: it emits nothing, so
+    // `.text` is byte-identical (proven by the frozen suite).
+    if let synth_synthesis::liveness::RaFinalVerdict::Violation(v) =
+        synth_synthesis::liveness::validate_final_allocation(&arm_instrs)
+    {
+        return Err(format!(
+            "VCR-RA-003: register-allocation validation FAILED — {v:?}. \
+             The emitted stream violates a register-allocation invariant \
+             (callee-saved preservation #490 / spill-slot non-aliasing #331); \
+             this is a compiler bug, not a program error. Refusing to emit a \
+             miscompiled object."
+        ));
+    }
+
     // Encode to binary — use Thumb-2 for Cortex-M targets
     let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
 
