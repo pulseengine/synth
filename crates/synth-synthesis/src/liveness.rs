@@ -3719,6 +3719,11 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     }
     // Epilogue half: if there IS a prologue that saved a set, every return
     // epilogue `pop {…,pc}` must restore exactly the saved callee-saved regs.
+    // PHASE-2 scope: only the `pop {…,pc}`-form epilogue is checked here — a
+    // non-`pop`-form return (`add sp,#N; bx lr`) that drops a restore is a v1
+    // false-NEGATIVE for THIS check (never a false-positive), but the store-side
+    // `defined_cs` vs `saved` check above still catches the underlying clobber at
+    // def-time, so soundness of the #490 guarantee does not rest on this half.
     if has_prologue {
         for ins in instrs {
             if let Pop { regs } = &ins.op
