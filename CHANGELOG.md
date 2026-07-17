@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-07-17
+
+**"Close the loops" — every v0.46 loud-decline converted to a proven capability
+(or an honestly sharper decline), driven end-to-end by real-module needs.**
+Highlights: WCET now bounds statically-proven loops and sound-checks untrusted
+hints (the scry seam); aarch64 gains SOUND trapping float→int + IEEE-754-2019
+min/max (35→46 ops, all 32 trap cases execution-verified); the #275 finale ships
+self-contained `call_indirect` via a PC-relative flash funcref table (falcon
+unblocked, #275 CLOSED); the addressing validator extends to spans, the
+self-contained ROM image, and RV32; the WasmCert anchor grows 489→536 Qed with a
+concrete real-dep path; and `cabi-arena-realloc` binds natively on self-contained
+dissolves (#418 CLOSED). The #791 soundness fix shipped same-day as v0.46.1.
+
 ### Added
 
 - **Self-contained `--cortex-m` `call_indirect` — the #275 finale (falcon's
@@ -65,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the moved (never deleted) decline matrix; every bounded fixture was
   additionally executed under unicorn at authoring time (result correct,
   executed machine instructions ≤ bound).
+
+## [0.46.1] - 2026-07-17
+
+**Soundness backport — #791.** The optimized (default) path miscompiled functions
+whose body is a bare constant: `Opcode::Const` was the one value-producing arm
+that never recorded its dest as `last_result_vreg`, so the epilogue never moved
+the result to R0 and the export returned caller residue. Found by the #275
+finale's execution differential (the first gate to run dispatch targets in a
+default self-contained image). Tagged from v0.46.0 + the cherry-picked fix
+(pure patch); also on main. Red-first `const_body_791_differential.py`; frozen
+anchors unchanged; `base_cse_flip_468` goldens re-pinned (+2 B harmless
+`mov r0,rX` on void stored-const tails) after a full differential sweep.
 
 ## [0.46.0] - 2026-07-16
 
