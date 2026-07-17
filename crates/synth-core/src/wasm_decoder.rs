@@ -2362,6 +2362,62 @@ mod tests {
         );
     }
 
+    /// #782a: the 0xFC-prefixed trunc_sat family must DECODE (it was
+    /// previously unmapped → the whole function loud-skipped as
+    /// "unsupported operator", the falcon #782 `ts32`/`ts64` class). All
+    /// eight forms must surface as their `WasmOp` variants so the selectors
+    /// can lower (ARM32 i32-targets, aarch64 all) or LOUD-decline (ARM32
+    /// i64-targets, RV32) per backend.
+    #[test]
+    fn test_decode_trunc_sat_family() {
+        let wat = r#"
+            (module
+                (func (export "ts") (param f32 f64) (result i32)
+                    (i32.trunc_sat_f32_s (local.get 0))
+                    (i32.trunc_sat_f32_u (local.get 0))
+                    i32.add
+                    (i32.trunc_sat_f64_s (local.get 1))
+                    i32.add
+                    (i32.trunc_sat_f64_u (local.get 1))
+                    i32.add
+                    (i32.wrap_i64 (i64.trunc_sat_f32_s (local.get 0)))
+                    i32.add
+                    (i32.wrap_i64 (i64.trunc_sat_f32_u (local.get 0)))
+                    i32.add
+                    (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get 1)))
+                    i32.add
+                    (i32.wrap_i64 (i64.trunc_sat_f64_u (local.get 1)))
+                    i32.add
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+        assert_eq!(functions.len(), 1);
+        let f = &functions[0];
+        assert!(
+            f.unsupported.is_none(),
+            "trunc_sat must decode, not loud-skip: {:?}",
+            f.unsupported
+        );
+        for want in [
+            WasmOp::I32TruncSatF32S,
+            WasmOp::I32TruncSatF32U,
+            WasmOp::I32TruncSatF64S,
+            WasmOp::I32TruncSatF64U,
+            WasmOp::I64TruncSatF32S,
+            WasmOp::I64TruncSatF32U,
+            WasmOp::I64TruncSatF64S,
+            WasmOp::I64TruncSatF64U,
+        ] {
+            assert!(
+                f.ops.contains(&want),
+                "decoded ops must contain {want:?}: {:?}",
+                f.ops
+            );
+        }
+    }
+
     /// #204 regression: `i64.extend_i32_u`, `i64.extend_i32_s` and
     /// `i32.wrap_i64` must DECODE (they were previously unmapped → silently
     /// dropped by `convert_operator`, leaving an i32 value as a 64-bit operand

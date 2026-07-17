@@ -1091,6 +1091,70 @@ mod tests {
     }
 
     #[test]
+    fn trunc_sat_782_i32_forms_are_one_bare_fcvtz() {
+        // §4.3.2 trunc_sat is TOTAL — A64 FCVTZS/FCVTZU already saturate and
+        // give 0 for NaN, so the lowering is ONE bare convert: no bound
+        // materialization, no b.cond, and above all NO brk (a guard would
+        // spuriously trap where WASM saturates).
+        for (op, f32_src, cvt) in [
+            (
+                WasmOp::I32TruncSatF32S,
+                true,
+                enc::fcvtzs_w_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I32TruncSatF32U, true, enc::fcvtzu_w_from_s),
+            (WasmOp::I32TruncSatF64S, false, enc::fcvtzs_w_from_d),
+            (WasmOp::I32TruncSatF64U, false, enc::fcvtzu_w_from_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f32_src {
+                (&[true], &[])
+            } else {
+                (&[], &[true])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![cvt(9, 0), enc::mov_reg64(0, 9), enc::ret()],
+                "{op:?} must be one bare saturating convert"
+            );
+            assert!(
+                !w.contains(&enc::brk(0)),
+                "{op:?} is total — a brk guard would spuriously trap"
+            );
+        }
+    }
+
+    #[test]
+    fn trunc_sat_782_i64_forms_use_x_destination_fcvtz() {
+        // A64 is 64-bit native: the i64-target forms are the same
+        // one-instruction shape with an x (sf=1) destination.
+        for (op, f32_src, cvt) in [
+            (
+                WasmOp::I64TruncSatF32S,
+                true,
+                enc::fcvtzs_x_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I64TruncSatF32U, true, enc::fcvtzu_x_from_s),
+            (WasmOp::I64TruncSatF64S, false, enc::fcvtzs_x_from_d),
+            (WasmOp::I64TruncSatF64U, false, enc::fcvtzu_x_from_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f32_src {
+                (&[true], &[])
+            } else {
+                (&[], &[true])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![cvt(9, 0), enc::mov_reg64(0, 9), enc::ret()],
+                "{op:?} must be one bare x-destination saturating convert"
+            );
+        }
+    }
+
+    #[test]
     fn f32_min_max_use_fmin_fmax() {
         // WASM min/max ≡ A64 FMIN/FMAX (IEEE 754-2019 minimum/maximum) — a
         // single instruction each; FMINNM/FMAXNM would be the WRONG (minNum)
