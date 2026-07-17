@@ -1589,3 +1589,41 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/cabi_arena_bind_418_differential.py
+
+  vcr-ra-003-alloc-validator-gate:
+    name: "VCR-RA-003 register-allocation validator (red-first + frozen)"
+    # VCR-RA-003 (#242): the UNCONDITIONAL, single-stream backward-dataflow
+    # register-allocation validator (synth_synthesis::liveness::
+    # validate_final_allocation) runs on every ARM compile in the default build
+    # and hard-errors on a callee-saved-preservation (#490) or spill-slot
+    # non-aliasing (#331) violation. This job pins the gate's TWO halves as an
+    # explicit, self-describing red so a regression is visible on its own name:
+    #   (1) RED-FIRST non-vacuity: the ra003_red_* unit tests synthetically
+    #       revert a known-fixed clobber and assert the validator CATCHES it
+    #       (revert #490 prologue -> CalleeSavedNotSaved; drop epilogue restore
+    #       -> CalleeSavedNotRestored; alias two live values on one slot ->
+    #       SpillSlotAliased). The ra003_green_* tests assert it is SILENT on
+    #       correct code (the Consistent half).
+    #   (2) SILENT-ON-REAL-CODEGEN: the frozen suite compiles the whole ARM
+    #       fixture set THROUGH the unconditional validator; if it false-positived
+    #       on any real function that fixture would fail to compile, so 10/10 green
+    #       (control_step 0x00210A55, flight_algo 0x07FDF307 byte-identical) is the
+    #       validator's "Consistent on every real function" proof.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: RED-FIRST non-vacuity + silent-on-correct (validator unit tests)
+        run: cargo test -p synth-synthesis --lib ra003_
+      - name: Silent-on-real-codegen (frozen suite through the unconditional gate)
+        run: cargo test -p synth-cli --test frozen_codegen_bytes
