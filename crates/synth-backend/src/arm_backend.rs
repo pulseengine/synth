@@ -157,11 +157,22 @@ impl Backend for ArmBackend {
         let (code, relocations, line_map, branch_map, final_instrs) =
             compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 
-        // #778: derive the SOUND static WCET bound from the final Thumb-2 stream.
-        // Only present for the Thumb-2 path; the core class (from the triple)
-        // decides whether the bound is sound (M3/M4) or declined (M7). Phase 2:
-        // any --wcet-hints entry for THIS function is verified (never trusted)
-        // by the loop analyzer.
+        // #778: derive the SOUND static WCET intermediate from the final Thumb-2
+        // stream. Only present for the Thumb-2 path; the core class (from the
+        // triple) decides whether the bound is sound (M3/M4) or declined (M7).
+        // Phase 2: any --wcet-hints entry for THIS function is verified (never
+        // trusted) by the loop analyzer. Phase 3: the intermediate carries the
+        // own-body cycles + direct call sites; the module driver composes it across
+        // the call graph. `wcet` here is the SINGLE-FUNCTION view (unresolved direct
+        // calls decline `call`) — a valid standalone answer, overwritten by the
+        // composed result when the driver runs the second pass.
+        let wcet_intermediate = final_instrs.as_ref().map(|instrs| {
+            let hints = config
+                .wcet_hints
+                .as_ref()
+                .and_then(|h| h.functions.get(name));
+            crate::wcet::function_wcet_intermediate(name, instrs, &config.target.triple, hints)
+        });
         let wcet = final_instrs.map(|instrs| {
             let hints = config
                 .wcet_hints
@@ -178,6 +189,7 @@ impl Backend for ArmBackend {
             line_map,
             branch_map,
             wcet,
+            wcet_intermediate,
         })
     }
 

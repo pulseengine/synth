@@ -20,10 +20,12 @@
 //!     the PROVEN trip count (head-test, bottom-test, nested-multiplicative,
 //!     memory-writing, zero-trip) — pinned exact literals + a trip-aware
 //!     soundness floor (`cycles ≥ trip × region_instr_count`).
-//!  3. **Decline fixtures** (data-dependent loop / non-canonical loop / call /
+//!  3. **Decline fixtures** (data-dependent loop / non-canonical loop /
+//!     external-import call / recursion / indirect call / declined-callee /
 //!     i64-software-div) each emit NO bound — a `declined` entry with the
 //!     SPECIFIC machine-readable reason. The phase-1 const-loop declines MOVED
-//!     to (2); the gate never deletes a decline, it converts it.
+//!     to (2); the phase-2 direct-local-`call` decline MOVED to phase-3
+//!     composition (item 6); the gate never deletes a decline, it converts it.
 //!  4. **The `--wcet-hints` seam** (#778 phase 2): RED-FIRST — a deliberately
 //!     WRONG hint (below the real trip count) is REJECTED
 //!     (`hint-below-derived-trip`) and the function stays declined; a correct
@@ -33,6 +35,12 @@
 //!     CLI misuse (no `--emit-wcet`, malformed JSON, wrong schema) fails loudly.
 //!  5. **Unsupported-core fixtures** (M7 dual-issue, and the ambiguous `-eabihf`
 //!     M4F triple) decline as `unsupported-core` — the conservative gap spar sees.
+//!  6. **Inter-procedural composition** (#778 phase 3): a caller with a DIRECT
+//!     call to a LOCAL bounded callee is BOUNDED (own body + Σ callee × call-site
+//!     multiplier); a callee invoked inside a proven loop is counted `trip` times.
+//!     Recursion (`recursion`), indirect (`indirect-call`), external/import
+//!     (`call`), and any declined callee (`callee-unbounded`) STAY loud declines —
+//!     the decline-honesty gate on what is not provably composable.
 //!
 //! It does NOT prove the per-op cycle NUMBERS are worst-case: it re-derives from
 //! the same table (there is no cycle-accurate Cortex-M oracle in this
@@ -63,8 +71,24 @@ fn compile_wcet(wat: &str, triple: &str) -> Value {
     compile_wcet_hinted(wat, triple, None)
 }
 
+/// Like [`compile_wcet`] but with `--relocatable` (so an import call lowers to a
+/// direct `BL func_N` reloc — the shape the composer sees as an external callee).
+fn compile_wcet_relocatable(wat: &str, triple: &str) -> Value {
+    compile_wcet_inner(wat, triple, None, true)
+}
+
 /// Like [`compile_wcet`] but passing a `--wcet-hints` file (#778 phase 2).
 fn compile_wcet_hinted(wat: &str, triple: &str, hints_json: Option<&str>) -> Value {
+    compile_wcet_inner(wat, triple, hints_json, false)
+}
+
+/// Shared compile+read-sidecar body for the WCET fixtures.
+fn compile_wcet_inner(
+    wat: &str,
+    triple: &str,
+    hints_json: Option<&str>,
+    relocatable: bool,
+) -> Value {
     let dir = std::env::temp_dir().join(format!(
         "synth_wcet_gate_{}_{}_{}",
         std::process::id(),
@@ -85,6 +109,9 @@ fn compile_wcet_hinted(wat: &str, triple: &str, hints_json: Option<&str>) -> Val
         triple.to_string(),
         "--emit-wcet".to_string(),
     ];
+    if relocatable {
+        args.push("--relocatable".to_string());
+    }
     if let Some(h) = hints_json {
         let hints_path = dir.join("hints.json");
         std::fs::write(&hints_path, h).unwrap();
@@ -280,16 +307,200 @@ fn data_dependent_loop_still_declines_with_loop_reason() {
 }
 
 #[test]
-fn call_declines_with_call_reason() {
-    // A caller with an internal call — inter-procedural, out of scope → `call`.
+fn external_import_call_declines_with_call_reason() {
+    // A DIRECT call to an IMPORTED function: the import has no per-function body in
+    // this module, so it cannot be composed → `call`. This is the decline the phase-3
+    // composer KEEPS for un-composable direct edges (a defined-function call is now
+    // composed — see `direct_call_chain_composes_*` below). Requires --relocatable so
+    // the import call lowers to a direct `BL func_N` reloc.
+    let wat = r#"
+        (module
+          (import "env" "ext" (func $ext (param i32) (result i32)))
+          (func (export "caller") (param i32) (result i32)
+            local.get 0 call $ext))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_declined(&report, "caller", "call");
+}
+
+// ---------------------------------------------------------------------------
+// #778 phase 3 — inter-procedural composition over the DIRECT call graph.
+// A caller containing a DIRECT call to a LOCAL bounded callee is now BOUNDED
+// (own body + Σ callee_bound × call-site multiplier). The `call` decline is
+// MOVED (never deleted) onto un-composable edges: external/import (above),
+// recursion, indirect, and any declined callee (below). This is the v0.46
+// decline-honesty discipline: converting a decline keeps the honesty gate on
+// what still declines.
+// ---------------------------------------------------------------------------
+
+/// A loop-free leaf→mid→root chain composes into an EXACT bound per function.
+/// The literals are the composed sums (frozen-codegen pins the streams): leaf 19,
+/// mid = own(32) + 1×leaf(19) = 51, root = own(34) + 2×mid(51) = 136. Every
+/// callee body is counted exactly as many times as it is invoked; summing every
+/// straight-line path over-approximates the real max — sound by construction.
+#[test]
+fn direct_call_chain_composes_exact_bounds() {
     let wat = r#"
         (module
           (func $leaf (param i32) (result i32) local.get 0 i32.const 1 i32.add)
-          (func (export "caller") (param i32) (result i32)
-            local.get 0 call $leaf))
+          (func $mid (param i32) (result i32) local.get 0 call $leaf i32.const 2 i32.add)
+          (func (export "root") (param i32) (result i32)
+            local.get 0 call $mid call $mid))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    assert_declined(&report, "caller", "call");
+    // func_0 == leaf (no export name), func_1 == mid, root exported.
+    assert_bounded(&report, "func_0", 19);
+    assert_bounded(&report, "func_1", 51);
+    assert_bounded(&report, "root", 136);
+    // Composition is a sound upper bound: each bound clears its own instr floor,
+    // and root's bound covers its two mid-calls (2 × 51 = 102 <= 136).
+    for name in ["func_0", "func_1", "root"] {
+        let f = func(&report, name);
+        let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
+        let instrs = f.get("instr_count").and_then(Value::as_u64).unwrap();
+        assert!(cycles >= instrs, "{name}: bound {cycles} < instrs {instrs}");
+    }
+    let root = func(&report, "root")
+        .get("cycles")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let mid = func(&report, "func_1")
+        .get("cycles")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert!(
+        root >= 2 * mid,
+        "root bound {root} must cover both mid-calls (2 × {mid})"
+    );
+}
+
+/// A DIRECT call sitting INSIDE a proven const-bound loop: the callee body is
+/// counted `trip` times (the call site's proven execution-count multiplier), NEVER
+/// once. This is the #1 composition soundness trap — a flat `Σ callee_bound` would
+/// undercount a callee invoked in a loop. Killed by construction: the composed
+/// bound clears both the leaf-called-10× floor and the loop's trip floor.
+#[test]
+fn direct_call_inside_proven_loop_counts_callee_per_trip() {
+    let wat = r#"
+        (module
+          (func $leaf (param i32) (result i32) local.get 0 i32.const 1 i32.add)
+          (func (export "loopcaller") (result i32)
+            (local i32 i32)
+            (block
+              (loop
+                local.get 0 i32.const 10 i32.lt_s i32.eqz br_if 1
+                local.get 1 call $leaf local.set 1
+                local.get 0 i32.const 1 i32.add local.set 0
+                br 0))
+            local.get 1))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    let leaf = func(&report, "func_0")
+        .get("cycles")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert_eq!(leaf, 19, "leaf body pins at 19");
+    let f = func(&report, "loopcaller");
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("bounded"),
+        "a direct call inside a PROVEN loop must compose (callee counted trip×): {f}"
+    );
+    assert_loop(&report, "loopcaller", 0, 10, "static");
+    assert_trip_floor(&report, "loopcaller");
+    // The leaf is invoked 10× (once per trip): the composed bound must include at
+    // LEAST 10 × leaf, or the call-in-loop multiplier was dropped (unsound).
+    let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
+    assert!(
+        cycles >= 10 * leaf,
+        "loopcaller bound {cycles} < 10 × leaf {leaf} — the call-in-loop multiplier \
+         was lost; a callee in a trip-10 loop must be counted 10×, not once (unsound)"
+    );
+}
+
+/// DECLINE-HONESTY 1 — SELF-RECURSION: a function that calls itself forms a cycle
+/// in the direct call graph → an upper cycle bound cannot be composed → LOUD
+/// decline `recursion`. This decline is NEW in phase 3 (the cycle would previously
+/// have hit the blanket `call` decline); it must fire on its own specific reason.
+#[test]
+fn self_recursion_declines_with_recursion_reason() {
+    let wat = r#"
+        (module
+          (func $fac (export "fac") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 1)
+              (else local.get 0 local.get 0 i32.const 1 i32.sub call $fac i32.mul))))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "fac", "recursion");
+}
+
+/// DECLINE-HONESTY 2 — MUTUAL RECURSION: a cycle spanning two functions declines
+/// `recursion` on BOTH (every function on the cycle is unbounded).
+#[test]
+fn mutual_recursion_declines_both() {
+    let wat = r#"
+        (module
+          (func $ping (export "ping") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 0)
+              (else local.get 0 i32.const 1 i32.sub call $pong)))
+          (func $pong (export "pong") (param i32) (result i32)
+            local.get 0 i32.eqz
+            (if (result i32)
+              (then i32.const 1)
+              (else local.get 0 i32.const 1 i32.sub call $ping))))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "ping", "recursion");
+    assert_declined(&report, "pong", "recursion");
+}
+
+/// DECLINE-HONESTY 3 — INDIRECT CALL: `call_indirect` (callee not statically known)
+/// declines `indirect-call`. The direct-call composition never applies to an
+/// indirect edge — soundness over coverage.
+#[test]
+fn indirect_call_declines_with_indirect_reason() {
+    let wat = r#"
+        (module
+          (type $t (func (param i32) (result i32)))
+          (table 1 funcref)
+          (func $g (param i32) (result i32) local.get 0 i32.const 1 i32.add)
+          (elem (i32.const 0) $g)
+          (func (export "dispatch") (param i32) (result i32)
+            local.get 0 i32.const 0 call_indirect (type $t)))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "dispatch", "indirect-call");
+}
+
+/// DECLINE-HONESTY 4 — PROPAGATION: a caller whose OWN body is bounded but that
+/// directly calls a callee which itself declines (an unproven data-dependent loop)
+/// declines `callee-unbounded` — the decline travels UP the graph. Crucially it
+/// carries the PROPAGATION reason, not the callee's `loop` reason (so a consumer
+/// sees the caller is unbounded because a callee is, not because the caller loops).
+#[test]
+fn declined_callee_propagates_up_as_callee_unbounded() {
+    let wat = r#"
+        (module
+          (func $spin (param i32) (result i32)
+            (local i32)
+            (block
+              (loop
+                local.get 1 local.get 0 i32.lt_s i32.eqz br_if 1
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 1)
+          (func (export "caller") (param i32) (result i32)
+            local.get 0 call $spin))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    // The callee keeps its own specific decline...
+    assert_declined(&report, "func_0", "loop");
+    // ...and the caller declines with the PROPAGATION reason (not `loop`).
+    assert_declined(&report, "caller", "callee-unbounded");
 }
 
 #[test]

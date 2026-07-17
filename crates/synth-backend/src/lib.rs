@@ -38,6 +38,7 @@ pub mod reset_handler;
 #[cfg(feature = "arm-cortex-m")]
 pub mod vector_table;
 pub mod wcet;
+pub mod wcet_compose;
 mod wcet_loops;
 
 #[cfg(feature = "arm-cortex-m")]

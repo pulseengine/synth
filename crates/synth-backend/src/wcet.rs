@@ -43,10 +43,29 @@
 //! entry is justified inline. Since a loop-free function executes every
 //! instruction at most once, a per-instruction over-estimate keeps the SUM sound.
 
-use synth_core::wcet::{WcetDecline, WcetFunction, WcetFunctionHints};
+use synth_core::wcet::{
+    WcetCallSite, WcetDecline, WcetFunction, WcetFunctionHints, WcetIntermediate,
+};
 use synth_synthesis::{ArmInstruction, ArmOp};
 
 use crate::wcet_loops::{LoopAnalysis, analyze_loops};
+
+/// The worst-case cycle cost of a DIRECT `BL`/`BLX` call instruction itself
+/// (the branch-with-link, EXCLUDING the callee body which is composed separately).
+///
+/// PROVENANCE — MAX over {Cortex-M3, Cortex-M4}. Both TRMs time `BL`/`BLX` as
+/// `1 + P` where `P` is the pipeline-refill penalty, "1 to 3 depending on the
+/// alignment and width of the target instruction, and whether the processor manages
+/// to speculate the address early" (ARM Cortex-M3 / Cortex-M4 Technical Reference
+/// Manuals, instruction-timing summary). The worst case is `1 + 3 = 4`. This is the
+/// SAME branch-with-refill class the table already prices for `Bx`/`BOffset`/
+/// `BCondOffset` (also 4), so a direct call's branch overhead is 4 cycles. The
+/// callee's own return (`BX LR` / `POP {PC}`) is already counted inside the
+/// callee's own bound, so NO return penalty is added here (that would double-count).
+///
+/// SOUND-CRITICAL: pinned in `claims.yaml` (SYNTH-WCET-CYCLE-MODEL). Editing it
+/// reddens the claim-check and forces a conscious re-derivation against the TRM.
+const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;
 
 /// A conservative per-16-bit-halfword ceiling for a straight-line multi-byte
 /// encoder expansion built from ALU/shift/compare/move/short-multiply plus the
@@ -162,8 +181,13 @@ fn op_cost(op: &ArmOp) -> OpCost {
         // strictly cheaper, so the over-estimate is sound.
         BOffset { .. } | BCondOffset { .. } | Bx { .. } => Cycles(4),
 
-        // --- calls: DECLINE the function (inter-procedural, out of scope) ---
-        Bl { .. } | Blx { .. } => Unmodeled, // routed to Call decline by the caller
+        // --- calls: the BRANCH-WITH-LINK overhead only (1 + up-to-3 refill = 4).
+        // The callee body is composed in separately over the direct call graph
+        // (#778 phase 3); a DIRECT `Bl func_N` to a local bounded callee is priced
+        // as this overhead + callee bound. An INDIRECT `Blx <reg>` still declines
+        // (callee not statically known) — that classification is made in
+        // `classify_call` / the intermediate builder, not here. ---
+        Bl { .. } | Blx { .. } => Cycles(BL_BLX_CALL_OVERHEAD_CYCLES),
 
         // --- select / predication ---
         // SetCond = IT + MOV + MOV (6 B, 3 insns); SelectMove = IT + MOV (4 B).
@@ -397,43 +421,86 @@ pub fn sound_core_class(triple: &str) -> Option<&'static str> {
     }
 }
 
-/// Scan for op-class declines: calls, residual label branches, looped
-/// expansions, unmodeled ops. Returns the first decline reason found, or `None`
-/// if every instruction is straight-line-priceable (backward branches — loops —
-/// are NOT a decline here; they are handed to [`crate::wcet_loops`]).
+/// The classification of a call-shaped instruction for composition (#778 phase 3).
+enum CallClass {
+    /// A DIRECT `BL func_<idx>` to a callee that may be a local/bounded function —
+    /// resolved against the module by the composer. Carries the target label.
+    Direct(String),
+    /// An INDIRECT call (`Blx <reg>`, `call_indirect`, or a function-pointer
+    /// dispatch label such as `__meld_dispatch_import`): callee not statically
+    /// known → the function DECLINES [`WcetDecline::IndirectCall`].
+    Indirect,
+    /// A DIRECT `BL <label>` to a runtime helper / external symbol that has NO
+    /// per-function body in this module (`__aeabi_*`, a bridge, an import trampoline
+    /// other than the dispatch above): cannot compose a bound → the function
+    /// DECLINES [`WcetDecline::Call`].
+    External,
+}
+
+/// Classify a call-shaped `ArmOp`, or `None` if `op` is not a call.
+///
+/// A `BL func_<idx>` is the selector's shape for a direct local call (or a direct
+/// relocatable-import call, whose `func_N` symbol the ELF builder retargets to the
+/// import name — that import has no body here, so the composer resolves it to
+/// External and declines). `__meld_dispatch_import` is a runtime function-pointer
+/// dispatch (indirect). `Blx`/`CallIndirect` are indirect by construction.
+fn classify_call(op: &ArmOp) -> Option<CallClass> {
+    match op {
+        ArmOp::Bl { label } => {
+            if label == "__meld_dispatch_import" {
+                Some(CallClass::Indirect)
+            } else if is_local_func_label(label) {
+                Some(CallClass::Direct(label.clone()))
+            } else {
+                Some(CallClass::External)
+            }
+        }
+        ArmOp::Blx { .. } | ArmOp::CallIndirect { .. } => Some(CallClass::Indirect),
+        // `Call` is a pseudo-op lowered upstream; if one survived, treat it as a
+        // direct call by name so composition can still resolve it (its label is a
+        // function name). CallIndirect handled above.
+        ArmOp::Call { func_idx, .. } => Some(CallClass::Direct(format!("func_{func_idx}"))),
+        _ => None,
+    }
+}
+
+/// Is `label` the selector's DIRECT-local-call shape `func_<decimal index>`?
+fn is_local_func_label(label: &str) -> bool {
+    label
+        .strip_prefix("func_")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Scan for op-class declines that are INDEPENDENT of inter-procedural composition:
+/// residual label branches, looped expansions, indirect calls, external direct
+/// calls, and unmodeled ops. Direct local calls (`BL func_N`) are NOT a decline
+/// here — they are recorded as call sites and resolved by the composer. Backward
+/// branches (loops) are NOT a decline here either; they go to [`crate::wcet_loops`].
+///
+/// Returns the first composition-independent decline reason, or `None`.
 fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
     for instr in instrs {
-        // Op-class declines (call / looped-expansion / unmodeled) come first.
-        match &instr.op {
-            ArmOp::Bl { .. }
-            | ArmOp::Blx { .. }
-            | ArmOp::Call { .. }
-            | ArmOp::CallIndirect { .. } => {
-                return Some(WcetDecline::Call);
+        // Call-shaped ops: only a DIRECT local call is composable; everything else
+        // (indirect / external) is a composition-independent decline.
+        if let Some(class) = classify_call(&instr.op) {
+            match class {
+                CallClass::Direct(_) => {} // composable — recorded, not declined
+                CallClass::Indirect => return Some(WcetDecline::IndirectCall),
+                CallClass::External => return Some(WcetDecline::Call),
             }
-            // A residual label branch: direction is not statically known here.
-            ArmOp::B { .. } | ArmOp::Bcc { .. } | ArmOp::Bhs { .. } | ArmOp::Blo { .. } => {
-                return Some(WcetDecline::UnresolvedBranch);
-            }
-            _ => {}
+            continue;
+        }
+        // A residual label branch: direction is not statically known here.
+        if matches!(
+            &instr.op,
+            ArmOp::B { .. } | ArmOp::Bcc { .. } | ArmOp::Bhs { .. } | ArmOp::Blo { .. }
+        ) {
+            return Some(WcetDecline::UnresolvedBranch);
         }
         match op_cost(&instr.op) {
             OpCost::LoopedExpansion => return Some(WcetDecline::LoopedExpansion),
-            // Bl/Blx already handled above; any other Unmodeled op is off-path.
-            OpCost::Unmodeled
-                if !matches!(
-                    &instr.op,
-                    ArmOp::Bl { .. }
-                        | ArmOp::Blx { .. }
-                        | ArmOp::B { .. }
-                        | ArmOp::Bcc { .. }
-                        | ArmOp::Bhs { .. }
-                        | ArmOp::Blo { .. }
-                ) =>
-            {
-                return Some(WcetDecline::UnmodeledOp);
-            }
-            _ => {}
+            OpCost::Unmodeled => return Some(WcetDecline::UnmodeledOp),
+            OpCost::Cycles(_) => {}
         }
     }
     None
@@ -456,17 +523,76 @@ pub fn function_wcet(name: &str, instrs: &[ArmInstruction], triple: &str) -> Wce
 /// function (#778 phase 2, the scry seam). Every hint is soundly verified by
 /// [`crate::wcet_loops`] before use; wrong/unverifiable hints are rejected with
 /// machine reasons in the returned record — never trusted into a bound.
+///
+/// This is the SINGLE-FUNCTION view: it collapses the phase-3 intermediate to a
+/// `WcetFunction` treating every direct call as unresolvable (External → `call`
+/// decline), which is the correct answer when no module context is available. The
+/// module-level driver instead calls [`function_wcet_intermediate`] and composes
+/// (see [`crate::wcet_compose`]).
 pub fn function_wcet_with_hints(
     name: &str,
     instrs: &[ArmInstruction],
     triple: &str,
     hints: Option<&WcetFunctionHints>,
 ) -> WcetFunction {
+    match function_wcet_intermediate(name, instrs, triple, hints) {
+        WcetIntermediate::Declined {
+            name,
+            reason,
+            hint_rejections,
+        } => WcetFunction::declined_with_rejections(name, reason, hint_rejections),
+        WcetIntermediate::Composable {
+            name,
+            own_cycles,
+            instr_count,
+            call_sites,
+            loops,
+            hint_rejections,
+        } => {
+            // No module context here: an unresolved direct call cannot be composed,
+            // so a composable function WITH call sites declines `call`; one with no
+            // calls is a genuine intra-procedural bound.
+            if call_sites.is_empty() {
+                WcetFunction::Bounded {
+                    name,
+                    cycles: own_cycles,
+                    instr_count,
+                    loops,
+                    hint_rejections,
+                }
+            } else {
+                WcetFunction::declined_with_rejections(name, WcetDecline::Call, hint_rejections)
+            }
+        }
+    }
+}
+
+/// Compute the per-function WCET INTERMEDIATE (#778 phase 3): either a
+/// composition-independent decline, or a [`WcetIntermediate::Composable`] whose
+/// `own_cycles` prices every instruction (each `BL`'s branch overhead included) at
+/// its proven execution count, with the direct call sites recorded for the composer
+/// to resolve against the whole module.
+///
+/// `triple` is `config.target.triple`; a non-soundly-summable core declines
+/// [`WcetDecline::UnsupportedCore`]. Loop trip counts are proven exactly as in
+/// phase 2 (unproven loops → `loop` decline); the ONLY phase-3 change is that a
+/// direct local `BL func_N` is a recorded call site instead of an immediate decline.
+pub fn function_wcet_intermediate(
+    name: &str,
+    instrs: &[ArmInstruction],
+    triple: &str,
+    hints: Option<&WcetFunctionHints>,
+) -> WcetIntermediate {
+    let declined = |reason, hint_rejections| WcetIntermediate::Declined {
+        name: name.to_string(),
+        reason,
+        hint_rejections,
+    };
     if sound_core_class(triple).is_none() {
-        return WcetFunction::declined(name, WcetDecline::UnsupportedCore);
+        return declined(WcetDecline::UnsupportedCore, Vec::new());
     }
     if let Some(reason) = scan_for_decline(instrs) {
-        return WcetFunction::declined(name, reason);
+        return declined(reason, Vec::new());
     }
     // Loop analysis: prove a trip count for every backward-branch region, or
     // keep the loud `loop` decline.
@@ -478,32 +604,46 @@ pub fn function_wcet_with_hints(
             hint_rejections,
         } => (Some(multipliers), loops, hint_rejections),
         LoopAnalysis::Unproven { hint_rejections } => {
-            return WcetFunction::declined_with_rejections(
-                name,
-                WcetDecline::Loop,
-                hint_rejections,
-            );
+            return declined(WcetDecline::Loop, hint_rejections);
         }
     };
-    // Every instruction's documented worst case × its proven worst-case
-    // execution count (1 everywhere for a loop-free function). u128 through the
-    // sum so deep nesting cannot silently wrap; an astronomically large product
-    // declines rather than emitting a truncated (unsound) number.
+    let mult_at = |i: usize| -> u128 { multipliers.as_ref().map_or(1u128, |m| m[i]) };
+
+    // Every instruction's documented worst case × its proven worst-case execution
+    // count (1 everywhere for a loop-free function). u128 through the sum so deep
+    // nesting cannot silently wrap; an astronomically large product declines rather
+    // than emitting a truncated (unsound) number. Each direct `BL` contributes its
+    // branch overhead here (via op_worst_case_cycles); the callee body is added by
+    // the composer.
     let cycles_wide: u128 = instrs
         .iter()
         .enumerate()
-        .map(|(i, instr)| {
-            let mult = multipliers.as_ref().map_or(1u128, |m| m[i]);
-            (op_worst_case_cycles(&instr.op) as u128).saturating_mul(mult)
-        })
+        .map(|(i, instr)| (op_worst_case_cycles(&instr.op) as u128).saturating_mul(mult_at(i)))
         .fold(0u128, u128::saturating_add);
-    let Ok(cycles) = u64::try_from(cycles_wide) else {
-        return WcetFunction::declined_with_rejections(name, WcetDecline::Loop, hint_rejections);
+    let Ok(own_cycles) = u64::try_from(cycles_wide) else {
+        return declined(WcetDecline::Loop, hint_rejections);
     };
-    WcetFunction::Bounded {
+
+    // Record every DIRECT call site with the BL's proven execution-count multiplier
+    // — a call inside a proven loop is counted `trip` times by the composer, never
+    // once (the #1 composition soundness trap, killed by construction).
+    let call_sites: Vec<WcetCallSite> = instrs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, instr)| match classify_call(&instr.op) {
+            Some(CallClass::Direct(callee_label)) => Some(WcetCallSite {
+                callee_label,
+                multiplier: mult_at(i),
+            }),
+            _ => None,
+        })
+        .collect();
+
+    WcetIntermediate::Composable {
         name: name.to_string(),
-        cycles,
+        own_cycles,
         instr_count: instrs.len(),
+        call_sites,
         loops,
         hint_rejections,
     }

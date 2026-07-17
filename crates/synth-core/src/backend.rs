@@ -602,6 +602,14 @@ pub struct CompiledFunction {
     /// without it (frozen-safe). Emitted as the `<output>.wcet.json` sidecar only
     /// under `--emit-wcet`.
     pub wcet: Option<crate::wcet::WcetFunction>,
+    /// #778 phase 3: the per-function WCET INTERMEDIATE (own-body cycles + direct
+    /// call sites, or a composition-independent decline) BEFORE inter-procedural
+    /// composition. The module driver composes these across the direct call graph
+    /// into the final per-function bounds (a caller's bound = its own body + each
+    /// direct callee's bound × the call site's proven execution count). `Some` only
+    /// on the Thumb-2 path that produced `wcet`. Purely additive, `.text`-invisible
+    /// (frozen-safe) — derived from the already-decided instruction list.
+    pub wcet_intermediate: Option<crate::wcet::WcetIntermediate>,
 }
 
 /// Result of compiling a full module

@@ -234,6 +234,7 @@ fn compile_function_with_opts(
         // #778: WCET cycle model is ARM(Thumb-2)-only in v1 (RISC-V has no
         // per-op cycle table yet) — no bound emitted for this backend.
         wcet: None,
+        wcet_intermediate: None,
     })
 }
 
@@ -490,6 +491,7 @@ mod tests {
             line_map: Vec::new(),
             branch_map: Vec::new(),
             wcet: None,
+            wcet_intermediate: None,
         };
         let cfg = CompileConfig {
             target: TargetSpec::riscv32imac(),

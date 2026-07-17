@@ -3209,3 +3209,81 @@ artifacts:
         VFP ops). The f32 comparisons compile + are byte-pinned in
         f32_vfp_encoding_test.rs but are not execution-differentiated (unicorn
         does not model the VMRS FPSCR→APSR flag transfer — an emulator gap).
+
+  # ---------------------------------------------------------------------------
+  # Track D — schedulability: sound static WCET bound (#778)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-WCET-001
+    type: sys-verification
+    title: "Sound static per-function WCET bound (--emit-wcet) — phase 3 inter-procedural composition landed"
+    description: >
+      --emit-wcet emits a SOUND static per-function worst-case cycle bound
+      (synth-wcet-v1 sidecar) as gale spar's T3/T4 C_i input — a proven ceiling,
+      never a DWT observation. The bound is CONDITIONAL on a zero-wait-state
+      in-order Cortex-M3/M4 pipeline (recorded in the sidecar precondition); the
+      per-op worst cases are MAX over {M3,M4} from an EXHAUSTIVE no-wildcard cycle
+      table (crates/synth-backend/src/wcet.rs), pinned sound-critical in
+      claims.yaml (SYNTH-WCET-CYCLE-MODEL). SOUNDNESS = decline > guess: anything
+      uncertain LOUD-DECLINES with a machine reason rather than emit a number it
+      cannot defend.
+
+      Phase 1 (v0.46): loop-free functions = EXACT conservative sum (every insn
+      once, both arms of every if). Phase 2 (v0.47): canonical const-bound counted
+      loops PROVEN by a symbolic walk over the final stream (wcet_loops.rs);
+      --wcet-hints (synth-wcet-hints-v1) is an UNTRUSTED scry seam verified against
+      synth's own derived trip and rejected with machine reasons otherwise.
+
+      Phase 3 (v0.48, THIS entry): INTER-PROCEDURAL COMPOSITION over the DIRECT
+      call graph. A caller containing a direct BL func_N to a LOCAL bounded callee
+      is now BOUNDED (was a blanket `call` decline): total(f) = own_cycles(f) +
+      Σ_site multiplier(site) × total(callee), composed callee-first over the
+      acyclic graph (crates/synth-backend/src/wcet_compose.rs, a PURE memoized DFS
+      over per-function intermediates — never re-touches the instruction streams,
+      so trivially frozen-safe). own_cycles prices each direct BL at the
+      branch-with-link overhead BL_BLX_CALL_OVERHEAD_CYCLES = 4 (MAX over {M3,M4}:
+      both TRMs time BL/BLX as 1+P, P the pipeline refill 1..3, worst case 1+3=4 —
+      the same branch-with-refill class the table already prices for taken
+      Bx/BOffset/BCondOffset; the callee's own return is counted in the callee's
+      bound so no return penalty is added). The per-site multiplier is the call
+      site's PROVEN execution count, so a callee invoked inside a proven counted
+      loop is counted trip× — never once (the #1 composition soundness trap, killed
+      by construction).
+
+      NAMED RESIDUAL DECLINES (decline-honesty, nothing deleted — moved onto what
+      is not provably composable):
+        - RECURSION: any cycle in the direct call graph (self- or mutual) declines
+          `recursion` on every function on/reaching the cycle — an upper cycle
+          bound cannot be composed from a recursive graph.
+        - INDIRECT CALL: Blx <reg> / call_indirect / function-pointer dispatch
+          (__meld_dispatch_import) declines `indirect-call` — callee not statically
+          known.
+        - EXTERNAL/IMPORT: a direct BL to a symbol with no per-function body in the
+          module (an import under --relocatable) declines `call`.
+        - PROPAGATION: a caller whose bounded body directly calls a declined callee
+          declines `callee-unbounded` — a decline travels UP the graph.
+
+      Data-dependent loops, non-canonical shapes, i64 software div/rem, and
+      non-M3/M4 cores (incl. the ambiguous -eabihf M4F/M7 triple) still
+      LOUD-DECLINE unchanged. Frozen-safe (.text byte-identical, frozen 10/10;
+      the Bl/Blx op_cost change is WCET-path-only). Richer hint certificates
+      (data-dependent bounds, scry) remain the named follow-up.
+
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        crates/synth-cli/tests/wcet_bound_gate.rs (CI-gated, cargo test +
+        explicit ci.yml step): compiles REAL .wat fixtures and asserts on the
+        sidecar. Phase-3 additions — direct_call_chain_composes_exact_bounds
+        (leaf 19 / mid 51 / root 136 EXACT literals + instr floor + root covers
+        both mid-calls), direct_call_inside_proven_loop_counts_callee_per_trip
+        (callee counted 10× under a proven trip-10 loop; bound ≥ 10×leaf + trip
+        floor), self_recursion_declines_with_recursion_reason,
+        mutual_recursion_declines_both, indirect_call_declines_with_indirect_reason,
+        declined_callee_propagates_up_as_callee_unbounded,
+        external_import_call_declines_with_call_reason. 8 pure-composer unit tests
+        in wcet_compose.rs (chain/diamond/loop-multiplier/self+mutual+transitive
+        recursion/propagation/external). claims.yaml pins
+        BL_BLX_CALL_OVERHEAD_CYCLES = 4 (SYNTH-WCET-CYCLE-MODEL); claim_check green.
+        Frozen anchors 10/10 untouched (WCET is a byte-invisible sidecar).
