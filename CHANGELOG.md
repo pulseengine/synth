@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Claim-verification surface extension — one machine-derived numbers
+  artifact, closed linked-doc surface, pinned repo metadata.**
+  `scripts/claim_check.py --emit-status` now derives `artifacts/status.json`
+  (proof counts, DSL rule counts, backend list, per-backend op coverage,
+  version) from source and renders `docs/status/FEATURE_MATRIX.md` from a
+  template; both are STALENESS-GATED in CI (committed copy must equal
+  re-derivation). The README carries no hand-typed counts — shields.io
+  dynamic-JSON badges surface `status.json` fields (badge queries are
+  claim-pinned to declared fields). Stale claims fixed from the tree: the
+  README/feature matrix said f32/f64 were rejected (VFP shipped v0.41/v0.43,
+  #369 closed — #782 residuals disclosed), the feature matrix carried
+  March-era "291 Qed / 9 Admitted" / "~93 ops" / no aarch64/WCET.
+  New `scripts/repo_metadata_check.py` pins the GitHub description/topics
+  verbatim in `claims.yaml` (API failure = loud SKIP, mismatch = red).
+  A README link tripwire closes the linked-doc surface: every relative `.md`
+  link must be claim-covered, generated, or allowlisted with a rationale;
+  dangling links fail. ARCHITECTURE.md was validity-checked per section
+  against the tree (register-pool description corrected — the doc said
+  "allocate R0–R12 for temporaries" while R12 is encoder scratch and
+  R9/R10/R11 are reserved bases; four backends; verification architecture
+  added; April-era benchmark relics removed).
+
+### Removed
+
+- **ROADMAP.md, docs/architecture/ARCHITECTURE_VISION.md, docs/archive/**
+  (git history preserves them). The roadmap's single source of truth is
+  `artifacts/verified-codegen-roadmap.yaml` + the README North-Star section;
+  the vision doc was the same stale Feb-era plan/status class. No surviving
+  links into deleted paths.
+
 ## [0.47.0] - 2026-07-17
 
 **"Close the loops" — every v0.46 loud-decline converted to a proven capability
