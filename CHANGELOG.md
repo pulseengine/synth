@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-07-17
+
+**"Close the loops" — every v0.46 loud-decline converted to a proven capability
+(or an honestly sharper decline), driven by real-module needs.** WCET bounds
+statically-proven loops and sound-checks untrusted hints (the scry seam); aarch64
+gains SOUND trapping float→int + IEEE-754-2019 min/max (35→46 ops, all 32 trap
+cases execution-verified); the #275 finale ships self-contained `call_indirect`
+(falcon unblocked, #275 CLOSED); the addressing validator extends to spans, the
+self-contained ROM image, and RV32; the WasmCert anchor grows 489→536 Qed; and
+`cabi-arena-realloc` binds natively on self-contained dissolves (**#418 remains
+open** for the real dissolved fixture). The #791 soundness fix shipped same-day
+as v0.46.1.
+
 ### Added
 
 - **Self-contained `--cortex-m` `call_indirect` — the #275 finale (falcon's
@@ -27,13 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (no flash-table builder), imports present (ET_REL output), and the
   `select_default` demo path. `--relocatable` output is byte-identical;
   self-contained modules without `call_indirect` are byte-identical.
-
-### Found (tracked separately)
-
-- **#791: the optimized path miscompiles const-only-body functions** (result
-  materialized in r4, never moved to R0) — surfaced by the first execution
-  gate that runs dispatch targets in a default self-contained image; present
-  on main independent of this change (`--no-optimize` is correct).
 
 - **WCET phase 2 — statically-proven loop bounds + the `--wcet-hints` seam
   (#778).** `--emit-wcet` now BOUNDS canonical const-bound counted loops
@@ -65,6 +71,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the moved (never deleted) decline matrix; every bounded fixture was
   additionally executed under unicorn at authoring time (result correct,
   executed machine instructions ≤ bound).
+
+- **aarch64 milestone 4 — sound trapping float→int + IEEE-754-2019 min/max +
+  copysign (#538, 35 → 46 ops).** `i32.trunc_f32/f64_s/u` lower behind a
+  two-sided WASM §4.3.3 domain guard (exact boundary constants, ordered
+  `fcmp`+`b.cond` skipping a `brk #0` only on the proven-in-range path — NaN
+  fails every ordered condition → trap) with `FCVTZS/FCVTZU` only where
+  saturate ≡ trunc; `f32/f64.min/max` use single `FMIN/FMAX` (IEEE 754-2019
+  minimum/maximum = exactly WASM NaN-propagation + −0<+0, verified vs wasmtime
+  — `FMINNM/FMAXNM` would be the wrong minNum semantics); `copysign` via GP-file
+  bit surgery; `f32.sqrt` un-dropped at decode (now reachable on aarch64 AND
+  ARM32). Gate: 167-case boundary differential, **all 32 trap cases
+  execution-verified** (unicorn brk-exception + native SIGTRAP). Two latent
+  bugs found and fixed: an m3 `mov_imm64` halfword-shift bug (constants with
+  all-zero low halfwords materialized wrong) and the ARM32 `F32Min/F32Max`
+  pseudo-op (NaN/±0-wrong, previously dead code) now loud-declines until the
+  VMINNM twin lands. **Still declines (loud, gate-pinned):** f32/f64 rounding
+  ops (ceil/floor/trunc/nearest), i64↔float conversions, div/rem, popcnt —
+  the m2 decline oracle and #554 loudskip test were moved to these.
+
+- **VCR-VER-003 phase 2 — addressing validation for spans, the self-contained
+  ROM image, and RV32 (#777).** The per-compilation static-data addressing
+  validator now checks the FULL access span (a reloc whose access crosses a
+  segment's runtime-owned range no longer validates on byte 0 alone), the
+  self-contained `--cortex-m` packed ROM image (the #758 layout), and the RV32
+  static-data path. Unconditional as in phase 1 (`
+  validate_reloc_resolutions_spanned`, hard compile error on mismatch);
+  red-first gated per class (e2e gate grew 1 → 6 tests). The RV32 probe found
+  **#798** (active data segments silently dropped on RV32 — interim warning
+  landed; the ship-or-hard-decline fix is tracked there).
+
+- **WasmCert-Coq anchor phase 2 — 489 → 536 Qed (+47) and a concrete real-dep
+  path (VCR-WASM-001, epic #242).** 19 i32 ops (arithmetic, bitwise, shifts,
+  eqz, full compare family) transcribed with line-level provenance pinned to
+  the nix-built coq9.0-wasm-2.2.0 sources; 49 real Qed / 0 Admitted in the
+  bridge (genuine discharges — mod-arithmetic, bit-level testbit facts,
+  shift-count normalization collapse, the gt/le/ge orientation gap).
+  Feasibility verdict sharpened from "no-go": `coqPackages.wasmcert` exists in
+  the exact pinned nixpkgs and **nix-builds green**; three named bazel blockers
+  documented in the roadmap, including a **license policy point — CompCert 3.16
+  is unfree** (deliberately NOT taken into CI); upstream wasmcert ≥ 2.2.1 drops
+  the CompCert dep, so the real dep lands with the ruleset hook + the next
+  nixpkgs bump.
+
+- **`cabi-arena-realloc` binds natively on self-contained dissolves (#418 —
+  remains open for the real fixture).** When the wit-bindgen
+  `cabi-realloc-extern` arena import is the module's ONLY import, synth removes
+  it and prepends a defined wasm allocator (an index-preserving wasm→wasm
+  rewrite compiled through the ordinary pipeline — no hand-written machine
+  code, every existing validator applies), so the dissolve produces a real
+  self-contained image instead of degrading to a link-me ET_REL object.
+  Red-first execution differential: the image's own startup + each export vs
+  wasmtime with a host arena at a deliberately different base
+  (pointer-independent observables; exhaustion traps on both sides).
+  **Decline matrix (test-asserted):** `--relocatable` keeps the #420
+  undefined-symbol seam; modules with OTHER imports keep the host seam entirely
+  (never a half-bound hybrid); `--native-pointer-abi` declines (SP-promotion
+  hazard with the cursor global); wrong signature / no memory / non-const data
+  offsets / zero arena room refuse loudly; pinned opt-out
+  `--no-bind-cabi-arena`. #418 stays open on the maintainer ask for the real
+  dissolved `.wasm` as a pinned fixture.
+
+### Found (tracked separately)
+
+- **#791: the optimized path miscompiled const-only-body functions** (result
+  materialized in r4, never moved to R0) — surfaced by the first execution
+  gate that runs dispatch targets in a default self-contained image. Fixed
+  same-day; shipped as the **v0.46.1** backport (see below).
+- **#798: RV32 active data segments silently dropped** — found by the
+  VCR-VER-003 phase-2 RV32 probe; interim warning landed, ship-or-decline fix
+  tracked on #798.
+
+## [0.46.1] - 2026-07-17
+
+**Soundness backport — #791.** The optimized (default) path miscompiled functions
+whose body is a bare constant: `Opcode::Const` was the one value-producing arm
+that never recorded its dest as `last_result_vreg`, so the epilogue never moved
+the result to R0 and the export returned caller residue. Found by the #275
+finale's execution differential (the first gate to run dispatch targets in a
+default self-contained image). Tagged from v0.46.0 + the cherry-picked fix
+(pure patch); also on main. Red-first `const_body_791_differential.py`; frozen
+anchors unchanged; `base_cse_flip_468` goldens re-pinned (+2 B harmless
+`mov r0,rX` on void stored-const tails) after a full differential sweep.
 
 ## [0.46.0] - 2026-07-16
 
