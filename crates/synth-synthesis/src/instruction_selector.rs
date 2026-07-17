@@ -2692,15 +2692,21 @@ fn try_lower_f32(
             Ok(true)
         }
         op @ (I64TruncSatF32S | I64TruncSatF32U) => {
-            // #782a: the i64-target trunc_sat forms need an i64 register-pair
-            // conversion path that 32-bit ARM VFP does not provide (VCVT
-            // targets a single 32-bit register). LOUD-decline the function —
-            // decline > wrong (falcon needs only the i32-target forms, #782).
-            Err(synth_core::Error::synthesis(format!(
-                "{op:?} not supported on 32-bit ARM: no i64 register-pair \
-                 float→int conversion path — declining the function loudly \
-                 (#782a; the i32-target trunc_sat forms are lowered)"
-            )))
+            // #782 finale: SOUND i64-target trunc_sat from an f32 source —
+            // promote to f64 (EXACT, sign+NaN preserved) then run the shared
+            // branch-free FP word-decompose. Trap-free, self-contained.
+            let signed = matches!(op, I64TruncSatF32S);
+            let sm = pop_float(stack)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64PromoteF32 { dd, sm },
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            lower_i64_trunc_sat_from_f64(
+                dd, signed, idx, vfp_used, vfp_home, stack, next_temp, spill,
+                instructions, reserved,
+            )
         }
         F32ReinterpretI32 => {
             // #708: i32 bits → f32 (VMOV Sd, Rm). Pure bit-cast, no conversion.
@@ -2916,6 +2922,318 @@ fn materialize_f64_const(
         source_line: Some(idx),
     });
     Ok(dd)
+}
+
+/// #782 finale: lower `i64.trunc_sat_f64_{s,u}` (and, after an f64-promote,
+/// the f32-source twins) onto 32-bit ARM as a SOUND, TRAP-FREE, self-contained
+/// register-pair conversion — no `__aeabi` link dependency, no i64 VCVT (which
+/// ARMv7 VFP lacks).
+///
+/// WASM §4.3.2 `trunc_sat` is TOTAL: NaN → 0, out-of-range saturates to the
+/// integer bound (unsigned: negatives → 0), else truncate toward zero; it
+/// NEVER traps. The lowering realises this by an exact FP word-decompose:
+///
+/// ```text
+/// _u (decompose x directly; negatives saturate to 0 via VCVT.U32):
+///   hi = VCVT.U32.F64(x * 2^-32)            ; sat: x*2^-32 >= 2^32 -> 0xFFFFFFFF
+///                                           ;      NaN/negative      -> 0
+///   rem = x - (u32->f64)(hi) * 2^32         ; EXACT while x < 2^64
+///   lo = VCVT.U32.F64(rem)                  ; sat: overflow/inf -> 0xFFFFFFFF
+///   result = (hi:lo)                        ; x>=2^64 -> 0xFFFF_FFFF_FFFF_FFFF
+///
+/// _s (decompose |x|, then negate or clamp from the ORIGINAL sign bit):
+///   mag = |x| via VABS.F64  (sign cleared; NaN stays, |NaN| decomposes to 0)
+///   (hi:lo) = the same unsigned decompose applied to mag
+///   signmask = ASR(bit63(x), 31)            ; 0xFFFFFFFF if x<0 else 0
+///   satmask  = ASR(hi, 31)                  ; 0xFFFFFFFF if mag>=2^63 else 0
+///   sel = signmask ? -(hi:lo) : (hi:lo)     ; branch-free per-word blend
+///   out = satmask  ? sat_const : sel        ; sat_const = signmask?MIN:MAX
+/// ```
+///
+/// The selection is BRANCH-FREE (mask arithmetic), so the straight-line
+/// selector needs no control flow. NaN is safe automatically: `|NaN|`
+/// decomposes to mag=0, so the negate and identity branches coincide (0) and
+/// satmask is 0; −0.0 is likewise safe (mag=0). The `x = -2^63` edge is where
+/// clamp (INT64_MIN) and negate (-2^63) produce identical bits, so no fencepost
+/// is observable there. `sat_const`: when signmask=0, lo=~0=0xFFFFFFFF and
+/// hi=0x7FFFFFFF^0=0x7FFFFFFF = INT64_MAX; when signmask=~0, lo=~(~0)=0 and
+/// hi=0x7FFFFFFF^0xFFFFFFFF=0x80000000 = INT64_MIN. Execution-verified
+/// bit-exactly against wasmtime over the boundary table AND ≥10k random
+/// f32/f64 bit-patterns per form in
+/// `scripts/repro/trunc_sat_782_differential.py`.
+#[allow(clippy::too_many_arguments)]
+fn lower_i64_trunc_sat_from_f64(
+    x: VfpReg,
+    signed: bool,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &mut [bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<bool> {
+    // 2^-32 and 2^32 as f64 — exact powers of two (multiplying by them never
+    // rounds).
+    const SCALE_DOWN: u64 = 0x3DF0_0000_0000_0000; // 2^-32
+    const SCALE_UP: u64 = 0x41F0_0000_0000_0000; //   2^32
+
+    // For _s: capture the ORIGINAL sign bit (bit63) BEFORE VABS and decompose
+    // |x|. For _u: decompose x directly (VCVT.U32 saturates negatives to 0).
+    let mut signmask: Option<Reg> = None;
+    let value = if signed {
+        // Extract x's 64 bits; keep only the hi word's sign, broadened to a
+        // full-width mask by ASR #31.
+        let slo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+        stack.push(StackVal::i32(slo));
+        let shi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+        stack.pop();
+        instructions.push(ArmInstruction {
+            op: ArmOp::I64ReinterpretF64 {
+                rdlo: slo,
+                rdhi: shi,
+                dm: x,
+            },
+            source_line: Some(idx),
+        });
+        // signmask = ASR(shi, 31): 0xFFFFFFFF when x<0, else 0. (slo dead now.)
+        instructions.push(ArmInstruction {
+            op: ArmOp::Asr {
+                rd: shi,
+                rn: shi,
+                shift: 31,
+            },
+            source_line: Some(idx),
+        });
+        signmask = Some(shi);
+        let mag = alloc_vfp_dtemp(vfp_used)?;
+        instructions.push(ArmInstruction {
+            op: ArmOp::F64Abs { dd: mag, dm: x },
+            source_line: Some(idx),
+        });
+        free_vfp_dtemp(vfp_used, vfp_home, x);
+        mag
+    } else {
+        x
+    };
+
+    // Keep the captured signmask reg live across all further core-temp allocs.
+    let mut resv: Vec<Reg> = reserved.to_vec();
+    if let Some(s) = signmask {
+        resv.push(s);
+    }
+    let reserved = resv.as_slice();
+
+    // --- unsigned word-decompose of `value` ---------------------------------
+    let d_down = materialize_f64_const(
+        SCALE_DOWN, idx, vfp_used, stack, next_temp, spill, instructions, reserved,
+    )?;
+    let prod = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Mul {
+            dd: prod,
+            dn: value,
+            dm: d_down,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_down);
+
+    // Allocate the i64 result pair; reserve both halves for the remainder.
+    let (lo_r, hi_r) =
+        alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], reserved, idx)?;
+    let mut resv2: Vec<Reg> = reserved.to_vec();
+    resv2.push(lo_r);
+    resv2.push(hi_r);
+    let reserved = resv2.as_slice();
+
+    // hi = VCVT.U32.F64(value * 2^-32)  (saturating; NaN/negative -> 0)
+    instructions.push(ArmInstruction {
+        op: ArmOp::I32TruncF64U { rd: hi_r, dm: prod },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, prod);
+
+    // rem = value - (u32->f64)(hi) * 2^32
+    let d_hi = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64ConvertI32U { dd: d_hi, rm: hi_r },
+        source_line: Some(idx),
+    });
+    let d_up = materialize_f64_const(
+        SCALE_UP, idx, vfp_used, stack, next_temp, spill, instructions, reserved,
+    )?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Mul {
+            dd: d_hi,
+            dn: d_hi,
+            dm: d_up,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_up);
+    let rem = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Sub {
+            dd: rem,
+            dn: value,
+            dm: d_hi,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_hi);
+    // lo = VCVT.U32.F64(rem)  (saturating -> 0xFFFFFFFF on overflow/inf)
+    instructions.push(ArmInstruction {
+        op: ArmOp::I32TruncF64U { rd: lo_r, dm: rem },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, rem);
+    free_vfp_dtemp(vfp_used, vfp_home, value); // `value` (= x or mag) is dead
+
+    // (lo_r:hi_r) now holds min(trunc(|x| or x), 2^64-1) as unsigned.
+    if !signed {
+        stack.push(StackVal::i64(lo_r));
+        return Ok(true);
+    }
+
+    // --- signed post-processing (branch-free, in place) ---------------------
+    let signmask = signmask.expect("signed path captured the signmask");
+    // satmask = ASR(hi, 31): mag >= 2^63  <=>  hi bit31 set. Computed BEFORE
+    // the negate mutates hi_r.
+    let satmask = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    let mut resv3: Vec<Reg> = reserved.to_vec();
+    resv3.push(satmask);
+    let reserved = resv3.as_slice();
+    instructions.push(ArmInstruction {
+        op: ArmOp::Asr {
+            rd: satmask,
+            rn: hi_r,
+            shift: 31,
+        },
+        source_line: Some(idx),
+    });
+
+    // Conditional two's-complement negate WITHOUT any extra register pair, via
+    // the identity  -v == (v XOR -1) - (-1)  and  signmask ∈ {0, -1}:
+    //   (v XOR signmask) - (signmask:signmask)  ==  v   when signmask == 0
+    //                                              == -v   when signmask == -1
+    // The 64-bit subtrahend is (signmask:signmask) so both halves subtract -1/0.
+    instructions.push(ArmInstruction {
+        op: ArmOp::Eor {
+            rd: lo_r,
+            rn: lo_r,
+            op2: Operand2::Reg(signmask),
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::Eor {
+            rd: hi_r,
+            rn: hi_r,
+            op2: Operand2::Reg(signmask),
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::I64Sub {
+            rdlo: lo_r,
+            rdhi: hi_r,
+            rnlo: lo_r,
+            rnhi: hi_r,
+            rmlo: signmask,
+            rmhi: signmask,
+        },
+        source_line: Some(idx),
+    });
+
+    // Saturation blend, one word at a time (sat_lo/sat_hi never live together).
+    // sat_const: signmask=0 -> INT64_MAX (lo=0xFFFFFFFF, hi=0x7FFFFFFF);
+    //            signmask=-1 -> INT64_MIN (lo=0x00000000, hi=0x80000000).
+    // lo: sat_lo = ~signmask.
+    let sat_tmp = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    let mut resv4: Vec<Reg> = reserved.to_vec();
+    resv4.push(sat_tmp);
+    let reserved = resv4.as_slice();
+    instructions.push(ArmInstruction {
+        op: ArmOp::Mvn {
+            rd: sat_tmp,
+            op2: Operand2::Reg(signmask),
+        },
+        source_line: Some(idx),
+    });
+    blend_word(instructions, lo_r, sat_tmp, satmask, next_temp, stack, spill, reserved, idx)?;
+    // hi: sat_hi = 0x7FFFFFFF ^ signmask.
+    instructions_push_movw(instructions, sat_tmp, 0xFFFF, idx);
+    instructions.push(ArmInstruction {
+        op: ArmOp::Movt {
+            rd: sat_tmp,
+            imm16: 0x7FFF,
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::Eor {
+            rd: sat_tmp,
+            rn: sat_tmp,
+            op2: Operand2::Reg(signmask),
+        },
+        source_line: Some(idx),
+    });
+    blend_word(instructions, hi_r, sat_tmp, satmask, next_temp, stack, spill, reserved, idx)?;
+
+    stack.push(StackVal::i64(lo_r));
+    Ok(true)
+}
+
+/// Emit `MOVW rd, #imm16` (helper for the trunc-sat routine).
+fn instructions_push_movw(instructions: &mut Vec<ArmInstruction>, rd: Reg, imm16: u16, idx: usize) {
+    instructions.push(ArmInstruction {
+        op: ArmOp::Movw { rd, imm16 },
+        source_line: Some(idx),
+    });
+}
+
+/// Branch-free per-word select: `dst = dst ^ ((dst ^ src) & mask)` — yields
+/// `src` where `mask` bits are 1, `dst` where 0. Uses one scratch temp.
+#[allow(clippy::too_many_arguments)]
+fn blend_word(
+    instructions: &mut Vec<ArmInstruction>,
+    dst: Reg,
+    src: Reg,
+    mask: Reg,
+    next_temp: &mut u8,
+    stack: &mut Vec<StackVal>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    idx: usize,
+) -> Result<()> {
+    let t = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::Eor {
+            rd: t,
+            rn: dst,
+            op2: Operand2::Reg(src),
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::And {
+            rd: t,
+            rn: t,
+            op2: Operand2::Reg(mask),
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::Eor {
+            rd: dst,
+            rn: dst,
+            op2: Operand2::Reg(t),
+        },
+        source_line: Some(idx),
+    });
+    Ok(())
 }
 
 /// Lower an in-scope scalar f64 op onto the caller-saved D-register file.
@@ -3375,14 +3693,27 @@ fn try_lower_f64(
             Ok(true)
         }
         op @ (I64TruncSatF64S | I64TruncSatF64U) => {
-            // #782a: no i64 register-pair float→int conversion path on 32-bit
-            // ARM — LOUD-decline (decline > wrong; falcon needs only the
-            // i32-target forms, #782).
-            Err(synth_core::Error::synthesis(format!(
-                "{op:?} not supported on 32-bit ARM: no i64 register-pair \
-                 float→int conversion path — declining the function loudly \
-                 (#782a; the i32-target trunc_sat forms are lowered)"
-            )))
+            // #782 finale: SOUND i64-target trunc_sat via the branch-free
+            // FP word-decompose (see `lower_i64_trunc_sat_from_f64`). Trap-free,
+            // self-contained (no __aeabi link dep), §4.3.2-exact.
+            let signed = matches!(op, I64TruncSatF64S);
+            let dm = pop_double(stack)?;
+            // The routine consumes `dm` (frees it internally). If it is a pinned
+            // param/local HOME, hand it a fresh copy so the home survives.
+            let dm_is_home = vfp_d_index(dm).is_some_and(|d| vfp_home[2 * d]);
+            let work = if dm_is_home {
+                let copy = alloc_vfp_dtemp(vfp_used)?;
+                emit_d_copy(
+                    copy, dm, idx, stack, next_temp, spill, instructions, reserved,
+                )?;
+                copy
+            } else {
+                dm
+            };
+            lower_i64_trunc_sat_from_f64(
+                work, signed, idx, vfp_used, vfp_home, stack, next_temp, spill,
+                instructions, reserved,
+            )
         }
         _ => Ok(false),
     }
