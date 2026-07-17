@@ -2008,9 +2008,14 @@ artifacts:
         also 0 violations. The NotAttempted decline is COMMON on the default path
         (~41/130 fixtures), so its diagnostic eprintln is gated behind
         `SYNTH_RA003_VERBOSE` (a production compile stays quiet; the verdict is
-        observable on demand). Extending invariant 4 to the numeric-branch
-        optimized path (a resolved-offset CFG builder, the #606 geometry) is a
-        NAMED follow-up. CI-gated: the third `vcr-ra-003-alloc-validator-gate`
+        observable on demand). v0.50: invariant 4 now ALSO runs on the
+        numeric-branch OPTIMIZED path — a resolved-offset join-CFG builder decodes
+        BOffset/BCondOffset targets to predecessor indices so the MUST-availability
+        fixpoint runs there too (6 new `ra003_numeric_*` tests: red across-join
+        clobber CAUGHT, green both-paths/dominator/loop-back-edge Consistent,
+        off-boundary + mixed-stream still decline). NotAttempted stays only for
+        genuinely-unresolvable offsets (decline>guess). CI-gated: the third
+        `vcr-ra-003-alloc-validator-gate`
         step runs `scripts/repro/vcr_ra_003_phase2_join_call.py` over
         branchy/mem/call fixtures on BOTH paths (silent-on-real-branchy-codegen).
         Frozen-safe (emits nothing; control_step 0x00210A55 / flight_algo
