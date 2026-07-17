@@ -1205,6 +1205,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
+ "wasm-encoder 0.253.0",
  "wasmparser 0.253.0",
  "wat",
 ]

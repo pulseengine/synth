@@ -4,6 +4,7 @@
 //! including representations for WebAssembly components, modules, and the intermediate
 //! representation (IR) used for synthesis.
 
+pub mod arena_bind;
 pub mod backend;
 pub mod component;
 pub mod dwarf_line;

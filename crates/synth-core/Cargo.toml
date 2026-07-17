@@ -17,6 +17,10 @@ sha2.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 wasmparser.workspace = true
+# #418: the arena-bind rewrite (replace the sole `env::__cabi_arena_realloc`
+# import with a synthesized in-module arena allocator). Already listed in the
+# hand-written crates/BUILD.bazel synth-core deps.
+wasm-encoder.workspace = true
 # VCR-DBG-001 Tier-1 step 4 (#394, #242) — the DWARF READER (parse the input
 # wasm's `.debug_line`) and the EMITTER (write the ARM `.debug_line` bytes) are
 # PRODUCTION now, behind the `--debug-line` flag. Bazel's `from_cargo`
