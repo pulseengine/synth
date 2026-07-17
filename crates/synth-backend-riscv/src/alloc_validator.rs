@@ -10,7 +10,7 @@
 //! speaks `ArmOp`. RV32 needs a different instruction enum
 //! ([`RiscVOp`]), a different callee-saved set (the RV psABI `s`-registers), a
 //! different prologue/epilogue shape (`addi sp,sp,-N` + `sw s_k, off(sp)`), and
-//! its own def/use classifier ([`op_dest`], already in `selector.rs`, mirroring
+//! its own def/use classifier (`op_dest`, already in `selector.rs`, mirroring
 //! `reg_effect`'s "bail on unmodeled" contract). So we
 //! port the *invariants*, not the code (#815).
 //!
@@ -57,6 +57,20 @@
 //! force prologue" fail-safe: on RV every `op_dest == None` op is control-flow /
 //! system / label / call (none write an `s`-register), so the fail-safe is
 //! unnecessary AND would disagree with the pass (which has none) → false-positive.
+//!
+//! # Documented boundaries (false-negatives, never false-positives)
+//!
+//! The store-side `saved`-set scan counts ANY `sw s_k, off(sp)` as a prologue
+//! save. If the RV selector ever spilled a callee-saved temp (s1/s2..s10) to the
+//! frame IN THE BODY, that body `sw` would mask a genuine unsaved clobber → a
+//! false NEGATIVE (the checker-safe direction, FN < FP, exactly as the ARM
+//! validator excludes R0/R1 across a call). This is NOT reachable on current
+//! selector output: the RV selector has NO Belady / spill-realloc body spilling
+//! (`preserve_callee_saved` is the only site that stores an s-register to the
+//! frame, and it is the prologue), and it DECLINES rather than body-spills when
+//! it cannot allocate. If cross-call/Belady spilling is wired for RV later, this
+//! boundary must be re-examined (anchor the save-set on the prologue window, not
+//! any-sw). Named here so the boundary is visible, not silent.
 
 use crate::register::Reg;
 use crate::riscv_op::RiscVOp;
@@ -145,10 +159,9 @@ fn is_ret(op: &RiscVOp) -> bool {
     )
 }
 
-/// True for ops that do NOT break a straight-line segment: everything with a
-/// modeled register effect ([`op_dest`]/[`op_reads`] are `Some`) plus the
-/// `sw`/`lw` memory ops. A `Label`, `Jal`, `Branch`, `Call`, `Jalr` return, or
-/// any system op breaks the segment (the spill map resets at a join/barrier).
+/// True for ops that do NOT break a straight-line segment: the data ops (arith,
+/// load, store, csr). A `Label`, `Jal`, `Branch`, `Call`, `Jalr` return, or any
+/// system op breaks the segment (the spill map resets at a join/barrier).
 fn is_straight_line(op: &RiscVOp) -> bool {
     use RiscVOp::*;
     match op {

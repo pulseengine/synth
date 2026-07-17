@@ -1735,8 +1735,8 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: RED-FIRST non-vacuity + silent-on-correct (RV32 validator unit tests)
         run: cargo test -p synth-backend-riscv --lib ra003rv
-      - name: Silent-on-real-codegen (frozen RV32 oracle through the unconditional gate)
-        run: cargo test -p synth-cli --test frozen_codegen_bytes rv32
+      - name: Silent-on-real-codegen (frozen suite through the unconditional gate)
+        run: cargo test -p synth-cli --test frozen_codegen_bytes
       - name: Silent-on-real-codegen (RV32 fixture sweep, both paths)
         run: |
           cargo build -p synth-cli
