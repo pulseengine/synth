@@ -7,8 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-07-17
+
+**"Real modules, verified allocator" — the real falcon fused core drove the
+breadth (its skip classes became implemented ops or honest declines), and the
+register allocator (the North Star's last major unverified component) finally got
+a per-compilation validator.** Wave 1 closed the real-module frontier (trunc_sat,
+the float select/return class, RV32 data segments) and hardened the claim surface
+into machine-derived badges; Wave 2 deepened the verified core (an unconditional
+allocation validator, inter-procedural WCET, the WasmCert dep hook). Every lane
+oracle-gated red-first; frozen anchors byte-identical throughout.
+
 ### Added
 
+- **#782a: the WASM `trunc_sat` family — nontrapping saturating float→int.**
+  Un-dropped the decoder family (`i32/i64.trunc_sat_f32/f64_s/u`); i32 forms
+  lowered on ARM32 (bare round-toward-zero VCVT), all 8 forms on aarch64
+  (FCVTZS/FCVTZU — native saturation is the CORRECT semantics here, the guard-free
+  dual of the #709 trapping forms); ARM32 i64 forms loud-decline by name. Full
+  boundary table (NaN→0, ±inf→min/max, exact INT_MIN..MAX bounds, ±0.5) verified
+  bit-identical to wasmtime on m7dp+m4f+aarch64 — no traps anywhere. This gate
+  caught an optimized-path silent-NOP drop at land time.
+- **#782b: float `select` + explicit float `return` — the dominant falcon
+  fused-core skip class.** The "an integer operation popped an f32" reports were
+  NOT register pressure (that hypothesis was disproven by getting the real falcon
+  bytes) but two missing lowerings: `select` over two f32/f64 values (the clamp
+  idiom) and `return` of a float result. Getting the real bytes also surfaced two
+  soundness bugs fixed red-first: a **wide (i64) `select` hi-half SILENT
+  miscompile on every target** (cond==0 returned val2's lo paired with val1's hi;
+  soft-float f64 select rode the same path), and a **hard-float signature-only ABI
+  hole** (a float-signature function with no float op stayed on the float-naive
+  optimized path — callers marshalled S0/S1, the body read R0/R1). 702-case
+  differential vs wasmtime.
+- **VCR-RA-003 (#242): unconditional register-allocation validator** — the North
+  Star's last major unverified component gets a per-compilation checker
+  (`synth_synthesis::liveness::validate_final_allocation`, wired in `arm_backend`,
+  runs on every ARM compile in the default build, hard-errors on a violation).
+  Bounded first increment: straight-line segments + spill/reload discipline, with
+  two non-vacuous in-stream invariants — **callee-saved preservation (#490)** and
+  **spill-slot non-aliasing**. Red-first: a reverted #490 prologue / dropped
+  epilogue / aliased slot / unmodeled-op-no-prologue are CAUGHT; correct codegen
+  is silent (frozen 10/10 byte-identical is the silent-on-real-codegen proof).
+  CF-joins + calls are the named phase 2.
+- **WCET phase 3 (#778): inter-procedural composition over the direct call graph.**
+  A caller with a direct `BL func_N` to a LOCAL bounded callee is now BOUNDED (was
+  a blanket `call` decline): `total = own_cycles + Σ_site multiplier × callee_total`,
+  the per-site multiplier being the call site's proven execution count so a callee
+  inside a proven loop is counted `trip×`. New sound-critical constant
+  `BL_BLX_CALL_OVERHEAD_CYCLES = 4` (MAX{M3,M4}, pinned in `claims.yaml`).
+  Decline-honesty preserved (moved, never deleted): recursion / any call-graph
+  cycle → `recursion`, indirect → `indirect-call`, external import → `call`, a
+  declined callee → `callee-unbounded` (propagates up). Unicorn-verified bound ≥
+  actual; `.text` byte-identical (sidecar-only).
+- **VCR-WASM-001 phase 3 (#242): the `extra_coq_package` bzlmod hook** — a generic
+  mechanism to pull any `coqPackages.<attr>` into the hermetic toolchain without
+  forking rules_rocq_rust (closes named blocker 1). The real WasmCert-Coq dep
+  stays PENDING: the pinned nixpkgs ships wasmcert 2.2.0, which propagates unfree
+  CompCert 3.16; wasmcert ≥ 2.2.1 (which drops CompCert) is not yet in the pin, and
+  no unfree dep may enter CI. The 20-op transcription is unchanged (536 Qed held);
+  the hook is ready to flip to the real dep the moment the pin bumps.
 - **#798: RV32 active data segments SHIP — linker-script placement + startup
   copy (the RV32 analogue of #758).** The single-base scheme
   (`s11 = __linear_memory_base`, zeroed RAM) used to emit a `.text`-only
