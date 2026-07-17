@@ -173,6 +173,11 @@ impl Backend for ArmBackend {
                 .and_then(|h| h.functions.get(name));
             crate::wcet::function_wcet_intermediate(name, instrs, &config.target.triple, hints)
         });
+        // The SINGLE-FUNCTION standalone view (unresolved direct calls decline
+        // `call`). Kept as a per-function fallback for any consumer that reads a
+        // lone `CompiledFunction` without running the module composer; the CLI
+        // `--emit-wcet` path IGNORES this and composes `wcet_intermediate` across
+        // the whole call graph instead (its result overwrites the report).
         let wcet = final_instrs.map(|instrs| {
             let hints = config
                 .wcet_hints

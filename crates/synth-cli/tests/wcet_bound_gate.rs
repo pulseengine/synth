@@ -338,6 +338,8 @@ fn external_import_call_declines_with_call_reason() {
 /// mid = own(32) + 1×leaf(19) = 51, root = own(34) + 2×mid(51) = 136. Every
 /// callee body is counted exactly as many times as it is invoked; summing every
 /// straight-line path over-approximates the real max — sound by construction.
+/// unicorn ground truth (whole call tree, `wcet_phase3_778_compose_soundness.py`):
+/// root(1) == 7, executed 39 machine insns across root+2×mid+4×leaf <= 136.
 #[test]
 fn direct_call_chain_composes_exact_bounds() {
     let wat = r#"
@@ -379,6 +381,8 @@ fn direct_call_chain_composes_exact_bounds() {
 /// once. This is the #1 composition soundness trap — a flat `Σ callee_bound` would
 /// undercount a callee invoked in a loop. Killed by construction: the composed
 /// bound clears both the leaf-called-10× floor and the loop's trip floor.
+/// unicorn ground truth (`wcet_phase3_778_compose_soundness.py`): loopcaller()
+/// == 10, executed 238 machine insns (whole call tree, leaf run 10×) <= 602.
 #[test]
 fn direct_call_inside_proven_loop_counts_callee_per_trip() {
     let wat = r#"
