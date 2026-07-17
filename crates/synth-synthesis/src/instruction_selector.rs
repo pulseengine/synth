@@ -12556,6 +12556,98 @@ impl InstructionSelector {
                 }
 
                 Return => {
+                    // GI-FPU-002 (#782): a float result reaches an EXPLICIT
+                    // `return` in the VFP file — home it to S0 (f32) / D0
+                    // (f64) per AAPCS-VFP, exactly like the fall-through
+                    // epilogue below the op loop (which already does this),
+                    // instead of loud-declining in the integer pop. Same
+                    // soundness guard as the epilogue (#719): a hard-float
+                    // function whose f32/f64 result shows up integer-tagged
+                    // (e.g. a call's R0 result) must NOT emit the integer R0
+                    // return — the AAPCS-VFP caller reads S0/D0.
+                    let ret_top_f32 = stack.last().and_then(|v| v.as_float());
+                    let ret_top_f64 = stack.last().and_then(|v| v.as_double());
+                    if (self.ret_f32 || self.ret_f64) && fpu.is_some() {
+                        let top_matches = if self.ret_f64 {
+                            ret_top_f64.is_some()
+                        } else {
+                            ret_top_f32.is_some()
+                        };
+                        if !top_matches {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "GI-FPU-002 phase 2: function returns {} but an \
+                                 explicit `return`'s result is in a core register \
+                                 — refusing to emit an integer R0 return where an \
+                                 AAPCS-VFP caller reads {} (declining, #719/#369)",
+                                if self.ret_f64 { "f64" } else { "f32" },
+                                if self.ret_f64 { "D0" } else { "S0" },
+                            )));
+                        }
+                    }
+                    if self.ret_f64
+                        && let Some(dreg) = ret_top_f64
+                    {
+                        // Home to D0 via the core round-trip (bit-exact; no
+                        // D→D move in the ArmOp set). R0/R1 are dead at the
+                        // return of an f64-returning function.
+                        if vfp_d_index(dreg) != Some(0) {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::I64ReinterpretF64 {
+                                    rdlo: Reg::R0,
+                                    rdhi: Reg::R1,
+                                    dm: dreg,
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::F64ReinterpretI64 {
+                                    dd: VfpReg::D0,
+                                    rmlo: Reg::R0,
+                                    rmhi: Reg::R1,
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        stack.pop();
+                        free_vfp_dtemp(&mut vfp_used, &vfp_home, dreg);
+                    } else if self.ret_f32
+                        && let Some(sreg) = ret_top_f32
+                    {
+                        // Home to S0 via the R12 (IP scratch) round-trip.
+                        if vfp_s_index(sreg) != Some(0) {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::I32ReinterpretF32 {
+                                    rd: Reg::R12,
+                                    sm: sreg,
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::F32ReinterpretI32 {
+                                    sd: VfpReg::S0,
+                                    rm: Reg::R12,
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        stack.pop();
+                        free_vfp_temp(&mut vfp_used, &vfp_home, sreg);
+                    } else if ret_top_f32.is_some() || ret_top_f64.is_some() {
+                        // A float on top of the stack at the `return` of a
+                        // function that does not return that float type —
+                        // invalid wasm (or an unlowered shape). Loud, as ever.
+                        return Err(synth_core::Error::synthesis(
+                            "GI-FPU-002: a VFP stack value reached an explicit \
+                             `return` of a non-float-returning function — \
+                             invalid wasm or an unlowered float op reached the \
+                             integer path"
+                                .to_string(),
+                        ));
+                    } else
                     // Move top-of-stack to R0 for return value (AAPCS). Pop is
                     // reload-aware (#171): a spilled return value is reloaded
                     // from its frame slot first.
@@ -13147,6 +13239,263 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+                    // GI-FPU-002 (#782): FLOAT select — both value operands
+                    // live in the VFP register file (`select` over f32/f64 is
+                    // the clamp idiom `(x>k)?k:x` falcon emits throughout its
+                    // stabilization math). The integer pop below loud-declines
+                    // on a Float/Double entry, so route the float shapes
+                    // through a VFP-aware lowering FIRST: move both operands'
+                    // bit patterns into core registers (VMOV — bit-exact, no
+                    // conversion), run the SAME flag-safe CMP + IT;MOV select
+                    // on the patterns, and move the winner back into a fresh
+                    // VFP register. NaN-safe by construction: `select` picks a
+                    // value, never computes one, and the round-trip preserves
+                    // the exact bits. Only reachable when an operand is
+                    // VFP-resident (fpu-gated paths pushed it), so integer
+                    // modules are byte-identical.
+                    let top2_f32 = stack.len() >= 2
+                        && matches!(stack[stack.len() - 1], StackVal::Float { .. })
+                        && matches!(stack[stack.len() - 2], StackVal::Float { .. });
+                    let top2_f64 = stack.len() >= 2
+                        && matches!(stack[stack.len() - 1], StackVal::Double { .. })
+                        && matches!(stack[stack.len() - 2], StackVal::Double { .. });
+                    if top2_f32 {
+                        let s2 = pop_float(&mut stack)?; // val2 (cond == 0)
+                        let s1 = pop_float(&mut stack)?; // val1 (cond != 0)
+                        // `cond_reg` is off the vstack but must survive until
+                        // the CMP — reserve it (and the first pattern temp)
+                        // through the core-register allocations.
+                        let mut resv = live_params.clone();
+                        resv.push(cond_reg);
+                        let ra = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I32ReinterpretF32 { rd: ra, sm: s1 },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        resv.push(ra);
+                        let rb = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I32ReinterpretF32 { rd: rb, sm: s2 },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // CMP first, then the single flag-preserving IT;MOV —
+                        // `rb` already holds val2's pattern (the EQ result), so
+                        // only the NE override is needed (in-place form).
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: cond_reg,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::SelectMove {
+                                rd: rb,
+                                rm: ra,
+                                cond: Condition::NE,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // Free the two consumed S-registers (home-aware), then
+                        // home the selected pattern in a fresh S-register.
+                        free_vfp_temp(&mut vfp_used, &vfp_home, s1);
+                        free_vfp_temp(&mut vfp_used, &vfp_home, s2);
+                        let sd = alloc_vfp_temp(&mut vfp_used)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::F32ReinterpretI32 { sd, rm: rb },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        stack.push(StackVal::Float { sreg: sd });
+                        continue;
+                    }
+                    if top2_f64 {
+                        // Same bit-pattern select, one register PAIR per f64
+                        // (I64ReinterpretF64/F64ReinterpretI64 are the shipped
+                        // core round-trip — no D→D move in the ArmOp set).
+                        let d2 = pop_double(&mut stack)?; // val2 (cond == 0)
+                        let d1 = pop_double(&mut stack)?; // val1 (cond != 0)
+                        let mut resv = live_params.clone();
+                        resv.push(cond_reg);
+                        let (alo, ahi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            &resv,
+                            idx,
+                        )?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64ReinterpretF64 {
+                                rdlo: alo,
+                                rdhi: ahi,
+                                dm: d1,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        resv.push(alo);
+                        resv.push(ahi);
+                        let (blo, bhi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            &resv,
+                            idx,
+                        )?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64ReinterpretF64 {
+                                rdlo: blo,
+                                rdhi: bhi,
+                                dm: d2,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: cond_reg,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // Two IT;MOVs — each is the flag-preserving 0x46xx
+                        // MOV, so the second still sees the CMP's flags.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::SelectMove {
+                                rd: blo,
+                                rm: alo,
+                                cond: Condition::NE,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::SelectMove {
+                                rd: bhi,
+                                rm: ahi,
+                                cond: Condition::NE,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        free_vfp_dtemp(&mut vfp_used, &vfp_home, d1);
+                        free_vfp_dtemp(&mut vfp_used, &vfp_home, d2);
+                        let dd = alloc_vfp_dtemp(&mut vfp_used)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::F64ReinterpretI64 {
+                                dd,
+                                rmlo: blo,
+                                rmhi: bhi,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        stack.push(StackVal::Double { dreg: dd });
+                        continue;
+                    }
+                    // #782(b): WIDE (i64) select — BOTH halves must be picked.
+                    // The narrow path below moves only the lo register and
+                    // pushed the result as i32, silently keeping the WRONG hi
+                    // half whenever cond == 0 (found adversarially while
+                    // clearing the float-select class; also covers a soft-float
+                    // f64 select, which rides the i64-pair treatment). Width is
+                    // read BEFORE the pops (pop_operand returns only the lo).
+                    let v2_wide = stack.last().is_some_and(|v| v.is_i64());
+                    let v1_wide = stack.len() >= 2 && stack[stack.len() - 2].is_i64();
+                    if v2_wide || v1_wide {
+                        if v2_wide != v1_wide {
+                            return Err(synth_core::Error::synthesis(
+                                "select value operands disagree on width \
+                                 (i32 vs i64) — invalid wasm"
+                                    .to_string(),
+                            ));
+                        }
+                        // Destination pair FIRST, while both values are still
+                        // stack-live (the allocator cannot hand out their
+                        // registers; a pressure spill of them reloads on pop).
+                        let mut resv = live_params.clone();
+                        resv.push(cond_reg);
+                        let (dlo, dhi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            &resv,
+                            idx,
+                        )?;
+                        // Reserve the dst pair through the (possibly reloading)
+                        // pops so a spilled operand cannot reload into it.
+                        resv.push(dlo);
+                        resv.push(dhi);
+                        let val2 = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        let hi2 = i64_pair_hi(val2)?;
+                        let val1 = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &resv,
+                            idx,
+                        )?;
+                        let hi1 = i64_pair_hi(val1)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: cond_reg,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // Four IT;MOVs (the flag-preserving 0x46xx MOV — the
+                        // CMP flags survive all four). dst is disjoint from
+                        // both source pairs by construction, so the NE/EQ
+                        // moves never clobber a source half they still need.
+                        for (rd, rm, cond) in [
+                            (dlo, val1, Condition::NE),
+                            (dhi, hi1, Condition::NE),
+                            (dlo, val2, Condition::EQ),
+                            (dhi, hi2, Condition::EQ),
+                        ] {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::SelectMove { rd, rm, cond },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        stack.push(StackVal::i64(dlo));
+                        continue;
+                    }
                     let val2 = pop_operand(
                         &mut stack,
                         &mut next_temp,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#223 — control_step on RISC-V: correctness + ABI differential.
+"""#223 / #798 — control_step on RISC-V: correctness + ABI + shipped-data differential.
 
 After #218 (reachable) + #220 (callee-saved ABI) + #223 (Select, non-param
 locals, sign-extend), gale's `control_step_decide` compiles to RV32. This checks
@@ -7,12 +7,29 @@ it computes the SAME result as wasmtime (and the ARM backend — gale's referenc
 `(3000,50,40,0) = 0x00210a55`), reads its `.rodata` table via s11 (the linmem
 base), and preserves the caller's callee-saved registers.
 
+DE-VACUATED for #798: linear memory is initialized from the object's SHIPPED
+`.wasm_data` active-segment records (the exact bytes the generated startup's
+record-copy loop places at `s11 + off`), NOT from wasmtime's instantiated
+memory. The old harness copied wasmtime's memory image into unicorn, which
+masked the silent initializer drop the VCR-VER-003 phase-2 probe found — the
+object shipped `.text` only, every load of the 1200-byte decision table read
+0x00, and this differential stayed green anyway (a VACUOUS gate). Now:
+
+  - an object WITHOUT `.wasm_data` fails LOUDLY up front (the drop is visible);
+  - the emulated linmem holds exactly what the shipped records serve, so a
+    packing/offset bug diverges from wasmtime here.
+
+Record format (see synth_core::static_data_addr::pack_segment_records):
+repeated [u32 LE linmem_off][u32 LE len][len bytes][pad to 4], declaration
+order — the startup copies them in record order, so later-wins is preserved.
+
 Run:
   synth compile scripts/repro/control_step.wasm -b riscv -t rv32imac \
         --all-exports --relocatable -o /tmp/cs_rv.o
   /tmp/armv/bin/python scripts/repro/control_step_riscv_differential.py /tmp/cs_rv.o
 """
 import re
+import struct
 import subprocess
 import sys
 
@@ -46,6 +63,27 @@ SENTINELS = {
 VECTORS = [(3000, 50, 40, 0), (0, 0, 0, 0), (1500, 0, 0, 0), (2645, 10, 20, 0), (4000, 200, 30, 7)]
 
 
+def shipped_records(elffile):
+    """Parse the shipped `.wasm_data` active-segment records (#798).
+
+    Returns a declaration-order list of (linmem_off, bytes), or None when the
+    object ships no `.wasm_data` section at all (the pre-#798 silent drop).
+    """
+    sec = elffile.get_section_by_name(".wasm_data")
+    if sec is None:
+        return None
+    blob = sec.data()
+    recs, i = [], 0
+    while i + 8 <= len(blob):
+        off, ln = struct.unpack_from("<II", blob, i)
+        i += 8
+        assert i + ln <= len(blob), f"truncated .wasm_data record at {i}"
+        recs.append((off, blob[i:i + ln]))
+        i = (i + ln + 3) & ~3
+    assert i == len(blob), f".wasm_data has {len(blob) - i} trailing bytes"
+    return recs
+
+
 def main():
     engine = wasmtime.Engine()
     module = wasmtime.Module(engine, open(WASM, "rb").read())
@@ -53,24 +91,38 @@ def main():
     def wt(args):
         store = wasmtime.Store(engine)
         inst = wasmtime.Instance(store, module, [])
-        r = inst.exports(store)["control_step_decide"](store, *args) & 0xFFFFFFFF
-        rod = bytes(inst.exports(store)["memory"].read(store, 0x10000, 0x20000))
-        return r, rod
+        return inst.exports(store)["control_step_decide"](store, *args) & 0xFFFFFFFF
 
     dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
     syms = {m.group(2): int(m.group(1), 16)
             for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
     fa = syms["func_0"] if "func_0" in syms else syms["control_step_decide"]
-    code = ELFFile(open(ELF, "rb")).get_section_by_name(".text").data()
+    elffile = ELFFile(open(ELF, "rb"))
+    code = elffile.get_section_by_name(".text").data()
 
-    def run(args, rodata):
+    # #798 gate: the module carries a nonzero active data segment (the decision
+    # table at linmem 0x10000); an object that ships no .wasm_data records
+    # drops it silently — every table load reads 0x00. Fail LOUDLY up front.
+    recs = shipped_records(elffile)
+    if recs is None:
+        print("RISC-V control_step ORACLE: FAIL — object ships NO .wasm_data "
+              "records; the active data segment (decision table @ 0x10000) is "
+              "silently dropped (#798), linmem reads return 0x00")
+        sys.exit(1)
+    total = sum(len(b) for _, b in recs)
+    print(f"shipped .wasm_data: {len(recs)} record(s), {total} initializer byte(s)")
+
+    def run(args):
         mu = Uc(UC_ARCH_RISCV, UC_MODE_RISCV32)
         mu.mem_map(CODE, 0x20000)
         mu.mem_map(LIN, 0x20000)
         mu.mem_map(STK - 0x8000, 0x10000)
         mu.mem_map(RET, 0x1000)
         mu.mem_write(CODE, code)
-        mu.mem_write(LIN + 0x10000, rodata)
+        # Linear memory init = the SHIPPED records, applied in record order
+        # (later-wins) — exactly what the generated startup copy loop does.
+        for off, b in recs:
+            mu.mem_write(LIN + off, bytes(b))
         mu.reg_write(UC_RISCV_REG_SP, STK)
         mu.reg_write(UC_RISCV_REG_S11, LIN)  # s11 = __linear_memory_base
         for r, v in zip((UC_RISCV_REG_A0, UC_RISCV_REG_A1, UC_RISCV_REG_A2, UC_RISCV_REG_A3), args):
@@ -88,15 +140,15 @@ def main():
 
     fails = 0
     for v in VECTORS:
-        gt, rodata = wt(v)
-        res, preserved, err = run(v, rodata)
+        gt = wt(v)
+        res, preserved, err = run(v)
         ok = res == gt and preserved
         fails += 0 if ok else 1
         shown = f"0x{res:08x}" if res is not None else f"ERR({err})"
         print(f"control_step{v} = {shown}  wasmtime=0x{gt:08x}  s-regs-preserved={preserved}"
               f"  {'OK' if ok else 'FAIL'}")
-    print("\nRISC-V control_step ORACLE: PASS (correct + ABI-compliant)" if not fails
-          else f"RISC-V control_step ORACLE: FAIL ({fails})")
+    print("\nRISC-V control_step ORACLE: PASS (correct + ABI-compliant + data shipped)"
+          if not fails else f"RISC-V control_step ORACLE: FAIL ({fails})")
     sys.exit(1 if fails else 0)
 
 

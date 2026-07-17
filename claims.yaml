@@ -416,13 +416,16 @@ claims:
   # staggered-overlap straddle phase 1 silently miscompiled is now refused);
   # (b) the self-contained #758 ROM image is packed by the shared
   # declaration-order packer and validated unconditionally against the
-  # reconstructed runtime image; (c) the RV32 single-base path runs the
-  # zero-served-image check and WARNS LOUDLY on nonzero dropped initializer
-  # bytes (hard decline held on the CI-pinned RV32 frozen fixture — named
-  # follow-up); (d) AArch64 documented N/A (no linear-memory ops in the
-  # subset). The count-eq pins below hold the wiring UNCONDITIONAL: exactly
-  # one spanned-validator call on the mixed split, exactly one ROM-image and
-  # one RV32 served-image call.
+  # reconstructed runtime image; (c) RV32 active segments SHIP since v0.48
+  # (#798): packed as .wasm_data records (declaration order, startup copies
+  # to __linear_memory_base + off at reset), the emitted blob READ BACK via
+  # served_image_from_records and hard-error-validated against the runtime
+  # image (the v0.47 drop-warning is gone; de-vacuated control_step
+  # differential + full-boot unicorn oracle gate the runtime side);
+  # (d) AArch64 documented N/A (no linear-memory ops in the subset). The
+  # count-eq pins below hold the wiring UNCONDITIONAL: exactly one
+  # spanned-validator call on the mixed split, exactly one ROM-image and one
+  # RV32 served-image (read-back) call.
   - id: SYNTH-VCR-VER-003-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
     text: "Static-data addressing VC catches the overlapping-segment wrong-segment miscompile (#757) at compile time on every module"
@@ -440,10 +443,14 @@ claims:
         pattern: 'validate_reloc_resolutions_spanned\('
         glob: crates/synth-cli/src/main.rs
         expect: 1
-      - kind: count-eq                       # phase 2: #758 ROM image + RV32 zero-served checks
+      - kind: count-eq                       # phase 2: #758 ROM image + #798 RV32 read-back checks
         pattern: 'validate_served_image\('
         glob: crates/synth-cli/src/main.rs
         expect: 2
+      - kind: count-eq                       # #798: the RV32 served image is the EMITTED blob read back
+        pattern: 'served_image_from_records\('
+        glob: crates/synth-cli/src/main.rs
+        expect: 1
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: README.md

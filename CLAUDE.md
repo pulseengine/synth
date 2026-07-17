@@ -166,9 +166,13 @@ frozen and oracle-gated every step:
   the shipped init blob on the mixed split (the staggered-overlap straddle is
   refused with a span diagnostic); the self-contained `--cortex-m` #758 ROM
   image is packed by a shared later-wins packer and validated unconditionally;
-  RV32 (single-base s11, ships no initializer image) warns loudly on nonzero
-  dropped initializer bytes (hard decline + initializer shipping = named
-  follow-up, held on the frozen control_step fixture); AArch64 is N/A (no
+  RV32 active data segments SHIP since v0.48 (#798): sparse `.wasm_data`
+  records ([off][len][bytes], declaration order) placed in flash by the
+  generated linker.ld and byte-copied to `__linear_memory_base + off` by the
+  generated startup at reset — the emitted blob is READ BACK and
+  validate_served_image hard-errors the compile on any served/runtime
+  disagreement (the v0.47 warning is gone; the de-vacuated control_step
+  differential + a full-boot unicorn oracle gate it); AArch64 is N/A (no
   linear-memory ops in the integer subset).
 - **Track D (schedulability, #778):** `--emit-wcet` emits a SOUND static
   per-function worst-case cycle bound (`synth-wcet-v1` sidecar) as gale spar's

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **#798: RV32 active data segments SHIP — linker-script placement + startup
+  copy (the RV32 analogue of #758).** The single-base scheme
+  (`s11 = __linear_memory_base`, zeroed RAM) used to emit a `.text`-only
+  object: every nonzero active-segment byte read 0x00 at runtime (found by the
+  VCR-VER-003 phase-2 probe; v0.47 shipped a loud warning). Now `-b riscv`
+  packs the segments into sparse per-segment records
+  (`[u32 off][u32 len][bytes][pad4]`, declaration order —
+  `synth_core::static_data_addr::pack_segment_records`) emitted as a
+  `.wasm_data` PROGBITS section; the generated `linker.ld` places it in flash
+  (`__wasm_data_records_start/end`, before `_data_load`) and the generated
+  `startup.c` byte-copies each record to `__linear_memory_base + off` at
+  reset — record order preserves WASM's later-wins overlap semantics
+  (the #757 lesson). The warning became the VCR-VER-003 hard gate: the
+  emitted blob is READ BACK (`served_image_from_records`) and the compile
+  hard-errors on any served/runtime disagreement; a segment past the declared
+  linear memory is refused (`instantiation would trap`, #758 parity).
+  Regenerate `startup.c`/`linker.ld` via `synth riscv-runtime` — an old
+  script fails the link loudly (undefined `__wasm_data_records_*`) instead of
+  silently dropping data. Gated red-first: the control_step RV32 differential
+  was DE-VACUATED (linear memory now initialized from the SHIPPED records,
+  not wasmtime's instantiated memory — the pre-fix object fails loud,
+  `0x00000000` vs `0x00210a55`), and a new full-boot oracle
+  (`scripts/repro/rv32_data_798_boot_differential.py`: clang riscv32 +
+  ld.lld + unicorn booting `fw.elf` from `_reset`) proves the REAL startup
+  copy loop serves the later-wins image for overlapping segments. Data-free
+  modules ship no section and stay whole-object byte-identical; frozen RV32
+  fixtures' `.text` is unchanged (differentials re-run green, no re-pin
+  needed). The library `Backend::compile_module` path ships + validates the
+  records too.
+
 ### Changed
 
 - **Claim-verification surface extension — one machine-derived numbers

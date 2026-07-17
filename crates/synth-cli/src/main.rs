@@ -3480,19 +3480,26 @@ fn compile_all_exports(
         info!("Building AArch64 multi-function relocatable object (EM_AARCH64)");
         build_multi_func_aarch64_elf(&compiled_funcs)?
     } else if is_riscv {
-        // VCR-VER-003 phase 2 (#777): the RV32 single-base scheme (s11 =
-        // __linear_memory_base, zeroed RAM at reset) ships NO static-data
-        // initializer image — the object is `.text`-only, and neither the
-        // generated startup.c nor linker.ld carries the wasm data segments.
-        // Validate what zeroed RAM actually serves against the runtime image:
-        // any NONZERO later-wins byte is un-served (a load there returns 0x00
-        // instead of the initializer — the silent-drop analogue of #757).
-        // All-zero or zero-overwritten segments genuinely ARE served correctly
-        // and stay silent. This is a LOUD WARNING, not (yet) a hard error:
-        // the CI-pinned RV32 frozen fixture (control_step.wasm, which carries
-        // a nonzero active segment its differential never reads) freezes
-        // compile-success on this path; the hard-decline + initializer
-        // shipping (the RV32 analogue of #758) is the named follow-up.
+        // #798 (the RV32 analogue of #758; found by the VCR-VER-003 phase-2
+        // probe, #777): the RV32 single-base scheme (s11 =
+        // __linear_memory_base, zeroed RAM at reset) used to ship a
+        // `.text`-only object — active data segments were silently DROPPED
+        // (loads read 0x00; v0.47 warned loudly). Now the segments SHIP:
+        // packed into sparse per-segment records ([u32 off][u32 len][bytes]
+        // [pad4], declaration order) in a `.wasm_data` PROGBITS section; the
+        // generated linker.ld places it in flash and the generated startup.c
+        // byte-copies each record to `__linear_memory_base + off` at reset
+        // (record order ⇒ WASM later-wins overlap semantics). Regenerate the
+        // runtime scaffolding (`synth riscv-runtime`) alongside — an OLD
+        // linker script leaves `__wasm_data_records_*` undefined and the
+        // link fails loudly rather than dropping the data again.
+        //
+        // VCR-VER-003 gate (unconditional): READ BACK the emitted blob,
+        // reconstruct the image its record-order copy serves, and hard-error
+        // on any disagreement with the runtime image (segments applied
+        // declaration-order, later-wins) — the mixed-split-style hard error
+        // the v0.47 warning was held back from, now that the fixture's
+        // differential actually reads its segment.
         let rv_segments: Vec<synth_core::static_data_addr::DataSegment> = all_data_segments
             .iter()
             .map(|(off, d)| synth_core::static_data_addr::DataSegment {
@@ -3500,24 +3507,57 @@ fn compile_all_exports(
                 bytes: d.clone(),
             })
             .collect();
+        // Instantiation-trap guard (#758 parity): a segment past the declared
+        // linear memory would trap at wasm instantiation — refuse to ship a
+        // layout the semantics say cannot exist. u64 so off + len can't wrap.
+        let rv_mem_size = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0) as u64;
+        let rv_extent = synth_core::static_data_addr::image_extent(&rv_segments);
+        if rv_extent > rv_mem_size {
+            anyhow::bail!(
+                "active data segment extends to {} bytes but linear memory is only \
+                 {} bytes — instantiation would trap; refusing to truncate the \
+                 initializer (#798)",
+                rv_extent,
+                rv_mem_size
+            );
+        }
+        let rv_wasm_data = synth_core::static_data_addr::pack_segment_records(&rv_segments);
+        let rv_served = synth_core::static_data_addr::served_image_from_records(&rv_wasm_data)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "VCR-VER-003 (#798): emitted .wasm_data records failed to parse \
+                     back — this is a compiler bug in the record packing"
+                )
+            })?;
         if let synth_core::static_data_addr::ImageVerdict::Mismatch(mismatches) =
-            synth_core::static_data_addr::validate_served_image(&rv_segments, &[])
+            synth_core::static_data_addr::validate_served_image(&rv_segments, &rv_served)
         {
-            let first = &mismatches[0];
-            warn!(
-                "VCR-VER-003 (#777 phase 2): the RISC-V object ships NO \
-                 static-data initializer image — {} nonzero initializer byte(s) \
-                 (first: {}) will read as 0x00 from zeroed RAM at runtime. Any \
-                 load from those addresses is a SILENT MISCOMPILE; use the ARM \
-                 relocatable (--native-pointer-abi) or self-contained \
-                 (--cortex-m) paths for modules whose code reads its data \
-                 segments.",
-                mismatches.len(),
-                first.describe()
+            let detail = mismatches
+                .iter()
+                .take(8)
+                .map(|m| format!("  {}", m.describe()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "VCR-VER-003 (#798): RV32 .wasm_data record validation FAILED — {} \
+                 byte(s) the shipped records serve disagree with the runtime \
+                 linear-memory image (segments applied in declaration order, \
+                 later-wins). This is a compiler bug in the record packing:\n{detail}",
+                mismatches.len()
+            );
+        }
+        if !rv_segments.is_empty() {
+            info!(
+                "Shipping {} wasm data segment(s) ({} initializer byte(s)) as \
+                 .wasm_data records (#798) — the generated startup copies them to \
+                 __linear_memory_base + off at reset; regenerate startup.c/linker.ld \
+                 via `synth riscv-runtime` if yours predate v0.48",
+                rv_segments.len(),
+                rv_segments.iter().map(|s| s.bytes.len()).sum::<usize>()
             );
         }
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
-        build_multi_func_riscv_elf(&compiled_funcs)?
+        build_multi_func_riscv_elf(&compiled_funcs, &rv_wasm_data)?
     } else if has_external_relocations || relocatable {
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
@@ -6301,9 +6341,11 @@ fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
-/// Build a multi-function RISC-V relocatable ELF.
+/// Build a multi-function RISC-V relocatable ELF. `wasm_data` is the #798
+/// packed active-data-segment record blob (`.wasm_data` section; empty ⇒
+/// the section is omitted and the object is byte-identical to pre-#798).
 #[cfg(feature = "riscv")]
-fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result<Vec<u8>> {
     use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
 
     // Same placeholder-then-overwrite approach as build_riscv_elf.
@@ -6339,7 +6381,7 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
 
     let builder = RiscVElfBuilder::new_relocatable();
     let mut elf = builder
-        .build(&placeholder_funcs)
+        .build_with_data(&placeholder_funcs, wasm_data)
         .context("RISC-V multi-function ELF generation failed")?;
 
     // .text starts immediately after the 52-byte ELF header.
@@ -6352,7 +6394,7 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(feature = "riscv"))]
-fn build_multi_func_riscv_elf(_funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+fn build_multi_func_riscv_elf(_funcs: &[ElfFunction], _wasm_data: &[u8]) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
