@@ -14,6 +14,7 @@
 //! The encoder always emits 32-bit instructions in this skeleton. The 16-bit
 //! C-extension encoding will be a peephole pass in a follow-up.
 
+pub mod alloc_validator;
 pub mod backend;
 pub mod elf_builder;
 pub mod encoder;

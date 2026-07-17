@@ -2016,6 +2016,53 @@ artifacts:
         Frozen-safe (emits nothing; control_step 0x00210A55 / flight_algo
         0x07FDF307 byte-identical, 10/10). v2 (Rocq-mechanized soundness of the
         straight-line fragment) remains the open step.
+        RV32 ARM LANDED (v0.50, #815) — the per-backend RV32 analogue promised at
+        "RV32 / AArch64 get their own arms later" now ships: a PARALLEL
+        re-implementation `synth_backend_riscv::alloc_validator::
+        validate_final_allocation_rv32` (RaFinalVerdict / RaFinalViolation in that
+        crate), keyed on the RV32 calling convention — NOT a reuse of the
+        ARM-coupled `validate_final_allocation` (different instruction enum
+        RiscVOp, different callee-saved set, different `addi sp,-N` + `sw s_k`
+        prologue shape). Wired UNCONDITIONALLY in `backend.rs`
+        (`compile_function_with_opts`, on `selection.ops` immediately after the
+        selector) on EVERY RV32 compile in the default `--features riscv` build
+        (both `compile_module` — the ELF path — and `compile_function` reach it),
+        hard-erroring on a Violation. Two STRAIGHT-LINE invariants (the two #815
+        names): (1) CALLEE-SAVED PRESERVATION — a body write (op_dest) of an
+        s-register the pass saves (s1, s2..s10 = `is_callee_saved_temp`, mirroring
+        `preserve_callee_saved` EXACTLY; the reserved s0/fp + s11/linmem-base are
+        excluded so the checker never false-positives on the pass's own output)
+        must be saved by a prologue `sw s_k, off(sp)` and restored by every
+        epilogue `lw s_k, off(sp)` before a `ret` (jalr x0,0(ra)) ->
+        CalleeSavedNotSaved / CalleeSavedNotRestored; (2) SPILL-SLOT NON-ALIASING
+        — the same holder model as the ARM validator, per straight-line segment,
+        an `addi sp` frame adjust resetting the slot map (the RV analogue of ARM's
+        `ldr sp,[sp,#N]` clear) -> SpillSlotAliased. A `Call` is the ARM
+        phase-2 across-call/across-join frontier (no RV `cfg_liveness` yet) ->
+        NON-FATAL NotAttempted { reason: "rv32-call-boundary" } (decline > guess;
+        the two straight-line invariants still ran). DELIBERATELY NO
+        "unmodeled-op → force-prologue" fail-safe (unlike ARM): on RV every
+        op_dest==None op is CF/system/label/call and writes no s-register, so the
+        fail-safe would be vacuous AND disagree with the pass -> a false-positive;
+        omitting it keeps validator↔pass agreement. RED-FIRST non-vacuity (8
+        `ra003rv_*` unit tests in alloc_validator.rs): 3 RED synthetically revert a
+        known-fixed clobber and assert the CATCH (drop the prologue save of a used
+        s2 -> CalleeSavedNotSaved; drop the epilogue restore -> CalleeSavedNotRestored;
+        alias two live values on one slot -> SpillSlotAliased) + 4 GREEN assert
+        SILENT (the balanced save/use/restore leaf; a pure-scratch t0/a0 leaf;
+        sequential single-slot reuse; a Call -> NotAttempted) + 1 asserting a
+        straight-line Violation BEFORE a Call still fires (the Call does not mask
+        it). SILENT-ON-REAL-CODEGEN: the frozen RV32 oracle
+        (`frozen_fixtures_rv32_text_is_bit_identical_oracle_001`, control_step
+        0x00210A55) compiles through the unconditional validator — 0 false
+        positives, byte-identical — PLUS a dedicated repro
+        (`scripts/repro/vcr_ra_003_rv32_alloc_validator.py`) sweeps 9 RV32 fixtures
+        × {relocatable, default} = 18 pairs (callee-saved-heavy control_step /
+        controller_step, spill-heavy gust_kernel, branchy flight_seam, call-bearing
+        reachable_helper) with 0 validator false-positives. CI-gated:
+        `vcr-ra-003-rv32-alloc-validator-gate` in ci.yml (red-first unit tests +
+        frozen RV32 oracle + the silent-on-real repro). AArch64 arm still open (the
+        integer subset has minimal spill traffic; a NAMED follow-up).
 
   - id: VCR-RA-004
     type: sw-req

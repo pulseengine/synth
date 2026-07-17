@@ -471,7 +471,7 @@ fn select_attempt(
 }
 
 /// The destination register an op writes, if any (for the callee-saved scan).
-fn op_dest(op: &RiscVOp) -> Option<Reg> {
+pub(crate) fn op_dest(op: &RiscVOp) -> Option<Reg> {
     use RiscVOp::*;
     match *op {
         Lui { rd, .. }
