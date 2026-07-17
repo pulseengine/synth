@@ -114,13 +114,28 @@ jobs:
     # sizes) are pinned in claims.yaml and RE-DERIVED from source here — a
     # hand-maintained number that drifts from the tree fails the build.
     # When a proof/rule lands, update the docs AND claims.yaml together.
+    #
+    # Since the claim-surface extension, the same script run ALSO
+    #  * staleness-gates the machine-derived artifacts/status.json (the README
+    #    badges' data source) and the GENERATED docs/status/FEATURE_MATRIX.md —
+    #    regenerate with `python3 scripts/claim_check.py claims.yaml
+    #    --emit-status` and commit the result;
+    #  * closes the README linked-doc surface (every relative .md link must be
+    #    claim-covered, generated, or allowlisted with a rationale).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Ensure PyYAML
         run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
-      - name: Re-derive documentation claims
+      - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
+      # The GitHub About surface (description + topics) is pinned verbatim in
+      # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
+      # (exit 0) so a flake can't block merges; a real mismatch = red.
+      - name: Repo metadata check (description + topics)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/repo_metadata_check.py claims.yaml
 
   verify:
     name: Z3 Verification
