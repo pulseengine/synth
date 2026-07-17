@@ -4236,9 +4236,11 @@ fn build_join_cfg(
             // A call returns to the next instruction: fall-through.
             Bl { .. } | Blx { .. } | Call { .. } => JTerm::Fall,
             // Genuinely unmodeled control flow.
-            BOffset { .. } | BCondOffset { .. } | Bx { .. } | BrTable { .. } | CallIndirect { .. } => {
-                JTerm::Unsupported
-            }
+            BOffset { .. }
+            | BCondOffset { .. }
+            | Bx { .. }
+            | BrTable { .. }
+            | CallIndirect { .. } => JTerm::Unsupported,
             _ => JTerm::Fall,
         }
     }
@@ -4258,10 +4260,7 @@ fn build_join_cfg(
                 // A call is admitted (its def-set is synthesized below); any
                 // other Fall op must be a Label or have a precise reg_effect.
                 let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-                if !is_call
-                    && !matches!(ins.op, Label { .. })
-                    && reg_effect(&ins.op).is_none()
-                {
+                if !is_call && !matches!(ins.op, Label { .. }) && reg_effect(&ins.op).is_none() {
                     return None;
                 }
             }
@@ -4301,8 +4300,11 @@ fn build_join_cfg(
             succ: vec![],
         })
         .collect();
-    let block_of_start: BTreeMap<usize, usize> =
-        blocks.iter().enumerate().map(|(bi, b)| (b.start, bi)).collect();
+    let block_of_start: BTreeMap<usize, usize> = blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, b)| (b.start, bi))
+        .collect();
     let mut block_of_label: BTreeMap<&str, usize> = BTreeMap::new();
     for (bi, b) in blocks.iter().enumerate() {
         if let Label { name } = &instrs[b.start].op {
@@ -14198,5 +14200,237 @@ mod tests {
             pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
         ];
         assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
+    }
+
+    // ================================================================
+    // VCR-RA-003 PHASE 2 (#242): across-CALL + across-JOIN red-first gate.
+    // ================================================================
+
+    fn label(name: &str) -> ArmInstruction {
+        ins(ArmOp::Label {
+            name: name.to_string(),
+        })
+    }
+    fn bcc(cond: Condition, name: &str) -> ArmInstruction {
+        ins(ArmOp::Bcc {
+            cond,
+            label: name.to_string(),
+        })
+    }
+    fn b(name: &str) -> ArmInstruction {
+        ins(ArmOp::B {
+            label: name.to_string(),
+        })
+    }
+    fn bl(name: &str) -> ArmInstruction {
+        ins(ArmOp::Bl {
+            label: name.to_string(),
+        })
+    }
+    fn add_rr(rd: Reg, rn: Reg, rm: Reg) -> ArmInstruction {
+        ins(ArmOp::Add {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        })
+    }
+    // ---- across-CALL: RED (a caller-saved value live across a bl) ----
+    #[test]
+    fn ra003_red_caller_saved_live_across_call_is_caught() {
+        // R2 holds a value (movw), a `bl` runs (the AAPCS boundary DESTROYS R2),
+        // then R2 is read after the call — the callee was free to clobber it, so
+        // the post-call read consumes garbage. The allocator should have homed
+        // the value in a callee-saved reg or spilled it across the call.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            movi(Reg::R2, 0x55),               // define R2 (caller-saved)…
+            bl("func_1"),                      // …AAPCS boundary destroys R2…
+            add_rr(Reg::R0, Reg::R2, Reg::R2), // …but R2 is read after → clobber
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::CallerSavedLiveAcrossCall {
+                    reg: Reg::R2,
+                    ..
+                })
+            ),
+            "a caller-saved value live across a call MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- across-CALL: GREEN (return value used after call is NOT a clobber) --
+    #[test]
+    fn ra003_green_return_value_used_after_call_is_consistent() {
+        // The ubiquitous "use the return value" pattern: `bl` defines R0, then R0
+        // is read. A call DEFINES R0/R1 (return), so this is not a clobber — the
+        // documented R0/R1 false-negative boundary. Must be Consistent, not a
+        // false positive (else every call-returning function stops compiling).
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            bl("func_1"),                      // defines R0 (return value)
+            add_rr(Reg::R1, Reg::R0, Reg::R0), // read the return value — legal
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "using a call's return value must not be flagged as a clobber"
+        );
+    }
+
+    // ---- across-CALL: GREEN (callee-saved value survives a call) ----
+    #[test]
+    fn ra003_green_callee_saved_value_across_call_is_consistent() {
+        // The CORRECT allocation of the red case: home the live value in R4
+        // (callee-saved — the callee preserves it), so reading it after the call
+        // is sound. The prologue saves R4. Must be Consistent.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            movi(Reg::R4, 0x55), // define R4 (callee-saved, preserved by callee)
+            bl("func_1"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4), // read R4 after call — sound
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a callee-saved value read across a call must validate clean"
+        );
+    }
+
+    // ---- across-JOIN: RED (a value in different locations on two paths) ----
+    #[test]
+    fn ra003_red_across_join_clobber_is_caught() {
+        // The across-join clobber: the value flowing into the join is placed in
+        // R4 on the then-path but the else-path defines R5 (NOT R4). The join
+        // block READS R4 (live-in), but R4 is not available on the else edge —
+        // the join consumes a stale/undefined R4 on that path. On R4-R8 (not a
+        // param) so the entry seed does not mask it.
+        //
+        //   entry:  push {r4,r5,lr} ; cmp r0,#0 ; beq .else
+        //   then:   movw r4,#7 ; b .join      (R4 defined)
+        //   else:   movw r5,#9                (R5 defined, R4 is NOT)
+        //   join:   add r0,r4,r4 ; pop {r4,r5,pc}  (reads R4 — unavailable on else)
+        // The prologue saves R4/R5 so invariant 1 (callee-saved) passes and the
+        // join check is the one that fires — proving invariant 4 non-vacuous.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::EQ, ".else"),
+            // then-path
+            movi(Reg::R4, 7),
+            b(".join"),
+            // else-path
+            label(".else"),
+            movi(Reg::R5, 9), // defines R5, NOT R4
+            // join
+            label(".join"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4), // reads R4 — not available on else
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: Reg::R4,
+                    ..
+                })
+            ),
+            "a value live into a join but undefined on one path MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- across-JOIN: GREEN (value defined on BOTH paths is consistent) ----
+    #[test]
+    fn ra003_green_across_join_both_paths_define_is_consistent() {
+        // The CORRECT allocation: BOTH paths place the join value in R4, so R4 is
+        // available on every incoming edge. Must be Consistent — a false positive
+        // here would break every real diamond that merges a value.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::EQ, ".else"),
+            movi(Reg::R4, 7), // then defines R4
+            b(".join"),
+            label(".else"),
+            movi(Reg::R4, 9), // else ALSO defines R4
+            label(".join"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4), // reads R4 — available on both
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a value defined on both incoming edges must validate clean"
+        );
+    }
+
+    // ---- across-JOIN: GREEN (dominator-defined value survives the merge) ----
+    #[test]
+    fn ra003_green_dominator_defined_value_across_join_is_consistent() {
+        // A value defined in the common dominator (entry block) before the split
+        // is available on ALL paths — the availability fixpoint must stay SILENT
+        // on it (the "no false positive on dominator-defined" property).
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::LR]),
+            movi(Reg::R4, 42), // dominator-defines R4, before the split
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::EQ, ".else"),
+            movi(Reg::R5, 1), // then touches an unrelated reg
+            b(".join"),
+            label(".else"),
+            movi(Reg::R6, 2), // else touches another unrelated reg
+            label(".join"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4), // reads the dominator R4 — sound
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::PC]),
+        ];
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value must not be flagged at a join"
+        );
+    }
+
+    // ---- across-JOIN: honest decline (unmodeled CF → NotAttempted) ----
+    #[test]
+    fn ra003_join_declines_on_unmodeled_control_flow() {
+        // A `BrTable` (real multi-way divergence) is outside the modeled label-
+        // form CFG. The join check must LOUD-decline (NotAttempted), never a
+        // silent Consistent claiming coherence it cannot prove. The callee-saved
+        // + across-call invariants still ran (they held) — only the join
+        // reasoning is skipped.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            movi(Reg::R0, 1),
+            ins(ArmOp::BrTable {
+                rd: Reg::R1,
+                index_reg: Reg::R0,
+                targets: vec![0, 1],
+                default: 0,
+            }),
+            label("a"),
+            label("b"),
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::NotAttempted { .. }
+            ),
+            "an unmodeled-CF function must LOUD-decline the join check, not pass silently"
+        );
     }
 }
