@@ -276,10 +276,21 @@ fn test_f32_floor_compiles_on_m4f() {
 }
 
 #[test]
-fn test_f32_min_compiles_on_m4f() {
-    let mut selector = selector_with_fpu();
-    let result = selector.select(&[WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), WasmOp::F32Min]);
-    assert!(result.is_ok(), "f32.min should compile on cortex-m4f");
+fn test_f32_min_max_loud_declined_on_m4f() {
+    // #538 m4: f32.min/max are DECODED now (the aarch64 backend lowers them),
+    // but ARM32's legacy `ArmOp::F32Min/F32Max` compare-select pseudo-op is
+    // NOT WASM-correct (returns the wrong operand for NaN mixes and ±0
+    // pairs), so the ARM32 selector must LOUD-decline — never expose the
+    // latent miscompile — until the VMINNM+fix-up twin of F64Min/F64Max
+    // lands. This replaces the old test that pinned the wrong lowering as Ok.
+    for op in [WasmOp::F32Min, WasmOp::F32Max] {
+        let mut selector = selector_with_fpu();
+        let result = selector.select(&[WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), op.clone()]);
+        assert!(
+            result.is_err(),
+            "{op:?} must loud-decline on ARM32 (NaN/±0-wrong legacy lowering)"
+        );
+    }
 }
 
 #[test]

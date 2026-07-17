@@ -202,6 +202,21 @@ def main():
             else:
                 print(f"[{fn}] 0x{b:08x} -> 0x{got:08x} (bit-exact) OK")
 
+    # ---- f32.sqrt (#538 m4 un-drop): bits in R0 -> bits in R0. NaN-LENIENT
+    # compare (sqrt is arithmetic — a negative operand's quiet-NaN payload is
+    # not pinned by WASM), every non-NaN result bit-exact. ----
+    if need("sqrt"):
+        for b in EDGE_BITS + [0x40800000, 0x40000000, 0x3E800000]:  # 4, 2, .25
+            uc = run(text, base, syms["sqrt"], r0=b)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp["sqrt"](store, b) & 0xFFFFFFFF
+            checked += 1
+            if not f32_bits_eq(got, want):
+                nonlocal_fail(
+                    f"sqrt(0x{b:08x}) -> 0x{got:08x} != wasmtime 0x{want:08x}")
+            else:
+                print(f"[sqrt] 0x{b:08x} -> 0x{got:08x} OK")
+
     # ---- copysign(a, b): a=R0 (magnitude), b=R1 (sign) -> R0 ----
     if need("copysign"):
         for a in EDGE_BITS:

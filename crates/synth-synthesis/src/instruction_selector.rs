@@ -2431,6 +2431,23 @@ fn try_lower_f32(
             stack.push(StackVal::Float { sreg: sd });
             Ok(true)
         }
+        // #538 m4: `f32.sqrt` — a single `VSQRT.F32`, IEEE 754 square root
+        // (negative operand ⇒ quiet NaN, never traps), exactly WASM f32.sqrt.
+        // Previously dropped at decode; un-dropped alongside f32.min/max for
+        // the aarch64 m4 backend — ARM32 lowers it with the already-shipped
+        // clang-verified VSQRT encoder (execution-verified in
+        // scripts/repro/f32_ops_719_differential.py).
+        F32Sqrt => {
+            let sm = pop_float(stack)?;
+            let sd = alloc_vfp_temp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32Sqrt { sd, sm },
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            stack.push(StackVal::Float { sreg: sd });
+            Ok(true)
+        }
         // #719 (phase 1b): `f32.copysign(a, b)` = magnitude of `a` with sign of
         // `b`. Stack order is `[a, b]` (b on top), so `sm` (popped first) is the
         // SIGN source `b` and `sn` is the MAGNITUDE source `a` — matching the
@@ -5766,18 +5783,22 @@ impl InstructionSelector {
                 let sm = self.alloc_vfp_reg();
                 vec![ArmOp::F32Nearest { sd, sm }]
             }
-            // F32 min/max — emit ArmOp variants, encoder expands to VCMP + conditional VMOV
-            F32Min if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sn = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Min { sd, sn, sm }]
-            }
-            F32Max if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sn = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Max { sd, sn, sm }]
+            // F32 min/max — LOUD-DECLINED on ARM32 (#538 m4): the legacy
+            // `ArmOp::F32Min/F32Max` pseudo-op encodes a naive VCMP +
+            // IT-conditional VMOV select, which returns the WRONG operand for
+            // NaN mixes (WASM requires NaN propagation) and for ±0 pairs
+            // (WASM: min(+0,-0) = -0). These ops were previously unreachable
+            // (dropped at decode); now that the decoder delivers them for the
+            // aarch64 backend, ARM32 must honest-reject rather than expose the
+            // latent miscompile. The fix is the f32 twin of
+            // `encode_thumb_f64_minmax` (VMINNM/VMAXNM + IT VS VADD fix-up) —
+            // a later increment.
+            op @ (F32Min | F32Max) if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported on ARM32: the available lowering is not \
+                     WASM NaN/±0-correct — declined until the VMINNM+fix-up twin \
+                     of F64Min/F64Max lands"
+                )));
             }
             // F32 copysign — emit ArmOp variant, encoder expands to VABS + sign extraction
             F32Copysign if self.fpu.is_some() => {
