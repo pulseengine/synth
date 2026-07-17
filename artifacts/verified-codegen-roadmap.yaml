@@ -1739,19 +1739,32 @@ artifacts:
         shipping lesson). It hard-errors the compile on (1) callee-saved
         preservation #490 (a body def of R4-R8 not saved by a prologue
         `push {..,lr}` / not restored by a return `pop {..,pc}`) and (2)
-        spill-slot non-aliasing #331 (two simultaneously-live values sharing a
-        frame slot, per straight-line segment via the holder model). BOUNDED
+        spill-slot non-aliasing — the class #331 EXEMPLIFIES (two
+        simultaneously-live values sharing a frame slot: a reload after an
+        unreloaded overwrite, per straight-line segment via the holder model).
+        NOTE the scope honestly: the red test proves the aliasing CLASS is
+        caught, NOT a reproduction of the historical #331 (whose param-home vs
+        i64-spill collision may present as a caller/prologue-written home or span
+        a segment boundary, outside this in-segment str/str/ldr shape). BOUNDED
         first increment = straight-line + spill/reload discipline only;
         branches / CF joins and unmodeled ops (calls / i64-pair / FP) are the
         NAMED PHASE-2 boundary (the spill check segments at them, never claiming
         cross-join coherence - a loud honest scope, never a false pass).
-        RED-FIRST non-vacuity proven (8 unit tests, `ra003_*` in liveness.rs): 3
-        RED synthetically revert a known-fixed clobber and assert the validator
-        CATCHES it (revert #490 prologue -> CalleeSavedNotSaved; drop the epilogue
-        restore -> CalleeSavedNotRestored; alias two live values on one slot ->
-        SpillSlotAliased) + 5 GREEN assert it is SILENT on correct code (the real
-        `ensure_callee_saved_prologue` output; balanced push/pop; a pure-scratch
-        leaf; sequential single-slot reuse; a call as a segment barrier).
+        The callee-saved check is FAIL-SAFE on unmodeled ops (calls / i64-pair /
+        FP / BrTable): an op `reg_effect` cannot model MIGHT write R4-R8, so a
+        no-prologue body containing one is flagged — the checker-correct
+        (false-negative-avoiding) direction, mirroring the pass it validates
+        (`body_uses_callee_saved`, which forces a push on None); verified to not
+        false-positive (frozen + full workspace green). RED-FIRST non-vacuity
+        proven (10 unit tests, `ra003_*` in liveness.rs): 4 RED synthetically
+        revert a known-fixed clobber and assert the validator CATCHES it (revert
+        #490 prologue -> CalleeSavedNotSaved; drop the epilogue restore ->
+        CalleeSavedNotRestored; alias two live values on one slot ->
+        SpillSlotAliased; an unmodeled op with no prologue -> fail-safe
+        CalleeSavedNotSaved) + 6 GREEN assert it is SILENT on correct code (the
+        real `ensure_callee_saved_prologue` output; balanced push/pop; a
+        pure-scratch leaf; sequential single-slot reuse; an unmodeled op WITH a
+        prologue; a call as a spill-segment barrier).
         Frozen-safe (emits nothing; `.text` byte-identical, control_step
         0x00210A55 / flight_algo 0x07FDF307) - the frozen suite compiling the
         whole ARM fixture set THROUGH the unconditional gate (10/10 green) is the

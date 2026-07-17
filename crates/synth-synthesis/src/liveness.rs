@@ -3627,26 +3627,29 @@ pub enum RaFinalVerdict {
 /// **Phase-2 boundary (loud, never a false pass).** Control-flow joins and ops
 /// [`reg_effect`] cannot model (calls, i64-pair, FP, `BrTable`) end the current
 /// spill segment; the callee-saved check still spans the whole function
-/// (structural, conservative-on-`None`). The spill check simply does not reason
-/// ACROSS a segment boundary — it never claims a cross-join slot is coherent.
-/// The result is always [`RaFinalVerdict::Consistent`] or a concrete
-/// `Violation`; there is no silent pass on an unmodeled shape.
+/// (structural, FAIL-SAFE on `None` — an unmodeled op is treated as a possible
+/// callee-saved clobber, so a no-prologue body containing one is flagged). The
+/// spill check simply does not reason ACROSS a segment boundary — it never
+/// claims a cross-join slot is coherent. The result is always
+/// [`RaFinalVerdict::Consistent`] or a concrete `Violation`; there is no silent
+/// pass on an unmodeled shape.
 pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     use ArmOp::*;
     const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
 
     // ---- Invariant 1: callee-saved preservation (#490), whole-function ----
     //
-    // Collect the prologue save-set (the LR-push regs, if any) and the union of
-    // callee-saved registers the body DEFINES. Every defined callee-saved reg
-    // must be in the save-set. Unmodeled ops (`reg_effect` == None) MIGHT define
-    // a callee-saved reg — but a body that has no prologue at all and contains
-    // ONLY such ops is the direct-selector shape that always carries its own
-    // push; to stay conservative-without-false-positives we count a callee-saved
-    // def only when we can SEE it (a modeled op names it in `defs`). An unmodeled
-    // op is a segment barrier for invariant 2, not a phantom callee-saved def
-    // here — mirroring `shrink_callee_saved_saves`, which declines (leaves the
-    // full save) rather than fabricating a specific register.
+    // Collect the prologue save-set (the LR-push regs, if any) and the callee-
+    // saved registers the body clobbers. Every clobbered callee-saved reg must be
+    // in the save-set. FAIL-SAFE on unmodeled ops (`reg_effect` == None): a call /
+    // i64-pair / FP / `BrTable` MIGHT write a callee-saved reg, so a body with NO
+    // prologue that contains such an op is flagged — the checker-correct
+    // direction (avoid false-negatives), mirroring the pass this validates
+    // (`body_uses_callee_saved`, which likewise forces a push on None). Because
+    // the pass and validator share the classifier, real code the pass gave a
+    // prologue already satisfies `has_prologue`, so the fail-safe never
+    // false-positives on the direct-selector shape (verified: frozen + workspace
+    // green).
     let mut saved: BTreeSet<Reg> = BTreeSet::new();
     let mut has_prologue = false;
     for ins in instrs {
@@ -3662,22 +3665,44 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
             break;
         }
     }
-    // Which callee-saved registers does the body genuinely write?
+    // Which callee-saved registers does the body write? FAIL-SAFE on unmodeled
+    // ops (`reg_effect` == None): calls / i64-pair / FP / `BrTable` MIGHT write a
+    // callee-saved register, so — mirroring `body_uses_callee_saved`'s allowlist
+    // EXACTLY (the pass this validates) — an unmodeled op forces the "a
+    // callee-saved reg may be clobbered" conclusion, requiring a prologue. This
+    // is the checker-correct direction (avoid FALSE-NEGATIVES): the pass treats
+    // None the same way (None -> force push), so the two agree and a real body
+    // the pass gave a prologue already has `has_prologue == true`. `unmodeled_cs`
+    // names no specific register (we cannot know which), so it is reported as the
+    // whole callee-saved set only when no prologue exists.
     let mut defined_cs: BTreeSet<Reg> = BTreeSet::new();
+    let mut unmodeled_may_clobber_cs = false;
     for ins in instrs {
-        // The prologue push and epilogue pop are the SAVE/RESTORE themselves —
-        // a `pop {…,pc}` "defines" R4-R8 but that is the restore, not a clobber.
         match &ins.op {
-            Push { .. } | Pop { .. } => continue,
-            op => {
-                if let Some(e) = reg_effect(op) {
+            // The prologue push / epilogue pop are the SAVE/RESTORE themselves;
+            // pure label control flow and `bx lr` carry no callee-saved data
+            // effect (mirrors `body_uses_callee_saved`'s allowlist exactly).
+            Push { .. }
+            | Pop { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => match reg_effect(op) {
+                Some(e) => {
                     for r in &e.defs {
                         if CALLEE_SAVED.contains(r) {
                             defined_cs.insert(*r);
                         }
                     }
                 }
-            }
+                // Unmodeled op -> assume it may write a callee-saved register.
+                None => unmodeled_may_clobber_cs = true,
+            },
         }
     }
     for r in &defined_cs {
@@ -3685,6 +3710,12 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
             // A callee-saved reg is written but not saved by a prologue push.
             return RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: *r });
         }
+    }
+    // Fail-safe: an unmodeled op may clobber a callee-saved reg — a body with no
+    // prologue at all cannot have saved it. Report R4 as the representative of
+    // the possibly-clobbered set (the specific register is unknowable here).
+    if unmodeled_may_clobber_cs && !has_prologue {
+        return RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: Reg::R4 });
     }
     // Epilogue half: if there IS a prologue that saved a set, every return
     // epilogue `pop {…,pc}` must restore exactly the saved callee-saved regs.
@@ -3762,9 +3793,15 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
                     // has NOT yet been reloaded (still live). Overwriting an
                     // already-reloaded (dead) value is legal single-slot reuse.
                     let shadowed = match slots.get(&slot) {
+                        // Owner still live (not reloaded): this store shadows it —
+                        // record THIS overwrite (a later `str` on a still-live
+                        // owner supersedes the earlier pending shadow; either fires
+                        // a violation on the next reload, so reporting the most
+                        // recent overwrite is sufficient and correct).
                         Some(prev) if !prev.owner_reloaded => Some((prev.owner_store, i)),
-                        // Preserve an existing shadow: a third store cannot clear
-                        // a live earlier value's outstanding-reload obligation.
+                        // Owner already reloaded (dead): legal single-slot reuse —
+                        // `prev.shadowed` is `None` after a clean reload, so this
+                        // carries no obligation forward.
                         Some(prev) => prev.shadowed,
                         None => None,
                     };
@@ -13554,19 +13591,62 @@ mod tests {
         );
     }
 
+    // ---- #490 fail-safe: RED (unmodeled op may clobber CS, no prologue) ----
+    #[test]
+    fn ra003_red_unmodeled_op_without_prologue_is_caught() {
+        // A call (unmodeled by `reg_effect`) MIGHT write a callee-saved reg; a
+        // body with no prologue at all cannot have preserved it. The fail-safe
+        // must flag it — the checker-correct (false-negative-avoiding) direction.
+        let body = vec![
+            movi(Reg::R0, 1),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { .. })
+            ),
+            "an unmodeled op with no prologue MUST be flagged (fail-safe), got {verdict:?}"
+        );
+    }
+
+    // ---- #490 fail-safe: GREEN (same body WITH a prologue is silent) ----
+    #[test]
+    fn ra003_green_unmodeled_op_with_prologue_is_consistent() {
+        // The direct-selector / call shape: the pass already emits a
+        // `push {…,lr}` prologue, so the unmodeled call is preserved-safe.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR]),
+            movi(Reg::R0, 1),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
+        ];
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
+    }
+
     // ---- phase-2 boundary: a call SEGMENTS the spill check, never crashes ----
     #[test]
     fn ra003_call_is_a_segment_barrier_not_a_crash() {
         // A call (unmodeled by reg_effect) splits the straight-line region; a
-        // reload after it reads a fresh segment (live-in), not a stale value.
-        // The validator must return Consistent (no false pass, no panic) here.
+        // reload after it reads a fresh segment (live-in), not a stale value. The
+        // body carries the prologue the pass emits for a call (so the callee-saved
+        // fail-safe is satisfied); the spill check must NOT flag the cross-segment
+        // slot 8 reload — no false pass, no panic.
         let body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR]),
             movi(Reg::R0, 1),
             str_sp(Reg::R0, 8),
             ins(ArmOp::Bl {
                 label: "func_1".to_string(),
             }),
             ldr_sp(Reg::R1, 8), // post-call segment: slot 8 is a live-in here
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
         ];
         assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
     }
