@@ -1516,3 +1516,38 @@ jobs:
           SYNTH: ./target/debug/synth
           EXTRA_SYNTH_FLAGS: "--stack-layout low"
         run: python scripts/repro/i64_global_init_649_differential.py
+
+  # #418: self-contained binding of the meld-dissolve embedder import
+  # `env::__cabi_arena_realloc` — the compile must yield an ET_EXEC image
+  # (not a "link me" ET_REL) whose synthesized arena allocator EXECUTES the
+  # canonical-ABI realloc contract identically to a wasmtime host arena
+  # (pointer-independent observables; exhaustion traps on both sides). The
+  # `--relocatable` undefined-symbol seam (#420) is asserted untouched by
+  # cabi_arena_realloc_linkability_418.rs in the `test` job.
+  arena-bind-418-oracle:
+    name: "#418 arena-bind self-contained execution oracle"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run the #418 arena-bind execution differential
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/cabi_arena_bind_418_differential.py

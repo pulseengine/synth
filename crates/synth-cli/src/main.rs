@@ -337,6 +337,13 @@ enum Commands {
         #[arg(long)]
         native_pointer_abi: bool,
 
+        /// #418: keep a sole `env::__cabi_arena_realloc` import an EXTERNAL
+        /// symbol (ET_REL, host-linked) instead of binding it to a synthesized
+        /// in-image arena allocator on the self-contained Cortex-M path — the
+        /// pinned opt-out restoring the pre-binding pass-through.
+        #[arg(long)]
+        no_bind_cabi_arena: bool,
+
         /// Emit a CycloneDX 1.5 SBOM for the compiled ELF. With a path, writes
         /// there; as a bare flag (`--sbom`) writes `<output>.cdx.json` next to
         /// the ELF. The SBOM documents the synth compiler, the input WASM, the
@@ -595,6 +602,7 @@ fn main() -> Result<()> {
             builtins,
             relocatable,
             native_pointer_abi,
+            no_bind_cabi_arena,
             sbom,
             sign_output,
             shadow_stack_size,
@@ -674,6 +682,7 @@ fn main() -> Result<()> {
                 &target_spec,
                 relocatable,
                 native_pointer_abi,
+                no_bind_cabi_arena,
                 sbom_path,
                 sign_output,
                 shadow_stack_size,
@@ -1407,6 +1416,8 @@ fn compile_command(
     target_spec: &TargetSpec,
     relocatable: bool,
     native_pointer_abi: bool,
+    // #418: `--no-bind-cabi-arena` — keep the arena import an external symbol.
+    no_bind_cabi_arena: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
     shadow_stack_size: Option<u32>,
@@ -1470,6 +1481,7 @@ fn compile_command(
             target_spec,
             relocatable,
             native_pointer_abi,
+            no_bind_cabi_arena,
             sbom_path,
             sign_output,
             shadow_stack_size,
@@ -2510,6 +2522,9 @@ fn compile_all_exports(
     target_spec: &TargetSpec,
     relocatable: bool,
     native_pointer_abi: bool,
+    // #418: `--no-bind-cabi-arena` — keep a sole `env::__cabi_arena_realloc`
+    // import an external symbol instead of binding it in-image.
+    no_bind_cabi_arena: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
     shadow_stack_size: Option<u32>,
@@ -2713,6 +2728,45 @@ fn compile_all_exports(
 
         // Run Loom optimizer if --loom is enabled
         let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
+
+        // #418: on the SELF-CONTAINED Cortex-M path, bind a sole passed-through
+        // `env::__cabi_arena_realloc` embedder import (the wit-bindgen
+        // `cabi-realloc-extern` / meld-dissolve shape) to a synthesized
+        // in-module arena allocator, so the compile yields a fully
+        // self-contained image instead of degrading to an ET_REL "link me
+        // with the Kiln bridge" object. The `--relocatable` host-link seam is
+        // UNTOUCHED (#420 contract: undefined `__cabi_arena_realloc` symbol,
+        // TCB-bound at native link), as is `--native-pointer-abi` (its
+        // SP-global register promotion could misidentify the appended arena
+        // cursor global). Modules without the import pass through
+        // byte-identically. Pinned opt-out: `--no-bind-cabi-arena`.
+        let wasm_bytes = if cortex_m
+            && !relocatable
+            && !native_pointer_abi
+            && backend.name() == "arm"
+            && !no_bind_cabi_arena
+        {
+            match synth_core::arena_bind::bind_cabi_arena_realloc(&wasm_bytes)? {
+                synth_core::arena_bind::ArenaBind::Bound(b) => {
+                    info!(
+                        "#418: bound env::__cabi_arena_realloc to a synthesized in-image \
+                         arena allocator: wasm [0x{:x}, 0x{:x}) ({} bytes, traps on \
+                         exhaustion; opt-out --no-bind-cabi-arena)",
+                        b.arena_base,
+                        b.arena_end,
+                        b.arena_end - b.arena_base
+                    );
+                    b.bytes
+                }
+                synth_core::arena_bind::ArenaBind::KeptHostSeam(reason) => {
+                    info!("#418: env::__cabi_arena_realloc NOT bound: {reason}");
+                    wasm_bytes
+                }
+                synth_core::arena_bind::ArenaBind::NoArenaImport => wasm_bytes,
+            }
+        } else {
+            wasm_bytes
+        };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
         sbom_wasm_bytes = Some(wasm_bytes);
