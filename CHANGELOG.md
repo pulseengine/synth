@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-07-17
+
+**Soundness patch — #791 closed (const-only-body exports returned garbage).**
+
+### Fixed (soundness)
+
+- **The optimized (default) path miscompiled functions whose body is a bare
+  constant (#791)** — `Opcode::Const` was the one value-producing arm that never
+  recorded its dest as `last_result_vreg`, so the epilogue's move-result-to-R0 had
+  nothing to move: `push {r4,lr}; movs r4,#K; pop {r4,pc}` — R0 never written, the
+  export returned caller residue. Found by the #275 lane's execution differential
+  (the first gate to run dispatch targets in a default self-contained image).
+  Fix: track the const's dest like every other producer. Side effect: void
+  functions whose final IR value is a stored const gain one harmless `mov r0,rX`
+  (+2 B, both flag arms consistently — the behavior every other producer always
+  had); `base_cse_flip_468` goldens re-pinned with rationale after a full
+  differential sweep on the new bytes. Red-first
+  `const_body_791_differential.py` (RED on 0.46.0, GREEN on fix); frozen anchors
+  10/10 unchanged.
+
 ## [0.46.0] - 2026-07-16
 
 **Qualification depth + capability breadth.** The sequel to the #757 arc: synth's
