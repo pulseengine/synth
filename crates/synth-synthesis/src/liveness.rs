@@ -3693,8 +3693,11 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
             if let Pop { regs } = &ins.op
                 && regs.contains(&Reg::PC)
             {
-                let restored: BTreeSet<Reg> =
-                    regs.iter().filter(|r| CALLEE_SAVED.contains(r)).copied().collect();
+                let restored: BTreeSet<Reg> = regs
+                    .iter()
+                    .filter(|r| CALLEE_SAVED.contains(r))
+                    .copied()
+                    .collect();
                 for r in &saved {
                     if !restored.contains(r) {
                         return RaFinalVerdict::Violation(
@@ -3785,14 +3788,12 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
                             // A reload after an unreloaded overwrite: the value
                             // this reload consumes is the overwriting store's, but
                             // an earlier live value was shadowed at that slot.
-                            return RaFinalVerdict::Violation(
-                                RaFinalViolation::SpillSlotAliased {
-                                    slot,
-                                    first_store,
-                                    overwriting_store,
-                                    stale_reload: i,
-                                },
-                            );
+                            return RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased {
+                                slot,
+                                first_store,
+                                overwriting_store,
+                                stale_reload: i,
+                            });
                         }
                         // The owner's value is now consumed; a later overwrite is
                         // legal reuse (the value is no longer outstanding).
@@ -13488,10 +13489,7 @@ mod tests {
             movi(Reg::R5, 2),
             pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
         ];
-        assert_eq!(
-            validate_final_allocation(&body),
-            RaFinalVerdict::Consistent
-        );
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
     }
 
     // ---- pure r0-r3 leaf: GREEN (no callee-saved touched, no prologue) ----
@@ -13570,9 +13568,6 @@ mod tests {
             }),
             ldr_sp(Reg::R1, 8), // post-call segment: slot 8 is a live-in here
         ];
-        assert_eq!(
-            validate_final_allocation(&body),
-            RaFinalVerdict::Consistent
-        );
+        assert_eq!(validate_final_allocation(&body), RaFinalVerdict::Consistent);
     }
 }
