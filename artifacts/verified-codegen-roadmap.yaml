@@ -1938,14 +1938,27 @@ artifacts:
         +1 NotAttempted (BrTable -> loud decline). Vacuity-in-practice VERIFIED:
         invariant 4 FIRES on real branchy codegen (if_else_result_343 /
         cf_shapes_500 / block_brif_483 joins all Consistent, incl. a real R11
-        availability check) - not unit-tested-but-dead-in-shipping. 130-fixture
-        sweep: 0 false positives. CI-gated: the third
-        `vcr-ra-003-alloc-validator-gate` step runs
-        `scripts/repro/vcr_ra_003_phase2_join_call.py` over branchy/mem/call
-        fixtures (silent-on-real-branchy-codegen). Frozen-safe (emits nothing;
-        control_step 0x00210A55 / flight_algo 0x07FDF307 byte-identical, 10/10).
-        v2 (Rocq-mechanized soundness of the straight-line fragment) remains the
-        open step.
+        availability check) - not unit-tested-but-dead-in-shipping.
+        HONEST PATH SCOPE: invariant 4 FIRES (analyzable label-form CFG) on the
+        RELOCATABLE / direct-selector path; on the DEFAULT optimized path branches
+        are already resolved to NUMERIC offsets (BOffset/BCondOffset) before the
+        validator runs, so the join CFG cannot be built and invariant 4 declines
+        to NotAttempted THERE (invariants 1-3 still run on both paths - a
+        false-positive Violation on either would hard-error the compile). Verified
+        BOTH paths: control_step on the DEFAULT path (the control_step
+        differential's own input) + 7 branchy fixtures × {relocatable, default} =
+        16 pairs, 0 false positives; the full 130-fixture default-path sweep is
+        also 0 violations. The NotAttempted decline is COMMON on the default path
+        (~41/130 fixtures), so its diagnostic eprintln is gated behind
+        `SYNTH_RA003_VERBOSE` (a production compile stays quiet; the verdict is
+        observable on demand). Extending invariant 4 to the numeric-branch
+        optimized path (a resolved-offset CFG builder, the #606 geometry) is a
+        NAMED follow-up. CI-gated: the third `vcr-ra-003-alloc-validator-gate`
+        step runs `scripts/repro/vcr_ra_003_phase2_join_call.py` over
+        branchy/mem/call fixtures on BOTH paths (silent-on-real-branchy-codegen).
+        Frozen-safe (emits nothing; control_step 0x00210A55 / flight_algo
+        0x07FDF307 byte-identical, 10/10). v2 (Rocq-mechanized soundness of the
+        straight-line fragment) remains the open step.
 
   - id: VCR-RA-004
     type: sw-req

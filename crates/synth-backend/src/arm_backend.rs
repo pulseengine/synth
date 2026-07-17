@@ -1390,14 +1390,23 @@ fn compile_wasm_to_arm(
             ));
         }
         // Loud honest decline (join reasoning skipped for an unmodeled-CF
-        // function). Non-fatal — surface it so the boundary is observable, but
-        // do NOT stop the compile.
+        // function). Non-fatal — the straight-line / callee-saved / across-call
+        // invariants still ran and held; only the across-JOIN availability
+        // reasoning is skipped (the optimized path pre-resolves branches to
+        // NUMERIC offsets, outside the label-form CFG the join check needs, so
+        // this is the COMMON case on the default path — ~41/130 repro fixtures).
+        // Surfaced only under `SYNTH_RA003_VERBOSE` so a production compile stays
+        // quiet: emitting it unconditionally would print on every branchy
+        // optimized-path compile (new stderr noise phase 1 never produced), yet
+        // it must remain observable on demand for the honest-scope audit.
         synth_synthesis::liveness::RaFinalVerdict::NotAttempted { reason } => {
-            eprintln!(
-                "VCR-RA-003: across-join validation NOT ATTEMPTED ({reason}) — \
-                 straight-line / callee-saved / across-call invariants held; \
-                 join-availability reasoning declined on this control-flow shape."
-            );
+            if std::env::var_os("SYNTH_RA003_VERBOSE").is_some() {
+                eprintln!(
+                    "VCR-RA-003: across-join validation NOT ATTEMPTED ({reason}) — \
+                     straight-line / callee-saved / across-call invariants held; \
+                     join-availability reasoning declined on this control-flow shape."
+                );
+            }
         }
         synth_synthesis::liveness::RaFinalVerdict::Consistent => {}
     }

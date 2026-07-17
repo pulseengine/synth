@@ -40,6 +40,7 @@ REPRO = REPO / "scripts" / "repro"
 # Fixtures with real control-flow joins (br/br_if/block/loop/if) and/or memory
 # stores through the reserved R11 base — the shapes invariant 4 reasons about.
 BRANCHY_FIXTURES = [
+    "control_step.wasm",        # the control_step differential's own input (default path)
     "block_brif_483.wat",       # forward block + br_if; nested br 1 (the R11 case)
     "if_else_result_343.wat",   # if/else merging a value at the join
     "cf_shapes_500.wat",        # assorted CF shapes, promoted-local + R11 joins
@@ -68,32 +69,39 @@ def main() -> int:
 
     failures = []
     checked = 0
-    for fx in BRANCHY_FIXTURES:
-        path = REPRO / fx
-        if not path.exists():
-            print(f"warn: fixture missing, skipping: {fx}", file=sys.stderr)
-            continue
-        checked += 1
-        with tempfile.NamedTemporaryFile(suffix=".elf") as out:
-            proc = subprocess.run(
-                [binp, "compile", str(path), "-o", out.name, "--relocatable"],
-                capture_output=True,
-                text=True,
-            )
-        combined = proc.stdout + proc.stderr
-        if "VCR-RA-003" in combined and "FAILED" in combined:
-            # Extract the offending line for the report.
-            line = next(
-                (l for l in combined.splitlines() if "FAILED" in l and "VCR-RA-003" in l),
-                "<unknown>",
-            )
-            failures.append((fx, line.strip()))
-            print(f"FAIL {fx}: validator false-positived on real codegen")
-            print(f"     {line.strip()}")
-        else:
-            print(f"ok   {fx}: validator silent (Consistent / NotAttempted)")
+    # Sweep BOTH the label-form/relocatable path (where invariant 4 FIRES:
+    # label branches → an analyzable CFG) AND the DEFAULT optimized path (the
+    # SHIPPING path the control_step differential compiles: pre-resolved numeric
+    # branches → invariant 4 declines to NotAttempted, but invariants 1-3 still
+    # run and a false-positive Violation would hard-error the compile). A false
+    # positive on EITHER path reds this gate.
+    for path_name, extra_args in (("relocatable", ["--relocatable"]), ("default", [])):
+        for fx in BRANCHY_FIXTURES:
+            path = REPRO / fx
+            if not path.exists():
+                if path_name == "relocatable":
+                    print(f"warn: fixture missing, skipping: {fx}", file=sys.stderr)
+                continue
+            checked += 1
+            with tempfile.NamedTemporaryFile(suffix=".elf") as out:
+                proc = subprocess.run(
+                    [binp, "compile", str(path), "-o", out.name, *extra_args],
+                    capture_output=True,
+                    text=True,
+                )
+            combined = proc.stdout + proc.stderr
+            if "VCR-RA-003" in combined and "FAILED" in combined:
+                line = next(
+                    (l for l in combined.splitlines() if "FAILED" in l and "VCR-RA-003" in l),
+                    "<unknown>",
+                )
+                failures.append((fx, path_name, line.strip()))
+                print(f"FAIL [{path_name}] {fx}: validator false-positived on real codegen")
+                print(f"     {line.strip()}")
+            else:
+                print(f"ok   [{path_name}] {fx}: validator silent (Consistent / NotAttempted)")
 
-    print(f"\nchecked {checked} branchy fixtures; {len(failures)} false-positives")
+    print(f"\nchecked {checked} (fixture, path) pairs; {len(failures)} false-positives")
     if failures:
         print(
             "\nVCR-RA-003 phase-2 across-JOIN/across-CALL check FALSE-POSITIVED on "
