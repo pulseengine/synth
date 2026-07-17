@@ -3577,6 +3577,30 @@ pub enum RaFinalViolation {
         overwriting_store: usize,
         stale_reload: usize,
     },
+    /// PHASE 2 (across-CALL): a caller-saved register `reg` ∈ {R2, R3, R12} is
+    /// LIVE ACROSS a `bl`/`blx`/`call` — it holds a value defined before the
+    /// call and read after it, with no intervening redefinition — yet the AAPCS
+    /// call boundary DESTROYS caller-saved registers. The callee is free to
+    /// clobber R2/R3/R12, so the value the post-call read consumes is garbage.
+    /// A correct allocator either homes such a value in a callee-saved register
+    /// (R4-R8, preserved by the callee) or spills it to the frame across the
+    /// call. `call_index` is the index of the offending call instruction.
+    /// R0/R1 are DELIBERATELY excluded: a call DEFINES them (return value), so a
+    /// live R0/R1 across a call is the ubiquitous "use the return value" pattern,
+    /// not a clobber (documented phase-2 false-negative boundary — we cannot know
+    /// the callee's return arity, so FN < FP here).
+    CallerSavedLiveAcrossCall { reg: Reg, call_index: usize },
+    /// PHASE 2 (across-JOIN): register `reg` is LIVE-IN to a control-flow join
+    /// block (≥2 predecessors) but is NOT AVAILABLE (must-defined) on every path
+    /// reaching the join — some predecessor path never defines it. The value the
+    /// join consumes is defined on one incoming edge but undefined (stale /
+    /// wrong) on another: the allocation does not preserve value flow across the
+    /// merge. `join_block` is the CFG block index of the join. Anchored on the
+    /// join's own read (a live-in = read-before-write), so it keys on a real
+    /// in-stream reference, not inferred value-identity (the v0.48 vacuity
+    /// lesson). Params/SP/LR are seeded available at entry, so a join reading a
+    /// param is never flagged (documented boundary).
+    JoinValueNotAvailable { reg: Reg, join_block: usize },
 }
 
 /// The verdict of the UNCONDITIONAL final register-allocation validator
@@ -3594,6 +3618,19 @@ pub enum RaFinalVerdict {
     Consistent,
     /// A checked invariant is violated — the compile must hard-error.
     Violation(RaFinalViolation),
+    /// PHASE 2 (loud honest decline): a CONSTRUCT is present that the
+    /// whole-function CF checks cannot model (a numeric-offset branch, a
+    /// computed/return branch, `BrTable`, a duplicate label, or any op the CFG
+    /// builder declines) — so the across-JOIN availability check was NOT
+    /// attempted for this function. The straight-line + callee-saved + across-
+    /// CALL invariants were still checked (they returned Consistent, else this
+    /// would be a `Violation`); only the join-availability reasoning is skipped.
+    /// This is the decline>guess doctrine applied to the checker itself: a false
+    /// `Consistent` on a join it could not analyze is worse than a loud "not
+    /// attempted". NON-FATAL at the call site (the compile proceeds) — it names
+    /// the construct so the boundary is visible, never silently passed.
+    /// `reason` is a static machine-readable tag.
+    NotAttempted { reason: &'static str },
 }
 
 /// VCR-RA-003 UNCONDITIONAL single-stream register-allocation validator (epic
@@ -3624,15 +3661,46 @@ pub enum RaFinalVerdict {
 ///    ⇒ [`RaFinalViolation::SpillSlotAliased`]. Tracked with the same holder
 ///    model [`forward_stack_reloads`] uses.
 ///
-/// **Phase-2 boundary (loud, never a false pass).** Control-flow joins and ops
-/// [`reg_effect`] cannot model (calls, i64-pair, FP, `BrTable`) end the current
-/// spill segment; the callee-saved check still spans the whole function
-/// (structural, FAIL-SAFE on `None` — an unmodeled op is treated as a possible
-/// callee-saved clobber, so a no-prologue body containing one is flagged). The
-/// spill check simply does not reason ACROSS a segment boundary — it never
-/// claims a cross-join slot is coherent. The result is always
-/// [`RaFinalVerdict::Consistent`] or a concrete `Violation`; there is no silent
-/// pass on an unmodeled shape.
+/// **Phase 2 (#242, this lane) — WHOLE-FUNCTION across CALLS and JOINS.** Two
+/// more invariants extend the checker past straight-line, each anchored on a
+/// reference that lives OUTSIDE inferred value-identity (the v0.48 vacuity
+/// lesson: generic GP-liveness on one stream cannot tell a clobber from a
+/// redefinition):
+///
+/// 3. **Caller-saved preservation across a call (across-CALL).** The AAPCS call
+///    boundary DESTROYS the caller-saved registers R2/R3/R12. A value in one of
+///    them that is defined before a `bl`/`blx`/`call` and read after it (with no
+///    redefinition between) crossed a boundary the ABI is contractually allowed
+///    to clobber ⇒ [`RaFinalViolation::CallerSavedLiveAcrossCall`]. The
+///    reference is the ABI contract at the call, not an inferred value — so the
+///    check is non-vacuous. R0/R1 are excluded (a call DEFINES them: the return
+///    value), a documented false-negative boundary. Computed locally at the call
+///    site with a backward last-read scan; it does NOT modify the shared
+///    [`reg_effect`] (whose `None`-on-call meaning the phase-1 callee-saved
+///    fail-safe and [`eliminate_unread_frame_stores`] both depend on).
+///
+/// 4. **Value availability across a join (across-JOIN).** A register live-in to
+///    a CF join (a block with ≥2 predecessors) must be AVAILABLE — must-defined
+///    on EVERY path reaching the join (or an entry live-in: a param R0-R3, SP,
+///    or LR). A value defined on one incoming edge but undefined on another is
+///    consumed stale on the second edge ⇒
+///    [`RaFinalViolation::JoinValueNotAvailable`]. The reference is the join's
+///    own read (a live-in = read-before-write in the join block), a real
+///    in-stream anchor. Solved by a forward MUST (intersection) availability
+///    fixpoint over the label-form CFG ([`cfg_liveness`] supplies the blocks +
+///    succ + per-block live-in).
+///
+/// **Loud honest decline (never a false pass).** The across-JOIN check needs a
+/// complete label-form CFG; a function containing a numeric-offset branch, a
+/// computed/return branch, a call, `BrTable`, or a duplicate label makes
+/// [`cfg_liveness`] return `None`, and this validator returns
+/// [`RaFinalVerdict::NotAttempted`] for the JOIN reasoning (the other three
+/// invariants having already passed) rather than silently claiming join
+/// coherence it cannot prove. The spill check still segments at every barrier
+/// (never reasoning across a join). The result is [`RaFinalVerdict::Consistent`]
+/// (all attempted invariants hold), a concrete [`RaFinalVerdict::Violation`], or
+/// a loud [`RaFinalVerdict::NotAttempted`] naming the unmodeled construct — there
+/// is no silent pass on a shape the checker cannot analyze.
 pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     use ArmOp::*;
     const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
@@ -3850,7 +3918,483 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
         }
     }
 
+    // ---- Invariant 3: caller-saved preservation across a call (phase 2) ----
+    if let Some(v) = check_caller_saved_across_calls(instrs) {
+        return RaFinalVerdict::Violation(v);
+    }
+
+    // ---- Invariant 4: value availability across a join (phase 2) ----
+    match check_join_availability(instrs) {
+        JoinCheck::Consistent => {}
+        JoinCheck::Violation(v) => return RaFinalVerdict::Violation(v),
+        JoinCheck::NotAttempted { reason } => {
+            // The straight-line, callee-saved, and across-call invariants all
+            // passed; only the join-availability reasoning is skipped for this
+            // (unmodeled-CF) function. Loud honest decline, non-fatal upstream.
+            return RaFinalVerdict::NotAttempted { reason };
+        }
+    }
+
     RaFinalVerdict::Consistent
+}
+
+/// Across-CALL check (VCR-RA-003 phase 2, invariant 3). Returns `Some(violation)`
+/// iff some caller-saved register R2/R3/R12 is LIVE ACROSS a `bl`/`blx`/`call`:
+/// defined (or a live-in) before the call and read after it with no intervening
+/// redefinition. The AAPCS boundary destroys R2/R3/R12, so such a value is
+/// consumed garbage after the call.
+///
+/// **Non-vacuity anchor.** The clobber is the ABI CONTRACT at the call site, not
+/// an inferred redefinition — so a live-across-a-known-clobber is a real bug,
+/// distinguishable without value-identity reasoning (the v0.48 lesson).
+///
+/// R0/R1 are EXCLUDED (a call defines them: the return value; a live R0/R1 across
+/// a call is the "use the return value" pattern). We cannot know callee return
+/// arity, so this is a documented false-NEGATIVE boundary (FN < FP). The check
+/// does NOT model the call in the shared [`reg_effect`] — it reasons locally,
+/// keeping `reg_effect(call) == None` intact for the phase-1 fail-safe.
+///
+/// Local liveness definition (backward, register-precise, over the LINEAR
+/// stream): a register `c` is "read after the call" iff, scanning forward from
+/// just after the call, some instruction USES `c` before any instruction DEFINES
+/// `c`. It is "held across the call" iff it was USED-or-DEFINED at some point
+/// before the call in the same linear prefix (i.e. it carries a value, not an
+/// uninitialised register). We flag when both hold. To stay SOUND across the
+/// intervening control flow, a caller-saved reg read after the call with no
+/// visible redefinition on the fall-through IS the miscompile the allocator must
+/// avoid — a conservative linear scan over-approximates "read after" (it may see
+/// a read on a not-taken path), which is the false-POSITIVE-safe direction ONLY
+/// if we also require a pre-call producer; both conditions together are the
+/// tight signal. Because a false positive here would break frozen, we take the
+/// STRICTER route: require the post-call read to be reached with NO intervening
+/// def AND on the straight-line fall-through (we stop the forward scan at the
+/// first branch/label/call), so we never invent a cross-CF read.
+fn check_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
+    use ArmOp::*;
+    const CALLER_SAVED: [Reg; 3] = [Reg::R2, Reg::R3, Reg::R12];
+
+    let is_call = |op: &ArmOp| matches!(op, Bl { .. } | Blx { .. } | Call { .. });
+
+    for (ci, ins) in instrs.iter().enumerate() {
+        if !is_call(&ins.op) {
+            continue;
+        }
+        for &c in &CALLER_SAVED {
+            // (a) pre-call producer: c was defined somewhere in the straight-
+            //     line prefix ending at the call, with no barrier in between
+            //     (so the value is genuinely resident in c at the call). Scan
+            //     backward from just before the call, stop at the first barrier.
+            let mut has_producer = false;
+            for prev in instrs[..ci].iter().rev() {
+                if !is_straight_line(&prev.op) {
+                    break; // barrier: cannot prove c resident from before it
+                }
+                if let Some(e) = reg_effect(&prev.op) {
+                    if e.defs.contains(&c) {
+                        has_producer = true;
+                        break;
+                    }
+                } else {
+                    break; // unmodeled op in prefix: stop conservatively
+                }
+            }
+            if !has_producer {
+                continue;
+            }
+            // (b) post-call consumer on the straight-line fall-through: scan
+            //     forward from just after the call; a USE of c before any DEF of
+            //     c (and before any barrier) proves c is read across the call.
+            let mut read_after = false;
+            for next in &instrs[ci + 1..] {
+                if !is_straight_line(&next.op) {
+                    break; // stop at first branch/label/call — no cross-CF read
+                }
+                match reg_effect(&next.op) {
+                    Some(e) => {
+                        if e.uses.contains(&c) {
+                            read_after = true;
+                            break;
+                        }
+                        if e.defs.contains(&c) {
+                            break; // redefined before read → value re-established
+                        }
+                    }
+                    None => break, // unmodeled op: stop conservatively
+                }
+            }
+            if read_after {
+                return Some(RaFinalViolation::CallerSavedLiveAcrossCall {
+                    reg: c,
+                    call_index: ci,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Result of the across-JOIN availability check.
+enum JoinCheck {
+    Consistent,
+    Violation(RaFinalViolation),
+    NotAttempted { reason: &'static str },
+}
+
+/// Across-JOIN check (VCR-RA-003 phase 2, invariant 4). A register LIVE-IN to a
+/// join block (≥2 predecessors) must be AVAILABLE (must-defined on every path
+/// reaching the join, or an entry live-in). Solved by a forward MUST
+/// (intersection) availability fixpoint over the label-form CFG.
+///
+/// **Non-vacuity anchor.** The reference is the join block's own READ (a live-in
+/// = read-before-write) — a real in-stream fact — and the violation is
+/// "unavailable on some incoming edge". A value defined in a common dominator IS
+/// available on all edges, so a proper availability fixpoint stays SILENT on it
+/// (no false positive on real code); only a value missing on some path fires.
+///
+/// **Init is UNIVERSE, not empty (MUST/intersection analysis).** `avail_out` of
+/// every non-entry block is initialised to the full register set and SHRINKS;
+/// the entry's `avail_in` is seeded with the AAPCS entry-live set (R0-R3 params,
+/// SP, LR). Initialising to empty (the liveness template's MAY/union init) would
+/// wrongly drop dominator-defined values at loop headers → false positive.
+///
+/// Declines to [`JoinCheck::NotAttempted`] whenever the CFG cannot be built in
+/// complete label-form (numeric-offset branch, `BrTable`, computed `Bx` to a
+/// non-`LR` register, duplicate label) — never a guessed CFG. Unlike the shared
+/// [`cfg_liveness`] (whose `classify` marks a call / `bx lr` `Unsupported`
+/// because other analyses need that), the JOIN CFG admits:
+///   - `Bx {LR}` as a no-successor RETURN terminator (a function sink);
+///   - `Bl`/`Blx`/`Call` as FALL-THROUGH (a call returns to the next
+///     instruction), contributing a DEF of the caller-saved set (R0-R3, R12 —
+///     all get new values across the call). Defining the caller-saved set is the
+///     false-positive-SAFE (over-approximate availability) direction: a call
+///     that returns a value into a join must not spuriously drop it (the latent
+///     `bl foo → join → use r0` false positive).
+fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
+    let Some((blocks, live_in, def_b)) = build_join_cfg(instrs) else {
+        return JoinCheck::NotAttempted {
+            reason: "cfg-unmodeled-construct",
+        };
+    };
+    let nb = blocks.len();
+    if nb == 0 {
+        return JoinCheck::Consistent;
+    }
+
+    // Entry-live seed: AAPCS argument registers (R0-R3), SP, LR, AND the four
+    // RESERVED registers (R9=globals, R10=mem_size, R11=mem_base, R12) — see
+    // `contracts::regalloc::RESERVED_REGS`. The reserved registers are NEVER
+    // allocated by the register allocator: the runtime/prologue establishes them
+    // (R11 = linear-memory base) and every function assumes them resident, so
+    // they are available function-wide BY CONSTRUCTION, exactly like SP/LR. A
+    // `str [r11,#off]` in a join block reads R11 without a per-function def; NOT
+    // seeding them false-positives on every memory-touching branchy function
+    // (the block_brif_483 `nested` case — R11 defined nowhere in the stream).
+    // Over-seeding causes only false NEGATIVES; under-seeding would
+    // false-POSITIVE on real code — so seed generously.
+    let entry_seed: BTreeSet<Reg> = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+        Reg::R12,
+        Reg::SP,
+        Reg::LR,
+    ]
+    .into_iter()
+    .collect();
+
+    // `def_b` (per-block must-def) and `live_in` are supplied by `build_join_cfg`
+    // (which models calls' caller-saved def-set — a detail `block_use_def` alone
+    // would miss, planting the `bl foo → join → use r0` false positive).
+
+    // Predecessors: invert the successor edges.
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+    for (b, blk) in blocks.iter().enumerate() {
+        for &s in &blk.succ {
+            preds[s].push(b);
+        }
+    }
+
+    // The full register universe (any register the stream could define). Using
+    // the concrete GP + SP/LR set is sufficient: availability only ever tests
+    // membership for registers that are live-in somewhere, and those are drawn
+    // from `reg_effect` uses (a subset of this universe).
+    let universe: BTreeSet<Reg> = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+        Reg::R8,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+        Reg::R12,
+        Reg::SP,
+        Reg::LR,
+        Reg::PC,
+    ]
+    .into_iter()
+    .collect();
+
+    // Forward MUST (intersection) fixpoint. Init: block 0's `avail_in` is the
+    // entry seed; every other block's `avail_out` starts at UNIVERSE and shrinks.
+    let mut avail_in: Vec<BTreeSet<Reg>> = vec![universe.clone(); nb];
+    let mut avail_out: Vec<BTreeSet<Reg>> = vec![universe.clone(); nb];
+    avail_in[0] = entry_seed.clone();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in 0..nb {
+            // avail_in[b] = entry_seed (b == 0) else ∩ preds avail_out.
+            let new_in: BTreeSet<Reg> = if b == 0 {
+                entry_seed.clone()
+            } else if preds[b].is_empty() {
+                // Unreachable block (no predecessors, not entry): treat as
+                // universe (vacuously available) — it constrains nothing.
+                universe.clone()
+            } else {
+                let mut it = preds[b].iter();
+                let first = *it.next().unwrap();
+                let mut acc = avail_out[first].clone();
+                for &p in it {
+                    acc = acc.intersection(&avail_out[p]).copied().collect();
+                }
+                acc
+            };
+            // avail_out[b] = avail_in[b] ∪ def_b[b].
+            let new_out: BTreeSet<Reg> = new_in.union(&def_b[b]).copied().collect();
+            if new_in != avail_in[b] {
+                avail_in[b] = new_in;
+                changed = true;
+            }
+            if new_out != avail_out[b] {
+                avail_out[b] = new_out;
+                changed = true;
+            }
+        }
+    }
+
+    // Check every JOIN (≥2 preds): each live-in register must be available.
+    for b in 0..nb {
+        if preds[b].len() < 2 {
+            continue;
+        }
+        for &r in &live_in[b] {
+            if !avail_in[b].contains(&r) {
+                return JoinCheck::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: r,
+                    join_block: b,
+                });
+            }
+        }
+    }
+
+    JoinCheck::Consistent
+}
+
+/// Build the JOIN-check CFG: `(blocks, live_in, def_b)`, or `None` (decline) if
+/// the stream contains a construct the join analysis cannot model in complete
+/// label form. See [`check_join_availability`] for how it differs from the shared
+/// [`cfg_liveness`]: `Bx {LR}` is a return SINK and `Bl`/`Blx`/`Call` are
+/// FALL-THROUGH with a caller-saved def-set. Everything else that is not a
+/// label-form branch (`BOffset`/`BCondOffset`, `BrTable`, computed `Bx`, and any
+/// op with no [`reg_effect`] that is not one of the admitted terminators) makes
+/// this decline — never a partial/guessed CFG.
+#[allow(clippy::type_complexity)]
+fn build_join_cfg(
+    instrs: &[ArmInstruction],
+) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
+    use ArmOp::*;
+    // Caller-saved registers a call defines (all get fresh values across it).
+    const CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
+
+    // How the JOIN CFG classifies a terminator. Distinct from `classify`: a
+    // `bx lr` return is a SINK (no successors, not a decline) and a call is
+    // FALL-THROUGH (returns to next), so branchy functions with calls / returns
+    // remain analyzable instead of wholesale-declining.
+    enum JTerm<'a> {
+        Uncond(&'a str),
+        Cond(&'a str),
+        Fall,
+        Return, // bx lr — no successor
+        Unsupported,
+    }
+    fn jclassify(op: &ArmOp) -> JTerm<'_> {
+        use ArmOp::*;
+        match op {
+            B { label } => JTerm::Uncond(label),
+            Bhs { label } | Blo { label } | Bcc { label, .. } => JTerm::Cond(label),
+            Bx { rm: Reg::LR } => JTerm::Return,
+            // A call returns to the next instruction: fall-through.
+            Bl { .. } | Blx { .. } | Call { .. } => JTerm::Fall,
+            // Genuinely unmodeled control flow.
+            BOffset { .. } | BCondOffset { .. } | Bx { .. } | BrTable { .. } | CallIndirect { .. } => {
+                JTerm::Unsupported
+            }
+            _ => JTerm::Fall,
+        }
+    }
+    let n = instrs.len();
+    if n == 0 {
+        return Some((vec![], vec![], vec![]));
+    }
+
+    // 1. Admission: every instruction is a modeled label-form branch, an
+    //    admitted terminator (return/call), a Label, or a precise-effect op.
+    let mut labels_seen: BTreeSet<&str> = BTreeSet::new();
+    for ins in instrs {
+        match jclassify(&ins.op) {
+            JTerm::Unsupported => return None,
+            JTerm::Uncond(_) | JTerm::Cond(_) | JTerm::Return => {}
+            JTerm::Fall => {
+                // A call is admitted (its def-set is synthesized below); any
+                // other Fall op must be a Label or have a precise reg_effect.
+                let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
+                if !is_call
+                    && !matches!(ins.op, Label { .. })
+                    && reg_effect(&ins.op).is_none()
+                {
+                    return None;
+                }
+            }
+        }
+        if let Label { name } = &ins.op
+            && !labels_seen.insert(name.as_str())
+        {
+            return None; // duplicate label: ambiguous CFG
+        }
+    }
+
+    // 2. Leaders: instr 0, every Label, and the instruction after any branch or
+    //    return (a return ends a block; its follower — if any — is a leader).
+    let mut is_leader = vec![false; n];
+    is_leader[0] = true;
+    for i in 0..n {
+        if matches!(instrs[i].op, Label { .. }) {
+            is_leader[i] = true;
+        }
+        if matches!(
+            jclassify(&instrs[i].op),
+            JTerm::Uncond(_) | JTerm::Cond(_) | JTerm::Return
+        ) && i + 1 < n
+        {
+            is_leader[i + 1] = true;
+        }
+    }
+    let leaders: Vec<usize> = (0..n).filter(|&i| is_leader[i]).collect();
+
+    // 3. Blocks span [leader, next_leader).
+    let mut blocks: Vec<BasicBlock> = leaders
+        .iter()
+        .enumerate()
+        .map(|(bi, &start)| BasicBlock {
+            start,
+            end: leaders.get(bi + 1).copied().unwrap_or(n),
+            succ: vec![],
+        })
+        .collect();
+    let block_of_start: BTreeMap<usize, usize> =
+        blocks.iter().enumerate().map(|(bi, b)| (b.start, bi)).collect();
+    let mut block_of_label: BTreeMap<&str, usize> = BTreeMap::new();
+    for (bi, b) in blocks.iter().enumerate() {
+        if let Label { name } = &instrs[b.start].op {
+            block_of_label.insert(name.as_str(), bi);
+        }
+    }
+
+    // 4. Successors.
+    let mut succs: Vec<Vec<usize>> = Vec::with_capacity(blocks.len());
+    for b in &blocks {
+        let last = b.end - 1;
+        let fallthrough = block_of_start.get(&b.end).copied();
+        let succ = match jclassify(&instrs[last].op) {
+            JTerm::Uncond(label) => vec![*block_of_label.get(label)?],
+            JTerm::Cond(label) => {
+                let t = *block_of_label.get(label)?;
+                let mut s = vec![t];
+                if let Some(f) = fallthrough
+                    && f != t
+                {
+                    s.push(f);
+                }
+                s
+            }
+            JTerm::Return => vec![], // sink
+            JTerm::Fall => fallthrough.into_iter().collect(),
+            JTerm::Unsupported => return None,
+        };
+        succs.push(succ);
+    }
+    for (b, succ) in blocks.iter_mut().zip(succs) {
+        b.succ = succ;
+    }
+
+    // 5. Per-block use/def and live-in, with the call def-set folded in. We
+    //    compute use/def locally (mirroring `block_use_def`) so a call inside a
+    //    block contributes CALL_DEFS to `def` and — critically for live-in — a
+    //    read of a caller-saved reg BEFORE the call in the same block is a
+    //    genuine use, while a read AFTER the call is satisfied by the call def.
+    let nb = blocks.len();
+    let mut use_b = vec![BTreeSet::<Reg>::new(); nb];
+    let mut def_b = vec![BTreeSet::<Reg>::new(); nb];
+    for (bi, b) in blocks.iter().enumerate() {
+        let mut used = BTreeSet::new();
+        let mut defined = BTreeSet::new();
+        for ins in &instrs[b.start..b.end] {
+            let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
+            let eff = reg_effect(&ins.op).unwrap_or_default();
+            for u in &eff.uses {
+                if !defined.contains(u) {
+                    used.insert(*u);
+                }
+            }
+            for d in &eff.defs {
+                defined.insert(*d);
+            }
+            if is_call {
+                // A call defines the whole caller-saved set (return + clobbers).
+                for d in CALL_DEFS {
+                    defined.insert(d);
+                }
+            }
+        }
+        use_b[bi] = used;
+        def_b[bi] = defined;
+    }
+
+    // 6. Backward liveness fixpoint (same shape as `cfg_liveness` step 5).
+    let mut live_in = vec![BTreeSet::<Reg>::new(); nb];
+    let mut live_out = vec![BTreeSet::<Reg>::new(); nb];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in (0..nb).rev() {
+            let mut out = BTreeSet::new();
+            for &s in &blocks[bi].succ {
+                out.extend(live_in[s].iter().copied());
+            }
+            let mut in_ = use_b[bi].clone();
+            in_.extend(out.difference(&def_b[bi]).copied());
+            if out != live_out[bi] {
+                live_out[bi] = out;
+                changed = true;
+            }
+            if in_ != live_in[bi] {
+                live_in[bi] = in_;
+                changed = true;
+            }
+        }
+    }
+
+    Some((blocks, live_in, def_b))
 }
 
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
