@@ -40,6 +40,7 @@ pub mod vector_table;
 pub mod wcet;
 pub mod wcet_compose;
 mod wcet_loops;
+mod wcet_recursion;
 
 #[cfg(feature = "arm-cortex-m")]
 pub use arm_backend::ArmBackend;

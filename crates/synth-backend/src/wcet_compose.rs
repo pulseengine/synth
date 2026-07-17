@@ -106,6 +106,7 @@ pub fn compose(
             let WcetIntermediate::Composable {
                 own_cycles,
                 call_sites,
+                recursion_cert,
                 ..
             } = inter
             else {
@@ -116,12 +117,27 @@ pub fn compose(
                 continue;
             };
 
+            // #778 phase 4 (#49): a verified self-recursion certificate authorizes
+            // the function's OWN self-edge. The self-call site (`func_<idx>` == this
+            // node's own label) is DROPPED from the dependency graph — the recursive
+            // frames are folded analytically as `(max_depth+1) × frame_cost` — so a
+            // back-edge to a certified self is NOT a Recursion decline. Any OTHER
+            // cycle (mutual recursion, an uncertified self) still declines.
+            let self_label: Option<&str> = recursion_cert.as_ref().map(|c| c.self_label.as_str());
+            let is_self_site = |site: &synth_core::wcet::WcetCallSite| {
+                Some(site.callee_label.as_str()) == self_label
+            };
+
             if !second {
                 // First visit: mark on-stack, schedule the second visit AFTER all
                 // dependency resolutions (pushed on top, popped first).
                 state[i] = State::OnStack;
                 work.push((i, true));
                 for site in call_sites {
+                    // Skip the certified self-edge — it is not a graph dependency.
+                    if is_self_site(site) {
+                        continue;
+                    }
                     match index_by_func_label.get(&site.callee_label) {
                         None => {} // external — handled in the combine phase
                         Some(&callee) => match &state[callee] {
@@ -141,13 +157,21 @@ pub fn compose(
 
             // Second visit: every dependency is settled (or was a back-edge).
             // If this node itself was hit as a back-edge target, it is on a cycle.
-            if recursion_hits[i] {
+            // A CERTIFIED self is exempt: the only back-edge to it is its own
+            // (dropped) self-edge; a mutual cycle would still mark it via a
+            // DIFFERENT caller's non-self edge.
+            if recursion_hits[i] && recursion_cert.is_none() {
                 state[i] = State::Declined(WcetDecline::Recursion);
                 continue;
             }
-            let mut total: u128 = *own_cycles as u128;
+            // frame_cost = own body + every NON-self callee (counted at its site
+            // multiplier). own_cycles already prices the self-BL overhead once.
+            let mut frame_cost: u128 = *own_cycles as u128;
             let mut verdict: Option<WcetDecline> = None;
             for site in call_sites {
+                if is_self_site(site) {
+                    continue; // folded analytically below
+                }
                 let callee = match index_by_func_label.get(&site.callee_label) {
                     None => {
                         // Direct BL to a symbol with no body in this module.
@@ -158,7 +182,8 @@ pub fn compose(
                 };
                 match &state[callee] {
                     State::Bounded(c) => {
-                        total = total.saturating_add(site.multiplier.saturating_mul(*c as u128));
+                        frame_cost =
+                            frame_cost.saturating_add(site.multiplier.saturating_mul(*c as u128));
                     }
                     State::Declined(WcetDecline::Recursion) => {
                         verdict = Some(WcetDecline::Recursion);
@@ -177,6 +202,18 @@ pub fn compose(
                     }
                 }
             }
+            // Fold the certified self-recursion: `frame_count = max_depth + 1`
+            // frames (the base frame runs own_cycles but no self-call), each
+            // costing `frame_cost`. The self-call is a simple chain (single call
+            // per frame, multiplier 1, proven at certification), so summing
+            // frame_count × frame_cost is a sound upper bound.
+            let total: u128 = match (&verdict, recursion_cert.as_ref()) {
+                (None, Some(cert)) => {
+                    let frames = (cert.max_depth as u128).saturating_add(1);
+                    frame_cost.saturating_mul(frames)
+                }
+                _ => frame_cost,
+            };
             state[i] = match verdict {
                 Some(reason) => State::Declined(reason),
                 None => match u64::try_from(total) {
@@ -208,22 +245,32 @@ pub fn compose(
         .enumerate()
         .map(|(i, inter)| match &state[i] {
             State::Bounded(cycles) => {
-                let (name, instr_count, loops, hint_rejections) = match inter {
+                let (name, instr_count, loops, recursion, hint_rejections) = match inter {
                     WcetIntermediate::Composable {
                         name,
                         instr_count,
                         loops,
+                        recursion_cert,
                         hint_rejections,
                         ..
                     } => (
                         name.clone(),
                         *instr_count,
                         loops.clone(),
+                        // #778 phase 4 (#49): surface the derived depth + frame count
+                        // when this bound was composed via a self-recursion cert.
+                        recursion_cert
+                            .as_ref()
+                            .map(|c| synth_core::wcet::WcetRecursionBound {
+                                max_depth: c.max_depth,
+                                frame_count: c.max_depth.saturating_add(1),
+                                hint: c.hint,
+                            }),
                         hint_rejections.clone(),
                     ),
                     // A Bounded state always comes from a Composable node.
                     WcetIntermediate::Declined { name, .. } => {
-                        (name.clone(), 0, Vec::new(), Vec::new())
+                        (name.clone(), 0, Vec::new(), None, Vec::new())
                     }
                 };
                 WcetFunction::Bounded {
@@ -231,6 +278,7 @@ pub fn compose(
                     cycles: *cycles,
                     instr_count,
                     loops,
+                    recursion,
                     hint_rejections,
                 }
             }
@@ -275,7 +323,44 @@ mod tests {
                 })
                 .collect(),
             loops: Vec::new(),
+            recursion_cert: None,
             hint_rejections: Vec::new(),
+        }
+    }
+
+    /// A composable node with a self-recursion certificate for `self_label` at
+    /// `max_depth` (the self-edge is folded `(max_depth+1)×frame_cost`).
+    fn recursive(
+        name: &str,
+        own: u64,
+        sites: &[(&str, u128)],
+        self_label: &str,
+        max_depth: u64,
+    ) -> WcetIntermediate {
+        let WcetIntermediate::Composable {
+            name,
+            own_cycles,
+            instr_count,
+            call_sites,
+            loops,
+            hint_rejections,
+            ..
+        } = composable(name, own, sites)
+        else {
+            unreachable!()
+        };
+        WcetIntermediate::Composable {
+            name,
+            own_cycles,
+            instr_count,
+            call_sites,
+            loops,
+            recursion_cert: Some(synth_core::wcet::WcetRecursionCert {
+                self_label: self_label.to_string(),
+                max_depth,
+                hint: max_depth,
+            }),
+            hint_rejections,
         }
     }
 
@@ -356,6 +441,41 @@ mod tests {
         let inters = vec![composable("func_0", 10, &[("func_0", 1)])];
         let out = compose(&inters, &labels(&["func_0"]));
         assert_eq!(reason_of(&out[0]), &WcetDecline::Recursion);
+    }
+
+    #[test]
+    fn certified_self_recursion_folds_depth_frames() {
+        // func_0 self-recurses (own 10) with a cert max_depth 3 → 4 frames × 10 = 40.
+        let inters = vec![recursive("func_0", 10, &[("func_0", 1)], "func_0", 3)];
+        let out = compose(&inters, &labels(&["func_0"]));
+        assert_eq!(cycles_of(&out[0]), 4 * 10); // (3+1) frames × own_cycles
+    }
+
+    #[test]
+    fn certified_self_recursion_folds_nonself_callee_per_frame() {
+        // func_1 self-recurses (own 5, cert depth 2 → 3 frames) and each frame also
+        // calls the leaf func_0 (own 10) once. Composed: 3 × (5 + 10) = 45.
+        let inters = vec![
+            composable("func_0", 10, &[]),
+            recursive("func_1", 5, &[("func_1", 1), ("func_0", 1)], "func_1", 2),
+        ];
+        let out = compose(&inters, &labels(&["func_0", "func_1"]));
+        assert_eq!(cycles_of(&out[0]), 10);
+        assert_eq!(cycles_of(&out[1]), 3 * (5 + 10)); // 45
+    }
+
+    #[test]
+    fn certified_self_still_declines_a_mutual_cycle() {
+        // func_0 has a self-cert BUT also participates in a mutual cycle with func_1
+        // (func_0→func_1→func_0). The mutual (non-self) cycle must STILL decline —
+        // the cert only exempts the self-edge, not a distinct cycle.
+        let inters = vec![
+            recursive("func_0", 10, &[("func_0", 1), ("func_1", 1)], "func_0", 3),
+            composable("func_1", 10, &[("func_0", 1)]),
+        ];
+        let out = compose(&inters, &labels(&["func_0", "func_1"]));
+        assert_eq!(reason_of(&out[0]), &WcetDecline::Recursion);
+        assert_eq!(reason_of(&out[1]), &WcetDecline::Recursion);
     }
 
     #[test]

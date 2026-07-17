@@ -629,3 +629,13 @@ claims:
         pattern: 'const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;'
         glob: ['crates/synth-backend/src/wcet.rs']
         expect: 1
+      # #778 phase 4 (#49) — the SOUND-critical self-recursion FRAME COUNT. A
+      # certified single-self-call chain of derived depth `d` runs `d+1` frames
+      # (the `+1` is the BASE frame, which executes own_cycles but no self-call);
+      # the composer folds `(max_depth+1) × frame_cost`. Omitting the +1 would
+      # undercount the base frame by one → unsound. Pinning the fold guards
+      # against a silent off-by-one regression.
+      - kind: count-eq
+        pattern: 'let frames = \(cert\.max_depth as u128\)\.saturating_add\(1\);'
+        glob: ['crates/synth-backend/src/wcet_compose.rs']
+        expect: 1

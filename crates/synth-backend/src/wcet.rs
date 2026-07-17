@@ -535,7 +535,7 @@ pub fn function_wcet_with_hints(
     triple: &str,
     hints: Option<&WcetFunctionHints>,
 ) -> WcetFunction {
-    match function_wcet_intermediate(name, instrs, triple, hints) {
+    match function_wcet_intermediate(name, instrs, triple, hints, None) {
         WcetIntermediate::Declined {
             name,
             reason,
@@ -547,17 +547,21 @@ pub fn function_wcet_with_hints(
             instr_count,
             call_sites,
             loops,
+            recursion_cert: _,
             hint_rejections,
         } => {
             // No module context here: an unresolved direct call cannot be composed,
             // so a composable function WITH call sites declines `call`; one with no
-            // calls is a genuine intra-procedural bound.
+            // calls is a genuine intra-procedural bound. A self-recursion certificate
+            // is only foldable by the module composer (it needs the self-edge), so in
+            // this single-function view a recursive function still declines `call`.
             if call_sites.is_empty() {
                 WcetFunction::Bounded {
                     name,
                     cycles: own_cycles,
                     instr_count,
                     loops,
+                    recursion: None,
                     hint_rejections,
                 }
             } else {
@@ -582,6 +586,7 @@ pub fn function_wcet_intermediate(
     instrs: &[ArmInstruction],
     triple: &str,
     hints: Option<&WcetFunctionHints>,
+    self_label: Option<&str>,
 ) -> WcetIntermediate {
     let declined = |reason, hint_rejections| WcetIntermediate::Declined {
         name: name.to_string(),
@@ -639,12 +644,39 @@ pub fn function_wcet_intermediate(
         })
         .collect();
 
+    // #778 phase 4 (#49): if this function self-recurses (a `BL` to its own
+    // `func_<idx>` label), attempt a BOUNDED-recursion certificate. Only a
+    // single-self-call chain with an entry-independent masked-slot counter and a
+    // VERIFIED depth hint is certified; everything else keeps the phase-3
+    // `recursion` decline (moved here, never deleted). Rejected depth hints are
+    // merged into this function's hint rejections.
+    let mult_at_fn = |i: usize| mult_at(i);
+    let recursion_hint = hints.and_then(|h| h.recursion_depth);
+    let (recursion_cert, mut rec_rejections) = match crate::wcet_recursion::analyze_recursion(
+        instrs,
+        self_label,
+        &mult_at_fn,
+        recursion_hint,
+    ) {
+        crate::wcet_recursion::RecursionAnalysis::NotRecursive => (None, Vec::new()),
+        crate::wcet_recursion::RecursionAnalysis::Unprovable { hint_rejections } => {
+            (None, hint_rejections)
+        }
+        crate::wcet_recursion::RecursionAnalysis::Certified {
+            cert,
+            hint_rejections,
+        } => (Some(cert), hint_rejections),
+    };
+    let mut hint_rejections = hint_rejections;
+    hint_rejections.append(&mut rec_rejections);
+
     WcetIntermediate::Composable {
         name: name.to_string(),
         own_cycles,
         instr_count: instrs.len(),
         call_sites,
         loops,
+        recursion_cert,
         hint_rejections,
     }
 }

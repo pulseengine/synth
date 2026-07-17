@@ -171,7 +171,14 @@ impl Backend for ArmBackend {
                 .wcet_hints
                 .as_ref()
                 .and_then(|h| h.functions.get(name));
-            crate::wcet::function_wcet_intermediate(name, instrs, &config.target.triple, hints)
+            let self_label = config.current_func_index.map(|i| format!("func_{i}"));
+            crate::wcet::function_wcet_intermediate(
+                name,
+                instrs,
+                &config.target.triple,
+                hints,
+                self_label.as_deref(),
+            )
         });
         // The SINGLE-FUNCTION standalone view (unresolved direct calls decline
         // `call`). Kept as a per-function fallback for any consumer that reads a

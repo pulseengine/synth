@@ -3194,6 +3194,10 @@ fn compile_all_exports(
             // cap the access-pattern param inference that mistook a
             // read-before-write non-param local for a param.
             fc.current_func_param_count = config.func_arg_counts.get(func.index as usize).copied();
+            // #778 phase 4 / #49: THIS function's WASM index, so the WCET pass can
+            // identify its own `func_<idx>` self-call and prove/decline the
+            // self-recursion depth.
+            fc.current_func_index = Some(func.index);
             // VCR-PERF-002 Phase 1 (#494): THIS function's wsc.facts slice
             // (`compile_function` carries no function index — the same reason
             // `current_func_params_i64` exists). Not yet consumed.

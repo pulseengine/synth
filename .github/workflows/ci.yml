@@ -51,15 +51,19 @@ jobs:
         # disk-exhaustion workaround) is gone. The z3-solver feature path is
         # covered by the dedicated `Z3 Verification` differential job below.
         run: cargo test --workspace
-      - name: WCET bound gate (#778 — sound static WCET incl. phase-3 composition)
+      - name: WCET bound gate (#778 — sound static WCET incl. phase-3/4 recursion)
         # The soundness gate for --emit-wcet: bound >= actual on loop-free +
         # const-loop fixtures, EXACT-literal composed bounds over the direct call
         # graph (leaf->mid->root; a callee in a proven loop counted trip×), and the
         # decline-honesty matrix — recursion (`recursion`), indirect
         # (`indirect-call`), external/import (`call`), and declined-callee
-        # (`callee-unbounded`) still LOUD-DECLINE. Covered by `cargo test --workspace`
-        # above; run explicitly so a WCET-soundness regression is unmissable in the
-        # log (the #778 phase-3 inter-procedural-composition contract).
+        # (`callee-unbounded`) still LOUD-DECLINE. Phase 4 (#49): a masked
+        # single-self-call chain with a VERIFIED depth hint is BOUNDED (derived
+        # depth 15, frame_count 16, 752 cyc); a too-low hint / tree (fib) / uncapped
+        # countdown / mutual recursion STAY declined with the specific machine
+        # reason (hint-below-derived-depth / hint-unverifiable-recursion). Covered
+        # by `cargo test --workspace` above; run explicitly so a WCET-soundness
+        # regression is unmissable in the log.
         run: cargo test -p synth-cli --test wcet_bound_gate
       - name: Space-consistency invariant (#77 — execution+memory space)
         # The #77 checked property: an inconsistent execution/memory-space
