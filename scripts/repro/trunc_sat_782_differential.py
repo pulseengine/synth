@@ -49,6 +49,7 @@ from unicorn.arm_const import (
     UC_ARM_REG_LR,
     UC_ARM_REG_PC,
     UC_ARM_REG_R0,
+    UC_ARM_REG_R1,
     UC_ARM_REG_R11,
     UC_ARM_REG_S0,
     UC_ARM_REG_SP,
@@ -187,8 +188,11 @@ def load(elf):
 
 
 # ---------------------------------------------------------------------------
-# ARM32 (Thumb-2) unicorn execution. Returns ('ok', r0) or ('trap', pc-info).
-def arm32_run(text, base, addr, aty, v):
+# ARM32 (Thumb-2) unicorn execution. Returns ('ok', result) or ('trap', info).
+# For an i32 return the AAPCS result is R0; for an i64 it is the pair
+# (R0 = lo bits[31:0], R1 = hi bits[63:32]) — reading only R0 would make every
+# hi-word bug (NaN→0 upper word, saturation MIN/MAX, sign) invisible.
+def arm32_run(text, base, addr, aty, v, rty="i32"):
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     map_base = base & ~0xFFF
     size = ((len(text) + (base - map_base)) + 0xFFF) & ~0xFFF
@@ -218,7 +222,11 @@ def arm32_run(text, base, addr, aty, v):
             if hw & 0xFF00 == 0xDE00:  # Thumb UDF
                 kind = "trap-udf"
         return (kind, f"{e} at pc={pc:#x}")
-    return ("ok", uc.reg_read(UC_ARM_REG_R0) & M32)
+    lo = uc.reg_read(UC_ARM_REG_R0) & M32
+    if rty == "i64":
+        hi = uc.reg_read(UC_ARM_REG_R1) & M32
+        return ("ok", lo | (hi << 32))
+    return ("ok", lo)
 
 
 # ---------------------------------------------------------------------------
@@ -305,53 +313,135 @@ def native_run(code, faddr, code_base, aty, rty, v):
 
 
 # ---------------------------------------------------------------------------
+# Fuzz: >=10k random bit-patterns per source type vs wasmtime, checked against
+# the ARM32 m7dp lowering (all 8 forms) and the aarch64 lowering.
+FUZZ_PER_TYPE = int(os.environ.get("TRUNC_SAT_FUZZ", "12000"))
+
+
+def _rand_f32_bits(rng):
+    # Mix uniform 32-bit patterns with a bias toward the interesting exponents
+    # (near/over 2^31, 2^63, 2^64) so the saturation edges are well sampled.
+    import random
+    r = rng.random()
+    if r < 0.55:
+        return rng.getrandbits(32)
+    if r < 0.75:  # exponent near the i32/i64 boundaries, random sign+mantissa
+        exp = rng.randint(126, 191)  # ~2^-1 .. ~2^64
+        return (rng.getrandbits(1) << 31) | (exp << 23) | rng.getrandbits(23)
+    if r < 0.85:  # subnormals / tiny
+        return (rng.getrandbits(1) << 31) | rng.getrandbits(23)
+    # NaN/inf payloads
+    return (rng.getrandbits(1) << 31) | (0xFF << 23) | rng.getrandbits(23)
+
+
+def _rand_f64_bits(rng):
+    r = rng.random()
+    if r < 0.55:
+        return rng.getrandbits(64)
+    if r < 0.75:
+        exp = rng.randint(1022, 1087)  # ~2^-1 .. ~2^64
+        return (rng.getrandbits(1) << 63) | (exp << 52) | rng.getrandbits(52)
+    if r < 0.85:
+        return (rng.getrandbits(1) << 63) | rng.getrandbits(52)
+    return (rng.getrandbits(1) << 63) | (0x7FF << 52) | rng.getrandbits(52)
+
+
+def run_fuzz(text, base, syms, a64_code, a64_base, a64_syms, host_native):
+    import random
+    rng = random.Random(0x782F17E)  # fixed seed => reproducible CI gate
+
+    engine = wasmtime.Engine()
+    module = wasmtime.Module.from_file(engine, str(WAT))
+    store = wasmtime.Store(engine)
+    wexp = wasmtime.Instance(store, module, []).exports(store)
+
+    fails = 0
+    checks = 0
+    for src, gen, bits_of in (("f32", _rand_f32_bits, f32_bits),
+                              ("f64", _rand_f64_bits, f64_bits)):
+        fns = [(fn, rty) for fn, (aty, rty) in SIGS.items() if aty == src]
+        for _ in range(FUZZ_PER_TYPE):
+            b = gen(rng)
+            if src == "f32":
+                v = struct.unpack("<f", struct.pack("<I", b))[0]
+            else:
+                v = struct.unpack("<d", struct.pack("<Q", b))[0]
+            for fn, rty in fns:
+                mask = M32 if rty == "i32" else M64
+                try:
+                    want = int(wexp[fn](store, v)) & mask
+                except wasmtime.Trap:
+                    sys.exit(f"TABLE-BUG: wasmtime TRAPPED on {fn}(bits={b:#x})")
+                # ARM32 m7dp
+                if fn in syms:
+                    checks += 1
+                    kind, got = arm32_run(text, base, syms[fn], src, v, rty)
+                    if kind != "ok":
+                        fails += 1
+                        if fails <= 20:
+                            print(f"FUZZ-BUG [arm32] {fn}(bits={b:#x}) -> "
+                                  f"{kind}: {got} (wasmtime {want:#x})")
+                    elif got != want:
+                        fails += 1
+                        if fails <= 20:
+                            print(f"FUZZ-BUG [arm32] {fn}(bits={b:#x}) = "
+                                  f"{got:#x} != wasmtime {want:#x}")
+                # aarch64
+                if fn in a64_syms:
+                    checks += 1
+                    faddr = a64_syms[fn] & ~1
+                    kind, got = a64_run(a64_code, a64_base, faddr, src, rty, v)
+                    if kind != "ok":
+                        fails += 1
+                        if fails <= 20:
+                            print(f"FUZZ-BUG [a64] {fn}(bits={b:#x}) -> TRAP "
+                                  f"(wasmtime {want:#x})")
+                    elif got != want:
+                        fails += 1
+                        if fails <= 20:
+                            print(f"FUZZ-BUG [a64] {fn}(bits={b:#x}) = "
+                                  f"{got:#x} != wasmtime {want:#x}")
+    return fails, checks
+
+
+# ---------------------------------------------------------------------------
 def main():
     expected = wasmtime_expected()
     fails = 0
     total = 0
 
     # ==== falcon repro flags (#782): -t cortex-m7dp --relocatable ==========
-    # The four i32-target exports must NOT skip; the four i64-target exports
-    # MUST still skip with the named ARM32 decline (decline-honesty).
-    log = compile_or_die("/tmp/trunc_sat_782_reloc.elf",
-                         ["-b", "arm", "--target", "cortex-m7dp",
-                          "--relocatable"],
-                         "ARM32 --relocatable (falcon flags)")
-    for fn in I32_FNS:
-        if fn in log and "kipping" in log:
-            # cheap guard; the authoritative check is the symbol table below
-            pass
+    # #782 FINALE: ALL EIGHT trunc_sat exports (the four i32-target AND the
+    # four i64-target forms) must now compile — NONE may skip. The i64 forms
+    # were LOUD-declined through v0.48; v0.49 lowers them via the sound
+    # branch-free FP word-decompose. (Honesty-gate flip, the v0.46 lesson: this
+    # assertion moved from "i64 absent + decline named" to "i64 present"; it is
+    # not deleted — a regression that drops any i64 form fails here.)
+    compile_or_die("/tmp/trunc_sat_782_reloc.elf",
+                   ["-b", "arm", "--target", "cortex-m7dp", "--relocatable"],
+                   "ARM32 --relocatable (falcon flags)")
     _, _, reloc_syms = load("/tmp/trunc_sat_782_reloc.elf")
-    for fn in I32_FNS:
+    for fn in SIGS:
         total += 1
         if fn not in reloc_syms:
             fails += 1
             print(f"FAIL [falcon-flags] {fn}: SKIPPED under "
-                  f"-t cortex-m7dp --relocatable (the #782 class)")
-    for fn in I64_FNS:
-        total += 1
-        if fn in reloc_syms:
-            fails += 1
-            print(f"FAIL [falcon-flags] {fn}: compiled on 32-bit ARM — "
-                  f"expected a LOUD decline (no i64 pair conversion)")
-    if "register-pair" not in log:
-        fails += 1
-        print("FAIL [falcon-flags]: the i64 trunc_sat decline is not NAMED "
-              "in the compile log (decline-honesty)")
+                  f"-t cortex-m7dp --relocatable (the #782 skip class)")
 
-    # ==== ARM32 self-contained (cortex-m7dp): execute the i32 quartet ======
+    # ==== ARM32 self-contained (cortex-m7dp): execute ALL EIGHT forms ======
     compile_or_die("/tmp/trunc_sat_782_arm.elf",
                    ["-b", "arm", "--target", "cortex-m7dp", "--all-exports"],
                    "ARM32 cortex-m7dp")
     text, base, syms = load("/tmp/trunc_sat_782_arm.elf")
-    for fn, (aty, rty) in I32_FNS.items():
+    for fn, (aty, rty) in SIGS.items():
         if fn not in syms:
             fails += 1
-            print(f"FAIL [arm32] {fn}: symbol missing")
+            print(f"FAIL [arm32] {fn}: symbol missing (#782 finale expects "
+                  f"all eight forms lowered)")
             continue
         for v, want in expected[fn]:
             total += 1
-            kind, got = arm32_run(text, base, syms[fn], aty, v)
+            kind, got = arm32_run(text, base, syms[fn], aty, v, rty)
             if kind != "ok":
                 fails += 1
                 print(f"BUG [arm32] {fn}({v!r}) -> {kind}: {got} — trunc_sat "
@@ -359,12 +449,6 @@ def main():
             elif got != want:
                 fails += 1
                 print(f"BUG [arm32] {fn}({v!r}) = {got:#x} != wasmtime {want:#x}")
-    # i64-target forms must be absent (loud-declined) on ARM32 here too.
-    for fn in I64_FNS:
-        total += 1
-        if fn in syms:
-            fails += 1
-            print(f"FAIL [arm32] {fn}: compiled on 32-bit ARM — expected decline")
 
     # ==== ARM32 single-precision (cortex-m4f): f32 quartet only ============
     # trunc_sat_f32_* needs only single-precision VFP; the f64-source forms
@@ -424,11 +508,26 @@ def main():
                     print(f"BUG [a64/{label}] {fn}({v!r}) = {got:#x} != "
                           f"wasmtime {want:#x}")
 
+    # ==== HEAVY FUZZ (the real gate for the multi-instruction i64 decompose) =
+    # A boundary table of ~40 points cannot characterise a word-decompose: a
+    # rounding/borrow bug at some arbitrary mid-range mantissa sails straight
+    # through. So drive >=10k random BIT-PATTERNS per source type (f32 and f64,
+    # covering subnormals/huge/NaN payloads/every sign) through wasmtime and
+    # compare bit-exactly against BOTH the ARM32 m7dp lowering (all eight forms,
+    # R0:R1 for i64) and the aarch64 lowering. A single mismatch (or any trap on
+    # our side) fails the pass.
+    f_fails, fuzz_n = run_fuzz(text, base, syms,
+                               a64_code, a64_base, a64_syms, host_native)
+    fails += f_fails
+    total += fuzz_n
+
     print(f"\n{total} checks ({checked_native} also run natively, "
+          f"{fuzz_n} random-bit-pattern fuzz, "
           f"{'arm64 host' if host_native else 'unicorn-only host'})")
-    print("RESULT:", "PASS — trunc_sat boundary table matches wasmtime on "
-          "ARM32(m7dp+m4f)+aarch64; no traps anywhere; ARM32 i64 forms "
-          "loud-declined" if not fails else f"FAIL ({fails})")
+    print("RESULT:", "PASS — trunc_sat boundary+fuzz matches wasmtime on "
+          "ARM32(m7dp all 8 forms)+m4f+aarch64; no traps anywhere; ARM32 i64 "
+          "forms lowered (branch-free FP decompose)"
+          if not fails else f"FAIL ({fails})")
     sys.exit(1 if fails else 0)
 
 

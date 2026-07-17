@@ -2704,8 +2704,16 @@ fn try_lower_f32(
             });
             free_vfp_temp(vfp_used, vfp_home, sm);
             lower_i64_trunc_sat_from_f64(
-                dd, signed, idx, vfp_used, vfp_home, stack, next_temp, spill,
-                instructions, reserved,
+                dd,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
             )
         }
         F32ReinterpretI32 => {
@@ -3027,7 +3035,14 @@ fn lower_i64_trunc_sat_from_f64(
 
     // --- unsigned word-decompose of `value` ---------------------------------
     let d_down = materialize_f64_const(
-        SCALE_DOWN, idx, vfp_used, stack, next_temp, spill, instructions, reserved,
+        SCALE_DOWN,
+        idx,
+        vfp_used,
+        stack,
+        next_temp,
+        spill,
+        instructions,
+        reserved,
     )?;
     let prod = alloc_vfp_dtemp(vfp_used)?;
     instructions.push(ArmInstruction {
@@ -3062,7 +3077,14 @@ fn lower_i64_trunc_sat_from_f64(
         source_line: Some(idx),
     });
     let d_up = materialize_f64_const(
-        SCALE_UP, idx, vfp_used, stack, next_temp, spill, instructions, reserved,
+        SCALE_UP,
+        idx,
+        vfp_used,
+        stack,
+        next_temp,
+        spill,
+        instructions,
+        reserved,
     )?;
     instructions.push(ArmInstruction {
         op: ArmOp::F64Mul {
@@ -3162,7 +3184,17 @@ fn lower_i64_trunc_sat_from_f64(
         },
         source_line: Some(idx),
     });
-    blend_word(instructions, lo_r, sat_tmp, satmask, next_temp, stack, spill, reserved, idx)?;
+    blend_word(
+        instructions,
+        lo_r,
+        sat_tmp,
+        satmask,
+        next_temp,
+        stack,
+        spill,
+        reserved,
+        idx,
+    )?;
     // hi: sat_hi = 0x7FFFFFFF ^ signmask.
     instructions_push_movw(instructions, sat_tmp, 0xFFFF, idx);
     instructions.push(ArmInstruction {
@@ -3180,7 +3212,17 @@ fn lower_i64_trunc_sat_from_f64(
         },
         source_line: Some(idx),
     });
-    blend_word(instructions, hi_r, sat_tmp, satmask, next_temp, stack, spill, reserved, idx)?;
+    blend_word(
+        instructions,
+        hi_r,
+        sat_tmp,
+        satmask,
+        next_temp,
+        stack,
+        spill,
+        reserved,
+        idx,
+    )?;
 
     stack.push(StackVal::i64(lo_r));
     Ok(true)
@@ -3196,7 +3238,9 @@ fn instructions_push_movw(instructions: &mut Vec<ArmInstruction>, rd: Reg, imm16
 
 /// Branch-free per-word select: `dst = dst ^ ((dst ^ src) & mask)` — yields
 /// `src` where `mask` bits are 1, `dst` where 0. Uses one scratch temp.
-#[allow(clippy::too_many_arguments)]
+// `stack` is `&mut Vec` (not a slice) because it is threaded straight into
+// `alloc_temp_or_spill`, which spills by pushing/popping stack entries.
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn blend_word(
     instructions: &mut Vec<ArmInstruction>,
     dst: Reg,
@@ -3704,15 +3748,30 @@ fn try_lower_f64(
             let work = if dm_is_home {
                 let copy = alloc_vfp_dtemp(vfp_used)?;
                 emit_d_copy(
-                    copy, dm, idx, stack, next_temp, spill, instructions, reserved,
+                    copy,
+                    dm,
+                    idx,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
                 )?;
                 copy
             } else {
                 dm
             };
             lower_i64_trunc_sat_from_f64(
-                work, signed, idx, vfp_used, vfp_home, stack, next_temp, spill,
-                instructions, reserved,
+                work,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
             )
         }
         _ => Ok(false),
