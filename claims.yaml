@@ -617,3 +617,15 @@ claims:
         pattern: 'I64DivU \{ \.\. \} \| I64DivS \{ \.\. \} \| I64RemU \{ \.\. \} \| I64RemS \{ \.\. \} => LoopedExpansion,'
         glob: ['crates/synth-backend/src/wcet.rs']
         expect: 1
+      # BL/BLX direct-call branch overhead = 4 (#778 phase 3 inter-procedural
+      # composition). MAX over {M3, M4}: both TRMs time BL/BLX as `1 + P` where P
+      # is the pipeline-refill penalty (1..3 by target alignment/width/speculation),
+      # so the worst case is 1 + 3 = 4 — the SAME branch-with-refill class the table
+      # already prices for taken Bx/BOffset/BCondOffset. The callee body + its
+      # return are counted separately (in the callee's own bound), so no return
+      # penalty is added here. Editing this reddens the claim and forces a conscious
+      # re-derivation against the TRM.
+      - kind: count-eq
+        pattern: 'const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1

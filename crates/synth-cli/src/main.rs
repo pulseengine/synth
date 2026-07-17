@@ -3100,6 +3100,15 @@ fn compile_all_exports(
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
     let mut skipped_funcs: Vec<(String, String)> = Vec::new();
+    // #778 phase 3: collect per-function WCET intermediates (own-body cycles +
+    // direct call sites, or a decline) and a `func_<idx>` → position map, so the
+    // module-level composer can resolve direct calls across the call graph AFTER
+    // every function compiles. `func_none` is a placeholder for a function that
+    // produced no intermediate (non-Thumb-2 backend) → resolved to an
+    // UnsupportedCore decline, keeping the report COMPLETE.
+    let mut wcet_intermediates: Vec<synth_core::wcet::WcetIntermediate> = Vec::new();
+    let mut wcet_label_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for func in &all_exports {
         // Exported functions keep their export name; reachable internal callees
         // (#235) have none, so they take the `func_{index}` symbol — exactly the
@@ -3299,19 +3308,25 @@ fn compile_all_exports(
             }
         }
 
-        // #778: collect this function's sound WCET bound (or loud decline). The
-        // ARM backend attaches it on `compiled.wcet` for the Thumb-2 path; if the
-        // backend produced none (RISC-V/AArch64/A32), record a decline so the map
-        // stays COMPLETE (every compiled function is bounded-or-explicitly-unbounded,
-        // never silently missing).
-        if let Some(wr) = wcet_report.as_mut() {
-            match &compiled.wcet {
-                Some(wf) => wr.functions.push(wf.clone()),
-                None => wr.functions.push(synth_core::wcet::WcetFunction::declined(
-                    &name,
-                    synth_core::wcet::WcetDecline::UnsupportedCore,
-                )),
-            }
+        // #778 phase 3: collect this function's WCET INTERMEDIATE for the
+        // module-level composer (run after the loop). The ARM backend attaches it
+        // on `compiled.wcet_intermediate` for the Thumb-2 path; if the backend
+        // produced none (RISC-V/AArch64/A32), record an UnsupportedCore decline so
+        // the map stays COMPLETE (every compiled function is
+        // bounded-or-explicitly-unbounded, never silently missing). The
+        // `func_<idx>` label a direct call references is registered so the composer
+        // can resolve edges — exported callees are called by `func_<idx>` even
+        // though their report entry is keyed by the export name.
+        if wcet_report.is_some() {
+            let inter = compiled.wcet_intermediate.clone().unwrap_or_else(|| {
+                synth_core::wcet::WcetIntermediate::Declined {
+                    name: name.clone(),
+                    reason: synth_core::wcet::WcetDecline::UnsupportedCore,
+                    hint_rejections: Vec::new(),
+                }
+            });
+            wcet_label_index.insert(format!("func_{}", func.index), wcet_intermediates.len());
+            wcet_intermediates.push(inter);
         }
 
         if !compiled.relocations.is_empty() {
@@ -3347,6 +3362,15 @@ fn compile_all_exports(
                 eprintln!("  Rebuild with: cargo build --features verify");
             }
         }
+    }
+
+    // #778 phase 3: compose per-function WCET intermediates across the DIRECT call
+    // graph into the final per-function bounds/declines. A caller's bound = its own
+    // body + each direct callee's bound × the call site's proven execution count;
+    // recursion (any call-graph cycle), indirect calls, and any declined callee
+    // stay LOUD declines (composition only bounds what is provably composable).
+    if let Some(wr) = wcet_report.as_mut() {
+        wr.functions = synth_backend::wcet_compose::compose(&wcet_intermediates, &wcet_label_index);
     }
 
     // Surface skipped functions (no silent omissions): a skipped function is

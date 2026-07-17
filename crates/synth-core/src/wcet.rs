@@ -78,9 +78,28 @@ pub enum WcetDecline {
     /// additionally need a verified `--wcet-hints` entry). Data-dependent
     /// bounds remain the scry loop-bound-inference follow-up.
     Loop,
-    /// A call (`Bl`/`Blx`) — the bound is per-function (intra-procedural). Summing
-    /// a callee's cost is the spar inter-procedural-composition follow-up.
+    /// A DIRECT call (`Bl func_N`) that could not be composed into a bound because
+    /// the callee is unbounded or unresolvable in THIS module — an external/imported
+    /// callee (a WASM import, `__meld_dispatch_import`, or an `__aeabi_*` runtime
+    /// helper: it has no per-function body in this module to sum). #778 phase 3
+    /// composes direct calls to LOCAL, bounded callees over the direct call graph;
+    /// this reason remains for the direct edges that cannot be composed.
     Call,
+    /// A cycle in the direct call graph (self-recursion or mutual recursion). An
+    /// upper cycle bound cannot be composed from a call graph that revisits a frame
+    /// an unbounded number of times, so every function on the cycle DECLINES. This
+    /// is the #778 phase-3 decline-honesty guard: composition only bounds an acyclic
+    /// direct call graph.
+    Recursion,
+    /// An INDIRECT call (`Blx <reg>` / `call_indirect` / a function-pointer
+    /// dispatch such as `__meld_dispatch_import`): the callee is not statically
+    /// known, so its bound cannot be composed. Declined, not guessed. (#778 phase 3.)
+    IndirectCall,
+    /// A caller whose own body is bounded but that DIRECTLY calls a callee which
+    /// itself declined (transitively): a decline must PROPAGATE up the call graph —
+    /// a caller cannot be bounded while a callee it invokes is unbounded. (#778
+    /// phase 3.) The `note()` names the first unbounded callee for diagnosis.
+    CalleeUnbounded,
     /// A residual/external label branch (`B`/`Bcc`/… still carrying a label): its
     /// direction is not statically known here, so it cannot be proven loop-free.
     UnresolvedBranch,
@@ -110,8 +129,22 @@ impl WcetDecline {
                  data-dependent bounds are the scry loop-bound-inference follow-up"
             }
             WcetDecline::Call => {
-                "call (Bl/Blx) — per-function bound is intra-procedural \
-                 (spar inter-procedural-composition follow-up)"
+                "direct call to an external/imported/unresolvable callee with no \
+                 per-function bound in this module — cannot compose an \
+                 inter-procedural bound (local direct calls ARE composed, #778 phase 3)"
+            }
+            WcetDecline::Recursion => {
+                "cycle in the direct call graph (self- or mutual recursion) — an \
+                 upper cycle bound cannot be composed from a recursive call graph"
+            }
+            WcetDecline::IndirectCall => {
+                "indirect call (Blx <reg> / call_indirect / function-pointer \
+                 dispatch) — the callee is not statically known, cannot compose"
+            }
+            WcetDecline::CalleeUnbounded => {
+                "a directly-called callee is itself unbounded — the decline \
+                 propagates up the call graph (a caller cannot be bounded while a \
+                 callee it invokes is unbounded)"
             }
             WcetDecline::UnresolvedBranch => {
                 "residual external/unresolved label branch — direction not \
@@ -289,6 +322,76 @@ impl WcetFunction {
             reason,
             note,
             hint_rejections,
+        }
+    }
+}
+
+/// One direct call site inside a composable function (#778 phase 3). Records the
+/// callee's `BL` label (`func_<idx>` for a local/relocatable-import call) and the
+/// per-instruction execution-count multiplier of the `BL` (1 outside any loop; the
+/// enclosing loop's proven trip product when the call sits inside a proven counted
+/// loop, so a call in a loop is counted `trip` times, never once).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WcetCallSite {
+    /// The `BL` target label as emitted by the selector (`func_<wasm_index>` for a
+    /// direct local/import call; any other label is a runtime helper → external).
+    pub callee_label: String,
+    /// The call site's worst-case execution count (product of enclosing proven loop
+    /// trip factors; 1 outside any loop). `u128` to survive deep nesting without
+    /// wrapping, matching the loop-multiplier domain.
+    pub multiplier: u128,
+}
+
+/// The per-function INTERMEDIATE result of the WCET pass BEFORE inter-procedural
+/// composition (#778 phase 3). The backend produces one of these per function; the
+/// module-level composer ([`crate::wcet`] consumers call `synth_backend::wcet_compose`)
+/// resolves each function's direct call sites against the whole module and emits the
+/// final [`WcetFunction`] (a composed bound, or a propagated/recursion/indirect
+/// decline).
+///
+/// Splitting the pass in two keeps composition a PURE function over already-decided
+/// per-function facts: `own_cycles` already prices every non-call instruction
+/// (including each `BL`'s branch overhead) at its proven execution count, so the
+/// composed total is `own_cycles + Σ_site multiplier_site × callee_total` — the
+/// per-site multiplier makes a call inside a proven loop sound by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WcetIntermediate {
+    /// The function declines for a reason INDEPENDENT of composition (an unproven
+    /// loop, an internal looped expansion, an unsupported core, an unresolved label
+    /// branch, an indirect call, or an unmodeled op). Carried straight through to a
+    /// [`WcetFunction::Declined`]; composition never rescues these.
+    Declined {
+        name: String,
+        reason: WcetDecline,
+        hint_rejections: Vec<WcetHintRejection>,
+    },
+    /// The function's own body is bounded; its final bound depends only on resolving
+    /// the recorded direct call sites against the module's other functions.
+    Composable {
+        name: String,
+        /// The summed worst-case cost of every instruction in the final stream
+        /// (each priced at its documented worst case × its proven execution-count
+        /// multiplier), INCLUDING each direct `BL`'s branch overhead. The callee
+        /// bodies are added by the composer via `call_sites`.
+        own_cycles: u64,
+        /// Number of ARM instructions summed (diagnostic, carried to the bound).
+        instr_count: usize,
+        /// The direct call sites to resolve at compose time.
+        call_sites: Vec<WcetCallSite>,
+        /// Proven loops inside this function (carried to the bound unchanged).
+        loops: Vec<WcetLoopBound>,
+        /// Hints rejected while analyzing this function (carried to the bound).
+        hint_rejections: Vec<WcetHintRejection>,
+    },
+}
+
+impl WcetIntermediate {
+    /// The compiled function name this intermediate is for.
+    pub fn name(&self) -> &str {
+        match self {
+            WcetIntermediate::Declined { name, .. } | WcetIntermediate::Composable { name, .. } => {
+                name
+            }
         }
     }
 }

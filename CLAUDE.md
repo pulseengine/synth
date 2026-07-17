@@ -179,7 +179,8 @@ frozen and oracle-gated every step:
   T3/T4 `C_i` input — a bound, not a DWT observation. Loop-free functions get an
   EXACT sum of documented Cortex-M3/M4 worst-case per-op cycles (MAX over {M3,M4};
   the sound-critical model constants are `STRAIGHTLINE_CEIL_PER_HALFWORD = 5`,
-  `Umull = 5`, `Mls/Mla = 2`, `Sdiv/Udiv = 12`, and the four i64 software
+  `Umull = 5`, `Mls/Mla = 2`, `Sdiv/Udiv = 12`, `BL_BLX_CALL_OVERHEAD_CYCLES = 4`
+  (1+P, P≤3, the branch-with-refill class), and the four i64 software
   div/rem = `LoopedExpansion` decline, pinned in `claims.yaml`). Phase 2
   (v0.47): canonical const-bound counted loops (const init/step/bound, head- or
   bottom-test, nested-multiplicative, memory-writing bodies) are PROVEN by a
@@ -189,14 +190,23 @@ frozen and oracle-gated every step:
   (`synth-wcet-hints-v1`, UNTRUSTED scry seam) entries are verified against
   synth's own derived trip and REJECTED with machine reasons
   (`hint-below-derived-trip` / `hint-unverifiable-induction`) otherwise —
-  equality-exit shapes bound only under a verified hint. Data-dependent
-  loops, non-canonical shapes, calls, i64-software-div and non-M3/M4 cores
-  (incl. the ambiguous `-eabihf` M4F/M7 triple) still LOUD-DECLINE with a
-  machine reason. Frozen-safe (`.text` unchanged, hints byte-invisible);
-  gated by `wcet_bound_gate.rs` (bound ≥ actual + trip-aware floor +
-  red-first hint rejection + decline matrix). Richer hint certificates
-  (data-dependent bounds, scry) + inter-procedural composition are named
-  follow-ups.
+  equality-exit shapes bound only under a verified hint. Phase 3 (v0.48):
+  INTER-PROCEDURAL COMPOSITION over the DIRECT call graph (`wcet_compose.rs`, a
+  pure memoized DFS over per-function intermediates) — a caller with a direct
+  `BL func_N` to a LOCAL bounded callee is now BOUNDED (`total = own_cycles +
+  Σ_site multiplier × callee_total`), the per-site multiplier being the call
+  site's proven execution count so a callee invoked inside a proven loop is
+  counted `trip×` (never once). Decline-honesty residuals (moved, never deleted):
+  recursion / any call-graph cycle → `recursion`, indirect `Blx`/`call_indirect`
+  → `indirect-call`, external/import direct call → `call`, a declined callee →
+  `callee-unbounded` (a decline propagates UP). Data-dependent loops,
+  non-canonical shapes, i64-software-div and non-M3/M4 cores (incl. the
+  ambiguous `-eabihf` M4F/M7 triple) still LOUD-DECLINE with a machine reason.
+  Frozen-safe (`.text` unchanged, hints/sidecar byte-invisible); gated by
+  `wcet_bound_gate.rs` (bound ≥ actual + trip-aware floor + red-first hint
+  rejection + decline matrix + composed exact-literal chain + recursion/indirect
+  decline honesty). Richer hint certificates (data-dependent bounds, scry) are a
+  named follow-up.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the

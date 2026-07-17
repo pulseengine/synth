@@ -106,6 +106,7 @@ impl Backend for AArch64Backend {
             branch_map: Vec::new(),
             // #778: WCET cycle model is ARM(Thumb-2)-only in v1.
             wcet: None,
+            wcet_intermediate: None,
         })
     }
 
