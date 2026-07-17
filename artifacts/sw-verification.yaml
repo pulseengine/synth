@@ -463,3 +463,39 @@ artifacts:
           scripts/repro/dyn_table_359_differential.py (lookup table read at the
           init-segment tail) + scripts/repro/postlink_359_oracle.py (no literal
           read past __bss_end)
+
+  - id: SWVER-020
+    type: sw-verification
+    title: WasmCert-Coq refinement of exec_wasm_instr — i32 + i64 fragments (#242)
+    description: >
+      Verifies VCR-WASM-001: synth's WASM stack-machine executor
+      (exec_wasm_instr) is machine-checked to REFINE the WasmCert-Coq
+      operational rules for the integer fragment. coq/Synth/WASM/
+      WasmCertReference.v transcribes the WasmCert-Coq numerics rules (i32: 19
+      ops; i64: 22 ops — add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/
+      eq/ne/lt/gt/le/ge) from the PINNED coq9.0-wasm-2.2.0 sources with
+      line-level provenance (numerics.v generic Make functor read at wordsize
+      32/64; CompCert 3.16 Integers.v for the underlying ops incl. rol/ror
+      217-222). WasmCertBridge.v proves a real-Qed op-level refinement lemma per
+      op AND an executor-level lemma routing through the real exec_wasm_instr for
+      every WIRED op. HONEST SCOPE (named, not fabricated): (1) it is still a
+      hand TRANSCRIPTION of the pinned sources, not the real external dep — that
+      stays blocked on the unfree CompCert 3.16 the current nixpkgs pin
+      propagates; (2) the 6 i64 arithmetic/bitwise ops have op-level refinement
+      ONLY, because exec_wasm_instr returns None for their constructors (unwired
+      in the model). The WASM-side analogue of SailArmBridge.v (VCR-ISA-001).
+    status: implemented
+    tags: [vcr-wasm, wasmcert, rocq, refinement, transcription, epic-242]
+    links:
+      - type: verifies
+        target: VCR-WASM-001
+    fields:
+      method: formal-proof
+      steps:
+        run: "bazel test //coq:verify_proofs"
+        coverage: >
+          coq/Synth/WASM/WasmCertBridge.v (98 Qed: i32 + i64 op-level and
+          executor-level refinement lemmas + encoding/bit-level/rotate-boundary
+          helpers) against coq/Synth/WASM/WasmCertReference.v; re-derived Qed
+          total 585 CI-gated by scripts/claim_check.py (claims.yaml
+          wasmcert_bridge_qed flows to artifacts/status.json)

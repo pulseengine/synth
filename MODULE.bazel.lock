@@ -129,7 +129,7 @@
     "@@rules_renode~//renode:extensions.bzl%renode": {
       "general": {
         "bzlTransitiveDigest": "7Lnr806jnybahW/j3rYmzxDyIEILjiU3LTCqQKMBTAE=",
-        "usagesDigest": "xzMgAugBVf7dwP9q5aW+F8CkYeqeL3DoK5fgnVoatBM=",
+        "usagesDigest": "/33IJo3NgeL4x1ptp1sLlF3xVeTMRxIDmspAZK0uSsg=",
         "recordedFileInputs": {
           "@@rules_renode~//renode/renode.BUILD.bazel": "92dbf0d95a2e56bfda1a31891f4d0b5f262d30b6546afb1b60cc48fdc09effac"
         },
