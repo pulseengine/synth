@@ -3298,6 +3298,9 @@ artifacts:
       the Bl/Blx op_cost change is WCET-path-only). Richer hint certificates
       (data-dependent bounds, scry) remain the named follow-up.
 
+    links:
+      - type: verifies
+        target: VCR-001
     fields:
       req-type: functional
       priority: should
