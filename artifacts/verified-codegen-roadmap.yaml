@@ -1250,11 +1250,54 @@ artifacts:
       the wrong-segment miscompile uncaught. It is not a check that runs on every
       compile in general.
 
-      BOUNDED (named follow-up): reloc/overlap class only. The validator checks
-      the RESOLVED byte per reloc (matching the reference oracle
-      mem757_gale_differential.py); a multi-byte access whose read spans an
-      owning segment's packed-length boundary is a named follow-up, as are
-      all-addressing coverage and the AArch64 / RV32 static bases.
+      PHASE 2 (v0.47, #777 follow-ups) — the phase-1 BOUNDED items, landed:
+      (5) MULTI-BYTE SPANS (validate_reloc_resolutions_spanned): beyond the
+      addend byte, every runtime-covered byte a conservatively-widened access
+      (MAX_ACCESS_BYTES = 8; CodeRelocation records no width — the Abs32
+      literal is a pointer) could read must equal what the SHIPPED packed init
+      blob serves at that position (the emission extends the validated blob,
+      so the served side is the real artifact). Catches the staggered-overlap
+      straddle (addend byte correct, tail bytes runtime-owned by a LATER
+      segment — demonstrated live: the v0.46 binary compiled the synthetic
+      straddle fixture clean with packed seg_0 serving a4a5 where the runtime
+      image owns b0b1; phase 2 hard-fails it with `span byte +2`), the
+      4-align-padding-shifted crossing, and the init-region escape. DOCUMENTED
+      RESIDUE: a span byte NO segment covers at runtime (implicit-zero linmem)
+      is skipped — flagging it would hard-error the ubiquitous "pointer near a
+      sparse segment's end, narrow access" shape; exact checking needs a
+      recorded access width (named follow-up).
+      (6) SELF-CONTAINED --cortex-m (#758 ROM-copy): the dense flash image is
+      packed by the shared declaration-order packer (pack_rom_image) and
+      validated unconditionally against the reconstructed runtime image
+      (validate_served_image — every blob byte equals the later-wins byte,
+      zero in gaps; garbage-in-gap and first-wins packs are RED in the
+      permanent unit gate, the overwrite policy is an argument). The dense
+      layout (index = linmem offset) preserves spans/overlaps structurally, so
+      the straddle fixture that the mixed split refuses compiles CORRECTLY
+      here (e2e green gate).
+      (7) RV32 single-base scheme (s11 = __linear_memory_base, zeroed RAM):
+      the object ships NO static-data initializer image at all — probing found
+      active nonzero data segments are silently DROPPED (loads read 0x00).
+      validate_served_image with an EMPTY image now runs unconditionally on
+      the RV32 emit path and WARNS LOUDLY per nonzero un-served byte
+      (all-zero / zero-overwritten runtime images genuinely ARE served by
+      zeroed RAM and stay silent — a later-wins check, not a bytes grep).
+      HELD AT WARNING, not a hard decline: the CI-pinned RV32 frozen fixture
+      (control_step.wasm carries a nonzero segment its differential never
+      reads) freezes compile-success on this path; the hard decline +
+      initializer shipping (the RV32 analogue of #758: linker-script
+      placement + startup copy) is the named follow-up.
+      (8) AArch64: N/A, verified — the -b aarch64 integer subset has no
+      linear-memory loads/stores (every memory op loud-declines at selection:
+      "unsupported wasm op for aarch64 subset"), so compiled code cannot
+      observe static data; there is nothing to validate.
+
+      BOUNDED (named follow-ups after phase 2): recorded per-reloc access
+      widths (removes the uncovered-span-byte tolerance and the conservative
+      8-byte widening); RV32 initializer shipping + hard decline (needs a
+      frozen-fixture refreeze ritual); all-addressing coverage (dynamic
+      base+index accesses that cross packed-segment boundaries at runtime are
+      out of static reach on the mixed split).
     status: implemented
     tags: [verification, addressing, relocation, soundness, mem757]
     links:
@@ -1272,13 +1315,22 @@ artifacts:
         - "Wire the EMITTED (k, addend) into the mixed-split retarget loop; hard-error on Mismatch"
         - "Red-first unit gate: Mismatch on .position(), Consistent on .rposition() (same validator, argument toggle)"
         - "Durable e2e gate: real gale loom.wasm compiles exit-0; regresses to RED on the .position() revert"
+        - "Phase 2: spanned reloc check against the SHIPPED init blob (straddle refused e2e, owner access green)"
+        - "Phase 2: #758 dense ROM image packed via pack_rom_image + validate_served_image (first-wins pack RED in the unit gate)"
+        - "Phase 2: RV32 zero-served-image check — nonzero dropped initializers WARN loudly; zero-overwritten silent"
       pass-criteria: >
         On any compiled relocatable object every static-data reloc resolves to
         the runtime-correct byte (segments later-wins), else the compile fails.
         The validator is Mismatch on the #757 wrong-segment (.position())
         resolution and Consistent on the correct (.rposition()) one for an
         overlapping-segment module; the real gale module compiles clean and
-        regresses to a hard error under the .position() revert.
+        regresses to a hard error under the .position() revert. Phase 2: the
+        staggered-overlap straddle fixture is REFUSED on the mixed split with
+        a span diagnostic (and compiles CORRECTLY self-contained); the #758
+        ROM image validates on every self-contained build (first-wins pack is
+        Mismatch in the unit gate); RV32 warns loudly on nonzero un-served
+        initializer bytes and stays silent on zero-served runtime images;
+        AArch64 is documented N/A (no linear-memory ops in the subset).
 
   # ---------------------------------------------------------------------------
   # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the

@@ -193,6 +193,20 @@ claims:
   # later-wins). In synth-core so it runs on EVERY compilation (default
   # `--features riscv`, not `verify`). Non-vacuous red-first gate: same validator
   # Mismatch on .position() (the #757 bug) / Consistent on .rposition().
+  #
+  # Phase 2 (#777 follow-ups, v0.47): (a) SPANNED reloc check — the mixed split
+  # validates every runtime-covered byte of a conservatively-widened access
+  # (MAX_ACCESS_BYTES) against the SHIPPED packed init blob (the
+  # staggered-overlap straddle phase 1 silently miscompiled is now refused);
+  # (b) the self-contained #758 ROM image is packed by the shared
+  # declaration-order packer and validated unconditionally against the
+  # reconstructed runtime image; (c) the RV32 single-base path runs the
+  # zero-served-image check and WARNS LOUDLY on nonzero dropped initializer
+  # bytes (hard decline held on the CI-pinned RV32 frozen fixture — named
+  # follow-up); (d) AArch64 documented N/A (no linear-memory ops in the
+  # subset). The count-eq pins below hold the wiring UNCONDITIONAL: exactly
+  # one spanned-validator call on the mixed split, exactly one ROM-image and
+  # one RV32 served-image call.
   - id: SYNTH-VCR-VER-003-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
     text: "Static-data addressing VC catches the overlapping-segment wrong-segment miscompile (#757) at compile time on every module"
@@ -206,6 +220,14 @@ claims:
         path: crates/synth-core/src/static_data_addr.rs
       - kind: file-exists
         path: crates/synth-cli/tests/vcr_ver_003_addr_777.rs
+      - kind: count-eq                       # phase 2: spanned check wired on the mixed split
+        pattern: 'validate_reloc_resolutions_spanned\('
+        glob: crates/synth-cli/src/main.rs
+        expect: 1
+      - kind: count-eq                       # phase 2: #758 ROM image + RV32 zero-served checks
+        pattern: 'validate_served_image\('
+        glob: crates/synth-cli/src/main.rs
+        expect: 2
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: README.md
