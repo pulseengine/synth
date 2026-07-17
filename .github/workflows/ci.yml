@@ -1671,3 +1671,39 @@ jobs:
         run: cargo test -p synth-synthesis --lib ra003_
       - name: Silent-on-real-codegen (frozen suite through the unconditional gate)
         run: cargo test -p synth-cli --test frozen_codegen_bytes
+
+  vcr-sel-005-cross-backend-op-parity-gate:
+    name: "VCR-SEL-005 cross-backend op-parity (universe-complete + red-first)"
+    # VCR-SEL-005 (#242, #223, #232): the "selector missed an op" class was never
+    # a silent miscompile — it was a silent cross-backend DIVERGENCE: ARM lowered
+    # an op RV32 loud-declined, so a function compiled on Cortex-M but was skipped
+    # on RISC-V and nothing caught it until gale ran it on qemu. This gate makes
+    # the divergence visible: for every WasmOp variant (a no-wildcard match — a
+    # new op fails to compile until classified, so the universe is
+    # compiler-enforced complete), the integer core is probed on BOTH the ARM
+    # (select_with_stack) and RV32 selectors and must be at parity — both lower,
+    # both decline, OR a ledgered one-sided divergence with a written reason. A
+    # NEW un-ledgered one-sided gap FAILS the gate; a ledgered gap that has CLOSED
+    # FAILS as stale. Float/f64/SIMD are StructurallyExcluded (their ARM lowering
+    # is target-parameterized), tracked as separate parity gaps.
+    #   RED-FIRST non-vacuity: red_first_unledgered_one_sided_gap_is_caught drops
+    #   the real i32.rotl ledger entry and asserts the gate reports it as an
+    #   unexpected divergence on the REAL backends — proving it detects a genuine
+    #   one-sided op-gap, not a synthetic one, with no shipping-code change.
+    # Test-only: emits nothing (.text byte-identical; frozen 10/10 unaffected).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Universe-complete parity + red-first + ledger-liveness
+        run: cargo test -p synth-backend-riscv --test cross_backend_op_parity
