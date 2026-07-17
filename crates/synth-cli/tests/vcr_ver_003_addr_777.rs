@@ -278,11 +278,14 @@ fn rv32_nonzero_data_segment_ships_wasm_data_records() {
         "the shipping info line names the segment count:\n{all}"
     );
     // The object carries the record verbatim: off=16, len=4, bytes 01020304.
-    let records = section_bytes(&out_path, ".wasm_data")
-        .expect("the object must ship a .wasm_data section");
+    let records =
+        section_bytes(&out_path, ".wasm_data").expect("the object must ship a .wasm_data section");
     assert_eq!(
         records,
-        [16u32.to_le_bytes(), 4u32.to_le_bytes()].concat().iter().copied()
+        [16u32.to_le_bytes(), 4u32.to_le_bytes()]
+            .concat()
+            .iter()
+            .copied()
             .chain([1u8, 2, 3, 4])
             .collect::<Vec<u8>>(),
         "record = [u32 off=16][u32 len=4][01 02 03 04]"

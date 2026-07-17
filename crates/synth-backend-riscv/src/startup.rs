@@ -156,7 +156,9 @@ impl RiscVStartupGenerator {
         // later-wins overlap semantics. Byte-granular copy — segment offsets
         // and lengths have no alignment guarantee. A data-free object has
         // start == end and the loop no-ops.
-        out.push_str("        /* Copy wasm data segments to __linear_memory_base + off (#798). */\n");
+        out.push_str(
+            "        /* Copy wasm data segments to __linear_memory_base + off (#798). */\n",
+        );
         out.push_str("        \"la t0, __wasm_data_records_start\\n\"\n");
         out.push_str("        \"la t1, __wasm_data_records_end\\n\"\n");
         out.push_str("        \"6:\\n\"\n");

@@ -3521,8 +3521,7 @@ fn compile_all_exports(
                 rv_mem_size
             );
         }
-        let rv_wasm_data =
-            synth_core::static_data_addr::pack_segment_records(&rv_segments);
+        let rv_wasm_data = synth_core::static_data_addr::pack_segment_records(&rv_segments);
         let rv_served = synth_core::static_data_addr::served_image_from_records(&rv_wasm_data)
             .ok_or_else(|| {
                 anyhow::anyhow!(
