@@ -719,6 +719,31 @@ artifacts:
         bazel/nix toolchain (the transcription is the bounded scaffold), plus
         the full integer/control-flow fragment.
 
+        PHASE 2 (v0.47): real-dependency FEASIBILITY SPIKE result — nix-level
+        FEASIBLE, bazel-level DEFERRED on three named blockers. Evidence:
+        coqPackages.wasmcert (coq9.0-wasm-2.2.0) EXISTS in the exact nixpkgs
+        commit the rules_rocq_rust toolchain pins (88d3861a) and nix-builds
+        GREEN against the same Rocq 9.0.1 (verified 2026-07-17), propagating
+        coq-ext-lib 0.13.0, mathcomp-boot 2.5.0, parseque 0.3.0, flocq 4.2.1,
+        compcert 3.16 — the phase-1 "drags mathcomp+CompCert, no-go" wording
+        is obsolete. Blockers for wiring it into bazel: (1) rules_rocq_rust
+        has NO generic extra-coq-package hook — coqutil/hammer/smpl are
+        hard-coded attrs across extensions.bzl + toolchain.bzl + rocq.bzl, so
+        a fork change (or a large MODULE.bazel patch) is required; (2)
+        LICENSE: nixpkgs wasmcert 2.2.0 depends on CompCert 3.16, license
+        inria-compcert (meta.license.free = false) — an unfree dep in the
+        default CI proof toolchain needs an explicit allowUnfree opt-in and a
+        project policy decision; (3) upstream WasmCert-Coq 2.2.1 (master,
+        coq >= 9.0 & < 9.2) DROPS the coq-compcert dependency entirely, so
+        waiting for the next nixpkgs wasmcert bump removes blocker (2) for
+        free. Verdict: land the ruleset extra-package hook + take the dep when
+        wasmcert >= 2.2.1 reaches nixpkgs. Meanwhile phase 2 batch-extends the
+        transcription bridge: the full i32 arithmetic/bitwise/shift + eqz +
+        compare family (19 ops), each transcribed from the PINNED
+        coq9.0-wasm-2.2.0 sources (numerics.v / operations.v line-level
+        provenance, CompCert 3.16 lib/Integers.v for the underlying ops) with
+        a real-Qed refinement lemma per op in WasmCertBridge.v.
+
   # ---------------------------------------------------------------------------
   # Track C — validation methodology (can start now; feeds Tracks A and B)
   # ---------------------------------------------------------------------------

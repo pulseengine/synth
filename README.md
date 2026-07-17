@@ -109,7 +109,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 489 Qed / 3 Admitted | i32 + i64 T1 correctness proofs; the 50 selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73) |
+| Rocq mechanized proofs | 536 Qed / 3 Admitted | i32 + i64 T1 correctness proofs; the 50 selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73) |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -194,7 +194,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 489 Qed / 3 Admitted (50 selector-DSL rule theorems stated directly about the GENERATED model, VCR-ISA-001 #667) — all four i32 div/rem trap guards discharged (#73) |
+| **Rocq** | Partial | 536 Qed / 3 Admitted (50 selector-DSL rule theorems stated directly about the GENERATED model, VCR-ISA-001 #667) — all four i32 div/rem trap guards discharged (#73) |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -206,7 +206,7 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-489 Qed / 3 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
+536 Qed / 3 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories
@@ -271,7 +271,7 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 | | `VCR-PERF-002` | Proof-carrying specialization (#494): loom's `wsc.facts` invariants become premises for per-elision proof obligations, certificate-checked by the ordeal-backed validator — toward gale's measured **0.45× (below-native) floor** | design traced (v0.30.0); phase 1 (facts ingestion) landed ([PR #624](https://github.com/pulseengine/synth/pull/624), v0.31.0) |
 | | `SYNTH_SPILL_ON_EXHAUST` | Replace the register-exhaustion decline with allocation-time Belady spilling (#580) — the last piece of the exhaustion hard-fail | built, flag-off; default-on held for silicon cycle numbers |
 | **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec); generate the selector model, don't mirror it (#667) | approved — Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`); #667 "generate, don't mirror" landed: the shipped `sel_dsl::RULES` table emits the 50 covered ops' Rocq lowerings (`coq/Synth/Synth/VcrSelRulesGenerated.v`), and `VcrSelRules.v` DEFINES `rule_X := Gen.rule_X` — the generated file is the single model source, the 50 correctness Qed are stated directly about it, and a selector-table change breaks the matching proof (no hand-written copy left to drift) |
-| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | proposed |
+| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | phases 1+2 landed: the i32 integer fragment (19 ops — arithmetic/bitwise/shifts/eqz/comparisons) transcribed from the pinned coq9.0-wasm-2.2.0 sources with line-level provenance (`coq/Synth/WASM/WasmCertReference.v`) and proven refined by `exec_wasm_instr` (49 Qed, `WasmCertBridge.v`); the real external dep is nix-feasible, bazel-deferred on three named blockers (roadmap entry) |
 | **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | **demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md)): the v0.11.20 reciprocal-mult cost-gate deleted outright (PR #322, bit-identical); the #496 exhaustion decline revertable behind `SYNTH_SPILL_ON_EXHAUST` — red case green, anchors byte-identical, declines 14→8; flip held on a measured i32-shape cycle regression |
 
 Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); f32/f64 remain loud-reject (#369); SIMD/Helium is untested on hardware.

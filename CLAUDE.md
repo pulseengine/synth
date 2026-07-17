@@ -89,7 +89,7 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 489 Qed / 3 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 536 Qed / 3 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. The 50 selector-DSL rule theorems
 (`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
 #667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted
@@ -148,7 +148,10 @@ frozen and oracle-gated every step:
   #682 model↔selector drift is unrepresentable at the instruction-sequence level
   for those ops (the interim `VcrSelRulesGenCheck.v` reflexivity gate was
   retired as vacuous/subsumed). `VCR-WASM-001` WasmCert-Coq source semantics —
-  proposed.
+  phases 1+2 landed: the i32 integer fragment (19 ops) transcribed from the
+  pinned coq9.0-wasm-2.2.0 sources with line-level provenance and proven
+  refined by `exec_wasm_instr` (49 Qed, `coq/Synth/WASM/WasmCertBridge.v`);
+  real external dep nix-feasible, bazel-deferred (roadmap entry).
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
   symtab-based frozen-fixture differentials). `VCR-VER-003` (#777, implemented
