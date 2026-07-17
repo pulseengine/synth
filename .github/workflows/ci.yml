@@ -1636,23 +1636,33 @@ jobs:
 
   vcr-ra-003-alloc-validator-gate:
     name: "VCR-RA-003 register-allocation validator (red-first + frozen)"
-    # VCR-RA-003 (#242): the UNCONDITIONAL, single-stream backward-dataflow
-    # register-allocation validator (synth_synthesis::liveness::
-    # validate_final_allocation) runs on every ARM compile in the default build
-    # and hard-errors on a callee-saved-preservation (#490) or spill-slot
-    # non-aliasing (#331) violation. This job pins the gate's TWO halves as an
-    # explicit, self-describing red so a regression is visible on its own name:
+    # VCR-RA-003 (#242): the UNCONDITIONAL register-allocation validator
+    # (synth_synthesis::liveness::validate_final_allocation) runs on every ARM
+    # compile in the default build and hard-errors on a violation of FOUR
+    # invariants: (1) callee-saved preservation (#490), (2) spill-slot
+    # non-aliasing (#331), and — PHASE 2 (#49), whole-function past straight-line
+    # — (3) caller-saved preservation across a call and (4) value availability
+    # across a control-flow join. This job pins the gate's halves as an explicit,
+    # self-describing red so a regression is visible on its own name:
     #   (1) RED-FIRST non-vacuity: the ra003_red_* unit tests synthetically
-    #       revert a known-fixed clobber and assert the validator CATCHES it
-    #       (revert #490 prologue -> CalleeSavedNotSaved; drop epilogue restore
+    #       revert / construct a known clobber and assert the validator CATCHES
+    #       it (revert #490 prologue -> CalleeSavedNotSaved; drop epilogue restore
     #       -> CalleeSavedNotRestored; alias two live values on one slot ->
-    #       SpillSlotAliased). The ra003_green_* tests assert it is SILENT on
-    #       correct code (the Consistent half).
+    #       SpillSlotAliased; a caller-saved value live across a bl ->
+    #       CallerSavedLiveAcrossCall; a value in R4 on one join path but not the
+    #       other -> JoinValueNotAvailable; a BrTable -> NotAttempted loud
+    #       decline). The ra003_green_* tests assert it is SILENT on correct code.
     #   (2) SILENT-ON-REAL-CODEGEN: the frozen suite compiles the whole ARM
     #       fixture set THROUGH the unconditional validator; if it false-positived
     #       on any real function that fixture would fail to compile, so 10/10 green
     #       (control_step 0x00210A55, flight_algo 0x07FDF307 byte-identical) is the
     #       validator's "Consistent on every real function" proof.
+    #   (3) PHASE-2 SILENT + FIRES ON REAL BRANCHY CODEGEN: the phase-2 repro
+    #       compiles branchy / memory-touching / call-bearing fixtures (real CF
+    #       joins the availability check reasons about) and asserts ZERO false
+    #       positives — the guard against the R11-linmem-base regression this lane
+    #       found (a join reading the reserved base register, defined nowhere in
+    #       the stream, must be seeded available not flagged).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1671,3 +1681,7 @@ jobs:
         run: cargo test -p synth-synthesis --lib ra003_
       - name: Silent-on-real-codegen (frozen suite through the unconditional gate)
         run: cargo test -p synth-cli --test frozen_codegen_bytes
+      - name: PHASE-2 silent-on-real-branchy-codegen (across-CALL + across-JOIN)
+        run: |
+          cargo build -p synth-cli
+          python3 scripts/repro/vcr_ra_003_phase2_join_call.py ./target/debug/synth

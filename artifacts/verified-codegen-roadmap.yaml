@@ -1898,8 +1898,54 @@ artifacts:
         in synth-synthesis (not synth-core) because ArmOp/Reg live there and the
         register-assigned stream is consumed in arm_backend before main.rs.
         ARM-scoped this increment; RV32 / AArch64 get their own arms later
-        (per-backend, like VCR-VER-003). v2 (Rocq-mechanized soundness of the
-        straight-line fragment) remains the open step.
+        (per-backend, like VCR-VER-003).
+        PHASE 2 (v0.49, #49) — WHOLE-FUNCTION across CALLS and JOINS: the named
+        phase-2 boundary is now extended past straight-line with two more
+        invariants, each anchored on a reference OUTSIDE inferred value-identity
+        (the v0.48 vacuity lesson: generic GP-liveness on one stream cannot tell
+        a clobber from a redefinition). (3) CALLER-SAVED PRESERVATION ACROSS A
+        CALL: a value in R2/R3/R12 defined before a bl/blx/call and read after it
+        with no intervening redef crossed a boundary the AAPCS is contractually
+        allowed to clobber -> `CallerSavedLiveAcrossCall`; the reference is the
+        ABI contract at the call, not an inferred value. R0/R1 are EXCLUDED (a
+        call DEFINES them: the return value) - a documented false-NEGATIVE
+        boundary (FN < FP). Reasoned locally at the call site; does NOT modify the
+        shared `reg_effect` (whose None-on-call meaning the phase-1 callee-saved
+        fail-safe and `eliminate_unread_frame_stores` both depend on). (4) VALUE
+        AVAILABILITY ACROSS A JOIN: a register live-in to a CF join (>=2 preds)
+        must be AVAILABLE - must-defined on EVERY incoming path, or an entry
+        live-in -> else `JoinValueNotAvailable`. Solved by a forward MUST
+        (intersection) availability fixpoint (UNIVERSE-init, not empty - it is a
+        must-analysis) over a DEDICATED join CFG (`build_join_cfg`) that admits
+        `bx lr` returns (sinks) and calls (fall-through with a caller-saved
+        def-set), so branchy functions with calls/returns remain analyzable
+        instead of wholesale-declining. Entry seed = params R0-R3, SP, LR, AND the
+        RESERVED registers R9/R10/R11/R12 (`contracts::regalloc::RESERVED_REGS` -
+        R11 = linmem base etc., never allocated, resident by construction);
+        seeding them is REQUIRED to avoid a false positive on every
+        memory-touching branchy function (the block_brif_483 `nested` case: a
+        `str [r11,#off]` at a join, R11 defined nowhere in the stream - this lane
+        FOUND + FIXED that regression). RaFinalVerdict gains `NotAttempted {
+        reason }` - a LOUD honest decline when the join CFG cannot be built
+        (numeric branch, BrTable, computed Bx, duplicate label); NON-FATAL at the
+        arm_backend call site (only Violation hard-errors), so a construct the
+        checker cannot model never blocks a correct compile but is also never
+        silently passed. RED-FIRST non-vacuity extended (17 `ra003_*` tests): +2
+        RED assert the SPECIFIC violation (a caller-saved value live across a bl
+        -> CallerSavedLiveAcrossCall; a value in R4 on one join path but not the
+        other -> JoinValueNotAvailable), +4 GREEN (return-value-after-call,
+        callee-saved-across-call, both-paths-define, dominator-defined at a join),
+        +1 NotAttempted (BrTable -> loud decline). Vacuity-in-practice VERIFIED:
+        invariant 4 FIRES on real branchy codegen (if_else_result_343 /
+        cf_shapes_500 / block_brif_483 joins all Consistent, incl. a real R11
+        availability check) - not unit-tested-but-dead-in-shipping. 130-fixture
+        sweep: 0 false positives. CI-gated: the third
+        `vcr-ra-003-alloc-validator-gate` step runs
+        `scripts/repro/vcr_ra_003_phase2_join_call.py` over branchy/mem/call
+        fixtures (silent-on-real-branchy-codegen). Frozen-safe (emits nothing;
+        control_step 0x00210A55 / flight_algo 0x07FDF307 byte-identical, 10/10).
+        v2 (Rocq-mechanized soundness of the straight-line fragment) remains the
+        open step.
 
   - id: VCR-RA-004
     type: sw-req
