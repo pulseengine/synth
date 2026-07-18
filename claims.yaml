@@ -189,12 +189,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "585 Qed / 3 Admitted"
+    text: "591 Qed / 3 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 585
+        expect: 591
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -202,16 +202,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "585 Qed / 3 Admitted"
+    text: "591 Qed / 3 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '585 Qed / 3 Admitted'
+        pattern: '591 Qed / 3 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 585
+        expect: 591
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']

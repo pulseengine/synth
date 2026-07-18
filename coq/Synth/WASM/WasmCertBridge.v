@@ -9,10 +9,11 @@
       [exec_wasm_instr].
     - PHASE 3 (i64 batch, #242): add, sub, mul, and, or, xor, shl, shr_u,
       shr_s, rotl, rotr, eqz, eq, ne, lt_u, lt_s, gt_u, gt_s, le_u, le_s,
-      ge_u, ge_s — op-level refinement for all 22, plus executor-level for the
-      16 ops WIRED in [exec_wasm_instr] (the shifts, the two rotates, and the
-      11 comparisons (incl. eqz); see the named residual below for the 6 arithmetic/
-      bitwise ops the model does not yet route).
+      ge_u, ge_s — op-level refinement for all 22, plus executor-level for ALL
+      22 ops. As of the v0.50 wiring batch (#242) the six arithmetic/bitwise
+      ops (add/sub/mul/and/or/xor) are WIRED in [exec_wasm_instr] (pop2_i64 /
+      VI64, mirroring their i32 twins), so their executor-level refinement now
+      lands too — the former "op-level-only" residual is CLOSED.
     It is the WASM-side analogue of SailArmBridge.v's per-instruction bridge
     lemmas (VCR-ISA-001 / #667).
 
@@ -28,12 +29,13 @@
     wasmcert >= 2.2.1.
 
     NAMED RESIDUALS (not forced, not admitted):
-    - i64 add/sub/mul/and/or/xor have OP-LEVEL refinement only: synth's
-      [exec_wasm_instr] returns [None] for the [I64Add]/…/[I64Xor] constructors
-      (they are not wired in the model's match, unlike their i32 twins). Wiring
-      them is a semantics-model change, out of scope for a transcription batch.
-    - Remaining op coverage (div/rem trap rules, clz/ctz/popcnt, memory,
-      control flow) is the named follow-up for both widths.
+    - (CLOSED, v0.50 #242) i64 add/sub/mul/and/or/xor are now WIRED in
+      [exec_wasm_instr] and carry executor-level refinement — they previously
+      had OP-LEVEL refinement only because the model's match returned [None] for
+      those constructors. That gap is gone.
+    - Remaining op coverage (div/rem trap rules, clz/ctz/popcnt, the
+      wrap/extend/reinterpret conversions, memory, control flow) is the named
+      follow-up for both widths.
 
     NON-VACUITY (why a WRONG synth semantics fails this file):
     - No op-level lemma is [reflexivity]-only where a real gap exists:
@@ -652,14 +654,13 @@ Qed.
     helpers below are the wordsize-64 duplicates of the i32 helpers (the same
     raw-vs-normalized [Z.testbit] / shift-count-collapse content, at 2^64).
 
-    HONEST SCOPE (named residuals). Two classes are DELIBERATELY not given
-    executor-level refinement:
-    - i64 add/sub/mul/and/or/xor: synth's [exec_wasm_instr] returns [None] for
-      these constructors ([I64Add]/[I64Sub]/…/[I64Xor] are not wired in the
-      model's match, unlike their i32 counterparts). We prove the OP-LEVEL
-      refinement ([I64.op = wasmcert_i64_op], genuine raw-vs-normalized content),
-      and NAME the missing executor routing as a residual — wiring them into the
-      model is a semantics change, out of scope for a transcription batch.
+    HONEST SCOPE. As of the v0.50 wiring batch (#242) ALL 22 i64 integer ops
+    carry BOTH op-level and executor-level refinement:
+    - i64 add/sub/mul/and/or/xor: now WIRED in synth's [exec_wasm_instr]
+      ([I64Add]/[I64Sub]/…/[I64Xor], pop2_i64 / VI64, mirroring their i32
+      counterparts). Both the OP-LEVEL refinement ([I64.op = wasmcert_i64_op],
+      genuine raw-vs-normalized content) AND the executor-level routing are
+      proven — the former "op-level-only" residual is CLOSED.
     - i64 rotl/rotr: transcribed at the reference level (WasmCertReference.v) and
       proven op-level here; see the note at the rotate lemmas for the [n = 0]
       boundary discharge. *)
@@ -1026,6 +1027,87 @@ Proof.
     rewrite <- (i64_lor_mod_modulus (Z.shiftr (I64.unsigned x) n)
                  (Z.shiftl (I64.unsigned x) (64 - n))).
     reflexivity.
+Qed.
+
+(** ** i64 executor-level refinement: arithmetic + bitwise.
+    [exec_wasm_instr] pushes exactly the WasmCert reference result. These six
+    ops (add/sub/mul/and/or/xor) are now WIRED in the model's match (pop2_i64 /
+    VI64), so their executor-level refinement lands with the same shape as the
+    i32 twins and the i64 shifts — closing the former "op-level-only" residual.
+    If an op were miswired (wrong operation, wrong operand order, wrong stack
+    shape) the theorem would be unprovable: the pushed value is pinned to the
+    INDEPENDENT reference. *)
+
+Theorem i64_add_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Add s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_add v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_add_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_sub_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Sub s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_sub v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_sub_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_mul_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Mul s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_mul v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_mul_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_and_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64And s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_and v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_and_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_or_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Or s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_or v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_or_refines_wasmcert_op. reflexivity.
+Qed.
+
+Theorem i64_xor_exec_refines_wasmcert : forall v1 v2 s stack',
+  s.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Xor s =
+  Some (mkWasmState
+          (VI64 (wasmcert_i64_xor v1 v2) :: stack')
+          s.(locals) s.(globals) s.(memory)).
+Proof.
+  intros v1 v2 s stack' Hstack.
+  unfold exec_wasm_instr, pop2_i64, pop2. rewrite Hstack.
+  rewrite <- i64_xor_refines_wasmcert_op. reflexivity.
 Qed.
 
 (** ** i64 executor-level refinement: shifts.
