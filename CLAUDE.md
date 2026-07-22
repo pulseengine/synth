@@ -222,8 +222,24 @@ frozen and oracle-gated every step:
   exact-literal chain + recursion/indirect decline honesty + masked-recursion
   accept/reject) and the `wcet_phase4_49_recursion_soundness.py` unicorn cross-
   check (`md(0xFFFFFFFF)` executes 267 insns across all 16 frames ≤ 752 cyc,
-  entry-independent). Richer recursion certificates (clamp-bounded controlling
-  values, data-dependent depths, scry) are a named follow-up.
+  entry-independent). Phase 5 (#778): DATA-DEPENDENT masked-ceiling LOOP
+  certificates (`wcet_loops.rs`) — the scry seam extended past const-trip to a
+  loop whose exit bound is a MASKED value `i REL (x & K)`. `x & K ∈ [0, K]` for
+  ANY runtime `x` (`Sym::Masked`, mask sign-bit clear; base identity irrelevant),
+  so synth DERIVES the worst-case trip as the MAX over BOTH endpoints of `[0, K]`
+  (`rhs = K` and `rhs = 0`, both required to terminate — a single endpoint would
+  undercount a count-DOWN loop, the fatal class; the both-endpoints max is pinned
+  in `claims.yaml`). Like the equality-exit and recursion-depth seams it is
+  HINT-GATED (unhinted masked loop still declines `loop`) and DERIVE-not-trust
+  (emitted trip is synth's derived ceiling, source `mask-ceiling`); a too-low hint
+  → `hint-below-derived-trip`; an UNMASKED `i < param` (no entry-independent
+  ceiling) still LOUD-DECLINES `loop` + `hint-unverifiable-induction` (the mask is
+  the sole discriminator — the decline MOVED onto the masked shape, not widened to
+  every runtime bound). Gated by `wcet_bound_gate.rs` (count-up/-down accept +
+  unhinted/too-low/unmasked reject) and the `wcet_phase5_778_masked_loop_soundness.py`
+  unicorn cross-check (count-down `cd(0)` executes 180 insns ≤ 339 cyc). Richer
+  certificates (clamp-bounded controlling values, data-dependent recursion depths,
+  scry) are a named follow-up.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WCET phase 5 (#778) — data-dependent masked-ceiling loop certificates.** The
+  `--wcet-hints` scry seam now bounds a DATA-DEPENDENT loop whose exit bound is a
+  masked value `i REL (x & K)`. Because `x & K ∈ [0, K]` for ANY runtime `x`
+  (`Sym::Masked`, mask sign-bit clear), synth DERIVES the worst-case trip as the
+  MAX over both endpoints of `[0, K]` — a single endpoint would undercount a
+  count-DOWN loop (the fatal class). Hint-gated + derive-not-trust like the
+  equality-exit and recursion-depth seams (new source `mask-ceiling`). The decline
+  MOVED, not deleted: an unhinted masked loop still declines `loop`; a too-low hint
+  rejects `hint-below-derived-trip`; an UNMASKED `i < param` still declines
+  `hint-unverifiable-induction` (the mask is the sole discriminator). Frozen-safe
+  (WCET reads the final stream; `.text` byte-identical). New unicorn cross-check
+  `wcet_phase5_778_masked_loop_soundness.py` (count-down `cd(0)`: 180 insns ≤ 339
+  cyc); the both-endpoints max is pinned in `claims.yaml`.
+
 ## [0.49.0] - 2026-07-17
 
 **"Phase-2 frontier + falcon to zero" — the verified allocation validator went
