@@ -2137,6 +2137,146 @@ mod tests {
         });
     }
 
+    // --- i64 rem VALUE model (VCR-VER, #825/#836): native BvTerm::Urem ---
+    //
+    // The i64 rem_u/rem_s VC now asserts the VALUE, not just the trap. Under
+    // the old HAVOC model the register result was an unconstrained fresh
+    // symbol, so ANY lowering (correct, wrong-remainder, wrong-destination)
+    // trivially satisfied a value-only obligation — the model proved nothing.
+    // These tests pin the value model as load-bearing.
+
+    /// Build an i64 rem pseudo-op with a chosen DESTINATION register pair. The
+    /// shipped ABI is `rd = R0:R1`; a lowering that writes elsewhere leaves
+    /// R0:R1 unrelated to the remainder and must be REJECTED by the value VC.
+    fn i64_rem_with_dest(op: &WasmOp, rdlo: Reg, rdhi: Reg) -> Vec<ArmOp> {
+        let arm = match op {
+            WasmOp::I64RemU => ArmOp::I64RemU {
+                rdlo,
+                rdhi,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: false,
+            },
+            WasmOp::I64RemS => ArmOp::I64RemS {
+                rdlo,
+                rdhi,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: false,
+            },
+            _ => unreachable!("i64_rem_with_dest: not an i64 rem op"),
+        };
+        vec![arm]
+    }
+
+    /// GREEN: the shipped rem_u/rem_s lowering (`rd = R0:R1`) computes the
+    /// correct 64-bit remainder into the ABI return pair — the value+trap VC
+    /// must be Verified.
+    #[test]
+    fn i64_rem_shipped_value_is_verified() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [WasmOp::I64RemU, WasmOp::I64RemS] {
+                let arm_ops = shipped_i64_div_rem(&op, false, false);
+                let result = validator.verify_trap_preservation(&op, &arm_ops).unwrap();
+                assert_eq!(
+                    result,
+                    ValidationResult::Verified,
+                    "GREEN: {op:?} shipped lowering (correct value + ÷0 guard) must be Verified"
+                );
+            }
+        });
+    }
+
+    /// RED / NON-VACUITY (the key gate): a lowering that writes the remainder
+    /// to the WRONG destination pair (`rd = R2:R3` instead of the ABI `R0:R1`)
+    /// leaves R0:R1 holding the (unrelated) input operands, so the ABI return
+    /// pair is NOT the remainder. Under the old HAVOC model this was ACCEPTED
+    /// (the result symbol was unconstrained); the native `BvTerm::Urem` value
+    /// model now REJECTS it. This is the accepted-under-havoc → rejected-now
+    /// discriminator.
+    #[test]
+    fn i64_rem_wrong_destination_register_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [WasmOp::I64RemU, WasmOp::I64RemS] {
+                let arm_ops = i64_rem_with_dest(&op, Reg::R2, Reg::R3);
+                let result = validator.verify_trap_preservation(&op, &arm_ops).unwrap();
+                assert!(
+                    matches!(result, ValidationResult::Invalid { .. }),
+                    "RED: {op:?} writing the remainder to R2:R3 (not the ABI R0:R1) \
+                     leaves R0:R1 non-remainder — must be Invalid, got {result:?}"
+                );
+            }
+        });
+    }
+
+    /// NON-VACUITY control: the correct-destination and wrong-destination
+    /// lowerings must give OPPOSITE verdicts. A gate that returned the same
+    /// verdict for both (as the HAVOC model did — both trivially valued) would
+    /// be vacuous.
+    #[test]
+    fn i64_rem_destination_field_is_load_bearing() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [WasmOp::I64RemU, WasmOp::I64RemS] {
+                let correct = validator
+                    .verify_trap_preservation(&op, &i64_rem_with_dest(&op, Reg::R0, Reg::R1))
+                    .unwrap();
+                let wrong = validator
+                    .verify_trap_preservation(&op, &i64_rem_with_dest(&op, Reg::R2, Reg::R3))
+                    .unwrap();
+                assert_eq!(correct, ValidationResult::Verified, "{op:?} correct dest");
+                assert!(
+                    matches!(wrong, ValidationResult::Invalid { .. }),
+                    "{op:?} wrong dest"
+                );
+                assert_ne!(
+                    correct, wrong,
+                    "non-vacuity: {op:?} destination register must change the verdict"
+                );
+            }
+        });
+    }
+
+    /// EVIDENCE that the value model closed a real gap: the OLD trap-only VC
+    /// (`verify_i64_div_rem_trap_preservation`, still present for div) ACCEPTS
+    /// the wrong-destination rem lowering — it never reads the value — whereas
+    /// the NEW value VC (`verify_i64_rem_value_preservation`, dispatched by
+    /// `verify_trap_preservation`) REJECTS it. Opposite verdicts from the two
+    /// gates on the same input is the accepted-under-havoc → rejected-now
+    /// proof, made concrete rather than merely narrated.
+    #[test]
+    fn i64_rem_value_model_closes_a_trap_only_gap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [WasmOp::I64RemU, WasmOp::I64RemS] {
+                let wrong = i64_rem_with_dest(&op, Reg::R2, Reg::R3);
+                // Old trap-only path: value/destination invisible → accepted.
+                let trap_only = validator
+                    .verify_i64_div_rem_trap_preservation(&op, &wrong)
+                    .unwrap();
+                assert_eq!(
+                    trap_only,
+                    ValidationResult::Verified,
+                    "the trap-ONLY VC is blind to the wrong destination (this is the \
+                     havoc-era gap): {op:?} expected Verified, got {trap_only:?}"
+                );
+                // New value+trap path: destination is load-bearing → rejected.
+                let value = validator.verify_trap_preservation(&op, &wrong).unwrap();
+                assert!(
+                    matches!(value, ValidationResult::Invalid { .. }),
+                    "the value VC catches it: {op:?} expected Invalid, got {value:?}"
+                );
+                assert_ne!(trap_only, value, "the two gates must disagree ({op:?})");
+            }
+        });
+    }
+
     // --- call_indirect (LIVE at the pseudo-op guard level, #642/#664/#676) ---
 
     fn call_indirect_pseudo(
