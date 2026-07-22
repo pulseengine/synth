@@ -382,7 +382,17 @@ impl TranslationValidator {
             WasmOp::I32DivS | WasmOp::I32DivU | WasmOp::I32RemS | WasmOp::I32RemU => {
                 self.verify_div_rem_trap_preservation(wasm_op, arm_ops)
             }
-            WasmOp::I64DivS | WasmOp::I64DivU | WasmOp::I64RemS | WasmOp::I64RemU => {
+            // i64 rem_u/rem_s carry a REAL value model now (native
+            // `BvTerm::Urem`/`bvsrem` — VCR-VER, #825/#836): the VC asserts
+            // both the ÷0 trap AND the 64-bit remainder value, so a lowering
+            // that computes the wrong remainder — or writes it to the wrong
+            // register pair — is rejected. i64 div still leaves its 64-bit
+            // quotient symbolic (the full quotient value VC is not well-posed
+            // in QF_BV at that width), so it stays trap-condition-only.
+            WasmOp::I64RemU | WasmOp::I64RemS => {
+                self.verify_i64_rem_value_preservation(wasm_op, arm_ops)
+            }
+            WasmOp::I64DivS | WasmOp::I64DivU => {
                 self.verify_i64_div_rem_trap_preservation(wasm_op, arm_ops)
             }
             WasmOp::Unreachable => {
@@ -629,6 +639,119 @@ impl TranslationValidator {
             Self::i64_arm_trap_from_fields(div_op, &dividend, &divisor, elide_zero, elide_overflow);
 
         Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// i64 `rem_u`/`rem_s` **value + trap** preservation (VCR-VER, #825/#836).
+    ///
+    /// Unlike [`Self::verify_i64_div_rem_trap_preservation`] (trap-only, used
+    /// for div where the 64-bit quotient value VC is not well-posed), this
+    /// gate asserts the FULL obligation for remainder: on the non-trapping
+    /// path the ARM register pair `R0:R1` must equal the native 64-bit
+    /// unsigned/signed remainder of the operands, AND the ÷0 trap must be
+    /// preserved. It is what makes the [`ArmSemantics`] `I64RemU` model —
+    /// which now builds a real `BvTerm::Urem` term (ordeal 0.12) instead of
+    /// HAVOC — actually load-bearing: a wrong remainder computation, or one
+    /// that writes the answer to the wrong register pair, is now `Invalid`.
+    ///
+    /// # Operand / result convention (the shipped ABI, NOT the op's fields)
+    ///
+    /// The value is READ from the FIXED ABI return registers `R0` (low) /
+    /// `R1` (high) and the operands are SEEDED at the FIXED ABI argument
+    /// registers — dividend `R0:R1`, divisor `R2:R3`. Reading the op's own
+    /// `rd*` fields (or seeding its own `rn*`/`rm*`) would make the VC
+    /// vacuous (read tracks write); anchoring on the ABI is exactly what lets
+    /// a pseudo-op whose destination deviates from `R0:R1` be REJECTED.
+    ///
+    /// # Trap-guarded value (why not a raw `==`)
+    ///
+    /// A bare `arm_value == wasm_value` would also assert the value on the ÷0
+    /// path, where WASM has no value and SMT-LIB `bvurem`-by-0 = the dividend
+    /// (total) — a spurious obligation. Routing through
+    /// [`crate::trap::DefineOrTrap`] + [`crate::trap::prove_trap_equivalence`]
+    /// guards the value clause under non-trap. The single branch-free
+    /// pseudo-op keeps the value ite-free, so no straight-line rewrite is
+    /// needed (unlike the i32 guarded-div machinery).
+    pub fn verify_i64_rem_value_preservation(
+        &self,
+        wasm_op: &WasmOp,
+        arm_ops: &[ArmOp],
+    ) -> Result<ValidationResult, VerificationError> {
+        let Some(div_op) = crate::trap::div_op(wasm_op) else {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "i64 rem value gate applies to rem only, got {wasm_op:?}"
+            )));
+        };
+        if !matches!(wasm_op, WasmOp::I64RemU | WasmOp::I64RemS) {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "i64 rem value gate supports i64 rem_u/rem_s only, got {wasm_op:?}"
+            )));
+        }
+
+        // Require the pseudo-op to be present and read its ÷0 guard-elision
+        // field (the selector emits exactly one). The ARM trap term is
+        // reconstructed from this field — NOT from `encode_sequence_br`'s
+        // `may_trap`, which is `false` for a bare pseudo-op (it carries no
+        // expanded `UDF`) — exactly as the i64 trap-only VC does. A lowering
+        // that elides the ÷0 guard without discharging `divisor != 0` yields a
+        // strictly weaker ARM trap and is rejected.
+        let Some((elide_zero, _elide_overflow)) = Self::i64_div_rem_guard_fields(arm_ops) else {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "i64 rem value gate needs an I64Rem pseudo-op in the sequence, \
+                 got {arm_ops:?}"
+            )));
+        };
+
+        // Four independent 32-bit half-symbols. Seed them at the FIXED ABI
+        // argument registers: dividend lo:hi = R0:R1, divisor lo:hi = R2:R3.
+        let dividend_lo = BV::new_const("input_dividend_lo", 32);
+        let dividend_hi = BV::new_const("input_dividend_hi", 32);
+        let divisor_lo = BV::new_const("input_divisor_lo", 32);
+        let divisor_hi = BV::new_const("input_divisor_hi", 32);
+
+        let mut state = ArmState::new_symbolic();
+        state.set_reg(&Reg::R0, dividend_lo.clone());
+        state.set_reg(&Reg::R1, dividend_hi.clone());
+        state.set_reg(&Reg::R2, divisor_lo.clone());
+        state.set_reg(&Reg::R3, divisor_hi.clone());
+        self.arm_encoder
+            .encode_sequence_br(arm_ops, &mut state)
+            .map_err(VerificationError::UnsupportedOperation)?;
+
+        // ARM result read from the FIXED ABI return pair R0:R1 (concat puts
+        // self in the HIGH bits).
+        let arm_lo = self.arm_encoder.extract_result(&state, &Reg::R0);
+        let arm_hi = self.arm_encoder.extract_result(&state, &Reg::R1);
+        let arm_value = arm_hi.concat(&arm_lo); // 64-bit R1:R0
+
+        // WASM spec side: the 64-bit remainder of the SAME operand symbols.
+        // Both sides feed identical concats, so the valid case is structural.
+        let dividend = dividend_hi.concat(&dividend_lo); // 64-bit
+        let divisor = divisor_hi.concat(&divisor_lo); // 64-bit
+        let wasm_value = match wasm_op {
+            WasmOp::I64RemU => dividend.bvurem(&divisor),
+            WasmOp::I64RemS => dividend.bvsrem(&divisor),
+            _ => unreachable!("guarded above"),
+        };
+        let wasm_trap = crate::trap::trap_div(div_op, &dividend, &divisor);
+
+        // ARM trap: rem's only trap is ÷0; present iff the guard was NOT
+        // elided. rem carries no overflow clause, so `elide_overflow=false`.
+        let arm_may_trap = Self::i64_arm_trap_from_fields(
+            div_op, &dividend, &divisor, elide_zero, /* elide_overflow */ false,
+        );
+
+        let orig = crate::trap::DefineOrTrap {
+            value: wasm_value,
+            may_trap: wasm_trap,
+        };
+        let opt = crate::trap::DefineOrTrap {
+            value: arm_value,
+            may_trap: arm_may_trap,
+        };
+
+        Ok(Self::trap_verdict_to_result(
+            crate::trap::prove_trap_equivalence(&orig, &opt),
+        ))
     }
 
     /// Locate the i64 div/rem pseudo-op in a sequence and read its guard-elision
