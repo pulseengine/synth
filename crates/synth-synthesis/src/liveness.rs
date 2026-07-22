@@ -14478,4 +14478,68 @@ mod tests {
              available (the universe-init correctness case) — got a false positive"
         );
     }
+
+    // ---- VCR-DEC-001 graph-allocator RED-FIRST probe (SYNTH_GRAPH_ALLOC) ----
+    // Settles the load-bearing claim "the acceptance oracles gate the new
+    // allocator". Two distinct oracles cover distinct bug classes:
+    //
+    //  (A) verify_allocation(&graph, &assignment) — the allocator's OWN
+    //      self-check against the interference graph — catches the GENERIC
+    //      colouring bug (two interfering values assigned the same colour).
+    //  (B) validate_final_allocation (VCR-RA-003, unconditional) — catches the
+    //      structural bug classes whose reference lives in the emitted stream:
+    //      a callee-saved def without a prologue push (#490), spill aliasing.
+    //
+    // The probe below injects a same-colour-interfering assignment and confirms
+    // verify_allocation rejects it — the graph_alloc self-check is the primary
+    // colouring gate. (VCR-RA-003 is the backstop for the structural classes; a
+    // pure "two live values share a register with no push involved" merge is NOT
+    // what VCR-RA-003 models — hence the honest two-oracle claim, not one.)
+    #[test]
+    fn graph_alloc_bad_coloring_rejected_by_verify_allocation() {
+        // r0 = 1; r1 = 2; r2 = r0 + r1  — r0 and r1 are simultaneously live at
+        // the add, so they interfere and must differ.
+        let body = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let g = interference_graph(&body).expect("straight-line graph builds");
+        assert!(
+            g.interferes(Reg::R0, Reg::R1),
+            "r0 and r1 are simultaneously live at the add — must interfere"
+        );
+        // A DELIBERATELY BAD colouring: merge r0 and r1 onto colour 0.
+        let bad: BTreeMap<Reg, usize> = [(Reg::R0, 0), (Reg::R1, 0), (Reg::R2, 1)]
+            .into_iter()
+            .collect();
+        assert!(
+            matches!(
+                verify_allocation(&g, &bad),
+                Err(AllocationConflict::SameColor { .. })
+            ),
+            "the allocator's own graph self-check MUST reject two interfering \
+             values sharing a colour — this is the red-first gate for the \
+             generic colouring bug"
+        );
+        // A VALID colouring passes the same gate.
+        let good: BTreeMap<Reg, usize> = [(Reg::R0, 0), (Reg::R1, 1), (Reg::R2, 0)]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            verify_allocation(&g, &good),
+            Ok(()),
+            "a valid colouring (interfering r0/r1 differ) must pass"
+        );
+    }
 }
