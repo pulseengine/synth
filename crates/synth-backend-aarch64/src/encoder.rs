@@ -291,6 +291,27 @@ pub fn bcond(cond: Cond, imm19: i32) -> u32 {
     0x5400_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | cond.bcond_field()
 }
 
+/// `b #(imm26*4)` — unconditional PC-relative branch, offset in words (signed
+/// 26-bit). Used by the void-block control lowering to reach a forward block-end
+/// label. Clang ground truth: `b .+8` = 0x1400_0002 (imm26 = 2).
+pub fn b_uncond(imm26: i32) -> u32 {
+    0x1400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
+}
+
+/// `cbnz wt, #(imm19*4)` — compare-and-branch-if-nonzero, 32-bit form, offset in
+/// words (signed 19-bit). WASM `br_if` branches when the popped i32 condition is
+/// nonzero, so `cbnz w_cond, <block-end>` is the exact lowering. Clang ground
+/// truth: `cbnz w9, .+8` = 0x3500_0049 (imm19 = 2, Rt = 9).
+pub fn cbnz(rt: Reg, imm19: i32) -> u32 {
+    0x3500_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | (rt as u32)
+}
+
+/// `cbz wt, #(imm19*4)` — compare-and-branch-if-zero, 32-bit form. Symmetric
+/// partner of [`cbnz`]; kept for completeness. Clang: `cbz w9, .+8` = 0x3400_0049.
+pub fn cbz(rt: Reg, imm19: i32) -> u32 {
+    0x3400_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | (rt as u32)
+}
+
 /// `bic wd, wn, wm` — AND with complement (`wd = wn & !wm`). Used by the
 /// copysign lowering to clear the sign bit with the SAME mask register that
 /// isolates the source sign (one materialized mask instead of two).
@@ -777,5 +798,17 @@ mod tests {
         assert_eq!(bcond(Cond::Mi, 3), 0x5400_0064);
         assert_eq!(bic(0, 1, 2), 0x0A22_0020);
         assert_eq!(bic64(3, 4, 5), 0x8A25_0083);
+    }
+
+    #[test]
+    fn control_branch_encodings_match_clang() {
+        // Void-block control lowering: unconditional b, cbnz, cbz.
+        // clang -target aarch64: `b .+8` = 0x14000002; `cbnz w9,.+8` = 0x35000049;
+        // `cbz w9,.+8` = 0x34000049. Negative offsets use the signed field.
+        assert_eq!(b_uncond(2), 0x1400_0002);
+        assert_eq!(b_uncond(-2), 0x17FF_FFFE); // b .-8
+        assert_eq!(cbnz(9, 2), 0x3500_0049);
+        assert_eq!(cbz(9, 2), 0x3400_0049);
+        assert_eq!(cbnz(0, 3), 0x3500_0060); // cbnz w0, .+12
     }
 }

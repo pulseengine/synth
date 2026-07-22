@@ -87,11 +87,15 @@ impl Backend for AArch64Backend {
         };
         // m3: thread the per-param float masks so float params resolve to their
         // AAPCS64 V registers (an independent counter from the GP arg registers).
-        let words = selector::select_typed(
+        // #538 cf: also thread the decoder's blocktype-arity side-table so the
+        // void-block control-flow lowering can gate on `(0,0)` and loud-decline
+        // value-carrying (typed) blocks.
+        let words = selector::select_typed_cf(
             ops,
             num_params,
             &config.current_func_params_f32,
             &config.current_func_params_f64,
+            &config.current_func_block_arity,
         )
         .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
