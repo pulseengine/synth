@@ -175,6 +175,17 @@ pub enum WcetLoopBoundSource {
     /// trip count (divisibility + monotonicity + derived ≤ hint) before use. The
     /// emitted trip count is still synth's DERIVED value, never the raw hint.
     HintVerified,
+    /// (#778 phase 5) The loop's exit bound is a DATA-DEPENDENT masked ceiling
+    /// (`i REL (x & K)` for a runtime `x`): the real per-iteration bound lies in
+    /// `[0, K]` for ANY input (`x & K ∈ [0,K]`), so synth DERIVES the worst-case
+    /// trip as the MAX over both endpoints of that interval (`rhs = K` and
+    /// `rhs = 0`, both required to terminate) — an entry-independent ceiling.
+    /// Like [`HintVerified`] this is HINT-GATED: the derived trip is consumed
+    /// only under an explicit `--wcet-hints` entry the derived count respects
+    /// (`derived ≤ hint`); the emitted trip is synth's DERIVED value, never the
+    /// raw hint. A distinct source (not `HintVerified`) so the sidecar states the
+    /// extra data-dependent-ceiling assumption the bound rests on.
+    MaskCeiling,
 }
 
 /// One proven-bounded loop inside a bounded function (#778 phase 2). Loops are

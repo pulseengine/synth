@@ -239,6 +239,7 @@ pub(crate) fn analyze_recursion(
         add: base_pred.add,
         rel: base_pred.rel,
         rhs: base_pred.rhs,
+        masked_ceiling: None, // recursion derives its own depth via exit_index directly
     };
     // Endpoint reasoning is sound only when `exit_index` is MONOTONE in init over
     // `[0, mask]`. For a threshold predicate (<, <=, >, >=) it is. For an

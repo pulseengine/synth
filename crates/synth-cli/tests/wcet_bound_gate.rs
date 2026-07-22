@@ -1126,6 +1126,130 @@ fn conditional_decrement_recursion_rejected_unverifiable() {
     assert_hint_rejection(&report, "f", "hint-unverifiable-recursion", 15);
 }
 
+// ---------------------------------------------------------------------------
+// #778 phase 5 — DATA-DEPENDENT masked-ceiling loop certificates.
+//
+// The `loop` decline is CONVERTED for a data-dependent loop whose exit bound is
+// a MASKED value `x & K ∈ [0, K]` (entry-independent for ANY runtime `x`). synth
+// DERIVES the worst-case trip as the MAX over both endpoints of `[0, K]`
+// (`rhs = K` and `rhs = 0`, both required to terminate) — a single endpoint is
+// unsound for count-DOWN shapes. Like the equality-exit and recursion-depth
+// seams it is HINT-GATED (unhinted → still declines `loop`) and DERIVE-not-trust
+// (emitted trip is synth's derived ceiling, source `mask-ceiling`). RED-FIRST:
+// the wrong/unmasked rejections are asserted alongside the conversion, and the
+// UNMASKED `i < param` shape STILL declines (decline MOVED, not deleted).
+// ---------------------------------------------------------------------------
+
+/// COUNT-UP masked bound: `for i in 0.. while i < (param & 7)`. Real trips =
+/// `param & 7 ≤ 7`; worst case (any `x` with `x&7==7`) is 7. Head-test.
+const MASK_UP_WAT: &str = r#"
+    (module
+      (func (export "maskloop") (param i32) (result i32)
+        (local i32 i32)
+        (block
+          (loop
+            local.get 1 local.get 0 i32.const 7 i32.and i32.lt_s i32.eqz br_if 1
+            local.get 2 local.get 1 i32.add local.set 2
+            local.get 1 i32.const 1 i32.add local.set 1
+            br 0))
+        local.get 2))
+"#;
+
+/// COUNT-DOWN masked bound: counter 10 decrements while `counter > (param & 7)`.
+/// Real trips = `10 - (param & 7)`; WORST case is `param&7 == 0` → 10 trips. The
+/// load-bearing soundness fixture: a naive single-endpoint seed (`rhs = 7`) would
+/// derive 3 — a bound BELOW the real 10-iteration execution (the fatal class).
+/// The both-endpoints max derives 10.
+const MASK_DOWN_WAT: &str = r#"
+    (module
+      (func (export "cd") (param i32) (result i32)
+        (local i32 i32)
+        (local.set 1 (i32.const 10))
+        (block
+          (loop
+            local.get 1 local.get 0 i32.const 7 i32.and i32.gt_s i32.eqz br_if 1
+            local.get 2 i32.const 1 i32.add local.set 2
+            local.get 1 i32.const 1 i32.sub local.set 1
+            br 0))
+        local.get 2))
+"#;
+
+/// Unhinted, the masked-ceiling shape STAYS declined `loop` — the decline the
+/// hint seam converts (asserted so the conversion below is non-vacuous). A bound
+/// resting on a data-dependent ceiling is opt-in (mirroring the equality-exit and
+/// recursion-depth gates).
+#[test]
+fn masked_ceiling_loop_unhinted_still_declines() {
+    let report = compile_wcet(MASK_UP_WAT, "cortex-m4");
+    assert_declined(&report, "maskloop", "loop");
+}
+
+/// GREEN (count-up): a correct hint (7 ≥ synth's DERIVED ceiling 7) converts the
+/// `loop` decline into a bound. The emitted trip is synth's DERIVED value (7)
+/// with source `mask-ceiling` — never the raw hint. The exact bound literal (262)
+/// is pinned; a lowering change fails loud. unicorn ground truth
+/// (`wcet_phase5_778_masked_loop_soundness.py`): maskloop(0xFFFFFFFF)=r0 21, 138
+/// executed machine insns ≤ 262 (entry-independent).
+#[test]
+fn masked_ceiling_count_up_correct_hint_bounds() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"maskloop":{"loop_bounds":[7]}}}"#;
+    let report = compile_wcet_hinted(MASK_UP_WAT, "cortex-m4", Some(hints));
+    assert_bounded(&report, "maskloop", 262);
+    assert_loop(&report, "maskloop", 0, 7, "mask-ceiling");
+    assert_trip_floor(&report, "maskloop");
+}
+
+/// GREEN (count-down): the both-endpoints soundness case. The worst-case trip is
+/// at the `rhs = 0` endpoint (10 iterations), NOT the naive `rhs = K` endpoint
+/// (3). synth derives 10; a single-endpoint seed would have emitted a bound below
+/// a real execution. The pinned trip 10 (not 3) is the direct guard against that
+/// fatal class. unicorn: cd(0)=r0 10, 180 insns ≤ 339.
+#[test]
+fn masked_ceiling_count_down_uses_both_endpoints() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"cd":{"loop_bounds":[10]}}}"#;
+    let report = compile_wcet_hinted(MASK_DOWN_WAT, "cortex-m4", Some(hints));
+    assert_bounded(&report, "cd", 339);
+    assert_loop(&report, "cd", 0, 10, "mask-ceiling");
+    assert_trip_floor(&report, "cd");
+}
+
+/// RED: a too-LOW hint (3 < synth's derived ceiling 7) is REJECTED
+/// `hint-below-derived-trip` and the function STAYS declined — a wrong oracle
+/// claim never becomes a bound.
+#[test]
+fn masked_ceiling_too_low_hint_rejected_red_first() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"maskloop":{"loop_bounds":[3]}}}"#;
+    let report = compile_wcet_hinted(MASK_UP_WAT, "cortex-m4", Some(hints));
+    assert_declined(&report, "maskloop", "loop");
+    assert_hint_rejection(&report, "maskloop", "hint-below-derived-trip", 3);
+}
+
+/// DECLINE-HONESTY (the decline MOVED, not deleted): an UNMASKED data-dependent
+/// bound (`i < param`, no mask) has NO entry-independent ceiling. Even WITH a
+/// hint it STAYS declined `loop` with `hint-unverifiable-induction`. The mask is
+/// the sole discriminator (`param` is symbolic Top, never a masked ceiling); this
+/// is exactly `data_dependent_hint_is_rejected_unverifiable` above — asserting it
+/// here proves phase 5 MOVED the decline onto the masked shape rather than
+/// WIDENING acceptance to every runtime bound.
+#[test]
+fn unmasked_data_dependent_loop_stays_declined_with_hint() {
+    let wat = r#"
+        (module
+          (func (export "spin") (param i32) (result i32)
+            (local i32)
+            (block
+              (loop
+                local.get 1 local.get 0 i32.lt_s i32.eqz br_if 1
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 1))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"spin":{"loop_bounds":[100]}}}"#;
+    let report = compile_wcet_hinted(wat, "cortex-m4", Some(hints));
+    assert_declined(&report, "spin", "loop");
+    assert_hint_rejection(&report, "spin", "hint-unverifiable-induction", 100);
+}
+
 /// Assert `name` carries a hint rejection with EXACTLY `reason` and `hint`.
 fn assert_hint_rejection(report: &Value, name: &str, reason: &str, hint: u64) {
     let f = func(report, name);

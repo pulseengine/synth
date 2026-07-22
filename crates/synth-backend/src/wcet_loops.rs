@@ -147,6 +147,15 @@ pub(crate) struct Pred {
     pub(crate) add: i64,
     pub(crate) rel: Rel,
     pub(crate) rhs: i32,
+    /// (#778 phase 5) The DATA-DEPENDENT masked bound: when the compare RHS is a
+    /// masked value `x & K` (`K = masked_ceiling ≥ 0`), the real per-iteration
+    /// bound lies in `[0, K]` for ANY runtime input (`x & K ∈ [0,K]`). `rhs` is
+    /// then the ceiling `K` (the entry-independent worst case). The trip count is
+    /// derived as the MAX over both endpoints of the bound domain (`rhs = K` and
+    /// `rhs = 0`) — a single endpoint is unsound for count-DOWN shapes — and the
+    /// result is always HINT-GATED (opt-in, mirroring the equality-exit gate).
+    /// `None` for a normal const bound (unchanged phase-2 behavior).
+    pub(crate) masked_ceiling: Option<i32>,
 }
 
 impl Pred {
@@ -169,6 +178,13 @@ enum Sym {
     Slot { off: i64, add: i64 },
     /// A 0/1 boolean holding `pred`.
     Bool(Pred),
+    /// (#778 phase 5) A masked value `x & K` (`mask = K ≥ 0`), for ANY `x`. The
+    /// value is entry-independently bounded to `[0, K]` — the base identity is
+    /// irrelevant (`x & K ≤ K` regardless of what `x` holds), unlike the
+    /// recursion module's masked chain which needs the base identity for the
+    /// decrement. Used ONLY as a data-dependent loop-bound ceiling (the compare
+    /// RHS); the trip count it yields is always hint-gated.
+    Masked { mask: i32 },
 }
 
 /// Walk state: symbolic registers, slot writes since walk start, tainted slots
@@ -260,8 +276,22 @@ fn eval_pred(cond: Condition, flags: &Option<(Sym, Sym)>) -> Option<Pred> {
             add: *add,
             rel: Rel::of(cond),
             rhs: *c,
+            masked_ceiling: None,
         }),
-        // `cmp <bool>, #0` — the eqz / br_if lowering shape.
+        // (#778 phase 5) `cmp <counter slot>, <masked value>` — the counter is
+        // compared against a DATA-DEPENDENT masked bound `x & K ∈ [0, K]`. The
+        // ceiling `K` is the entry-independent worst case (`rhs = K`); the trip
+        // this yields is derived at BOTH endpoints of `[0, K]` and hint-gated.
+        (Sym::Slot { off, add }, Sym::Masked { mask }) => Some(Pred {
+            off: *off,
+            add: *add,
+            rel: Rel::of(cond),
+            rhs: *mask,
+            masked_ceiling: Some(*mask),
+        }),
+        // `cmp <bool>, #0` — the eqz / br_if lowering shape. The bool carries the
+        // ORIGINAL predicate (including any masked_ceiling), so a masked bound
+        // survives the SetCond→cmp#0 indirection.
         (Sym::Bool(p), Sym::Const(0)) => match cond {
             Condition::EQ => Some(p.negate()),
             Condition::NE => Some(*p),
@@ -304,6 +334,10 @@ struct Region {
     init: Option<i32>,
     /// Proven trip count (body executions) + whether it is hint-gated.
     trip: Option<(u64, bool)>,
+    /// (#778 phase 5) True when the exit bound is a DATA-DEPENDENT masked ceiling
+    /// (`x & K`) rather than a literal const — the accepted bound then carries
+    /// the `MaskCeiling` source so the sidecar states the extra assumption.
+    masked_bound: bool,
     /// Per-iteration execution-count factor for instructions in this region.
     factor: u128,
 }
@@ -370,6 +404,7 @@ pub(crate) fn analyze_loops(
             proof: None,
             init: None,
             trip: None,
+            masked_bound: false,
             factor: 1,
         });
     }
@@ -514,12 +549,15 @@ pub(crate) fn analyze_loops(
             r.trip = None;
             continue;
         };
+        r.masked_bound = match shape {
+            ExitShape::HeadTest(p) | ExitShape::BottomTest(p) => p.masked_ceiling.is_some(),
+        };
         r.trip = match shape {
-            ExitShape::HeadTest(p) => exit_index(init, step, &p),
+            ExitShape::HeadTest(p) => masked_exit_index(init, step, &p),
             ExitShape::BottomTest(p) => {
                 // Body n (n ≥ 1) enters with v = init + (n−1)·step and repeats
                 // while `pred` holds. K = 1 + (first m ≥ 0 where ¬pred fires).
-                exit_index(init, step, &p.negate())
+                masked_exit_index(init, step, &p.negate())
                     .and_then(|(m, h)| m.checked_add(1).map(|k| (k, h)))
             }
         };
@@ -551,12 +589,22 @@ pub(crate) fn analyze_loops(
                 }
                 (Some(k), WcetLoopBoundSource::Static)
             }
-            // Equality-exit (hint-gated): unhinted → keep the decline.
+            // Hint-gated shape (equality-exit OR data-dependent masked ceiling,
+            // #778 phase 5): unhinted → keep the `loop` decline. A bound resting
+            // on either assumption is opt-in.
             (Some((_, true)), None) => (None, WcetLoopBoundSource::Static),
-            // Equality-exit with a hint: consume ONLY if derived ≤ hint.
+            // Hint-gated shape WITH a hint: consume ONLY if derived ≤ hint. The
+            // accepted source distinguishes a masked ceiling from an equality
+            // exit so the sidecar states which assumption the bound rests on. The
+            // emitted trip is always synth's DERIVED value, never the raw hint.
             (Some((k, true)), Some(h)) => {
                 if k <= h {
-                    (Some(k), WcetLoopBoundSource::HintVerified)
+                    let source = if r.masked_bound {
+                        WcetLoopBoundSource::MaskCeiling
+                    } else {
+                        WcetLoopBoundSource::HintVerified
+                    };
+                    (Some(k), source)
                 } else {
                     rejections.push(rejection(
                         idx,
@@ -593,7 +641,9 @@ pub(crate) fn analyze_loops(
                     region_instr_count: r.closer - r.head + 1,
                     source,
                     hint: match source {
-                        WcetLoopBoundSource::HintVerified => hint,
+                        WcetLoopBoundSource::HintVerified | WcetLoopBoundSource::MaskCeiling => {
+                            hint
+                        }
                         WcetLoopBoundSource::Static => None,
                     },
                 });
@@ -897,9 +947,21 @@ fn sym_step(op: &ArmOp, st: &mut WalkState, store_events: &mut Vec<(i64, Sym)>) 
             st.kill_all_regs();
             st.flags = None;
         }
+        // (#778 phase 5) `And rd, _, #K` with a NON-NEGATIVE const mask yields a
+        // value in `[0, K]` for ANY input (`x & K ≤ K`, and `≥ 0` because K's
+        // sign bit is clear). A masked value with K's sign bit SET (`K < 0`,
+        // e.g. 0xFFFFFFFF) can be negative — the ceiling reasoning collapses —
+        // so only a non-negative mask is tracked; everything else kills rd.
+        And { rd, op2, .. } => {
+            let v = match st.op2(op2) {
+                Sym::Const(mask) if mask >= 0 => Sym::Masked { mask },
+                _ => Sym::Top,
+            };
+            st.set_reg(*rd, v);
+            st.flags = None;
+        }
         // Single-register-destination ALU ops: kill exactly rd.
-        And { rd, .. }
-        | Orr { rd, .. }
+        Orr { rd, .. }
         | Eor { rd, .. }
         | Rsb { rd, .. }
         | Mvn { rd, .. }
@@ -1147,6 +1209,55 @@ fn shift_slots(st: &mut WalkState, delta: i64) {
 /// with STATIC no-overflow checks over the whole counter walk in the
 /// predicate's signedness domain. Returns `(n, requires_hint)`; equality exits
 /// set `requires_hint` (consumed only under a verified `--wcet-hints` entry).
+/// (#778 phase 5) Trip count for an exit predicate that may carry a
+/// DATA-DEPENDENT masked bound. For a normal const bound (`masked_ceiling ==
+/// None`) this is exactly [`exit_index`]. For a masked bound `x & K ∈ [0, K]`
+/// the real per-iteration bound is somewhere in `[0, K]` for ANY runtime input,
+/// so the sound trip is the MAXIMUM over the whole bound domain:
+///
+/// - A single endpoint is UNSOUND. For a count-UP loop (`i < bound`) the worst
+///   case is the LARGEST bound (`K`); for a count-DOWN loop (`i > bound`) the
+///   worst case is the SMALLEST bound (`0`). Seeding only `rhs = K` would emit a
+///   bound BELOW a real count-down execution — the fatal class.
+/// - We evaluate `exit_index` at BOTH endpoints (`rhs = K` and `rhs = 0`),
+///   require BOTH to terminate (else the loop is not guaranteed-terminating for
+///   every masked value), and take the MAX trip. Because the trip is monotone in
+///   the bound for a threshold relation, the max over the two endpoints bounds
+///   the max over the whole `[0, K]` interval (and per-iteration-varying bounds,
+///   each `m_j ≤ K`, are covered too: a count-up exits by `counter = K`, a
+///   count-down's worst case is the `rhs = 0` endpoint).
+/// - For an Eq/Ne exit, an interior bound value can be MISSED by a step that does
+///   not divide the distance (the divisibility-divergence trap), so endpoint
+///   reasoning holds only when EVERY value in `[0, K]` is reachable — i.e.
+///   `|step| == 1`. A larger step with an Eq/Ne masked bound is declined.
+///
+/// The masked trip is ALWAYS hint-gated (the returned bool is forced true): a
+/// bound resting on a data-dependent ceiling is opt-in, mirroring the
+/// equality-exit gate. `None` propagates (unproven) whenever either endpoint
+/// fails to terminate or wraps.
+fn masked_exit_index(init: i32, step: i64, p: &Pred) -> Option<(u64, bool)> {
+    let Some(ceiling) = p.masked_ceiling else {
+        return exit_index(init, step, p);
+    };
+    debug_assert!(ceiling >= 0);
+    // Eq/Ne masked bound: only |step| == 1 keeps every interior value reachable.
+    if matches!(p.rel, Rel::Eq | Rel::Ne) && step.abs() != 1 {
+        return None;
+    }
+    let at = |rhs: i32| -> Option<u64> {
+        let pr = Pred {
+            rhs,
+            masked_ceiling: None,
+            ..*p
+        };
+        exit_index(init, step, &pr).map(|(k, _)| k)
+    };
+    let (hi, lo) = (at(ceiling)?, at(0)?);
+    // Force hint-gated: a data-dependent ceiling is only ever consumed under a
+    // verified --wcet-hints entry.
+    Some((hi.max(lo), true))
+}
+
 /// `None` = exit not statically guaranteed (or a possible wrap) → unproven.
 pub(crate) fn exit_index(init: i32, step: i64, p: &Pred) -> Option<(u64, bool)> {
     let s = step;
@@ -1256,6 +1367,7 @@ mod tests {
             add,
             rel,
             rhs,
+            masked_ceiling: None,
         }
     }
 
