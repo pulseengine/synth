@@ -54,14 +54,21 @@ from unicorn.arm_const import (
 )
 
 WAT = Path(__file__).with_name("i64_param_518.wat")
-# The DECLINE half: the i64-param sub-case that is still loud-skipped (not
-# lowered) — a REGISTER-resident i64 param in a frame-backing (has-call)
-# function. d_past_r3 (i64 param past R3 = on the caller's stack) was the
-# #503-i64 case and is now LOWERED: it moved to the emitted+executes set.
-# d_leaf is the control: a leaf i64 param IS emitted.
+# The DECLINE half — now fully LOWERED for every register-resident i64 param:
+#   * d_past_r3 (i64 param past R3 = on the caller's stack) was the #503-i64 case.
+#   * d_call (a REGISTER-resident i64 param in a frame-backing (has-call)
+#     function) was the last #518 sub-case, lowered by #837: the frame-backing
+#     param slot is now sized from the DECLARED AAPCS width, so the pair is homed
+#     into the frame and reloaded after the call. It moved from DECLINE_SKIPPED
+#     to the emitted+executes set. See framebacking_i64param_837_differential.py
+#     for the fuller gale-shape (mmio import + in-module call) execution oracle.
+# d_leaf is the control: a leaf i64 param IS emitted. DECLINE_SKIPPED is now
+# EMPTY — there is no register-resident i64-param shape that loud-skips (the only
+# remaining honest decline is the register-pair-exhaustion RETRY, which no static
+# fixture triggers; it is asserted by name in the selector, not here).
 DECLINE_WAT = Path(__file__).with_name("i64_param_518_decline.wat")
-DECLINE_SKIPPED = ["d_call"]                # must warn + be absent from symtab
-DECLINE_EMITTED = ["d_leaf", "d_past_r3"]   # must be emitted (non-vacuity)
+DECLINE_SKIPPED = []                              # nothing loud-skips anymore
+DECLINE_EMITTED = ["d_leaf", "d_past_r3", "d_call"]  # emitted + execute correctly
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 CODE, STK, RET, R11 = 0x100000, 0x900000, 0x300000, 0x20000000
 
@@ -202,9 +209,11 @@ def run_path(label, relocatable):
 
 
 def check_decline_contract():
-    """The unsupported i64-param sub-cases must LOUD-SKIP (warn + absent symbol),
-    never silently emit wrong code; a leaf i64 param must still be emitted AND
-    execute correctly (non-vacuity). Returns the number of failures."""
+    """Every register-resident i64-param shape must now be EMITTED and execute
+    correctly (d_leaf leaf, d_past_r3 stack-passed #503-i64, d_call frame-backed
+    across a call #837). DECLINE_SKIPPED is empty — the only remaining honest
+    decline (the register-pair-exhaustion retry) is asserted by name in the
+    selector, not by a static fixture. Returns the number of failures."""
     out = "/tmp/i518_decline.o"
     cmd = [SYNTH, "compile", str(DECLINE_WAT), "-o", out, "-b", "arm",
            "--target", "cortex-m4", "--all-exports", "--relocatable"]
@@ -238,6 +247,16 @@ def check_decline_contract():
         if fn == "d_leaf":
             # d_leaf: (param i64)(result i64) i64.add(p,3); run with p=7 -> 10
             ok = got_i64_leaf(code, base, syms[fn], 7) == leaf_expect(7)
+        elif fn == "d_call":
+            # d_call (#837): (param i64)(result i64)
+            # i64.add(p, i64.extend_i32_u(helper(7))); helper returns its arg, so
+            # = p + 7. Register-resident i64 param FRAME-BACKED across the call:
+            # the pair is homed into the frame and reloaded after the bl — the
+            # exact case #518 declined and #837 lowered. Needs the bl $helper
+            # (func_0) resolved so the call executes.
+            p = 0x1_0000_0009
+            ok = got_i64_dcall(out, base, syms[fn], p) == (
+                (p + 7) & 0xFFFFFFFFFFFFFFFF)
         else:
             # d_past_r3 (#503-i64): (param i32 i32 i32 i64)(result i64)
             # i64.add(p3,1); p3 arrives on the caller's stack at entry SP.
@@ -298,6 +317,56 @@ def got_i64_leaf(code, base, faddr, arg):
         (mu.reg_read(UC_ARM_REG_R1) & 0xFFFFFFFF) << 32)
 
 
+def got_i64_dcall(elf, base, faddr, arg):
+    """d_call (#837): resolve the in-module `bl func_N` (helper) reloc so the call
+    executes, then run the frame-backed i64-param function at CODE. `base` is the
+    .text sh_addr; the image is loaded at CODE, so relocs resolve against CODE."""
+    import struct
+    f = ELFFile(open(elf, "rb"))
+    text = bytearray(f.get_section_by_name(".text").data())
+    st = next(s for s in f.iter_sections() if s.header.sh_type == "SHT_SYMTAB")
+    fsyms = {s.name: s["st_value"] for s in st.iter_symbols()
+             if s.name and s["st_info"]["type"] == "STT_FUNC"}
+    relsec = f.get_section_by_name(".rel.text")
+    if relsec is not None:
+        for r in relsec.iter_relocations():
+            if r["r_info_type"] != 10:  # THM_CALL only (all internal here)
+                continue
+            sym = st.get_symbol(r["r_info_sym"])
+            off = r["r_offset"]
+            S = (CODE + fsyms[sym.name]) & ~1
+            P = CODE + off + 4
+            disp = S - P
+            imm = (disp >> 1) & 0x3FFFFF
+            s = (imm >> 21) & 1
+            i1 = (imm >> 20) & 1
+            i2 = (imm >> 19) & 1
+            j1 = (~i1 & 1) ^ s
+            j2 = (~i2 & 1) ^ s
+            imm10 = (imm >> 11) & 0x3FF
+            imm11 = imm & 0x7FF
+            hi = 0xF000 | (s << 10) | imm10
+            lo = 0xD000 | (j1 << 13) | (j2 << 11) | imm11
+            struct.pack_into("<HH", text, off, hi, lo)
+    foff = (faddr & ~1) - base
+    mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+    mu.mem_map(CODE, 0x20000)
+    mu.mem_map(STK - 0x10000, 0x20000)
+    mu.mem_map(RET & ~0xFFF, 0x1000)
+    mu.mem_write(CODE, bytes(text))
+    mu.reg_write(UC_ARM_REG_SP, STK)
+    mu.reg_write(UC_ARM_REG_R11, R11)
+    mu.reg_write(UC_ARM_REG_R0, arg & 0xFFFFFFFF)
+    mu.reg_write(UC_ARM_REG_R1, (arg >> 32) & 0xFFFFFFFF)
+    mu.reg_write(UC_ARM_REG_LR, RET | 1)
+    try:
+        mu.emu_start((CODE + foff) | 1, RET, count=100000)
+    except UcError as e:
+        return f"ERR:{e}"
+    return (mu.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF) | (
+        (mu.reg_read(UC_ARM_REG_R1) & 0xFFFFFFFF) << 32)
+
+
 def main():
     opt_div, opt_ctrl = run_path("OPTIMIZED (--target cortex-m4)", relocatable=False)
     rel_div, rel_ctrl = run_path("DIRECT (--relocatable)", relocatable=True)
@@ -326,9 +395,10 @@ def main():
         if total == 0:
             print("RESULT: PASS — both paths match wasmtime on every leaf i64-param "
                   "function across the full AAPCS matrix, the #503-i64 stack-param "
-                  "case (d_past_r3) is emitted and correct, AND the remaining "
-                  "unsupported sub-case (frame-backed REGISTER i64 param, d_call) "
-                  "loud-skips rather than miscompiles. #518 fixed.")
+                  "case (d_past_r3) is emitted and correct, AND the frame-backed "
+                  "REGISTER i64 param across a call (d_call) is now emitted and "
+                  "executes correctly (#837). #518 i64-param class complete for "
+                  "every register-resident shape.")
             sys.exit(0)
         print(f"RESULT: FAIL — {opt_div + rel_div} value divergence(s) + "
               f"{decline_fails} decline-contract failure(s); #518 not fully fixed.")

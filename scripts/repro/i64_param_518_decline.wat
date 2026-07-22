@@ -1,19 +1,20 @@
-;; #518 — the DECLINE half of the fix, minus what #503-i64 closed. The leaf,
-;; register-resident i64-param cases are lowered correctly (see
-;; i64_param_518.wat); the REMAINING sub-case is declined LOUDLY (a
-;; `warning: skipping function …` + absence from the symbol table) rather than
-;; silently miscompiled, because its correct lowering is a tracked follow-up:
+;; #518 — historically the DECLINE half of the fix. Every register-resident
+;; i64-param case is now LOWERED and executes correctly; this fixture is kept as
+;; the non-vacuity + AAPCS-matrix guard (all three functions emit + run):
 ;;   - d_call: a REGISTER-resident i64 param in a function that CONTAINS A
 ;;     CALL — params are frame-backed to survive the call's caller-saved
-;;     clobber, and that param_slots path sizes an i64 param's slot from a
-;;     width set that excludes params, dropping the high half. Declined until
-;;     the frame-backed i64 path lands.
+;;     clobber. #518 declined it because that param_slots path sized an i64
+;;     param's slot from a width set (`i64_set`) that EXCLUDES params, dropping
+;;     the high half. #837 sizes it from the DECLARED AAPCS width, so the pair
+;;     is homed into the frame (`I64Str`) and reloaded after the call (`I64Ldr`):
+;;     now emitted + executes correctly (d_call(p) = p + 7). The fuller gale
+;;     gust:os/timer shape (mmio import + in-module call) is exercised by
+;;     framebacking_i64param_837_differential.py.
 ;;   - d_past_r3 (an i64 param AAPCS-passed PAST R3, on the caller's stack)
-;;     was the #503-i64 stack-param case and is now LOWERED (width-aware
+;;     was the #503-i64 stack-param case and is LOWERED (width-aware
 ;;     `aapcs_param_layout` incoming homing): emitted + executes correctly,
 ;;     gated below and by i64_stack_param_503_differential.py.
-;; d_leaf is the control: a leaf register-resident i64 param IS emitted (proves
-;; the decline is specific to d_call, not a blanket i64-param refusal).
+;; d_leaf is the control: a leaf register-resident i64 param IS emitted.
 (module
   (func $helper (param i32) (result i32) (local.get 0))
 

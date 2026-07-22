@@ -1639,7 +1639,21 @@ fn compute_local_layout(
             }
         }
         for &p in &used_params {
-            let is_i64 = i64_set.contains(&p);
+            // #837: a frame-backed param's slot width is its DECLARED AAPCS
+            // width, not `i64_set` (which infers i64 *locals* from the op
+            // stream and never contains params — an i64 VALUE param whose body
+            // only reads it produces no i64-named op for a param index). Sizing
+            // from `i64_set` alone gave a wide param a 4-byte slot + `is_i64 =
+            // false`, dropping its high half — the exact reason the frame-
+            // backing i64/f64-param case was loud-declined at `select_with_stack`
+            // (#518). Consult `params_i64` (which lumps i64/f64) so R0:R1 or
+            // R2:R3 is homed as an 8-byte pair via `I64Str` and reloaded via
+            // `I64Ldr` (both already `is_i64`-aware). For an all-i32 signature
+            // `params_i64` is all-false ⇒ byte-identical to the old `i64_set`
+            // result (i64 *locals* are non-params, so `i64_set.contains(&p)`
+            // for a param index `p < num_params` was already always false).
+            let is_i64 =
+                params_i64.get(p as usize).copied().unwrap_or(false) || i64_set.contains(&p);
             if is_i64 && (offset % 8) != 0 {
                 offset += 4;
             }
@@ -9310,14 +9324,31 @@ impl InstructionSelector {
                 && param_layout.regs.contains_key(&i)
         });
         if has_reg_i64_param {
-            let has_call = wasm_ops
-                .iter()
-                .any(|op| matches!(op, Call(_) | CallIndirect { .. }));
-            if has_call || self.param_backing_on_exhaustion {
+            // #837: the frame-backing-with-CALL case is now LOWERED. A
+            // register-resident i64/f64 param in a function that contains a call
+            // homes its AAPCS even-aligned pair (R0:R1 or R2:R3) into an 8-byte
+            // frame slot in the prologue (`param_slots` now sizes it from the
+            // DECLARED width, above), survives the call's caller-saved clobber
+            // in the frame, and is reloaded as a pair via `I64Ldr` after — the
+            // store/reload machinery (prologue homing, LocalGet/Set/Tee) was
+            // already `is_i64`-aware; only the slot width was wrong. The
+            // past-R3 STACK-passed wide param never reached this guard
+            // (`param_layout.regs` excludes it) — it flows through
+            // `incoming_params` and has compiled since #503-i64.
+            //
+            // The one residual that still LOUD-DECLINES by name (decline >
+            // guess): the register-pair-exhaustion RETRY
+            // (`param_backing_on_exhaustion`) forces param backing on a
+            // call-FREE function whose i64-param homing across the retry's
+            // spill choreography is UNVERIFIED by a red→green fixture — kept
+            // declining until it has its own execution oracle rather than
+            // silently enabled.
+            if self.param_backing_on_exhaustion {
                 return Err(synth_core::Error::synthesis(
-                    "#518: an i64/f64 param in a frame-backing function (contains a \
-                     call, or the register-pair-exhaustion retry) is not yet \
-                     lowered — the param_slots path drops the high half"
+                    "#518/#837: an i64/f64 param in the register-pair-exhaustion \
+                     retry (force_param_backing on a call-free function) is not \
+                     yet lowered — the frame-backing-with-call case is handled, \
+                     but the exhaustion retry lacks an execution oracle"
                         .to_string(),
                 ));
             }
@@ -19225,12 +19256,16 @@ mod tests {
         );
     }
 
-    /// #503-i64: a wide STACK param in a has-call function lowers (it lives in
-    /// the caller's frame, surviving the BL without a backing slot), while a
-    /// wide REGISTER param in a has-call function keeps the #518 loud decline
-    /// (its `param_slots` backing would drop the high half).
+    /// #503-i64 + #837: a wide STACK param in a has-call function lowers (it
+    /// lives in the caller's frame, surviving the BL without a backing slot),
+    /// and a wide REGISTER param in a has-call function NOW ALSO lowers (#837):
+    /// its AAPCS pair is homed into an 8-byte frame slot (`I64Str`) in the
+    /// prologue and reloaded (`I64Ldr`) after the call — the pair survives the
+    /// caller-saved clobber in the frame. The one residual that still
+    /// LOUD-DECLINES is the register-pair-exhaustion RETRY
+    /// (`param_backing_on_exhaustion`), asserted below.
     #[test]
-    fn test_503_wide_stack_param_with_call_lowers_reg_still_declines() {
+    fn test_837_wide_reg_param_with_call_lowers_frame_backed() {
         let db = RuleDatabase::new();
         // (i32 i32 i32 i32 i64) + call: the i64 is stack-passed -> lowers.
         let mut selector = InstructionSelector::new(db.rules().to_vec());
@@ -19241,15 +19276,40 @@ mod tests {
             selector.select_with_stack(&ops, 5).is_ok(),
             "a wide STACK param + call must lower (caller-frame slot)"
         );
-        // (i64) + call: the i64 is REGISTER-resident -> #518 decline stands.
+        // (i64) + call: the i64 is REGISTER-resident -> #837 frame-backs it and
+        // homes it as an 8-byte pair. The lowering must emit an I64Str (prologue
+        // homing) and an I64Ldr (reload after the call), never dropping the hi.
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_params_i64(vec![true]);
         selector.set_func_arg_counts(vec![0, 0], Vec::new());
         let ops = vec![WasmOp::Call(1), WasmOp::LocalGet(0), WasmOp::Drop];
+        let arm = selector
+            .select_with_stack(&ops, 1)
+            .expect("#837: a wide REGISTER param + call must now lower (frame-backed pair)");
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Str { addr, .. }
+                if addr.base == Reg::SP)),
+            "the i64 param pair must be homed into the frame via I64Str [sp,#off]: {arm:#?}"
+        );
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Ldr { addr, .. }
+                if addr.base == Reg::SP)),
+            "the i64 param pair must be reloaded via I64Ldr [sp,#off] after the call: {arm:#?}"
+        );
+
+        // The residual honesty decline: the register-pair-exhaustion RETRY
+        // (force_param_backing on a call-FREE function) still LOUD-DECLINES by
+        // name until it has its own execution oracle.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_params_i64(vec![true]);
+        selector.set_param_backing_on_exhaustion(true);
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Drop];
         let r = selector.select_with_stack(&ops, 1);
         assert!(
-            r.as_ref().is_err_and(|e| e.to_string().contains("#518")),
-            "a wide REGISTER param + call must keep the #518 loud decline: {r:?}"
+            r.as_ref().is_err_and(|e| e.to_string().contains("#837")),
+            "the exhaustion-retry i64 param must keep the loud decline: {r:?}"
         );
     }
 
