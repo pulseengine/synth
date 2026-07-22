@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, SelectorOptions, select_with_result_types};
+use crate::selector::{RvBoundsMode, SelectorOptions, select_with_params_i64};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -85,9 +85,15 @@ impl Backend for RiscVBackend {
             // an argument-register home. None when the driver supplied no
             // arg-count table (hand-built modules) — pure inference, as before.
             let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            let func_config = if declared_params.is_some() {
+            // Per-function i64/f64 PARAM mask (#518/#312 twin): feeds the
+            // selector's honest i64-param loud-decline. Without it an i64 param
+            // read by a `pop_any` consumer (e.g. `select`) was silently read as
+            // a single i32 register (v0.50 Lane-7 soundness sweep).
+            let declared_params_i64 = config.func_params_i64.get(func.index as usize).cloned();
+            let func_config = if declared_params.is_some() || declared_params_i64.is_some() {
                 Some(CompileConfig {
                     current_func_param_count: declared_params,
+                    current_func_params_i64: declared_params_i64.unwrap_or_default(),
                     ..config.clone()
                 })
             } else {
@@ -203,12 +209,15 @@ fn compile_function_with_opts(
     let num_params = effective_num_params(ops, config);
     // #312: pass the decoder's "returns i64" tables down so call-fed i64
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
-    let selection = select_with_result_types(
+    // Plus the i64/f64 PARAM mask so an i64-param read hits the honest
+    // loud-decline instead of a silent i32 misread (v0.50 Lane-7 sweep).
+    let selection = select_with_params_i64(
         ops,
         num_params,
         opts,
         &config.func_ret_i64,
         &config.type_ret_i64,
+        &config.current_func_params_i64,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -382,12 +391,13 @@ fn compile_to_riscv_ops(
     _compiled: &CompiledFunction,
 ) -> Result<Vec<crate::riscv_op::RiscVOp>, BackendError> {
     let num_params = effective_num_params(ops, config);
-    let selection = select_with_result_types(
+    let selection = select_with_params_i64(
         ops,
         num_params,
         opts,
         &config.func_ret_i64,
         &config.type_ret_i64,
+        &config.current_func_params_i64,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)

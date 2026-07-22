@@ -34,6 +34,6 @@ pub use register::{Reg, RegClass};
 pub use riscv_op::{Branch, Csr, RiscVOp};
 pub use selector::{
     RiscVSelection, RvBoundsMode, SelectorError, SelectorOptions, select_simple,
-    select_with_options, select_with_result_types,
+    select_with_options, select_with_params_i64, select_with_result_types,
 };
 pub use startup::{RiscVStartupGenerator, StartupConfig};

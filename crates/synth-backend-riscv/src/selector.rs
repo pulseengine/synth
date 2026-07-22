@@ -197,6 +197,34 @@ pub fn select_with_result_types(
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
+    select_with_params_i64(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        &[],
+    )
+}
+
+/// Same as [`select_with_result_types`], plus the per-function i64/f64 PARAM
+/// mask (`params_i64[k]` true ⇒ param `k` is a 64-bit value). Threaded so an
+/// i64-param `local.get`/`set`/`tee` hits the honest loud-decline guard
+/// (#312) instead of being silently treated as a single-register i32 — the
+/// RV32 twin of the ARM #518 param-classification fix. Without this seed
+/// `infer_i64_locals` (which learns width only from `LocalSet`/`LocalTee`)
+/// never classifies an i64 param, so a body that reads i64 params through a
+/// `pop_any` consumer (e.g. `select`) miscompiled silently (v0.50 Lane-7
+/// soundness sweep): the params were read as i32, the wrong register became
+/// the condition, and the high half was dropped.
+pub fn select_with_params_i64(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    params_i64: &[bool],
+) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
     //
@@ -233,6 +261,7 @@ pub fn select_with_result_types(
         options,
         func_ret_i64,
         type_ret_i64,
+        params_i64,
         promote_locals,
         cmp_select_fuse,
     )
@@ -255,12 +284,14 @@ pub fn select_with_result_types(
 /// all charged by construction (#511: measure emitted bytes, don't trust a
 /// side model). Subsets matter: one local's win must not smuggle another
 /// local's loss past the gate.
+#[allow(clippy::too_many_arguments)]
 fn select_inner(
     wasm_ops: &[WasmOp],
     num_params: u32,
     options: SelectorOptions,
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    params_i64: &[bool],
     promote_locals: bool,
     cmp_select_fuse: bool,
 ) -> Result<RiscVSelection, SelectorError> {
@@ -275,6 +306,7 @@ fn select_inner(
         options,
         func_ret_i64,
         type_ret_i64,
+        params_i64,
         false,
         None,
         cmp_select_fuse,
@@ -290,6 +322,7 @@ fn select_inner(
         options,
         func_ret_i64,
         type_ret_i64,
+        params_i64,
         true,
         None,
         cmp_select_fuse,
@@ -318,6 +351,7 @@ fn select_inner(
             options,
             func_ret_i64,
             type_ret_i64,
+            params_i64,
             true,
             Some(&subset),
             cmp_select_fuse,
@@ -362,6 +396,7 @@ fn select_attempt(
     options: SelectorOptions,
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    params_i64: &[bool],
     promote_locals: bool,
     promo_allow: Option<&std::collections::HashSet<u32>>,
     cmp_select_fuse: bool,
@@ -369,6 +404,7 @@ fn select_attempt(
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
+    ctx.params_i64 = params_i64.to_vec();
     ctx.promote_locals = promote_locals;
     ctx.promo_allow = promo_allow.cloned();
     ctx.cmp_select_fuse = cmp_select_fuse;
@@ -1148,6 +1184,14 @@ struct Selector {
     /// bail out honestly — the RV32 i64-*param* ABI (an i64 param occupies an
     /// aligned even/odd a-register pair per the psABI) is not modeled yet.
     i64_locals: std::collections::HashSet<u32>,
+    /// Per-function i64/f64 PARAM mask (`params_i64[k]` true ⇒ param `k` is a
+    /// 64-bit value). Seeds `i64_locals` with the i64 param indices in
+    /// `compute_local_layout` so an i64-param `local.get`/`set`/`tee` hits the
+    /// honest loud-decline guard (#312) rather than being read as one i32
+    /// register. Empty = legacy (every param treated as i32) — the pre-fix
+    /// silent-miscompile behaviour, retained only for the unit-test entry
+    /// points that pass no signature (they never exercise i64 params).
+    params_i64: Vec<bool>,
     /// #312: per-function "returns i64" table (full wasm function index,
     /// imports first). Empty = treat every call result as i32 (legacy).
     func_ret_i64: Vec<bool>,
@@ -1220,6 +1264,7 @@ impl Selector {
             local_offsets: std::collections::HashMap::new(),
             local_frame_bytes: 0,
             i64_locals: std::collections::HashSet::new(),
+            params_i64: Vec::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             promoted: std::collections::HashMap::new(),
@@ -1242,6 +1287,21 @@ impl Selector {
         use std::collections::BTreeSet;
         self.i64_locals =
             synth_synthesis::infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        // Seed the i64/f64 PARAM indices. `infer_i64_locals` learns a local's
+        // width only from `LocalSet`/`LocalTee`, so an i64 param that is only
+        // READ (e.g. `local.get 0; local.get 1; local.get 2; select`) was never
+        // classified — the param was treated as a single i32 register, the wrong
+        // register became the `select` condition and the high half was dropped
+        // (v0.50 Lane-7 soundness sweep; the RV32 twin of ARM #518). With the
+        // param index in `i64_locals`, `lower_local_get`/`_set`/`_tee` take the
+        // honest #312 loud-decline (i64-param ABI not yet modelled) instead of
+        // the silent misread. Byte-neutral: functions with no i64 param have an
+        // empty mask; declining a function emits nothing.
+        for (idx, &is_i64) in self.params_i64.iter().enumerate() {
+            if is_i64 {
+                self.i64_locals.insert(idx as u32);
+            }
+        }
         // #472: VCR-RA local promotion — default-on (SYNTH_RV_LOCAL_PROMO=0
         // opts out). Under the opt-out the map is empty, every local falls to
         // the frame path below, and codegen is byte-identical to the pre-lever
