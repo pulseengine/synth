@@ -2,6 +2,7 @@
 
 pub mod contracts;
 pub mod control_flow;
+pub mod graph_alloc;
 pub mod instruction_selector;
 pub mod liveness;
 pub mod optimizer_bridge;

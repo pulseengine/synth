@@ -172,8 +172,10 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
 }
 
 /// True if `op` is straight-line (no branch / label / call) and therefore safe
-/// to include in a local, single-block analysis.
-fn is_straight_line(op: &ArmOp) -> bool {
+/// to include in a local, single-block analysis. `pub` so the VCR-DEC-001
+/// graph-colouring allocator ([`crate::graph_alloc`]) can share the exact
+/// straight-line predicate this module's analyses use.
+pub fn is_straight_line(op: &ArmOp) -> bool {
     use ArmOp::*;
     !matches!(
         op,
