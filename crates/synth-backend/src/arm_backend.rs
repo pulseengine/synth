@@ -237,31 +237,10 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
 }
 
 /// #539: fold the `i32.const 0; memory.grow m` idiom to `memory.size m`.
-/// `memory.grow(0)` always succeeds and returns the current page count (WASM
-/// Core §4.4.7), which is exactly `memory.size`; the fixed-memory backend
-/// otherwise emits a constant `-1` for every `memory.grow`, so the legal
-/// `memory.grow(0)` "read/validate current size" idiom wrongly reported failure.
-/// Only the ADJACENT const-0 delta is folded (a non-zero delta keeps the sound
-/// `-1` — fixed memory genuinely cannot grow; a runtime-computed 0 is a
-/// documented follow-up). Backend- and path-agnostic: `memory.size` reads the
-/// runtime memory-size register on every selector, so this fixes the optimized
-/// and direct paths at once.
-fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
-    let mut out = Vec::with_capacity(wasm_ops.len());
-    let mut i = 0;
-    while i < wasm_ops.len() {
-        if matches!(wasm_ops[i], WasmOp::I32Const(0))
-            && let Some(WasmOp::MemoryGrow(m)) = wasm_ops.get(i + 1)
-        {
-            out.push(WasmOp::MemorySize(*m));
-            i += 2;
-        } else {
-            out.push(wasm_ops[i].clone());
-            i += 1;
-        }
-    }
-    out
-}
+/// Moved to `synth_core::rewrite_memory_grow_zero` (#242, VCR-SEL-005) so the
+/// ARM and RISC-V backends share ONE implementation and cannot drift; re-export
+/// here keeps the existing `rewrite_memory_grow_zero(...)` call sites working.
+use synth_core::rewrite_memory_grow_zero;
 
 /// #509: does the op stream contain a `br`/`br_if`/`br_table` that CARRIES a
 /// value — i.e. one targeting a result-typed block/if (forward edge with

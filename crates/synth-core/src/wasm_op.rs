@@ -489,3 +489,72 @@ pub enum WasmOp {
     F32x4ExtractLane(u8), // f32x4.extract_lane
     F32x4ReplaceLane(u8), // f32x4.replace_lane
 }
+
+/// Fold `i32.const 0; memory.grow` → `memory.size` up front, on every backend.
+///
+/// WASM Core §4.4.7: growing a memory by ZERO pages can never fail — it returns
+/// the current size. But every backend's `memory.grow` lowering on FIXED
+/// (non-growable) linear memory returns the "grow failed" sentinel `-1`, which
+/// would wrongly report failure for the legal `memory.grow(0)` "read current
+/// size" idiom. Rewriting the const-0 case to the semantically identical
+/// `memory.size` BEFORE selection fixes it uniformly. (A runtime-variable page
+/// count that happens to be 0 still lowers to `-1` — that is a documented
+/// follow-up, not this fold's concern; only the SYNTACTIC `i32.const 0` form is
+/// the well-known idiom.)
+///
+/// Shared by the ARM (`synth-backend`) and RISC-V (`synth-backend-riscv`)
+/// backend entry points so the two cannot drift (#242, VCR-SEL-005) — it lives
+/// here in `synth-core` next to `WasmOp` because both crates depend on it.
+pub fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
+    let mut out = Vec::with_capacity(wasm_ops.len());
+    let mut i = 0;
+    while i < wasm_ops.len() {
+        if matches!(wasm_ops[i], WasmOp::I32Const(0))
+            && let Some(WasmOp::MemoryGrow(m)) = wasm_ops.get(i + 1)
+        {
+            out.push(WasmOp::MemorySize(*m));
+            i += 2;
+        } else {
+            out.push(wasm_ops[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod grow_zero_tests {
+    use super::*;
+
+    #[test]
+    fn folds_const_zero_grow_to_size() {
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(0), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::MemorySize(0)]
+        );
+    }
+
+    #[test]
+    fn leaves_nonzero_grow_alone() {
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(2), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::I32Const(2), WasmOp::MemoryGrow(0)]
+        );
+    }
+
+    #[test]
+    fn leaves_variable_grow_alone() {
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::LocalGet(0), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::LocalGet(0), WasmOp::MemoryGrow(0)]
+        );
+    }
+
+    #[test]
+    fn preserves_memory_index() {
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(0), WasmOp::MemoryGrow(3)]),
+            vec![WasmOp::MemorySize(3)]
+        );
+    }
+}

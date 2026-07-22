@@ -189,6 +189,12 @@ fn build_options(config: &CompileConfig, mem_size: u32) -> Result<SelectorOption
     Ok(SelectorOptions {
         bounds,
         signed_div_overflow_trap: true,
+        // #223/#242 (VCR-SEL-005): `memory.size` materializes the current page
+        // count from the module's FIXED linear-memory size. `mem_size` is the
+        // module's first-memory `initial_bytes()` (or the 64 KiB default on the
+        // no-module `compile_function` path), matching the linker-reserved
+        // region — so `memory.size` == the declared pages, byte-stable.
+        linear_memory_bytes: mem_size,
     })
 }
 
@@ -201,6 +207,12 @@ fn compile_function_with_opts(
     ensure_supported_target(&config.target)?;
 
     let num_params = effective_num_params(ops, config);
+    // #539/#242 (VCR-SEL-005): fold `i32.const 0; memory.grow` → `memory.size`
+    // BEFORE selection (shared with ARM), so the legal `memory.grow(0)` "return
+    // current size" idiom isn't miscompiled to the fixed-memory `-1` sentinel.
+    // `num_params` is unaffected (the fold only touches the memory-op body).
+    let ops = synth_core::rewrite_memory_grow_zero(ops);
+    let ops = ops.as_slice();
     // #312: pass the decoder's "returns i64" tables down so call-fed i64
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
     let selection = select_with_result_types(
@@ -382,6 +394,11 @@ fn compile_to_riscv_ops(
     _compiled: &CompiledFunction,
 ) -> Result<Vec<crate::riscv_op::RiscVOp>, BackendError> {
     let num_params = effective_num_params(ops, config);
+    // Same `memory.grow(0)` fold as `compile_function_with_opts` — this path
+    // re-runs selection to produce the ELF bytes and MUST match it op-for-op
+    // (#539/#242), or the two selections would disagree.
+    let ops = synth_core::rewrite_memory_grow_zero(ops);
+    let ops = ops.as_slice();
     let selection = select_with_result_types(
         ops,
         num_params,
