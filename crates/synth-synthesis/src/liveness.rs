@@ -14480,26 +14480,26 @@ mod tests {
     }
 
     // ---- VCR-DEC-001 graph-allocator RED-FIRST probe (SYNTH_GRAPH_ALLOC) ----
-    // Settles the load-bearing claim "the acceptance oracles gate the new
-    // allocator". Two distinct oracles cover distinct bug classes:
+    // Settles the load-bearing claim "the acceptance oracle gates the new
+    // allocator". The value-range graph allocator (crate::graph_alloc) rewrites
+    // each straight-line segment via a colouring and PROVES the rewrite preserves
+    // execution semantics with `validate_segment_rewrite` (the Rideau/Leroy
+    // pairwise trace-equality gate — STRONGER than "no interfering ranges share a
+    // register": it is exactly the check reallocate_function already runs, so the
+    // spike reuses the verified path's own acceptance oracle). VCR-RA-003
+    // (validate_final_allocation) is the unconditional whole-function backstop on
+    // the final stream; wasmtime is the execution backstop.
     //
-    //  (A) verify_allocation(&graph, &assignment) — the allocator's OWN
-    //      self-check against the interference graph — catches the GENERIC
-    //      colouring bug (two interfering values assigned the same colour).
-    //  (B) validate_final_allocation (VCR-RA-003, unconditional) — catches the
-    //      structural bug classes whose reference lives in the emitted stream:
-    //      a callee-saved def without a prologue push (#490), spill aliasing.
-    //
-    // The probe below injects a same-colour-interfering assignment and confirms
-    // verify_allocation rejects it — the graph_alloc self-check is the primary
-    // colouring gate. (VCR-RA-003 is the backstop for the structural classes; a
-    // pure "two live values share a register with no push involved" merge is NOT
-    // what VCR-RA-003 models — hence the honest two-oracle claim, not one.)
+    // Red-first: a colouring bug that MERGES two simultaneously-live ranges onto
+    // one register breaks value flow — validate_segment_rewrite must reject it.
     #[test]
-    fn graph_alloc_bad_coloring_rejected_by_verify_allocation() {
-        // r0 = 1; r1 = 2; r2 = r0 + r1  — r0 and r1 are simultaneously live at
-        // the add, so they interfere and must differ.
-        let body = vec![
+    fn graph_alloc_bad_rename_rejected_by_segment_validator() {
+        // Original straight-line segment (r2 = r0 + r1, then r0 is redefined and
+        // read — so r0's first value and r1 are both live at the add):
+        //   movw r0,#1 ; movw r1,#2 ; add r2,r0,r1 ; add r3,r0,r2
+        // r0 is live across the `add r2` (read again at `add r3`), and r1 is live
+        // there too — they interfere.
+        let orig = vec![
             ins(ArmOp::Movw {
                 rd: Reg::R0,
                 imm16: 1,
@@ -14513,33 +14513,47 @@ mod tests {
                 rn: Reg::R0,
                 op2: Operand2::Reg(Reg::R1),
             }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
         ];
-        let g = interference_graph(&body).expect("straight-line graph builds");
+        // A DELIBERATELY BROKEN rewrite: rename r1's def+use to r0 — collapsing
+        // two interfering live values onto one register. `add r2,r0,r1` becomes
+        // `add r2,r0,r0`, changing the computed value: a real miscompile.
+        let broken = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0, // was r1 — clobbers r0's live value
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0), // was r1
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+        ];
         assert!(
-            g.interferes(Reg::R0, Reg::R1),
-            "r0 and r1 are simultaneously live at the add — must interfere"
+            validate_segment_rewrite(&orig, &broken).is_err(),
+            "the segment trace-equality validator MUST reject a rename that \
+             merges two interfering live ranges onto one register — this is the \
+             red-first acceptance gate for the graph allocator's rewrite"
         );
-        // A DELIBERATELY BAD colouring: merge r0 and r1 onto colour 0.
-        let bad: BTreeMap<Reg, usize> = [(Reg::R0, 0), (Reg::R1, 0), (Reg::R2, 1)]
-            .into_iter()
-            .collect();
-        assert!(
-            matches!(
-                verify_allocation(&g, &bad),
-                Err(AllocationConflict::SameColor { .. })
-            ),
-            "the allocator's own graph self-check MUST reject two interfering \
-             values sharing a colour — this is the red-first gate for the \
-             generic colouring bug"
-        );
-        // A VALID colouring passes the same gate.
-        let good: BTreeMap<Reg, usize> = [(Reg::R0, 0), (Reg::R1, 1), (Reg::R2, 0)]
-            .into_iter()
-            .collect();
+        // The identity rewrite (a no-op colouring) is accepted — the gate is not
+        // vacuously rejecting.
         assert_eq!(
-            verify_allocation(&g, &good),
+            validate_segment_rewrite(&orig, &orig),
             Ok(()),
-            "a valid colouring (interfering r0/r1 differ) must pass"
+            "the identity rewrite must pass — the gate is non-vacuous"
         );
     }
 }
