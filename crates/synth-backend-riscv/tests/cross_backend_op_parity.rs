@@ -734,16 +734,30 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
             "i32.popcnt",
             "Zbb cpop absent on RV32IMAC/rv32imc; RV32 seq-lowering deferred — VCR-SEL-005",
         ),
-        // ---- globals (measured 2026-07-17, universe-completeness) ----
+        // ---- globals (measured 2026-07-17; root-caused v0.50) ----
+        // NOT a missing selector arm — a missing SUBSTRATE. ARM addresses
+        // globals via a `__synth_globals` symbol + data reloc (R9-relative or
+        // emit_sym_addr); the RV32 encoder has NO data-symbol reloc path (Call
+        // is local-label-only, no %hi/%lo/%pcrel), and RV32 emits ET_REL only,
+        // so an absolute-constant address is unsound (the linker places the
+        // region). The reloc-free path — a linker-reserved region past linear
+        // memory, addressed `s11 + linear_memory_bytes + slot_off` — is sound
+        // and reuses the memory.size plumbing, BUT a HONEST landing needs the
+        // full #798-sized stack: CLI global-init emission + a startup init loop
+        // + a linker `.wasm_globals` region + a FULL-BOOT differential (a
+        // hand-initialized-region harness would be VACUOUS — the pre-#798
+        // control_step lesson). Deferred as that piece, VCR-SEL-005.
         (
             "global.get",
-            "RV32 selector has no GlobalGet arm (loud Unsupported); WASM globals \
-             not yet lowered on RV32 — deferred, VCR-SEL-005",
+            "RV32 globals need a base-relative region + startup init + linker \
+             wiring (#798-class), not a selector arm: the RV32 encoder has no \
+             data-symbol reloc and emits ET_REL only — deferred, VCR-SEL-005",
         ),
         (
             "global.set",
-            "RV32 selector has no GlobalSet arm (loud Unsupported); WASM globals \
-             not yet lowered on RV32 — deferred, VCR-SEL-005",
+            "RV32 globals need a base-relative region + startup init + linker \
+             wiring (#798-class), not a selector arm: the RV32 encoder has no \
+             data-symbol reloc and emits ET_REL only — deferred, VCR-SEL-005",
         ),
         // ---- bulk memory (measured 2026-07-17) ----
         // (memory.size / memory.grow CLOSED v0.50, #242 — RV32 now lowers both:
