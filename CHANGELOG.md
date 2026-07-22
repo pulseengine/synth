@@ -21,9 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is homed into an 8-byte frame slot in the prologue (`I64Str`) and reloaded
   after the call (`I64Ldr`) — the store/reload machinery was already
   width-aware. The u64 value param survives the call, verified bit-identically
-  under unicorn (`framebacking_i64param_837_differential.py`, gale's mmio-import
-  + in-module-call shape). Frozen fixtures byte-identical (all-i32 signatures are
-  untouched at the slot-sizing site). The one residual that still LOUD-DECLINES
+  vs **wasmtime** under unicorn (`framebacking_i64param_837_differential.py`,
+  gale's mmio-import + in-module-call shape; `sleep` + `sleep_hi` exercising both
+  halves). Execution-verified for one i64 pair (R2:R3), two i64 pairs (R0:R1 +
+  R2:R3, correct carry), and a soft-float f64 value param (R0:R1) — all survive
+  the call. gale's report was the `--relocatable` direct path; the default
+  optimized path (separate codegen) already compiled the shape and still does.
+  Frozen fixtures byte-identical (all-i32 signatures are untouched at the
+  slot-sizing site). The one residual that still LOUD-DECLINES
   by name is the register-pair-exhaustion retry (`param_backing_on_exhaustion`),
   which has no execution oracle yet. Refs #518, #242.
 

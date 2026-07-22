@@ -29,13 +29,16 @@ installs a deterministic `read32` stub, runs `sleep(handle, ticks)` under unicor
 clobbered pair would diverge. A companion `sleep_hi` export mixes BOTH halves of
 the u64 into its result, so the FULL pair (not just the low word) must survive.
 
-Reference model (mirrors the wat exactly):
-    read32(x)      = x ^ 0xA5A5A5A5            # deterministic mmio stub
+Ground truth is WASMTIME (the same .wat, with `read32` supplied as a host import
+`lambda h: h ^ 0xA5A5A5A5`), so the expected side is a real WASM execution, not a
+hand model. A pure-Python model with the identical semantics is also checked as a
+cross-check (they must agree), but wasmtime is the oracle:
+    read32(x)      = x ^ 0xA5A5A5A5            # host import, both sides
     combine(x)     = x + 7                     # in-module fn (result dropped)
     sleep(h, t)    = (low32(t) + read32(h)) & 0xFFFFFFFF
     sleep_hi(h, t) = ((low32(t) ^ high32(t)) + read32(h)) & 0xFFFFFFFF
 
-Run (needs unicorn + pyelftools; wasmtime not required — read32 is a host stub):
+Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/framebacking_i64param_837_differential.py
 """
 import os
@@ -44,6 +47,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import wasmtime
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
 from unicorn.arm_const import (
@@ -87,6 +91,28 @@ def model_sleep(h, t):
 
 def model_sleep_hi(h, t):
     return (((t & 0xFFFFFFFF) ^ ((t >> 32) & 0xFFFFFFFF)) + model_read32(h)) & 0xFFFFFFFF
+
+
+def wasmtime_ground_truth():
+    """Instantiate the SAME .wat with read32 as a host import; return a callable
+    (fn, h, t) -> u32 that runs the real WASM. This is the oracle; the Python
+    models above are a cross-check that must agree with it."""
+    engine = wasmtime.Engine()
+    mod = wasmtime.Module.from_file(engine, str(WAT))
+    store = wasmtime.Store(engine)
+    read32 = wasmtime.Func(
+        store,
+        wasmtime.FuncType([wasmtime.ValType.i32()], [wasmtime.ValType.i32()]),
+        lambda h: (h ^ MMIO_XOR) & 0xFFFFFFFF,
+    )
+    inst = wasmtime.Instance(store, mod, [read32])
+    exports = inst.exports(store)
+
+    def call(fn, h, t):
+        # wasmtime-py takes i64 as a Python int; results are signed — mask to u32.
+        return exports[fn](store, h, t) & 0xFFFFFFFF
+
+    return call
 
 
 def compile_synth(out):
@@ -202,39 +228,36 @@ def main():
             sys.exit(1)
     resolve_relocs(f, st, text, base, syms)
     mu = build_mu(text)
+    wt = wasmtime_ground_truth()
 
     fails = 0
     H = 0x0000_0011
-    print("=== sleep(handle, ticks) — low32(ticks)+read32(handle), u64 param survives call ===")
-    for t in CASES:
-        exp = model_sleep(H, t)
-        try:
-            got = run(mu, syms["sleep"], base, H, t)
-        except UcError as e:
-            got = f"ERR:{e}"
-        ok = isinstance(got, int) and got == exp
-        fails += 0 if ok else 1
-        print(f"  [{'ok ' if ok else 'BUG'}] sleep(h={H:#x}, ticks={t:#018x}) -> "
-              f"{got if isinstance(got, str) else hex(got)}  (model {hex(exp)})")
-
-    print("=== sleep_hi — result mixes BOTH halves of the u64 param (full pair must survive) ===")
-    for t in CASES:
-        exp = model_sleep_hi(H, t)
-        try:
-            got = run(mu, syms["sleep_hi"], base, H, t)
-        except UcError as e:
-            got = f"ERR:{e}"
-        ok = isinstance(got, int) and got == exp
-        fails += 0 if ok else 1
-        print(f"  [{'ok ' if ok else 'BUG'}] sleep_hi(h={H:#x}, ticks={t:#018x}) -> "
-              f"{got if isinstance(got, str) else hex(got)}  (model {hex(exp)})")
+    for fn, model in (("sleep", model_sleep), ("sleep_hi", model_sleep_hi)):
+        desc = ("low32(ticks)+read32(handle)" if fn == "sleep"
+                else "(low32^high32)(ticks)+read32(handle) — full pair must survive")
+        print(f"=== {fn}(handle, ticks) — {desc} ===")
+        for t in CASES:
+            exp = wt(fn, H, t)             # wasmtime ground truth
+            m = model(H, t)               # cross-check
+            if m != exp:                  # the harness's own model disagrees with WASM
+                print(f"  [BUG] harness model disagrees with wasmtime on {fn}: "
+                      f"model {hex(m)} != wasmtime {hex(exp)}")
+                fails += 1
+            try:
+                got = run(mu, syms[fn], base, H, t)
+            except UcError as e:
+                got = f"ERR:{e}"
+            ok = isinstance(got, int) and got == exp
+            fails += 0 if ok else 1
+            print(f"  [{'ok ' if ok else 'BUG'}] {fn}(h={H:#x}, ticks={t:#018x}) -> "
+                  f"{got if isinstance(got, str) else hex(got)}  (wasmtime {hex(exp)})")
 
     print("\n--- verdict ---")
     if fails == 0:
         print("RESULT: PASS — the frame-backing i64/f64-param-with-call shape (gale's "
               "gust:os/timer sleep) is LOWERED and the u64 value param survives the "
-              "call bit-identically to the reference model (#837 fixed, #518 class "
-              "complete for the register-resident case).")
+              "call BIT-IDENTICALLY TO WASMTIME (#837 fixed, #518 class complete for "
+              "the register-resident case).")
         sys.exit(0)
     print(f"RESULT: FAIL — {fails} divergence(s); the u64 param did not survive the call.")
     sys.exit(1)
