@@ -929,17 +929,54 @@ fn compile_wasm_to_arm(
             Reg::R7,
             Reg::R8,
         ];
+        // VCR-DEC-001 (epic #242, the North Star's first foothold): the
+        // SYNTH_GRAPH_ALLOC graph-colouring allocator SPIKE. When enabled it
+        // replaces STEP 1 of the re-allocation (the segment-based
+        // `reallocate_function`) with a whole-function Chaitin/Briggs colouring
+        // (`graph_alloc::reallocate`) built against the SAME acceptance oracle
+        // (`validate_segment_rewrite` trace-equality); the later dead-frame /
+        // callee-saved-prologue / shrink passes still run on its output, so a
+        // value it homes in R4-R8 still gets its callee-saved push (the
+        // invariant the unconditional VCR-RA-003 validator guards). It is
+        // BOUNDED to whole straight-line functions and DECLINES (returns None)
+        // to the shipping `reallocate_function` on any control flow, spill, or
+        // unmodeled op — never a hard-fail. Flag-OFF (`SYNTH_GRAPH_ALLOC` unset)
+        // never enters this branch, so the shipping bytes are byte-identical
+        // (the GOLDEN trick — frozen fixtures unchanged). NO default flip: the
+        // spike ships flag-off; the flip is a later, evidence-gated step.
+        //
         // VCR-VER-001 (#242): on a function the spill-on-exhaustion machinery
         // shaped, the terminal segment gets relaxed live-out pinning (only
         // R0/R1 are observable past `bx lr` at this pre-prologue position) so
         // the colourer can lower R4-R8-homed tails into caller-saved R0-R3 —
         // shrinking the `push {r4-r8,lr}` the #580 exhaustion shapes pay for.
         // `post_exhaust == false` selects the shipping pass bit for bit.
-        let (out, stats) = synth_synthesis::liveness::reallocate_function_post_exhaust(
-            &arm_instrs,
-            &POOL,
-            post_exhaust,
-        );
+        let (out, stats) = if synth_synthesis::graph_alloc::enabled() {
+            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL) {
+                Some(new) => {
+                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                        eprintln!("[graph-alloc] whole-function colouring APPLIED (validated)");
+                    }
+                    (new, synth_synthesis::liveness::ReallocStats::default())
+                }
+                None => {
+                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                        eprintln!("[graph-alloc] DECLINED → shipping reallocate_function");
+                    }
+                    synth_synthesis::liveness::reallocate_function_post_exhaust(
+                        &arm_instrs,
+                        &POOL,
+                        post_exhaust,
+                    )
+                }
+            }
+        } else {
+            synth_synthesis::liveness::reallocate_function_post_exhaust(
+                &arm_instrs,
+                &POOL,
+                post_exhaust,
+            )
+        };
         if std::env::var("SYNTH_REALLOC_STATS").is_ok() {
             eprintln!(
                 "[range-realloc] {} segments: {} reallocated, {} declined ({} validator-rejected), {} need spill (step 4)",
@@ -1408,7 +1445,11 @@ fn compile_wasm_to_arm(
                 );
             }
         }
-        synth_synthesis::liveness::RaFinalVerdict::Consistent => {}
+        synth_synthesis::liveness::RaFinalVerdict::Consistent => {
+            if std::env::var_os("SYNTH_RA003_VERBOSE").is_some() {
+                eprintln!("VCR-RA-003: Consistent");
+            }
+        }
     }
 
     // Encode to binary — use Thumb-2 for Cortex-M targets
