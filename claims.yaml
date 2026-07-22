@@ -639,3 +639,14 @@ claims:
         pattern: 'let frames = \(cert\.max_depth as u128\)\.saturating_add\(1\);'
         glob: ['crates/synth-backend/src/wcet_compose.rs']
         expect: 1
+      # #778 phase 5 — the SOUND-critical masked-ceiling BOTH-ENDPOINTS MAX. For a
+      # data-dependent masked loop bound `x & K ∈ [0, K]`, the worst-case trip is
+      # at the `rhs = K` endpoint for a count-UP loop and the `rhs = 0` endpoint
+      # for a count-DOWN loop. Seeding only ONE endpoint emits a bound BELOW a real
+      # count-down execution (the fatal class). synth evaluates BOTH endpoints,
+      # requires BOTH to terminate (the `?` operators), and takes the MAX. Pinning
+      # this guards against a silent single-endpoint regression that would undercount.
+      - kind: count-eq
+        pattern: 'let \(hi, lo\) = \(at\(ceiling\)\?, at\(0\)\?\);'
+        glob: ['crates/synth-backend/src/wcet_loops.rs']
+        expect: 1
