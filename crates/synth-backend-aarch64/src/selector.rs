@@ -653,7 +653,8 @@ pub fn select_typed_cf(
             // `other` arm below; loop is explicit so its arity ordinal is
             // consumed with a clear message.)
             WasmOp::Loop => {
-                ctrl_ord += 1;
+                // (no ctrl_ord bump needed: a decline aborts the whole compile,
+                // so the arity-ordinal alignment is moot from here on.)
                 return Err(SelectError(
                     "loop: backward-branch control flow not yet supported for \
                      aarch64 — loud-declining (only forward void blocks)"

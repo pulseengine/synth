@@ -437,6 +437,8 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m3_floats_538_differential.py
       - name: Run m4 trunc boundary-table + min/max NaN/±0 execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m4_trunc_minmax_538_differential.py
+      - name: Run cf void-block br/br_if execution oracle (both branch edges)
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
