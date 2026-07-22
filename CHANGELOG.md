@@ -7,8 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-07-22
+
+**"Cross-backend verified core, and the allocator endgame begins."** The
+whole-function register-allocation validator is now cross-backend (ARM incl.
+optimized joins + RV32), the SMT validator models i64 remainder natively instead
+of havoc, and — the headline — **a from-construction graph-colouring register
+allocator lands (flag-off), with every function it emits validated by that same
+verified oracle.** That is the North Star's first foothold: the verified checker
+gating its own replacement. Seven parallel lanes; every one oracle-gated red-first;
+frozen anchors byte-identical throughout.
+
 ### Added
 
+- **VCR-DEC-001 — a from-construction graph-colouring register allocator (spike,
+  flag-off `SYNTH_GRAPH_ALLOC`).** The North Star made concrete: a second allocator
+  that builds an interference graph from the whole-function liveness VCR-RA-003
+  already computes, Chaitin/Briggs-colours it over R0–R8 (reserved R9–R12 held
+  identity), and spills by farthest-next-use — declining to the shipping greedy
+  allocator on any control-flow / spill / unmodeled-op it can't yet handle (never
+  hard-fails). **The point is the gate:** with the flag on, every function it emits
+  is checked by the unconditional VCR-RA-003 validator, which returns *Consistent*
+  on every applied function (6/10 corpus fixtures) — the verified acceptance oracle
+  gating its own replacement. Non-vacuity proven (a `signed_div_const` that greedy
+  reallocation shrinks 40 B→34 B is reproduced by the colouring path, not an
+  identity transform); the real gate is `validate_segment_rewrite` trace-equality
+  (rejects a value-flow-breaking merge-rename). **Flag-OFF is byte-identical** —
+  frozen 10/10, the shipping path untouched; NO default flip (that is the
+  widen-and-measure step). Whole-function webs across CF joins are the named next
+  increment. New module `crates/synth-synthesis/src/graph_alloc.rs`.
+- **RV32: `memory.size` / `memory.grow` lower (cross-backend parity, #223/#232).**
+  The universe-complete op-parity gate's ledger shrinks 21→19: `memory.size`
+  materializes the fixed-memory page count as a compile-time constant, and
+  `memory.grow` returns `-1` for fixed memory — with the `memory.grow(0)` →
+  `memory.size` fold moved to `synth_core` so ARM and RV32 share ONE implementation
+  (the soundness point: `grow(0)` returns the current size, never miscompiles to
+  `-1`). Executed vs **wasmtime** under unicorn on a real `(memory 3)` module.
+  `global.get`/`global.set` root-caused as a #798-class *substrate* decline (RV32
+  needs the linker-reserved region + startup init before a sound landing), kept an
+  honest ledgered decline rather than a vacuous fix.
+- **AArch64: void-block control flow — `block` / `br` / `br_if` (#538).** The
+  `-b aarch64` backend gains basic control flow (was straight-line-only): A64
+  B/B.cond branches + label resolution. Execution-verified vs wasmtime (arm64 host
+  + unicorn, both branch edges); value-blocks / loop / memory still loud-decline by
+  name.
+- **VCR-VER: i64 `rem_u` / `rem_s` modeled with native `BvTerm::Urem` / `bvsrem`
+  (was havoc).** The SMT translation validator previously modeled ARM i64 remainder
+  as uninterpreted fresh consts — proving nothing about the result. It now uses the
+  native unsigned/signed-remainder terms (ordeal 0.9→0.12, plumbed this release),
+  with the ÷0 trap handled explicitly, plus value + trap VCs and a non-vacuity gate
+  (a wrong-dest lowering is now rejected — was accepted under havoc). Verify-only:
+  `.text` byte-identical.
 - **WCET phase 5 (#778) — data-dependent masked-ceiling loop certificates.** The
   `--wcet-hints` scry seam now bounds a DATA-DEPENDENT loop whose exit bound is a
   masked value `i REL (x & K)`. Because `x & K ∈ [0, K]` for ANY runtime `x`
