@@ -1402,6 +1402,14 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/i64_spill_pool_587_differential.py
+      - name: Run i64-param correctness + decline oracle (#518, d_call now emits #837)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/i64_param_518_differential.py
+      - name: Run frame-backing i64-param-with-call oracle (#837 gale gust:os/timer)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/framebacking_i64param_837_differential.py
 
   i64-rot-div-610-oracle:
     name: i64 rotl/rotr/div/rem expansion oracle
