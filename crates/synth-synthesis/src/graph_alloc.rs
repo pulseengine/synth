@@ -173,7 +173,11 @@ pub fn reallocate(instrs: &[ArmInstruction], pool: &[Reg]) -> Option<Vec<ArmInst
     // Apply the colouring, then PROVE it preserves the function's dataflow with
     // the trace-equality validator (whole-function live-outs + entry inputs
     // pinned; no exemptions — a whole straight-line function's exit registers are
-    // all observable). This is the acceptance oracle; a reject → decline.
+    // all observable). This is the acceptance oracle; a reject → decline (the
+    // red-first teeth are the unit probe `graph_alloc_bad_rename_rejected_by_\
+    // segment_validator` in liveness.rs: it shows validate_segment_rewrite
+    // rejects a value-flow-breaking merge-rename and accepts the identity — the
+    // exact Err/Ok this match discharges to decline/accept).
     let new = apply_range_coloring(instrs, &assignment)?;
     match validate_segment_rewrite(instrs, &new) {
         Ok(()) => Some(new),
