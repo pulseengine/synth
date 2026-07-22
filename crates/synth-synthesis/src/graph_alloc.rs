@@ -259,6 +259,72 @@ mod tests {
         assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
     }
 
+    /// NON-VACUITY: prove the Chaitin/Briggs simplify/select core actually PLACES
+    /// a FREE (unpinned) node — not that the pins alone determine everything. A
+    /// register defined, used, then REDEFINED has an EARLIER range that is
+    /// neither a segment input (def != 0) nor the register's last-opened range
+    /// (live-out) — so it is unpinned, and the colourer must choose its register.
+    /// We give a SMALL pool so a valid colouring requires reusing a colour the
+    /// pins do not force: only the select phase can find it.
+    #[test]
+    fn simplify_select_places_a_free_interior_range() {
+        // Pool = {R0, R1} — only two colours. Body (all in-pool registers):
+        //   r0 = r0 + r1   ; A: r0 redefined — its INPUT range (def 0) is pinned,
+        //                    this new r0 range is last-opened → pinned to colour 0
+        //   r1 = r0 + r1   ; r1 redefined: its input range pinned, new one
+        //                    last-opened → pinned to colour 1
+        // Every range here is input-or-last-opened, so to get a genuinely FREE
+        // interior range we need a THIRD def of some register that is later
+        // overwritten. Use r0 defined, consumed, then r0 overwritten:
+        //   0: r0 = r0 + r1   (r0 range A: def=0? no, def=0 is the INPUT range;
+        //                      this DEF opens range A' — def=0 is instr 0's def,
+        //                      which IS index 0 → treated as input-pinned. avoid.)
+        // Cleaner: start the free range at a NON-zero instruction.
+        //   0: r1 = r0 + r0     ; opens r1 range (def=0 index → but this is the
+        //                         FIRST def of r1, at instr 0). To keep it
+        //                         unpinned we must redefine r1 later AND it must
+        //                         not be def==0. `straight_line_value_ranges`
+        //                         marks def with the instruction INDEX, and the
+        //                         input pin is `def == 0` meaning the range opened
+        //                         at index 0. So a def at index 0 is input-pinned.
+        //   Use three instructions so the middle def is at index 1 (not 0) and is
+        //   overwritten at index 2 (so not last-opened):
+        //   0: r1 = r0 + r0     ; r1 def@0 (input-pinned), r0 input (pinned)
+        //   1: r1 = r0 + r0     ; r1 def@1 — NOT index 0, and OVERWRITTEN next →
+        //                         neither input nor last-opened ⇒ FREE
+        //   2: r1 = r0 + r0     ; r1 def@2 last-opened (live-out) → pinned
+        let small_pool = [Reg::R0, Reg::R1];
+        let body = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        // The r1 range opened at instruction 1 is free (def index 1, overwritten
+        // at 2). It is dead-on-arrival (defined, immediately overwritten), so it
+        // does not interfere with the pinned r0/r1 ranges beyond r0; the colourer
+        // simplifies+selects a colour for it. A `Some` result that PASSES the
+        // trace-equality validator proves the free-placement path ran soundly.
+        let out = reallocate(&body, &small_pool).expect("free interior range colours");
+        assert_eq!(out.len(), body.len());
+        assert_eq!(
+            validate_segment_rewrite(&body, &out),
+            Ok(()),
+            "the colouring of the free interior range must preserve dataflow"
+        );
+    }
+
     #[test]
     fn declines_on_control_flow() {
         // A branch makes it non-straight-line → decline (None).

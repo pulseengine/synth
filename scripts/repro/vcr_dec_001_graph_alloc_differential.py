@@ -186,6 +186,33 @@ def main():
         print("  VACUOUS: graph_alloc never applied — increment-1 scope regressed.")
         fails += 1
 
+    # DEEPER non-vacuity: prove graph_alloc's byte-match is NOT a trivial identity
+    # transform. Compile a known-applying fixture with the shipping re-allocation
+    # DISABLED (SYNTH_RANGE_REALLOC=0 = the raw selector stream): if the shipping
+    # reallocated bytes DIFFER from the raw stream, reallocation did real register
+    # work — and graph_alloc reproduced THOSE bytes (property 3), so graph_alloc
+    # is making the same non-trivial choices, not returning its input unchanged.
+    print("== (deeper non-vacuity) graph_alloc reproduces REAL reallocation ==")
+    r_raw, raw_elf = compile_arm(synth, "signed_div_const.wasm",
+                                 {"SYNTH_RANGE_REALLOC": "0"})
+    r_realloc, realloc_elf = compile_arm(synth, "signed_div_const.wasm", {})
+    r_ga, ga_elf = compile_arm(synth, "signed_div_const.wasm",
+                               {"SYNTH_GRAPH_ALLOC": "1"})
+    if all(x.returncode == 0 for x in (r_raw, r_realloc, r_ga)):
+        raw_t, realloc_t, ga_t = (text_of(raw_elf), text_of(realloc_elf),
+                                  text_of(ga_elf))
+        did_work = raw_t != realloc_t
+        ga_matches = ga_t == realloc_t
+        ok = did_work and ga_matches
+        print(f"  signed_div_const: raw={len(raw_t)}B realloc={len(realloc_t)}B "
+              f"graph_alloc={len(ga_t)}B  realloc-did-work={did_work} "
+              f"graph_alloc≡realloc={ga_matches} {'OK' if ok else 'FAIL <--'}")
+        if not ok:
+            fails += 1
+    else:
+        print("  signed_div_const: COMPILE FAIL")
+        fails += 1
+
     print("-" * 60)
     if fails:
         print(f"VIOLATION: {fails} check(s) failed.")
