@@ -688,6 +688,23 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
       - name: Run #761 linmem<->globals overlap oracle (cortex-m4, low layout)
         run: EXTRA_SYNTH_FLAGS="--stack-layout low" SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
+      # VCR-DEC-001 (epic #242, the North Star's first foothold): the
+      # SYNTH_GRAPH_ALLOC whole-function graph-colouring allocator SPIKE. Gates
+      # three properties on the ARM corpus: (1) flag-OFF ≡ the frozen goldens
+      # (the GOLDEN trick — the spike is byte-invisible when off), (2) flag-ON
+      # APPLIES on ≥2 fixtures and the UNCONDITIONAL VCR-RA-003 validator returns
+      # Consistent on every applied function (observed via SYNTH_RA003_VERBOSE —
+      # the acceptance oracle validating the new allocator's REAL output), and
+      # (3) flag-ON ≡ flag-OFF corpus-wide (a DESIGNED property: on a
+      # straight-line function graph_alloc and the shipping reallocate_function
+      # share pins + chaitin_core + single-segment scope, so byte-identity is by
+      # construction; execution correctness follows transitively via the frozen
+      # wasmtime differentials above). The red-first teeth are the unit probe
+      # graph_alloc_bad_rename_rejected_by_segment_validator (validate_segment_
+      # rewrite rejects a value-flow-breaking merge-rename). Byte-only compare —
+      # needs pyelftools ONLY (no unicorn/wasmtime).
+      - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
+        run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
