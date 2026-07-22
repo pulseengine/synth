@@ -212,6 +212,43 @@ fn compile_function_with_opts(
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
+    // VCR-RA-003 for RISC-V (#815, epic #242): UNCONDITIONAL per-compilation
+    // register-allocation validation, the RV32 analogue of the ARM-only
+    // `synth_synthesis::liveness::validate_final_allocation`. It proves — by
+    // construction, on the EXACT emitted stream — that the allocation preserves
+    // the two STRAIGHT-LINE invariants whose reference lives in the stream: (1)
+    // callee-saved preservation (a written `s`-register saved+restored by the
+    // prologue/epilogue) and (2) spill-slot non-aliasing (no live frame slot
+    // overwritten before its reload). Runs on every RV32 compile in the DEFAULT
+    // `--features riscv` build (NOT behind `--features verify`; a verify-gated
+    // check would be dormant in the build that ships — the #757 / VCR-VER-003
+    // lesson) and hard-errors on a VIOLATION. A `NotAttempted` verdict (a `Call`
+    // — the ARM phase-2 across-call/across-join frontier, which has no RV CFG
+    // machinery yet) is NON-FATAL: the two straight-line invariants still ran and
+    // held; only the past-straight-line reasoning is declined (decline > guess).
+    // Frozen-safe: it emits nothing, so RV32 `.text` is byte-identical.
+    match crate::alloc_validator::validate_final_allocation_rv32(&selection.ops) {
+        crate::alloc_validator::RaFinalVerdict::Violation(v) => {
+            return Err(BackendError::CompilationFailed(format!(
+                "VCR-RA-003 (RV32): register-allocation validation FAILED — {v:?}. \
+                 The emitted stream violates a register-allocation invariant \
+                 (callee-saved preservation / spill-slot non-aliasing); this is a \
+                 compiler bug, not a program error. Refusing to emit a miscompiled \
+                 object."
+            )));
+        }
+        crate::alloc_validator::RaFinalVerdict::NotAttempted { reason } => {
+            if std::env::var_os("SYNTH_RA003_VERBOSE").is_some() {
+                eprintln!(
+                    "VCR-RA-003 (RV32): past-straight-line validation NOT ATTEMPTED \
+                     ({reason}) — callee-saved / spill-slot invariants held; \
+                     across-call/across-join reasoning declined on this shape."
+                );
+            }
+        }
+        crate::alloc_validator::RaFinalVerdict::Consistent => {}
+    }
+
     // Encode the function via the ELF builder's per-function pipeline so
     // we benefit from label resolution. We discard the ELF and keep the
     // raw bytes — that's what `CompiledFunction` carries.

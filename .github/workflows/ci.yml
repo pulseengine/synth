@@ -358,7 +358,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -424,7 +424,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -466,7 +466,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -726,7 +726,7 @@ jobs:
         run: cargo test -p synth-cli --features verify --test fact_spec_div_494
       - name: Build synth (verify feature)
         run: cargo build -p synth-cli --features verify
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -818,7 +818,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -852,7 +852,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -889,7 +889,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -928,7 +928,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -968,7 +968,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1013,7 +1013,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1062,7 +1062,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1107,7 +1107,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1149,7 +1149,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1187,7 +1187,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1227,7 +1227,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1265,7 +1265,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1309,7 +1309,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1349,7 +1349,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1389,7 +1389,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1431,7 +1431,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1468,7 +1468,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1506,7 +1506,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1544,7 +1544,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1584,7 +1584,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1624,7 +1624,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -1685,6 +1685,62 @@ jobs:
         run: |
           cargo build -p synth-cli
           python3 scripts/repro/vcr_ra_003_phase2_join_call.py ./target/debug/synth
+
+  vcr-ra-003-rv32-alloc-validator-gate:
+    name: "VCR-RA-003 RV32 register-allocation validator (red-first + frozen)"
+    # VCR-RA-003 for RISC-V (#815, epic #242): the RV32 analogue of the ARM
+    # register-allocation validator. A PARALLEL re-implementation
+    # (synth_backend_riscv::alloc_validator::validate_final_allocation_rv32) keyed
+    # on the RV32 calling convention — NOT a reuse of the ARM-coupled
+    # validate_final_allocation. It runs UNCONDITIONALLY on every RV32 compile in
+    # the default `--features riscv` build (wired in backend.rs
+    # compile_function_with_opts, on the selector's `selection.ops`) and
+    # hard-errors on a violation of the two STRAIGHT-LINE invariants #815 names:
+    #   (1) CALLEE-SAVED PRESERVATION — a body write of an s-register the pass
+    #       saves (s1, s2..s10, mirroring `preserve_callee_saved`; the reserved
+    #       s0/fp + s11/linmem-base excluded) must be saved by the prologue
+    #       `sw s_k, off(sp)` + restored by every epilogue `lw s_k, off(sp)` ->
+    #       CalleeSavedNotSaved / CalleeSavedNotRestored.
+    #   (2) SPILL-SLOT NON-ALIASING — a frame slot `off(sp)` overwritten by a
+    #       second `sw` while its value is still reloaded downstream, per
+    #       straight-line segment (an `addi sp` frame adjust resets the map) ->
+    #       SpillSlotAliased.
+    # A `Call` (the ARM phase-2 across-call/across-join frontier, no RV CFG yet)
+    # is a NON-FATAL NotAttempted (decline > guess). This job pins the gate:
+    #   (a) RED-FIRST non-vacuity: the ra003rv_red_* unit tests synthetically
+    #       revert a known-fixed clobber (drop the prologue save -> CalleeSavedNotSaved;
+    #       drop the epilogue restore -> CalleeSavedNotRestored; alias two live
+    #       values on one slot -> SpillSlotAliased) and assert the validator
+    #       CATCHES it. The ra003rv_green_* tests assert it is SILENT on correct
+    #       code + a Call -> NotAttempted.
+    #   (b) SILENT-ON-REAL-CODEGEN: the frozen RV32 oracle compiles the RV32
+    #       fixtures THROUGH the unconditional validator; if it false-positived on
+    #       a real function that fixture would fail to compile, so 10/10 green
+    #       (control_step 0x00210A55 byte-identical) is the "Consistent on every
+    #       real RV32 function" proof — PLUS a dedicated repro sweeping 9 fixtures
+    #       × {relocatable, default} = 18 pairs asserting ZERO false positives.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: RED-FIRST non-vacuity + silent-on-correct (RV32 validator unit tests)
+        run: cargo test -p synth-backend-riscv --lib ra003rv
+      - name: Silent-on-real-codegen (frozen suite through the unconditional gate)
+        run: cargo test -p synth-cli --test frozen_codegen_bytes
+      - name: Silent-on-real-codegen (RV32 fixture sweep, both paths)
+        run: |
+          cargo build -p synth-cli
+          python3 scripts/repro/vcr_ra_003_rv32_alloc_validator.py ./target/debug/synth
 
   vcr-sel-005-cross-backend-op-parity-gate:
     name: "VCR-SEL-005 cross-backend op-parity (universe-complete + red-first)"
