@@ -879,6 +879,40 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_addr_fold_riscv_differential.py
 
+  rv32-mem-size-grow-oracle:
+    name: rv32 memory.size / memory.grow execution oracle
+    # VCR-SEL-005 (#223/#242): EXECUTE the newly-lowered RV32 memory.size and
+    # memory.grow under unicorn (UC_ARCH_RISCV) and diff vs wasmtime. Closes two
+    # entries off the cross-backend op-parity allowlist — proves memory.size
+    # reports the declared page count, the shared rewrite_memory_grow_zero fold
+    # makes grow(0) return current size, and fixed-memory grow(>0) returns -1.
+    # Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run RV32 memory.size / memory.grow execution oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/rv32_mem_size_grow_242_differential.py
+
   callee-saved-490-oracle:
     name: optimized-path callee-saved preservation oracle
     # VCR-ORACLE-001 (#242, #490): EXECUTE optimized-path functions that use

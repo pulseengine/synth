@@ -72,6 +72,16 @@ pub struct SelectorOptions {
     /// Always on for spec-compliant WASM output; exposed as a knob so the
     /// fuzz harness can disable it when comparing IR-level behaviour only.
     pub signed_div_overflow_trap: bool,
+    /// Linear-memory size in BYTES for memory-0, used by the `memory.size`
+    /// lowering to materialize the current page count as a constant
+    /// (`li rd, bytes / 65536`). This backend emits FIXED-SIZE linear memory
+    /// (the linker script reserves exactly this many bytes; `memory.grow`
+    /// always declines with `-1`), so the page count is a compile-time
+    /// constant — no runtime size register (the RV analogue of ARM's R10) is
+    /// needed. `0` (the default, e.g. the bare selector probe / a memory-less
+    /// module) materializes `0` pages, which is exactly what a module with no
+    /// declared memory reports.
+    pub linear_memory_bytes: u32,
 }
 
 impl SelectorOptions {
@@ -81,6 +91,7 @@ impl SelectorOptions {
         Self {
             bounds: RvBoundsMode::None,
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         }
     }
 }
@@ -1748,6 +1759,15 @@ impl Selector {
             //   * More than 8 args (spill to stack per RV psABI)
             Call(func_idx) => self.lower_call(*func_idx, op)?,
 
+            // ─── Memory management (#223/#242, VCR-SEL-005) ──────────────
+            // FIXED-memory model, mirroring the ARM backend: this backend
+            // reserves exactly `linear_memory_bytes` for memory 0 in the
+            // generated linker script and `memory.grow` can never actually
+            // grow, so `memory.size` is a COMPILE-TIME CONSTANT (no runtime
+            // size register, the RV analogue of ARM's R10, is needed).
+            MemorySize(mem_idx) => self.lower_memory_size(*mem_idx, op)?,
+            MemoryGrow(mem_idx) => self.lower_memory_grow(*mem_idx, op)?,
+
             other => return Err(SelectorError::Unsupported(other.clone())),
         }
         Ok(())
@@ -2640,6 +2660,58 @@ impl Selector {
             },
         };
         self.out.push(op_built);
+        Ok(())
+    }
+
+    // ────────── Memory management (#223/#242, VCR-SEL-005) ──────────
+
+    /// `memory.size` — push the current linear-memory size in 64 KiB pages.
+    ///
+    /// This backend emits FIXED-size linear memory (the generated linker
+    /// script reserves exactly `linear_memory_bytes`; `memory.grow` always
+    /// declines with `-1`), so the page count is a COMPILE-TIME CONSTANT —
+    /// materialized with `li rd, bytes / 65536`. This is the RV32 analogue of
+    /// the ARM multi-memory constant path (`instruction_selector.rs`
+    /// `Movw/Movt` for a fixed-size memory), NOT ARM's memory-0 runtime
+    /// `LSR R10, #16` register read — RV32 has no such runtime size register,
+    /// and does not need one because the size cannot change.
+    ///
+    /// Only memory 0 is lowered (this backend is single-memory; multi-memory
+    /// is a separate #406 lane). A non-zero index declines loudly.
+    fn lower_memory_size(&mut self, mem_idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
+        if mem_idx != 0 {
+            return Err(SelectorError::Unsupported(op.clone()));
+        }
+        // 64 KiB = one wasm page. Integer division floors; a partial page
+        // cannot occur here because the linker reserves whole pages.
+        let pages = (self.options.linear_memory_bytes / 65536) as i32;
+        let dst = self.alloc_temp();
+        emit_load_imm(&mut self.out, dst, pages);
+        self.push_i32(dst);
+        Ok(())
+    }
+
+    /// `memory.grow` — on FIXED linear memory, growth can never succeed, so
+    /// return `-1` (WASM's "grow failed" sentinel).
+    ///
+    /// Byte-agnostic and identical to the ARM backend's `MemoryGrow` (which
+    /// emits `MVN rd, #0` = -1). The legal `memory.grow(0)` idiom ("grow by
+    /// zero pages can never fail; return current size", WASM Core §4.4.7) is
+    /// handled UP-FRONT by `rewrite_memory_grow_zero` in the backend entry
+    /// (shared with ARM), which folds `i32.const 0; memory.grow` → `memory.size`
+    /// BEFORE selection — so this arm only ever sees a genuine grow request
+    /// (or a runtime-variable page count), for which `-1` is the sound answer.
+    ///
+    /// Only memory 0 is lowered; a non-zero index declines loudly.
+    fn lower_memory_grow(&mut self, mem_idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
+        if mem_idx != 0 {
+            return Err(SelectorError::Unsupported(op.clone()));
+        }
+        // Pop (and discard) the requested page count: fixed memory ignores it.
+        let _pages = self.pop_i32(op)?;
+        let dst = self.alloc_temp();
+        emit_load_imm(&mut self.out, dst, -1);
+        self.push_i32(dst);
         Ok(())
     }
 
@@ -5575,6 +5647,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 0x10000 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -5631,6 +5704,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 2 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6001,6 +6075,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Pmp,
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6032,6 +6107,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6064,6 +6140,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6114,6 +6191,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let word = s_with_opts(
             &[
@@ -6163,6 +6241,7 @@ mod tests {
         let sw = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 0x10000 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let load = s_with_opts(
             &[
@@ -6191,6 +6270,7 @@ mod tests {
         let mask = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let store = s_with_opts(
             &[
@@ -6254,6 +6334,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::None,
             signed_div_overflow_trap: false,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
