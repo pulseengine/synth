@@ -2672,9 +2672,9 @@ impl Selector {
     /// declines with `-1`), so the page count is a COMPILE-TIME CONSTANT —
     /// materialized with `li rd, bytes / 65536`. This is the RV32 analogue of
     /// the ARM multi-memory constant path (`instruction_selector.rs`
-    /// `Movw/Movt` for a fixed-size memory), NOT ARM's memory-0 runtime `R10
-    /// >> 16` register — RV32 has no such runtime size register, and does not
-    /// need one because the size cannot change.
+    /// `Movw/Movt` for a fixed-size memory), NOT ARM's memory-0 runtime
+    /// `LSR R10, #16` register read — RV32 has no such runtime size register,
+    /// and does not need one because the size cannot change.
     ///
     /// Only memory 0 is lowered (this backend is single-memory; multi-memory
     /// is a separate #406 lane). A non-zero index declines loudly.
@@ -5647,6 +5647,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 0x10000 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -5703,6 +5704,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 2 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6073,6 +6075,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Pmp,
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6104,6 +6107,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6136,6 +6140,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
@@ -6186,6 +6191,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let word = s_with_opts(
             &[
@@ -6235,6 +6241,7 @@ mod tests {
         let sw = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 0x10000 },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let load = s_with_opts(
             &[
@@ -6263,6 +6270,7 @@ mod tests {
         let mask = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },
             signed_div_overflow_trap: true,
+            linear_memory_bytes: 0,
         };
         let store = s_with_opts(
             &[
@@ -6326,6 +6334,7 @@ mod tests {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::None,
             signed_div_overflow_trap: false,
+            linear_memory_bytes: 0,
         };
         let out = s_with_opts(
             &[
