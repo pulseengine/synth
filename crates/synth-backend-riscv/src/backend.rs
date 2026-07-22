@@ -155,10 +155,18 @@ impl Backend for RiscVBackend {
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
         ensure_supported_target(&config.target)?;
-        // No module context — default the memory size to 1 wasm page so that
-        // Software/Mask modes can still synthesise the guard. Callers that
-        // need a different size go through `compile_module`.
-        let opts = build_options(config, 64 * 1024)?;
+        // Prefer the config's declared linear-memory size (the CLI populates it
+        // from the module's first memory — `--all-exports` compiles per function
+        // through here, NOT `compile_module`, so `memory.size` must read it from
+        // the config to report the right page count). Fall back to 1 wasm page
+        // when unset (a hand-built driver with no module context) so
+        // Software/Mask bounds modes can still synthesise their guard.
+        let mem_size = if config.linear_memory_bytes > 0 {
+            config.linear_memory_bytes
+        } else {
+            64 * 1024
+        };
+        let opts = build_options(config, mem_size)?;
         compile_function_with_opts(name, ops, config, opts)
     }
 

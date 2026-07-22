@@ -704,8 +704,13 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
 /// br_table, and the nine sub-word i64 loads/stores (load8/16/32_s/u,
 /// store8/16/32 — the full-word i64.load/i64.store DO lower on both; only the
 /// sub-word extend/truncate variants are the gap). Each is a TRACKED
-/// RV32-selector DEFERRAL under VCR-SEL-005, not a permanent ISA limit. Ledger
-/// total: 5 Zbb + 16 new = 21 entries.
+/// RV32-selector DEFERRAL under VCR-SEL-005, not a permanent ISA limit.
+///
+/// CLOSED v0.50 (#242): `memory.size` + `memory.grow` now lower on RV32
+/// (fixed-memory page-count constant + fixed-memory `-1` grow, shared
+/// `rewrite_memory_grow_zero` fold; execution differential
+/// `rv32_mem_size_grow_242_differential.py`). Ledger total: 5 Zbb + 16 −
+/// 2 closed = 19 entries.
 fn known_divergences() -> &'static [(&'static str, &'static str)] {
     &[
         // ---- Zbb bit-manipulation class (measured 2026-06-20) ----
@@ -740,17 +745,11 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
             "RV32 selector has no GlobalSet arm (loud Unsupported); WASM globals \
              not yet lowered on RV32 — deferred, VCR-SEL-005",
         ),
-        // ---- memory management / bulk memory (measured 2026-07-17) ----
-        (
-            "memory.size",
-            "RV32 selector has no MemorySize arm (loud Unsupported); RV32 memory \
-             intrinsics not yet lowered — deferred, VCR-SEL-005",
-        ),
-        (
-            "memory.grow",
-            "RV32 selector has no MemoryGrow arm (loud Unsupported); RV32 memory \
-             intrinsics not yet lowered — deferred, VCR-SEL-005",
-        ),
+        // ---- bulk memory (measured 2026-07-17) ----
+        // (memory.size / memory.grow CLOSED v0.50, #242 — RV32 now lowers both:
+        //  fixed-memory page-count constant + fixed-memory `-1` grow, with the
+        //  shared `rewrite_memory_grow_zero` fold so grow(0)≡size. Execution
+        //  differential: scripts/repro/rv32_mem_size_grow_242_differential.py.)
         (
             "memory.copy",
             "RV32 selector has no MemoryCopy arm (loud Unsupported); RV32 bulk-memory \
