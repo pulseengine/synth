@@ -117,6 +117,18 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
     select_typed(ops, num_params, &[], &[])
 }
 
+/// Lower a body with per-param float masks but no control-flow (empty
+/// block-arity table). Kept for callers/tests that predate the #538-cf
+/// increment — behavior is byte-identical to threading an empty arity slice.
+pub fn select_typed(
+    ops: &[WasmOp],
+    num_params: u32,
+    params_f32: &[bool],
+    params_f64: &[bool],
+) -> Result<Vec<u32>, SelectError> {
+    select_typed_cf(ops, num_params, params_f32, params_f64, &[])
+}
+
 /// The parameter's assigned register + file under AAPCS64. Integer params take
 /// `x0,x1,…` in order; float params take `v0,v1,…` in order — the two counters
 /// are INDEPENDENT, so `(param i32 f32 i32)` is w0, s0, w1.
@@ -138,14 +150,26 @@ fn param_map(num_params: u32, params_f32: &[bool], params_f64: &[bool]) -> Vec<V
     out
 }
 
-/// Lower a single function body with per-param type info. `params_f32[k]` /
-/// `params_f64[k]` mark which params are float (delivered in V registers). The
-/// integer path (empty masks) is byte-identical to the m2 behavior.
-pub fn select_typed(
+/// Lower a single function body with per-param type info AND control-flow.
+///
+/// `params_f32[k]` / `params_f64[k]` mark which params are float (delivered in V
+/// registers). `block_arity` is the decoder's ordinal blocktype-arity side-table
+/// (`(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in op order),
+/// used to gate the control-flow increment.
+///
+/// **Control-flow subset (#538 cf increment):** VOID-result `block … end` with
+/// forward `br`/`br_if` to enclosing block ends. Only `block_arity == (0,0)`
+/// blocks are accepted — a value-carrying (typed) block would need result-
+/// register reconciliation across the branch and is LOUD-DECLINED. `loop`
+/// (backward branch), `if`, and `br_table` are declined by name. This keeps the
+/// straight-line value-stack model sound: nothing crosses the branch, so at each
+/// `end` the value stack is exactly its block-entry height (asserted).
+pub fn select_typed_cf(
     ops: &[WasmOp],
     num_params: u32,
     params_f32: &[bool],
     params_f64: &[bool],
+    block_arity: &[(u8, u8)],
 ) -> Result<Vec<u32>, SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
@@ -155,6 +179,22 @@ pub fn select_typed(
     let params = param_map(num_params, params_f32, params_f64);
     let mut words: Vec<u32> = Vec::new();
     let mut stack: Vec<Val> = Vec::new();
+
+    // Control-flow state (#538 cf increment). Each open `block` pushes a frame;
+    // the matching `End` pops it and patches the recorded forward branches to
+    // land at the current instruction position (the block's fall-through point).
+    struct Frame {
+        /// Word positions in `words` of branches targeting this block's END,
+        /// awaiting fix-up when the block closes.
+        pending: Vec<usize>,
+        /// Value-stack height on entry — a void block must restore it at `End`.
+        stack_entry: usize,
+    }
+    let mut ctrl: Vec<Frame> = Vec::new();
+    // Ordinal counter over Block/Loop/If in op order — the key into
+    // `block_arity`. Incremented on EVERY control op encountered (even declined
+    // ones, though a decline aborts the whole compile so alignment is moot).
+    let mut ctrl_ord: usize = 0;
 
     // Pick a GP temp not holding a live GP value-stack entry.
     let alloc_temp = |stack: &[Val]| -> Result<Reg, SelectError> {
@@ -546,6 +586,82 @@ pub fn select_typed(
             // `brk #0`, the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
             WasmOp::Unreachable => words.push(enc::brk(0)),
 
+            // --- control flow (#538 cf increment): VOID-result forward blocks ---
+            //
+            // `block` opens a new control frame. Only a `(0,0)` (void, no params,
+            // no result) block is accepted — a typed block would leave a value on
+            // the stack whose result register the branch would have to reconcile,
+            // which this straight-line model does not do. The arity comes from the
+            // decoder's ordinal side-table (`unreachable`-polymorphic fall-through
+            // makes a stack-height proxy UNSOUND — the arity table is the signal).
+            WasmOp::Block => {
+                let ord = ctrl_ord;
+                ctrl_ord += 1;
+                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                if arity != (0, 0) {
+                    return Err(SelectError(format!(
+                        "block #{ord} has type {arity:?} — only void (0,0) blocks \
+                         are supported (value-carrying blocks need result-register \
+                         reconciliation across the branch); loud-declining"
+                    )));
+                }
+                ctrl.push(Frame {
+                    pending: Vec::new(),
+                    stack_entry: stack.len(),
+                });
+            }
+            // `br N` — unconditional branch to the END of the block N levels out.
+            // A forward branch to a void block: emit `b <placeholder>`, record its
+            // position for fix-up at that block's `End`. Ops after `br` up to the
+            // enclosing `End` are unreachable (WASM stack-polymorphic) — the
+            // selector still lowers them, but the branch skips them at runtime.
+            WasmOp::Br(depth) => {
+                let d = *depth as usize;
+                if d >= ctrl.len() {
+                    return Err(SelectError(format!(
+                        "br {depth}: target depth exceeds open block nesting \
+                         ({} open) — only branches to enclosing blocks are \
+                         supported (a branch to the function body is not)",
+                        ctrl.len()
+                    )));
+                }
+                let target = ctrl.len() - 1 - d;
+                let pos = words.len();
+                words.push(enc::b_uncond(0)); // placeholder; patched at End
+                ctrl[target].pending.push(pos);
+            }
+            // `br_if N` — pop an i32 condition; branch to the block-N END iff it
+            // is nonzero → `cbnz w_cond, <block-end>`. Not-taken falls through.
+            WasmOp::BrIf(depth) => {
+                let d = *depth as usize;
+                if d >= ctrl.len() {
+                    return Err(SelectError(format!(
+                        "br_if {depth}: target depth exceeds open block nesting \
+                         ({} open)",
+                        ctrl.len()
+                    )));
+                }
+                let cond = pop_gp(&mut stack, "br_if")?;
+                let target = ctrl.len() - 1 - d;
+                let pos = words.len();
+                words.push(enc::cbnz(cond, 0)); // placeholder; patched at End
+                ctrl[target].pending.push(pos);
+            }
+            // `loop` (backward branch target), `if`/`else` (join reconciliation),
+            // and `br_table` (jump table) are OUT of this increment — decline by
+            // name rather than miscompile. (BrTable/If/Else hit the catch-all
+            // `other` arm below; loop is explicit so its arity ordinal is
+            // consumed with a clear message.)
+            WasmOp::Loop => {
+                // (no ctrl_ord bump needed: a decline aborts the whole compile,
+                // so the arity-ordinal alignment is moot from here on.)
+                return Err(SelectError(
+                    "loop: backward-branch control flow not yet supported for \
+                     aarch64 — loud-declining (only forward void blocks)"
+                        .into(),
+                ));
+            }
+
             // --- i32 arithmetic / bitwise ---
             WasmOp::I32Add => binop(&mut words, &mut stack, enc::add)?,
             WasmOp::I32Sub => binop(&mut words, &mut stack, enc::sub)?,
@@ -682,9 +798,38 @@ pub fn select_typed(
                 reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_w_from_s)?
             }
 
-            // End of the function body: funnel the result into x0/d0 and return.
+            // `End` is overloaded: it closes the innermost open `block`, or —
+            // when no block is open — ends the FUNCTION body (funnel the result
+            // into x0/d0 and return).
             WasmOp::End => {
-                epilogue(&mut words, stack.last().copied());
+                if let Some(frame) = ctrl.pop() {
+                    // Block close: every recorded forward branch targets HERE
+                    // (the block's fall-through). Patch each placeholder with the
+                    // word-relative offset from the branch to the current position.
+                    let here = words.len();
+                    for pos in frame.pending {
+                        let off = (here as i64 - pos as i64) as i32;
+                        let branch = words[pos];
+                        // Re-encode with the resolved offset, preserving the
+                        // opcode/register bits set at emission (b vs cbnz).
+                        words[pos] = if branch & 0xFF00_0000 == 0x1400_0000 {
+                            enc::b_uncond(off)
+                        } else {
+                            // cbnz: keep the Rt field, set the imm19.
+                            enc::cbnz((branch & 0x1F) as u8, off)
+                        };
+                    }
+                    // A void block leaves the value stack exactly as on entry.
+                    debug_assert!(
+                        stack.len() == frame.stack_entry,
+                        "void block must restore stack height: entry={} now={}",
+                        frame.stack_entry,
+                        stack.len()
+                    );
+                    stack.truncate(frame.stack_entry);
+                } else {
+                    epilogue(&mut words, stack.last().copied());
+                }
             }
             other => {
                 return Err(SelectError(format!(
@@ -1282,5 +1427,166 @@ mod tests {
             WasmOp::End,
         ];
         assert!(select_typed(&ops, 2, &[true, true], &[]).is_err());
+    }
+
+    // ---- #538 control-flow increment: void blocks + br/br_if ----
+
+    #[test]
+    fn void_block_with_br_if_patches_forward_offset() {
+        // (func (param i32 i32) (result i32)
+        //   block                      ;; void
+        //     local.get 0
+        //     br_if 0                  ;; if p0 != 0, skip the add
+        //     local.get 0
+        //     local.get 1
+        //     i32.add
+        //     drop                     ;; keep the block void — result via a
+        //     ...                      ;; (modeled without drop below: pure void body)
+        //   end
+        //   local.get 0
+        //   end)
+        // Simpler shape that stays void: the block body only conditionally traps.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0), // cbnz w0, <end>
+            WasmOp::Unreachable,
+            WasmOp::End, // block end — patch target
+            WasmOp::LocalGet(1),
+            WasmOp::End, // function end
+        ];
+        let w = select_typed_cf(&ops, 2, &[], &[], &[(0, 0)]).unwrap();
+        // Layout: [0] cbnz w0, +2 ; [1] brk ; [2] mov x0,x1 ; [3] ret
+        // The cbnz must skip exactly the brk (offset +2 words to the block end).
+        assert_eq!(w[0], enc::cbnz(0, 2), "cbnz must target the block end (+2)");
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::mov_reg64(0, 1));
+        assert_eq!(w[3], enc::ret());
+        assert_eq!(w.len(), 4);
+    }
+
+    #[test]
+    fn void_block_with_unconditional_br() {
+        // block ; br 0 ; unreachable ; end ; local.get0 ; end
+        // `br 0` unconditionally jumps to the block end, skipping the brk.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Br(0), // b <end>
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // [0] b +2 ; [1] brk ; [2] ret  (local.get 0 is w0 → no mov)
+        assert_eq!(w[0], enc::b_uncond(2), "br must jump to the block end (+2)");
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::ret());
+        assert_eq!(w.len(), 3);
+    }
+
+    #[test]
+    fn nested_void_blocks_br_targets_correct_level() {
+        // block            ;; outer (ord 0)
+        //   block          ;; inner (ord 1)
+        //     local.get 0
+        //     br_if 1      ;; branch to OUTER end (2 levels: depth 1)
+        //     unreachable
+        //   end            ;; inner end
+        //   unreachable
+        // end              ;; outer end
+        // local.get 0
+        // end
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(1), // to outer end
+            WasmOp::Unreachable,
+            WasmOp::End, // inner end
+            WasmOp::Unreachable,
+            WasmOp::End, // outer end
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
+        // [0] cbnz w0, ? ; [1] brk (inner) ; [2] brk (after inner end) ; [3] ret
+        // Outer end is at word index 3. cbnz at 0 → offset +3.
+        assert_eq!(
+            w[0],
+            enc::cbnz(0, 3),
+            "br_if 1 must reach the OUTER end (+3)"
+        );
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::brk(0));
+        assert_eq!(w[3], enc::ret());
+        assert_eq!(w.len(), 4);
+    }
+
+    #[test]
+    fn typed_block_is_loud_declined() {
+        // A value-carrying block (result i32) must decline — the straight-line
+        // model can't reconcile the result register across the branch.
+        let ops = vec![
+            WasmOp::Block, // arity (0,1) → declined
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(
+            select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).is_err(),
+            "typed (0,1) block must loud-decline"
+        );
+    }
+
+    #[test]
+    fn loop_and_br_table_and_if_are_loud_declined() {
+        // Backward-branch / join / jump-table control is out of this increment.
+        let loop_ops = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&loop_ops, 0, &[], &[], &[(0, 0)]).is_err());
+
+        let brtable = vec![
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0],
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(select_typed_cf(&brtable, 1, &[], &[], &[(0, 0)]).is_err());
+
+        let if_ops = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&if_ops, 1, &[], &[], &[(0, 0)]).is_err());
+    }
+
+    #[test]
+    fn br_beyond_open_nesting_declines() {
+        // `br 1` with only one open block targets the function body — unsupported.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Br(1), // depth 1 but only 1 block open → decline
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(select_typed_cf(&ops, 0, &[], &[], &[(0, 0)]).is_err());
+    }
+
+    #[test]
+    fn empty_arity_table_defaults_to_void_block() {
+        // Hand-built op streams (empty arity table) treat a block as void (0,0),
+        // matching the decoder's `unwrap_or((0,0))` convention.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0),
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
+        assert_eq!(w[0], enc::cbnz(0, 2));
     }
 }

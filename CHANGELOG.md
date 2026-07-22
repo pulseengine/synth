@@ -22,6 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (WCET reads the final stream; `.text` byte-identical). New unicorn cross-check
   `wcet_phase5_778_masked_loop_soundness.py` (count-down `cd(0)`: 180 insns ≤ 339
   cyc); the both-endpoints max is pinned in `claims.yaml`.
+### Fixed
+
+- **#837 — frame-backing i64/f64 VALUE param across a call is now LOWERED** (the
+  last uncovered #518 i64-param sub-case). A function whose signature carries a
+  64-bit value param AND whose body makes a call (gale's `gust:os/timer`
+  `sleep(handle: u32, ticks: u64)` shape) previously loud-declined ("an i64/f64
+  param in a frame-backing function … is not yet lowered") rather than lowering.
+  Root cause: the frame-backing `param_slots` path sized an i64 param's slot from
+  `i64_set` (inferred i64 *locals*, which never contains params), giving a wide
+  param a 4-byte slot and dropping the high half. Fix: size the slot from the
+  declared AAPCS width (`params_i64`), so the even-aligned pair (R0:R1 or R2:R3)
+  is homed into an 8-byte frame slot in the prologue (`I64Str`) and reloaded
+  after the call (`I64Ldr`) — the store/reload machinery was already
+  width-aware. The u64 value param survives the call, verified bit-identically
+  vs **wasmtime** under unicorn (`framebacking_i64param_837_differential.py`,
+  gale's mmio-import + in-module-call shape; `sleep` + `sleep_hi` exercising both
+  halves). Execution-verified for one i64 pair (R2:R3), two i64 pairs (R0:R1 +
+  R2:R3, correct carry), and a soft-float f64 value param (R0:R1) — all survive
+  the call. gale's report was the `--relocatable` direct path; the default
+  optimized path (separate codegen) already compiled the shape and still does.
+  Frozen fixtures byte-identical (all-i32 signatures are untouched at the
+  slot-sizing site). The one residual that still LOUD-DECLINES
+  by name is the register-pair-exhaustion retry (`param_backing_on_exhaustion`),
+  which has no execution oracle yet. Refs #518, #242.
 
 ## [0.49.0] - 2026-07-17
 

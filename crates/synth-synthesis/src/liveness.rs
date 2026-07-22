@@ -172,8 +172,10 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
 }
 
 /// True if `op` is straight-line (no branch / label / call) and therefore safe
-/// to include in a local, single-block analysis.
-fn is_straight_line(op: &ArmOp) -> bool {
+/// to include in a local, single-block analysis. `pub` so the VCR-DEC-001
+/// graph-colouring allocator ([`crate::graph_alloc`]) can share the exact
+/// straight-line predicate this module's analyses use.
+pub fn is_straight_line(op: &ArmOp) -> bool {
     use ArmOp::*;
     !matches!(
         op,
@@ -14476,6 +14478,84 @@ mod tests {
             RaFinalVerdict::Consistent,
             "a dominator-defined value read across a loop back-edge must stay \
              available (the universe-init correctness case) — got a false positive"
+        );
+    }
+
+    // ---- VCR-DEC-001 graph-allocator RED-FIRST probe (SYNTH_GRAPH_ALLOC) ----
+    // Settles the load-bearing claim "the acceptance oracle gates the new
+    // allocator". The value-range graph allocator (crate::graph_alloc) rewrites
+    // each straight-line segment via a colouring and PROVES the rewrite preserves
+    // execution semantics with `validate_segment_rewrite` (the Rideau/Leroy
+    // pairwise trace-equality gate — STRONGER than "no interfering ranges share a
+    // register": it is exactly the check reallocate_function already runs, so the
+    // spike reuses the verified path's own acceptance oracle). VCR-RA-003
+    // (validate_final_allocation) is the unconditional whole-function backstop on
+    // the final stream; wasmtime is the execution backstop.
+    //
+    // Red-first: a colouring bug that MERGES two simultaneously-live ranges onto
+    // one register breaks value flow — validate_segment_rewrite must reject it.
+    #[test]
+    fn graph_alloc_bad_rename_rejected_by_segment_validator() {
+        // Original straight-line segment (r2 = r0 + r1, then r0 is redefined and
+        // read — so r0's first value and r1 are both live at the add):
+        //   movw r0,#1 ; movw r1,#2 ; add r2,r0,r1 ; add r3,r0,r2
+        // r0 is live across the `add r2` (read again at `add r3`), and r1 is live
+        // there too — they interfere.
+        let orig = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+        ];
+        // A DELIBERATELY BROKEN rewrite: rename r1's def+use to r0 — collapsing
+        // two interfering live values onto one register. `add r2,r0,r1` becomes
+        // `add r2,r0,r0`, changing the computed value: a real miscompile.
+        let broken = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0, // was r1 — clobbers r0's live value
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0), // was r1
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+        ];
+        assert!(
+            validate_segment_rewrite(&orig, &broken).is_err(),
+            "the segment trace-equality validator MUST reject a rename that \
+             merges two interfering live ranges onto one register — this is the \
+             red-first acceptance gate for the graph allocator's rewrite"
+        );
+        // The identity rewrite (a no-op colouring) is accepted — the gate is not
+        // vacuously rejecting.
+        assert_eq!(
+            validate_segment_rewrite(&orig, &orig),
+            Ok(()),
+            "the identity rewrite must pass — the gate is non-vacuous"
         );
     }
 }
