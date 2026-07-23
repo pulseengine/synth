@@ -63,4 +63,17 @@
     (local.set 1 (local.get 0))
     (local.set 1 (i32.add (local.get 1) (i32.const 1)))
     (local.set 1 (i32.mul (local.get 1) (i32.const 2)))
+    (local.get 1))
+
+  ;; Non-param local READ AND WRITTEN ACROSS a void block with an early `br_if`
+  ;; out (#851 × #538-cf). SP is lowered once at prologue and the block never
+  ;; touches it, so the single epilogue `add sp` at the outer `End` balances on
+  ;; every path. param0 != 0 → br_if skips the second set → local = 1; param0 == 0
+  ;; → falls through → local = 2. Returns the local.
+  (func (export "local_across_block") (param i32) (result i32)
+    (local i32)
+    (local.set 1 (i32.const 1))
+    (block
+      (br_if 0 (local.get 0))          ;; if param0 != 0, jump to block end
+      (local.set 1 (i32.const 2)))     ;; only runs when param0 == 0
     (local.get 1)))

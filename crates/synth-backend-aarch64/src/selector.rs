@@ -25,7 +25,19 @@
 //!   naively is the "ARM more-total-than-WASM" silent-miscompile class; they are
 //!   left for a later milestone that adds the explicit trap guards.
 //! - `popcnt`: no scalar A64 popcount pre-SVE (needs SIMD `CNT`+`ADDV`).
-//! - memory, calls, control flow, non-param locals, spilling.
+//! - memory, calls, spilling. (Forward void-block control flow lands in the
+//!   #538-cf increment; NON-PARAM LOCALS land in #851 — see below.)
+//!
+//! **#851 — non-param locals:** GP locals beyond the params (index >=
+//! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -
+//! num_params)*8]`, frame rounded to a 16-byte SP-aligned multiple), only when
+//! the function actually declares one. `local.get` LOADS the slot into a fresh
+//! temp (copy-semantics — a later `local.set` of the same index cannot alias a
+//! stacked value), `local.set`/`local.tee` store it (tee without popping).
+//! 64-bit slots preserve both i32 and i64. Still declined here: writing a
+//! PARAMETER (params live in arg registers by reference — a later increment
+//! homes them) and FP non-param locals (their types are not threaded to the
+//! backend, so an FP `local.set` is caught by the GP file-check and declined).
 //!
 //! **Milestone 3 adds scalar floating point** (the separate V/D/S register file):
 //! f32/f64 const, add/sub/mul/div, abs/neg/sqrt, the full compare family, the
@@ -1840,6 +1852,44 @@ mod tests {
         // written params is a later increment) — never silently miscompiled.
         let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0), WasmOp::End];
         assert!(select(&ops, 1).is_err());
+    }
+
+    #[test]
+    fn local_across_void_block_balances_sp() {
+        // A non-param local read/written across a void block with a br_if out.
+        // The frame `sub sp` is emitted ONCE at prologue and the block never
+        // touches SP; the single `add sp` fires only at the OUTER End (the block
+        // End takes the ctrl-pop path, no epilogue). So SP is balanced on every
+        // path: exactly one `sub sp` and exactly one matching `add sp`.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(1),
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0),
+            WasmOp::I32Const(2),
+            WasmOp::LocalSet(1),
+            WasmOp::End, // block end — NO epilogue, NO sp adjust
+            WasmOp::LocalGet(1),
+            WasmOp::End, // function end — the one epilogue
+        ];
+        // 1 param, 1 non-param local (index 1) → frame 8 rounds to 16.
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let subs = w
+            .iter()
+            .filter(|&&x| x == enc::sub_imm64(enc::SP, enc::SP, 16))
+            .count();
+        let adds = w
+            .iter()
+            .filter(|&&x| x == enc::add_imm64(enc::SP, enc::SP, 16))
+            .count();
+        assert_eq!(subs, 1, "exactly one prologue sub sp");
+        assert_eq!(adds, 1, "exactly one epilogue add sp — SP balanced");
+        // The prologue sub is the very first word; the epilogue add is the
+        // second-to-last (before ret).
+        assert_eq!(w[0], enc::sub_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(w[w.len() - 1], enc::ret());
+        assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 16));
     }
 
     #[test]

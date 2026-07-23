@@ -69,6 +69,12 @@ CASES = [
     ("reassign_local", 32, 32, [0]),
     ("reassign_local", 32, 32, [10]),
     ("reassign_local", 32, 32, [0x7FFFFFFF]),
+    # non-param local read/written across a void block + br_if (#851 x #538-cf):
+    # param!=0 -> br_if out -> local=1 ; param==0 -> fall through -> local=2.
+    # SP must be balanced on BOTH paths (single epilogue at the outer End).
+    ("local_across_block", 32, 32, [0]),
+    ("local_across_block", 32, 32, [1]),
+    ("local_across_block", 32, 32, [7]),
 ]
 
 
