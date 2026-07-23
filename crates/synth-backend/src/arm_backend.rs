@@ -1257,7 +1257,7 @@ fn compile_wasm_to_arm(
     // shift) and before branch resolution (removal/rewrite-only ⇒
     // offset-neutral).
     //
-    // DEFAULT-ON since v0.50.0 (opt-out via `SYNTH_SHIFT_MASK_ELIDE=0`; #846).
+    // DEFAULT-ON since v0.50.1 (opt-out via `SYNTH_SHIFT_MASK_ELIDE=0`; #846).
     // gale's gpio-thin driver regressed +44 B / +9% on synth 0.49 — its pin
     // bit-arithmetic (`pin & 31` then a register shift) emits the source
     // `and rN,#0x1f` IMMEDIATELY followed by the #682 mod-32 re-mask

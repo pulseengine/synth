@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Flipping the elision on by default recovers **534 → 506 B** (−28 B; 6 of the 10
   masks proven redundant). Execution proven bit-identical vs wasmtime on gale's
   driver (75/75 mmio traces incl. pin ≥ 32) and the corpus sweep. Opt-out
-  `SYNTH_NO_SHIFT_MASK_ELIDE=1`. The 4 residual masks (the ones the elision can't
+  `SYNTH_SHIFT_MASK_ELIDE=0`. The 4 residual masks (the ones the elision can't
   prove <32, ~16 B to gale's 490 B target) are a tracked follow-up.
 
 ### Fixed
