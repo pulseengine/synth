@@ -122,11 +122,17 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 /// origin/main binary), incl. gust_spill_fwd_390_differential.py (gust_poll
 /// return + post-call state struct vs wasmtime in default + both lever
 /// opt-outs). Only gust_poll's bytes changed; func_0/func_1/gust_mix identical.
+// RE-PINNED for the #846 SYNTH_SHIFT_MASK_ELIDE default-on flip (v0.50.0): the
+// scheduler's pin/shift bit-arithmetic drops the redundant #682 mod-32 re-mask,
+// shrinking gust_poll 716→692 (−24), func_0 408→380 (−28), func_1 76→60 (−16);
+// gust_mix (no register shifts) is unchanged. Execution UNCHANGED — re-pinned
+// only after gust_spill_fwd_390_differential.py PASSED on the new default-on
+// bytes (gust_poll return + post-call state struct vs wasmtime).
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 716),
+    ("gust_poll", 692),
     ("gust_mix", 32),
-    ("func_0", 408),
-    ("func_1", 76),
+    ("func_0", 380),
+    ("func_1", 60),
 ];
 
 #[test]

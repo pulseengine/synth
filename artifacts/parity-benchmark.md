@@ -92,7 +92,7 @@ Regenerate everything on this page:
 | gust_poll bounds (8 sw guards) | synth AOT --safety-bounds software (no facts) | 184 | MEASURED | 1.77x | OPEN — gale silicon (DWT) |
 | gust_poll bounds (8 sw guards) | synth AOT sw bounds + SYNTH_FACT_SPEC=1 (proven slot∈[0,63]) | 104 | MEASURED (8 ordeal ADMITs) | 1.00x | OPEN — gale silicon (DWT) |
 | gust_poll bounds (8 sw guards) | synth AOT unguarded floor (no --safety-bounds) — group ref | 104 | MEASURED | ref | OPEN — gale silicon (DWT) |
-| flat_flight | synth AOT (default) | 458 | MEASURED | 2.54x | OPEN — gale silicon (DWT) |
+| flat_flight | synth AOT (default) | 384 | MEASURED | 2.13x | OPEN — gale silicon (DWT) |
 | flat_flight | native C — arm-none-eabi-gcc -Os | 180 | MEASURED | ref | OPEN — gale silicon (DWT) |
 | falcon_axis (f32) | synth AOT (cortex-m4f, VFP) | 72 | MEASURED | 1.64x | OPEN — gale silicon (DWT) |
 | falcon_axis (f32) | native C — arm-none-eabi-gcc -Os | 44 | MEASURED | ref | OPEN — gale silicon (DWT) |
@@ -153,7 +153,7 @@ The gap is CLOSING release-over-release, lever by lever, each evidence-gated:
 Open, tracked, and honestly not yet won: general regalloc overhead
 (gust_poll 3.48x,
 spill_reload ~31%, #390/#242 Track A), flat_flight at
-2.54x vs gcc, falcon f32 at
+2.13x vs gcc, falcon f32 at
 1.64x vs gcc (constant materialization
 via `movw/movt+vmov` instead of a literal pool, unused callee-save push), and
 every cycles cell.
