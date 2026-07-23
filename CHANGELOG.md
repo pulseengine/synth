@@ -7,16 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.50.0] - 2026-07-22
+## [0.50.1] - 2026-07-23
+
+### Changed
+
+- **gpio-thin size regression (#846): `SYNTH_SHIFT_MASK_ELIDE` now default-on.**
+  The #686 shift-mask elision (dropping a redundant `and rN, #31` mask-of-shift-
+  amount when the amount is provably <32, incl. the `and X,#0x1f`-masked-operand
+  Pattern B) shipped flag-off in v0.49. gale's real 656 B `gpio.loom.wasm` emitted
+  10 such redundant `and.w ip, rN, #31` sites → the +9% (490 → 534 B) regression.
+  Flipping the elision on by default recovers **534 → 506 B** (−28 B; 6 of the 10
+  masks proven redundant). Execution proven bit-identical vs wasmtime on gale's
+  driver (75/75 mmio traces incl. pin ≥ 32) and the corpus sweep. Opt-out
+  `SYNTH_NO_SHIFT_MASK_ELIDE=1`. The 4 residual masks (the ones the elision can't
+  prove <32, ~16 B to gale's 490 B target) are a tracked follow-up.
+
+### Fixed
+
+- **[0.50.0 doc correction] The v0.50.0 notes described "the SMT validator models
+  i64 remainder natively instead of havoc" — that lane (#844) was reverted before
+  the v0.50.0 tag** (the ordeal 0.12 solver-perf regression it depended on hung CI;
+  ordeal pinned to =0.9.1, #849). i64 remainder is modeled as havoc in 0.50.0 and
+  0.50.1; the native model re-lands behind a per-query solver timeout (#848). The
+  0.50.0 intro prose below is left as-shipped for the historical record; this note
+  is the correction.
+
+## [0.50.0] - 2026-07-23
 
 **"Cross-backend verified core, and the allocator endgame begins."** The
 whole-function register-allocation validator is now cross-backend (ARM incl.
-optimized joins + RV32), the SMT validator models i64 remainder natively instead
-of havoc, and — the headline — **a from-construction graph-colouring register
-allocator lands (flag-off), with every function it emits validated by that same
-verified oracle.** That is the North Star's first foothold: the verified checker
-gating its own replacement. Seven parallel lanes; every one oracle-gated red-first;
-frozen anchors byte-identical throughout.
+optimized joins + RV32) and — the headline — **a from-construction graph-colouring
+register allocator lands (flag-off), with every function it emits validated by that
+same verified oracle.** That is the North Star's first foothold: the verified
+checker gating its own replacement. Seven parallel lanes; every one oracle-gated
+red-first; frozen anchors byte-identical throughout. *(Correction: an earlier draft
+of these notes claimed native i64-remainder SMT modeling; that lane was reverted
+pre-tag — see the [0.50.1] Fixed note.)*
 
 ### Added
 
