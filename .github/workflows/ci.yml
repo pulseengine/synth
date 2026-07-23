@@ -444,8 +444,40 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m4_trunc_minmax_538_differential.py
       - name: Run cf void-block br/br_if execution oracle (both branch edges)
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
+      - name: Run #851 linear-memory load/store execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
+
+  aarch64-native-matrix:
+    name: aarch64 native execution matrix (gale #851 acceptance gate)
+    # gale's standing execution-differential (#851): compiles a broad op set with
+    # `synth -b aarch64`, executes each ACCEPTED op NATIVELY on this arm64 runner
+    # (MAP_JIT), and diffs bit-exact vs wasmtime. Exits non-zero ONLY on a
+    # MISCOMPILE — a declined op is fine (the gate is "no accepted op is WRONG"),
+    # so every op auto-flips declined→verified the day its lowering lands. macos
+    # runners are arm64, so this is the real-silicon acceptance gate for the
+    # host-native backend (the unicorn job above is the host-independent partner).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - name: Install wasm-tools + wasmtime (LLVM/objcopy ship with the runner)
+        run: brew install wasm-tools wasmtime
+      - name: Run gale's aarch64 execution matrix (miscompile → non-zero)
+        run: SYNTH=./target/debug/synth ./scripts/repro/aarch64_matrix.sh
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
