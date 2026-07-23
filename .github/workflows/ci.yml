@@ -410,9 +410,10 @@ jobs:
     # (NaN-ordering compares, promote/demote, converts, reinterprets), m4 the
     # #709 boundary table (domain-guarded trapping trunc: every case where
     # WASM traps must TRAP under emulation, in-range must match bit-exactly)
-    # + min/max NaN/±0 matrix + copysign. The decline-matrix probe asserts
-    # div/rem/popcnt/rounding/i64<->float still LOUD-decline (A64 SDIV/UDIV
-    # don't trap; a naive lowering would be a silent miscompile).
+    # + min/max NaN/±0 matrix + copysign. #851 added div/rem (SDIV/UDIV+MSUB
+    # with WASM ÷0 + INT_MIN/-1 trap guards, execution-verified), popcnt (SIMD
+    # CNT/ADDV), and f64<->i64 reinterpret; the decline-matrix probe now
+    # asserts only rounding + i64<->float conversions still LOUD-decline.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -446,6 +447,8 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
       - name: Run #851 linear-memory load/store execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
+      - name: Run #851 div/rem trap-and-value execution oracle (÷0 + INT_MIN/-1)
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_divrem_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
