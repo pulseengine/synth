@@ -1,5 +1,5 @@
 {
-  "aarch64_selector_ops": 111,
+  "aarch64_selector_ops": 132,
   "backends": [
     "arm-thumb2-cortex-m",
     "arm-a32-cortex-r5",

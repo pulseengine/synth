@@ -485,8 +485,16 @@ jobs:
         run: |
           out=$(SYNTH=./target/debug/synth \
             OBJCOPY="$(brew --prefix llvm)/bin/llvm-objcopy" \
-            ./scripts/repro/aarch64_matrix.sh)
+            ./scripts/repro/aarch64_matrix.sh); rc=$?
           echo "$out"
+          # Primary purpose: a MISCOMPILE makes the matrix exit non-zero. Check
+          # that explicitly (don't lean on set -e propagating through $(...)).
+          if [ "$rc" -ne 0 ]; then
+            echo "aarch64 matrix reported a miscompile/error (rc=$rc)"; exit "$rc"
+          fi
+          # Non-vacuity: extraction failure counts every op as declined (=PASS),
+          # so a broken objcopy/objdump would green the gate having checked
+          # nothing. Assert at least gale's 0.50.x accepted-op baseline.
           acc=$(echo "$out" | sed -n 's/aarch64: \([0-9]*\) ops accepted.*/\1/p')
           if [ "${acc:-0}" -lt 32 ]; then
             echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 32) — \

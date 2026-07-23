@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **aarch64 non-param locals (#856).** The `-b aarch64` backend now supports
+  `local` declarations beyond params: each non-param local gets a zero-init
+  8-byte stack slot (`[sp, #(idx − num_params)*8]`, frame rounded to a 16-byte
+  SP-aligned multiple), with copy-semantics `local.get`/`local.set`/`local.tee`
+  (stack slots give alias-safety by construction). Adds `str_x_imm`/`ldr_x_imm`/
+  `sub_imm64`/`add_imm64` encoders. (Landed via PR #856 ahead of the #851 memory
+  lane; entry added here on fan-in.)
+- **aarch64 linear-memory load/store (#851, the biggest host-native gap).** The
+  `-b aarch64` backend now lowers `i32`/`i64` `load`/`store` and every sub-word
+  form (`i32.load8_{s,u}/16_{s,u}`, `i32.store8/16`, `i64.load8_{s,u}/16_{s,u}/
+  32_{s,u}`, `i64.store8/16/32`) — clang-ground-truth-verified LDR/STR/LDRB/
+  STRB/LDRH/STRH/LDRSB/LDRSH/LDRSW encoders against a dedicated linear-memory
+  base register (`x28`, mirroring ARM R11 / RV32 s11). Effective address =
+  `x28 + uxtw(i32 addr) + memarg.offset`; offsets fold into the size-scaled
+  imm12 or materialize-and-add. `MultiMemory` and everything uncovered still
+  loud-decline. The aarch64 selector op count rises 111 → 130. Gale's execution
+  matrix (`scripts/repro/aarch64_matrix.sh`) is vendored as the CI acceptance
+  gate (macos-latest, arm64; reproduces the 32-op/86-check baseline + a
+  non-vacuity guard); a memory execution-differential proves **38/38 store/load
+  round-trips bit-identical vs wasmtime** under unicorn (i32/i64, all sub-word
+  sign/zero forms, big-offset path, cross-function shared-base). Honest
+  frontier (documented, not silent): in-bounds only — OOB-trap, data-segment
+  init, `memory.{size,grow}`, and emitting startup that establishes `x28` are
+  follow-ons.
+
 ## [0.50.1] - 2026-07-23
 
 ### Changed
