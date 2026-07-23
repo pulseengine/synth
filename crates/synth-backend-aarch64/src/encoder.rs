@@ -276,6 +276,49 @@ pub fn ret() -> u32 {
     0xD65F_03C0
 }
 
+/// The stack-pointer register operand (architectural number 31 in the
+/// base-register position of a load/store or an add/sub-immediate, where 31
+/// means SP rather than the zero register).
+pub const SP: Reg = 31;
+
+/// `str xt, [xn, #imm]` — 64-bit store, unsigned scaled offset. `imm` is a BYTE
+/// offset that must be a multiple of 8 (the 64-bit access size); the encoded
+/// `imm12` field is `imm/8`. Used to zero-init and write non-param local frame
+/// slots (#851). Clang ground truth: `str x9, [sp, #8]` = 0xF90007E9.
+pub fn str_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
+    debug_assert!(imm % 8 == 0, "str x offset must be 8-byte aligned");
+    let imm12 = imm / 8;
+    debug_assert!(imm12 < 0x1000, "str x offset out of unsigned-imm12 range");
+    0xF900_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `ldr xt, [xn, #imm]` — 64-bit load, unsigned scaled offset (byte offset,
+/// multiple of 8). The copy-semantics read of a non-param local frame slot
+/// (#851): each `local.get` loads a FRESH register so a later `local.set` to the
+/// same index cannot alias a value already on the stack. Clang ground truth:
+/// `ldr x9, [sp, #8]` = 0xF94007E9.
+pub fn ldr_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
+    debug_assert!(imm % 8 == 0, "ldr x offset must be 8-byte aligned");
+    let imm12 = imm / 8;
+    debug_assert!(imm12 < 0x1000, "ldr x offset out of unsigned-imm12 range");
+    0xF940_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `sub xd, xn, #imm12` — 64-bit subtract of an unsigned 12-bit immediate (no
+/// shift). Used to LOWER the stack pointer by the non-param-local frame size at
+/// prologue. Clang ground truth: `sub sp, sp, #16` = 0xD10043FF.
+pub fn sub_imm64(rd: Reg, rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000, "sub imm12 out of range");
+    0xD100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+
+/// `add xd, xn, #imm12` — 64-bit add of an unsigned 12-bit immediate (no shift).
+/// RAISES the stack pointer back at epilogue. Clang: `add sp, sp, #16` = 0x910043FF.
+pub fn add_imm64(rd: Reg, rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000, "add imm12 out of range");
+    0x9100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+
 /// `brk #imm16` — A64 breakpoint/trap. Used for wasm `unreachable` (#665) and
 /// the m4 trunc-guard trap path: WASM §4.4.5 requires an unconditional trap,
 /// the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
@@ -625,6 +668,26 @@ mod tests {
             mov_imm32(3, 0x0001_2345),
             vec![movz(3, 0x2345), movk(3, 1, 1)]
         );
+    }
+
+    // #851 non-param-local frame ops. Ground truth from
+    // `clang -target aarch64-linux-gnu` (assemble, objdump, read the word).
+    #[test]
+    fn local_frame_encodings_match_clang() {
+        // str x9, [sp]        = f90003e9 ; str x9, [sp, #8]  = f90007e9
+        assert_eq!(str_x_imm(9, SP, 0), 0xF900_03E9);
+        assert_eq!(str_x_imm(9, SP, 8), 0xF900_07E9);
+        // str xzr, [sp]       = f90003ff ; str xzr, [sp, #16] = f9000bff
+        assert_eq!(str_x_imm(XZR, SP, 0), 0xF900_03FF);
+        assert_eq!(str_x_imm(XZR, SP, 16), 0xF900_0BFF);
+        // ldr x9, [sp]        = f94003e9 ; ldr x10, [sp, #8]  = f94007ea
+        assert_eq!(ldr_x_imm(9, SP, 0), 0xF940_03E9);
+        assert_eq!(ldr_x_imm(10, SP, 8), 0xF940_07EA);
+        // sub sp, sp, #16     = d10043ff ; add sp, sp, #16     = 910043ff
+        assert_eq!(sub_imm64(SP, SP, 16), 0xD100_43FF);
+        assert_eq!(add_imm64(SP, SP, 16), 0x9100_43FF);
+        // sub sp, sp, #32     = d10083ff
+        assert_eq!(sub_imm64(SP, SP, 32), 0xD100_83FF);
     }
 
     // Milestone-2 broadening. Ground truth from `clang -target aarch64-linux-gnu`

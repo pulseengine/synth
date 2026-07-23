@@ -180,6 +180,54 @@ pub fn select_typed_cf(
     let mut words: Vec<u32> = Vec::new();
     let mut stack: Vec<Val> = Vec::new();
 
+    // --- non-param locals (#851): stack-slot frame ---
+    //
+    // WASM locals beyond the parameters (index >= num_params) are addressed by
+    // any `local.get`/`local.set`/`local.tee` with index >= num_params. Their
+    // count is `highest referenced index + 1 - num_params`. Each gets a fixed
+    // 8-byte slot on the stack (64-bit wide so both i32 and i64 read back intact),
+    // ZERO-INITIALIZED at entry per WASM's local default-value rule.
+    //
+    // Stack slots (not registers) give ALIAS SAFETY BY CONSTRUCTION: every
+    // `local.get` is a `ldr` into a FRESH temp — a copy, never the home location —
+    // so a later `local.set` of the same index cannot clobber a value already on
+    // the value stack (the read-by-reference param path would miscompile this;
+    // params stay read-only, see the LocalSet/LocalTee decline below).
+    //
+    // The slot for non-param local L (num_params <= L) is at `[sp, #(L -
+    // num_params)*8]`. The frame is sized to a 16-byte multiple (AArch64 SP
+    // alignment) and only materialized when there is at least one non-param local
+    // — a function with none is byte-identical to before this increment.
+    let max_local_idx = ops
+        .iter()
+        .filter_map(|op| match op {
+            WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => Some(*i),
+            _ => None,
+        })
+        .max();
+    let num_non_param_locals = match max_local_idx {
+        Some(m) if m >= num_params => m - num_params + 1,
+        _ => 0,
+    };
+    // Frame size in bytes: one 8-byte slot per non-param local, rounded UP to a
+    // 16-byte multiple (the ABI requires 16-byte SP alignment).
+    let frame_size: u32 = if num_non_param_locals == 0 {
+        0
+    } else {
+        (num_non_param_locals * 8).div_ceil(16) * 16
+    };
+    // Byte offset of non-param local `idx`'s slot from SP.
+    let local_slot_off = |idx: u32| -> u32 { (idx - num_params) * 8 };
+
+    // Prologue: lower SP by the frame, then zero every non-param local slot with
+    // `str xzr, [sp, #off]` (64-bit store clears the whole slot).
+    if frame_size > 0 {
+        words.push(enc::sub_imm64(enc::SP, enc::SP, frame_size));
+        for k in 0..num_non_param_locals {
+            words.push(enc::str_x_imm(enc::XZR, enc::SP, k * 8));
+        }
+    }
+
     // Control-flow state (#538 cf increment). Each open `block` pushes a frame;
     // the matching `End` pops it and patches the recorded forward branches to
     // land at the current instruction position (the block's fall-through point).
@@ -540,12 +588,57 @@ pub fn select_typed_cf(
         match op {
             WasmOp::LocalGet(i) => {
                 if *i >= num_params {
+                    // Non-param local (#851): LOAD its stack slot into a FRESH GP
+                    // temp — a copy, so a later `local.set` of the same index
+                    // cannot alias this value. 64-bit load (both i32 and i64 read
+                    // back correctly; an i32 producer wrote the low half and the
+                    // slot was zeroed, so the upper half is clean).
+                    let dst = alloc_temp(&stack)?;
+                    words.push(enc::ldr_x_imm(dst, enc::SP, local_slot_off(*i)));
+                    stack.push(Val::gp(dst));
+                } else {
+                    // Resolve the param to its AAPCS64 register + file (GP or FP).
+                    stack.push(params[*i as usize]);
+                }
+            }
+            // `local.set i` — pop the top value and store it into local `i`.
+            // Non-param locals live in stack slots (`str` the value). A param
+            // target is LOUD-DECLINED: params live in arg registers BY REFERENCE
+            // on the value stack, so writing one could alias a value already
+            // pushed (the miscompile the slot model avoids for non-param locals);
+            // homing written params is a later increment.
+            WasmOp::LocalSet(i) => {
+                if *i >= num_params {
+                    let src = pop_gp(&mut stack, "local.set")?;
+                    words.push(enc::str_x_imm(src, enc::SP, local_slot_off(*i)));
+                } else {
                     return Err(SelectError(format!(
-                        "local.get {i}: non-param locals not yet supported"
+                        "local.set {i}: writing a PARAMETER is not yet supported \
+                         for aarch64 (params live in arg registers by reference; \
+                         writing one could alias a stacked value) — loud-declining"
                     )));
                 }
-                // Resolve the param to its AAPCS64 register + file (GP or FP).
-                stack.push(params[*i as usize]);
+            }
+            // `local.tee i` — like `local.set` but leaves the value on the stack.
+            // Store the top value WITHOUT popping it (peek + `str`); a param
+            // target is declined for the same reason as `local.set`.
+            WasmOp::LocalTee(i) => {
+                if *i >= num_params {
+                    let top = *stack
+                        .last()
+                        .ok_or_else(|| SelectError("local.tee underflow".into()))?;
+                    if top.file != File::Gp {
+                        return Err(SelectError(
+                            "local.tee: expected GP operand, got FP".into(),
+                        ));
+                    }
+                    words.push(enc::str_x_imm(top.reg, enc::SP, local_slot_off(*i)));
+                } else {
+                    return Err(SelectError(format!(
+                        "local.tee {i}: writing a PARAMETER is not yet supported \
+                         for aarch64 — loud-declining"
+                    )));
+                }
             }
             WasmOp::I32Const(c) => {
                 let dst = alloc_temp(&stack)?;
@@ -828,7 +921,7 @@ pub fn select_typed_cf(
                     );
                     stack.truncate(frame.stack_entry);
                 } else {
-                    epilogue(&mut words, stack.last().copied());
+                    epilogue(&mut words, stack.last().copied(), frame_size);
                 }
             }
             other => {
@@ -841,17 +934,24 @@ pub fn select_typed_cf(
 
     // A body without a trailing `End` still needs an epilogue.
     if !matches!(ops.last(), Some(WasmOp::End)) {
-        epilogue(&mut words, stack.last().copied());
+        epilogue(&mut words, stack.last().copied(), frame_size);
     }
     Ok(words)
 }
 
 /// Emit the function epilogue: move the top-of-stack result into the ABI return
-/// register (`x0` for a GP result, `d0` for a float result) and `ret`. A GP
-/// result already in `x0` / an FP result already in `v0` skips the move. The
-/// 64-bit `mov x0, xN` is correct for i32 results too (w-form producers zero the
-/// upper half); the `fmov d0, dN` likewise carries an f32's low 32 bits intact.
-fn epilogue(words: &mut Vec<u32>, top: Option<Val>) {
+/// register (`x0` for a GP result, `d0` for a float result), restore the stack
+/// pointer past any non-param-local frame, and `ret`. A GP result already in
+/// `x0` / an FP result already in `v0` skips the move. The 64-bit `mov x0, xN` is
+/// correct for i32 results too (w-form producers zero the upper half); the `fmov
+/// d0, dN` likewise carries an f32's low 32 bits intact.
+///
+/// `frame_size` is the byte size of the non-param-local frame (0 when the
+/// function has no non-param locals — then no `add sp` is emitted and the output
+/// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
+/// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
+/// the sequence is: funnel result → restore SP → ret.
+fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32) {
     match top {
         Some(Val {
             reg,
@@ -866,6 +966,9 @@ fn epilogue(words: &mut Vec<u32>, top: Option<Val>) {
             words.push(enc::fmov_d(0, reg));
         }
         _ => {}
+    }
+    if frame_size > 0 {
+        words.push(enc::add_imm64(enc::SP, enc::SP, frame_size));
     }
     words.push(enc::ret());
 }
@@ -1588,5 +1691,175 @@ mod tests {
         ];
         let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
         assert_eq!(w[0], enc::cbnz(0, 2));
+    }
+
+    // --- #851 non-param locals ---
+
+    #[test]
+    fn no_non_param_locals_is_byte_identical() {
+        // A function that only touches params emits NO frame — byte-identical to
+        // the pre-#851 lowering (the localizing guard).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(w, vec![enc::add(9, 0, 1), enc::mov_reg64(0, 9), enc::ret()]);
+    }
+
+    #[test]
+    fn two_non_param_locals_frame_and_ops() {
+        // (result i32) (local i32 i32)
+        // local.set 0 (const 5); local.set 1 (const 7); local.get 0 + local.get 1
+        // 0 params, 2 non-param locals → frame rounds 2*8=16 to 16.
+        let ops = vec![
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(0),
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                // prologue: sub sp,sp,#16 ; zero both slots
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0),
+                enc::str_x_imm(enc::XZR, enc::SP, 8),
+                // const 5 -> w9 ; set local 0 (slot 0)
+                enc::movz(9, 5),
+                enc::str_x_imm(9, enc::SP, 0),
+                // const 7 -> w9 (freed) ; set local 1 (slot 8)
+                enc::movz(9, 7),
+                enc::str_x_imm(9, enc::SP, 8),
+                // get local 0 -> w9 ; get local 1 -> w10
+                enc::ldr_x_imm(9, enc::SP, 0),
+                enc::ldr_x_imm(10, enc::SP, 8),
+                enc::add(9, 9, 10),
+                enc::mov_reg64(0, 9),
+                // epilogue: restore sp ; ret
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_param_local_zero_init_read_before_write() {
+        // A non-param local read BEFORE any write must read 0. With 1 param and
+        // one non-param local (index 1), get local 1 loads the zeroed slot.
+        // 1 param + 1 non-param local → frame 8 rounds to 16.
+        let ops = vec![
+            WasmOp::LocalGet(0), // param
+            WasmOp::LocalGet(1), // non-param local, read-first → must be 0
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0), // zero the one slot
+                enc::ldr_x_imm(9, enc::SP, 0),        // get local 1 (zeroed)
+                enc::add(9, 0, 9),                    // param0 + local1
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_get_set_get_no_alias() {
+        // THE aliasing regression: get local 1 (push), set local 1 := 5, get
+        // local 1 (push), add. Stack slots make each get a FRESH load, so the
+        // first pushed value is the OLD slot (0), not clobbered by the set.
+        // wasmtime: 0 + 5 = 5. A read-by-reference model would give 5 + 5 = 10.
+        // 0 params, 1 non-param local (index 0) → frame 8 rounds to 16.
+        let ops = vec![
+            WasmOp::LocalGet(0), // load slot (0) into w9
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(0), // slot := 5 (does NOT touch w9 on the stack)
+            WasmOp::LocalGet(0), // load slot (5) into a fresh temp
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0), // zero-init
+                enc::ldr_x_imm(9, enc::SP, 0),        // get -> w9 (=0, on stack)
+                enc::movz(10, 5),                     // const 5 -> w10 (w9 live)
+                enc::str_x_imm(10, enc::SP, 0),       // set slot := 5
+                enc::ldr_x_imm(10, enc::SP, 0),       // get -> w10 (=5, fresh)
+                enc::add(9, 9, 10),                   // 0 + 5
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_tee_stores_and_keeps_value() {
+        // tee local 0 := (const 9) leaves 9 on the stack; then double it.
+        let ops = vec![
+            WasmOp::I32Const(9),
+            WasmOp::LocalTee(0), // slot := w9, w9 stays on stack
+            WasmOp::LocalGet(0), // reload slot -> w10
+            WasmOp::I32Add,      // 9 + 9
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0),
+                enc::movz(9, 9),
+                enc::str_x_imm(9, enc::SP, 0), // tee stores WITHOUT popping
+                enc::ldr_x_imm(10, enc::SP, 0),
+                enc::add(9, 9, 10),
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_param_loud_declines() {
+        // Writing a PARAMETER is declined (params are read-by-reference; homing
+        // written params is a later increment) — never silently miscompiled.
+        let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0), WasmOp::End];
+        assert!(select(&ops, 1).is_err());
+    }
+
+    #[test]
+    fn three_locals_frame_rounds_to_32() {
+        // 0 params, 3 non-param locals → 3*8 = 24 rounds up to 32.
+        let ops = vec![
+            WasmOp::LocalGet(2), // touch index 2 → 3 locals (0,1,2)
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(w[0], enc::sub_imm64(enc::SP, enc::SP, 32));
+        // three zeroing stores at offsets 0,8,16
+        assert_eq!(w[1], enc::str_x_imm(enc::XZR, enc::SP, 0));
+        assert_eq!(w[2], enc::str_x_imm(enc::XZR, enc::SP, 8));
+        assert_eq!(w[3], enc::str_x_imm(enc::XZR, enc::SP, 16));
+        // slot for local 2 is at offset 16
+        assert_eq!(w[4], enc::ldr_x_imm(9, enc::SP, 16));
+        // epilogue restores 32
+        assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 32));
     }
 }
