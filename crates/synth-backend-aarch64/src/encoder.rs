@@ -286,7 +286,7 @@ pub const SP: Reg = 31;
 /// `imm12` field is `imm/8`. Used to zero-init and write non-param local frame
 /// slots (#851). Clang ground truth: `str x9, [sp, #8]` = 0xF90007E9.
 pub fn str_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
-    debug_assert!(imm % 8 == 0, "str x offset must be 8-byte aligned");
+    debug_assert!(imm.is_multiple_of(8), "str x offset must be 8-byte aligned");
     let imm12 = imm / 8;
     debug_assert!(imm12 < 0x1000, "str x offset out of unsigned-imm12 range");
     0xF900_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
@@ -298,7 +298,7 @@ pub fn str_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
 /// same index cannot alias a value already on the stack. Clang ground truth:
 /// `ldr x9, [sp, #8]` = 0xF94007E9.
 pub fn ldr_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
-    debug_assert!(imm % 8 == 0, "ldr x offset must be 8-byte aligned");
+    debug_assert!(imm.is_multiple_of(8), "ldr x offset must be 8-byte aligned");
     let imm12 = imm / 8;
     debug_assert!(imm12 < 0x1000, "ldr x offset out of unsigned-imm12 range");
     0xF940_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)

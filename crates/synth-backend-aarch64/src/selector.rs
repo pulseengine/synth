@@ -628,9 +628,7 @@ pub fn select_typed_cf(
                         .last()
                         .ok_or_else(|| SelectError("local.tee underflow".into()))?;
                     if top.file != File::Gp {
-                        return Err(SelectError(
-                            "local.tee: expected GP operand, got FP".into(),
-                        ));
+                        return Err(SelectError("local.tee: expected GP operand, got FP".into()));
                     }
                     words.push(enc::str_x_imm(top.reg, enc::SP, local_slot_off(*i)));
                 } else {
