@@ -4191,6 +4191,24 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
         }
         for &r in &live_in[b] {
             if !avail_in[b].contains(&r) {
+                if std::env::var_os("RA003_DEBUG").is_some() {
+                    eprintln!("=== RA003 numeric JOIN violation: reg={r:?} join_block={b} ===");
+                    for (bi, blk) in blocks.iter().enumerate() {
+                        eprintln!(
+                            "  B{bi} [{}..{}) succ={:?} preds={:?} def={:?} live_in={:?} avail_in={:?}",
+                            blk.start,
+                            blk.end,
+                            blk.succ,
+                            preds[bi],
+                            def_b[bi],
+                            live_in[bi],
+                            avail_in[bi]
+                        );
+                    }
+                    for (i, ins) in instrs.iter().enumerate() {
+                        eprintln!("    [{i}] {:?}", ins.op);
+                    }
+                }
                 return JoinCheck::Violation(RaFinalViolation::JoinValueNotAvailable {
                     reg: r,
                     join_block: b,
@@ -4203,20 +4221,52 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
 }
 
 /// Build the JOIN-check CFG: `(blocks, live_in, def_b)`, or `None` (decline) if
-/// the stream contains a construct the join analysis cannot model in complete
-/// label form. See [`check_join_availability`] for how it differs from the shared
+/// the stream contains a construct the join analysis cannot model.
+///
+/// TWO shapes are modeled, chosen by the stream (VCR-RA-003 optimized-path joins,
+/// #57/#242):
+///   - **label-form** (`B`/`Bcc`/`Bhs`/`Blo` to a `Label`): the direct /
+///     `--relocatable` selector path — see [`build_join_cfg_label`];
+///   - **pre-resolved NUMERIC** (`BOffset`/`BCondOffset` with a computed
+///     PC-relative halfword displacement, no `Label`): the DEFAULT optimized path
+///     — see [`build_join_cfg_numeric`], which reconstructs each branch's target
+///     instruction index from the estimator byte layout (the #604/#606 geometry
+///     mirror) and builds the CFG from those.
+///
+/// A MIXED stream (label-form branches ALONGSIDE numeric ones — the msgq_put
+/// trap-guard shape) stays DECLINED (`None`): the two families need different
+/// target reconstruction; unifying them would guess (decline > guess).
+#[allow(clippy::type_complexity)]
+fn build_join_cfg(
+    instrs: &[ArmInstruction],
+) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
+    let has_numeric = instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }));
+    let has_label = instrs.iter().any(|i| matches!(i.op, ArmOp::Label { .. }));
+    if has_numeric {
+        if has_label {
+            // Mixed label+numeric stream: decline (the two branch families need
+            // different reconstruction — decline > guess).
+            return None;
+        }
+        return build_join_cfg_numeric(instrs);
+    }
+    build_join_cfg_label(instrs)
+}
+
+/// The label-form JOIN-CFG builder (the original `build_join_cfg`). See
+/// [`check_join_availability`] for how it differs from the shared
 /// [`cfg_liveness`]: `Bx {LR}` is a return SINK and `Bl`/`Blx`/`Call` are
 /// FALL-THROUGH with a caller-saved def-set. Everything else that is not a
 /// label-form branch (`BOffset`/`BCondOffset`, `BrTable`, computed `Bx`, and any
 /// op with no [`reg_effect`] that is not one of the admitted terminators) makes
 /// this decline — never a partial/guessed CFG.
 #[allow(clippy::type_complexity)]
-fn build_join_cfg(
+fn build_join_cfg_label(
     instrs: &[ArmInstruction],
 ) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
     use ArmOp::*;
-    // Caller-saved registers a call defines (all get fresh values across it).
-    const CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
 
     // How the JOIN CFG classifies a terminator. Distinct from `classify`: a
     // `bx lr` return is a SINK (no successors, not a decline) and a call is
@@ -4341,11 +4391,206 @@ fn build_join_cfg(
         b.succ = succ;
     }
 
-    // 5. Per-block use/def and live-in, with the call def-set folded in. We
-    //    compute use/def locally (mirroring `block_use_def`) so a call inside a
-    //    block contributes CALL_DEFS to `def` and — critically for live-in — a
-    //    read of a caller-saved reg BEFORE the call in the same block is a
-    //    genuine use, while a read AFTER the call is satisfied by the call def.
+    // 5-6. Per-block use/def + live-in (shared, CFG-shape-agnostic).
+    let (live_in, def_b) = join_cfg_livein_defb(instrs, &blocks);
+
+    Some((blocks, live_in, def_b))
+}
+
+/// The pre-resolved NUMERIC JOIN-CFG builder (VCR-RA-003 optimized-path joins,
+/// #57/#242). The DEFAULT optimized path emits `BOffset`/`BCondOffset` with a
+/// computed halfword displacement and NO `Label`; the label builder declined
+/// wholesale for these (the "optimized numeric-target path is not covered" hole).
+/// This builder reconstructs each numeric branch's TARGET instruction index from
+/// the EXACT same estimator byte layout the #604/#606 geometry helpers use, makes
+/// each target a block leader, and builds the CFG from those. The availability
+/// fixpoint then runs on the optimized path.
+///
+/// SOUNDNESS VALVE (decline > guess). Any branch whose reconstructed target does
+/// not land on an instruction boundary — the estimator disagreeing with the
+/// encoder for this stream — makes the WHOLE function decline (`None`), exactly
+/// like the geometry helper. A `Bl`/`Blx`/`Call` is FALL-THROUGH with a
+/// caller-saved def-set. `BrTable`, computed `Bx`, and any op with no
+/// [`reg_effect`] that is not an admitted terminator decline. Runs ONLY on
+/// no-`Label` numeric streams (the mixed case is declined upstream in
+/// [`build_join_cfg`]).
+#[allow(clippy::type_complexity)]
+fn build_join_cfg_numeric(
+    instrs: &[ArmInstruction],
+) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
+    use ArmOp::*;
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+
+    // Numeric-CFG terminator classification. Same policy as the label builder's
+    // `jclassify`, but the branch families are the NUMERIC ones.
+    enum NTerm {
+        Uncond,
+        Cond,
+        Fall,
+        Return,
+        Unsupported,
+    }
+    fn nclassify(op: &ArmOp) -> NTerm {
+        use ArmOp::*;
+        match op {
+            BOffset { .. } => NTerm::Uncond,
+            BCondOffset { .. } => NTerm::Cond,
+            Bx { rm: Reg::LR } => NTerm::Return,
+            Bl { .. } | Blx { .. } | Call { .. } => NTerm::Fall,
+            // Label-form branches must not appear here (mixed stream is declined
+            // upstream); if one somehow does, decline rather than misinterpret.
+            B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. } | Label { .. } => NTerm::Unsupported,
+            Bx { .. } | BrTable { .. } | CallIndirect { .. } => NTerm::Unsupported,
+            _ => NTerm::Fall,
+        }
+    }
+
+    let n = instrs.len();
+    if n == 0 {
+        return Some((vec![], vec![], vec![]));
+    }
+
+    // 1. Admission: every instruction is a numeric branch, an admitted terminator
+    //    (return/call), or a precise-effect op. No `Label` reaches here.
+    for ins in instrs {
+        match nclassify(&ins.op) {
+            NTerm::Unsupported => return None,
+            NTerm::Uncond | NTerm::Cond | NTerm::Return => {}
+            NTerm::Fall => {
+                let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
+                if !is_call && reg_effect(&ins.op).is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+
+    // 2. Byte layout — the exact mirror of the resolved-branch geometry helper
+    //    (`Label` = 0 bytes; there are none here, but keep the arm for parity).
+    //    `byte_offsets[i]` = byte address of instruction `i`; `byte_offsets[n]` =
+    //    total size.
+    let mut byte_offsets: Vec<i64> = Vec::with_capacity(n + 1);
+    let mut cur: i64 = 0;
+    for ins in instrs {
+        byte_offsets.push(cur);
+        cur += match &ins.op {
+            Label { .. } => 0,
+            op => estimate_arm_byte_size(op) as i64,
+        };
+    }
+    byte_offsets.push(cur);
+
+    // 3. Reconstruct each branch's TARGET instruction index. Off-boundary or
+    //    out-of-range → decline the whole function (estimator/encoder disagree).
+    //    A target index of `n` (branch to function end) is a valid SINK-like
+    //    successor (no block starts there); modeled as "no successor".
+    let mut branch_target: Vec<Option<usize>> = vec![None; n];
+    for (i, ins) in instrs.iter().enumerate() {
+        let offset = match &ins.op {
+            BOffset { offset } => *offset,
+            BCondOffset { offset, .. } => *offset,
+            _ => continue,
+        };
+        let target_byte = byte_offsets[i] + 4 + 2 * offset as i64;
+        if target_byte < 0 {
+            return None; // target before function start: unmappable
+        }
+        let ti = byte_offsets.partition_point(|&b| b < target_byte);
+        if byte_offsets.get(ti) != Some(&target_byte) {
+            return None; // target inside an instruction: unmappable
+        }
+        branch_target[i] = Some(ti); // ti may be `n` (function end)
+    }
+
+    // 4. Leaders: instr 0, every in-range branch target, and the instruction
+    //    after any branch or return (a branch/return ends a block).
+    let mut is_leader = vec![false; n];
+    is_leader[0] = true;
+    for i in 0..n {
+        if let Some(ti) = branch_target[i]
+            && ti < n
+        {
+            is_leader[ti] = true;
+        }
+        let ends_block = matches!(
+            nclassify(&instrs[i].op),
+            NTerm::Uncond | NTerm::Cond | NTerm::Return
+        );
+        if ends_block && i + 1 < n {
+            is_leader[i + 1] = true;
+        }
+    }
+    let leaders: Vec<usize> = (0..n).filter(|&i| is_leader[i]).collect();
+
+    // 5. Blocks span [leader, next_leader).
+    let mut blocks: Vec<BasicBlock> = leaders
+        .iter()
+        .enumerate()
+        .map(|(bi, &start)| BasicBlock {
+            start,
+            end: leaders.get(bi + 1).copied().unwrap_or(n),
+            succ: vec![],
+        })
+        .collect();
+    let block_of_start: BTreeMap<usize, usize> = blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, b)| (b.start, bi))
+        .collect();
+
+    // 6. Successors. A target index maps to the block starting there; a target of
+    //    `n` (function end) yields no successor (sink-like). Because every
+    //    in-range target was made a leader, `block_of_start` must contain it.
+    let mut succs: Vec<Vec<usize>> = Vec::with_capacity(blocks.len());
+    for b in &blocks {
+        let last = b.end - 1;
+        let fallthrough = block_of_start.get(&b.end).copied();
+        let succ = match nclassify(&instrs[last].op) {
+            NTerm::Uncond => match branch_target[last] {
+                Some(ti) if ti < n => vec![*block_of_start.get(&ti)?],
+                Some(_) => vec![], // branch to function end: sink
+                None => return None,
+            },
+            NTerm::Cond => {
+                let mut s = match branch_target[last] {
+                    Some(ti) if ti < n => vec![*block_of_start.get(&ti)?],
+                    Some(_) => vec![], // taken edge exits the function
+                    None => return None,
+                };
+                if let Some(f) = fallthrough
+                    && !s.contains(&f)
+                {
+                    s.push(f);
+                }
+                s
+            }
+            NTerm::Return => vec![], // sink
+            NTerm::Fall => fallthrough.into_iter().collect(),
+            NTerm::Unsupported => return None,
+        };
+        succs.push(succ);
+    }
+    for (b, succ) in blocks.iter_mut().zip(succs) {
+        b.succ = succ;
+    }
+
+    // 7. Per-block use/def + live-in (shared, CFG-shape-agnostic).
+    let (live_in, def_b) = join_cfg_livein_defb(instrs, &blocks);
+
+    Some((blocks, live_in, def_b))
+}
+
+/// Per-block (use/def + backward-liveness live-in) for a JOIN CFG, shared by the
+/// label and numeric builders (it reads only block spans + successors, so the two
+/// paths get IDENTICAL dataflow). A call inside a block contributes
+/// [`JOIN_CALL_DEFS`] to `def` and — critically for live-in — a read of a
+/// caller-saved reg BEFORE the call in the same block is a genuine use, while a
+/// read AFTER it is satisfied by the call def. Returns `(live_in, def_b)`.
+fn join_cfg_livein_defb(
+    instrs: &[ArmInstruction],
+    blocks: &[BasicBlock],
+) -> (Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>) {
+    use ArmOp::*;
     let nb = blocks.len();
     let mut use_b = vec![BTreeSet::<Reg>::new(); nb];
     let mut def_b = vec![BTreeSet::<Reg>::new(); nb];
@@ -4365,7 +4610,7 @@ fn build_join_cfg(
             }
             if is_call {
                 // A call defines the whole caller-saved set (return + clobbers).
-                for d in CALL_DEFS {
+                for d in JOIN_CALL_DEFS {
                     defined.insert(d);
                 }
             }
@@ -4374,7 +4619,7 @@ fn build_join_cfg(
         def_b[bi] = defined;
     }
 
-    // 6. Backward liveness fixpoint (same shape as `cfg_liveness` step 5).
+    // Backward liveness fixpoint (same shape as `cfg_liveness` step 5).
     let mut live_in = vec![BTreeSet::<Reg>::new(); nb];
     let mut live_out = vec![BTreeSet::<Reg>::new(); nb];
     let mut changed = true;
@@ -4398,8 +4643,13 @@ fn build_join_cfg(
         }
     }
 
-    Some((blocks, live_in, def_b))
+    (live_in, def_b)
 }
+
+/// The caller-saved set a `bl`/`blx`/`call` DEFINES across the JOIN CFG (all get
+/// fresh values across the AAPCS call boundary — R0/R1 = return, R2/R3/R12 =
+/// clobbered). Shared by both JOIN-CFG builders.
+const JOIN_CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
 
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
