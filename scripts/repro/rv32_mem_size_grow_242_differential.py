@@ -34,7 +34,6 @@ Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/rv32_mem_size_grow_242_differential.py
 """
 import os
-import re
 import struct
 import subprocess
 import sys
@@ -75,10 +74,21 @@ def compile_rv32(wat_path, out):
 
 
 def load(elf):
-    dis = subprocess.run([SYNTH, "disasm", elf], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
-    code = ELFFile(open(elf, "rb")).get_section_by_name(".text").data()
+    # Read function offsets from the ELF SYMBOL TABLE (host-independent), NOT by
+    # parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (empty syms → "no symbol"),
+    # even though it matched on macOS. See the differential-harness symtab lesson.
+    ef = ELFFile(open(elf, "rb"))
+    text_idx = ef.get_section_index(".text")
+    code = ef.get_section_by_name(".text").data()
+    symtab = ef.get_section_by_name(".symtab")
+    if symtab is None:
+        print("RV32 mem-size/grow ORACLE: FAIL — ELF has no .symtab")
+        sys.exit(1)
+    # In a --relocatable object a function symbol's st_value is its offset within
+    # .text — exactly the `faddr` unicorn_run expects (CODE + faddr).
+    syms = {s.name: s["st_value"] for s in symtab.iter_symbols()
+            if s.name and s["st_shndx"] == text_idx}
     return code, syms
 
 

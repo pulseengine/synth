@@ -187,7 +187,6 @@ mod z3_backend {
             BvTerm::Sub(a, b) => bv_to_z3(a).bvsub(&bv_to_z3(b)),
             BvTerm::Mul(a, b) => bv_to_z3(a).bvmul(&bv_to_z3(b)),
             BvTerm::Udiv(a, b) => bv_to_z3(a).bvudiv(&bv_to_z3(b)),
-            BvTerm::Urem(a, b) => bv_to_z3(a).bvurem(&bv_to_z3(b)),
             BvTerm::And(a, b) => bv_to_z3(a).bvand(&bv_to_z3(b)),
             BvTerm::Or(a, b) => bv_to_z3(a).bvor(&bv_to_z3(b)),
             BvTerm::Xor(a, b) => bv_to_z3(a).bvxor(&bv_to_z3(b)),
