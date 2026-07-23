@@ -32,7 +32,11 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.50.0", optional = 
 # Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553).
 # 0.9 adds the `ordeal::trap` module (trap-preservation VCs, VCR-VER-002 / #166);
 # 0.9.1 adds the float→int trunc trap classifier (`trap_trunc`, ordeal#59/TR-020).
-ordeal = "0.12.0"
+# PINNED at 0.9.1: the 0.12.0 bump (#825) has a bvsrem/bvsdiv solver-performance
+# regression that HANGS div/rem trap-preservation VCs (4-6h CI timeouts, #849).
+# Re-adopt only once the perf regression is fixed upstream AND native i64 rem
+# (#844/#848) re-lands behind a per-query timeout. Do NOT let dependabot bump this.
+ordeal = "=0.9.1"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
