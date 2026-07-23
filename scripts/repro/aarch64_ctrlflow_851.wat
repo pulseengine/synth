@@ -73,23 +73,28 @@
     local.get 2)
 
   ;; countdown loop: while n != 0 { n-- ; iters++ } ; return iters.
+  ;; The param is copied into a non-param local (params are read-only
+  ;; by-reference on aarch64; `local.set` of a param loud-declines).
   (func (export "countdown") (param i32) (result i32)
-    (local i32) ;; iters
+    (local i32) ;; local 1: n (working copy)
+    (local i32) ;; local 2: iters
+    local.get 0
+    local.set 1
     (block
       (loop
-        local.get 0
+        local.get 1
         i32.eqz
         br_if 1
-        local.get 0
-        i32.const 1
-        i32.sub
-        local.set 0
         local.get 1
         i32.const 1
-        i32.add
+        i32.sub
         local.set 1
+        local.get 2
+        i32.const 1
+        i32.add
+        local.set 2
         br 0))
-    local.get 1)
+    local.get 2)
 
   ;; --- early return ---
   ;; if a < 0 return -1 early; else return a*2.
