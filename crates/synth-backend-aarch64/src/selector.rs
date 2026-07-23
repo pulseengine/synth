@@ -81,6 +81,24 @@ const TEMPS: [Reg; 7] = [9, 10, 11, 12, 13, 14, 15];
 /// carry incoming float params, `v8..v15` are callee-saved). 8 scratch slots.
 const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
 
+/// #851 — the WASM linear-memory base register. A memory-using function expects
+/// `x28 = __linear_memory_base` on entry — the same dedicated-base convention
+/// the ARM (R11) and RV32 (s11) backends use, chosen OUTSIDE the temp pool
+/// (`x9..x15`), the AAPCS64 arg/result registers (`x0..x7`), and the platform /
+/// frame registers (`x18`, `x29`, `x30`, `sp`). `x28` is callee-saved and
+/// non-platform, so a caller establishing it once keeps it stable across the
+/// function body; the lowering only READS it (never clobbers), so it stays a
+/// clean ambient input. Effective address = `x28 + uxtw(w_addr) + memarg.offset`.
+///
+/// FRONTIER (honest): this backend does NOT yet EMIT anything that establishes
+/// `x28` — there is no aarch64 startup / linker script (the RV32 backend sets
+/// s11 in its generated `startup.rs`; the host-native subset has none). So a
+/// memory-using function is correct *given* the `x28 = base` precondition, which
+/// the #851 execution differential supplies explicitly; wiring the ABI/startup
+/// that establishes it in a real program is a documented follow-on (alongside
+/// OOB-trap, data-segment init, and memory.{size,grow}).
+const LINMEM_BASE: Reg = 28;
+
 /// Which register file a value-stack entry lives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum File {
@@ -596,6 +614,86 @@ pub fn select_typed_cf(
         Ok(())
     };
 
+    // #851 — form the effective linear-memory address `x_ea = x28 + uxtw(addr) +
+    // offset` into a fresh GP temp and return it. `size_log2` is the access-size
+    // log2 (0=byte,1=half,2=word,3=dword). If `offset` is a multiple of the
+    // access size and the scaled result fits imm12 (< 4096), the caller may fold
+    // it into the load/store immediate (returned as `Some(imm12)`); otherwise the
+    // offset is ADDED into `x_ea` here and `None` is returned. `x_ea` is a temp
+    // that does not alias any live value-stack entry (the address operand has
+    // already been popped, so its register is free to reuse).
+    //
+    // SOUNDNESS / honest frontier: this computes the WASM effective address and
+    // dereferences it against the ambient base — it does NOT bounds-check. WASM
+    // requires an out-of-bounds access to TRAP; the host-native subset has no
+    // memory-size convention yet, so OOB is UNTRAPPED (reads/writes adjacent host
+    // memory). In-bounds load/store is execution-verified vs wasmtime; OOB-trap,
+    // data-segment init, and memory.{size,grow} are the documented follow-ons.
+    let form_ea = |words: &mut Vec<u32>,
+                   stack: &mut Vec<Val>,
+                   addr: Reg,
+                   offset: u32,
+                   size_log2: u32|
+     -> Result<(Reg, Option<u32>), SelectError> {
+        // The address operand is popped; its register is now free. Allocate the
+        // EA temp against the CURRENT live stack (addr already removed).
+        let ea = alloc_temp(stack)?;
+        // x_ea = x28 + uxtw(w_addr) — zero-extends the unsigned i32 WASM address.
+        words.push(enc::add_ext_uxtw(ea, LINMEM_BASE, addr));
+        let size = 1u32 << size_log2;
+        if offset.is_multiple_of(size) && (offset >> size_log2) < 4096 {
+            return Ok((ea, Some(offset >> size_log2)));
+        }
+        if offset != 0 {
+            // Offset does not fit the scaled immediate: materialize it in a
+            // second temp and add. `alloc_temp` against the stack with `ea`
+            // temporarily marked live picks a DISTINCT register.
+            stack.push(Val::gp(ea));
+            let otmp = alloc_temp(stack)?;
+            stack.pop();
+            for w in enc::mov_imm32(otmp, offset) {
+                words.push(w);
+            }
+            words.push(enc::add_ext_uxtw(ea, ea, otmp)); // ea += uxtw(offset)
+        }
+        Ok((ea, None))
+    };
+
+    // A GP load: pop the i32 address, dereference `[base + addr + offset]` with
+    // `ldr_op`, push the loaded value (zero/sign extension is baked into the op).
+    let load = |words: &mut Vec<u32>,
+                stack: &mut Vec<Val>,
+                offset: u32,
+                size_log2: u32,
+                ldr_op: fn(Reg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let addr = pop_gp(stack, "load")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        let dst = ea; // load target may reuse the EA register (read-before-write)
+        words.push(ldr_op(dst, ea, imm.unwrap_or(0)));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // A GP store: pop the value (top of stack) then the i32 address, store the
+    // low `size` bytes of the value to `[base + addr + offset]`.
+    let store = |words: &mut Vec<u32>,
+                 stack: &mut Vec<Val>,
+                 offset: u32,
+                 size_log2: u32,
+                 str_op: fn(Reg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let val = pop_gp(stack, "store")?;
+        let addr = pop_gp(stack, "store")?;
+        // Keep `val` live across the EA temp allocation so `form_ea` never hands
+        // back the value register.
+        stack.push(Val::gp(val));
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        stack.pop(); // release `val`
+        words.push(str_op(val, ea, imm.unwrap_or(0)));
+        Ok(())
+    };
+
     for op in ops {
         match op {
             WasmOp::LocalGet(i) => {
@@ -933,6 +1031,68 @@ pub fn select_typed_cf(
                 } else {
                     epilogue(&mut words, stack.last().copied(), frame_size);
                 }
+            }
+            // --- #851 linear-memory load/store ---
+            //
+            // Effective address = `x28 (base) + uxtw(i32 addr) + memarg.offset`.
+            // Loads bake zero/sign extension into the A64 op (`ldrb`=zero-extend,
+            // `ldrsb`=sign-extend, etc); stores write the low `size` bytes. The
+            // `align` hint is advisory (WASM permits unaligned access) and
+            // ignored — A64 unsigned-offset loads/stores are alignment-tolerant.
+            // Only single-memory (memory 0) ops are lowered here; a `MultiMemory`
+            // wrapper hits the catch-all and loud-declines.
+            WasmOp::I32Load { offset, .. } => load(&mut words, &mut stack, *offset, 2, enc::ldr_w)?,
+            WasmOp::I32Store { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 2, enc::str_w)?
+            }
+            WasmOp::I32Load8U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrb)?
+            }
+            WasmOp::I32Load8S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrsb_w)?
+            }
+            WasmOp::I32Load16U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrh)?
+            }
+            WasmOp::I32Load16S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrsh_w)?
+            }
+            WasmOp::I32Store8 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 0, enc::strb)?
+            }
+            WasmOp::I32Store16 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 1, enc::strh)?
+            }
+            WasmOp::I64Load { offset, .. } => load(&mut words, &mut stack, *offset, 3, enc::ldr_x)?,
+            WasmOp::I64Store { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 3, enc::str_x)?
+            }
+            WasmOp::I64Load8U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrb)?
+            }
+            WasmOp::I64Load8S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrsb_x)?
+            }
+            WasmOp::I64Load16U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrh)?
+            }
+            WasmOp::I64Load16S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrsh_x)?
+            }
+            WasmOp::I64Load32U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 2, enc::ldr_w)?
+            }
+            WasmOp::I64Load32S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 2, enc::ldrsw)?
+            }
+            WasmOp::I64Store8 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 0, enc::strb)?
+            }
+            WasmOp::I64Store16 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 1, enc::strh)?
+            }
+            WasmOp::I64Store32 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 2, enc::str_w)?
             }
             other => {
                 return Err(SelectError(format!(

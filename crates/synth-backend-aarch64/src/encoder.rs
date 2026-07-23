@@ -406,6 +406,92 @@ pub fn mov_imm64(rd: Reg, value: u64) -> Vec<u32> {
 }
 
 // ===========================================================================
+// #851 — linear-memory load/store (unsigned-offset addressing form).
+//
+// WASM linear-memory ops lower to A64 LDR/STR against a base register plus the
+// static `memarg` byte offset. All encodings below are the "unsigned offset"
+// form `<op> Rt, [Xn, #imm12*size]`: the shared `LDR/STR (immediate, unsigned
+// offset)` family, where the `size` field [31:30] selects the access width
+// (00=byte, 01=half, 10=word, 11=dword) and `opc` [23:22] selects load vs store
+// vs signed-load, and the 12-bit immediate is SCALED by the access size. Ground
+// truth from `clang -target aarch64-linux-gnu` (see the `mem_*` tests).
+//
+// The `imm12` is the byte offset RIGHT-SHIFTED by the size-log2 (`str w,[x0,#16]`
+// → imm12 = 4). The caller is responsible for verifying the offset is a multiple
+// of the access size and fits in 12 bits (else it must materialize the address).
+// ===========================================================================
+
+/// A `LDR/STR (immediate, unsigned offset)` word. `base` carries size[31:30] +
+/// opc[23:22] + the fixed `0x3900_0000` load/store bit; `imm12` is the
+/// size-scaled offset (already divided by the access size), `rn` the base, `rt`
+/// the data register.
+fn ldst_uimm(base: u32, imm12: u32, rn: Reg, rt: Reg) -> u32 {
+    base | ((imm12 & 0xFFF) << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `str wt, [xn, #imm12*4]` — store 32-bit word.
+pub fn str_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB900_0000, imm12, rn, rt)
+}
+/// `ldr wt, [xn, #imm12*4]` — load 32-bit word (zero-extended into x).
+pub fn ldr_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB940_0000, imm12, rn, rt)
+}
+/// `str xt, [xn, #imm12*8]` — store 64-bit doubleword.
+pub fn str_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xF900_0000, imm12, rn, rt)
+}
+/// `ldr xt, [xn, #imm12*8]` — load 64-bit doubleword.
+pub fn ldr_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xF940_0000, imm12, rn, rt)
+}
+/// `strh wt, [xn, #imm12*2]` — store low 16 bits.
+pub fn strh(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7900_0000, imm12, rn, rt)
+}
+/// `ldrh wt, [xn, #imm12*2]` — load 16 bits, zero-extended.
+pub fn ldrh(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7940_0000, imm12, rn, rt)
+}
+/// `strb wt, [xn, #imm12]` — store low 8 bits.
+pub fn strb(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3900_0000, imm12, rn, rt)
+}
+/// `ldrb wt, [xn, #imm12]` — load 8 bits, zero-extended.
+pub fn ldrb(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3940_0000, imm12, rn, rt)
+}
+/// `ldrsb wt, [xn, #imm12]` — load 8 bits, SIGN-extended to 32.
+pub fn ldrsb_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x39C0_0000, imm12, rn, rt)
+}
+/// `ldrsh wt, [xn, #imm12*2]` — load 16 bits, SIGN-extended to 32.
+pub fn ldrsh_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x79C0_0000, imm12, rn, rt)
+}
+/// `ldrsb xt, [xn, #imm12]` — load 8 bits, SIGN-extended to 64.
+pub fn ldrsb_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3980_0000, imm12, rn, rt)
+}
+/// `ldrsh xt, [xn, #imm12*2]` — load 16 bits, SIGN-extended to 64.
+pub fn ldrsh_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7980_0000, imm12, rn, rt)
+}
+/// `ldrsw xt, [xn, #imm12*4]` — load 32 bits, SIGN-extended to 64.
+pub fn ldrsw(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB980_0000, imm12, rn, rt)
+}
+
+/// `add xd, xn, wm, uxtw` — 64-bit add of `xn` and the zero-extended 32-bit
+/// `wm` (the WASM address operand is an unsigned i32, so `uxtw` gives the
+/// architecturally-correct 33-bit-clean effective address). Extend option UXTW
+/// = 0b010 at [15:13], shift amount 0. Ground truth: `add x2,x0,w1,uxtw` =
+/// 0x8B21_4002.
+pub fn add_ext_uxtw(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x8B20_4000 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+
+// ===========================================================================
 // Milestone 3 — scalar floating point (V/D/S register file).
 //
 // A64 keeps floats in a SEPARATE register file (V0..V31; the `s`/`d` views are
@@ -741,6 +827,28 @@ mod tests {
         assert_eq!(cset(0, Cond::Hi), 0x1A9F_97E0);
         assert_eq!(cset(0, Cond::Ls), 0x1A9F_87E0);
         assert_eq!(cset(0, Cond::Hs), 0x1A9F_37E0);
+    }
+
+    // #851 — linear-memory load/store. Ground truth from `clang -target
+    // aarch64-linux-gnu` (`str w1,[x0,#16]` etc; the imm12 arg is the
+    // size-SCALED offset, so #16 on a word access is imm12 = 4).
+    #[test]
+    fn mem_ldst_encodings_match_clang() {
+        assert_eq!(str_w(1, 0, 4), 0xB900_1001); // str w1,[x0,#16]
+        assert_eq!(ldr_w(1, 0, 4), 0xB940_1001); // ldr w1,[x0,#16]
+        assert_eq!(strh(1, 0, 4), 0x7900_1001); // strh w1,[x0,#8]
+        assert_eq!(ldrh(1, 0, 4), 0x7940_1001); // ldrh w1,[x0,#8]
+        assert_eq!(strb(1, 0, 4), 0x3900_1001); // strb w1,[x0,#4]
+        assert_eq!(ldrb(1, 0, 4), 0x3940_1001); // ldrb w1,[x0,#4]
+        assert_eq!(ldrsb_w(1, 0, 4), 0x39C0_1001); // ldrsb w1,[x0,#4]
+        assert_eq!(ldrsh_w(1, 0, 4), 0x79C0_1001); // ldrsh w1,[x0,#8]
+        assert_eq!(str_x(1, 0, 2), 0xF900_0801); // str x1,[x0,#16]
+        assert_eq!(ldr_x(1, 0, 2), 0xF940_0801); // ldr x1,[x0,#16]
+        assert_eq!(ldrsw(1, 0, 4), 0xB980_1001); // ldrsw x1,[x0,#16]
+        assert_eq!(ldrsb_x(1, 0, 4), 0x3980_1001); // ldrsb x1,[x0,#4]
+        assert_eq!(ldrsh_x(1, 0, 4), 0x7980_1001); // ldrsh x1,[x0,#8]
+        assert_eq!(str_w(1, 0, 0), 0xB900_0001); // str w1,[x0]
+        assert_eq!(add_ext_uxtw(2, 0, 1), 0x8B21_4002); // add x2,x0,w1,uxtw
     }
 
     // Milestone 3 — scalar float. Ground truth from `clang -target
