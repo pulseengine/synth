@@ -89,6 +89,14 @@ const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
 /// non-platform, so a caller establishing it once keeps it stable across the
 /// function body; the lowering only READS it (never clobbers), so it stays a
 /// clean ambient input. Effective address = `x28 + uxtw(w_addr) + memarg.offset`.
+///
+/// FRONTIER (honest): this backend does NOT yet EMIT anything that establishes
+/// `x28` — there is no aarch64 startup / linker script (the RV32 backend sets
+/// s11 in its generated `startup.rs`; the host-native subset has none). So a
+/// memory-using function is correct *given* the `x28 = base` precondition, which
+/// the #851 execution differential supplies explicitly; wiring the ABI/startup
+/// that establishes it in a real program is a documented follow-on (alongside
+/// OOB-trap, data-segment init, and memory.{size,grow}).
 const LINMEM_BASE: Reg = 28;
 
 /// Which register file a value-stack entry lives in.

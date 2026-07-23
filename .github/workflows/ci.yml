@@ -474,10 +474,24 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - name: Install wasm-tools + wasmtime (LLVM/objcopy ship with the runner)
-        run: brew install wasm-tools wasmtime
+      - name: Install wasm-tools + wasmtime + llvm (objcopy)
+        run: brew install wasm-tools wasmtime llvm
       - name: Run gale's aarch64 execution matrix (miscompile → non-zero)
-        run: SYNTH=./target/debug/synth ./scripts/repro/aarch64_matrix.sh
+        # NON-VACUITY GUARD: the matrix DECLINES an op when `.text` extraction
+        # fails (empty hex), and declined ops count as PASS — so a missing
+        # objcopy/objdump would make the whole gate green having verified
+        # NOTHING. Point OBJCOPY at brew's llvm (not on the default PATH) and
+        # assert the accepted-op count is at least gale's 0.50.x baseline (32).
+        run: |
+          out=$(SYNTH=./target/debug/synth \
+            OBJCOPY="$(brew --prefix llvm)/bin/llvm-objcopy" \
+            ./scripts/repro/aarch64_matrix.sh)
+          echo "$out"
+          acc=$(echo "$out" | sed -n 's/aarch64: \([0-9]*\) ops accepted.*/\1/p')
+          if [ "${acc:-0}" -lt 32 ]; then
+            echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 32) — \
+          objcopy/objdump/synth extraction likely broke"; exit 1
+          fi
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
