@@ -68,11 +68,20 @@ def compile_variant(fold_on):
 
 
 def fn_addr_and_code(elf):
-    dis = subprocess.run([SYNTH, "disasm", elf], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r"^([0-9a-f]{8}) <(\w+)>:", dis, re.M)}
+    # Read the function offset from the ELF SYMBOL TABLE (host-independent), NOT by
+    # parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (#850). synth emits the symtab
+    # as an UNNAMED SHT_SYMTAB section (get_section_by_name(".symtab") is None), so
+    # iterate by TYPE. ARM Thumb symbols carry the Thumb bit (bit 0); mask `& ~1`
+    # so the value equals the clean disasm address ((CODE + fa - base) | 1 unchanged).
+    ef = ELFFile(open(elf, "rb"))
+    text_idx = ef.get_section_index(".text")
+    syms = {s.name: s["st_value"] & ~1 for sec in ef.iter_sections()
+            if sec.header.sh_type == "SHT_SYMTAB"
+            for s in sec.iter_symbols()
+            if s.name and s["st_shndx"] == text_idx}
     fa = syms.get("func_0") or syms.get("pack")
-    text = ELFFile(open(elf, "rb")).get_section_by_name(".text")
+    text = ef.get_section_by_name(".text")
     return fa, text.data(), text["sh_addr"]
 
 
