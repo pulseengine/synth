@@ -627,8 +627,10 @@ pub fn select_typed_cf(
                 words.push(enc::cmp(a, s0));
             }
             // b.ne → dividend != INT_MIN, no overflow: jump PAST the second cmp,
-            // its b.ne, and the brk (3 words ahead of THIS branch).
-            words.push(enc::bcond(Cond::Ne, 3));
+            // its b.ne, and the brk, landing on the arithmetic. Those are the
+            // next THREE instructions, so the branch target is +4 words from
+            // this branch (`b.<cond> #(imm*4)` is pc-relative to the branch).
+            words.push(enc::bcond(Cond::Ne, 4));
             words.push(if is64 {
                 enc::cmp64(b, s1)
             } else {
@@ -1527,7 +1529,7 @@ mod tests {
         expect.extend(enc::mov_imm32(10, 0x8000_0000)); // INT_MIN scratch
         expect.extend(enc::mov_imm32(11, 0xFFFF_FFFF)); // -1 scratch
         expect.push(enc::cmp(0, 10)); // dividend == INT_MIN?
-        expect.push(enc::bcond(Cond::Ne, 3));
+        expect.push(enc::bcond(Cond::Ne, 4));
         expect.push(enc::cmp(1, 11)); // divisor == -1?
         expect.push(enc::bcond(Cond::Ne, 2));
         expect.push(enc::brk(0));

@@ -2229,6 +2229,15 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // register and a single-precision S-register — no numeric conversion.
         F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),
         I32ReinterpretF32 => Some(WasmOp::I32ReinterpretF32),
+        // #851 (GI-FPU-001): the f64<->i64 bit-casts, the 64-bit twins of the
+        // pair above. The WasmOp variants already existed and every backend
+        // that lowers f64 has a lowering (ARM: `ArmOp::{F64ReinterpretI64,
+        // I64ReinterpretF64}` VFP moves; aarch64: `fmov d,x` / `fmov x,d`);
+        // they were merely never DECODED, so they globally declined. Backends
+        // without an f64 lowering (RV32) still loud-decline downstream — this
+        // only un-drops the op at decode.
+        F64ReinterpretI64 => Some(WasmOp::F64ReinterpretI64),
+        I64ReinterpretF64 => Some(WasmOp::I64ReinterpretF64),
         F32ConvertI32S => Some(WasmOp::F32ConvertI32S),
         F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
         I32TruncF32S => Some(WasmOp::I32TruncF32S),
