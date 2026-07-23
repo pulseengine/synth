@@ -25,8 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multi-result or FLOAT-result callees (returned in v0/d0, not x0), a CALLER
   that reads its OWN incoming params across a call (param-homing is a later
   increment; a callee freely reads its params), any live value beneath the
-  args at the call site, and `call_indirect`. Verified: 8 new selector/elf unit
-  tests + a native-arm64 MAP_JIT execution differential
+  args at the call site, and `call_indirect`. Verified: 10 new unit tests (8
+  selector + 1 elf `.rela.text` + 1 encoder) + a native-arm64 MAP_JIT
+  execution differential
   (`scripts/repro/aarch64_calls_851.py`) proving 5 call modules (const/computed
   args, void, i64, result-consumed) bit-identical vs wasmtime; the standing
   `aarch64_matrix.sh` op-set gate is unchanged (32 ops / 86 checks PASS).
