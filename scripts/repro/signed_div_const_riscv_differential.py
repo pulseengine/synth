@@ -12,7 +12,6 @@ Run:
         --all-exports --relocatable -o /tmp/sdiv.o
   /tmp/armv/bin/python scripts/repro/signed_div_const_riscv_differential.py /tmp/sdiv.o
 """
-import re
 import subprocess
 import sys
 
@@ -44,14 +43,22 @@ def main():
         inst = wasmtime.Instance(store, module, [])
         return inst.exports(store)["filter_axis_decide"](store, *args) & 0xFFFFFFFF
 
-    dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
+    # Read the function offset from the ELF SYMBOL TABLE (host-independent), NOT
+    # by parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (#850). In a --relocatable RV32
+    # object a function symbol's st_value IS its offset within .text (base 0, no
+    # Thumb bit), exactly the `fa` unicorn expects at CODE + fa.
+    elffile = ELFFile(open(ELF, "rb"))
+    text_idx = elffile.get_section_index(".text")
+    syms = {s.name: s["st_value"] for sec in elffile.iter_sections()
+            if sec.header.sh_type == "SHT_SYMTAB"
+            for s in sec.iter_symbols()
+            if s.name and s["st_shndx"] == text_idx}
     fa = syms.get("func_0") or syms.get("filter_axis_decide")
     if fa is None:
-        print("FAIL: filter_axis_decide symbol not found (function skipped?)")
+        print(f"FAIL: filter_axis_decide symbol not found ({sorted(syms)})")
         sys.exit(1)
-    code = ELFFile(open(ELF, "rb")).get_section_by_name(".text").data()
+    code = elffile.get_section_by_name(".text").data()
 
     def run(args):
         mu = Uc(UC_ARCH_RISCV, UC_MODE_RISCV32)
