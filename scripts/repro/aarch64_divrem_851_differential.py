@@ -36,9 +36,9 @@ import wasmtime
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM64, UC_MODE_ARM, Uc, UcError
 from unicorn.arm64_const import (
+    UC_ARM64_REG_CPACR_EL1,
     UC_ARM64_REG_LR,
     UC_ARM64_REG_SP,
-    UC_ARM64_REG_W0,
     UC_ARM64_REG_X0,
     UC_ARM64_REG_X1,
 )
@@ -64,6 +64,19 @@ SIGS = {
     "i64_div_u": (64, False),
     "i64_rem_s": (64, True),
     "i64_rem_u": (64, False),
+}
+
+# Unary (param T)(result T) coverage: popcnt (both widths) + the f64<->i64
+# reinterpret round-trip (a bit-identity). fn -> width_bits.
+UNARY_SIGS = {
+    "i32_popcnt": 32,
+    "i64_popcnt": 64,
+    "i64_reinterpret_rt": 64,
+}
+UNARY_VALS = {
+    32: [0, 1, -1, 0xAAAA, 0x5555, 0x8000_0000, 0x7FFF_FFFF, 42, 0xFFFF_0000],
+    64: [0, 1, -1, 0xAAAA_AAAA_AAAA_AAAA, 0x8000_0000_0000_0000,
+         0x7FFF_FFFF_FFFF_FFFF, 0x0001_0203_0405_0607, 123456789, (1 << 40)],
 }
 
 
@@ -116,6 +129,65 @@ def compile_aarch64(out):
                        env={"PATH": "/usr/bin:/bin"})
     if r.returncode != 0:
         sys.exit(f"aarch64 compile failed: {r.stderr}")
+
+
+def wasmtime_run1(fn, a, width):
+    engine = wasmtime.Engine()
+    module = wasmtime.Module.from_file(engine, str(WAT))
+    store = wasmtime.Store(engine)
+    f = wasmtime.Instance(store, module, []).exports(store)[fn]
+    try:
+        r = f(store, to_signed(a, width))
+    except wasmtime.Trap:
+        return TRAP
+    return to_unsigned(r, width)
+
+
+def unicorn_run1(code, base, faddr, a, width):
+    off = faddr - base
+    mu = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
+    mu.reg_write(UC_ARM64_REG_CPACR_EL1, 0x3 << 20)  # FPEN: enable V/D regs
+    mu.mem_map(CODE, 0x20000)
+    mu.mem_map(STK - 0x10000, 0x20000)
+    mu.mem_map(RET & ~0xFFF, 0x1000)
+    mu.mem_write(CODE, code)
+    mu.reg_write(UC_ARM64_REG_SP, STK)
+    mu.reg_write(UC_ARM64_REG_LR, RET)
+    mu.reg_write(X_ARGS[0], to_unsigned(a, width))
+    try:
+        mu.emu_start(CODE + off, RET, count=2000)
+    except UcError:
+        return TRAP
+    return mu.reg_read(UC_ARM64_REG_X0) & (M32 if width == 32 else M64)
+
+
+def native_run1(code, faddr, code_base, a, width):
+    cty = ctypes.c_int32 if width == 32 else ctypes.c_int64
+    rd, wr = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.close(rd)
+            base_addr = native_setup(code)
+            fn_addr = base_addr + (faddr - code_base)
+            fn = ctypes.CFUNCTYPE(cty, cty)(fn_addr)
+            r = fn(to_signed(a, width))
+            os.write(wr, struct.pack("<q", int(r)))
+            os.close(wr)
+        finally:
+            os._exit(0)
+    os.close(wr)
+    _, status = os.waitpid(pid, 0)
+    data = os.read(rd, 8)
+    os.close(rd)
+    if os.WIFSIGNALED(status):
+        sig_no = os.WTERMSIG(status)
+        if sig_no in (signal.SIGTRAP, signal.SIGILL, signal.SIGFPE):
+            return TRAP
+        return f"ERR:signal {sig_no}"
+    if len(data) != 8:
+        return "ERR:no result"
+    return to_unsigned(struct.unpack("<q", data)[0], width)
 
 
 def load(elf):
@@ -252,11 +324,32 @@ def main():
                     g = got if isinstance(got, str) else hex(got)
                     print(f"BUG {fn}(a={a},b={b}) [{label}] A64={g} wasmtime={e}")
 
+    # --- unary coverage: popcnt (both widths) + reinterpret round-trip.
+    for fn, width in UNARY_SIGS.items():
+        if fn not in syms:
+            print(f"FAIL {fn}: symbol missing (op declined?)")
+            fails += 1
+            continue
+        for a in UNARY_VALS[width]:
+            total += 1
+            exp = wasmtime_run1(fn, a, width)
+            oracles = [("unicorn", unicorn_run1(code, base, syms[fn], a, width))]
+            if host_native:
+                oracles.append(("native", native_run1(code, syms[fn], base, a, width)))
+                checked_native += 1
+            for label, got in oracles:
+                if exp != got:
+                    fails += 1
+                    e = exp if exp == TRAP else hex(exp)
+                    g = got if isinstance(got, str) else hex(got)
+                    print(f"BUG {fn}(a={a}) [{label}] A64={g} wasmtime={e}")
+
     print(f"\n{total} wasmtime cases ({trap_cases} trap cases), "
           f"{checked_native} also run natively "
           f"({'arm64 host' if host_native else 'unicorn-only host'})")
-    print("RESULT:", "PASS — aarch64 div/rem match wasmtime; the ÷0 and "
-          "INT_MIN/-1 traps are execution-verified (native SIGTRAP + unicorn brk)"
+    print("RESULT:", "PASS — aarch64 div/rem + popcnt + f64<->i64 reinterpret "
+          "match wasmtime; the ÷0 and INT_MIN/-1 traps are execution-verified "
+          "(native SIGTRAP + unicorn brk)"
           if not fails else f"FAIL ({fails})")
     sys.exit(1 if fails else 0)
 

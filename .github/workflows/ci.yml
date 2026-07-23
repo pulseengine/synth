@@ -447,7 +447,7 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
       - name: Run #851 linear-memory load/store execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
-      - name: Run #851 div/rem trap-and-value execution oracle (÷0 + INT_MIN/-1)
+      - name: Run #851 div/rem trap + popcnt + reinterpret execution oracle (÷0 + INT_MIN/-1)
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_divrem_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
