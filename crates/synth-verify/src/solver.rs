@@ -38,11 +38,25 @@ const DEFAULT_MAX_CONFLICTS: u64 = 1_000_000;
 /// insurance: a query that has not decided within the budget degrades to a
 /// conservative [`CheckOutcome::Unknown`] (never a verdict — soundness is in
 /// the never-`Unknown`-to-`Verified` mapping upstream) instead of hanging the
-/// whole suite. 10 s is generous — every real synth VC on ordeal 0.16 decides
-/// in well under a second, so a genuine-fast query never approaches it even on
-/// a loaded CI box; only a future regression would trip it. `0` = unbounded
-/// (falls back to the conflict-budget path). Override: `SYNTH_ORDEAL_DEADLINE_MS`.
-const DEFAULT_DEADLINE_MS: u64 = 10_000;
+/// whole suite.
+///
+/// The budget is set ABOVE the slowest *legitimate* query in the suite: the
+/// 32-bit popcount HAKMEM-fold equivalence (`popcnt_hakmem_formula_is_popcnt`,
+/// a wide-multiply `* 0x01010101 >> 24` proof over all 2^32 inputs — a
+/// known-hard SMT class, distinct from division) decides `Unsat` in ~41 s on
+/// ordeal 0.16. 120 s gives ~3x headroom so it never flakes on a loaded CI
+/// box, while a genuine perf cliff (the #849 class ran *minutes to hours*) is
+/// still cut far below the 4-6 h CI timeout. `0` = unbounded (falls back to
+/// the conflict-budget path). Override: `SYNTH_ORDEAL_DEADLINE_MS`.
+///
+/// KNOWN BLOCKER (#848/#849, ordeal#97 — why this branch is NOT merged): even
+/// at 120 s, the pre-existing i32 `verify_i32_rem_u` VC (full `rem_u(a,b) =
+/// a - (a/b)*b` equivalence, a cross-circuit `bvurem` bit-blast) does NOT
+/// decide on ordeal 0.16 — it ran >8 min unbounded and was killed. 0.16 fixed
+/// `bvsrem`/`bvsdiv` (signed; `verify_i32_rem_s` / `div_s` / `div_u` all pass
+/// fast) but `bvurem` (unsigned rem) is still exponential. The un-pin stays
+/// blocked on an upstream bvurem fix; keep `ordeal = "=0.9.1"` until then.
+const DEFAULT_DEADLINE_MS: u64 = 120_000;
 
 /// Outcome of a one-shot `check` of the asserted conjunction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,9 +288,11 @@ mod z3_backend {
     /// "z3 could not decide, keep ordeal's verdict" branch — losing the oracle
     /// on the hardest query class degrades to certificate-checked ordeal (its
     /// `Unsat` carries an `ordeal-lrat`-validated LRAT proof), which is
-    /// acceptable, not a soundness hole. 10 s matches the ordeal deadline;
-    /// override with `SYNTH_Z3_TIMEOUT_MS`.
-    const DEFAULT_Z3_TIMEOUT_MS: u32 = 10_000;
+    /// acceptable, not a soundness hole. 120 s matches the ordeal deadline
+    /// ([`DEFAULT_DEADLINE_MS`]) so the differential stays meaningful on the
+    /// slow-but-legitimate popcount HAKMEM query rather than the oracle timing
+    /// out on it; override with `SYNTH_Z3_TIMEOUT_MS`.
+    const DEFAULT_Z3_TIMEOUT_MS: u32 = 120_000;
 
     /// The former engine, now the differential oracle.
     pub struct Z3Solver {

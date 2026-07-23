@@ -7,29 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **ordeal un-pinned `=0.9.1` → `0.16.0` (#849) + per-query wall-clock deadline
-  wired (#848).** The ordeal 0.12 `bvsrem`/`bvsdiv` solver-performance regression
-  that HUNG the div/rem trap-preservation VCs (4–6 h CI timeouts) is fixed upstream
-  (ordeal PR#99 / ordeal#97 — `bvsrem` is multiplicative again). 0.16.0 adds
-  `Solver::check_with_deadline(ms)`, now wired into the `synth-verify` solver seam
-  (`OrdealSolver`, default 10 s, override `SYNTH_ORDEAL_DEADLINE_MS`) so a future
-  perf cliff degrades a slow query to a conservative `Unknown` — the soundness basis
-  being that `Unknown` is never mapped to `Verified` — instead of hanging the suite.
-  The four #836 `BvTerm::Urem` enum-completeness arms (term.rs ×3, z3-gated
-  solver.rs ×1) re-appear (the variant exists only in ordeal 0.12+).
-
-### Added
-
-- **Native i64 `rem_u`/`rem_s` value model re-landed (#844/#848).** The `I64RemU`/
-  `I64RemS` HAVOC in `synth-verify`'s `arm_semantics` is again a real native 64-bit
-  remainder (`dividend.bvurem`/`bvsrem(&divisor)` composed from the register halves,
-  with the ÷0 trap), so the value+trap VC (`verify_i64_rem_value_preservation`) is
-  load-bearing: a lowering that writes the remainder to the wrong register pair is
-  now `Invalid` (non-vacuity gate restored). Re-landed on ordeal 0.16.0 behind the
-  new per-query deadline (this is the #848 acceptance shape). Byte-invisible —
-  verify-only, no codegen change, frozen anchors untouched.
+<!--
+  BLOCKED (#848/#849, ordeal#97): the ordeal `=0.9.1` → 0.16.0 un-pin + native
+  i64 rem re-land is DRAFTED (PR #854) but MUST NOT MERGE. ordeal 0.16 fixed
+  `bvsrem`/`bvsdiv` (signed — the PR#99 claim; `verify_i32_rem_s`/`div_s`/`div_u`
+  all pass fast) but NOT `bvurem` (unsigned): the pre-existing i32
+  `verify_i32_rem_u` value VC (a cross-circuit `bvurem` equivalence, ~fast on the
+  ~41 s 0.9.1 baseline) does NOT decide on 0.16 — >8 min unbounded, killed. The
+  per-query wall-clock deadline (ordeal `check_with_deadline` + Z3 `Params`
+  timeout) works as insurance but cannot turn an undecidable-in-time `Verified`
+  assertion green. `ordeal = "=0.9.1"` STAYS PINNED until upstream fixes bvurem;
+  no [Unreleased] entry is claimed for this work yet. See PR #854 for the
+  measured finding.
+-->
 
 ## [0.50.1] - 2026-07-23
 
