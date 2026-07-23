@@ -680,7 +680,10 @@ pub fn select_typed_cf(
     // POPCNT): move the integer into a V register, per-byte CNT, horizontal
     // ADDV, move back. For i32, `fmov s,w` zero-fills the upper lanes so CNT.8b
     // counts exactly 4 value bytes; for i64, `fmov d,x` fills all 8.
-    let popcnt = |words: &mut Vec<u32>, stack: &mut Vec<Val>, is64: bool| -> Result<(), SelectError> {
+    let popcnt = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  is64: bool|
+     -> Result<(), SelectError> {
         let a = pop_gp(stack, "popcnt")?;
         let dst = alloc_temp(stack)?;
         // Grab an FP scratch that no live FP value-stack entry holds.
@@ -1486,7 +1489,12 @@ mod tests {
             WasmOp::I64RemS,
             WasmOp::I64RemU,
         ] {
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), op.clone(), WasmOp::End];
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::End,
+            ];
             assert!(select(&ops, 2).is_ok(), "div/rem must lower: {op:?}");
         }
     }
