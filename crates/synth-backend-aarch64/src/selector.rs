@@ -575,6 +575,165 @@ pub fn select_typed_cf(
         Ok(())
     };
 
+    // #851 — integer divide / remainder with WASM-faithful traps.
+    //
+    // A64 SDIV/UDIV are TOTAL where WASM is PARTIAL, so the raw instruction is a
+    // "more-total-than-WASM" silent miscompile (the #633/#666/#709 class). WASM
+    // (Core §4.3.2) requires:
+    //   * div/rem by ZERO traps         (all four forms)
+    //   * div_s(INT_MIN, -1) traps      (overflow: +2^(N-1) is unrepresentable)
+    //   * rem_s(INT_MIN, -1) = 0        (NO trap — falls out of MSUB naturally)
+    // We therefore emit an explicit divisor-zero guard for every form and, for
+    // SIGNED DIV only, an INT_MIN/-1 overflow guard. `is_rem`/`signed`/`is64`
+    // parameterize the one closure.
+    //
+    // Aliasing (the #776 lesson): `msub rd, q, b, a` reads a, b AND q at once, and
+    // the guards read a/b after materializing const scratch. So every temp
+    // (quotient, const scratch, result) is allocated while a and b are STILL on
+    // the value stack (pushed back as reservations), guaranteeing no allocation
+    // hands back a register still holding a live operand.
+    let divrem = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  signed: bool,
+                  is64: bool,
+                  is_rem: bool|
+     -> Result<(), SelectError> {
+        let b = pop_gp(stack, "divrem")?; // divisor
+        let a = pop_gp(stack, "divrem")?; // dividend
+        // Reserve a and b so temp allocation never collides with them.
+        stack.push(Val::gp(a));
+        stack.push(Val::gp(b));
+        // Need up to three DISTINCT scratch regs beyond a/b: quotient, and (for
+        // the signed-div overflow guard) two const-materialization temps.
+        let mut free = TEMPS
+            .iter()
+            .copied()
+            .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+        let (Some(q), Some(s0), Some(s1)) = (free.next(), free.next(), free.next()) else {
+            stack.pop();
+            stack.pop();
+            return Err(SelectError(
+                "value-stack too deep (divrem needs 3 GP temps)".into(),
+            ));
+        };
+        stack.pop(); // b
+        stack.pop(); // a
+
+        // --- Guard 1: divisor == 0 → trap (all four forms). Test the FULL width
+        // so an i64 divisor with a zero low word but nonzero high word (e.g.
+        // 0x1_0000_0000) is correctly seen as nonzero. `cbnz b, +2` skips the
+        // brk when the divisor is nonzero.
+        if is64 {
+            words.push(enc::cbnz64(b, 2));
+        } else {
+            words.push(enc::cbnz(b, 2));
+        }
+        words.push(enc::brk(0)); // divide by zero
+
+        // --- Guard 2 (signed DIV only): dividend == INT_MIN && divisor == -1
+        // → overflow trap. rem_s does NOT trap here (result is 0). Materialize
+        // INT_MIN and -1, compare, and branch over the brk when EITHER differs.
+        if signed && !is_rem {
+            let (min_bits, neg1_bits): (u64, u64) = if is64 {
+                (0x8000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF)
+            } else {
+                (0x8000_0000, 0xFFFF_FFFF)
+            };
+            if is64 {
+                for w in enc::mov_imm64(s0, min_bits) {
+                    words.push(w);
+                }
+                for w in enc::mov_imm64(s1, neg1_bits) {
+                    words.push(w);
+                }
+                words.push(enc::cmp64(a, s0));
+            } else {
+                for w in enc::mov_imm32(s0, min_bits as u32) {
+                    words.push(w);
+                }
+                for w in enc::mov_imm32(s1, neg1_bits as u32) {
+                    words.push(w);
+                }
+                words.push(enc::cmp(a, s0));
+            }
+            // b.ne → dividend != INT_MIN, no overflow: jump PAST the second cmp,
+            // its b.ne, and the brk, landing on the arithmetic. Those are the
+            // next THREE instructions, so the branch target is +4 words from
+            // this branch (`b.<cond> #(imm*4)` is pc-relative to the branch).
+            words.push(enc::bcond(Cond::Ne, 4));
+            words.push(if is64 {
+                enc::cmp64(b, s1)
+            } else {
+                enc::cmp(b, s1)
+            });
+            words.push(enc::bcond(Cond::Ne, 2)); // divisor != -1 → skip brk
+            words.push(enc::brk(0)); // INT_MIN / -1 overflow
+        }
+
+        // --- The arithmetic.
+        let dst = if is_rem {
+            // rem = a − (a/b)·b. SDIV/UDIV into q, then MSUB into the result reg
+            // (which may reuse q — msub reads q before writing its dst).
+            if signed {
+                words.push(if is64 {
+                    enc::sdiv64(q, a, b)
+                } else {
+                    enc::sdiv(q, a, b)
+                });
+            } else {
+                words.push(if is64 {
+                    enc::udiv64(q, a, b)
+                } else {
+                    enc::udiv(q, a, b)
+                });
+            }
+            words.push(if is64 {
+                enc::msub64(q, q, b, a)
+            } else {
+                enc::msub(q, q, b, a)
+            });
+            q
+        } else {
+            words.push(match (signed, is64) {
+                (true, false) => enc::sdiv(q, a, b),
+                (true, true) => enc::sdiv64(q, a, b),
+                (false, false) => enc::udiv(q, a, b),
+                (false, true) => enc::udiv64(q, a, b),
+            });
+            q
+        };
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // #851 — scalar popcount via the Advanced-SIMD unit (A64 has no scalar
+    // POPCNT): move the integer into a V register, per-byte CNT, horizontal
+    // ADDV, move back. For i32, `fmov s,w` zero-fills the upper lanes so CNT.8b
+    // counts exactly 4 value bytes; for i64, `fmov d,x` fills all 8.
+    let popcnt = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  is64: bool|
+     -> Result<(), SelectError> {
+        let a = pop_gp(stack, "popcnt")?;
+        let dst = alloc_temp(stack)?;
+        // Grab an FP scratch that no live FP value-stack entry holds.
+        let vtmp = FTEMPS
+            .iter()
+            .copied()
+            .find(|t| !stack.iter().any(|v| v.file == File::Fp && v.reg == *t))
+            .ok_or_else(|| SelectError("value-stack too deep (popcnt needs an FP temp)".into()))?;
+        if is64 {
+            words.push(enc::fmov_d_from_x(vtmp, a));
+        } else {
+            words.push(enc::fmov_s_from_w(vtmp, a));
+        }
+        words.push(enc::cnt_8b(vtmp, vtmp));
+        words.push(enc::addv_8b(vtmp, vtmp));
+        words.push(enc::fmov_w_from_s(dst, vtmp));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
     // `ctz` = `rbit` then `clz` (A64 has no direct CTZ). `sf` selects width.
     let ctz = |words: &mut Vec<u32>, stack: &mut Vec<Val>, sf: bool| -> Result<(), SelectError> {
         let a = pop_gp(stack, "ctz")?;
@@ -1018,6 +1177,13 @@ pub fn select_typed_cf(
             WasmOp::I32Rotl => rotl(&mut words, &mut stack, false)?,
             WasmOp::I32Clz => unop(&mut words, &mut stack, enc::clz)?,
             WasmOp::I32Ctz => ctz(&mut words, &mut stack, false)?,
+            WasmOp::I32Popcnt => popcnt(&mut words, &mut stack, false)?,
+            // #851 — i32 divide / remainder (SDIV/UDIV + MSUB) with the WASM
+            // trap guards (÷0 all forms; INT_MIN/-1 signed-div only).
+            WasmOp::I32DivS => divrem(&mut words, &mut stack, true, false, false)?,
+            WasmOp::I32DivU => divrem(&mut words, &mut stack, false, false, false)?,
+            WasmOp::I32RemS => divrem(&mut words, &mut stack, true, false, true)?,
+            WasmOp::I32RemU => divrem(&mut words, &mut stack, false, false, true)?,
 
             // --- i32 comparisons ---
             WasmOp::I32Eqz => eqz(&mut words, &mut stack, false)?,
@@ -1046,6 +1212,13 @@ pub fn select_typed_cf(
             WasmOp::I64Rotl => rotl(&mut words, &mut stack, true)?,
             WasmOp::I64Clz => unop(&mut words, &mut stack, enc::clz64)?,
             WasmOp::I64Ctz => ctz(&mut words, &mut stack, true)?,
+            WasmOp::I64Popcnt => popcnt(&mut words, &mut stack, true)?,
+            // #851 — i64 divide / remainder (x-form SDIV/UDIV + MSUB) with the
+            // WASM trap guards (÷0 all forms; INT64_MIN/-1 signed-div only).
+            WasmOp::I64DivS => divrem(&mut words, &mut stack, true, true, false)?,
+            WasmOp::I64DivU => divrem(&mut words, &mut stack, false, true, false)?,
+            WasmOp::I64RemS => divrem(&mut words, &mut stack, true, true, true)?,
+            WasmOp::I64RemU => divrem(&mut words, &mut stack, false, true, true)?,
 
             // --- i64 comparisons (result is an i32 0/1) ---
             WasmOp::I64Eqz => eqz(&mut words, &mut stack, true)?,
@@ -1138,6 +1311,14 @@ pub fn select_typed_cf(
             }
             WasmOp::I32ReinterpretF32 => {
                 reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_w_from_s)?
+            }
+            // #851 (GI-FPU-001) — f64 <-> i64 bit-cast reinterprets, the 64-bit
+            // twins of the f32/i32 pair above (`fmov dd,xn` / `fmov xd,dn`).
+            WasmOp::F64ReinterpretI64 => {
+                reinterpret_gp_to_fp(&mut words, &mut stack, enc::fmov_d_from_x)?
+            }
+            WasmOp::I64ReinterpretF64 => {
+                reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_x_from_d)?
             }
 
             // `End` is overloaded: it closes the innermost open `block`, or —
@@ -1492,9 +1673,9 @@ mod tests {
         );
     }
 
+    // #851 — div/rem now LOWER (SDIV/UDIV + MSUB) with WASM trap guards.
     #[test]
-    fn division_is_loud_declined() {
-        // A64 SDIV/UDIV do not trap → we refuse rather than silently miscompile.
+    fn division_and_remainder_lower_with_guards() {
         for op in [
             WasmOp::I32DivS,
             WasmOp::I32DivU,
@@ -1502,16 +1683,154 @@ mod tests {
             WasmOp::I32RemU,
             WasmOp::I64DivS,
             WasmOp::I64DivU,
+            WasmOp::I64RemS,
+            WasmOp::I64RemU,
         ] {
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), op, WasmOp::End];
-            assert!(select(&ops, 2).is_err(), "division must loud-decline");
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::End,
+            ];
+            assert!(select(&ops, 2).is_ok(), "div/rem must lower: {op:?}");
         }
     }
 
     #[test]
-    fn popcnt_is_loud_declined() {
+    fn div_u_emits_divisor_zero_guard_only() {
+        // i32.div_u: cbnz w1,+2 ; brk ; udiv w9,w0,w1 ; mov x0,x9 ; ret.
+        // Exactly ONE brk (÷0), no overflow guard for the unsigned form.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32DivU,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cbnz(1, 2),
+                enc::brk(0),
+                enc::udiv(9, 0, 1),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn div_s_emits_zero_and_overflow_guards() {
+        // i32.div_s: ÷0 guard + INT_MIN/-1 overflow guard, then sdiv.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32DivS,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        // Temps: q=9 (quotient/result), s0=10 (INT_MIN), s1=11 (-1).
+        let mut expect = vec![enc::cbnz(1, 2), enc::brk(0)];
+        expect.extend(enc::mov_imm32(10, 0x8000_0000)); // INT_MIN scratch
+        expect.extend(enc::mov_imm32(11, 0xFFFF_FFFF)); // -1 scratch
+        expect.push(enc::cmp(0, 10)); // dividend == INT_MIN?
+        expect.push(enc::bcond(Cond::Ne, 4));
+        expect.push(enc::cmp(1, 11)); // divisor == -1?
+        expect.push(enc::bcond(Cond::Ne, 2));
+        expect.push(enc::brk(0));
+        expect.push(enc::sdiv(9, 0, 1));
+        expect.push(enc::mov_reg64(0, 9));
+        expect.push(enc::ret());
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn rem_s_has_zero_guard_but_no_overflow_guard() {
+        // rem_s traps ONLY on ÷0 (rem_s(INT_MIN,-1) == 0). So exactly one brk,
+        // and the arithmetic is sdiv + msub.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32RemS,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cbnz(1, 2),
+                enc::brk(0),
+                enc::sdiv(9, 0, 1),
+                enc::msub(9, 9, 1, 0),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+        // Exactly one brk — no overflow guard.
+        assert_eq!(w.iter().filter(|&&x| x == enc::brk(0)).count(), 1);
+    }
+
+    #[test]
+    fn i64_div_zero_guard_tests_full_width() {
+        // The i64 ÷0 guard MUST use the x-form cbnz (all 64 bits).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I64DivU,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(w[0], enc::cbnz64(1, 2), "i64 ÷0 guard must be 64-bit cbnz");
+        assert_eq!(w[1], enc::brk(0));
+    }
+
+    #[test]
+    fn popcnt_lowers_via_simd_cnt_addv() {
+        // i32.popcnt: fmov s16,w0 ; cnt v16.8b ; addv b16 ; fmov w9,s16.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Popcnt, WasmOp::End];
-        assert!(select(&ops, 1).is_err());
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_s_from_w(16, 0),
+                enc::cnt_8b(16, 16),
+                enc::addv_8b(16, 16),
+                enc::fmov_w_from_s(9, 16),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn i64_popcnt_uses_d_move() {
+        // i64.popcnt fills all 8 bytes: fmov d16,x0.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64Popcnt, WasmOp::End];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(w[0], enc::fmov_d_from_x(16, 0));
+        assert_eq!(w[1], enc::cnt_8b(16, 16));
+        assert_eq!(w[2], enc::addv_8b(16, 16));
+    }
+
+    #[test]
+    fn f64_i64_reinterpret_round_trips_through_fmov() {
+        // i64 param → f64.reinterpret → i64.reinterpret: fmov d16,x0; fmov x9,d16.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F64ReinterpretI64,
+            WasmOp::I64ReinterpretF64,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_d_from_x(16, 0),
+                enc::fmov_x_from_d(9, 16),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
     }
 
     // ---- milestone 3: scalar float ----

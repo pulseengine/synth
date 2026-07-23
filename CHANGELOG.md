@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **aarch64 div/rem + popcnt + f64↔i64 reinterpret (#851).** Three op groups
+  that previously loud-declined on `-b aarch64` now lower, shrinking gale's
+  acceptance frontier (`scripts/repro/aarch64_matrix.sh`) from
+  `popcnt div_s rem_s` to **empty** (32 → 35 accepted ops, 86 → 91 native
+  checks, all bit-identical vs wasmtime):
+  - **Integer div/rem (i32+i64):** `div_{s,u}` → A64 `SDIV`/`UDIV`; `rem_{s,u}`
+    → `SDIV`/`UDIV` + `MSUB` (`rem = a − (a/b)·b`). A64 divide is TOTAL where
+    WASM is PARTIAL, so — the #633/#666/#709 totality class — the lowering emits
+    explicit WASM trap guards: divisor `== 0` → `brk` (all four forms;
+    full-width `cbnz` for i64) and, for SIGNED DIV only, the `INT_MIN / −1`
+    overflow → `brk`. `rem_s(INT_MIN, −1) == 0` (no trap) falls out of `MSUB`
+    naturally. The ÷0 and INT_MIN/−1 traps are execution-verified vs wasmtime
+    (`scripts/repro/aarch64_divrem_851_differential.py`: 152 cases / 34 trap
+    cases, native SIGTRAP + unicorn `brk`).
+  - **popcnt (i32+i64):** A64 has no scalar popcount, so `fmov` gpr→SIMD,
+    `CNT vN.8b`, `ADDV bN, vN.8b`, `fmov` back (i32 uses `fmov s` to zero-fill
+    the upper lanes; i64 uses `fmov d`).
+  - **f64↔i64 reinterpret (GI-FPU-001):** `i64.reinterpret_f64` /
+    `f64.reinterpret_i64` → bit-preserving `fmov x,d` / `fmov d,x`. These
+    `WasmOp` variants existed but were never decoded (`convert_operator`), so
+    they globally declined; un-dropping them at decode also un-blocks the ARM
+    backend's existing VFP lowering. Verified every backend still emits or
+    LOUD-declines (never silent-drops): aarch64 + cortex-m7dp ARM emit;
+    no-FPU ARM / single-precision Cortex-M / RV32 loud-decline.
+  - New encoders (llvm-mc ground-truth byte tests): `sdiv`/`udiv`/`msub`
+    (+64-bit), `cnt_8b`, `addv_8b`, `cbnz64`.
 - **aarch64 non-param locals (#856).** The `-b aarch64` backend now supports
   `local` declarations beyond params: each non-param local gets a zero-init
   8-byte stack slot (`[sp, #(idx − num_params)*8]`, frame rounded to a 16-byte
