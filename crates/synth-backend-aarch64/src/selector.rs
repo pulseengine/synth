@@ -258,14 +258,36 @@ pub fn select_typed_cf(
         }
     }
 
-    // Control-flow state (#538 cf increment). Each open `block` pushes a frame;
-    // the matching `End` pops it and patches the recorded forward branches to
-    // land at the current instruction position (the block's fall-through point).
+    // Control-flow state (#538 cf increment, #851 full control flow). Each open
+    // `block`/`loop`/`if` pushes a frame. The matching `End` pops it. Where a
+    // `br`/`br_if` to that frame lands depends on the frame KIND:
+    //
+    //   * `Block` / `If`: a branch to the frame targets its END (fall-through) —
+    //     a FORWARD branch, recorded in `pending` and patched when `End` closes
+    //     the frame (the target position is only known then).
+    //   * `Loop`: a branch to the frame targets its ENTRY (the loop header) — a
+    //     BACKWARD branch, resolved to a NEGATIVE offset immediately at emission
+    //     (`entry` is already known), never patched.
+    //
+    // This "dispatch on the TARGET frame's kind, not on the branch op" is what
+    // makes loop back-edges correct alongside forward block exits.
+    enum Kind {
+        /// A plain `block`: branches to it go to its END (forward).
+        Block,
+        /// A `loop`: branches to it go to `entry` (the loop header, backward).
+        Loop { entry: usize },
+        /// An `if`: like Block for `br` (branches go to END), but also carries
+        /// the position of the `cbz`/`b.cond` that skips the THEN arm, patched
+        /// at `else` (to the else arm) or at `end` (past the then arm).
+        If { else_fixup: Option<usize> },
+    }
     struct Frame {
-        /// Word positions in `words` of branches targeting this block's END,
-        /// awaiting fix-up when the block closes.
+        kind: Kind,
+        /// Word positions in `words` of FORWARD branches targeting this frame's
+        /// END, awaiting fix-up when the frame closes (Block/If only; a Loop's
+        /// branches are backward and resolved eagerly).
         pending: Vec<usize>,
-        /// Value-stack height on entry — a void block must restore it at `End`.
+        /// Value-stack height on entry — a void frame must restore it at `End`.
         stack_entry: usize,
     }
     let mut ctrl: Vec<Frame> = Vec::new();
@@ -273,6 +295,14 @@ pub fn select_typed_cf(
     // `block_arity`. Incremented on EVERY control op encountered (even declined
     // ones, though a decline aborts the whole compile so alignment is moot).
     let mut ctrl_ord: usize = 0;
+    // Reachability of the current linear position (#851). Code after an
+    // UNCONDITIONAL transfer (`br`, `return`, `unreachable`) is unreachable and
+    // WASM's stack becomes polymorphic there — the straight-line height model no
+    // longer tracks the real stack. We keep truncating the value stack to the
+    // frame's entry height at `else`/`end` (that fixes the model), but SKIP the
+    // fall-through height assert when unreachable (it only holds on a reachable
+    // fall-through). `br_if` is conditional, so its fall-through stays reachable.
+    let mut reachable = true;
 
     // Pick a GP temp not holding a live GP value-stack entry.
     let alloc_temp = |stack: &[Val]| -> Result<Reg, SelectError> {
@@ -785,7 +815,11 @@ pub fn select_typed_cf(
             }
             // #665: wasm `unreachable` traps unconditionally (WASM §4.4.5) —
             // `brk #0`, the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
-            WasmOp::Unreachable => words.push(enc::brk(0)),
+            WasmOp::Unreachable => {
+                words.push(enc::brk(0));
+                // `unreachable` traps unconditionally: fall-through is dead.
+                reachable = false;
+            }
 
             // --- control flow (#538 cf increment): VOID-result forward blocks ---
             //
@@ -807,6 +841,7 @@ pub fn select_typed_cf(
                     )));
                 }
                 ctrl.push(Frame {
+                    kind: Kind::Block,
                     pending: Vec::new(),
                     stack_entry: stack.len(),
                 });
@@ -828,8 +863,17 @@ pub fn select_typed_cf(
                 }
                 let target = ctrl.len() - 1 - d;
                 let pos = words.len();
-                words.push(enc::b_uncond(0)); // placeholder; patched at End
-                ctrl[target].pending.push(pos);
+                if let Kind::Loop { entry } = ctrl[target].kind {
+                    // BACKWARD branch to the loop header — resolve immediately.
+                    let off = check_imm26((entry as i64 - pos as i64) as i32)?;
+                    words.push(enc::b_uncond(off));
+                } else {
+                    // FORWARD branch to a block/if END — patched at that `End`.
+                    words.push(enc::b_uncond(0)); // placeholder
+                    ctrl[target].pending.push(pos);
+                }
+                // Unconditional transfer: fall-through is unreachable.
+                reachable = false;
             }
             // `br_if N` — pop an i32 condition; branch to the block-N END iff it
             // is nonzero → `cbnz w_cond, <block-end>`. Not-taken falls through.
@@ -845,22 +889,119 @@ pub fn select_typed_cf(
                 let cond = pop_gp(&mut stack, "br_if")?;
                 let target = ctrl.len() - 1 - d;
                 let pos = words.len();
-                words.push(enc::cbnz(cond, 0)); // placeholder; patched at End
-                ctrl[target].pending.push(pos);
+                if let Kind::Loop { entry } = ctrl[target].kind {
+                    // BACKWARD conditional branch to the loop header.
+                    let off = check_imm19((entry as i64 - pos as i64) as i32)?;
+                    words.push(enc::cbnz(cond, off));
+                } else {
+                    // FORWARD conditional branch to a block/if END.
+                    words.push(enc::cbnz(cond, 0)); // placeholder; patched at End
+                    ctrl[target].pending.push(pos);
+                }
             }
-            // `loop` (backward branch target), `if`/`else` (join reconciliation),
-            // and `br_table` (jump table) are OUT of this increment — decline by
-            // name rather than miscompile. (BrTable/If/Else hit the catch-all
-            // `other` arm below; loop is explicit so its arity ordinal is
-            // consumed with a clear message.)
+            // `loop` (#851): opens a control frame whose branch target is the
+            // loop HEADER (the current position), so a `br`/`br_if` to it is a
+            // BACKWARD branch. Only a VOID `(0,0)` loop is accepted: a
+            // value/param loop would need the value stack non-empty across the
+            // back-edge, and the deterministic temp-restart (`alloc_temp` picks
+            // the same register when the stack is empty) would no longer hold.
+            // The `(0,0)` gate enforces exactly the sound shape — loop-carried
+            // state must live in non-param LOCAL SLOTS (memory), reloaded each
+            // iteration. `br_table` still declines (catch-all).
             WasmOp::Loop => {
-                // (no ctrl_ord bump needed: a decline aborts the whole compile,
-                // so the arity-ordinal alignment is moot from here on.)
-                return Err(SelectError(
-                    "loop: backward-branch control flow not yet supported for \
-                     aarch64 — loud-declining (only forward void blocks)"
-                        .into(),
-                ));
+                let ord = ctrl_ord;
+                ctrl_ord += 1;
+                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                if arity != (0, 0) {
+                    return Err(SelectError(format!(
+                        "loop #{ord} has type {arity:?} — only void (0,0) loops \
+                         are supported (a value/param loop needs the value stack \
+                         live across the back-edge); loud-declining"
+                    )));
+                }
+                ctrl.push(Frame {
+                    kind: Kind::Loop { entry: words.len() },
+                    pending: Vec::new(),
+                    stack_entry: stack.len(),
+                });
+            }
+            // `if` (#851): pop the i32 condition; emit `cbz cond, <else/end>` to
+            // SKIP the then-arm when the condition is false. The skip target is
+            // patched at the matching `else` (to the else-arm entry) or, if
+            // there is no `else`, at `end` (past the then-arm). Only VOID `(0,0)`
+            // `if` is accepted — a value-producing `if` would need both arms to
+            // leave the result in the same register, which this straight-line
+            // model does not guarantee, so it LOUD-DECLINES.
+            WasmOp::If => {
+                let ord = ctrl_ord;
+                ctrl_ord += 1;
+                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                if arity != (0, 0) {
+                    return Err(SelectError(format!(
+                        "if #{ord} has type {arity:?} — only void (0,0) if/else \
+                         is supported (a value-producing if needs both arms to \
+                         land the result in one register); loud-declining"
+                    )));
+                }
+                let cond = pop_gp(&mut stack, "if")?;
+                let else_pos = words.len();
+                // cbz: fall THROUGH into the then-arm when cond != 0; branch to
+                // the else/end when cond == 0. Offset patched at else/end.
+                words.push(enc::cbz(cond, 0)); // placeholder
+                ctrl.push(Frame {
+                    kind: Kind::If {
+                        else_fixup: Some(else_pos),
+                    },
+                    pending: Vec::new(),
+                    stack_entry: stack.len(),
+                });
+            }
+            // `else` (#851): closes the then-arm of the innermost `if`. Emit an
+            // unconditional `b <end>` to skip the else-arm at runtime (recorded
+            // in `pending`, patched at `end`), then patch the `if`'s pending
+            // `cbz` to land HERE (the else-arm entry). The value stack is reset
+            // to the if's entry height (a void then-arm must not leave a value).
+            WasmOp::Else => {
+                let frame = ctrl
+                    .last_mut()
+                    .ok_or_else(|| SelectError("else without a matching if".into()))?;
+                let else_fixup = match &mut frame.kind {
+                    Kind::If { else_fixup } => else_fixup
+                        .take()
+                        .ok_or_else(|| SelectError("duplicate else for one if".into()))?,
+                    _ => {
+                        return Err(SelectError("else does not close an if block".into()));
+                    }
+                };
+                // A void then-arm leaves the stack at its entry height — but
+                // only on a REACHABLE fall-through (a then-arm ending in
+                // `return`/`br` is polymorphic). Truncate unconditionally (fixes
+                // the model); assert only when reachable.
+                debug_assert!(
+                    !reachable || stack.len() == frame.stack_entry,
+                    "void then-arm must restore stack height"
+                );
+                stack.truncate(frame.stack_entry);
+                // The else-arm is a `cbz` target — always reachable.
+                reachable = true;
+                // Skip the else-arm when the then-arm falls through.
+                let skip_pos = words.len();
+                words.push(enc::b_uncond(0)); // placeholder; patched at end
+                frame.pending.push(skip_pos);
+                // The if's cbz now lands at the else-arm entry (current pos).
+                let here = words.len();
+                patch_branch(&mut words, else_fixup, here)?;
+            }
+            // `return` (#851): funnel the top-of-stack into x0/d0, tear down the
+            // frame, and `ret` — an EARLY function exit. Ops after `return` up
+            // to the enclosing `end` are unreachable (WASM stack-polymorphic);
+            // the selector still lowers them but this `ret` never falls into
+            // them. Mirrors the existing "code after `br` is unreachable but
+            // still emitted" model — no shared epilogue label needed.
+            WasmOp::Return => {
+                epilogue(&mut words, stack.last().copied(), frame_size);
+                // Unconditional transfer: fall-through is unreachable.
+                reachable = false;
             }
 
             // --- i32 arithmetic / bitwise ---
@@ -1004,30 +1145,41 @@ pub fn select_typed_cf(
             // into x0/d0 and return).
             WasmOp::End => {
                 if let Some(frame) = ctrl.pop() {
-                    // Block close: every recorded forward branch targets HERE
-                    // (the block's fall-through). Patch each placeholder with the
-                    // word-relative offset from the branch to the current position.
+                    // Frame close. Every recorded FORWARD branch (block/if exit,
+                    // else-arm skip) targets HERE (fall-through). A Loop's
+                    // branches were backward and already resolved. Patch each
+                    // placeholder via the kind-preserving `patch_branch`.
                     let here = words.len();
-                    for pos in frame.pending {
-                        let off = (here as i64 - pos as i64) as i32;
-                        let branch = words[pos];
-                        // Re-encode with the resolved offset, preserving the
-                        // opcode/register bits set at emission (b vs cbnz).
-                        words[pos] = if branch & 0xFF00_0000 == 0x1400_0000 {
-                            enc::b_uncond(off)
-                        } else {
-                            // cbnz: keep the Rt field, set the imm19.
-                            enc::cbnz((branch & 0x1F) as u8, off)
-                        };
+                    // An `if` with NO `else`: its `cbz` still needs to skip the
+                    // then-arm to here (the fall-through past the then-arm).
+                    if let Kind::If {
+                        else_fixup: Some(pos),
+                    } = frame.kind
+                    {
+                        patch_branch(&mut words, pos, here)?;
                     }
-                    // A void block leaves the value stack exactly as on entry.
+                    for pos in frame.pending {
+                        patch_branch(&mut words, pos, here)?;
+                    }
+                    // A void frame leaves the value stack exactly as on entry —
+                    // but only on a REACHABLE fall-through (a body ending in
+                    // `return`/`br` is stack-polymorphic). Truncate always;
+                    // assert only when the fall-through is reachable.
                     debug_assert!(
-                        stack.len() == frame.stack_entry,
-                        "void block must restore stack height: entry={} now={}",
+                        !reachable || stack.len() == frame.stack_entry,
+                        "void frame must restore stack height: entry={} now={}",
                         frame.stack_entry,
                         stack.len()
                     );
                     stack.truncate(frame.stack_entry);
+                    // After closing a frame the position is reachable again: a
+                    // forward branch could target this fall-through, and a loop's
+                    // continuation follows. (A dead nested block would want the
+                    // precise `fell_through || had_pending` rule; that only
+                    // affects a debug assert, never emitted bytes — noted as a
+                    // residual, the wasmtime differential is the correctness
+                    // oracle here.)
+                    reachable = true;
                 } else {
                     epilogue(&mut words, stack.last().copied(), frame_size);
                 }
@@ -1121,6 +1273,51 @@ pub fn select_typed_cf(
 /// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
 /// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
 /// the sequence is: funnel result → restore SP → ret.
+/// Guard an `imm26` (unconditional `b`) displacement (words) against the A64
+/// field width (signed 26-bit → ±2^25 words = ±128 MB). Over-range would wrap
+/// silently in the encoder's mask, so we LOUD-DECLINE instead (unreachable for
+/// any realistic function; "No silent miscompile" is the hard rule).
+fn check_imm26(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 25)..(1 << 25)).contains(&off) {
+        return Err(SelectError(format!(
+            "branch displacement {off} words exceeds A64 b imm26 range \
+             (±2^25) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
+/// Guard an `imm19` (`cbz`/`cbnz`/`b.cond`) displacement (signed 19-bit →
+/// ±2^18 words = ±1 MB). Same silent-wrap hazard as [`check_imm26`].
+fn check_imm19(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 18)..(1 << 18)).contains(&off) {
+        return Err(SelectError(format!(
+            "conditional-branch displacement {off} words exceeds A64 imm19 \
+             range (±2^18) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
+/// Re-encode a placeholder FORWARD branch at `words[pos]` to land at `target`
+/// (a word index in `words`), preserving its kind. The three kinds we emit as
+/// forward placeholders are `b` (0x14…, imm26), `cbnz` (0x35…, imm19+Rt), and
+/// `cbz` (0x34…, imm19+Rt); the opcode's high bits discriminate them so the Rt
+/// field and op class survive the patch. Centralizing this prevents a `cbz`
+/// (added in #851) from being mis-patched as a `cbnz`. Over-range displacements
+/// LOUD-DECLINE (no silent field wrap).
+fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), SelectError> {
+    let off = (target as i64 - pos as i64) as i32;
+    let w = words[pos];
+    words[pos] = match w & 0xFF00_0000 {
+        0x1400_0000 => enc::b_uncond(check_imm26(off)?),
+        0x3500_0000 => enc::cbnz((w & 0x1F) as u8, check_imm19(off)?),
+        0x3400_0000 => enc::cbz((w & 0x1F) as u8, check_imm19(off)?),
+        _ => unreachable!("patch_branch: not a placeholder branch: {w:#010x}"),
+    };
+    Ok(())
+}
+
 fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32) {
     match top {
         Some(Val {
@@ -1813,11 +2010,10 @@ mod tests {
     }
 
     #[test]
-    fn loop_and_br_table_and_if_are_loud_declined() {
-        // Backward-branch / join / jump-table control is out of this increment.
-        let loop_ops = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&loop_ops, 0, &[], &[], &[(0, 0)]).is_err());
-
+    fn br_table_and_typed_loop_if_are_loud_declined() {
+        // #851: `loop`, `if`/`else` are now LOWERED for the void (0,0) shape.
+        // What still declines: `br_table` (jump table, catch-all) and any
+        // VALUE-carrying loop/if (arity != (0,0)).
         let brtable = vec![
             WasmOp::Block,
             WasmOp::LocalGet(0),
@@ -1830,8 +2026,97 @@ mod tests {
         ];
         assert!(select_typed_cf(&brtable, 1, &[], &[], &[(0, 0)]).is_err());
 
-        let if_ops = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&if_ops, 1, &[], &[], &[(0, 0)]).is_err());
+        // A VALUE-producing if (result i32 → arity (0,1)) loud-declines.
+        let typed_if = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_if, 1, &[], &[], &[(0, 1)]).is_err());
+
+        // A VALUE-producing loop (arity (0,1)) loud-declines.
+        let typed_loop = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_loop, 0, &[], &[], &[(0, 1)]).is_err());
+    }
+
+    #[test]
+    fn void_if_without_else_emits_cbz_skip() {
+        // `if (then unreachable)` with cond in w0: cbz w0, <past-then> ; brk ;
+        // then fall-through. The cbz skips the then-arm when cond == 0.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Unreachable,
+            WasmOp::End, // if-end
+            WasmOp::End, // fn-end
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, .+8 (skip the brk) ; brk #0 ; ret
+        assert_eq!(w[0], enc::cbz(0, 2));
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::ret());
+    }
+
+    #[test]
+    fn void_if_else_patches_both_edges() {
+        // if(cond){} else{} — void arms. cbz skips to the else entry; the
+        // then-arm's trailing `b` skips the else-arm to the join.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Else,
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, else ; b end ; brk ; ret
+        // then-arm is empty: cbz lands at the `b`? No — cbz skips the then-arm
+        // to the else entry. then-arm empty → cbz to the b's fall-through.
+        // Layout: [0] cbz w0, else_entry ; [1] b end ; [2] brk ; [3] ret
+        assert_eq!(w[0], enc::cbz(0, 2)); // to word 2 (else entry = brk)
+        assert_eq!(w[1], enc::b_uncond(2)); // skip else-arm to word 3 (ret)
+        assert_eq!(w[2], enc::brk(0));
+        assert_eq!(w[3], enc::ret());
+    }
+
+    #[test]
+    fn loop_back_edge_is_negative_offset() {
+        // block { loop { <body> br 0 } } — the `br 0` targets the loop header
+        // (BACKWARD), resolving to a negative offset. A `local.tee`/`local.get`
+        // on a NON-PARAM local emits real instructions ahead of the `br`, so
+        // the back-edge offset is strictly negative. Frame: 1 non-param local
+        // (idx 1) → a sub-sp + str-xzr prologue, then the loop body.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(1), // non-param local read → ldr (real instr)
+            WasmOp::LocalSet(1), // → str (real instr) — loop body has 2 instrs
+            WasmOp::Br(0),       // back-edge to loop header
+            WasmOp::End,         // loop end
+            WasmOp::End,         // block end
+            WasmOp::End,         // fn end
+        ];
+        // arity table: Block, Loop → two (0,0) entries.
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
+        // Find the back-edge `b` (0x14…): it must carry a NEGATIVE imm26.
+        let br = w
+            .iter()
+            .find(|&&x| x & 0xFC00_0000 == 0x1400_0000)
+            .expect("a back-edge b must be emitted");
+        let imm26 = (br & 0x03FF_FFFF) as i32;
+        let signed = (imm26 << 6) >> 6; // sign-extend 26 bits
+        assert!(
+            signed < 0,
+            "loop back-edge must be a negative offset, got {signed}"
+        );
+    }
+
+    #[test]
+    fn early_return_emits_epilogue_ret() {
+        // `local.get 0 ; return` — funnels w0 and rets early, then the trailing
+        // fn-end epilogue rets again (unreachable).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Return, WasmOp::End];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
+        // local.get 0 → mov x9,x0 ; return → mov x0,x9 ; ret
+        assert_eq!(*w.last().unwrap(), enc::ret());
+        assert!(w.contains(&enc::ret()));
     }
 
     #[test]

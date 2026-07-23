@@ -33,6 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontier (documented, not silent): in-bounds only — OOB-trap, data-segment
   init, `memory.{size,grow}`, and emitting startup that establishes `x28` are
   follow-ons.
+- **aarch64 full control flow — `if`/`else`, `loop`, `return` (#851).** The
+  `-b aarch64` backend extends the void-block-only #538 control flow
+  (`block`/`br`/`br_if`) with the remaining structured constructs: `if`/`else`
+  (`cbz` cond → else/end, unconditional `b` over the else arm, join at end),
+  `loop` (a **backward** branch target — a `br`/`br_if` to a loop frame resolves
+  a negative offset eagerly at the loop header), and `return` (early epilogue:
+  funnel top → `x0`/`d0`, restore SP, `ret`). Branch resolution dispatches on
+  the **target frame's kind** (Block/If = forward, patched at `End`; Loop =
+  backward, resolved on emission), so loop back-edges and forward block exits
+  coexist; a single `patch_branch` helper centralizes the `b`/`cbnz`/`cbz`
+  re-encode. A reachability flag applies WASM's stack-polymorphism rule after
+  `br`/`return`/`unreachable`. Honest frontier (loud-decline, never silent):
+  **value-producing `if`/`loop`** (arity ≠ (0,0) — both arms would need the
+  result in one register / the value stack live across the back-edge) and
+  `br_table`. A dedicated execution differential
+  (`scripts/repro/aarch64_ctrlflow_851_differential.py`, 28 cases) proves
+  if/else (both arms), counting + countdown + **do-while** loops (multiple trip
+  counts; the do-while drives the backward *conditional* `cbnz`-to-header path),
+  early-return, and return-inside-loop **bit-identical vs wasmtime** on a native
+  arm64 host (MAP_JIT fork) + unicorn, with both branch edges and a trap edge
+  exercised (non-vacuity-guarded). Branch displacements exceeding the A64 field
+  width (imm26 ±128 MB, imm19 ±1 MB) LOUD-DECLINE rather than wrap silently
+  (`check_imm26`/`check_imm19` at every eager and patched resolution site).
+  *Coordinator note:* wire the new differential
+  into `ci.yml` alongside `aarch64_cf_538` / `aarch64_mem_851` at assembly (this
+  lane does not edit repo config).
 
 ## [0.50.1] - 2026-07-23
 
