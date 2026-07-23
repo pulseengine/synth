@@ -50,12 +50,16 @@ REPRO = Path(__file__).resolve().parent
 # Canonical frozen fixtures (fixture, golden .text sha256, golden len) — the exact
 # pins from crates/synth-cli/tests/frozen_codegen_bytes.rs oracle_001.
 FROZEN = [
+    # Synced to frozen_codegen_bytes.rs oracle_001 default block after the #846
+    # shift-mask elision went default-on (v0.50.1): the shift-carrying anchors
+    # SHRANK — control_step 308→288 (−20), flight_seam 870→706 (−164),
+    # flight_seam_flat 1010→842 (−168). signed_div_const is inert (no shift).
     ("control_step.wasm",
-     "b365a29ef47ddd3e5ef8755d54cbd0d46c504af64dd24d08e9500385f674d892", 308),
+     "8b3f1f6fe3a40994dacca91614cc19590f330eb49e8dcc8eb5b0ffc78338a1d9", 288),
     ("flight_seam.wasm",
-     "28642d60533c3fc154dfc7ab27e6a9f4ffe5b0a81adfe4c0fba493d490fc8d2c", 870),
+     "e7152735df88a699f4600574dc5b6f5bc34efcb8cba020f78ec78f59d9d20f8a", 706),
     ("flight_seam_flat.wasm",
-     "7d3145c4ed0493cd326f867ab068930a64f3813bce60d031b19f535d0f800998", 1010),
+     "5a5d675772544662fefdee6f267d07be98da1560af0626b0671e7d79b1644f37", 842),
     ("signed_div_const.wasm",
      "b277453b7829a5b2c64527131298d89fa63f5641231b1d4c7336675e8cdab9b0", 34),
 ]
@@ -73,6 +77,9 @@ CLEAR = [
     "SYNTH_NO_CMP_SELECT_FUSE", "SYNTH_NO_LOCAL_PROMOTE", "SYNTH_NO_IMM_SHIFT_FOLD",
     "SYNTH_NO_STACK_FWD", "SYNTH_SPILL_REALLOC", "SYNTH_CONST_CSE", "SYNTH_BASE_CSE",
     "SYNTH_DEAD_FRAME_ELIM", "SYNTH_UXTH_FOLD", "SYNTH_GRAPH_ALLOC",
+    # #846: shift-mask elision is default-on since v0.50.1; strip its opt-out
+    # (`SYNTH_SHIFT_MASK_ELIDE=0`) so an ambient override can't un-freeze the gate.
+    "SYNTH_SHIFT_MASK_ELIDE",
 ]
 
 
