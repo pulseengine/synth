@@ -7,7 +7,7 @@
 > stale. All numbers come from [`artifacts/status.json`](../../artifacts/status.json),
 > which is re-derived from source on every run — never hand-edited.
 
-**Workspace version:** 0.50.1
+**Workspace version:** 0.51.0
 
 ---
 
@@ -33,7 +33,7 @@ soundness feature, not an absence.
 | ARM Thumb-2 (primary) | `synth-backend` | `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m7dp` (+ `cortex-m55` experimental MVE) | i32 + i64 (register pairs) complete; scalar f32/f64 via VFP on FPU targets; control flow (block/loop/if/br/br_table); memory incl. sub-word; direct calls; `call_indirect` in both relocatable and self-contained `--cortex-m` images (v0.47, #275) |
 | ARM A32 | `synth-backend` | `cortex-r5` | i32 + i64 integer family (221-variant no-wildcard tripwire, #615); self-contained `call_indirect` declines loudly (no flash-table builder) |
 | RISC-V RV32IMAC | `synth-backend-riscv` | `rv32imac`, `rv32imc`, `rv32im`, `rv32i`, `rv32gc`, `esp32c3` | i32 + i64 integer ops, control flow, calls incl. `call_indirect`, memory loads/stores; relocatable ELF; floats decline loudly |
-| AArch64 (A64, host-native) | `synth-backend-aarch64` | `cortex-a53` (host-linkable ET_REL, `-b aarch64`) | 132 distinct WASM ops handled by the selector: i32 + i64 integer core (no div/rem/popcnt yet), scalar f32/f64 incl. domain-guarded trapping float→int truncations, IEEE 754-2019 min/max, copysign (#538 milestone 4); forward VOID-result `block` with `br`/`br_if` (#538 cf increment); non-param locals — zero-init stack slots with copy-semantics get/set/tee (#856); linear-memory `i32`/`i64` load/store incl. all sub-word sign/zero forms against the `x28` base (#851, in-bounds execution-verified — OOB-trap, data-segment init, and startup that establishes the base are follow-ons) — `loop`/`if`/`br_table`, value-carrying blocks, calls, and everything else decline loudly |
+| AArch64 (A64, host-native) | `synth-backend-aarch64` | `cortex-a53` (host-linkable ET_REL, `-b aarch64`) | 148 distinct WASM ops handled by the selector: i32 + i64 integer core (no div/rem/popcnt yet), scalar f32/f64 incl. domain-guarded trapping float→int truncations, IEEE 754-2019 min/max, copysign (#538 milestone 4); forward VOID-result `block` with `br`/`br_if` (#538 cf increment); non-param locals — zero-init stack slots with copy-semantics get/set/tee (#856); linear-memory `i32`/`i64` load/store incl. all sub-word sign/zero forms against the `x28` base (#851, in-bounds execution-verified — OOB-trap, data-segment init, and startup that establishes the base are follow-ons) — `loop`/`if`/`br_table`, value-carrying blocks, calls, and everything else decline loudly |
 
 ---
 

@@ -1,5 +1,5 @@
 {
-  "aarch64_selector_ops": 132,
+  "aarch64_selector_ops": 148,
   "backends": [
     "arm-thumb2-cortex-m",
     "arm-a32-cortex-r5",
@@ -15,7 +15,7 @@
   "sel_dsl_pilot_qed": 7,
   "sel_dsl_rule_qed": 50,
   "sel_dsl_rules": 50,
-  "version": "0.50.1",
+  "version": "0.51.0",
   "verus_spec_fns": 8,
   "wasmcert_bridge_qed": 104
 }

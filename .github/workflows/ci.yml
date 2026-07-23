@@ -449,6 +449,10 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
       - name: Run #851 div/rem trap + popcnt + reinterpret execution oracle (÷0 + INT_MIN/-1)
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_divrem_851_differential.py
+      - name: Run #851 non-param locals execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_locals_851_differential.py
+      - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 

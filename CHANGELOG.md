@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-07-23
+
+**"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses
+from a compute/ALU/float core into running actual programs: the **gating four**
+now lower and execute — **memory** (i32/i64/sub-word load/store), **non-param
+locals** (zero-init stack slots, copy-semantics get/set/tee), **direct calls**
+(AAPCS64 + `R_AARCH64_CALL26`), and **full control flow** (`if`/`else`, `loop`
+back-edges, early `return`) — plus **div/rem** (with the ÷0 and INT_MIN/−1 WASM
+trap guards A64's total divide omits), **popcnt**, and **f64↔i64 reinterpret**.
+Every op is execution-verified natively on arm64 (MAP_JIT) bit-identical vs
+wasmtime, gated by gale's standing acceptance matrix (`aarch64_matrix.sh`) whose
+declined frontier is now **empty**. Five parallel lanes (#851), each oracle-gated
+red-first; honest declines kept for the frontier beyond (`call_indirect`, imports,
+value-blocks, `br_table`, >8 args, float-result callees). Also: 9 differential
+oracles hardened to read the ELF symtab instead of host-dependent disasm text
+(#850). Deferred by design: the graph-colouring allocator widen (v0.52) and the
+ordeal 0.16 un-pin (blocked on the upstream unsigned-`bvurem` regression,
+ordeal#101 — synth stays safely pinned `ordeal =0.9.1`).
+
 ### Added
 
 - **aarch64 div/rem + popcnt + f64↔i64 reinterpret (#851).** Three op groups
