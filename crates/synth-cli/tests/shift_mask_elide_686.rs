@@ -3,11 +3,14 @@
 //!
 //! Three gates, per the flag-then-flip protocol:
 //!
-//! 1. **Default is OFF and byte-identical to baseline** — the elision moves
-//!    the frozen anchors (const-amount shifts fold back to the immediate
-//!    form), so it lands opt-in. `frozen_codegen_bytes.rs` locks the shipped
-//!    bytes; this test additionally pins unset ≡ explicit opt-out, so the
-//!    default can only change via a deliberate flip (which updates this).
+//! 1. **Default is ON since v0.50.0 (#846)** — the flag flipped default-on to
+//!    recover gale's gpio-thin +44 B regression (the pin bit-arithmetic emits
+//!    `and rN,#0x1f` then the redundant #682 re-mask `and r12,#0x1f`). The
+//!    flip re-froze the anchors (`frozen_codegen_bytes.rs`, all differentials
+//!    re-run green on the new smaller bytes). This gate now pins unset ≡
+//!    explicit `SYNTH_SHIFT_MASK_ELIDE=1` (the ON default) AND that the
+//!    opt-out `SYNTH_SHIFT_MASK_ELIDE=0` STILL rolls back to the pre-flip
+//!    bytes byte-for-byte — the escape hatch every flip lever owes.
 //! 2. **Per-function no-grow table** — with the flag ON, no function in the
 //!    corpus gets BIGGER on either path (relocatable/direct and default/
 //!    optimized). Elision is removal/rewrite-only; growth would mean the
@@ -47,6 +50,7 @@ const CORPUS: &[&str] = &[
     "signed_div_const.wasm",
     "i32_shift_mask_682.wat",
     "gust_mix_686.wat",
+    "gpio_thin_846.loom.wasm",
 ];
 
 /// Both codegen paths: `--relocatable` forces the direct stack selector; the
@@ -120,21 +124,31 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
     (data, sizes)
 }
 
-/// Gate 1: unset ≡ `SYNTH_SHIFT_MASK_ELIDE=0`, byte-for-byte — the flag is
-/// opt-in. A deliberate default-on flip re-freezes the anchors and updates
-/// this assertion (flag-then-flip protocol; the maintainer owns the flip).
+/// Gate 1 (post-#846 flip): unset ≡ `SYNTH_SHIFT_MASK_ELIDE=1`, byte-for-byte
+/// — the flag is DEFAULT-ON since v0.50.0. Also proves the opt-out escape
+/// hatch: `SYNTH_SHIFT_MASK_ELIDE=0` must differ from the default on at least
+/// one shift-heavy fixture (else the rollback lever is vacuous).
 #[test]
-fn shift_mask_elide_686_default_is_off_and_byte_identical() {
+fn shift_mask_elide_686_default_is_on_and_optout_rolls_back() {
+    let mut optout_differs = false;
     for &(vname, reloc) in VARIANTS {
         for &wasm in CORPUS {
             let (unset, _) = compile(wasm, reloc, None);
-            let (off, _) = compile(wasm, reloc, Some("0"));
+            let (on, _) = compile(wasm, reloc, Some("1"));
             assert_eq!(
-                unset, off,
-                "{wasm} [{vname}]: default must equal explicit opt-out (flag is opt-in)"
+                unset, on,
+                "{wasm} [{vname}]: default must equal explicit ON (flag is default-on since #846)"
             );
+            let (off, _) = compile(wasm, reloc, Some("0"));
+            if off != unset {
+                optout_differs = true;
+            }
         }
     }
+    assert!(
+        optout_differs,
+        "SYNTH_SHIFT_MASK_ELIDE=0 never changed bytes — the opt-out rollback is vacuous"
+    );
 }
 
 /// Gates 2+3: per-function no-grow across the corpus, strict shrink on the

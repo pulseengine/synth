@@ -85,6 +85,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_RV_SHIFT_FOLD")
         .env_remove("SYNTH_DEAD_FRAME_ELIM")
         .env_remove("SYNTH_UXTH_FOLD")
+        .env_remove("SYNTH_SHIFT_MASK_ELIDE")
         .args([
             "compile",
             path.to_str().unwrap(),
@@ -225,23 +226,40 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// `frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes`, pins
 /// untouched). Prior goldens were control_step f962794f…/314,
 /// flight_seam_flat 64388237…/1014.
+///
+/// Goldens RE-FROZEN for the SYNTH_SHIFT_MASK_ELIDE default-on flip (#846,
+/// v0.50.0): the #686 shift-mask elision that recovers gale's gpio-thin +44 B
+/// regression flipped default-on, so const-amount register shifts fold back to
+/// the immediate form (mask soundly kept for every unproven amount). All three
+/// shift-carrying anchors SHRANK — control_step 308→288 (−20), flight_seam
+/// 870→706 (−164), flight_seam_flat 1010→842 (−168); signed_div_const is
+/// byte-identical (no register shifts). Execution differentials re-run GREEN on
+/// the new smaller bytes BEFORE this re-pin: control_step_differential 13/13
+/// incl. the 0x00210A55 seam, flight_seam + flight_seam_flat both 0x07FDF307,
+/// the #682 mod-32 oracle (i32_shift_mask_682_differential all green, incl. the
+/// >=32 wrap), and the NEW gpio_thin_846_differential (534→506 B, 75/75 mmio
+/// traces+returns bit-identical across pins incl. >=32). `SYNTH_SHIFT_MASK_ELIDE=0`
+/// restores the prior bytes (asserted by
+/// `shift_mask_elide_686_default_is_on_and_optout_rolls_back`). Prior goldens
+/// were control_step b365a29e…/308, flight_seam 28642d60…/870, flight_seam_flat
+/// 7d3145c4…/1010.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "b365a29ef47ddd3e5ef8755d54cbd0d46c504af64dd24d08e9500385f674d892",
-            308usize,
+            "8b3f1f6fe3a40994dacca91614cc19590f330eb49e8dcc8eb5b0ffc78338a1d9",
+            288usize,
         ),
         (
             "flight_seam.wasm",
-            "28642d60533c3fc154dfc7ab27e6a9f4ffe5b0a81adfe4c0fba493d490fc8d2c",
-            870,
+            "e7152735df88a699f4600574dc5b6f5bc34efcb8cba020f78ec78f59d9d20f8a",
+            706,
         ),
         (
             "flight_seam_flat.wasm",
-            "7d3145c4ed0493cd326f867ab068930a64f3813bce60d031b19f535d0f800998",
-            1010,
+            "5a5d675772544662fefdee6f267d07be98da1560af0626b0671e7d79b1644f37",
+            842,
         ),
         (
             "signed_div_const.wasm",
@@ -261,8 +279,9 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
 ///
 /// COMPOSITION NOTE: rolling back to the pre-STACK_FWD bytes now also requires
 /// opting out of the LATER spill-realloc lever (`SYNTH_SPILL_REALLOC=0`), the
-/// const-CSE lever (`SYNTH_CONST_CSE=0`, #242), and the flag-audit flip-wave
-/// levers (`SYNTH_DEAD_FRAME_ELIM=0` + `SYNTH_UXTH_FOLD=0`, #242) — all
+/// const-CSE lever (`SYNTH_CONST_CSE=0`, #242), the flag-audit flip-wave
+/// levers (`SYNTH_DEAD_FRAME_ELIM=0` + `SYNTH_UXTH_FOLD=0`, #242), and the
+/// #846 shift-mask-elide lever (`SYNTH_SHIFT_MASK_ELIDE=0`, v0.50.0) — all
 /// default on since their own flips and would otherwise rewrite the traffic
 /// these goldens pin. The opt-outs compose; each is separately gated.
 #[test]
@@ -283,6 +302,7 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nofwd_{wasm}.elf");
         let out = Command::new(synth())
+            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_NO_STACK_FWD", "1")
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
@@ -376,6 +396,7 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nospillrealloc_{wasm}.elf");
         let out = Command::new(synth())
+            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
@@ -464,6 +485,7 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nocse_{wasm}.elf");
         let out = Command::new(synth())
+            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_CONST_CSE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
             .env("SYNTH_UXTH_FOLD", "0")
@@ -552,6 +574,7 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nodfe_{wasm}.elf");
         let out = Command::new(synth())
+            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
             .env_remove("SYNTH_UXTH_FOLD")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
@@ -629,6 +652,7 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nouxth_{wasm}.elf");
         let out = Command::new(synth())
+            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_UXTH_FOLD", "0")
             .env_remove("SYNTH_DEAD_FRAME_ELIM")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
