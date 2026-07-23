@@ -689,73 +689,20 @@ impl ArmSemantics {
                 state.set_reg(rdhi, BV::new_const("i64_divu_hi", 32));
             }
 
-            ArmOp::I64RemS {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                rmlo,
-                rmhi,
-                ..
-            } => {
-                // Signed 64-bit remainder (modulo). Same shape as I64RemU but
-                // the SIGNED remainder (`bvsrem`, SMT-LIB sign-of-dividend). The
-                // shipped lowering is an `__aeabi_ldivmod` library call; the
-                // value it must produce is exactly the native 64-bit signed
-                // remainder. The value VC (`verify_i64_rem_value_preservation`)
-                // asserts the R0:R1 pair equals it on the non-trapping path.
-                // rem_s traps ONLY on ÷0 (`rem_s(INT64_MIN,-1) == 0`, no
-                // overflow trap).
-                let n_lo = state.get_reg(rnlo).clone();
-                let n_hi = state.get_reg(rnhi).clone();
-                let m_lo = state.get_reg(rmlo).clone();
-                let m_hi = state.get_reg(rmhi).clone();
-
-                let dividend = n_hi.concat(&n_lo); // 64-bit: n_hi:n_lo
-                let divisor = m_hi.concat(&m_lo); // 64-bit: m_hi:m_lo
-                let rem = dividend.bvsrem(&divisor); // native signed rem, 64-bit
-
-                state.set_reg(rdlo, rem.extract(31, 0));
-                state.set_reg(rdhi, rem.extract(63, 32));
+            ArmOp::I64RemS { rdlo, rdhi, .. } => {
+                // Signed 64-bit remainder (modulo)
+                // Real implementation would require __aeabi_ldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const("i64_rems_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_rems_hi", 32));
             }
 
-            ArmOp::I64RemU {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                rmlo,
-                rmhi,
-                ..
-            } => {
-                // Unsigned 64-bit remainder (modulo). ARM32 has no 64-bit
-                // divide instruction — the shipped lowering expands this
-                // pseudo-op to an `__aeabi_uldivmod` library call — but for
-                // translation-validation the *value* the call must produce is
-                // exactly the native 64-bit unsigned remainder. Model it with
-                // the native `BvTerm::Urem` (ordeal 0.12, plumbed via
-                // `BV::bvurem`) instead of a HAVOC constant, so the value VC
-                // (`verify_i64_rem_value_preservation`) proves the register
-                // pair actually equals `dividend % divisor`.
-                //
-                // Compose the 64-bit operands from their register halves
-                // (`concat` puts self in the HIGH bits), take the 64-bit
-                // unsigned remainder, and split back to lo/hi. On a zero
-                // divisor SMT-LIB `bvurem` is total (returns the dividend),
-                // but WASM traps — the value clause is asserted only on the
-                // non-trapping path by the trap-guarded value VC, so this
-                // total model is sound.
-                let n_lo = state.get_reg(rnlo).clone();
-                let n_hi = state.get_reg(rnhi).clone();
-                let m_lo = state.get_reg(rmlo).clone();
-                let m_hi = state.get_reg(rmhi).clone();
-
-                let dividend = n_hi.concat(&n_lo); // 64-bit: n_hi:n_lo
-                let divisor = m_hi.concat(&m_lo); // 64-bit: m_hi:m_lo
-                let rem = dividend.bvurem(&divisor); // native bvurem, 64-bit
-
-                state.set_reg(rdlo, rem.extract(31, 0)); // low 32 bits
-                state.set_reg(rdhi, rem.extract(63, 32)); // high 32 bits
+            ArmOp::I64RemU { rdlo, rdhi, .. } => {
+                // Unsigned 64-bit remainder (modulo)
+                // Real implementation would require __aeabi_uldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const("i64_remu_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_remu_hi", 32));
             }
 
             ArmOp::I64And {
@@ -2738,18 +2685,6 @@ impl ArmSemantics {
                 Ok(())
             }
             ArmOp::Strb { .. } | ArmOp::Strh { .. } => Ok(()),
-            // i64 rem_u/rem_s pseudo-ops (VCR-VER, #825/#836): register-only
-            // (they set the `rd*` pair), so they belong in this subset — the
-            // executor delegates to the general value model, which now builds a
-            // real `BvTerm::Urem`/`bvsrem` term. The ÷0 TRAP is NOT derived
-            // here (the bare pseudo-op carries no `UDF`); the VC reconstructs
-            // it from the pseudo-op's `elide_zero_guard` field, exactly like
-            // the i64 trap-only VC. div_u/div_s stay OUT (their 64-bit quotient
-            // value model is havoc — no value VC consumes it).
-            ArmOp::I64RemU { .. } | ArmOp::I64RemS { .. } => {
-                self.encode_op(op, state);
-                Ok(())
-            }
             other => Err(format!(
                 "op {other:?} outside the trap-derivation subset — loud decline"
             )),
