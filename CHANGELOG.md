@@ -51,13 +51,15 @@ frozen anchors byte-identical throughout.
   B/B.cond branches + label resolution. Execution-verified vs wasmtime (arm64 host
   + unicorn, both branch edges); value-blocks / loop / memory still loud-decline by
   name.
-- **VCR-VER: i64 `rem_u` / `rem_s` modeled with native `BvTerm::Urem` / `bvsrem`
-  (was havoc).** The SMT translation validator previously modeled ARM i64 remainder
-  as uninterpreted fresh consts — proving nothing about the result. It now uses the
-  native unsigned/signed-remainder terms (ordeal 0.9→0.12, plumbed this release),
-  with the ÷0 trap handled explicitly, plus value + trap VCs and a non-vacuity gate
-  (a wrong-dest lowering is now rejected — was accepted under havoc). Verify-only:
-  `.text` byte-identical.
+- **Pinned the SMT solver at `ordeal =0.9.1` (#849).** The dependabot
+  `ordeal 0.9.1 → 0.12.0` bump (#825) shipped a `bvsrem`/`bvsdiv`
+  solver-performance regression that HANGS div/rem trap-preservation VCs (4–6h
+  CI timeouts on both the ordeal-default Test job and the Z3 differential job).
+  Pinned back to the exact last-green version; the full `synth-verify` suite
+  runs in ~41s again (was a >6h timeout on 0.12). The native i64 `rem_u`/`rem_s`
+  value model that leaned on 0.12's remainder terms (attempted in #844) is
+  reverted and deferred to a later release behind a per-query solver timeout
+  (#848). Verify-only: `.text` byte-identical.
 - **WCET phase 5 (#778) — data-dependent masked-ceiling loop certificates.** The
   `--wcet-hints` scry seam now bounds a DATA-DEPENDENT loop whose exit bound is a
   masked value `i REL (x & K)`. Because `x & K ∈ [0, K]` for ANY runtime `x`
