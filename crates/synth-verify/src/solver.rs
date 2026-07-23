@@ -49,13 +49,18 @@ const DEFAULT_MAX_CONFLICTS: u64 = 1_000_000;
 /// still cut far below the 4-6 h CI timeout. `0` = unbounded (falls back to
 /// the conflict-budget path). Override: `SYNTH_ORDEAL_DEADLINE_MS`.
 ///
-/// KNOWN BLOCKER (#848/#849, ordeal#97 — why this branch is NOT merged): even
-/// at 120 s, the pre-existing i32 `verify_i32_rem_u` VC (full `rem_u(a,b) =
-/// a - (a/b)*b` equivalence, a cross-circuit `bvurem` bit-blast) does NOT
-/// decide on ordeal 0.16 — it ran >8 min unbounded and was killed. 0.16 fixed
-/// `bvsrem`/`bvsdiv` (signed; `verify_i32_rem_s` / `div_s` / `div_u` all pass
-/// fast) but `bvurem` (unsigned rem) is still exponential. The un-pin stays
-/// blocked on an upstream bvurem fix; keep `ordeal = "=0.9.1"` until then.
+/// KNOWN BLOCKER (#848/#849, ordeal#101 — why this branch is NOT merged): the
+/// pre-existing i32 `verify_i32_rem_u` VC (full `rem_u(a,b) = a - (a/b)*b`
+/// equivalence, a cross-circuit `bvurem` bit-blast) does NOT decide on ordeal
+/// 0.16 — it ran >8 min unbounded and was killed. 0.16 fixed `bvsrem`/`bvsdiv`
+/// (signed; `verify_i32_rem_s` / `div_s` / `div_u` all pass fast) but `bvurem`
+/// (unsigned rem) is still exponential. AND this deadline does NOT save it: a
+/// 15 s deadline never fired on rem_u (it ran to a 50 s wall-kill with no
+/// `Unknown`) — `check_with_deadline` bounds the SAT *search*, but bvurem's
+/// cost is in *blasting* the circuit, which the deadline does not bound. The
+/// deadline is sound insurance against a SAT-search cliff; it is ineffective
+/// against this blasting cliff. Un-pin stays blocked on an upstream bvurem
+/// fix; keep `ordeal = "=0.9.1"` until then.
 const DEFAULT_DEADLINE_MS: u64 = 120_000;
 
 /// Outcome of a one-shot `check` of the asserted conjunction.
