@@ -15,7 +15,7 @@
   "sel_dsl_pilot_qed": 7,
   "sel_dsl_rule_qed": 50,
   "sel_dsl_rules": 50,
-  "version": "0.50.0",
+  "version": "0.50.1",
   "verus_spec_fns": 8,
   "wasmcert_bridge_qed": 104
 }

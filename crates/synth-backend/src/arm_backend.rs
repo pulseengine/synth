@@ -1257,14 +1257,23 @@ fn compile_wasm_to_arm(
     // shift) and before branch resolution (removal/rewrite-only ⇒
     // offset-neutral).
     //
-    // FLAG-OFF (opt-in via `SYNTH_SHIFT_MASK_ELIDE=1`) because the elision
-    // moves the frozen anchors: const-amount shifts in control_step (−20 B),
-    // flight_seam (−164 B) and flight_seam_flat (−168 B) fold back to the
-    // immediate form — byte-shapes the corpus had BEFORE the #682 mask, now
-    // with the mask soundly kept for every unproven amount. Flipping
-    // default-on is a deliberate byte-changing refreeze (all differentials
-    // re-run on the new bytes, goldens re-pinned) owned by the maintainer.
-    let arm_instrs = if std::env::var("SYNTH_SHIFT_MASK_ELIDE").is_ok_and(|v| v != "0") {
+    // DEFAULT-ON since v0.50.1 (opt-out via `SYNTH_SHIFT_MASK_ELIDE=0`; #846).
+    // gale's gpio-thin driver regressed +44 B / +9% on synth 0.49 — its pin
+    // bit-arithmetic (`pin & 31` then a register shift) emits the source
+    // `and rN,#0x1f` IMMEDIATELY followed by the #682 mod-32 re-mask
+    // `and r12,rN,#0x1f`; the second is provably redundant (Pattern B: an
+    // operand produced by `and X,#c`, c<32, is already in [0,31]), so the
+    // pass drops it. Flipping default-on is a deliberate byte-changing
+    // refreeze: the elision also moves the frozen anchors (const-amount
+    // shifts fold back to the immediate form) — control_step −20 B,
+    // flight_seam −166 B, flight_seam_flat −168 B — all size DECREASES with
+    // the mask soundly kept for every unproven amount. All differentials were
+    // re-run on the new bytes and the goldens re-pinned (see #846 PR /
+    // `frozen_codegen_bytes.rs`). `SYNTH_SHIFT_MASK_ELIDE=0` restores the
+    // pre-flip bytes (opt-out gate in `shift_mask_elide_686.rs`).
+    let arm_instrs = if std::env::var("SYNTH_SHIFT_MASK_ELIDE").is_ok_and(|v| v == "0") {
+        arm_instrs
+    } else {
         let (out, elisions) = synth_synthesis::liveness::elide_shift_masks(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!(
@@ -1272,8 +1281,6 @@ fn compile_wasm_to_arm(
             );
         }
         out
-    } else {
-        arm_instrs
     };
 
     // VCR-RA uxth/uxtb fold (#428, #242): `movw rM,#0xffff; and rD,rN,rM` →

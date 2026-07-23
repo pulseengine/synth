@@ -318,12 +318,17 @@ def main():
     s_len = func_size(spec_elf, "poll")
     f_len = func_size(floor_elf, "poll")
     print(f"poll: guarded {b_len} B -> specialized {s_len} B "
-          f"(-{b_len - s_len} B = 8 guards x 16 B SUB/CMP/BHS/UDF/CMP/BLS/UDF, "
-          f"the #752 wraparound-safe shape; the #390 "
-          f"guard_bool instruction class — gust_poll's whole guard_bool "
-          f"bucket is 108 B); unguarded floor {f_len} B")
-    if b_len - s_len != 128:
-        sys.exit(f"byte win drifted: expected exactly 128 B "
+          f"(-{b_len - s_len} B = 128 B guard elision [8 guards x 16 B "
+          f"SUB/CMP/BHS/UDF/CMP/BLS/UDF, the #752 wraparound-safe shape; the "
+          f"#390 guard_bool class, gust_poll's whole guard_bool bucket is 108 B] "
+          f"+ 4 B from SYNTH_SHIFT_MASK_ELIDE, default-on since v0.50.1 (#846): "
+          f"the elision trims BOTH builds but 4 B more off the specialized poll "
+          f"[guarded 232->226, specialized 104->94]); unguarded floor {f_len} B")
+    # 132 = 128 (guard elision) + 4 (shift-mask elision fires more on the
+    # specialized build; SYNTH_SHIFT_MASK_ELIDE default-on since v0.50.1/#846).
+    # With SYNTH_SHIFT_MASK_ELIDE=0 this is exactly 128 (the pre-flip win).
+    if b_len - s_len != 132:
+        sys.exit(f"byte win drifted: expected exactly 132 B "
                  f"(got {b_len - s_len})")
     scode, sbase, ssyms = load(spec_elf)
     fcode, _, _ = load(floor_elf)

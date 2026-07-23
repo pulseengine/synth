@@ -232,14 +232,21 @@ fn proven_slot_bound_elides_all_eight_guards_494() {
     assert_eq!(s.halfword_count("poll", UDF0), 0, "all guards elided");
 
     // The measured byte win — pinned exactly so a regression (or an
-    // improvement) shows as a required update, like the size oracle.
+    // improvement) shows as a required update, like the size oracle. These are
+    // the SHIPPED-DEFAULT sizes: SYNTH_SHIFT_MASK_ELIDE is default-on since
+    // v0.50.1 (#846), so the elision also trims the poll fixture — 6 B off the
+    // guarded build (232->226) and 10 B off the specialized one (104->94). The
+    // guard-elision win itself is unchanged (still 8 guards x 16 B = 128 B; see
+    // the UDF census 16->0 above); the elision just shaves 4 B MORE off the
+    // specialized build, so the measured delta is 128 + 4 = 132.
     let (b_len, s_len) = (b.func("poll").len(), s.func("poll").len());
-    assert_eq!(b_len, 232, "baseline poll size drifted");
-    assert_eq!(s_len, 104, "specialized poll size drifted");
+    assert_eq!(b_len, 226, "baseline poll size drifted");
+    assert_eq!(s_len, 94, "specialized poll size drifted");
     assert_eq!(
         b_len - s_len,
-        128,
-        "8 guards x 16 B (#752 shape: SUB.W+CMP+BHS+UDF+CMP+BLS+UDF)"
+        132,
+        "128 B guard elision (8 guards x 16 B, #752 SUB.W+CMP+BHS+UDF+CMP+BLS+UDF) \
+         + 4 B shift-mask elision on the specialized poll (#846, default-on)"
     );
 
     // Certificate trail: one ADMIT per access, naming the obligation.

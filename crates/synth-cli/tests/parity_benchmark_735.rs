@@ -16,7 +16,8 @@
 //!   * gust_mix clamp, SYNTH_FACT_SPEC + premise — 14 B (verify feature only:
 //!     the fact-spec pass needs the ordeal solver; cfg-gated below, exercised
 //!     by the fact-spec CI job via `--features verify`)
-//!   * flat_flight (loom-dissolved), default     — 458 B
+//!   * flat_flight (loom-dissolved), default     — 384 B (was 458; #846
+//!     shift-mask default-on, execution-verified 24/24)
 //!   * falcon_axis f32 (cortex-m4f, VFP)         — 72 B
 //!
 //! The native-C comparison numbers are NOT pinned here — they belong to
@@ -160,7 +161,11 @@ fn clamp_default_path_is_pinned_735() {
 fn flat_flight_is_pinned_735() {
     let wasm = std::fs::read(repro("flat_flight/flat_flight.loom.wasm")).expect("read fixture");
     let sizes = per_function_sizes(&wasm, "flat_flight", "cortex-m4", false);
-    assert_pinned(&sizes, "flat_flight", 458);
+    // 458 -> 384 (-74 B) with the #846 SYNTH_SHIFT_MASK_ELIDE default-on flip:
+    // flat_flight's const-amount register shifts drop the redundant #682 mod-32
+    // re-mask. Execution UNCHANGED — re-pinned only after 24/24 seeds proved
+    // flag-ON ≡ flag-OFF ≡ wasmtime (return + full linear-memory image).
+    assert_pinned(&sizes, "flat_flight", 384);
 }
 
 /// falcon-style f32 complementary-filter axis (VFP, cortex-m4f): the
