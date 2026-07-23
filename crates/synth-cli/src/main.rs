@@ -5047,6 +5047,15 @@ fn build_relocatable_elf(
                     );
                     ArmRelocationType::Abs32
                 }
+                // #851: R_AARCH64_CALL26 is emitted only by the EM_AARCH64 backend
+                // (its own `.rela.text` builder). It can never reach this ARM ELF
+                // relocation path; bail loudly if it somehow does.
+                synth_core::backend::RelocKind::AArch64Call26 => {
+                    anyhow::bail!(
+                        "internal error: AArch64 CALL26 relocation reached the ARM \
+                         ELF emitter — the aarch64 backend emits its own .rela.text (#851)"
+                    )
+                }
             };
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,

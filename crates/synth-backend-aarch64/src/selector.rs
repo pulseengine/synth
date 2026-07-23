@@ -201,10 +201,79 @@ pub fn select_typed_cf(
     params_f64: &[bool],
     block_arity: &[(u8, u8)],
 ) -> Result<Vec<u32>, SelectError> {
+    // No call metadata → any `call` in the body hits the honest catch-all decline
+    // (byte-identical to the pre-#851 behavior for call-free functions).
+    let (words, _sites) =
+        select_typed_cf_calls(ops, num_params, params_f32, params_f64, block_arity, 0, &[], &[])?;
+    Ok(words)
+}
+
+/// A direct-`call` site produced during selection (#851): the BYTE offset of the
+/// `bl` instruction within the function's code, and the callee's FULL wasm
+/// function index (imports first). The backend turns each into an
+/// `R_AARCH64_CALL26` relocation against the callee's `func_N` symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallSite {
+    /// Byte offset of the `bl` instruction within the function's machine code.
+    pub offset: u32,
+    /// Callee's full wasm function index (imports first).
+    pub callee: u32,
+}
+
+/// Lower a body, ALSO lowering direct `call` (#851). Same as [`select_typed_cf`]
+/// plus the call-lowering inputs:
+///
+/// - `num_imports`: functions with full index `< num_imports` are IMPORTS —
+///   calling one is loud-declined in v1 (no import-dispatch ABI yet).
+/// - `func_arg_counts[idx]`: the callee's AAPCS integer-arg slot count (how many
+///   values `call` pops off the value stack and marshals into `x0..x7`).
+/// - `func_result_counts[idx]`: the callee's result count (0 = void, 1 = one
+///   value pushed back). Multi-result and out-of-range are declined.
+///
+/// A function whose body contains a lowered `call` becomes NON-LEAF: `bl`
+/// clobbers `x30`, so a non-leaf prologue saves FP/LR (`stp x29,x30,[sp,#-16]!`)
+/// and every epilogue restores them (`ldp`) before `ret`. Leaf functions stay
+/// byte-identical to the pre-#851 output (the frame is gated on "body has a
+/// lowered call").
+#[allow(clippy::too_many_arguments)]
+pub fn select_typed_cf_calls(
+    ops: &[WasmOp],
+    num_params: u32,
+    params_f32: &[bool],
+    params_f64: &[bool],
+    block_arity: &[(u8, u8)],
+    num_imports: u32,
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
             "{num_params} params — supports at most 8 register params"
         )));
+    }
+
+    // #851 — is this function NON-LEAF (contains a `call` we will lower)? A `bl`
+    // clobbers x30, so a non-leaf must save/restore LR. Computed up front so the
+    // prologue can emit the frame; call-free functions stay byte-identical.
+    let is_non_leaf = ops.iter().any(|op| matches!(op, WasmOp::Call(_)));
+
+    // A non-leaf function that reads a PARAMETER is loud-declined: params arrive
+    // in x0..x7 (caller-saved), a `bl` clobbers them, and this backend does not
+    // yet HOME params to callee-saved storage — reading `local.get p` after a
+    // call would be garbage. Declining here ALSO makes arg marshalling
+    // hazard-free: with no param-Vals, every value-stack entry lives in a temp
+    // (x9..x15), disjoint from the arg destinations (x0..x7), so an argument
+    // move `mov x{arg}, x{temp}` never overwrites a not-yet-read source.
+    if is_non_leaf
+        && ops.iter().any(
+            |op| matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params),
+        )
+    {
+        return Err(SelectError(
+            "non-leaf function references a parameter — param homing across a \
+             call is not yet supported for aarch64; loud-declining (#851)"
+                .into(),
+        ));
     }
     let params = param_map(num_params, params_f32, params_f64);
     let mut words: Vec<u32> = Vec::new();
@@ -249,14 +318,25 @@ pub fn select_typed_cf(
     // Byte offset of non-param local `idx`'s slot from SP.
     let local_slot_off = |idx: u32| -> u32 { (idx - num_params) * 8 };
 
-    // Prologue: lower SP by the frame, then zero every non-param local slot with
-    // `str xzr, [sp, #off]` (64-bit store clears the whole slot).
+    // Prologue. Order (each step lowers SP; epilogue reverses):
+    //   1. #851 non-leaf: `stp x29,x30,[sp,#-16]!` saves FP/LR (a `bl` clobbers
+    //      x30). SP stays 16-byte aligned. Only when the body has a lowered call.
+    //   2. Non-param-local frame: `sub sp` then zero each 8-byte slot. Slot
+    //      offsets are relative to the POST-sub SP, unaffected by the LR save
+    //      that sits above them.
+    if is_non_leaf {
+        words.push(enc::stp_fp_lr_pre16());
+    }
     if frame_size > 0 {
         words.push(enc::sub_imm64(enc::SP, enc::SP, frame_size));
         for k in 0..num_non_param_locals {
             words.push(enc::str_x_imm(enc::XZR, enc::SP, k * 8));
         }
     }
+
+    // #851 — direct-call sites recorded during selection (byte offset of the
+    // `bl`, callee full index) for the backend's R_AARCH64_CALL26 relocations.
+    let mut call_sites: Vec<CallSite> = Vec::new();
 
     // Control-flow state (#538 cf increment). Each open `block` pushes a frame;
     // the matching `End` pops it and patches the recorded forward branches to
@@ -1029,7 +1109,7 @@ pub fn select_typed_cf(
                     );
                     stack.truncate(frame.stack_entry);
                 } else {
-                    epilogue(&mut words, stack.last().copied(), frame_size);
+                    epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
                 }
             }
             // --- #851 linear-memory load/store ---
@@ -1094,6 +1174,93 @@ pub fn select_typed_cf(
             WasmOp::I64Store32 { offset, .. } => {
                 store(&mut words, &mut stack, *offset, 2, enc::str_w)?
             }
+            // --- #851 direct `call` ---
+            //
+            // AAPCS64: pop `argc` integer args off the value stack, marshal them
+            // into x0..x{argc-1} in order (deepest = x0), `bl func_N` (recorded as
+            // an R_AARCH64_CALL26 relocation), then push the x0 result if the
+            // callee returns one value. LR is preserved by the non-leaf prologue.
+            //
+            // SOUNDNESS (v1 scope — everything else loud-declines, never wrong
+            // code): a call CLOBBERS all caller-saved registers (x0..x18), so
+            // value-stack temps (x9..x15) below the args do NOT survive it. We
+            // therefore require the value stack to hold EXACTLY the args at the
+            // call (`height == argc`) and decline otherwise. Combined with the
+            // non-leaf "no param reads" guard, this leaves every arg in a temp
+            // (x9..x15) disjoint from its destination (x0..x7), so the moves need
+            // no shuffle. Imports, >8 args, and non-{0,1}-result callees decline.
+            WasmOp::Call(func_idx) => {
+                let idx = *func_idx;
+                if idx < num_imports {
+                    return Err(SelectError(format!(
+                        "call to imported function {idx} — import dispatch is not \
+                         yet supported for aarch64; loud-declining (#851)"
+                    )));
+                }
+                let argc = *func_arg_counts.get(idx as usize).ok_or_else(|| {
+                    SelectError(format!("call to function {idx}: unknown arg count"))
+                })?;
+                if argc > 8 {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: {argc} args — at most 8 register \
+                         args are supported; loud-declining (#851)"
+                    )));
+                }
+                let rc = *func_result_counts.get(idx as usize).ok_or_else(|| {
+                    SelectError(format!("call to function {idx}: unknown result count"))
+                })?;
+                if rc > 1 {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: {rc} results — multi-result calls \
+                         are not supported for aarch64; loud-declining (#851)"
+                    )));
+                }
+                // The value stack must be EXACTLY the args (nothing survives the
+                // clobber underneath). This also guarantees no arg is FP-tagged
+                // improperly — an FP arg would need v-register marshalling we do
+                // not do, and it is caught here or by the disjointness below.
+                if stack.len() != argc as usize {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: value stack holds {} entries but \
+                         needs exactly {argc} (call clobbers caller-saved temps \
+                         below the args); loud-declining (#851)",
+                        stack.len()
+                    )));
+                }
+                // Args are stack[0..argc] with stack[0] = x0 (deepest arg first).
+                // All are GP temps (x9..x15) by the guards above; decline any FP.
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.file != File::Gp {
+                        return Err(SelectError(format!(
+                            "call to function {idx}: argument {arg_reg} is a float \
+                             — FP call args are not supported for aarch64; \
+                             loud-declining (#851)"
+                        )));
+                    }
+                }
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.reg != arg_reg as u8 {
+                        words.push(enc::mov_reg64(arg_reg as u8, v.reg));
+                    }
+                }
+                stack.clear();
+                // Record the reloc site (byte offset of the `bl`) then emit `bl 0`.
+                call_sites.push(CallSite {
+                    offset: (words.len() * 4) as u32,
+                    callee: idx,
+                });
+                words.push(enc::bl(0));
+                // Push the result if the callee returns one value. Move x0 into a
+                // regular value-stack temp (x9..x15) immediately so the rest of the
+                // selector's invariant holds — value-stack entries live in the temp
+                // pool, never in x0 (which the epilogue and the next call reuse).
+                // i64 fits in x0; the value stack is width-agnostic (op-carried).
+                if rc == 1 {
+                    let dst = alloc_temp(&stack)?;
+                    words.push(enc::mov_reg64(dst, 0));
+                    stack.push(Val::gp(dst));
+                }
+            }
             other => {
                 return Err(SelectError(format!(
                     "unsupported wasm op for aarch64 subset: {other:?}"
@@ -1104,9 +1271,9 @@ pub fn select_typed_cf(
 
     // A body without a trailing `End` still needs an epilogue.
     if !matches!(ops.last(), Some(WasmOp::End)) {
-        epilogue(&mut words, stack.last().copied(), frame_size);
+        epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
     }
-    Ok(words)
+    Ok((words, call_sites))
 }
 
 /// Emit the function epilogue: move the top-of-stack result into the ABI return
@@ -1121,7 +1288,7 @@ pub fn select_typed_cf(
 /// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
 /// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
 /// the sequence is: funnel result → restore SP → ret.
-fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32) {
+fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32, is_non_leaf: bool) {
     match top {
         Some(Val {
             reg,
@@ -1137,8 +1304,13 @@ fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32) {
         }
         _ => {}
     }
+    // Unwind in reverse of the prologue: raise SP past the locals frame, then
+    // (#851 non-leaf) restore FP/LR before `ret` — `ret` returns to x30.
     if frame_size > 0 {
         words.push(enc::add_imm64(enc::SP, enc::SP, frame_size));
+    }
+    if is_non_leaf {
+        words.push(enc::ldp_fp_lr_post16());
     }
     words.push(enc::ret());
 }
@@ -1149,6 +1321,117 @@ mod tests {
 
     fn bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    // Helper: no-import module, callee `func` has `argc` args and 1 result.
+    fn sel_calls(
+        ops: &[WasmOp],
+        num_params: u32,
+        num_imports: u32,
+        arg_counts: &[u32],
+        result_counts: &[u32],
+    ) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
+        select_typed_cf_calls(
+            ops,
+            num_params,
+            &[],
+            &[],
+            &[],
+            num_imports,
+            arg_counts,
+            result_counts,
+        )
+    }
+
+    #[test]
+    fn direct_call_no_args_one_result() {
+        // (func (export "run") (result i32) call 0)  — func 0 returns i32, 0 args.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[0], &[1]).unwrap();
+        // Non-leaf prologue (stp) ; bl #0 ; mov temp,x0 ; mov x0,temp ; ldp ; ret.
+        assert_eq!(w[0], enc::stp_fp_lr_pre16());
+        // The bl is the reloc site.
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].callee, 0);
+        assert_eq!(w[sites[0].offset as usize / 4], enc::bl(0));
+        // Last two words are the LR restore + ret.
+        assert_eq!(w[w.len() - 2], enc::ldp_fp_lr_post16());
+        assert_eq!(w[w.len() - 1], enc::ret());
+    }
+
+    #[test]
+    fn direct_call_two_const_args_marshalled_to_x0_x1() {
+        // i32.const 20 ; i32.const 22 ; call 0   — func 0: (param i32 i32)->i32.
+        let ops = vec![
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(22),
+            WasmOp::Call(0),
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[2], &[1]).unwrap();
+        // The two consts land in x9/x10; the call marshals x9->x0, x10->x1.
+        assert!(w.contains(&enc::mov_reg64(0, 9)));
+        assert!(w.contains(&enc::mov_reg64(1, 10)));
+        assert_eq!(sites.len(), 1);
+        // bl is right after the two arg moves.
+        let bl_word = w[sites[0].offset as usize / 4];
+        assert_eq!(bl_word, enc::bl(0));
+    }
+
+    #[test]
+    fn leaf_function_is_byte_identical_without_call() {
+        // A call-free body must not gain the non-leaf LR frame.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 2, 0, &[], &[]).unwrap();
+        assert!(sites.is_empty());
+        assert_eq!(w, vec![enc::add(9, 0, 1), enc::mov_reg64(0, 9), enc::ret()]);
+    }
+
+    #[test]
+    fn call_to_import_loud_declines() {
+        // func 0 is an import (num_imports = 1); calling it declines.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        assert!(sel_calls(&ops, 0, 1, &[0], &[0]).is_err());
+    }
+
+    #[test]
+    fn non_leaf_referencing_param_loud_declines() {
+        // A function that both reads a param AND makes a call declines (param
+        // homing across a call is unsupported — reading x0 after bl is garbage).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
+        // func 1 takes 1 arg (the local.get 0 value).
+        assert!(sel_calls(&ops, 1, 0, &[0, 1], &[0, 1]).is_err());
+    }
+
+    #[test]
+    fn call_with_extra_stack_below_args_loud_declines() {
+        // A live value beneath the args does not survive the call → decline.
+        // stack: [const_a, const_b] but callee takes only 1 arg → height 2 != 1.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::Call(0),
+            WasmOp::End,
+        ];
+        assert!(sel_calls(&ops, 0, 0, &[1], &[1]).is_err());
+    }
+
+    #[test]
+    fn void_result_call_pushes_nothing() {
+        // call 0 where func 0 returns void: no value pushed, epilogue returns x0
+        // as-is (whatever the ABI leaves) — the important part is it lowers.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[0], &[0]).unwrap();
+        assert_eq!(sites.len(), 1);
+        // No `mov temp, x0` after the bl (nothing pushed): the word after bl is
+        // the ldp restore.
+        let bl_i = sites[0].offset as usize / 4;
+        assert_eq!(w[bl_i + 1], enc::ldp_fp_lr_post16());
     }
 
     #[test]

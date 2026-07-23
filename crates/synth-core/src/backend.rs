@@ -527,6 +527,11 @@ pub enum RelocKind {
     /// semantics), which survives placement into a large multi-object image —
     /// whereas an inline-instruction MOVW_ABS immediate can be mangled.
     Abs32,
+    /// R_AARCH64_CALL26 (ELF type 283) — an AArch64 `BL` call site (#851). The
+    /// AArch64 analogue of [`RelocKind::ThmCall`]: the linker patches the 26-bit
+    /// word-offset immediate of the `bl` at `offset` to reach the target symbol.
+    /// Emitted only by the `EM_AARCH64` backend's `.rela.text`.
+    AArch64Call26,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
