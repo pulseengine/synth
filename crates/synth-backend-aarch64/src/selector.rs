@@ -641,7 +641,7 @@ pub fn select_typed_cf(
         // x_ea = x28 + uxtw(w_addr) — zero-extends the unsigned i32 WASM address.
         words.push(enc::add_ext_uxtw(ea, LINMEM_BASE, addr));
         let size = 1u32 << size_log2;
-        if offset % size == 0 && (offset >> size_log2) < 4096 {
+        if offset.is_multiple_of(size) && (offset >> size_log2) < 4096 {
             return Ok((ea, Some(offset >> size_log2)));
         }
         if offset != 0 {
