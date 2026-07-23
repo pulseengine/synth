@@ -920,9 +920,7 @@ pub fn select_typed_cf(
                     )));
                 }
                 ctrl.push(Frame {
-                    kind: Kind::Loop {
-                        entry: words.len(),
-                    },
+                    kind: Kind::Loop { entry: words.len() },
                     pending: Vec::new(),
                     stack_entry: stack.len(),
                 });
@@ -964,17 +962,15 @@ pub fn select_typed_cf(
             // `cbz` to land HERE (the else-arm entry). The value stack is reset
             // to the if's entry height (a void then-arm must not leave a value).
             WasmOp::Else => {
-                let frame = ctrl.last_mut().ok_or_else(|| {
-                    SelectError("else without a matching if".into())
-                })?;
+                let frame = ctrl
+                    .last_mut()
+                    .ok_or_else(|| SelectError("else without a matching if".into()))?;
                 let else_fixup = match &mut frame.kind {
-                    Kind::If { else_fixup } => else_fixup.take().ok_or_else(|| {
-                        SelectError("duplicate else for one if".into())
-                    })?,
+                    Kind::If { else_fixup } => else_fixup
+                        .take()
+                        .ok_or_else(|| SelectError("duplicate else for one if".into()))?,
                     _ => {
-                        return Err(SelectError(
-                            "else does not close an if block".into(),
-                        ));
+                        return Err(SelectError("else does not close an if block".into()));
                     }
                 };
                 // A void then-arm leaves the stack at its entry height — but
@@ -1986,11 +1982,10 @@ mod tests {
     }
 
     #[test]
-    fn loop_and_br_table_and_if_are_loud_declined() {
-        // Backward-branch / join / jump-table control is out of this increment.
-        let loop_ops = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&loop_ops, 0, &[], &[], &[(0, 0)]).is_err());
-
+    fn br_table_and_typed_loop_if_are_loud_declined() {
+        // #851: `loop`, `if`/`else` are now LOWERED for the void (0,0) shape.
+        // What still declines: `br_table` (jump table, catch-all) and any
+        // VALUE-carrying loop/if (arity != (0,0)).
         let brtable = vec![
             WasmOp::Block,
             WasmOp::LocalGet(0),
@@ -2003,8 +1998,97 @@ mod tests {
         ];
         assert!(select_typed_cf(&brtable, 1, &[], &[], &[(0, 0)]).is_err());
 
-        let if_ops = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&if_ops, 1, &[], &[], &[(0, 0)]).is_err());
+        // A VALUE-producing if (result i32 → arity (0,1)) loud-declines.
+        let typed_if = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_if, 1, &[], &[], &[(0, 1)]).is_err());
+
+        // A VALUE-producing loop (arity (0,1)) loud-declines.
+        let typed_loop = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_loop, 0, &[], &[], &[(0, 1)]).is_err());
+    }
+
+    #[test]
+    fn void_if_without_else_emits_cbz_skip() {
+        // `if (then unreachable)` with cond in w0: cbz w0, <past-then> ; brk ;
+        // then fall-through. The cbz skips the then-arm when cond == 0.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Unreachable,
+            WasmOp::End, // if-end
+            WasmOp::End, // fn-end
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, .+8 (skip the brk) ; brk #0 ; ret
+        assert_eq!(w[0], enc::cbz(0, 2));
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::ret());
+    }
+
+    #[test]
+    fn void_if_else_patches_both_edges() {
+        // if(cond){} else{} — void arms. cbz skips to the else entry; the
+        // then-arm's trailing `b` skips the else-arm to the join.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Else,
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, else ; b end ; brk ; ret
+        // then-arm is empty: cbz lands at the `b`? No — cbz skips the then-arm
+        // to the else entry. then-arm empty → cbz to the b's fall-through.
+        // Layout: [0] cbz w0, else_entry ; [1] b end ; [2] brk ; [3] ret
+        assert_eq!(w[0], enc::cbz(0, 2)); // to word 2 (else entry = brk)
+        assert_eq!(w[1], enc::b_uncond(2)); // skip else-arm to word 3 (ret)
+        assert_eq!(w[2], enc::brk(0));
+        assert_eq!(w[3], enc::ret());
+    }
+
+    #[test]
+    fn loop_back_edge_is_negative_offset() {
+        // block { loop { <body> br 0 } } — the `br 0` targets the loop header
+        // (BACKWARD), resolving to a negative offset. A `local.tee`/`local.get`
+        // on a NON-PARAM local emits real instructions ahead of the `br`, so
+        // the back-edge offset is strictly negative. Frame: 1 non-param local
+        // (idx 1) → a sub-sp + str-xzr prologue, then the loop body.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(1), // non-param local read → ldr (real instr)
+            WasmOp::LocalSet(1), // → str (real instr) — loop body has 2 instrs
+            WasmOp::Br(0),       // back-edge to loop header
+            WasmOp::End,         // loop end
+            WasmOp::End,         // block end
+            WasmOp::End,         // fn end
+        ];
+        // arity table: Block, Loop → two (0,0) entries.
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
+        // Find the back-edge `b` (0x14…): it must carry a NEGATIVE imm26.
+        let br = w
+            .iter()
+            .find(|&&x| x & 0xFC00_0000 == 0x1400_0000)
+            .expect("a back-edge b must be emitted");
+        let imm26 = (br & 0x03FF_FFFF) as i32;
+        let signed = (imm26 << 6) >> 6; // sign-extend 26 bits
+        assert!(
+            signed < 0,
+            "loop back-edge must be a negative offset, got {signed}"
+        );
+    }
+
+    #[test]
+    fn early_return_emits_epilogue_ret() {
+        // `local.get 0 ; return` — funnels w0 and rets early, then the trailing
+        // fn-end epilogue rets again (unreachable).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Return, WasmOp::End];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
+        // local.get 0 → mov x9,x0 ; return → mov x0,x9 ; ret
+        assert_eq!(*w.last().unwrap(), enc::ret());
+        assert!(w.contains(&enc::ret()));
     }
 
     #[test]
