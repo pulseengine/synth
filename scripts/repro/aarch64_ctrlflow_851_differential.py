@@ -62,6 +62,7 @@ SIGS = {
     "if_max": ([32, 32], 32),
     "count_sum": ([32], 32),
     "countdown": ([32], 32),
+    "do_while_count": ([32], 32),
     "early_ret": ([32], 32),
     "isqrt_ceil": ([32], 32),
 }
@@ -91,6 +92,10 @@ CASES = [
     ("countdown", [0]),                   # -> 0
     ("countdown", [1]),                   # -> 1
     ("countdown", [37]),                  # -> 37
+    # do-while (backward cbnz to loop header): body runs >=1 time.
+    ("do_while_count", [1]),              # -> 1 (runs once, n->0, exit)
+    ("do_while_count", [5]),              # -> 5
+    ("do_while_count", [200]),            # -> 200
     # early return: negative -> -1 early; else a*2.
     ("early_ret", [0xFFFFFFFF]),          # -1 -> -1 (early)
     ("early_ret", [10]),                  # -> 20 (late)

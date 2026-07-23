@@ -96,6 +96,30 @@
         br 0))
     local.get 2)
 
+  ;; do-while loop: br_if BACK to the loop header (backward CONDITIONAL branch,
+  ;; the cbnz-to-loop-header path). Counts down n and returns the iteration
+  ;; count; the body always runs at least once (n>=1 for the taken back-edge).
+  (func (export "do_while_count") (param i32) (result i32)
+    (local i32) ;; local 1: n working copy
+    (local i32) ;; local 2: iters
+    local.get 0
+    local.set 1
+    (loop
+      ;; iters += 1
+      local.get 2
+      i32.const 1
+      i32.add
+      local.set 2
+      ;; n -= 1
+      local.get 1
+      i32.const 1
+      i32.sub
+      local.set 1
+      ;; continue while n != 0 -> br_if 0 to the LOOP HEADER (backward cbnz)
+      local.get 1
+      br_if 0)
+    local.get 2)
+
   ;; --- early return ---
   ;; if a < 0 return -1 early; else return a*2.
   (func (export "early_ret") (param i32) (result i32)

@@ -865,7 +865,7 @@ pub fn select_typed_cf(
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD branch to the loop header — resolve immediately.
-                    let off = (entry as i64 - pos as i64) as i32;
+                    let off = check_imm26((entry as i64 - pos as i64) as i32)?;
                     words.push(enc::b_uncond(off));
                 } else {
                     // FORWARD branch to a block/if END — patched at that `End`.
@@ -891,7 +891,7 @@ pub fn select_typed_cf(
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD conditional branch to the loop header.
-                    let off = (entry as i64 - pos as i64) as i32;
+                    let off = check_imm19((entry as i64 - pos as i64) as i32)?;
                     words.push(enc::cbnz(cond, off));
                 } else {
                     // FORWARD conditional branch to a block/if END.
@@ -990,7 +990,7 @@ pub fn select_typed_cf(
                 frame.pending.push(skip_pos);
                 // The if's cbz now lands at the else-arm entry (current pos).
                 let here = words.len();
-                patch_branch(&mut words, else_fixup, here);
+                patch_branch(&mut words, else_fixup, here)?;
             }
             // `return` (#851): funnel the top-of-stack into x0/d0, tear down the
             // frame, and `ret` — an EARLY function exit. Ops after `return` up
@@ -1156,10 +1156,10 @@ pub fn select_typed_cf(
                         else_fixup: Some(pos),
                     } = frame.kind
                     {
-                        patch_branch(&mut words, pos, here);
+                        patch_branch(&mut words, pos, here)?;
                     }
                     for pos in frame.pending {
-                        patch_branch(&mut words, pos, here);
+                        patch_branch(&mut words, pos, here)?;
                     }
                     // A void frame leaves the value stack exactly as on entry —
                     // but only on a REACHABLE fall-through (a body ending in
@@ -1273,21 +1273,49 @@ pub fn select_typed_cf(
 /// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
 /// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
 /// the sequence is: funnel result → restore SP → ret.
+/// Guard an `imm26` (unconditional `b`) displacement (words) against the A64
+/// field width (signed 26-bit → ±2^25 words = ±128 MB). Over-range would wrap
+/// silently in the encoder's mask, so we LOUD-DECLINE instead (unreachable for
+/// any realistic function; "No silent miscompile" is the hard rule).
+fn check_imm26(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 25)..(1 << 25)).contains(&off) {
+        return Err(SelectError(format!(
+            "branch displacement {off} words exceeds A64 b imm26 range \
+             (±2^25) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
+/// Guard an `imm19` (`cbz`/`cbnz`/`b.cond`) displacement (signed 19-bit →
+/// ±2^18 words = ±1 MB). Same silent-wrap hazard as [`check_imm26`].
+fn check_imm19(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 18)..(1 << 18)).contains(&off) {
+        return Err(SelectError(format!(
+            "conditional-branch displacement {off} words exceeds A64 imm19 \
+             range (±2^18) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
 /// Re-encode a placeholder FORWARD branch at `words[pos]` to land at `target`
 /// (a word index in `words`), preserving its kind. The three kinds we emit as
 /// forward placeholders are `b` (0x14…, imm26), `cbnz` (0x35…, imm19+Rt), and
 /// `cbz` (0x34…, imm19+Rt); the opcode's high bits discriminate them so the Rt
 /// field and op class survive the patch. Centralizing this prevents a `cbz`
-/// (added in #851) from being mis-patched as a `cbnz`.
-fn patch_branch(words: &mut [u32], pos: usize, target: usize) {
+/// (added in #851) from being mis-patched as a `cbnz`. Over-range displacements
+/// LOUD-DECLINE (no silent field wrap).
+fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), SelectError> {
     let off = (target as i64 - pos as i64) as i32;
     let w = words[pos];
     words[pos] = match w & 0xFF00_0000 {
-        0x1400_0000 => enc::b_uncond(off),
-        0x3500_0000 => enc::cbnz((w & 0x1F) as u8, off),
-        0x3400_0000 => enc::cbz((w & 0x1F) as u8, off),
+        0x1400_0000 => enc::b_uncond(check_imm26(off)?),
+        0x3500_0000 => enc::cbnz((w & 0x1F) as u8, check_imm19(off)?),
+        0x3400_0000 => enc::cbz((w & 0x1F) as u8, check_imm19(off)?),
         _ => unreachable!("patch_branch: not a placeholder branch: {w:#010x}"),
     };
+    Ok(())
 }
 
 fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32) {

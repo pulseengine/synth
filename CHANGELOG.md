@@ -48,11 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **value-producing `if`/`loop`** (arity ≠ (0,0) — both arms would need the
   result in one register / the value stack live across the back-edge) and
   `br_table`. A dedicated execution differential
-  (`scripts/repro/aarch64_ctrlflow_851_differential.py`, 25 cases) proves
-  if/else (both arms), counting + countdown loops (multiple trip counts),
+  (`scripts/repro/aarch64_ctrlflow_851_differential.py`, 28 cases) proves
+  if/else (both arms), counting + countdown + **do-while** loops (multiple trip
+  counts; the do-while drives the backward *conditional* `cbnz`-to-header path),
   early-return, and return-inside-loop **bit-identical vs wasmtime** on a native
   arm64 host (MAP_JIT fork) + unicorn, with both branch edges and a trap edge
-  exercised (non-vacuity-guarded). *Coordinator note:* wire the new differential
+  exercised (non-vacuity-guarded). Branch displacements exceeding the A64 field
+  width (imm26 ±128 MB, imm19 ±1 MB) LOUD-DECLINE rather than wrap silently
+  (`check_imm26`/`check_imm19` at every eager and patched resolution site).
+  *Coordinator note:* wire the new differential
   into `ci.yml` alongside `aarch64_cf_538` / `aarch64_mem_851` at assembly (this
   lane does not edit repo config).
 
