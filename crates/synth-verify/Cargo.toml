@@ -32,11 +32,14 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.50.1", optional = 
 # Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553).
 # 0.9 adds the `ordeal::trap` module (trap-preservation VCs, VCR-VER-002 / #166);
 # 0.9.1 adds the float→int trunc trap classifier (`trap_trunc`, ordeal#59/TR-020).
-# PINNED at 0.9.1: the 0.12.0 bump (#825) has a bvsrem/bvsdiv solver-performance
-# regression that HANGS div/rem trap-preservation VCs (4-6h CI timeouts, #849).
-# Re-adopt only once the perf regression is fixed upstream AND native i64 rem
-# (#844/#848) re-lands behind a per-query timeout. Do NOT let dependabot bump this.
-ordeal = "=0.9.1"
+# UN-PINNED at 0.16.0 (#848/#849): the 0.12.0 bvsrem/bvsdiv solver-performance
+# regression that HUNG div/rem trap-preservation VCs (4-6h CI timeouts) is fixed
+# upstream (ordeal PR#99 / ordeal#97 — bvsrem is multiplicative again). 0.16.0
+# also adds `Solver::check_with_deadline(ms)`, a per-query wall-clock timeout the
+# `solver.rs` seam now wires so a future perf cliff degrades to a conservative
+# `Unknown` instead of hanging the suite. Native i64 rem_u/rem_s (#844) re-lands
+# on this version behind that deadline. `BvTerm::Urem` re-appears in 0.12+.
+ordeal = "0.16.0"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the

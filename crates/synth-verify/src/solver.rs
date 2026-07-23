@@ -29,6 +29,35 @@ use ordeal::{BoolTerm, CheckResult};
 /// commuted multiplies) to a conservative `Unknown`.
 const DEFAULT_MAX_CONFLICTS: u64 = 1_000_000;
 
+/// Default per-query **wall-clock deadline** (ms) for the ordeal core, wired
+/// via ordeal 0.16 `Solver::check_with_deadline` (#848/#849, ordeal#71/TR-029).
+///
+/// A conflict budget bounds SAT *logic* but not wall time — the ordeal 0.12
+/// `bvsrem`/`bvsdiv` perf cliff (#849) hung individual queries for minutes
+/// while WELL under the conflict limit. This deadline is the wall-clock
+/// insurance: a query that has not decided within the budget degrades to a
+/// conservative [`CheckOutcome::Unknown`] (never a verdict — soundness is in
+/// the never-`Unknown`-to-`Verified` mapping upstream) instead of hanging the
+/// whole suite.
+///
+/// The budget is set ABOVE the slowest *legitimate* query in the suite: the
+/// 32-bit popcount HAKMEM-fold equivalence (`popcnt_hakmem_formula_is_popcnt`,
+/// a wide-multiply `* 0x01010101 >> 24` proof over all 2^32 inputs — a
+/// known-hard SMT class, distinct from division) decides `Unsat` in ~41 s on
+/// ordeal 0.16. 120 s gives ~3x headroom so it never flakes on a loaded CI
+/// box, while a genuine perf cliff (the #849 class ran *minutes to hours*) is
+/// still cut far below the 4-6 h CI timeout. `0` = unbounded (falls back to
+/// the conflict-budget path). Override: `SYNTH_ORDEAL_DEADLINE_MS`.
+///
+/// KNOWN BLOCKER (#848/#849, ordeal#97 — why this branch is NOT merged): even
+/// at 120 s, the pre-existing i32 `verify_i32_rem_u` VC (full `rem_u(a,b) =
+/// a - (a/b)*b` equivalence, a cross-circuit `bvurem` bit-blast) does NOT
+/// decide on ordeal 0.16 — it ran >8 min unbounded and was killed. 0.16 fixed
+/// `bvsrem`/`bvsdiv` (signed; `verify_i32_rem_s` / `div_s` / `div_u` all pass
+/// fast) but `bvurem` (unsigned rem) is still exponential. The un-pin stays
+/// blocked on an upstream bvurem fix; keep `ordeal = "=0.9.1"` until then.
+const DEFAULT_DEADLINE_MS: u64 = 120_000;
+
 /// Outcome of a one-shot `check` of the asserted conjunction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckOutcome {
@@ -80,24 +109,37 @@ pub fn new_solver() -> Box<dyn BvSolver> {
 // ordeal backend (default)
 // ---------------------------------------------------------------------------
 
-/// The default engine: pure-Rust `ordeal` with a conflict budget.
+/// The default engine: pure-Rust `ordeal` with a per-query wall-clock deadline
+/// (primary) and a conflict budget (fallback when the deadline is disabled).
 pub struct OrdealSolver {
     assertions: Vec<BoolTerm>,
     max_conflicts: u64,
+    /// Wall-clock deadline (ms) for `check_with_deadline`; 0 = disabled (use
+    /// the conflict-budget path instead). See [`DEFAULT_DEADLINE_MS`].
+    deadline_ms: u64,
     model: Option<ordeal::Model>,
 }
 
 impl OrdealSolver {
-    /// New solver with the budget from `SYNTH_ORDEAL_MAX_CONFLICTS`
-    /// (default [`DEFAULT_MAX_CONFLICTS`]; 0 = unbounded).
+    /// New solver with the wall-clock deadline from `SYNTH_ORDEAL_DEADLINE_MS`
+    /// (default [`DEFAULT_DEADLINE_MS`]; 0 = disabled) and the conflict budget
+    /// from `SYNTH_ORDEAL_MAX_CONFLICTS` (default [`DEFAULT_MAX_CONFLICTS`];
+    /// 0 = unbounded). When the deadline is enabled it is the operative bound
+    /// (it caps wall time, which a conflict count does not); the conflict
+    /// budget is used only when the deadline is disabled.
     pub fn new() -> Self {
         let max_conflicts = std::env::var("SYNTH_ORDEAL_MAX_CONFLICTS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_CONFLICTS);
+        let deadline_ms = std::env::var("SYNTH_ORDEAL_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_DEADLINE_MS);
         Self {
             assertions: Vec::new(),
             max_conflicts,
+            deadline_ms,
             model: None,
         }
     }
@@ -123,10 +165,22 @@ impl BvSolver for OrdealSolver {
         for a in &self.assertions {
             solver.assert(a.clone());
         }
-        let result = if self.max_conflicts == 0 {
-            solver.check()
+        // Prefer the wall-clock deadline (bounds the SAT search in real time,
+        // which the ordeal 0.12 bvsrem/bvsdiv cliff #849 blew through while
+        // under the conflict budget). Fall back to the conflict budget only
+        // when the deadline is disabled (`SYNTH_ORDEAL_DEADLINE_MS=0`).
+        let (result, bound_desc) = if self.deadline_ms != 0 {
+            (
+                solver.check_with_deadline(self.deadline_ms),
+                format!("wall-clock deadline {} ms", self.deadline_ms),
+            )
+        } else if self.max_conflicts == 0 {
+            (solver.check(), "unbounded".to_string())
         } else {
-            solver.check_with_limit(self.max_conflicts)
+            (
+                solver.check_with_limit(self.max_conflicts),
+                format!("conflict budget {}", self.max_conflicts),
+            )
         };
         match result {
             CheckResult::Unsat(_certificate) => CheckOutcome::Unsat,
@@ -134,10 +188,12 @@ impl BvSolver for OrdealSolver {
                 self.model = Some(model);
                 CheckOutcome::Sat
             }
-            CheckResult::Unknown => CheckOutcome::Unknown(format!(
-                "ordeal returned unknown (conflict budget {})",
-                self.max_conflicts
-            )),
+            // Conservative non-answer: a deadline/budget exhaustion is NEVER a
+            // verdict. Callers must not map `Unknown` to Verified (this is the
+            // soundness basis of the deadline scheme, #848).
+            CheckResult::Unknown => {
+                CheckOutcome::Unknown(format!("ordeal returned unknown ({bound_desc})"))
+            }
         }
     }
 
@@ -187,6 +243,7 @@ mod z3_backend {
             BvTerm::Sub(a, b) => bv_to_z3(a).bvsub(&bv_to_z3(b)),
             BvTerm::Mul(a, b) => bv_to_z3(a).bvmul(&bv_to_z3(b)),
             BvTerm::Udiv(a, b) => bv_to_z3(a).bvudiv(&bv_to_z3(b)),
+            BvTerm::Urem(a, b) => bv_to_z3(a).bvurem(&bv_to_z3(b)),
             BvTerm::And(a, b) => bv_to_z3(a).bvand(&bv_to_z3(b)),
             BvTerm::Or(a, b) => bv_to_z3(a).bvor(&bv_to_z3(b)),
             BvTerm::Xor(a, b) => bv_to_z3(a).bvxor(&bv_to_z3(b)),
@@ -222,16 +279,37 @@ mod z3_backend {
         }
     }
 
+    /// Per-query wall-clock timeout (ms) for the Z3 differential oracle, the
+    /// twin of the ordeal [`DEFAULT_DEADLINE_MS`] deadline (#848/#849). Z3
+    /// itself is slow on the 64-bit `bvsrem`/`bvurem` i64-rem VC (#848 records
+    /// it hanging the "Z3 Verification" job, not just ordeal), so the oracle
+    /// gets its own bound. On timeout Z3 returns `SatResult::Unknown` →
+    /// [`CheckOutcome::Unknown`], which in [`DifferentialSolver`] lands on the
+    /// "z3 could not decide, keep ordeal's verdict" branch — losing the oracle
+    /// on the hardest query class degrades to certificate-checked ordeal (its
+    /// `Unsat` carries an `ordeal-lrat`-validated LRAT proof), which is
+    /// acceptable, not a soundness hole. 120 s matches the ordeal deadline
+    /// ([`DEFAULT_DEADLINE_MS`]) so the differential stays meaningful on the
+    /// slow-but-legitimate popcount HAKMEM query rather than the oracle timing
+    /// out on it; override with `SYNTH_Z3_TIMEOUT_MS`.
+    const DEFAULT_Z3_TIMEOUT_MS: u32 = 120_000;
+
     /// The former engine, now the differential oracle.
     pub struct Z3Solver {
         assertions: Vec<BoolTerm>,
+        timeout_ms: u32,
         model: Option<z3::Model>,
     }
 
     impl Z3Solver {
         pub fn new() -> Self {
+            let timeout_ms = std::env::var("SYNTH_Z3_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_Z3_TIMEOUT_MS);
             Self {
                 assertions: Vec::new(),
+                timeout_ms,
                 model: None,
             }
         }
@@ -248,6 +326,14 @@ mod z3_backend {
 
         fn check(&mut self) -> CheckOutcome {
             let solver = z3::Solver::new();
+            // Per-query wall-clock timeout so a hard bvsrem/bvurem degrades to
+            // `SatResult::Unknown` instead of hanging the Z3 Verification job
+            // (#848/#849). 0 = unbounded.
+            if self.timeout_ms != 0 {
+                let mut params = z3::Params::new();
+                params.set_u32("timeout", self.timeout_ms);
+                solver.set_params(&params);
+            }
             for a in &self.assertions {
                 solver.assert(bool_to_z3(a));
             }

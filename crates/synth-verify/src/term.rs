@@ -64,6 +64,7 @@ fn bv_rank(t: &BvTerm) -> u8 {
         BvTerm::Sub(..) => 3,
         BvTerm::Mul(..) => 4,
         BvTerm::Udiv(..) => 5,
+        BvTerm::Urem(..) => 5,
         BvTerm::And(..) => 6,
         BvTerm::Or(..) => 7,
         BvTerm::Xor(..) => 8,
@@ -234,6 +235,10 @@ fn canonicalize_bv(t: &BvTerm) -> BvTerm {
         BvTerm::Udiv(a, b) => {
             let (a, b) = bin(a, b);
             BvTerm::Udiv(a, b)
+        }
+        BvTerm::Urem(a, b) => {
+            let (a, b) = bin(a, b);
+            BvTerm::Urem(a, b)
         }
         BvTerm::Shl(a, b) => {
             let (a, b) = bin(a, b);
@@ -843,6 +848,7 @@ fn fmt_bv(t: &BvTerm, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         BvTerm::Sub(a, b) => fmt_bin(f, "bvsub", a, b),
         BvTerm::Mul(a, b) => fmt_bin(f, "bvmul", a, b),
         BvTerm::Udiv(a, b) => fmt_bin(f, "bvudiv", a, b),
+        BvTerm::Urem(a, b) => fmt_bin(f, "bvurem", a, b),
         BvTerm::And(a, b) => fmt_bin(f, "bvand", a, b),
         BvTerm::Or(a, b) => fmt_bin(f, "bvor", a, b),
         BvTerm::Xor(a, b) => fmt_bin(f, "bvxor", a, b),

@@ -659,18 +659,18 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "ordeal"
-version = "0.9.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c55b06587e2790390f278f8e0fdcb627aedf1ee45b9484a712c6cf1f80dccab"
+checksum = "51a5aeafeeae41f777063f5ec59ea62a1eabfbb10bb63ec9efa4b23695845640"
 dependencies = [
  "ordeal-lrat",
 ]
 
 [[package]]
 name = "ordeal-lrat"
-version = "0.9.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3affdf66f317047ddc588c7df4fbe5a463ee8f40a1e23f30115a8f8c7dffe82a"
+checksum = "3ac74759543c60b36b59ec627e897620ff0e66747e4f83e2dac07fb02de570d3"
 
 [[package]]
 name = "page_size"

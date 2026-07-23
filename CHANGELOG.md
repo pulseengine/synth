@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!--
+  BLOCKED (#848/#849, ordeal#97): the ordeal `=0.9.1` → 0.16.0 un-pin + native
+  i64 rem re-land is DRAFTED (PR #854) but MUST NOT MERGE. ordeal 0.16 fixed
+  `bvsrem`/`bvsdiv` (signed — the PR#99 claim; `verify_i32_rem_s`/`div_s`/`div_u`
+  all pass fast) but NOT `bvurem` (unsigned): the pre-existing i32
+  `verify_i32_rem_u` value VC (a cross-circuit `bvurem` equivalence, ~fast on the
+  ~41 s 0.9.1 baseline) does NOT decide on 0.16 — >8 min unbounded, killed. The
+  per-query wall-clock deadline (ordeal `check_with_deadline` + Z3 `Params`
+  timeout) works as insurance but cannot turn an undecidable-in-time `Verified`
+  assertion green. `ordeal = "=0.9.1"` STAYS PINNED until upstream fixes bvurem;
+  no [Unreleased] entry is claimed for this work yet. See PR #854 for the
+  measured finding.
+-->
+
 ## [0.50.1] - 2026-07-23
 
 ### Changed
