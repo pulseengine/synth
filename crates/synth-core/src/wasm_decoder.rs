@@ -386,6 +386,13 @@ pub struct DecodedModule {
     /// #642: type index per function, indexed by the FULL function index
     /// (imports first, then locally-defined ones).
     pub func_type_indices: Vec<u32>,
+    /// #851: result (return-value) count per function, indexed by the FULL
+    /// function index (imports first). `0` = void, `1` = single result, etc.
+    /// (saturated at 255 for pathological signatures). The aarch64 direct-`call`
+    /// lowering needs the 0-vs-1 distinction — `func_ret_i64/f32/f64` carry the
+    /// result TYPE but conflate void and i32 (both all-false), so they cannot say
+    /// whether a value is pushed back after the call.
+    pub func_result_counts: Vec<u32>,
     /// #642: canonical structural signature per type index (params/results
     /// rendered as a string) — used for the closed-world `call_indirect` type
     /// check, which must compare SIGNATURES, not raw type indices (a module
@@ -1310,6 +1317,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         table_size: table_sizes.first().copied().flatten(),
         table_sizes,
         elem_segments,
+        func_result_counts: func_type_indices
+            .iter()
+            .map(|&ti| {
+                type_block_arity
+                    .get(ti as usize)
+                    .map(|&(_p, r)| r as u32)
+                    .unwrap_or(0)
+            })
+            .collect(),
         func_type_indices,
         type_signatures,
         wsc_facts: wsc_facts.unwrap_or_default(),

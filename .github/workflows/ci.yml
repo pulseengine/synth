@@ -503,6 +503,21 @@ jobs:
             echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 32) — \
           objcopy/objdump/synth extraction likely broke"; exit 1
           fi
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install wasmtime python bindings
+        run: pip install wasmtime
+      - name: Run #851 direct-call execution differential
+        # The matrix above is single-function (loads one function's .text) so it
+        # cannot exercise CALLS. This harness compiles MULTI-function modules,
+        # resolves the R_AARCH64_CALL26 relocations itself, JITs the linked blob
+        # (MAP_JIT), and diffs bit-exact vs wasmtime. It asserts every expected
+        # symbol is present, so a silently-declined caller fails LOUDLY.
+        run: |
+          SYNTH=./target/debug/synth \
+            WASMTOOLS=wasm-tools WASMTIME=wasmtime \
+            python scripts/repro/aarch64_calls_851.py
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
