@@ -7,8 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-07-23
+
+**"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses
+from a compute/ALU/float core into running actual programs: the **gating four**
+now lower and execute — **memory** (i32/i64/sub-word load/store), **non-param
+locals** (zero-init stack slots, copy-semantics get/set/tee), **direct calls**
+(AAPCS64 + `R_AARCH64_CALL26`), and **full control flow** (`if`/`else`, `loop`
+back-edges, early `return`) — plus **div/rem** (with the ÷0 and INT_MIN/−1 WASM
+trap guards A64's total divide omits), **popcnt**, and **f64↔i64 reinterpret**.
+Every op is execution-verified natively on arm64 (MAP_JIT) bit-identical vs
+wasmtime, gated by gale's standing acceptance matrix (`aarch64_matrix.sh`) whose
+declined frontier is now **empty**. Five parallel lanes (#851), each oracle-gated
+red-first; honest declines kept for the frontier beyond (`call_indirect`, imports,
+value-blocks, `br_table`, >8 args, float-result callees). Also: 9 differential
+oracles hardened to read the ELF symtab instead of host-dependent disasm text
+(#850). Deferred by design: the graph-colouring allocator widen (v0.52) and the
+ordeal 0.16 un-pin (blocked on the upstream unsigned-`bvurem` regression,
+ordeal#101 — synth stays safely pinned `ordeal =0.9.1`).
+
 ### Added
 
+- **aarch64 div/rem + popcnt + f64↔i64 reinterpret (#851).** Three op groups
+  that previously loud-declined on `-b aarch64` now lower, shrinking gale's
+  acceptance frontier (`scripts/repro/aarch64_matrix.sh`) from
+  `popcnt div_s rem_s` to **empty** (32 → 35 accepted ops, 86 → 91 native
+  checks, all bit-identical vs wasmtime):
+  - **Integer div/rem (i32+i64):** `div_{s,u}` → A64 `SDIV`/`UDIV`; `rem_{s,u}`
+    → `SDIV`/`UDIV` + `MSUB` (`rem = a − (a/b)·b`). A64 divide is TOTAL where
+    WASM is PARTIAL, so — the #633/#666/#709 totality class — the lowering emits
+    explicit WASM trap guards: divisor `== 0` → `brk` (all four forms;
+    full-width `cbnz` for i64) and, for SIGNED DIV only, the `INT_MIN / −1`
+    overflow → `brk`. `rem_s(INT_MIN, −1) == 0` (no trap) falls out of `MSUB`
+    naturally. The ÷0 and INT_MIN/−1 traps are execution-verified vs wasmtime
+    (`scripts/repro/aarch64_divrem_851_differential.py`: 179 cases / 34 trap
+    cases, native SIGTRAP + unicorn `brk`).
+  - **popcnt (i32+i64):** A64 has no scalar popcount, so `fmov` gpr→SIMD,
+    `CNT vN.8b`, `ADDV bN, vN.8b`, `fmov` back (i32 uses `fmov s` to zero-fill
+    the upper lanes; i64 uses `fmov d`).
+  - **f64↔i64 reinterpret (GI-FPU-001):** `i64.reinterpret_f64` /
+    `f64.reinterpret_i64` → bit-preserving `fmov x,d` / `fmov d,x`. These
+    `WasmOp` variants existed but were never decoded (`convert_operator`), so
+    they globally declined; un-dropping them at decode also un-blocks the ARM
+    backend's existing VFP lowering. Verified every backend still emits or
+    LOUD-declines (never silent-drops): aarch64 + cortex-m7dp ARM emit;
+    no-FPU ARM / single-precision Cortex-M / RV32 loud-decline.
+  - New encoders (llvm-mc ground-truth byte tests): `sdiv`/`udiv`/`msub`
+    (+64-bit), `cnt_8b`, `addv_8b`, `cbnz64`.
+- **aarch64 direct `call` (#851).** The `-b aarch64` backend now lowers WASM
+  direct `call` (previously a loud-decline). Args are marshalled into `x0..x7`
+  per AAPCS64, a `bl func_N` targets the callee (linkable via a new
+  `R_AARCH64_CALL26` `.rela.text` relocation — ELF64 `r_info` sym in the high
+  word, type 283), and the `x0` result is pushed. A function that emits a call
+  becomes NON-LEAF: it saves/restores FP+LR (`stp x29,x30,[sp,#-16]!` /
+  `ldp x29,x30,[sp],#16`) around the body — leaf functions stay byte-identical.
+  The multi-function object now places EVERY reachable local function with a
+  `func_N` symbol (plus its export alias) so a call to a non-exported helper
+  resolves. New encoders `bl`/`stp_fp_lr_pre16`/`ldp_fp_lr_post16`; new
+  `RelocKind::AArch64Call26` and `DecodedModule::func_result_counts` (the
+  0-vs-1 result distinction the call push decision needs). Honest frontier
+  (loud-declined, never wrong code): calling an IMPORT, `> 8` integer args,
+  multi-result or FLOAT-result callees (returned in v0/d0, not x0), a CALLER
+  that reads its OWN incoming params across a call (param-homing is a later
+  increment; a callee freely reads its params), any live value beneath the
+  args at the call site, and `call_indirect`. Verified: 10 new unit tests (8
+  selector + 1 elf `.rela.text` + 1 encoder) + a native-arm64 MAP_JIT
+  execution differential
+  (`scripts/repro/aarch64_calls_851.py`) proving 5 call modules (const/computed
+  args, void, i64, result-consumed) bit-identical vs wasmtime; the standing
+  `aarch64_matrix.sh` op-set gate is unchanged (32 ops / 86 checks PASS).
 - **aarch64 non-param locals (#856).** The `-b aarch64` backend now supports
   `local` declarations beyond params: each non-param local gets a zero-init
   8-byte stack slot (`[sp, #(idx − num_params)*8]`, frame rounded to a 16-byte
@@ -33,6 +100,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontier (documented, not silent): in-bounds only — OOB-trap, data-segment
   init, `memory.{size,grow}`, and emitting startup that establishes `x28` are
   follow-ons.
+- **aarch64 full control flow — `if`/`else`, `loop`, `return` (#851).** The
+  `-b aarch64` backend extends the void-block-only #538 control flow
+  (`block`/`br`/`br_if`) with the remaining structured constructs: `if`/`else`
+  (`cbz` cond → else/end, unconditional `b` over the else arm, join at end),
+  `loop` (a **backward** branch target — a `br`/`br_if` to a loop frame resolves
+  a negative offset eagerly at the loop header), and `return` (early epilogue:
+  funnel top → `x0`/`d0`, restore SP, `ret`). Branch resolution dispatches on
+  the **target frame's kind** (Block/If = forward, patched at `End`; Loop =
+  backward, resolved on emission), so loop back-edges and forward block exits
+  coexist; a single `patch_branch` helper centralizes the `b`/`cbnz`/`cbz`
+  re-encode. A reachability flag applies WASM's stack-polymorphism rule after
+  `br`/`return`/`unreachable`. Honest frontier (loud-decline, never silent):
+  **value-producing `if`/`loop`** (arity ≠ (0,0) — both arms would need the
+  result in one register / the value stack live across the back-edge) and
+  `br_table`. A dedicated execution differential
+  (`scripts/repro/aarch64_ctrlflow_851_differential.py`, 28 cases) proves
+  if/else (both arms), counting + countdown + **do-while** loops (multiple trip
+  counts; the do-while drives the backward *conditional* `cbnz`-to-header path),
+  early-return, and return-inside-loop **bit-identical vs wasmtime** on a native
+  arm64 host (MAP_JIT fork) + unicorn, with both branch edges and a trap edge
+  exercised (non-vacuity-guarded). Branch displacements exceeding the A64 field
+  width (imm26 ±128 MB, imm19 ±1 MB) LOUD-DECLINE rather than wrap silently
+  (`check_imm26`/`check_imm19` at every eager and patched resolution site).
+  *Coordinator note:* wire the new differential
+  into `ci.yml` alongside `aarch64_cf_538` / `aarch64_mem_851` at assembly (this
+  lane does not edit repo config).
 
 ## [0.50.1] - 2026-07-23
 

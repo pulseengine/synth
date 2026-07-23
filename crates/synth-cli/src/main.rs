@@ -2584,6 +2584,7 @@ fn compile_all_exports(
         all_imports,
         max_num_imported_funcs,
         func_arg_counts,
+        func_result_counts, // #851: per-function result count (0/1) — aarch64 direct-call lowering
         type_arg_counts,
         all_data_segments, // #237: active data segments, for --native-pointer-abi
         stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
@@ -2620,6 +2621,7 @@ fn compile_all_exports(
         // #195: keep the arg-count tables aligned with the module whose
         // imports get merged (the one that defines `max_imports`).
         let mut merged_func_arg_counts: Vec<u32> = Vec::new();
+        let mut merged_func_result_counts: Vec<u32> = Vec::new(); // #851
         let mut merged_type_arg_counts: Vec<u32> = Vec::new();
 
         for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
@@ -2668,6 +2670,7 @@ fn compile_all_exports(
                         max_imports = module.num_imported_funcs;
                         merged_imports = module.imports.clone();
                         merged_func_arg_counts = module.func_arg_counts.clone();
+                        merged_func_result_counts = module.func_result_counts.clone();
                         merged_type_arg_counts = module.type_arg_counts.clone();
                         // Keep the SBOM input aligned with the merged
                         // imports (the module the dependency graph reflects).
@@ -2676,6 +2679,7 @@ fn compile_all_exports(
                         // No imports anywhere yet: still carry the arg-count
                         // tables from a module so direct calls get marshalled.
                         merged_func_arg_counts = module.func_arg_counts.clone();
+                        merged_func_result_counts = module.func_result_counts.clone();
                         merged_type_arg_counts = module.type_arg_counts.clone();
                     }
                 }
@@ -2692,6 +2696,7 @@ fn compile_all_exports(
             merged_imports,
             max_imports,
             merged_func_arg_counts,
+            merged_func_result_counts, // #851: per-function result count (WAST-merged)
             merged_type_arg_counts,
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
             None,       // #237: SP-global promotion is single-module .wasm only
@@ -2779,6 +2784,7 @@ fn compile_all_exports(
         // function addresses and ships the table in flash.
         let funcref_slots = module.funcref_region_slots();
         let func_arg_counts = module.func_arg_counts;
+        let func_result_counts = module.func_result_counts; // #851
         let type_arg_counts = module.type_arg_counts;
         let memories = module.memories;
         let imports = module.imports;
@@ -2876,6 +2882,7 @@ fn compile_all_exports(
             imports,
             num_imports,
             func_arg_counts,
+            func_result_counts, // #851
             type_arg_counts,
             data_segs,
             sp_global,
@@ -3034,6 +3041,7 @@ fn compile_all_exports(
         safety_bounds,
         num_imports: max_num_imported_funcs,
         func_arg_counts,
+        func_result_counts, // #851: per-function result count for aarch64 direct call
         type_arg_counts,
         target: target_spec.clone(),
         // #197: --relocatable forces the direct selector + direct func_N import
@@ -5047,6 +5055,15 @@ fn build_relocatable_elf(
                     );
                     ArmRelocationType::Abs32
                 }
+                // #851: R_AARCH64_CALL26 is emitted only by the EM_AARCH64 backend
+                // (its own `.rela.text` builder). It can never reach this ARM ELF
+                // relocation path; bail loudly if it somehow does.
+                synth_core::backend::RelocKind::AArch64Call26 => {
+                    anyhow::bail!(
+                        "internal error: AArch64 CALL26 relocation reached the ARM \
+                         ELF emitter — the aarch64 backend emits its own .rela.text (#851)"
+                    )
+                }
             };
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,
@@ -6504,8 +6521,9 @@ fn build_multi_func_riscv_elf(_funcs: &[ElfFunction], _wasm_data: &[u8]) -> Resu
 fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
     Ok(build_relocatable_object(&[A64ElfFunction {
-        name: func_name.to_string(),
+        symbols: vec![func_name.to_string()],
         code: code.to_vec(),
+        relocations: Vec::new(),
     }]))
 }
 
@@ -6516,9 +6534,22 @@ fn build_multi_func_aarch64_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
     let a64_funcs: Vec<A64ElfFunction> = funcs
         .iter()
-        .map(|f| A64ElfFunction {
-            name: f.name.clone(),
-            code: f.code.clone(),
+        .map(|f| {
+            // #851: EVERY function gets a `func_N` symbol (the target of a direct
+            // `bl` R_AARCH64_CALL26 reloc) plus its export name when it differs.
+            // The `name` field is the export name when exported, else `func_N`.
+            let func_sym = format!("func_{}", f.wasm_index);
+            let mut symbols = vec![func_sym.clone()];
+            if f.name != func_sym {
+                symbols.push(f.name.clone());
+            }
+            A64ElfFunction {
+                symbols,
+                code: f.code.clone(),
+                // #851: forward the call relocations so `bl func_N` sites resolve
+                // via `.rela.text` (these were dropped pre-#851).
+                relocations: f.relocations.clone(),
+            }
         })
         .collect();
     Ok(build_relocatable_object(&a64_funcs))

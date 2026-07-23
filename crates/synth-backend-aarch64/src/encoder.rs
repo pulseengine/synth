@@ -96,6 +96,45 @@ pub fn mul64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// #851 — integer divide and multiply-subtract, the lowering targets for WASM
+// `i32/i64.{div,rem}_{s,u}`. A64 `SDIV`/`UDIV` round toward zero (matching
+// WASM `idiv`), and remainder is `a − (a/b)·b` via `MSUB rd, q, b, a`. NOTE:
+// A64 SDIV/UDIV are TOTAL — `x/0 = 0` and `INT_MIN/−1 = INT_MIN` in hardware,
+// NEITHER of which traps. WASM REQUIRES a trap in both cases, so the selector
+// emits an explicit divisor-zero guard (all four div/rem forms) and, for
+// signed DIV only, an INT_MIN/−1 overflow guard. The encoders below are the
+// bare arithmetic; the guards live in the selector (see the `divrem` closure).
+// clang/llvm-mc ground truth:
+//   sdiv w0,w1,w2 = 0x1AC20C20   udiv w0,w1,w2 = 0x1AC20820
+//   msub w0,w1,w2,w3 = 0x1B028C20   (x-forms set SF64)
+
+/// `sdiv wd, wn, wm` — signed divide, round toward zero.
+pub fn sdiv(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x1AC0_0C00 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sdiv xd, xn, xm`
+pub fn sdiv64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    sdiv(rd, rn, rm) | SF64
+}
+/// `udiv wd, wn, wm` — unsigned divide, round toward zero.
+pub fn udiv(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x1AC0_0800 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `udiv xd, xn, xm`
+pub fn udiv64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    udiv(rd, rn, rm) | SF64
+}
+/// `msub wd, wn, wm, wa` — `wd = wa − wn·wm`. Used for remainder:
+/// `rem = a − (a/b)·b` = `msub rd, quotient, divisor, dividend`.
+pub fn msub(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
+    0x1B00_8000 | ((rm as u32) << 16) | ((ra as u32) << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `msub xd, xn, xm, xa`
+pub fn msub64(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
+    msub(rd, rn, rm, ra) | SF64
+}
+
+// ---------------------------------------------------------------------------
 // Variable shifts / rotates (register shift amount). Base = `0x1AC0_2000`
 // with the op2 field selecting LSL/LSR/ASR/ROR at bits [11:10]:
 //   00 = LSLV, 01 = LSRV, 10 = ASRV, 11 = RORV.
@@ -341,12 +380,47 @@ pub fn b_uncond(imm26: i32) -> u32 {
     0x1400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
 }
 
+/// `bl #(imm26*4)` — branch-with-link, PC-relative in words (signed 26-bit),
+/// sets `x30`/LR to the return address. WASM direct `call` lowers to `bl func_N`
+/// (#851). When the callee's `.text` offset is not known at selection time (the
+/// common case), emit `bl #0` (offset 0) and record an `R_AARCH64_CALL26`
+/// relocation against the callee symbol; the linker patches the imm26 field.
+/// Clang ground truth: `bl .+8` = 0x9400_0002 (imm26 = 2). The op is `b` with
+/// bit 31 set (0x9400_0000 vs `b`'s 0x1400_0000).
+pub fn bl(imm26: i32) -> u32 {
+    0x9400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
+}
+
+/// `stp x29, x30, [sp, #-16]!` — pre-indexed store-pair, the non-leaf function
+/// prologue that saves FP/LR and lowers SP by 16 (staying 16-byte aligned). A
+/// function that emits a `bl` clobbers `x30` and can no longer `ret` without
+/// first preserving the incoming LR. Clang ground truth:
+/// `stp x29, x30, [sp, #-16]!` = 0xA9BF7BFD.
+pub fn stp_fp_lr_pre16() -> u32 {
+    0xA9BF_7BFD
+}
+
+/// `ldp x29, x30, [sp], #16` — post-indexed load-pair, the matching non-leaf
+/// epilogue: restore FP/LR and raise SP by 16. Emitted just before `ret`. Clang
+/// ground truth: `ldp x29, x30, [sp], #16` = 0xA8C17BFD.
+pub fn ldp_fp_lr_post16() -> u32 {
+    0xA8C1_7BFD
+}
+
 /// `cbnz wt, #(imm19*4)` — compare-and-branch-if-nonzero, 32-bit form, offset in
 /// words (signed 19-bit). WASM `br_if` branches when the popped i32 condition is
 /// nonzero, so `cbnz w_cond, <block-end>` is the exact lowering. Clang ground
 /// truth: `cbnz w9, .+8` = 0x3500_0049 (imm19 = 2, Rt = 9).
 pub fn cbnz(rt: Reg, imm19: i32) -> u32 {
     0x3500_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | (rt as u32)
+}
+/// `cbnz xt, #(imm19*4)` — 64-bit form (tests the FULL 64-bit register). #851:
+/// the i64 div/rem divisor-zero guard MUST test all 64 bits — a 32-bit `cbnz w`
+/// on a divisor like `0x1_0000_0000` (nonzero, low word 0) would falsely take
+/// the "nonzero" path and let a divide-by-zero through. llvm-mc: `cbnz x2, #8`
+/// = 0xB5000042 (= the w-form with SF64 set).
+pub fn cbnz64(rt: Reg, imm19: i32) -> u32 {
+    cbnz(rt, imm19) | SF64
 }
 
 /// `cbz wt, #(imm19*4)` — compare-and-branch-if-zero, 32-bit form. Symmetric
@@ -695,6 +769,28 @@ pub fn fmov_d(rd: FReg, rn: FReg) -> u32 {
     fp2(0x1E60_4000, rd, rn)
 }
 
+// ---------------------------------------------------------------------------
+// #851 — the two SIMD (Advanced-SIMD) ops used to synthesize a scalar popcount
+// (A64 has no scalar POPCNT). The sequence is:
+//   fmov d_n, x/w_a        (move the integer into the low lane of a V register)
+//   cnt  v_n.8b, v_n.8b    (per-BYTE population count into 8 byte lanes)
+//   addv b_n, v_n.8b       (horizontal ADD of the 8 byte counts → one byte)
+//   fmov w_d, s_n          (move the scalar result back to a GP register)
+// For an i32 input, `fmov s_n, w_a` writes only the low 32 bits and zeroes the
+// rest of the V register, so `cnt.8b` sees 4 value bytes + 4 zero bytes — the
+// count is correct without masking. For i64, `fmov d_n, x_a` fills 8 bytes.
+// clang/llvm-mc ground truth:
+//   cnt v0.8b, v0.8b = 0x0E205800   addv b0, v0.8b = 0x0E31B800
+
+/// `cnt vd.8b, vn.8b` — per-byte population count (8 byte lanes).
+pub fn cnt_8b(rd: FReg, rn: FReg) -> u32 {
+    0x0E20_5800 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `addv bd, vn.8b` — horizontal add of the 8 byte lanes into scalar byte `bd`.
+pub fn addv_8b(rd: FReg, rn: FReg) -> u32 {
+    0x0E31_B800 | ((rn as u32) << 5) | (rd as u32)
+}
+
 /// `fcvt dd, sn` — single→double (`f64.promote_f32`). Exact, never traps.
 pub fn fcvt_d_from_s(rd: FReg, rn: FReg) -> u32 {
     fp2(0x1E22_C000, rd, rn)
@@ -744,6 +840,26 @@ mod tests {
         assert_eq!(movk(9, 1, 1), 0x72A0_0029);
         assert_eq!(mov_reg(0, 9), 0x2A09_03E0);
         assert_eq!(ret(), 0xD65F_03C0);
+    }
+
+    // #851 — divide / multiply-subtract / SIMD popcount building blocks.
+    // Ground truth from `llvm-mc -triple=aarch64 -show-encoding`.
+    #[test]
+    fn divrem_and_popcnt_encodings_match_llvm_mc() {
+        // sdiv w0,w1,w2 = [0x20,0x0c,0xc2,0x1a]  (LE) → 0x1AC20C20
+        assert_eq!(sdiv(0, 1, 2), 0x1AC2_0C20);
+        // udiv w0,w1,w2 = 0x1AC20820
+        assert_eq!(udiv(0, 1, 2), 0x1AC2_0820);
+        // msub w0,w1,w2,w3 = 0x1B028C20
+        assert_eq!(msub(0, 1, 2, 3), 0x1B02_8C20);
+        // x-forms set SF64 (bit 31)
+        assert_eq!(sdiv64(0, 1, 2), 0x9AC2_0C20);
+        assert_eq!(udiv64(0, 1, 2), 0x9AC2_0820);
+        assert_eq!(msub64(0, 1, 2, 3), 0x9B02_8C20);
+        // cnt v0.8b, v0.8b = 0x0E205800
+        assert_eq!(cnt_8b(0, 0), 0x0E20_5800);
+        // addv b0, v0.8b = 0x0E31B800
+        assert_eq!(addv_8b(0, 0), 0x0E31_B800);
     }
 
     #[test]
@@ -981,5 +1097,17 @@ mod tests {
         assert_eq!(cbnz(9, 2), 0x3500_0049);
         assert_eq!(cbz(9, 2), 0x3400_0049);
         assert_eq!(cbnz(0, 3), 0x3500_0060); // cbnz w0, .+12
+    }
+
+    #[test]
+    fn call_and_frame_encodings_match_clang() {
+        // #851 direct-call lowering primitives. clang -target aarch64:
+        // `bl .+8` = 0x94000002; `bl .-8` = 0x97FFFFFE;
+        // `stp x29,x30,[sp,#-16]!` = 0xA9BF7BFD; `ldp x29,x30,[sp],#16` = 0xA8C17BFD.
+        assert_eq!(bl(2), 0x9400_0002);
+        assert_eq!(bl(-2), 0x97FF_FFFE);
+        assert_eq!(bl(0), 0x9400_0000); // reloc placeholder (imm26 patched by linker)
+        assert_eq!(stp_fp_lr_pre16(), 0xA9BF_7BFD);
+        assert_eq!(ldp_fp_lr_post16(), 0xA8C1_7BFD);
     }
 }

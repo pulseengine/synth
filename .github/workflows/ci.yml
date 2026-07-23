@@ -410,9 +410,10 @@ jobs:
     # (NaN-ordering compares, promote/demote, converts, reinterprets), m4 the
     # #709 boundary table (domain-guarded trapping trunc: every case where
     # WASM traps must TRAP under emulation, in-range must match bit-exactly)
-    # + min/max NaN/±0 matrix + copysign. The decline-matrix probe asserts
-    # div/rem/popcnt/rounding/i64<->float still LOUD-decline (A64 SDIV/UDIV
-    # don't trap; a naive lowering would be a silent miscompile).
+    # + min/max NaN/±0 matrix + copysign. #851 added div/rem (SDIV/UDIV+MSUB
+    # with WASM ÷0 + INT_MIN/-1 trap guards, execution-verified), popcnt (SIMD
+    # CNT/ADDV), and f64<->i64 reinterpret; the decline-matrix probe now
+    # asserts only rounding + i64<->float conversions still LOUD-decline.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -446,6 +447,12 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
       - name: Run #851 linear-memory load/store execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
+      - name: Run #851 div/rem trap + popcnt + reinterpret execution oracle (÷0 + INT_MIN/-1)
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_divrem_851_differential.py
+      - name: Run #851 non-param locals execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_locals_851_differential.py
+      - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
@@ -500,6 +507,21 @@ jobs:
             echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 32) — \
           objcopy/objdump/synth extraction likely broke"; exit 1
           fi
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install wasmtime python bindings
+        run: pip install wasmtime
+      - name: Run #851 direct-call execution differential
+        # The matrix above is single-function (loads one function's .text) so it
+        # cannot exercise CALLS. This harness compiles MULTI-function modules,
+        # resolves the R_AARCH64_CALL26 relocations itself, JITs the linked blob
+        # (MAP_JIT), and diffs bit-exact vs wasmtime. It asserts every expected
+        # symbol is present, so a silently-declined caller fails LOUDLY.
+        run: |
+          SYNTH=./target/debug/synth \
+            WASMTOOLS=wasm-tools WASMTIME=wasmtime \
+            python scripts/repro/aarch64_calls_851.py
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
