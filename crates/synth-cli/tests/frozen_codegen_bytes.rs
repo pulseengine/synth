@@ -237,8 +237,9 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the new smaller bytes BEFORE this re-pin: control_step_differential 13/13
 /// incl. the 0x00210A55 seam, flight_seam + flight_seam_flat both 0x07FDF307,
 /// the #682 mod-32 oracle (i32_shift_mask_682_differential all green, incl. the
-/// >=32 wrap), and the NEW gpio_thin_846_differential (534→506 B, 75/75 mmio
-/// traces+returns bit-identical across pins incl. >=32). `SYNTH_SHIFT_MASK_ELIDE=0`
+/// wrap at amount ≥ 32), and the NEW gpio_thin_846_differential (534→506 B,
+/// 75/75 mmio traces+returns bit-identical across pins incl. ≥ 32). The opt-out
+/// `SYNTH_SHIFT_MASK_ELIDE=0`
 /// restores the prior bytes (asserted by
 /// `shift_mask_elide_686_default_is_on_and_optout_rolls_back`). Prior goldens
 /// were control_step b365a29e…/308, flight_seam 28642d60…/870, flight_seam_flat
