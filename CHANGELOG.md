@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **aarch64 direct `call` (#851).** The `-b aarch64` backend now lowers WASM
+  direct `call` (previously a loud-decline). Args are marshalled into `x0..x7`
+  per AAPCS64, a `bl func_N` targets the callee (linkable via a new
+  `R_AARCH64_CALL26` `.rela.text` relocation — ELF64 `r_info` sym in the high
+  word, type 283), and the `x0` result is pushed. A function that emits a call
+  becomes NON-LEAF: it saves/restores FP+LR (`stp x29,x30,[sp,#-16]!` /
+  `ldp x29,x30,[sp],#16`) around the body — leaf functions stay byte-identical.
+  The multi-function object now places EVERY reachable local function with a
+  `func_N` symbol (plus its export alias) so a call to a non-exported helper
+  resolves. New encoders `bl`/`stp_fp_lr_pre16`/`ldp_fp_lr_post16`; new
+  `RelocKind::AArch64Call26` and `DecodedModule::func_result_counts` (the
+  0-vs-1 result distinction the call push decision needs). Honest frontier
+  (loud-declined, never wrong code): calling an IMPORT, `> 8` integer args,
+  multi-result or FLOAT-result callees (returned in v0/d0, not x0), a CALLER
+  that reads its OWN incoming params across a call (param-homing is a later
+  increment; a callee freely reads its params), any live value beneath the
+  args at the call site, and `call_indirect`. Verified: 8 new selector/elf unit
+  tests + a native-arm64 MAP_JIT execution differential
+  (`scripts/repro/aarch64_calls_851.py`) proving 5 call modules (const/computed
+  args, void, i64, result-consumed) bit-identical vs wasmtime; the standing
+  `aarch64_matrix.sh` op-set gate is unchanged (32 ops / 86 checks PASS).
 - **aarch64 non-param locals (#856).** The `-b aarch64` backend now supports
   `local` declarations beyond params: each non-param local gets a zero-init
   8-byte stack slot (`[sp, #(idx − num_params)*8]`, frame rounded to a 16-byte

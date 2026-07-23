@@ -111,6 +111,13 @@ pub struct CompileConfig {
     /// of operand-stack values into R0–R3 (issue #195). Empty = pass no args
     /// (pre-#195 behaviour).
     pub func_arg_counts: Vec<u32>,
+    /// #851: result (return-value) count per function, indexed by full WASM
+    /// function index (imports first). `0` = void, `1` = one value. The AArch64
+    /// direct-`call` lowering needs the 0-vs-1 distinction to decide whether to
+    /// push the `x0` result — `func_ret_i64/f32/f64` carry the result TYPE but
+    /// conflate void and i32. Empty on backends/paths that do not lower calls
+    /// this way (byte-invisible there).
+    pub func_result_counts: Vec<u32>,
     /// AAPCS integer-argument count per function type, indexed by type index.
     /// Used by `call_indirect` (issue #195).
     pub type_arg_counts: Vec<u32>,
@@ -428,6 +435,7 @@ impl Default for CompileConfig {
             loom_compat: false,
             num_imports: 0,
             func_arg_counts: Vec::new(),
+            func_result_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             relocatable: false,
             // #275: self-contained funcref-table dispatch is opt-in by the

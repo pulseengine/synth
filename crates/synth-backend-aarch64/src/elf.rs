@@ -131,8 +131,10 @@ pub fn build_relocatable_object(functions: &[ElfFunction]) -> Vec<u8> {
     // .text=1/.symtab=2/.strtab=3/.shstrtab=4 stable preserves the milestone-1b
     // layout for call-free modules (byte-identical) — the symtab st_shndx=1 and
     // e_shstrndx=4 are unchanged.
+    // .symtab is section 2 (the .rela.text `sh_link`). .rela.text, when present,
+    // is section 5 (the last content section) — but the ELF section-header table
+    // is position-indexed, so we never need to name that index explicitly.
     let idx_symtab = 2u32;
-    let idx_rela = 5u32; // only used when have_rela
 
     // --- Layout: ehdr | .text | .symtab | .strtab | .shstrtab | [.rela] | shdrs. ---
     let text_off = EHDR_SIZE;
@@ -239,7 +241,6 @@ pub fn build_relocatable_object(functions: &[ElfFunction]) -> Vec<u8> {
             8,
             RELA_SIZE as u64,
         );
-        let _ = idx_rela; // documented section index; not otherwise referenced
     }
 
     out

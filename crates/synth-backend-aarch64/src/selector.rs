@@ -203,8 +203,17 @@ pub fn select_typed_cf(
 ) -> Result<Vec<u32>, SelectError> {
     // No call metadata → any `call` in the body hits the honest catch-all decline
     // (byte-identical to the pre-#851 behavior for call-free functions).
-    let (words, _sites) =
-        select_typed_cf_calls(ops, num_params, params_f32, params_f64, block_arity, 0, &[], &[])?;
+    let (words, _sites) = select_typed_cf_calls(
+        ops,
+        num_params,
+        params_f32,
+        params_f64,
+        block_arity,
+        0,
+        &[],
+        &[],
+        &[],
+    )?;
     Ok(words)
 }
 
@@ -229,6 +238,11 @@ pub struct CallSite {
 ///   values `call` pops off the value stack and marshals into `x0..x7`).
 /// - `func_result_counts[idx]`: the callee's result count (0 = void, 1 = one
 ///   value pushed back). Multi-result and out-of-range are declined.
+/// - `func_ret_float[idx]`: true when the callee returns an f32/f64. AAPCS64
+///   returns floats in `v0/d0`, NOT `x0`, so a float-returning callee is
+///   LOUD-DECLINED (pushing `x0` would read a stale GP register — the
+///   "more-total-than-WASM" silent-miscompile class). Float results are a
+///   documented later increment.
 ///
 /// A function whose body contains a lowered `call` becomes NON-LEAF: `bl`
 /// clobbers `x30`, so a non-leaf prologue saves FP/LR (`stp x29,x30,[sp,#-16]!`)
@@ -245,6 +259,7 @@ pub fn select_typed_cf_calls(
     num_imports: u32,
     func_arg_counts: &[u32],
     func_result_counts: &[u32],
+    func_ret_float: &[bool],
 ) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
@@ -1215,6 +1230,17 @@ pub fn select_typed_cf_calls(
                          are not supported for aarch64; loud-declining (#851)"
                     )));
                 }
+                // AAPCS64 returns f32/f64 in v0/d0, NOT x0. A float-returning
+                // callee must decline: pushing x0 as the result would read a
+                // stale GP register — a silent miscompile. (Float call results
+                // are a documented later increment.)
+                if rc == 1 && func_ret_float.get(idx as usize).copied().unwrap_or(false) {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: float result (returned in v0/d0, \
+                         not x0) — float call results are not yet supported for \
+                         aarch64; loud-declining (#851)"
+                    )));
+                }
                 // The value stack must be EXACTLY the args (nothing survives the
                 // clobber underneath). This also guarantees no arg is FP-tagged
                 // improperly — an FP arg would need v-register marshalling we do
@@ -1340,6 +1366,7 @@ mod tests {
             num_imports,
             arg_counts,
             result_counts,
+            &[],
         )
     }
 
@@ -1419,6 +1446,25 @@ mod tests {
             WasmOp::End,
         ];
         assert!(sel_calls(&ops, 0, 0, &[1], &[1]).is_err());
+    }
+
+    #[test]
+    fn call_with_float_result_loud_declines() {
+        // A callee that returns f32/f64 (result in v0/d0, not x0) must decline —
+        // pushing x0 would be a silent miscompile.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            0,
+            &[0],    // 0 args
+            &[1],    // 1 result
+            &[true], // ...which is a float
+        );
+        assert!(r.is_err(), "float-returning callee must loud-decline");
     }
 
     #[test]

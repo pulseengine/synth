@@ -39,6 +39,7 @@ impl AArch64Backend {
         ops: &[WasmOp],
         config: &CompileConfig,
         func_result_counts: &[u32],
+        func_ret_float: &[bool],
     ) -> Result<CompiledFunction, BackendError> {
         // #457: cap the access-pattern inference with the declared count when
         // the driver supplied one — a read-before-write non-param local (wasm
@@ -68,6 +69,7 @@ impl AArch64Backend {
             config.num_imports,
             &config.func_arg_counts,
             func_result_counts,
+            func_ret_float,
         )
         .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -144,7 +146,18 @@ impl Backend for AArch64Backend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        self.compile_function_with_results(name, ops, config, &[])
+        // #851: the CLI's per-function compile path threads the module-wide
+        // result-count + float-return tables via the config so direct `call`
+        // lowers here too (a float-returning callee is loud-declined — v0/d0).
+        let result_counts = config.func_result_counts.clone();
+        let n = config.func_ret_f32.len().max(config.func_ret_f64.len());
+        let ret_float: Vec<bool> = (0..n)
+            .map(|i| {
+                config.func_ret_f32.get(i).copied().unwrap_or(false)
+                    || config.func_ret_f64.get(i).copied().unwrap_or(false)
+            })
+            .collect();
+        self.compile_function_with_results(name, ops, config, &result_counts, &ret_float)
     }
 
     fn compile_module(
@@ -175,6 +188,16 @@ impl Backend for AArch64Backend {
                 "no exported functions found".into(),
             ));
         }
+
+        // #851: per-function "returns a float" mask (v0/d0 result) — a
+        // float-returning callee is loud-declined by the call lowering.
+        let nrf = module.func_ret_f32.len().max(module.func_ret_f64.len());
+        let func_ret_float: Vec<bool> = (0..nrf)
+            .map(|i| {
+                module.func_ret_f32.get(i).copied().unwrap_or(false)
+                    || module.func_ret_f64.get(i).copied().unwrap_or(false)
+            })
+            .collect();
 
         let mut functions = Vec::new();
         let mut elf_funcs = Vec::new();
@@ -213,15 +236,16 @@ impl Backend for AArch64Backend {
                 &func.ops,
                 &func_config,
                 &module.func_result_counts,
+                &func_ret_float,
             )?;
             // Symbol aliases at this function's `.text` offset: always `func_N`;
             // plus the export name when it differs (so both `run` and `func_1`
             // resolve to the same body).
             let mut aliases = vec![func_sym.clone()];
-            if let Some(exp) = &func.export_name {
-                if *exp != func_sym {
-                    aliases.push(exp.clone());
-                }
+            if let Some(exp) = &func.export_name
+                && *exp != func_sym
+            {
+                aliases.push(exp.clone());
             }
             elf_funcs.push(ElfFunction {
                 symbols: aliases,
