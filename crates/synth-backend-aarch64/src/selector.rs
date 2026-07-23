@@ -19,14 +19,20 @@
 //! - the full i32/i64 compare family (`eq/ne/lt/gt/le/ge` signed+unsigned) and
 //!   `eqz`, lowered to `cmp` + `cset`.
 //!
+//! **Shipped since #851:** `div_s/div_u/rem_s/rem_u` (i32+i64, with the ÷0 and
+//! signed-`INT_MIN÷-1` WASM trap guards A64's total `SDIV`/`UDIV` omit — the
+//! "more-total-than-WASM" class is guarded, not naive), `popcnt` (SIMD
+//! `CNT`+`ADDV`), f64↔i64 reinterpret, linear-memory load/store, non-param
+//! locals, direct `call`, and full control flow (`if`/`else`/`loop`/`return`).
+//!
 //! **Deliberately still declined (loud-skip, never wrong code):**
-//! - `div_s/div_u/rem_s/rem_u` (i32 and i64): A64 `SDIV`/`UDIV` do NOT trap on
-//!   divide-by-zero or `INT_MIN÷-1`, whereas WASM requires a trap. Lowering them
-//!   naively is the "ARM more-total-than-WASM" silent-miscompile class; they are
-//!   left for a later milestone that adds the explicit trap guards.
-//! - `popcnt`: no scalar A64 popcount pre-SVE (needs SIMD `CNT`+`ADDV`).
-//! - memory, calls, spilling. (Forward void-block control flow lands in the
-//!   #538-cf increment; NON-PARAM LOCALS land in #851 — see below.)
+//! - `call_indirect`, import calls, `>8` integer args, multi-result or
+//!   float-result callees (returned in v0/d0, not x0), a caller reading its own
+//!   params across a call (param-homing is a later increment).
+//! - `br_table`, value-carrying `block`/`loop`/`if`, and register spilling.
+//! - OOB memory bounds-trap, data-segment init, and the startup that establishes
+//!   the `x28` linear-memory base (the load/store lowering is correct given the
+//!   base precondition; wiring it at runtime is a follow-on).
 //!
 //! **#851 — non-param locals:** GP locals beyond the params (index >=
 //! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -

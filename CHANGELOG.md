@@ -40,7 +40,7 @@ ordeal#101 — synth stays safely pinned `ordeal =0.9.1`).
     full-width `cbnz` for i64) and, for SIGNED DIV only, the `INT_MIN / −1`
     overflow → `brk`. `rem_s(INT_MIN, −1) == 0` (no trap) falls out of `MSUB`
     naturally. The ÷0 and INT_MIN/−1 traps are execution-verified vs wasmtime
-    (`scripts/repro/aarch64_divrem_851_differential.py`: 152 cases / 34 trap
+    (`scripts/repro/aarch64_divrem_851_differential.py`: 179 cases / 34 trap
     cases, native SIGTRAP + unicorn `brk`).
   - **popcnt (i32+i64):** A64 has no scalar popcount, so `fmov` gpr→SIMD,
     `CNT vN.8b`, `ADDV bN, vN.8b`, `fmov` back (i32 uses `fmov s` to zero-fill
