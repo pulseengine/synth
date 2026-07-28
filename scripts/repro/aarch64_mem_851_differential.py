@@ -18,10 +18,12 @@ RED-first: before the #851 lowering every memory op loud-declines
 (`unsupported wasm op for aarch64 subset`), so `synth compile` fails and the
 symbols are absent → this gate is RED. After the lowering it is GREEN.
 
-SOUNDNESS / honest frontier: the lowering computes the WASM effective address
-and dereferences it — it does NOT bounds-check. All inputs here are IN-BOUNDS;
-out-of-bounds trap, data-segment init, and memory.{size,grow} are the documented
-follow-on frontier (the host-native subset has no memory-size convention yet).
+All inputs here are IN-BOUNDS — this gate pins the VALUE semantics of the
+lowering (and must stay green unchanged now that #865 bounds checks are on by
+default: an in-bounds access passes the check and behaves identically).
+Out-of-bounds TRAP semantics are gated separately by
+`aarch64_bounds_865_differential.py`; data-segment init and memory.{size,grow}
+remain the documented follow-on frontier.
 
 Runs on any host (unicorn emulates A64). Needs wasmtime + unicorn + pyelftools:
   SYNTH=<target>/debug/synth python scripts/repro/aarch64_mem_851_differential.py

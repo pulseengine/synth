@@ -104,7 +104,7 @@ const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
 /// memory-using function is correct *given* the `x28 = base` precondition, which
 /// the #851 execution differential supplies explicitly; wiring the ABI/startup
 /// that establishes it in a real program is a documented follow-on (alongside
-/// OOB-trap, data-segment init, and memory.{size,grow}).
+/// data-segment init and memory.{size,grow}; OOB accesses trap since #865).
 const LINMEM_BASE: Reg = 28;
 
 /// #865 — linear-memory bounds-check mode for the load/store lowering.
