@@ -574,30 +574,46 @@ mod tests {
 
     // --- per-query wall-clock deadline (#848/#849) ---
 
-    /// A query the CDCL core cannot decide instantly: 32-bit multiplication
-    /// **associativity**, `(x·y)·z == x·(y·z)`. Commutativity is folded away
-    /// by canonicalization, associativity is not — this is a genuine
-    /// multi-second bit-blast + search, exactly the shape the deadline exists
-    /// to bound.
-    fn hard_query() -> Bool {
-        let (x, y) = (x32(), y32());
-        let z = BV::new_const("z", 32);
+    /// The negated multiplication-**associativity** goal at a chosen width:
+    /// `¬((x·y)·z == x·(y·z))`. Valid at every width (so a decided verdict is
+    /// always `Unsat`), but *hard* for a CDCL core: commutativity is folded
+    /// away by canonicalization, associativity is not, so proving it needs a
+    /// real multiplier blast + search. This is exactly the shape the deadline
+    /// exists to bound.
+    ///
+    /// Cost scales viciously — measured unbounded on a dev host (debug build,
+    /// ordeal 0.16.1): width 8, 16 and 32 all run **>30 s**, width 3 decides
+    /// in milliseconds. Hence the two widths below.
+    fn mul_assoc_goal(width: u32) -> Bool {
+        let x = BV::new_const("ha_x", width);
+        let y = BV::new_const("ha_y", width);
+        let z = BV::new_const("ha_z", width);
         x.bvmul(&y).bvmul(&z).eq(x.bvmul(&y.bvmul(&z))).not()
     }
 
+    /// Wide enough that no 1 ms budget can finish it (>30 s unbounded).
+    const HARD_WIDTH: u32 = 8;
+    /// Narrow enough to decide in milliseconds — the cheap validity control.
+    const EASY_WIDTH: u32 = 3;
+
     /// SOUNDNESS GATE: a query that exceeds its wall-clock deadline must
-    /// degrade to [`CheckOutcome::Unknown`] — **never** `Unsat` (which every
-    /// caller reads as "proven"). Red-first pairing: the SAME query with the
-    /// deadline DISABLED (`0`) decides `Unsat`, so the `Unknown` is the
-    /// deadline biting a valid obligation, not a malformed query.
+    /// degrade to [`CheckOutcome::Unknown`] — **never** `Unsat`, which every
+    /// caller reads as "proven". This is the mechanism that would have turned
+    /// the #849 six-hour hang into a bounded, loud non-answer.
     ///
-    /// This is the mechanism that would have turned the #849 6-hour hang into
-    /// a bounded, loud non-answer.
+    /// Non-vacuity comes from the narrow control: the SAME construction at
+    /// [`EASY_WIDTH`] decides `Unsat` in milliseconds, so the `Unknown` above
+    /// is the deadline biting a well-formed, in-fragment, *valid* obligation —
+    /// not a query builder bug or an out-of-fragment term. (Associativity is a
+    /// mathematical identity at every width; what the control rules out is a
+    /// coding error in `mul_assoc_goal`, which is the only way this gate could
+    /// go vacuous.) Re-proving the width-8 instance unbounded would cost the
+    /// suite >30 s for no extra information.
     #[test]
     fn deadline_degrades_to_unknown_never_to_proven() {
-        // 1 ms: far below what this query needs.
+        // 1 ms: orders of magnitude below what the wide instance needs.
         let mut bounded = OrdealSolver::with_deadline_ms(1);
-        bounded.assert(&hard_query());
+        bounded.assert(&mul_assoc_goal(HARD_WIDTH));
         let outcome = bounded.check();
         assert!(
             matches!(outcome, CheckOutcome::Unknown(_)),
@@ -608,16 +624,22 @@ mod tests {
             CheckOutcome::Unsat,
             "SOUNDNESS: a timed-out query must never be reported as proven"
         );
+        // And it must say *why* — a deadline, not a silent shrug.
+        let CheckOutcome::Unknown(reason) = &outcome else {
+            unreachable!("asserted above")
+        };
+        assert!(
+            reason.contains("deadline"),
+            "the non-answer must name the bound that produced it, got {reason:?}"
+        );
 
-        // Control: unbounded, the same obligation IS provable — so the
-        // Unknown above is the deadline, not an unsatisfiable-by-accident or
-        // out-of-fragment query (which would make the gate vacuous).
-        let mut unbounded = OrdealSolver::with_deadline_ms(0);
-        unbounded.assert(&hard_query());
+        // Non-vacuity control: same construction, narrow, given the time.
+        let mut control = OrdealSolver::with_deadline_ms(0);
+        control.assert(&mul_assoc_goal(EASY_WIDTH));
         assert_eq!(
-            unbounded.check(),
+            control.check(),
             CheckOutcome::Unsat,
-            "control: 32-bit mul associativity is valid when given the time"
+            "control: the mul-associativity goal is well-formed and valid"
         );
     }
 
