@@ -30,9 +30,11 @@
 //!   float-result callees (returned in v0/d0, not x0), a caller reading its own
 //!   params across a call (param-homing is a later increment).
 //! - `br_table`, value-carrying `block`/`loop`/`if`, and register spilling.
-//! - OOB memory bounds-trap, data-segment init, and the startup that establishes
-//!   the `x28` linear-memory base (the load/store lowering is correct given the
-//!   base precondition; wiring it at runtime is a follow-on).
+//! - Data-segment init and the startup that establishes the `x28` linear-memory
+//!   base (the load/store lowering is correct given the base precondition;
+//!   wiring it at runtime is a follow-on). OOB accesses TRAP since #865 under
+//!   [`MemBounds::Software`] (the CLI default); `--safety-bounds none` is the
+//!   explicit unchecked opt-out.
 //!
 //! **#851 — non-param locals:** GP locals beyond the params (index >=
 //! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -
@@ -104,6 +106,30 @@ const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
 /// that establishes it in a real program is a documented follow-on (alongside
 /// OOB-trap, data-segment init, and memory.{size,grow}).
 const LINMEM_BASE: Reg = 28;
+
+/// #865 — linear-memory bounds-check mode for the load/store lowering.
+///
+/// v0.51.0 shipped the #851 lowering with NO bounds check and `--safety-bounds`
+/// silently ignored (all four modes byte-identical): a guest address is
+/// zero-extended (`uxtw`), so `0xFFFFFFFF` reaches `x28 + 4 GiB − 1` — an OOB
+/// read (disclosure) / write (arbitrary-write) primitive where WASM requires a
+/// trap. This enum makes the choice EXPLICIT at the selector boundary: a caller
+/// must either supply the memory limit (and get per-access trap checks) or
+/// explicitly opt out — there is no silent default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemBounds {
+    /// No per-access check — the explicit `--safety-bounds none` opt-out.
+    /// An out-of-bounds guest access dereferences host memory (documented,
+    /// deliberate; NOT the CLI default).
+    Unchecked,
+    /// Software bounds (#865): every access proves
+    /// `uxtw(addr) + memarg.offset + access_size <= limit_bytes`
+    /// or traps (`brk #0`) BEFORE the dereference — WASM §4.4.7 OOB-trap
+    /// semantics. `limit_bytes` is the module's declared minimum memory size
+    /// (pages × 64 KiB); `memory.grow` is not lowered on this backend, so the
+    /// declared minimum IS the runtime size and the static limit is sound.
+    Software { limit_bytes: u64 },
+}
 
 /// Which register file a value-stack entry lives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +235,9 @@ pub fn select_typed_cf(
 ) -> Result<Vec<u32>, SelectError> {
     // No call metadata → any `call` in the body hits the honest catch-all decline
     // (byte-identical to the pre-#851 behavior for call-free functions).
+    // No memory context either → bounds-unchecked, matching the pre-#865
+    // behavior of these compatibility wrappers (the real driver — the Backend
+    // impl — threads the resolved `MemBounds` explicitly).
     let (words, _sites) = select_typed_cf_calls(
         ops,
         num_params,
@@ -219,6 +248,7 @@ pub fn select_typed_cf(
         &[],
         &[],
         &[],
+        MemBounds::Unchecked,
     )?;
     Ok(words)
 }
@@ -266,6 +296,7 @@ pub fn select_typed_cf_calls(
     func_arg_counts: &[u32],
     func_result_counts: &[u32],
     func_ret_float: &[bool],
+    bounds: MemBounds,
 ) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
@@ -913,18 +944,67 @@ pub fn select_typed_cf_calls(
     // that does not alias any live value-stack entry (the address operand has
     // already been popped, so its register is free to reuse).
     //
-    // SOUNDNESS / honest frontier: this computes the WASM effective address and
-    // dereferences it against the ambient base — it does NOT bounds-check. WASM
-    // requires an out-of-bounds access to TRAP; the host-native subset has no
-    // memory-size convention yet, so OOB is UNTRAPPED (reads/writes adjacent host
-    // memory). In-bounds load/store is execution-verified vs wasmtime; OOB-trap,
-    // data-segment init, and memory.{size,grow} are the documented follow-ons.
+    // SOUNDNESS (#865): under `MemBounds::Software` every access first PROVES
+    // `uxtw(addr) + offset + size <= limit` or traps (`brk #0`) — WASM §4.4.7.
+    // Since `offset`, `size`, and `limit` are all compile-time constants, the
+    // check reduces to a single unsigned compare of the 32-bit guest address
+    // against `K = limit - offset - size`:
+    //
+    //   in-bounds  ⇔  uxtw(addr) + offset + size ≤ limit  ⇔  uxtw(addr) ≤ K
+    //
+    //   mov  w_k, #K          ; K = limit - offset - size (compile-time)
+    //   cmp  w_addr, w_k      ; 32-bit compare — uxtw-correct by construction
+    //                         ; (w-form reads the low 32 bits, exactly the
+    //                         ;  zero-extended guest address the EA add uses)
+    //   b.ls +2               ; unsigned addr <= K → skip the trap
+    //   brk  #0               ; OOB → trap (same mechanism as div/0, #709)
+    //
+    // When `K < 0` (offset + size exceed the limit) NO i32 address is in
+    // bounds: emit an unconditional `brk` (the access always traps; the dead
+    // access code that follows keeps the value-stack bookkeeping uniform).
+    // K always fits u32 when non-negative: limit ≤ 2^32 and size ≥ 1.
+    // Under `MemBounds::Unchecked` (explicit opt-out) no check is emitted.
+    let bounds_check = |words: &mut Vec<u32>,
+                        stack: &mut Vec<Val>,
+                        addr: Reg,
+                        offset: u32,
+                        size_log2: u32|
+     -> Result<(), SelectError> {
+        let MemBounds::Software { limit_bytes } = bounds else {
+            return Ok(());
+        };
+        let size = 1u64 << size_log2;
+        let k = limit_bytes as i64 - offset as i64 - size as i64;
+        if k < 0 {
+            words.push(enc::brk(0));
+            return Ok(());
+        }
+        // Keep `addr` live while allocating the limit scratch so they are
+        // guaranteed distinct registers.
+        stack.push(Val::gp(addr));
+        let ktmp = alloc_temp(stack)?;
+        stack.pop();
+        for w in enc::mov_imm32(ktmp, k as u32) {
+            words.push(w);
+        }
+        words.push(enc::cmp(addr, ktmp));
+        words.push(enc::bcond(Cond::Ls, 2)); // in-bounds: hop over the brk
+        words.push(enc::brk(0)); // OOB trap
+        Ok(())
+    };
+
+    // In-bounds load/store is execution-verified vs wasmtime; the OOB-trap
+    // check above is #865 (see `MemBounds`). Data-segment init and
+    // memory.{size,grow} are the remaining documented follow-ons.
     let form_ea = |words: &mut Vec<u32>,
                    stack: &mut Vec<Val>,
                    addr: Reg,
                    offset: u32,
                    size_log2: u32|
      -> Result<(Reg, Option<u32>), SelectError> {
+        // #865: prove the access in-bounds (or trap) BEFORE clobbering any
+        // register — `addr` is still intact here.
+        bounds_check(words, stack, addr, offset, size_log2)?;
         // The address operand is popped; its register is now free. Allocate the
         // EA temp against the CURRENT live stack (addr already removed).
         let ea = alloc_temp(stack)?;

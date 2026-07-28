@@ -60,6 +60,28 @@ impl AArch64Backend {
         // value-carrying (typed) blocks.
         // #851: thread the call metadata so direct `call` lowers to `bl func_N`
         // + an R_AARCH64_CALL26 relocation (call-free bodies are unaffected).
+        // #865: resolve `--safety-bounds` into the selector's explicit
+        // `MemBounds` — `software` emits per-access OOB-trap checks against the
+        // module's declared memory limit, `none` is the explicit unchecked
+        // opt-out, and anything else (mask/mpu) HARD-ERRORS here too (defense
+        // in depth behind the CLI's early rejection): accepting a mode and
+        // emitting unchecked accesses is the #865 silent-no-op miscompile.
+        let bounds = match config.effective_safety_bounds() {
+            synth_core::backend::SafetyBounds::Software => selector::MemBounds::Software {
+                limit_bytes: config.linear_memory_bytes as u64,
+            },
+            synth_core::backend::SafetyBounds::None => selector::MemBounds::Unchecked,
+            other => {
+                return Err(BackendError::CompilationFailed(format!(
+                    "--safety-bounds {} is not implemented on the aarch64 backend — \
+                     refusing to silently emit UNCHECKED memory accesses (#865). \
+                     Use --safety-bounds software (the default: per-access bounds \
+                     checks that trap out-of-bounds) or --safety-bounds none \
+                     (explicit unchecked opt-out).",
+                    other.as_str()
+                )));
+            }
+        };
         let (words, call_sites) = selector::select_typed_cf_calls(
             ops,
             num_params,
@@ -70,6 +92,7 @@ impl AArch64Backend {
             &config.func_arg_counts,
             func_result_counts,
             func_ret_float,
+            bounds,
         )
         .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
