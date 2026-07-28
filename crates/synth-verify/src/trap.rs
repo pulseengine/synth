@@ -262,6 +262,12 @@ fn verdict(result: CheckResult) -> TrapVerdict {
 /// `Preserved`. The certificate re-check in [`verdict`] is untouched, so the
 /// bound costs completeness only.
 ///
+/// NOTE this path is ordeal-only by construction: it does NOT go through
+/// [`crate::solver::new_solver`], so the `SYNTH_SOLVER_DIFF` Z3 cross-check
+/// never sees these VCs. That is why the CI "Z3 Verification" job hung in
+/// #849 too — it runs the same ordeal-backed trap tests, not a Z3 solve.
+/// Routing trap VCs through the differential seam is a separate follow-up.
+///
 /// Limitation (same as the seam): the deadline governs the SAT *search*, not
 /// bit-blasting.
 fn prove_valid_bounded(goal: ordeal::BoolTerm) -> CheckResult {

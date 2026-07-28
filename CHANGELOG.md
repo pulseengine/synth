@@ -22,13 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synth now builds the same goal term (`trap_equivalence_vc` /
   `trap_condition_equivalence`) and discharges it under the deadline itself.
   The Z3 differential oracle gets the identical budget via z3's `timeout`
-  param. Expiry degrades to `ValidationResult::Unknown` / `TrapVerdict::Unknown`
-  — an undecided query is **never** reported `Verified`/`Preserved`; the
-  certificate re-check and model self-check are untouched, so the bound costs
-  completeness only, never soundness. Gated red-first by
-  `solver::tests::deadline_degrades_to_unknown_never_to_proven` (a 1 ms budget
-  on a hard query yields `Unknown`; the same query with the deadline disabled
-  yields `Unsat`, so the gate is not vacuous). **Documented limitation:**
+  param — note the trap VCs are ordeal-only by construction (they never route
+  through `new_solver`), so the `Z3 Verification` job hung on the *same ordeal*
+  queries, not on Z3; the z3 budget is defence in depth for the value-VC path
+  that does use the oracle. Expiry degrades to `ValidationResult::Unknown` /
+  `TrapVerdict::Unknown` — an undecided query is **never** reported
+  `Verified`/`Preserved`; the certificate re-check and model self-check are
+  untouched, so the bound costs completeness only, never soundness. Gated
+  red-first by `solver::tests::deadline_degrades_to_unknown_never_to_proven`
+  (a 1 ms budget on a hard query yields `Unknown` and names the deadline; the
+  same construction, narrow, decides `Unsat`, so the gate is not vacuous).
+  **Documented limitation:**
   `check_with_deadline` bounds the SAT *search*, not bit-blasting — it is a
   strong bound on the dominant cost, not a universal wall-clock guard.
   Complemented by an outer `timeout-minutes` on the CI `Test` (60) and
