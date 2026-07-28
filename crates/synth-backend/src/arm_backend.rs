@@ -1415,9 +1415,11 @@ fn compile_wasm_to_arm(
         // Loud honest decline (join reasoning skipped for an unmodeled-CF
         // function). Non-fatal — the straight-line / callee-saved / across-call
         // invariants still ran and held; only the across-JOIN availability
-        // reasoning is skipped (the optimized path pre-resolves branches to
-        // NUMERIC offsets, outside the label-form CFG the join check needs, so
-        // this is the COMMON case on the default path — ~41/130 repro fixtures).
+        // reasoning is skipped. Since the #819 redo the optimized path's
+        // pre-resolved NUMERIC branches are modeled too (build_join_cfg_numeric
+        // + the PRESERVED entry-availability discriminator), so this fires only
+        // on genuinely unmodeled shapes: BrTable, computed Bx, mixed
+        // label+numeric streams, off-boundary numeric targets.
         // Surfaced only under `SYNTH_RA003_VERBOSE` so a production compile stays
         // quiet: emitting it unconditionally would print on every branchy
         // optimized-path compile (new stderr noise phase 1 never produced), yet
