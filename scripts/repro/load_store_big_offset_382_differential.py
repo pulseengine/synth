@@ -21,7 +21,6 @@ Run (rebuild synth first):
 
 Exits nonzero on mismatch so it can gate a release.
 """
-import re
 import subprocess
 import sys
 
@@ -76,10 +75,20 @@ def run_unicorn():
         [SYNTH, "compile", WASM, "-t", "cortex-m4", "--all-exports", "-o", ELF],
         check=True, capture_output=True,
     )
-    dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
-    text = ELFFile(open(ELF, "rb")).get_section_by_name(".text")
+    # Read function offsets from the ELF SYMBOL TABLE (host-independent), NOT by
+    # parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (#850). synth emits the symtab
+    # as an UNNAMED SHT_SYMTAB section (get_section_by_name(".symtab") is None), so
+    # iterate by TYPE. ARM Thumb symbols carry the Thumb bit (bit 0); mask `& ~1`
+    # so the map equals the clean disasm addresses and every downstream
+    # `(CODE + syms[fn] - base) | 1` formula is byte-identical.
+    ef = ELFFile(open(ELF, "rb"))
+    text_idx = ef.get_section_index(".text")
+    syms = {s.name: s["st_value"] & ~1 for sec in ef.iter_sections()
+            if sec.header.sh_type == "SHT_SYMTAB"
+            for s in sec.iter_symbols()
+            if s.name and s["st_shndx"] == text_idx}
+    text = ef.get_section_by_name(".text")
     code, base = text.data(), text["sh_addr"]
 
     CODE, LIN, STK = 0x10000, LIN_BASE & ~0xFFFF, 0x30000000

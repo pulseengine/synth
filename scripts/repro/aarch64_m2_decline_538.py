@@ -25,26 +25,13 @@ SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 # Each entry: (label, wat body). All must FAIL to compile with -b aarch64.
 DECLINED = [
-    ("i32.div_s", '(func (export "f") (param i32 i32) (result i32) '
-                  '(i32.div_s (local.get 0) (local.get 1)))'),
-    ("i32.div_u", '(func (export "f") (param i32 i32) (result i32) '
-                  '(i32.div_u (local.get 0) (local.get 1)))'),
-    ("i32.rem_s", '(func (export "f") (param i32 i32) (result i32) '
-                  '(i32.rem_s (local.get 0) (local.get 1)))'),
-    ("i32.rem_u", '(func (export "f") (param i32 i32) (result i32) '
-                  '(i32.rem_u (local.get 0) (local.get 1)))'),
-    ("i64.div_s", '(func (export "f") (param i64 i64) (result i64) '
-                  '(i64.div_s (local.get 0) (local.get 1)))'),
-    ("i64.rem_u", '(func (export "f") (param i64 i64) (result i64) '
-                  '(i64.rem_u (local.get 0) (local.get 1)))'),
-    ("i32.popcnt", '(func (export "f") (param i32) (result i32) '
-                   '(i32.popcnt (local.get 0)))'),
-    ("i64.popcnt", '(func (export "f") (param i64) (result i64) '
-                   '(i64.popcnt (local.get 0)))'),
-    # m3 (#787) landed non-trapping scalar floats; m4 landed the #709-class
-    # conversions (domain-guarded i32.trunc_f32/f64_s/u, FMIN/FMAX min/max,
-    # copysign) — those are now SUPPORTED, so the honesty gate moves to the
-    # floats that DELIBERATELY stay declined:
+    # #851 landed div/rem (SDIV/UDIV+MSUB with WASM ÷0 + INT_MIN/-1 trap
+    # guards), popcnt (SIMD CNT/ADDV), and f64<->i64 reinterpret — those are
+    # now SUPPORTED and execution-verified (aarch64_divrem_851_differential.py
+    # + the native matrix), so they moved off this honesty list. m3 (#787)
+    # landed non-trapping scalar floats; m4 landed the #709-class conversions
+    # (domain-guarded i32.trunc_f32/f64_s/u, FMIN/FMAX, copysign). The honesty
+    # gate now covers what DELIBERATELY stays declined:
     #   - rounding (ceil/floor/trunc/nearest): f64.floor is DECODED and must
     #     loud-decline at the aarch64 SELECTOR; f32.floor is dropped at decode
     #     (both paths must stay loud, never silent).

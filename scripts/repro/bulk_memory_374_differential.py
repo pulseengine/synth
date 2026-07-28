@@ -31,7 +31,6 @@ Run:
   /tmp/n374venv/bin/python scripts/repro/bulk_memory_374_differential.py /tmp/bmd.elf
 Exits nonzero on any mismatch.
 """
-import re
 import subprocess
 import os
 import sys
@@ -108,11 +107,22 @@ def main():
         img = bytes(mem.read(store, 0, MEM_BYTES))
         return trapped, img
 
-    dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
+    # Read symbol offsets from the ELF SYMBOL TABLE (host-independent), NOT by
+    # parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (#850). synth emits the symtab
+    # as an UNNAMED SHT_SYMTAB section (get_section_by_name(".symtab") is None), so
+    # iterate by TYPE. ARM Thumb symbols carry the Thumb bit (bit 0); mask `& ~1`
+    # so the map equals the clean disasm addresses. This is load-bearing for
+    # trap_addr too: the hook compares the EVEN executing PC, so an unmasked
+    # (odd) trap_addr would never match and silently defeat trap detection.
+    ef = ELFFile(open(ELF, "rb"))
+    text_idx = ef.get_section_index(".text")
+    syms = {s.name: s["st_value"] & ~1 for sec in ef.iter_sections()
+            if sec.header.sh_type == "SHT_SYMTAB"
+            for s in sec.iter_symbols()
+            if s.name and s["st_shndx"] == text_idx}
     trap_sym = syms["Trap_Handler"]
-    text = ELFFile(open(ELF, "rb")).get_section_by_name(".text")
+    text = ef.get_section_by_name(".text")
     code, base = text.data(), text["sh_addr"]
     trap_addr = CODE + trap_sym - base
 

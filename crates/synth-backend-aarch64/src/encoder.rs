@@ -96,6 +96,45 @@ pub fn mul64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// #851 — integer divide and multiply-subtract, the lowering targets for WASM
+// `i32/i64.{div,rem}_{s,u}`. A64 `SDIV`/`UDIV` round toward zero (matching
+// WASM `idiv`), and remainder is `a − (a/b)·b` via `MSUB rd, q, b, a`. NOTE:
+// A64 SDIV/UDIV are TOTAL — `x/0 = 0` and `INT_MIN/−1 = INT_MIN` in hardware,
+// NEITHER of which traps. WASM REQUIRES a trap in both cases, so the selector
+// emits an explicit divisor-zero guard (all four div/rem forms) and, for
+// signed DIV only, an INT_MIN/−1 overflow guard. The encoders below are the
+// bare arithmetic; the guards live in the selector (see the `divrem` closure).
+// clang/llvm-mc ground truth:
+//   sdiv w0,w1,w2 = 0x1AC20C20   udiv w0,w1,w2 = 0x1AC20820
+//   msub w0,w1,w2,w3 = 0x1B028C20   (x-forms set SF64)
+
+/// `sdiv wd, wn, wm` — signed divide, round toward zero.
+pub fn sdiv(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x1AC0_0C00 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sdiv xd, xn, xm`
+pub fn sdiv64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    sdiv(rd, rn, rm) | SF64
+}
+/// `udiv wd, wn, wm` — unsigned divide, round toward zero.
+pub fn udiv(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x1AC0_0800 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `udiv xd, xn, xm`
+pub fn udiv64(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    udiv(rd, rn, rm) | SF64
+}
+/// `msub wd, wn, wm, wa` — `wd = wa − wn·wm`. Used for remainder:
+/// `rem = a − (a/b)·b` = `msub rd, quotient, divisor, dividend`.
+pub fn msub(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
+    0x1B00_8000 | ((rm as u32) << 16) | ((ra as u32) << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+/// `msub xd, xn, xm, xa`
+pub fn msub64(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
+    msub(rd, rn, rm, ra) | SF64
+}
+
+// ---------------------------------------------------------------------------
 // Variable shifts / rotates (register shift amount). Base = `0x1AC0_2000`
 // with the op2 field selecting LSL/LSR/ASR/ROR at bits [11:10]:
 //   00 = LSLV, 01 = LSRV, 10 = ASRV, 11 = RORV.
@@ -276,6 +315,49 @@ pub fn ret() -> u32 {
     0xD65F_03C0
 }
 
+/// The stack-pointer register operand (architectural number 31 in the
+/// base-register position of a load/store or an add/sub-immediate, where 31
+/// means SP rather than the zero register).
+pub const SP: Reg = 31;
+
+/// `str xt, [xn, #imm]` — 64-bit store, unsigned scaled offset. `imm` is a BYTE
+/// offset that must be a multiple of 8 (the 64-bit access size); the encoded
+/// `imm12` field is `imm/8`. Used to zero-init and write non-param local frame
+/// slots (#851). Clang ground truth: `str x9, [sp, #8]` = 0xF90007E9.
+pub fn str_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
+    debug_assert!(imm.is_multiple_of(8), "str x offset must be 8-byte aligned");
+    let imm12 = imm / 8;
+    debug_assert!(imm12 < 0x1000, "str x offset out of unsigned-imm12 range");
+    0xF900_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `ldr xt, [xn, #imm]` — 64-bit load, unsigned scaled offset (byte offset,
+/// multiple of 8). The copy-semantics read of a non-param local frame slot
+/// (#851): each `local.get` loads a FRESH register so a later `local.set` to the
+/// same index cannot alias a value already on the stack. Clang ground truth:
+/// `ldr x9, [sp, #8]` = 0xF94007E9.
+pub fn ldr_x_imm(rt: Reg, rn: Reg, imm: u32) -> u32 {
+    debug_assert!(imm.is_multiple_of(8), "ldr x offset must be 8-byte aligned");
+    let imm12 = imm / 8;
+    debug_assert!(imm12 < 0x1000, "ldr x offset out of unsigned-imm12 range");
+    0xF940_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `sub xd, xn, #imm12` — 64-bit subtract of an unsigned 12-bit immediate (no
+/// shift). Used to LOWER the stack pointer by the non-param-local frame size at
+/// prologue. Clang ground truth: `sub sp, sp, #16` = 0xD10043FF.
+pub fn sub_imm64(rd: Reg, rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000, "sub imm12 out of range");
+    0xD100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+
+/// `add xd, xn, #imm12` — 64-bit add of an unsigned 12-bit immediate (no shift).
+/// RAISES the stack pointer back at epilogue. Clang: `add sp, sp, #16` = 0x910043FF.
+pub fn add_imm64(rd: Reg, rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000, "add imm12 out of range");
+    0x9100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (rd as u32)
+}
+
 /// `brk #imm16` — A64 breakpoint/trap. Used for wasm `unreachable` (#665) and
 /// the m4 trunc-guard trap path: WASM §4.4.5 requires an unconditional trap,
 /// the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
@@ -298,12 +380,47 @@ pub fn b_uncond(imm26: i32) -> u32 {
     0x1400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
 }
 
+/// `bl #(imm26*4)` — branch-with-link, PC-relative in words (signed 26-bit),
+/// sets `x30`/LR to the return address. WASM direct `call` lowers to `bl func_N`
+/// (#851). When the callee's `.text` offset is not known at selection time (the
+/// common case), emit `bl #0` (offset 0) and record an `R_AARCH64_CALL26`
+/// relocation against the callee symbol; the linker patches the imm26 field.
+/// Clang ground truth: `bl .+8` = 0x9400_0002 (imm26 = 2). The op is `b` with
+/// bit 31 set (0x9400_0000 vs `b`'s 0x1400_0000).
+pub fn bl(imm26: i32) -> u32 {
+    0x9400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
+}
+
+/// `stp x29, x30, [sp, #-16]!` — pre-indexed store-pair, the non-leaf function
+/// prologue that saves FP/LR and lowers SP by 16 (staying 16-byte aligned). A
+/// function that emits a `bl` clobbers `x30` and can no longer `ret` without
+/// first preserving the incoming LR. Clang ground truth:
+/// `stp x29, x30, [sp, #-16]!` = 0xA9BF7BFD.
+pub fn stp_fp_lr_pre16() -> u32 {
+    0xA9BF_7BFD
+}
+
+/// `ldp x29, x30, [sp], #16` — post-indexed load-pair, the matching non-leaf
+/// epilogue: restore FP/LR and raise SP by 16. Emitted just before `ret`. Clang
+/// ground truth: `ldp x29, x30, [sp], #16` = 0xA8C17BFD.
+pub fn ldp_fp_lr_post16() -> u32 {
+    0xA8C1_7BFD
+}
+
 /// `cbnz wt, #(imm19*4)` — compare-and-branch-if-nonzero, 32-bit form, offset in
 /// words (signed 19-bit). WASM `br_if` branches when the popped i32 condition is
 /// nonzero, so `cbnz w_cond, <block-end>` is the exact lowering. Clang ground
 /// truth: `cbnz w9, .+8` = 0x3500_0049 (imm19 = 2, Rt = 9).
 pub fn cbnz(rt: Reg, imm19: i32) -> u32 {
     0x3500_0000 | (((imm19 as u32) & 0x7FFFF) << 5) | (rt as u32)
+}
+/// `cbnz xt, #(imm19*4)` — 64-bit form (tests the FULL 64-bit register). #851:
+/// the i64 div/rem divisor-zero guard MUST test all 64 bits — a 32-bit `cbnz w`
+/// on a divisor like `0x1_0000_0000` (nonzero, low word 0) would falsely take
+/// the "nonzero" path and let a divide-by-zero through. llvm-mc: `cbnz x2, #8`
+/// = 0xB5000042 (= the w-form with SF64 set).
+pub fn cbnz64(rt: Reg, imm19: i32) -> u32 {
+    cbnz(rt, imm19) | SF64
 }
 
 /// `cbz wt, #(imm19*4)` — compare-and-branch-if-zero, 32-bit form. Symmetric
@@ -360,6 +477,92 @@ pub fn mov_imm64(rd: Reg, value: u64) -> Vec<u32> {
         }
     }
     out
+}
+
+// ===========================================================================
+// #851 — linear-memory load/store (unsigned-offset addressing form).
+//
+// WASM linear-memory ops lower to A64 LDR/STR against a base register plus the
+// static `memarg` byte offset. All encodings below are the "unsigned offset"
+// form `<op> Rt, [Xn, #imm12*size]`: the shared `LDR/STR (immediate, unsigned
+// offset)` family, where the `size` field [31:30] selects the access width
+// (00=byte, 01=half, 10=word, 11=dword) and `opc` [23:22] selects load vs store
+// vs signed-load, and the 12-bit immediate is SCALED by the access size. Ground
+// truth from `clang -target aarch64-linux-gnu` (see the `mem_*` tests).
+//
+// The `imm12` is the byte offset RIGHT-SHIFTED by the size-log2 (`str w,[x0,#16]`
+// → imm12 = 4). The caller is responsible for verifying the offset is a multiple
+// of the access size and fits in 12 bits (else it must materialize the address).
+// ===========================================================================
+
+/// A `LDR/STR (immediate, unsigned offset)` word. `base` carries size[31:30] +
+/// opc[23:22] + the fixed `0x3900_0000` load/store bit; `imm12` is the
+/// size-scaled offset (already divided by the access size), `rn` the base, `rt`
+/// the data register.
+fn ldst_uimm(base: u32, imm12: u32, rn: Reg, rt: Reg) -> u32 {
+    base | ((imm12 & 0xFFF) << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// `str wt, [xn, #imm12*4]` — store 32-bit word.
+pub fn str_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB900_0000, imm12, rn, rt)
+}
+/// `ldr wt, [xn, #imm12*4]` — load 32-bit word (zero-extended into x).
+pub fn ldr_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB940_0000, imm12, rn, rt)
+}
+/// `str xt, [xn, #imm12*8]` — store 64-bit doubleword.
+pub fn str_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xF900_0000, imm12, rn, rt)
+}
+/// `ldr xt, [xn, #imm12*8]` — load 64-bit doubleword.
+pub fn ldr_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xF940_0000, imm12, rn, rt)
+}
+/// `strh wt, [xn, #imm12*2]` — store low 16 bits.
+pub fn strh(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7900_0000, imm12, rn, rt)
+}
+/// `ldrh wt, [xn, #imm12*2]` — load 16 bits, zero-extended.
+pub fn ldrh(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7940_0000, imm12, rn, rt)
+}
+/// `strb wt, [xn, #imm12]` — store low 8 bits.
+pub fn strb(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3900_0000, imm12, rn, rt)
+}
+/// `ldrb wt, [xn, #imm12]` — load 8 bits, zero-extended.
+pub fn ldrb(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3940_0000, imm12, rn, rt)
+}
+/// `ldrsb wt, [xn, #imm12]` — load 8 bits, SIGN-extended to 32.
+pub fn ldrsb_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x39C0_0000, imm12, rn, rt)
+}
+/// `ldrsh wt, [xn, #imm12*2]` — load 16 bits, SIGN-extended to 32.
+pub fn ldrsh_w(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x79C0_0000, imm12, rn, rt)
+}
+/// `ldrsb xt, [xn, #imm12]` — load 8 bits, SIGN-extended to 64.
+pub fn ldrsb_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x3980_0000, imm12, rn, rt)
+}
+/// `ldrsh xt, [xn, #imm12*2]` — load 16 bits, SIGN-extended to 64.
+pub fn ldrsh_x(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0x7980_0000, imm12, rn, rt)
+}
+/// `ldrsw xt, [xn, #imm12*4]` — load 32 bits, SIGN-extended to 64.
+pub fn ldrsw(rt: Reg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xB980_0000, imm12, rn, rt)
+}
+
+/// `add xd, xn, wm, uxtw` — 64-bit add of `xn` and the zero-extended 32-bit
+/// `wm` (the WASM address operand is an unsigned i32, so `uxtw` gives the
+/// architecturally-correct 33-bit-clean effective address). Extend option UXTW
+/// = 0b010 at [15:13], shift amount 0. Ground truth: `add x2,x0,w1,uxtw` =
+/// 0x8B21_4002.
+pub fn add_ext_uxtw(rd: Reg, rn: Reg, rm: Reg) -> u32 {
+    0x8B20_4000 | ((rm as u32) << 16) | ((rn as u32) << 5) | (rd as u32)
 }
 
 // ===========================================================================
@@ -566,6 +769,28 @@ pub fn fmov_d(rd: FReg, rn: FReg) -> u32 {
     fp2(0x1E60_4000, rd, rn)
 }
 
+// ---------------------------------------------------------------------------
+// #851 — the two SIMD (Advanced-SIMD) ops used to synthesize a scalar popcount
+// (A64 has no scalar POPCNT). The sequence is:
+//   fmov d_n, x/w_a        (move the integer into the low lane of a V register)
+//   cnt  v_n.8b, v_n.8b    (per-BYTE population count into 8 byte lanes)
+//   addv b_n, v_n.8b       (horizontal ADD of the 8 byte counts → one byte)
+//   fmov w_d, s_n          (move the scalar result back to a GP register)
+// For an i32 input, `fmov s_n, w_a` writes only the low 32 bits and zeroes the
+// rest of the V register, so `cnt.8b` sees 4 value bytes + 4 zero bytes — the
+// count is correct without masking. For i64, `fmov d_n, x_a` fills 8 bytes.
+// clang/llvm-mc ground truth:
+//   cnt v0.8b, v0.8b = 0x0E205800   addv b0, v0.8b = 0x0E31B800
+
+/// `cnt vd.8b, vn.8b` — per-byte population count (8 byte lanes).
+pub fn cnt_8b(rd: FReg, rn: FReg) -> u32 {
+    0x0E20_5800 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `addv bd, vn.8b` — horizontal add of the 8 byte lanes into scalar byte `bd`.
+pub fn addv_8b(rd: FReg, rn: FReg) -> u32 {
+    0x0E31_B800 | ((rn as u32) << 5) | (rd as u32)
+}
+
 /// `fcvt dd, sn` — single→double (`f64.promote_f32`). Exact, never traps.
 pub fn fcvt_d_from_s(rd: FReg, rn: FReg) -> u32 {
     fp2(0x1E22_C000, rd, rn)
@@ -617,6 +842,26 @@ mod tests {
         assert_eq!(ret(), 0xD65F_03C0);
     }
 
+    // #851 — divide / multiply-subtract / SIMD popcount building blocks.
+    // Ground truth from `llvm-mc -triple=aarch64 -show-encoding`.
+    #[test]
+    fn divrem_and_popcnt_encodings_match_llvm_mc() {
+        // sdiv w0,w1,w2 = [0x20,0x0c,0xc2,0x1a]  (LE) → 0x1AC20C20
+        assert_eq!(sdiv(0, 1, 2), 0x1AC2_0C20);
+        // udiv w0,w1,w2 = 0x1AC20820
+        assert_eq!(udiv(0, 1, 2), 0x1AC2_0820);
+        // msub w0,w1,w2,w3 = 0x1B028C20
+        assert_eq!(msub(0, 1, 2, 3), 0x1B02_8C20);
+        // x-forms set SF64 (bit 31)
+        assert_eq!(sdiv64(0, 1, 2), 0x9AC2_0C20);
+        assert_eq!(udiv64(0, 1, 2), 0x9AC2_0820);
+        assert_eq!(msub64(0, 1, 2, 3), 0x9B02_8C20);
+        // cnt v0.8b, v0.8b = 0x0E205800
+        assert_eq!(cnt_8b(0, 0), 0x0E20_5800);
+        // addv b0, v0.8b = 0x0E31B800
+        assert_eq!(addv_8b(0, 0), 0x0E31_B800);
+    }
+
     #[test]
     fn mov_imm32_uses_movz_then_movk() {
         assert_eq!(mov_imm32(0, 5), vec![movz(0, 5)]);
@@ -625,6 +870,26 @@ mod tests {
             mov_imm32(3, 0x0001_2345),
             vec![movz(3, 0x2345), movk(3, 1, 1)]
         );
+    }
+
+    // #851 non-param-local frame ops. Ground truth from
+    // `clang -target aarch64-linux-gnu` (assemble, objdump, read the word).
+    #[test]
+    fn local_frame_encodings_match_clang() {
+        // str x9, [sp]        = f90003e9 ; str x9, [sp, #8]  = f90007e9
+        assert_eq!(str_x_imm(9, SP, 0), 0xF900_03E9);
+        assert_eq!(str_x_imm(9, SP, 8), 0xF900_07E9);
+        // str xzr, [sp]       = f90003ff ; str xzr, [sp, #16] = f9000bff
+        assert_eq!(str_x_imm(XZR, SP, 0), 0xF900_03FF);
+        assert_eq!(str_x_imm(XZR, SP, 16), 0xF900_0BFF);
+        // ldr x9, [sp]        = f94003e9 ; ldr x10, [sp, #8]  = f94007ea
+        assert_eq!(ldr_x_imm(9, SP, 0), 0xF940_03E9);
+        assert_eq!(ldr_x_imm(10, SP, 8), 0xF940_07EA);
+        // sub sp, sp, #16     = d10043ff ; add sp, sp, #16     = 910043ff
+        assert_eq!(sub_imm64(SP, SP, 16), 0xD100_43FF);
+        assert_eq!(add_imm64(SP, SP, 16), 0x9100_43FF);
+        // sub sp, sp, #32     = d10083ff
+        assert_eq!(sub_imm64(SP, SP, 32), 0xD100_83FF);
     }
 
     // Milestone-2 broadening. Ground truth from `clang -target aarch64-linux-gnu`
@@ -678,6 +943,28 @@ mod tests {
         assert_eq!(cset(0, Cond::Hi), 0x1A9F_97E0);
         assert_eq!(cset(0, Cond::Ls), 0x1A9F_87E0);
         assert_eq!(cset(0, Cond::Hs), 0x1A9F_37E0);
+    }
+
+    // #851 — linear-memory load/store. Ground truth from `clang -target
+    // aarch64-linux-gnu` (`str w1,[x0,#16]` etc; the imm12 arg is the
+    // size-SCALED offset, so #16 on a word access is imm12 = 4).
+    #[test]
+    fn mem_ldst_encodings_match_clang() {
+        assert_eq!(str_w(1, 0, 4), 0xB900_1001); // str w1,[x0,#16]
+        assert_eq!(ldr_w(1, 0, 4), 0xB940_1001); // ldr w1,[x0,#16]
+        assert_eq!(strh(1, 0, 4), 0x7900_1001); // strh w1,[x0,#8]
+        assert_eq!(ldrh(1, 0, 4), 0x7940_1001); // ldrh w1,[x0,#8]
+        assert_eq!(strb(1, 0, 4), 0x3900_1001); // strb w1,[x0,#4]
+        assert_eq!(ldrb(1, 0, 4), 0x3940_1001); // ldrb w1,[x0,#4]
+        assert_eq!(ldrsb_w(1, 0, 4), 0x39C0_1001); // ldrsb w1,[x0,#4]
+        assert_eq!(ldrsh_w(1, 0, 4), 0x79C0_1001); // ldrsh w1,[x0,#8]
+        assert_eq!(str_x(1, 0, 2), 0xF900_0801); // str x1,[x0,#16]
+        assert_eq!(ldr_x(1, 0, 2), 0xF940_0801); // ldr x1,[x0,#16]
+        assert_eq!(ldrsw(1, 0, 4), 0xB980_1001); // ldrsw x1,[x0,#16]
+        assert_eq!(ldrsb_x(1, 0, 4), 0x3980_1001); // ldrsb x1,[x0,#4]
+        assert_eq!(ldrsh_x(1, 0, 4), 0x7980_1001); // ldrsh x1,[x0,#8]
+        assert_eq!(str_w(1, 0, 0), 0xB900_0001); // str w1,[x0]
+        assert_eq!(add_ext_uxtw(2, 0, 1), 0x8B21_4002); // add x2,x0,w1,uxtw
     }
 
     // Milestone 3 — scalar float. Ground truth from `clang -target
@@ -810,5 +1097,17 @@ mod tests {
         assert_eq!(cbnz(9, 2), 0x3500_0049);
         assert_eq!(cbz(9, 2), 0x3400_0049);
         assert_eq!(cbnz(0, 3), 0x3500_0060); // cbnz w0, .+12
+    }
+
+    #[test]
+    fn call_and_frame_encodings_match_clang() {
+        // #851 direct-call lowering primitives. clang -target aarch64:
+        // `bl .+8` = 0x94000002; `bl .-8` = 0x97FFFFFE;
+        // `stp x29,x30,[sp,#-16]!` = 0xA9BF7BFD; `ldp x29,x30,[sp],#16` = 0xA8C17BFD.
+        assert_eq!(bl(2), 0x9400_0002);
+        assert_eq!(bl(-2), 0x97FF_FFFE);
+        assert_eq!(bl(0), 0x9400_0000); // reloc placeholder (imm26 patched by linker)
+        assert_eq!(stp_fp_lr_pre16(), 0xA9BF_7BFD);
+        assert_eq!(ldp_fp_lr_post16(), 0xA8C1_7BFD);
     }
 }

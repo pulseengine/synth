@@ -14,7 +14,6 @@ Run:
 
 Exits nonzero on any mismatch so it can gate a release.
 """
-import re
 import subprocess
 import sys
 
@@ -63,13 +62,25 @@ def main():
     inst = wasmtime.Instance(store, module, [])
     wt = {w: inst.exports(store)[w] for w in PAIRS}
 
-    dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    syms = sorted(int(m.group(1), 16)
-                  for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M))
+    # Read function offsets from the ELF SYMBOL TABLE (host-independent), NOT by
+    # parsing `synth disasm` TEXT — disasm formatting is host-dependent and the
+    # regex matched nothing on the Linux CI runner (#850). synth emits the symtab
+    # as an UNNAMED SHT_SYMTAB section (get_section_by_name(".symtab") is None), so
+    # iterate by TYPE. ARM Thumb symbols carry the Thumb bit (bit 0); mask `& ~1`.
+    # The symtab has TWO names per address (func_N and its export alias), so DEDUPE
+    # the addresses with set() before sorting — the masked sorted set equals the
+    # old sorted disasm addresses exactly, preserving the positional i-th mapping.
+    ef = ELFFile(open(ELF, "rb"))
+    text_idx = ef.get_section_index(".text")
+    syms = sorted({s["st_value"] & ~1 for sec in ef.iter_sections()
+                   if sec.header.sh_type == "SHT_SYMTAB"
+                   for s in sec.iter_symbols()
+                   if s.name and s["st_shndx"] == text_idx
+                   and s["st_info"]["type"] == "STT_FUNC"})
     # positional map: i-th wasm function -> i-th .text symbol by address
     assert len(syms) == len(PAIRS), f"{len(syms)} ELF syms vs {len(PAIRS)} wasm funcs"
     addr = dict(zip(PAIRS, syms))
-    text = ELFFile(open(ELF, "rb")).get_section_by_name(".text")
+    text = ef.get_section_by_name(".text")
     code, base = text.data(), text["sh_addr"]
 
     def run(a, x):

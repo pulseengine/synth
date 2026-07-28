@@ -386,6 +386,13 @@ pub struct DecodedModule {
     /// #642: type index per function, indexed by the FULL function index
     /// (imports first, then locally-defined ones).
     pub func_type_indices: Vec<u32>,
+    /// #851: result (return-value) count per function, indexed by the FULL
+    /// function index (imports first). `0` = void, `1` = single result, etc.
+    /// (saturated at 255 for pathological signatures). The aarch64 direct-`call`
+    /// lowering needs the 0-vs-1 distinction — `func_ret_i64/f32/f64` carry the
+    /// result TYPE but conflate void and i32 (both all-false), so they cannot say
+    /// whether a value is pushed back after the call.
+    pub func_result_counts: Vec<u32>,
     /// #642: canonical structural signature per type index (params/results
     /// rendered as a string) — used for the closed-world `call_indirect` type
     /// check, which must compare SIGNATURES, not raw type indices (a module
@@ -1310,6 +1317,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         table_size: table_sizes.first().copied().flatten(),
         table_sizes,
         elem_segments,
+        func_result_counts: func_type_indices
+            .iter()
+            .map(|&ti| {
+                type_block_arity
+                    .get(ti as usize)
+                    .map(|&(_p, r)| r as u32)
+                    .unwrap_or(0)
+            })
+            .collect(),
         func_type_indices,
         type_signatures,
         wsc_facts: wsc_facts.unwrap_or_default(),
@@ -2229,6 +2245,15 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // register and a single-precision S-register — no numeric conversion.
         F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),
         I32ReinterpretF32 => Some(WasmOp::I32ReinterpretF32),
+        // #851 (GI-FPU-001): the f64<->i64 bit-casts, the 64-bit twins of the
+        // pair above. The WasmOp variants already existed and every backend
+        // that lowers f64 has a lowering (ARM: `ArmOp::{F64ReinterpretI64,
+        // I64ReinterpretF64}` VFP moves; aarch64: `fmov d,x` / `fmov x,d`);
+        // they were merely never DECODED, so they globally declined. Backends
+        // without an f64 lowering (RV32) still loud-decline downstream — this
+        // only un-drops the op at decode.
+        F64ReinterpretI64 => Some(WasmOp::F64ReinterpretI64),
+        I64ReinterpretF64 => Some(WasmOp::I64ReinterpretF64),
         F32ConvertI32S => Some(WasmOp::F32ConvertI32S),
         F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
         I32TruncF32S => Some(WasmOp::I32TruncF32S),

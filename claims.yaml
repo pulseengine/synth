@@ -422,7 +422,10 @@ claims:
   # served_image_from_records and hard-error-validated against the runtime
   # image (the v0.47 drop-warning is gone; de-vacuated control_step
   # differential + full-boot unicorn oracle gate the runtime side);
-  # (d) AArch64 documented N/A (no linear-memory ops in the subset). The
+  # (d) AArch64 N/A for THIS validator: it has linear-memory load/store since
+  # #851 but no active DATA SEGMENTS / packed init blob, so there is nothing for
+  # the static-data addressing VC to validate (the follow-on that adds data-seg
+  # init is where this becomes applicable). The
   # count-eq pins below hold the wiring UNCONDITIONAL: exactly one
   # spanned-validator call on the mixed split, exactly one ROM-image and one
   # RV32 served-image (read-back) call.

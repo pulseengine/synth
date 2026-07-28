@@ -659,18 +659,18 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "ordeal"
-version = "0.9.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c55b06587e2790390f278f8e0fdcb627aedf1ee45b9484a712c6cf1f80dccab"
+checksum = "67b320966e15c0447e8bb02b86031f0f32b451a4940f1af24e9c0b5b2434e09b"
 dependencies = [
  "ordeal-lrat",
 ]
 
 [[package]]
 name = "ordeal-lrat"
-version = "0.9.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3affdf66f317047ddc588c7df4fbe5a463ee8f40a1e23f30115a8f8c7dffe82a"
+checksum = "d1dd8471cb03a6290624af9b033e071479a63bbdb7820d23c2a673f16e9984df"
 
 [[package]]
 name = "page_size"
@@ -1111,14 +1111,14 @@ dependencies = [
 
 [[package]]
 name = "synth-abi"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "synth-wit",
 ]
 
 [[package]]
 name = "synth-analysis"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-aarch64"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "synth-core",
  "thiserror",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-awsm"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-riscv"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-wasker"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1177,11 +1177,11 @@ dependencies = [
 
 [[package]]
 name = "synth-cfg"
-version = "0.50.0"
+version = "0.51.0"
 
 [[package]]
 name = "synth-cli"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "synth-core"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "gimli",
@@ -1216,20 +1216,20 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
- "wasm-encoder 0.253.0",
+ "wasm-encoder",
  "wasmparser 0.254.0",
  "wat",
 ]
 
 [[package]]
 name = "synth-frontend"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "synth-core",
  "thiserror",
  "tracing",
- "wasm-encoder 0.253.0",
+ "wasm-encoder",
  "wasmparser 0.254.0",
  "wit-component",
  "wit-parser",
@@ -1237,14 +1237,14 @@ dependencies = [
 
 [[package]]
 name = "synth-memory"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "bitflags",
 ]
 
 [[package]]
 name = "synth-opt"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "criterion",
  "synth-cfg",
@@ -1252,11 +1252,11 @@ dependencies = [
 
 [[package]]
 name = "synth-qemu"
-version = "0.50.0"
+version = "0.51.0"
 
 [[package]]
 name = "synth-synthesis"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "synth-test"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "synth-verify"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "synth-wit"
-version = "0.50.0"
+version = "0.51.0"
 
 [[package]]
 name = "tempfile"
@@ -1534,16 +1534,6 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
-version = "0.253.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59972d6cd272259de647b7c1f1912e45e289c75ffd4be04e10695507cd7e1b59"
-dependencies = [
- "leb128fmt",
- "wasmparser 0.253.0",
-]
-
-[[package]]
-name = "wasm-encoder"
 version = "0.254.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09480d646178e5fdd12bb06e812d0af9a3a191dbc9cd697fdc86687beade7393"
@@ -1560,7 +1550,7 @@ checksum = "b01df5f3b4ca7881e843f3bc0fb8a3905d79c68692250dcb8e33e698705ccdb6"
 dependencies = [
  "anyhow",
  "indexmap",
- "wasm-encoder 0.254.0",
+ "wasm-encoder",
  "wasmparser 0.254.0",
 ]
 
@@ -1571,17 +1561,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3eb099dcadcde5be9eef55e3a337128efd4e44b4c93122487e4d2e4e1c6627c"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "wasmparser"
-version = "0.253.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19db11f87d2486580e1e8b6f494c54df7e0566b87d0b599db843c24019667339"
-dependencies = [
- "bitflags",
- "indexmap",
- "semver",
 ]
 
 [[package]]
@@ -1607,7 +1586,7 @@ dependencies = [
  "leb128fmt",
  "memchr",
  "unicode-width",
- "wasm-encoder 0.254.0",
+ "wasm-encoder",
 ]
 
 [[package]]
@@ -1747,7 +1726,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "wasm-encoder 0.254.0",
+ "wasm-encoder",
  "wasm-metadata",
  "wasmparser 0.254.0",
  "wit-parser",

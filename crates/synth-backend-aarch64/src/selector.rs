@@ -19,13 +19,31 @@
 //! - the full i32/i64 compare family (`eq/ne/lt/gt/le/ge` signed+unsigned) and
 //!   `eqz`, lowered to `cmp` + `cset`.
 //!
+//! **Shipped since #851:** `div_s/div_u/rem_s/rem_u` (i32+i64, with the ÷0 and
+//! signed-`INT_MIN÷-1` WASM trap guards A64's total `SDIV`/`UDIV` omit — the
+//! "more-total-than-WASM" class is guarded, not naive), `popcnt` (SIMD
+//! `CNT`+`ADDV`), f64↔i64 reinterpret, linear-memory load/store, non-param
+//! locals, direct `call`, and full control flow (`if`/`else`/`loop`/`return`).
+//!
 //! **Deliberately still declined (loud-skip, never wrong code):**
-//! - `div_s/div_u/rem_s/rem_u` (i32 and i64): A64 `SDIV`/`UDIV` do NOT trap on
-//!   divide-by-zero or `INT_MIN÷-1`, whereas WASM requires a trap. Lowering them
-//!   naively is the "ARM more-total-than-WASM" silent-miscompile class; they are
-//!   left for a later milestone that adds the explicit trap guards.
-//! - `popcnt`: no scalar A64 popcount pre-SVE (needs SIMD `CNT`+`ADDV`).
-//! - memory, calls, control flow, non-param locals, spilling.
+//! - `call_indirect`, import calls, `>8` integer args, multi-result or
+//!   float-result callees (returned in v0/d0, not x0), a caller reading its own
+//!   params across a call (param-homing is a later increment).
+//! - `br_table`, value-carrying `block`/`loop`/`if`, and register spilling.
+//! - OOB memory bounds-trap, data-segment init, and the startup that establishes
+//!   the `x28` linear-memory base (the load/store lowering is correct given the
+//!   base precondition; wiring it at runtime is a follow-on).
+//!
+//! **#851 — non-param locals:** GP locals beyond the params (index >=
+//! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -
+//! num_params)*8]`, frame rounded to a 16-byte SP-aligned multiple), only when
+//! the function actually declares one. `local.get` LOADS the slot into a fresh
+//! temp (copy-semantics — a later `local.set` of the same index cannot alias a
+//! stacked value), `local.set`/`local.tee` store it (tee without popping).
+//! 64-bit slots preserve both i32 and i64. Still declined here: writing a
+//! PARAMETER (params live in arg registers by reference — a later increment
+//! homes them) and FP non-param locals (their types are not threaded to the
+//! backend, so an FP `local.set` is caught by the GP file-check and declined).
 //!
 //! **Milestone 3 adds scalar floating point** (the separate V/D/S register file):
 //! f32/f64 const, add/sub/mul/div, abs/neg/sqrt, the full compare family, the
@@ -68,6 +86,24 @@ const TEMPS: [Reg; 7] = [9, 10, 11, 12, 13, 14, 15];
 /// The FP value-stack temp registers: caller-saved `v16..v23` (the low `v0..v7`
 /// carry incoming float params, `v8..v15` are callee-saved). 8 scratch slots.
 const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
+
+/// #851 — the WASM linear-memory base register. A memory-using function expects
+/// `x28 = __linear_memory_base` on entry — the same dedicated-base convention
+/// the ARM (R11) and RV32 (s11) backends use, chosen OUTSIDE the temp pool
+/// (`x9..x15`), the AAPCS64 arg/result registers (`x0..x7`), and the platform /
+/// frame registers (`x18`, `x29`, `x30`, `sp`). `x28` is callee-saved and
+/// non-platform, so a caller establishing it once keeps it stable across the
+/// function body; the lowering only READS it (never clobbers), so it stays a
+/// clean ambient input. Effective address = `x28 + uxtw(w_addr) + memarg.offset`.
+///
+/// FRONTIER (honest): this backend does NOT yet EMIT anything that establishes
+/// `x28` — there is no aarch64 startup / linker script (the RV32 backend sets
+/// s11 in its generated `startup.rs`; the host-native subset has none). So a
+/// memory-using function is correct *given* the `x28 = base` precondition, which
+/// the #851 execution differential supplies explicitly; wiring the ABI/startup
+/// that establishes it in a real program is a documented follow-on (alongside
+/// OOB-trap, data-segment init, and memory.{size,grow}).
+const LINMEM_BASE: Reg = 28;
 
 /// Which register file a value-stack entry lives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,23 +207,188 @@ pub fn select_typed_cf(
     params_f64: &[bool],
     block_arity: &[(u8, u8)],
 ) -> Result<Vec<u32>, SelectError> {
+    // No call metadata → any `call` in the body hits the honest catch-all decline
+    // (byte-identical to the pre-#851 behavior for call-free functions).
+    let (words, _sites) = select_typed_cf_calls(
+        ops,
+        num_params,
+        params_f32,
+        params_f64,
+        block_arity,
+        0,
+        &[],
+        &[],
+        &[],
+    )?;
+    Ok(words)
+}
+
+/// A direct-`call` site produced during selection (#851): the BYTE offset of the
+/// `bl` instruction within the function's code, and the callee's FULL wasm
+/// function index (imports first). The backend turns each into an
+/// `R_AARCH64_CALL26` relocation against the callee's `func_N` symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallSite {
+    /// Byte offset of the `bl` instruction within the function's machine code.
+    pub offset: u32,
+    /// Callee's full wasm function index (imports first).
+    pub callee: u32,
+}
+
+/// Lower a body, ALSO lowering direct `call` (#851). Same as [`select_typed_cf`]
+/// plus the call-lowering inputs:
+///
+/// - `num_imports`: functions with full index `< num_imports` are IMPORTS —
+///   calling one is loud-declined in v1 (no import-dispatch ABI yet).
+/// - `func_arg_counts[idx]`: the callee's AAPCS integer-arg slot count (how many
+///   values `call` pops off the value stack and marshals into `x0..x7`).
+/// - `func_result_counts[idx]`: the callee's result count (0 = void, 1 = one
+///   value pushed back). Multi-result and out-of-range are declined.
+/// - `func_ret_float[idx]`: true when the callee returns an f32/f64. AAPCS64
+///   returns floats in `v0/d0`, NOT `x0`, so a float-returning callee is
+///   LOUD-DECLINED (pushing `x0` would read a stale GP register — the
+///   "more-total-than-WASM" silent-miscompile class). Float results are a
+///   documented later increment.
+///
+/// A function whose body contains a lowered `call` becomes NON-LEAF: `bl`
+/// clobbers `x30`, so a non-leaf prologue saves FP/LR (`stp x29,x30,[sp,#-16]!`)
+/// and every epilogue restores them (`ldp`) before `ret`. Leaf functions stay
+/// byte-identical to the pre-#851 output (the frame is gated on "body has a
+/// lowered call").
+#[allow(clippy::too_many_arguments)]
+pub fn select_typed_cf_calls(
+    ops: &[WasmOp],
+    num_params: u32,
+    params_f32: &[bool],
+    params_f64: &[bool],
+    block_arity: &[(u8, u8)],
+    num_imports: u32,
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+    func_ret_float: &[bool],
+) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
             "{num_params} params — supports at most 8 register params"
         )));
     }
+
+    // #851 — is this function NON-LEAF (contains a `call` we will lower)? A `bl`
+    // clobbers x30, so a non-leaf must save/restore LR. Computed up front so the
+    // prologue can emit the frame; call-free functions stay byte-identical.
+    let is_non_leaf = ops.iter().any(|op| matches!(op, WasmOp::Call(_)));
+
+    // A non-leaf function that reads a PARAMETER is loud-declined: params arrive
+    // in x0..x7 (caller-saved), a `bl` clobbers them, and this backend does not
+    // yet HOME params to callee-saved storage — reading `local.get p` after a
+    // call would be garbage. Declining here ALSO makes arg marshalling
+    // hazard-free: with no param-Vals, every value-stack entry lives in a temp
+    // (x9..x15), disjoint from the arg destinations (x0..x7), so an argument
+    // move `mov x{arg}, x{temp}` never overwrites a not-yet-read source.
+    if is_non_leaf
+        && ops.iter().any(
+            |op| matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params),
+        )
+    {
+        return Err(SelectError(
+            "non-leaf function references a parameter — param homing across a \
+             call is not yet supported for aarch64; loud-declining (#851)"
+                .into(),
+        ));
+    }
     let params = param_map(num_params, params_f32, params_f64);
     let mut words: Vec<u32> = Vec::new();
     let mut stack: Vec<Val> = Vec::new();
 
-    // Control-flow state (#538 cf increment). Each open `block` pushes a frame;
-    // the matching `End` pops it and patches the recorded forward branches to
-    // land at the current instruction position (the block's fall-through point).
+    // --- non-param locals (#851): stack-slot frame ---
+    //
+    // WASM locals beyond the parameters (index >= num_params) are addressed by
+    // any `local.get`/`local.set`/`local.tee` with index >= num_params. Their
+    // count is `highest referenced index + 1 - num_params`. Each gets a fixed
+    // 8-byte slot on the stack (64-bit wide so both i32 and i64 read back intact),
+    // ZERO-INITIALIZED at entry per WASM's local default-value rule.
+    //
+    // Stack slots (not registers) give ALIAS SAFETY BY CONSTRUCTION: every
+    // `local.get` is a `ldr` into a FRESH temp — a copy, never the home location —
+    // so a later `local.set` of the same index cannot clobber a value already on
+    // the value stack (the read-by-reference param path would miscompile this;
+    // params stay read-only, see the LocalSet/LocalTee decline below).
+    //
+    // The slot for non-param local L (num_params <= L) is at `[sp, #(L -
+    // num_params)*8]`. The frame is sized to a 16-byte multiple (AArch64 SP
+    // alignment) and only materialized when there is at least one non-param local
+    // — a function with none is byte-identical to before this increment.
+    let max_local_idx = ops
+        .iter()
+        .filter_map(|op| match op {
+            WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => Some(*i),
+            _ => None,
+        })
+        .max();
+    let num_non_param_locals = match max_local_idx {
+        Some(m) if m >= num_params => m - num_params + 1,
+        _ => 0,
+    };
+    // Frame size in bytes: one 8-byte slot per non-param local, rounded UP to a
+    // 16-byte multiple (the ABI requires 16-byte SP alignment).
+    let frame_size: u32 = if num_non_param_locals == 0 {
+        0
+    } else {
+        (num_non_param_locals * 8).div_ceil(16) * 16
+    };
+    // Byte offset of non-param local `idx`'s slot from SP.
+    let local_slot_off = |idx: u32| -> u32 { (idx - num_params) * 8 };
+
+    // Prologue. Order (each step lowers SP; epilogue reverses):
+    //   1. #851 non-leaf: `stp x29,x30,[sp,#-16]!` saves FP/LR (a `bl` clobbers
+    //      x30). SP stays 16-byte aligned. Only when the body has a lowered call.
+    //   2. Non-param-local frame: `sub sp` then zero each 8-byte slot. Slot
+    //      offsets are relative to the POST-sub SP, unaffected by the LR save
+    //      that sits above them.
+    if is_non_leaf {
+        words.push(enc::stp_fp_lr_pre16());
+    }
+    if frame_size > 0 {
+        words.push(enc::sub_imm64(enc::SP, enc::SP, frame_size));
+        for k in 0..num_non_param_locals {
+            words.push(enc::str_x_imm(enc::XZR, enc::SP, k * 8));
+        }
+    }
+
+    // #851 — direct-call sites recorded during selection (byte offset of the
+    // `bl`, callee full index) for the backend's R_AARCH64_CALL26 relocations.
+    let mut call_sites: Vec<CallSite> = Vec::new();
+
+    // Control-flow state (#538 cf increment, #851 full control flow). Each open
+    // `block`/`loop`/`if` pushes a frame. The matching `End` pops it. Where a
+    // `br`/`br_if` to that frame lands depends on the frame KIND:
+    //
+    //   * `Block` / `If`: a branch to the frame targets its END (fall-through) —
+    //     a FORWARD branch, recorded in `pending` and patched when `End` closes
+    //     the frame (the target position is only known then).
+    //   * `Loop`: a branch to the frame targets its ENTRY (the loop header) — a
+    //     BACKWARD branch, resolved to a NEGATIVE offset immediately at emission
+    //     (`entry` is already known), never patched.
+    //
+    // This "dispatch on the TARGET frame's kind, not on the branch op" is what
+    // makes loop back-edges correct alongside forward block exits.
+    enum Kind {
+        /// A plain `block`: branches to it go to its END (forward).
+        Block,
+        /// A `loop`: branches to it go to `entry` (the loop header, backward).
+        Loop { entry: usize },
+        /// An `if`: like Block for `br` (branches go to END), but also carries
+        /// the position of the `cbz`/`b.cond` that skips the THEN arm, patched
+        /// at `else` (to the else arm) or at `end` (past the then arm).
+        If { else_fixup: Option<usize> },
+    }
     struct Frame {
-        /// Word positions in `words` of branches targeting this block's END,
-        /// awaiting fix-up when the block closes.
+        kind: Kind,
+        /// Word positions in `words` of FORWARD branches targeting this frame's
+        /// END, awaiting fix-up when the frame closes (Block/If only; a Loop's
+        /// branches are backward and resolved eagerly).
         pending: Vec<usize>,
-        /// Value-stack height on entry — a void block must restore it at `End`.
+        /// Value-stack height on entry — a void frame must restore it at `End`.
         stack_entry: usize,
     }
     let mut ctrl: Vec<Frame> = Vec::new();
@@ -195,6 +396,14 @@ pub fn select_typed_cf(
     // `block_arity`. Incremented on EVERY control op encountered (even declined
     // ones, though a decline aborts the whole compile so alignment is moot).
     let mut ctrl_ord: usize = 0;
+    // Reachability of the current linear position (#851). Code after an
+    // UNCONDITIONAL transfer (`br`, `return`, `unreachable`) is unreachable and
+    // WASM's stack becomes polymorphic there — the straight-line height model no
+    // longer tracks the real stack. We keep truncating the value stack to the
+    // frame's entry height at `else`/`end` (that fixes the model), but SKIP the
+    // fall-through height assert when unreachable (it only holds on a reachable
+    // fall-through). `br_if` is conditional, so its fall-through stays reachable.
+    let mut reachable = true;
 
     // Pick a GP temp not holding a live GP value-stack entry.
     let alloc_temp = |stack: &[Val]| -> Result<Reg, SelectError> {
@@ -467,6 +676,165 @@ pub fn select_typed_cf(
         Ok(())
     };
 
+    // #851 — integer divide / remainder with WASM-faithful traps.
+    //
+    // A64 SDIV/UDIV are TOTAL where WASM is PARTIAL, so the raw instruction is a
+    // "more-total-than-WASM" silent miscompile (the #633/#666/#709 class). WASM
+    // (Core §4.3.2) requires:
+    //   * div/rem by ZERO traps         (all four forms)
+    //   * div_s(INT_MIN, -1) traps      (overflow: +2^(N-1) is unrepresentable)
+    //   * rem_s(INT_MIN, -1) = 0        (NO trap — falls out of MSUB naturally)
+    // We therefore emit an explicit divisor-zero guard for every form and, for
+    // SIGNED DIV only, an INT_MIN/-1 overflow guard. `is_rem`/`signed`/`is64`
+    // parameterize the one closure.
+    //
+    // Aliasing (the #776 lesson): `msub rd, q, b, a` reads a, b AND q at once, and
+    // the guards read a/b after materializing const scratch. So every temp
+    // (quotient, const scratch, result) is allocated while a and b are STILL on
+    // the value stack (pushed back as reservations), guaranteeing no allocation
+    // hands back a register still holding a live operand.
+    let divrem = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  signed: bool,
+                  is64: bool,
+                  is_rem: bool|
+     -> Result<(), SelectError> {
+        let b = pop_gp(stack, "divrem")?; // divisor
+        let a = pop_gp(stack, "divrem")?; // dividend
+        // Reserve a and b so temp allocation never collides with them.
+        stack.push(Val::gp(a));
+        stack.push(Val::gp(b));
+        // Need up to three DISTINCT scratch regs beyond a/b: quotient, and (for
+        // the signed-div overflow guard) two const-materialization temps.
+        let mut free = TEMPS
+            .iter()
+            .copied()
+            .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+        let (Some(q), Some(s0), Some(s1)) = (free.next(), free.next(), free.next()) else {
+            stack.pop();
+            stack.pop();
+            return Err(SelectError(
+                "value-stack too deep (divrem needs 3 GP temps)".into(),
+            ));
+        };
+        stack.pop(); // b
+        stack.pop(); // a
+
+        // --- Guard 1: divisor == 0 → trap (all four forms). Test the FULL width
+        // so an i64 divisor with a zero low word but nonzero high word (e.g.
+        // 0x1_0000_0000) is correctly seen as nonzero. `cbnz b, +2` skips the
+        // brk when the divisor is nonzero.
+        if is64 {
+            words.push(enc::cbnz64(b, 2));
+        } else {
+            words.push(enc::cbnz(b, 2));
+        }
+        words.push(enc::brk(0)); // divide by zero
+
+        // --- Guard 2 (signed DIV only): dividend == INT_MIN && divisor == -1
+        // → overflow trap. rem_s does NOT trap here (result is 0). Materialize
+        // INT_MIN and -1, compare, and branch over the brk when EITHER differs.
+        if signed && !is_rem {
+            let (min_bits, neg1_bits): (u64, u64) = if is64 {
+                (0x8000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF)
+            } else {
+                (0x8000_0000, 0xFFFF_FFFF)
+            };
+            if is64 {
+                for w in enc::mov_imm64(s0, min_bits) {
+                    words.push(w);
+                }
+                for w in enc::mov_imm64(s1, neg1_bits) {
+                    words.push(w);
+                }
+                words.push(enc::cmp64(a, s0));
+            } else {
+                for w in enc::mov_imm32(s0, min_bits as u32) {
+                    words.push(w);
+                }
+                for w in enc::mov_imm32(s1, neg1_bits as u32) {
+                    words.push(w);
+                }
+                words.push(enc::cmp(a, s0));
+            }
+            // b.ne → dividend != INT_MIN, no overflow: jump PAST the second cmp,
+            // its b.ne, and the brk, landing on the arithmetic. Those are the
+            // next THREE instructions, so the branch target is +4 words from
+            // this branch (`b.<cond> #(imm*4)` is pc-relative to the branch).
+            words.push(enc::bcond(Cond::Ne, 4));
+            words.push(if is64 {
+                enc::cmp64(b, s1)
+            } else {
+                enc::cmp(b, s1)
+            });
+            words.push(enc::bcond(Cond::Ne, 2)); // divisor != -1 → skip brk
+            words.push(enc::brk(0)); // INT_MIN / -1 overflow
+        }
+
+        // --- The arithmetic.
+        let dst = if is_rem {
+            // rem = a − (a/b)·b. SDIV/UDIV into q, then MSUB into the result reg
+            // (which may reuse q — msub reads q before writing its dst).
+            if signed {
+                words.push(if is64 {
+                    enc::sdiv64(q, a, b)
+                } else {
+                    enc::sdiv(q, a, b)
+                });
+            } else {
+                words.push(if is64 {
+                    enc::udiv64(q, a, b)
+                } else {
+                    enc::udiv(q, a, b)
+                });
+            }
+            words.push(if is64 {
+                enc::msub64(q, q, b, a)
+            } else {
+                enc::msub(q, q, b, a)
+            });
+            q
+        } else {
+            words.push(match (signed, is64) {
+                (true, false) => enc::sdiv(q, a, b),
+                (true, true) => enc::sdiv64(q, a, b),
+                (false, false) => enc::udiv(q, a, b),
+                (false, true) => enc::udiv64(q, a, b),
+            });
+            q
+        };
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // #851 — scalar popcount via the Advanced-SIMD unit (A64 has no scalar
+    // POPCNT): move the integer into a V register, per-byte CNT, horizontal
+    // ADDV, move back. For i32, `fmov s,w` zero-fills the upper lanes so CNT.8b
+    // counts exactly 4 value bytes; for i64, `fmov d,x` fills all 8.
+    let popcnt = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  is64: bool|
+     -> Result<(), SelectError> {
+        let a = pop_gp(stack, "popcnt")?;
+        let dst = alloc_temp(stack)?;
+        // Grab an FP scratch that no live FP value-stack entry holds.
+        let vtmp = FTEMPS
+            .iter()
+            .copied()
+            .find(|t| !stack.iter().any(|v| v.file == File::Fp && v.reg == *t))
+            .ok_or_else(|| SelectError("value-stack too deep (popcnt needs an FP temp)".into()))?;
+        if is64 {
+            words.push(enc::fmov_d_from_x(vtmp, a));
+        } else {
+            words.push(enc::fmov_s_from_w(vtmp, a));
+        }
+        words.push(enc::cnt_8b(vtmp, vtmp));
+        words.push(enc::addv_8b(vtmp, vtmp));
+        words.push(enc::fmov_w_from_s(dst, vtmp));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
     // `ctz` = `rbit` then `clz` (A64 has no direct CTZ). `sf` selects width.
     let ctz = |words: &mut Vec<u32>, stack: &mut Vec<Val>, sf: bool| -> Result<(), SelectError> {
         let a = pop_gp(stack, "ctz")?;
@@ -536,16 +904,139 @@ pub fn select_typed_cf(
         Ok(())
     };
 
+    // #851 — form the effective linear-memory address `x_ea = x28 + uxtw(addr) +
+    // offset` into a fresh GP temp and return it. `size_log2` is the access-size
+    // log2 (0=byte,1=half,2=word,3=dword). If `offset` is a multiple of the
+    // access size and the scaled result fits imm12 (< 4096), the caller may fold
+    // it into the load/store immediate (returned as `Some(imm12)`); otherwise the
+    // offset is ADDED into `x_ea` here and `None` is returned. `x_ea` is a temp
+    // that does not alias any live value-stack entry (the address operand has
+    // already been popped, so its register is free to reuse).
+    //
+    // SOUNDNESS / honest frontier: this computes the WASM effective address and
+    // dereferences it against the ambient base — it does NOT bounds-check. WASM
+    // requires an out-of-bounds access to TRAP; the host-native subset has no
+    // memory-size convention yet, so OOB is UNTRAPPED (reads/writes adjacent host
+    // memory). In-bounds load/store is execution-verified vs wasmtime; OOB-trap,
+    // data-segment init, and memory.{size,grow} are the documented follow-ons.
+    let form_ea = |words: &mut Vec<u32>,
+                   stack: &mut Vec<Val>,
+                   addr: Reg,
+                   offset: u32,
+                   size_log2: u32|
+     -> Result<(Reg, Option<u32>), SelectError> {
+        // The address operand is popped; its register is now free. Allocate the
+        // EA temp against the CURRENT live stack (addr already removed).
+        let ea = alloc_temp(stack)?;
+        // x_ea = x28 + uxtw(w_addr) — zero-extends the unsigned i32 WASM address.
+        words.push(enc::add_ext_uxtw(ea, LINMEM_BASE, addr));
+        let size = 1u32 << size_log2;
+        if offset.is_multiple_of(size) && (offset >> size_log2) < 4096 {
+            return Ok((ea, Some(offset >> size_log2)));
+        }
+        if offset != 0 {
+            // Offset does not fit the scaled immediate: materialize it in a
+            // second temp and add. `alloc_temp` against the stack with `ea`
+            // temporarily marked live picks a DISTINCT register.
+            stack.push(Val::gp(ea));
+            let otmp = alloc_temp(stack)?;
+            stack.pop();
+            for w in enc::mov_imm32(otmp, offset) {
+                words.push(w);
+            }
+            words.push(enc::add_ext_uxtw(ea, ea, otmp)); // ea += uxtw(offset)
+        }
+        Ok((ea, None))
+    };
+
+    // A GP load: pop the i32 address, dereference `[base + addr + offset]` with
+    // `ldr_op`, push the loaded value (zero/sign extension is baked into the op).
+    let load = |words: &mut Vec<u32>,
+                stack: &mut Vec<Val>,
+                offset: u32,
+                size_log2: u32,
+                ldr_op: fn(Reg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let addr = pop_gp(stack, "load")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        let dst = ea; // load target may reuse the EA register (read-before-write)
+        words.push(ldr_op(dst, ea, imm.unwrap_or(0)));
+        stack.push(Val::gp(dst));
+        Ok(())
+    };
+
+    // A GP store: pop the value (top of stack) then the i32 address, store the
+    // low `size` bytes of the value to `[base + addr + offset]`.
+    let store = |words: &mut Vec<u32>,
+                 stack: &mut Vec<Val>,
+                 offset: u32,
+                 size_log2: u32,
+                 str_op: fn(Reg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let val = pop_gp(stack, "store")?;
+        let addr = pop_gp(stack, "store")?;
+        // Keep `val` live across the EA temp allocation so `form_ea` never hands
+        // back the value register.
+        stack.push(Val::gp(val));
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        stack.pop(); // release `val`
+        words.push(str_op(val, ea, imm.unwrap_or(0)));
+        Ok(())
+    };
+
     for op in ops {
         match op {
             WasmOp::LocalGet(i) => {
                 if *i >= num_params {
+                    // Non-param local (#851): LOAD its stack slot into a FRESH GP
+                    // temp — a copy, so a later `local.set` of the same index
+                    // cannot alias this value. 64-bit load (both i32 and i64 read
+                    // back correctly; an i32 producer wrote the low half and the
+                    // slot was zeroed, so the upper half is clean).
+                    let dst = alloc_temp(&stack)?;
+                    words.push(enc::ldr_x_imm(dst, enc::SP, local_slot_off(*i)));
+                    stack.push(Val::gp(dst));
+                } else {
+                    // Resolve the param to its AAPCS64 register + file (GP or FP).
+                    stack.push(params[*i as usize]);
+                }
+            }
+            // `local.set i` — pop the top value and store it into local `i`.
+            // Non-param locals live in stack slots (`str` the value). A param
+            // target is LOUD-DECLINED: params live in arg registers BY REFERENCE
+            // on the value stack, so writing one could alias a value already
+            // pushed (the miscompile the slot model avoids for non-param locals);
+            // homing written params is a later increment.
+            WasmOp::LocalSet(i) => {
+                if *i >= num_params {
+                    let src = pop_gp(&mut stack, "local.set")?;
+                    words.push(enc::str_x_imm(src, enc::SP, local_slot_off(*i)));
+                } else {
                     return Err(SelectError(format!(
-                        "local.get {i}: non-param locals not yet supported"
+                        "local.set {i}: writing a PARAMETER is not yet supported \
+                         for aarch64 (params live in arg registers by reference; \
+                         writing one could alias a stacked value) — loud-declining"
                     )));
                 }
-                // Resolve the param to its AAPCS64 register + file (GP or FP).
-                stack.push(params[*i as usize]);
+            }
+            // `local.tee i` — like `local.set` but leaves the value on the stack.
+            // Store the top value WITHOUT popping it (peek + `str`); a param
+            // target is declined for the same reason as `local.set`.
+            WasmOp::LocalTee(i) => {
+                if *i >= num_params {
+                    let top = *stack
+                        .last()
+                        .ok_or_else(|| SelectError("local.tee underflow".into()))?;
+                    if top.file != File::Gp {
+                        return Err(SelectError("local.tee: expected GP operand, got FP".into()));
+                    }
+                    words.push(enc::str_x_imm(top.reg, enc::SP, local_slot_off(*i)));
+                } else {
+                    return Err(SelectError(format!(
+                        "local.tee {i}: writing a PARAMETER is not yet supported \
+                         for aarch64 — loud-declining"
+                    )));
+                }
             }
             WasmOp::I32Const(c) => {
                 let dst = alloc_temp(&stack)?;
@@ -584,7 +1075,11 @@ pub fn select_typed_cf(
             }
             // #665: wasm `unreachable` traps unconditionally (WASM §4.4.5) —
             // `brk #0`, the A64 analogue of Thumb-2 `udf #0` / RV32 `ebreak`.
-            WasmOp::Unreachable => words.push(enc::brk(0)),
+            WasmOp::Unreachable => {
+                words.push(enc::brk(0));
+                // `unreachable` traps unconditionally: fall-through is dead.
+                reachable = false;
+            }
 
             // --- control flow (#538 cf increment): VOID-result forward blocks ---
             //
@@ -606,6 +1101,7 @@ pub fn select_typed_cf(
                     )));
                 }
                 ctrl.push(Frame {
+                    kind: Kind::Block,
                     pending: Vec::new(),
                     stack_entry: stack.len(),
                 });
@@ -627,8 +1123,17 @@ pub fn select_typed_cf(
                 }
                 let target = ctrl.len() - 1 - d;
                 let pos = words.len();
-                words.push(enc::b_uncond(0)); // placeholder; patched at End
-                ctrl[target].pending.push(pos);
+                if let Kind::Loop { entry } = ctrl[target].kind {
+                    // BACKWARD branch to the loop header — resolve immediately.
+                    let off = check_imm26((entry as i64 - pos as i64) as i32)?;
+                    words.push(enc::b_uncond(off));
+                } else {
+                    // FORWARD branch to a block/if END — patched at that `End`.
+                    words.push(enc::b_uncond(0)); // placeholder
+                    ctrl[target].pending.push(pos);
+                }
+                // Unconditional transfer: fall-through is unreachable.
+                reachable = false;
             }
             // `br_if N` — pop an i32 condition; branch to the block-N END iff it
             // is nonzero → `cbnz w_cond, <block-end>`. Not-taken falls through.
@@ -644,22 +1149,119 @@ pub fn select_typed_cf(
                 let cond = pop_gp(&mut stack, "br_if")?;
                 let target = ctrl.len() - 1 - d;
                 let pos = words.len();
-                words.push(enc::cbnz(cond, 0)); // placeholder; patched at End
-                ctrl[target].pending.push(pos);
+                if let Kind::Loop { entry } = ctrl[target].kind {
+                    // BACKWARD conditional branch to the loop header.
+                    let off = check_imm19((entry as i64 - pos as i64) as i32)?;
+                    words.push(enc::cbnz(cond, off));
+                } else {
+                    // FORWARD conditional branch to a block/if END.
+                    words.push(enc::cbnz(cond, 0)); // placeholder; patched at End
+                    ctrl[target].pending.push(pos);
+                }
             }
-            // `loop` (backward branch target), `if`/`else` (join reconciliation),
-            // and `br_table` (jump table) are OUT of this increment — decline by
-            // name rather than miscompile. (BrTable/If/Else hit the catch-all
-            // `other` arm below; loop is explicit so its arity ordinal is
-            // consumed with a clear message.)
+            // `loop` (#851): opens a control frame whose branch target is the
+            // loop HEADER (the current position), so a `br`/`br_if` to it is a
+            // BACKWARD branch. Only a VOID `(0,0)` loop is accepted: a
+            // value/param loop would need the value stack non-empty across the
+            // back-edge, and the deterministic temp-restart (`alloc_temp` picks
+            // the same register when the stack is empty) would no longer hold.
+            // The `(0,0)` gate enforces exactly the sound shape — loop-carried
+            // state must live in non-param LOCAL SLOTS (memory), reloaded each
+            // iteration. `br_table` still declines (catch-all).
             WasmOp::Loop => {
-                // (no ctrl_ord bump needed: a decline aborts the whole compile,
-                // so the arity-ordinal alignment is moot from here on.)
-                return Err(SelectError(
-                    "loop: backward-branch control flow not yet supported for \
-                     aarch64 — loud-declining (only forward void blocks)"
-                        .into(),
-                ));
+                let ord = ctrl_ord;
+                ctrl_ord += 1;
+                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                if arity != (0, 0) {
+                    return Err(SelectError(format!(
+                        "loop #{ord} has type {arity:?} — only void (0,0) loops \
+                         are supported (a value/param loop needs the value stack \
+                         live across the back-edge); loud-declining"
+                    )));
+                }
+                ctrl.push(Frame {
+                    kind: Kind::Loop { entry: words.len() },
+                    pending: Vec::new(),
+                    stack_entry: stack.len(),
+                });
+            }
+            // `if` (#851): pop the i32 condition; emit `cbz cond, <else/end>` to
+            // SKIP the then-arm when the condition is false. The skip target is
+            // patched at the matching `else` (to the else-arm entry) or, if
+            // there is no `else`, at `end` (past the then-arm). Only VOID `(0,0)`
+            // `if` is accepted — a value-producing `if` would need both arms to
+            // leave the result in the same register, which this straight-line
+            // model does not guarantee, so it LOUD-DECLINES.
+            WasmOp::If => {
+                let ord = ctrl_ord;
+                ctrl_ord += 1;
+                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                if arity != (0, 0) {
+                    return Err(SelectError(format!(
+                        "if #{ord} has type {arity:?} — only void (0,0) if/else \
+                         is supported (a value-producing if needs both arms to \
+                         land the result in one register); loud-declining"
+                    )));
+                }
+                let cond = pop_gp(&mut stack, "if")?;
+                let else_pos = words.len();
+                // cbz: fall THROUGH into the then-arm when cond != 0; branch to
+                // the else/end when cond == 0. Offset patched at else/end.
+                words.push(enc::cbz(cond, 0)); // placeholder
+                ctrl.push(Frame {
+                    kind: Kind::If {
+                        else_fixup: Some(else_pos),
+                    },
+                    pending: Vec::new(),
+                    stack_entry: stack.len(),
+                });
+            }
+            // `else` (#851): closes the then-arm of the innermost `if`. Emit an
+            // unconditional `b <end>` to skip the else-arm at runtime (recorded
+            // in `pending`, patched at `end`), then patch the `if`'s pending
+            // `cbz` to land HERE (the else-arm entry). The value stack is reset
+            // to the if's entry height (a void then-arm must not leave a value).
+            WasmOp::Else => {
+                let frame = ctrl
+                    .last_mut()
+                    .ok_or_else(|| SelectError("else without a matching if".into()))?;
+                let else_fixup = match &mut frame.kind {
+                    Kind::If { else_fixup } => else_fixup
+                        .take()
+                        .ok_or_else(|| SelectError("duplicate else for one if".into()))?,
+                    _ => {
+                        return Err(SelectError("else does not close an if block".into()));
+                    }
+                };
+                // A void then-arm leaves the stack at its entry height — but
+                // only on a REACHABLE fall-through (a then-arm ending in
+                // `return`/`br` is polymorphic). Truncate unconditionally (fixes
+                // the model); assert only when reachable.
+                debug_assert!(
+                    !reachable || stack.len() == frame.stack_entry,
+                    "void then-arm must restore stack height"
+                );
+                stack.truncate(frame.stack_entry);
+                // The else-arm is a `cbz` target — always reachable.
+                reachable = true;
+                // Skip the else-arm when the then-arm falls through.
+                let skip_pos = words.len();
+                words.push(enc::b_uncond(0)); // placeholder; patched at end
+                frame.pending.push(skip_pos);
+                // The if's cbz now lands at the else-arm entry (current pos).
+                let here = words.len();
+                patch_branch(&mut words, else_fixup, here)?;
+            }
+            // `return` (#851): funnel the top-of-stack into x0/d0, tear down the
+            // frame, and `ret` — an EARLY function exit. Ops after `return` up
+            // to the enclosing `end` are unreachable (WASM stack-polymorphic);
+            // the selector still lowers them but this `ret` never falls into
+            // them. Mirrors the existing "code after `br` is unreachable but
+            // still emitted" model — no shared epilogue label needed.
+            WasmOp::Return => {
+                epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
+                // Unconditional transfer: fall-through is unreachable.
+                reachable = false;
             }
 
             // --- i32 arithmetic / bitwise ---
@@ -676,6 +1278,13 @@ pub fn select_typed_cf(
             WasmOp::I32Rotl => rotl(&mut words, &mut stack, false)?,
             WasmOp::I32Clz => unop(&mut words, &mut stack, enc::clz)?,
             WasmOp::I32Ctz => ctz(&mut words, &mut stack, false)?,
+            WasmOp::I32Popcnt => popcnt(&mut words, &mut stack, false)?,
+            // #851 — i32 divide / remainder (SDIV/UDIV + MSUB) with the WASM
+            // trap guards (÷0 all forms; INT_MIN/-1 signed-div only).
+            WasmOp::I32DivS => divrem(&mut words, &mut stack, true, false, false)?,
+            WasmOp::I32DivU => divrem(&mut words, &mut stack, false, false, false)?,
+            WasmOp::I32RemS => divrem(&mut words, &mut stack, true, false, true)?,
+            WasmOp::I32RemU => divrem(&mut words, &mut stack, false, false, true)?,
 
             // --- i32 comparisons ---
             WasmOp::I32Eqz => eqz(&mut words, &mut stack, false)?,
@@ -704,6 +1313,13 @@ pub fn select_typed_cf(
             WasmOp::I64Rotl => rotl(&mut words, &mut stack, true)?,
             WasmOp::I64Clz => unop(&mut words, &mut stack, enc::clz64)?,
             WasmOp::I64Ctz => ctz(&mut words, &mut stack, true)?,
+            WasmOp::I64Popcnt => popcnt(&mut words, &mut stack, true)?,
+            // #851 — i64 divide / remainder (x-form SDIV/UDIV + MSUB) with the
+            // WASM trap guards (÷0 all forms; INT64_MIN/-1 signed-div only).
+            WasmOp::I64DivS => divrem(&mut words, &mut stack, true, true, false)?,
+            WasmOp::I64DivU => divrem(&mut words, &mut stack, false, true, false)?,
+            WasmOp::I64RemS => divrem(&mut words, &mut stack, true, true, true)?,
+            WasmOp::I64RemU => divrem(&mut words, &mut stack, false, true, true)?,
 
             // --- i64 comparisons (result is an i32 0/1) ---
             WasmOp::I64Eqz => eqz(&mut words, &mut stack, true)?,
@@ -797,38 +1413,217 @@ pub fn select_typed_cf(
             WasmOp::I32ReinterpretF32 => {
                 reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_w_from_s)?
             }
+            // #851 (GI-FPU-001) — f64 <-> i64 bit-cast reinterprets, the 64-bit
+            // twins of the f32/i32 pair above (`fmov dd,xn` / `fmov xd,dn`).
+            WasmOp::F64ReinterpretI64 => {
+                reinterpret_gp_to_fp(&mut words, &mut stack, enc::fmov_d_from_x)?
+            }
+            WasmOp::I64ReinterpretF64 => {
+                reinterpret_fp_to_gp(&mut words, &mut stack, enc::fmov_x_from_d)?
+            }
 
             // `End` is overloaded: it closes the innermost open `block`, or —
             // when no block is open — ends the FUNCTION body (funnel the result
             // into x0/d0 and return).
             WasmOp::End => {
                 if let Some(frame) = ctrl.pop() {
-                    // Block close: every recorded forward branch targets HERE
-                    // (the block's fall-through). Patch each placeholder with the
-                    // word-relative offset from the branch to the current position.
+                    // Frame close. Every recorded FORWARD branch (block/if exit,
+                    // else-arm skip) targets HERE (fall-through). A Loop's
+                    // branches were backward and already resolved. Patch each
+                    // placeholder via the kind-preserving `patch_branch`.
                     let here = words.len();
-                    for pos in frame.pending {
-                        let off = (here as i64 - pos as i64) as i32;
-                        let branch = words[pos];
-                        // Re-encode with the resolved offset, preserving the
-                        // opcode/register bits set at emission (b vs cbnz).
-                        words[pos] = if branch & 0xFF00_0000 == 0x1400_0000 {
-                            enc::b_uncond(off)
-                        } else {
-                            // cbnz: keep the Rt field, set the imm19.
-                            enc::cbnz((branch & 0x1F) as u8, off)
-                        };
+                    // An `if` with NO `else`: its `cbz` still needs to skip the
+                    // then-arm to here (the fall-through past the then-arm).
+                    if let Kind::If {
+                        else_fixup: Some(pos),
+                    } = frame.kind
+                    {
+                        patch_branch(&mut words, pos, here)?;
                     }
-                    // A void block leaves the value stack exactly as on entry.
+                    for pos in frame.pending {
+                        patch_branch(&mut words, pos, here)?;
+                    }
+                    // A void frame leaves the value stack exactly as on entry —
+                    // but only on a REACHABLE fall-through (a body ending in
+                    // `return`/`br` is stack-polymorphic). Truncate always;
+                    // assert only when the fall-through is reachable.
                     debug_assert!(
-                        stack.len() == frame.stack_entry,
-                        "void block must restore stack height: entry={} now={}",
+                        !reachable || stack.len() == frame.stack_entry,
+                        "void frame must restore stack height: entry={} now={}",
                         frame.stack_entry,
                         stack.len()
                     );
                     stack.truncate(frame.stack_entry);
+                    // After closing a frame the position is reachable again: a
+                    // forward branch could target this fall-through, and a loop's
+                    // continuation follows. (A dead nested block would want the
+                    // precise `fell_through || had_pending` rule; that only
+                    // affects a debug assert, never emitted bytes — noted as a
+                    // residual, the wasmtime differential is the correctness
+                    // oracle here.)
+                    reachable = true;
                 } else {
-                    epilogue(&mut words, stack.last().copied());
+                    epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
+                }
+            }
+            // --- #851 linear-memory load/store ---
+            //
+            // Effective address = `x28 (base) + uxtw(i32 addr) + memarg.offset`.
+            // Loads bake zero/sign extension into the A64 op (`ldrb`=zero-extend,
+            // `ldrsb`=sign-extend, etc); stores write the low `size` bytes. The
+            // `align` hint is advisory (WASM permits unaligned access) and
+            // ignored — A64 unsigned-offset loads/stores are alignment-tolerant.
+            // Only single-memory (memory 0) ops are lowered here; a `MultiMemory`
+            // wrapper hits the catch-all and loud-declines.
+            WasmOp::I32Load { offset, .. } => load(&mut words, &mut stack, *offset, 2, enc::ldr_w)?,
+            WasmOp::I32Store { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 2, enc::str_w)?
+            }
+            WasmOp::I32Load8U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrb)?
+            }
+            WasmOp::I32Load8S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrsb_w)?
+            }
+            WasmOp::I32Load16U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrh)?
+            }
+            WasmOp::I32Load16S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrsh_w)?
+            }
+            WasmOp::I32Store8 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 0, enc::strb)?
+            }
+            WasmOp::I32Store16 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 1, enc::strh)?
+            }
+            WasmOp::I64Load { offset, .. } => load(&mut words, &mut stack, *offset, 3, enc::ldr_x)?,
+            WasmOp::I64Store { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 3, enc::str_x)?
+            }
+            WasmOp::I64Load8U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrb)?
+            }
+            WasmOp::I64Load8S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 0, enc::ldrsb_x)?
+            }
+            WasmOp::I64Load16U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrh)?
+            }
+            WasmOp::I64Load16S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 1, enc::ldrsh_x)?
+            }
+            WasmOp::I64Load32U { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 2, enc::ldr_w)?
+            }
+            WasmOp::I64Load32S { offset, .. } => {
+                load(&mut words, &mut stack, *offset, 2, enc::ldrsw)?
+            }
+            WasmOp::I64Store8 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 0, enc::strb)?
+            }
+            WasmOp::I64Store16 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 1, enc::strh)?
+            }
+            WasmOp::I64Store32 { offset, .. } => {
+                store(&mut words, &mut stack, *offset, 2, enc::str_w)?
+            }
+            // --- #851 direct `call` ---
+            //
+            // AAPCS64: pop `argc` integer args off the value stack, marshal them
+            // into x0..x{argc-1} in order (deepest = x0), `bl func_N` (recorded as
+            // an R_AARCH64_CALL26 relocation), then push the x0 result if the
+            // callee returns one value. LR is preserved by the non-leaf prologue.
+            //
+            // SOUNDNESS (v1 scope — everything else loud-declines, never wrong
+            // code): a call CLOBBERS all caller-saved registers (x0..x18), so
+            // value-stack temps (x9..x15) below the args do NOT survive it. We
+            // therefore require the value stack to hold EXACTLY the args at the
+            // call (`height == argc`) and decline otherwise. Combined with the
+            // non-leaf "no param reads" guard, this leaves every arg in a temp
+            // (x9..x15) disjoint from its destination (x0..x7), so the moves need
+            // no shuffle. Imports, >8 args, and non-{0,1}-result callees decline.
+            WasmOp::Call(func_idx) => {
+                let idx = *func_idx;
+                if idx < num_imports {
+                    return Err(SelectError(format!(
+                        "call to imported function {idx} — import dispatch is not \
+                         yet supported for aarch64; loud-declining (#851)"
+                    )));
+                }
+                let argc = *func_arg_counts.get(idx as usize).ok_or_else(|| {
+                    SelectError(format!("call to function {idx}: unknown arg count"))
+                })?;
+                if argc > 8 {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: {argc} args — at most 8 register \
+                         args are supported; loud-declining (#851)"
+                    )));
+                }
+                let rc = *func_result_counts.get(idx as usize).ok_or_else(|| {
+                    SelectError(format!("call to function {idx}: unknown result count"))
+                })?;
+                if rc > 1 {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: {rc} results — multi-result calls \
+                         are not supported for aarch64; loud-declining (#851)"
+                    )));
+                }
+                // AAPCS64 returns f32/f64 in v0/d0, NOT x0. A float-returning
+                // callee must decline: pushing x0 as the result would read a
+                // stale GP register — a silent miscompile. (Float call results
+                // are a documented later increment.)
+                if rc == 1 && func_ret_float.get(idx as usize).copied().unwrap_or(false) {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: float result (returned in v0/d0, \
+                         not x0) — float call results are not yet supported for \
+                         aarch64; loud-declining (#851)"
+                    )));
+                }
+                // The value stack must be EXACTLY the args (nothing survives the
+                // clobber underneath). This also guarantees no arg is FP-tagged
+                // improperly — an FP arg would need v-register marshalling we do
+                // not do, and it is caught here or by the disjointness below.
+                if stack.len() != argc as usize {
+                    return Err(SelectError(format!(
+                        "call to function {idx}: value stack holds {} entries but \
+                         needs exactly {argc} (call clobbers caller-saved temps \
+                         below the args); loud-declining (#851)",
+                        stack.len()
+                    )));
+                }
+                // Args are stack[0..argc] with stack[0] = x0 (deepest arg first).
+                // All are GP temps (x9..x15) by the guards above; decline any FP.
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.file != File::Gp {
+                        return Err(SelectError(format!(
+                            "call to function {idx}: argument {arg_reg} is a float \
+                             — FP call args are not supported for aarch64; \
+                             loud-declining (#851)"
+                        )));
+                    }
+                }
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.reg != arg_reg as u8 {
+                        words.push(enc::mov_reg64(arg_reg as u8, v.reg));
+                    }
+                }
+                stack.clear();
+                // Record the reloc site (byte offset of the `bl`) then emit `bl 0`.
+                call_sites.push(CallSite {
+                    offset: (words.len() * 4) as u32,
+                    callee: idx,
+                });
+                words.push(enc::bl(0));
+                // Push the result if the callee returns one value. Move x0 into a
+                // regular value-stack temp (x9..x15) immediately so the rest of the
+                // selector's invariant holds — value-stack entries live in the temp
+                // pool, never in x0 (which the epilogue and the next call reuse).
+                // i64 fits in x0; the value stack is width-agnostic (op-carried).
+                if rc == 1 {
+                    let dst = alloc_temp(&stack)?;
+                    words.push(enc::mov_reg64(dst, 0));
+                    stack.push(Val::gp(dst));
                 }
             }
             other => {
@@ -841,17 +1636,69 @@ pub fn select_typed_cf(
 
     // A body without a trailing `End` still needs an epilogue.
     if !matches!(ops.last(), Some(WasmOp::End)) {
-        epilogue(&mut words, stack.last().copied());
+        epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
     }
-    Ok(words)
+    Ok((words, call_sites))
 }
 
 /// Emit the function epilogue: move the top-of-stack result into the ABI return
-/// register (`x0` for a GP result, `d0` for a float result) and `ret`. A GP
-/// result already in `x0` / an FP result already in `v0` skips the move. The
-/// 64-bit `mov x0, xN` is correct for i32 results too (w-form producers zero the
-/// upper half); the `fmov d0, dN` likewise carries an f32's low 32 bits intact.
-fn epilogue(words: &mut Vec<u32>, top: Option<Val>) {
+/// register (`x0` for a GP result, `d0` for a float result), restore the stack
+/// pointer past any non-param-local frame, and `ret`. A GP result already in
+/// `x0` / an FP result already in `v0` skips the move. The 64-bit `mov x0, xN` is
+/// correct for i32 results too (w-form producers zero the upper half); the `fmov
+/// d0, dN` likewise carries an f32's low 32 bits intact.
+///
+/// `frame_size` is the byte size of the non-param-local frame (0 when the
+/// function has no non-param locals — then no `add sp` is emitted and the output
+/// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
+/// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
+/// the sequence is: funnel result → restore SP → ret.
+/// Guard an `imm26` (unconditional `b`) displacement (words) against the A64
+/// field width (signed 26-bit → ±2^25 words = ±128 MB). Over-range would wrap
+/// silently in the encoder's mask, so we LOUD-DECLINE instead (unreachable for
+/// any realistic function; "No silent miscompile" is the hard rule).
+fn check_imm26(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 25)..(1 << 25)).contains(&off) {
+        return Err(SelectError(format!(
+            "branch displacement {off} words exceeds A64 b imm26 range \
+             (±2^25) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
+/// Guard an `imm19` (`cbz`/`cbnz`/`b.cond`) displacement (signed 19-bit →
+/// ±2^18 words = ±1 MB). Same silent-wrap hazard as [`check_imm26`].
+fn check_imm19(off: i32) -> Result<i32, SelectError> {
+    if !(-(1 << 18)..(1 << 18)).contains(&off) {
+        return Err(SelectError(format!(
+            "conditional-branch displacement {off} words exceeds A64 imm19 \
+             range (±2^18) — loud-declining rather than wrap silently"
+        )));
+    }
+    Ok(off)
+}
+
+/// Re-encode a placeholder FORWARD branch at `words[pos]` to land at `target`
+/// (a word index in `words`), preserving its kind. The three kinds we emit as
+/// forward placeholders are `b` (0x14…, imm26), `cbnz` (0x35…, imm19+Rt), and
+/// `cbz` (0x34…, imm19+Rt); the opcode's high bits discriminate them so the Rt
+/// field and op class survive the patch. Centralizing this prevents a `cbz`
+/// (added in #851) from being mis-patched as a `cbnz`. Over-range displacements
+/// LOUD-DECLINE (no silent field wrap).
+fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), SelectError> {
+    let off = (target as i64 - pos as i64) as i32;
+    let w = words[pos];
+    words[pos] = match w & 0xFF00_0000 {
+        0x1400_0000 => enc::b_uncond(check_imm26(off)?),
+        0x3500_0000 => enc::cbnz((w & 0x1F) as u8, check_imm19(off)?),
+        0x3400_0000 => enc::cbz((w & 0x1F) as u8, check_imm19(off)?),
+        _ => unreachable!("patch_branch: not a placeholder branch: {w:#010x}"),
+    };
+    Ok(())
+}
+
+fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32, is_non_leaf: bool) {
     match top {
         Some(Val {
             reg,
@@ -867,6 +1714,14 @@ fn epilogue(words: &mut Vec<u32>, top: Option<Val>) {
         }
         _ => {}
     }
+    // Unwind in reverse of the prologue: raise SP past the locals frame, then
+    // (#851 non-leaf) restore FP/LR before `ret` — `ret` returns to x30.
+    if frame_size > 0 {
+        words.push(enc::add_imm64(enc::SP, enc::SP, frame_size));
+    }
+    if is_non_leaf {
+        words.push(enc::ldp_fp_lr_post16());
+    }
     words.push(enc::ret());
 }
 
@@ -876,6 +1731,137 @@ mod tests {
 
     fn bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    // Helper: no-import module, callee `func` has `argc` args and 1 result.
+    fn sel_calls(
+        ops: &[WasmOp],
+        num_params: u32,
+        num_imports: u32,
+        arg_counts: &[u32],
+        result_counts: &[u32],
+    ) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
+        select_typed_cf_calls(
+            ops,
+            num_params,
+            &[],
+            &[],
+            &[],
+            num_imports,
+            arg_counts,
+            result_counts,
+            &[],
+        )
+    }
+
+    #[test]
+    fn direct_call_no_args_one_result() {
+        // (func (export "run") (result i32) call 0)  — func 0 returns i32, 0 args.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[0], &[1]).unwrap();
+        // Non-leaf prologue (stp) ; bl #0 ; mov temp,x0 ; mov x0,temp ; ldp ; ret.
+        assert_eq!(w[0], enc::stp_fp_lr_pre16());
+        // The bl is the reloc site.
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].callee, 0);
+        assert_eq!(w[sites[0].offset as usize / 4], enc::bl(0));
+        // Last two words are the LR restore + ret.
+        assert_eq!(w[w.len() - 2], enc::ldp_fp_lr_post16());
+        assert_eq!(w[w.len() - 1], enc::ret());
+    }
+
+    #[test]
+    fn direct_call_two_const_args_marshalled_to_x0_x1() {
+        // i32.const 20 ; i32.const 22 ; call 0   — func 0: (param i32 i32)->i32.
+        let ops = vec![
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(22),
+            WasmOp::Call(0),
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[2], &[1]).unwrap();
+        // The two consts land in x9/x10; the call marshals x9->x0, x10->x1.
+        assert!(w.contains(&enc::mov_reg64(0, 9)));
+        assert!(w.contains(&enc::mov_reg64(1, 10)));
+        assert_eq!(sites.len(), 1);
+        // bl is right after the two arg moves.
+        let bl_word = w[sites[0].offset as usize / 4];
+        assert_eq!(bl_word, enc::bl(0));
+    }
+
+    #[test]
+    fn leaf_function_is_byte_identical_without_call() {
+        // A call-free body must not gain the non-leaf LR frame.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 2, 0, &[], &[]).unwrap();
+        assert!(sites.is_empty());
+        assert_eq!(w, vec![enc::add(9, 0, 1), enc::mov_reg64(0, 9), enc::ret()]);
+    }
+
+    #[test]
+    fn call_to_import_loud_declines() {
+        // func 0 is an import (num_imports = 1); calling it declines.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        assert!(sel_calls(&ops, 0, 1, &[0], &[0]).is_err());
+    }
+
+    #[test]
+    fn non_leaf_referencing_param_loud_declines() {
+        // A function that both reads a param AND makes a call declines (param
+        // homing across a call is unsupported — reading x0 after bl is garbage).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
+        // func 1 takes 1 arg (the local.get 0 value).
+        assert!(sel_calls(&ops, 1, 0, &[0, 1], &[0, 1]).is_err());
+    }
+
+    #[test]
+    fn call_with_extra_stack_below_args_loud_declines() {
+        // A live value beneath the args does not survive the call → decline.
+        // stack: [const_a, const_b] but callee takes only 1 arg → height 2 != 1.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::Call(0),
+            WasmOp::End,
+        ];
+        assert!(sel_calls(&ops, 0, 0, &[1], &[1]).is_err());
+    }
+
+    #[test]
+    fn call_with_float_result_loud_declines() {
+        // A callee that returns f32/f64 (result in v0/d0, not x0) must decline —
+        // pushing x0 would be a silent miscompile.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            0,
+            &[0],    // 0 args
+            &[1],    // 1 result
+            &[true], // ...which is a float
+        );
+        assert!(r.is_err(), "float-returning callee must loud-decline");
+    }
+
+    #[test]
+    fn void_result_call_pushes_nothing() {
+        // call 0 where func 0 returns void: no value pushed, epilogue returns x0
+        // as-is (whatever the ABI leaves) — the important part is it lowers.
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[0], &[0]).unwrap();
+        assert_eq!(sites.len(), 1);
+        // No `mov temp, x0` after the bl (nothing pushed): the word after bl is
+        // the ldp restore.
+        let bl_i = sites[0].offset as usize / 4;
+        assert_eq!(w[bl_i + 1], enc::ldp_fp_lr_post16());
     }
 
     #[test]
@@ -1022,9 +2008,9 @@ mod tests {
         );
     }
 
+    // #851 — div/rem now LOWER (SDIV/UDIV + MSUB) with WASM trap guards.
     #[test]
-    fn division_is_loud_declined() {
-        // A64 SDIV/UDIV do not trap → we refuse rather than silently miscompile.
+    fn division_and_remainder_lower_with_guards() {
         for op in [
             WasmOp::I32DivS,
             WasmOp::I32DivU,
@@ -1032,16 +2018,154 @@ mod tests {
             WasmOp::I32RemU,
             WasmOp::I64DivS,
             WasmOp::I64DivU,
+            WasmOp::I64RemS,
+            WasmOp::I64RemU,
         ] {
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), op, WasmOp::End];
-            assert!(select(&ops, 2).is_err(), "division must loud-decline");
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::End,
+            ];
+            assert!(select(&ops, 2).is_ok(), "div/rem must lower: {op:?}");
         }
     }
 
     #[test]
-    fn popcnt_is_loud_declined() {
+    fn div_u_emits_divisor_zero_guard_only() {
+        // i32.div_u: cbnz w1,+2 ; brk ; udiv w9,w0,w1 ; mov x0,x9 ; ret.
+        // Exactly ONE brk (÷0), no overflow guard for the unsigned form.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32DivU,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cbnz(1, 2),
+                enc::brk(0),
+                enc::udiv(9, 0, 1),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn div_s_emits_zero_and_overflow_guards() {
+        // i32.div_s: ÷0 guard + INT_MIN/-1 overflow guard, then sdiv.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32DivS,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        // Temps: q=9 (quotient/result), s0=10 (INT_MIN), s1=11 (-1).
+        let mut expect = vec![enc::cbnz(1, 2), enc::brk(0)];
+        expect.extend(enc::mov_imm32(10, 0x8000_0000)); // INT_MIN scratch
+        expect.extend(enc::mov_imm32(11, 0xFFFF_FFFF)); // -1 scratch
+        expect.push(enc::cmp(0, 10)); // dividend == INT_MIN?
+        expect.push(enc::bcond(Cond::Ne, 4));
+        expect.push(enc::cmp(1, 11)); // divisor == -1?
+        expect.push(enc::bcond(Cond::Ne, 2));
+        expect.push(enc::brk(0));
+        expect.push(enc::sdiv(9, 0, 1));
+        expect.push(enc::mov_reg64(0, 9));
+        expect.push(enc::ret());
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn rem_s_has_zero_guard_but_no_overflow_guard() {
+        // rem_s traps ONLY on ÷0 (rem_s(INT_MIN,-1) == 0). So exactly one brk,
+        // and the arithmetic is sdiv + msub.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32RemS,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cbnz(1, 2),
+                enc::brk(0),
+                enc::sdiv(9, 0, 1),
+                enc::msub(9, 9, 1, 0),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+        // Exactly one brk — no overflow guard.
+        assert_eq!(w.iter().filter(|&&x| x == enc::brk(0)).count(), 1);
+    }
+
+    #[test]
+    fn i64_div_zero_guard_tests_full_width() {
+        // The i64 ÷0 guard MUST use the x-form cbnz (all 64 bits).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I64DivU,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(w[0], enc::cbnz64(1, 2), "i64 ÷0 guard must be 64-bit cbnz");
+        assert_eq!(w[1], enc::brk(0));
+    }
+
+    #[test]
+    fn popcnt_lowers_via_simd_cnt_addv() {
+        // i32.popcnt: fmov s16,w0 ; cnt v16.8b ; addv b16 ; fmov w9,s16.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Popcnt, WasmOp::End];
-        assert!(select(&ops, 1).is_err());
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_s_from_w(16, 0),
+                enc::cnt_8b(16, 16),
+                enc::addv_8b(16, 16),
+                enc::fmov_w_from_s(9, 16),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn i64_popcnt_uses_d_move() {
+        // i64.popcnt fills all 8 bytes: fmov d16,x0.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64Popcnt, WasmOp::End];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(w[0], enc::fmov_d_from_x(16, 0));
+        assert_eq!(w[1], enc::cnt_8b(16, 16));
+        assert_eq!(w[2], enc::addv_8b(16, 16));
+    }
+
+    #[test]
+    fn f64_i64_reinterpret_round_trips_through_fmov() {
+        // i64 param → f64.reinterpret → i64.reinterpret: fmov d16,x0; fmov x9,d16.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F64ReinterpretI64,
+            WasmOp::I64ReinterpretF64,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::fmov_d_from_x(16, 0),
+                enc::fmov_x_from_d(9, 16),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
     }
 
     // ---- milestone 3: scalar float ----
@@ -1540,11 +2664,10 @@ mod tests {
     }
 
     #[test]
-    fn loop_and_br_table_and_if_are_loud_declined() {
-        // Backward-branch / join / jump-table control is out of this increment.
-        let loop_ops = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&loop_ops, 0, &[], &[], &[(0, 0)]).is_err());
-
+    fn br_table_and_typed_loop_if_are_loud_declined() {
+        // #851: `loop`, `if`/`else` are now LOWERED for the void (0,0) shape.
+        // What still declines: `br_table` (jump table, catch-all) and any
+        // VALUE-carrying loop/if (arity != (0,0)).
         let brtable = vec![
             WasmOp::Block,
             WasmOp::LocalGet(0),
@@ -1557,8 +2680,97 @@ mod tests {
         ];
         assert!(select_typed_cf(&brtable, 1, &[], &[], &[(0, 0)]).is_err());
 
-        let if_ops = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&if_ops, 1, &[], &[], &[(0, 0)]).is_err());
+        // A VALUE-producing if (result i32 → arity (0,1)) loud-declines.
+        let typed_if = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_if, 1, &[], &[], &[(0, 1)]).is_err());
+
+        // A VALUE-producing loop (arity (0,1)) loud-declines.
+        let typed_loop = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert!(select_typed_cf(&typed_loop, 0, &[], &[], &[(0, 1)]).is_err());
+    }
+
+    #[test]
+    fn void_if_without_else_emits_cbz_skip() {
+        // `if (then unreachable)` with cond in w0: cbz w0, <past-then> ; brk ;
+        // then fall-through. The cbz skips the then-arm when cond == 0.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Unreachable,
+            WasmOp::End, // if-end
+            WasmOp::End, // fn-end
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, .+8 (skip the brk) ; brk #0 ; ret
+        assert_eq!(w[0], enc::cbz(0, 2));
+        assert_eq!(w[1], enc::brk(0));
+        assert_eq!(w[2], enc::ret());
+    }
+
+    #[test]
+    fn void_if_else_patches_both_edges() {
+        // if(cond){} else{} — void arms. cbz skips to the else entry; the
+        // then-arm's trailing `b` skips the else-arm to the join.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Else,
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        // cbz w0, else ; b end ; brk ; ret
+        // then-arm is empty: cbz lands at the `b`? No — cbz skips the then-arm
+        // to the else entry. then-arm empty → cbz to the b's fall-through.
+        // Layout: [0] cbz w0, else_entry ; [1] b end ; [2] brk ; [3] ret
+        assert_eq!(w[0], enc::cbz(0, 2)); // to word 2 (else entry = brk)
+        assert_eq!(w[1], enc::b_uncond(2)); // skip else-arm to word 3 (ret)
+        assert_eq!(w[2], enc::brk(0));
+        assert_eq!(w[3], enc::ret());
+    }
+
+    #[test]
+    fn loop_back_edge_is_negative_offset() {
+        // block { loop { <body> br 0 } } — the `br 0` targets the loop header
+        // (BACKWARD), resolving to a negative offset. A `local.tee`/`local.get`
+        // on a NON-PARAM local emits real instructions ahead of the `br`, so
+        // the back-edge offset is strictly negative. Frame: 1 non-param local
+        // (idx 1) → a sub-sp + str-xzr prologue, then the loop body.
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(1), // non-param local read → ldr (real instr)
+            WasmOp::LocalSet(1), // → str (real instr) — loop body has 2 instrs
+            WasmOp::Br(0),       // back-edge to loop header
+            WasmOp::End,         // loop end
+            WasmOp::End,         // block end
+            WasmOp::End,         // fn end
+        ];
+        // arity table: Block, Loop → two (0,0) entries.
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
+        // Find the back-edge `b` (0x14…): it must carry a NEGATIVE imm26.
+        let br = w
+            .iter()
+            .find(|&&x| x & 0xFC00_0000 == 0x1400_0000)
+            .expect("a back-edge b must be emitted");
+        let imm26 = (br & 0x03FF_FFFF) as i32;
+        let signed = (imm26 << 6) >> 6; // sign-extend 26 bits
+        assert!(
+            signed < 0,
+            "loop back-edge must be a negative offset, got {signed}"
+        );
+    }
+
+    #[test]
+    fn early_return_emits_epilogue_ret() {
+        // `local.get 0 ; return` — funnels w0 and rets early, then the trailing
+        // fn-end epilogue rets again (unreachable).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Return, WasmOp::End];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
+        // local.get 0 → mov x9,x0 ; return → mov x0,x9 ; ret
+        assert_eq!(*w.last().unwrap(), enc::ret());
+        assert!(w.contains(&enc::ret()));
     }
 
     #[test]
@@ -1588,5 +2800,213 @@ mod tests {
         ];
         let w = select_typed_cf(&ops, 1, &[], &[], &[]).unwrap();
         assert_eq!(w[0], enc::cbnz(0, 2));
+    }
+
+    // --- #851 non-param locals ---
+
+    #[test]
+    fn no_non_param_locals_is_byte_identical() {
+        // A function that only touches params emits NO frame — byte-identical to
+        // the pre-#851 lowering (the localizing guard).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 2).unwrap();
+        assert_eq!(w, vec![enc::add(9, 0, 1), enc::mov_reg64(0, 9), enc::ret()]);
+    }
+
+    #[test]
+    fn two_non_param_locals_frame_and_ops() {
+        // (result i32) (local i32 i32)
+        // local.set 0 (const 5); local.set 1 (const 7); local.get 0 + local.get 1
+        // 0 params, 2 non-param locals → frame rounds 2*8=16 to 16.
+        let ops = vec![
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(0),
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                // prologue: sub sp,sp,#16 ; zero both slots
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0),
+                enc::str_x_imm(enc::XZR, enc::SP, 8),
+                // const 5 -> w9 ; set local 0 (slot 0)
+                enc::movz(9, 5),
+                enc::str_x_imm(9, enc::SP, 0),
+                // const 7 -> w9 (freed) ; set local 1 (slot 8)
+                enc::movz(9, 7),
+                enc::str_x_imm(9, enc::SP, 8),
+                // get local 0 -> w9 ; get local 1 -> w10
+                enc::ldr_x_imm(9, enc::SP, 0),
+                enc::ldr_x_imm(10, enc::SP, 8),
+                enc::add(9, 9, 10),
+                enc::mov_reg64(0, 9),
+                // epilogue: restore sp ; ret
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_param_local_zero_init_read_before_write() {
+        // A non-param local read BEFORE any write must read 0. With 1 param and
+        // one non-param local (index 1), get local 1 loads the zeroed slot.
+        // 1 param + 1 non-param local → frame 8 rounds to 16.
+        let ops = vec![
+            WasmOp::LocalGet(0), // param
+            WasmOp::LocalGet(1), // non-param local, read-first → must be 0
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0), // zero the one slot
+                enc::ldr_x_imm(9, enc::SP, 0),        // get local 1 (zeroed)
+                enc::add(9, 0, 9),                    // param0 + local1
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_get_set_get_no_alias() {
+        // THE aliasing regression: get local 1 (push), set local 1 := 5, get
+        // local 1 (push), add. Stack slots make each get a FRESH load, so the
+        // first pushed value is the OLD slot (0), not clobbered by the set.
+        // wasmtime: 0 + 5 = 5. A read-by-reference model would give 5 + 5 = 10.
+        // 0 params, 1 non-param local (index 0) → frame 8 rounds to 16.
+        let ops = vec![
+            WasmOp::LocalGet(0), // load slot (0) into w9
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(0), // slot := 5 (does NOT touch w9 on the stack)
+            WasmOp::LocalGet(0), // load slot (5) into a fresh temp
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0), // zero-init
+                enc::ldr_x_imm(9, enc::SP, 0),        // get -> w9 (=0, on stack)
+                enc::movz(10, 5),                     // const 5 -> w10 (w9 live)
+                enc::str_x_imm(10, enc::SP, 0),       // set slot := 5
+                enc::ldr_x_imm(10, enc::SP, 0),       // get -> w10 (=5, fresh)
+                enc::add(9, 9, 10),                   // 0 + 5
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_tee_stores_and_keeps_value() {
+        // tee local 0 := (const 9) leaves 9 on the stack; then double it.
+        let ops = vec![
+            WasmOp::I32Const(9),
+            WasmOp::LocalTee(0), // slot := w9, w9 stays on stack
+            WasmOp::LocalGet(0), // reload slot -> w10
+            WasmOp::I32Add,      // 9 + 9
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::sub_imm64(enc::SP, enc::SP, 16),
+                enc::str_x_imm(enc::XZR, enc::SP, 0),
+                enc::movz(9, 9),
+                enc::str_x_imm(9, enc::SP, 0), // tee stores WITHOUT popping
+                enc::ldr_x_imm(10, enc::SP, 0),
+                enc::add(9, 9, 10),
+                enc::mov_reg64(0, 9),
+                enc::add_imm64(enc::SP, enc::SP, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_param_loud_declines() {
+        // Writing a PARAMETER is declined (params are read-by-reference; homing
+        // written params is a later increment) — never silently miscompiled.
+        let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0), WasmOp::End];
+        assert!(select(&ops, 1).is_err());
+    }
+
+    #[test]
+    fn local_across_void_block_balances_sp() {
+        // A non-param local read/written across a void block with a br_if out.
+        // The frame `sub sp` is emitted ONCE at prologue and the block never
+        // touches SP; the single `add sp` fires only at the OUTER End (the block
+        // End takes the ctrl-pop path, no epilogue). So SP is balanced on every
+        // path: exactly one `sub sp` and exactly one matching `add sp`.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(1),
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0),
+            WasmOp::I32Const(2),
+            WasmOp::LocalSet(1),
+            WasmOp::End, // block end — NO epilogue, NO sp adjust
+            WasmOp::LocalGet(1),
+            WasmOp::End, // function end — the one epilogue
+        ];
+        // 1 param, 1 non-param local (index 1) → frame 8 rounds to 16.
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let subs = w
+            .iter()
+            .filter(|&&x| x == enc::sub_imm64(enc::SP, enc::SP, 16))
+            .count();
+        let adds = w
+            .iter()
+            .filter(|&&x| x == enc::add_imm64(enc::SP, enc::SP, 16))
+            .count();
+        assert_eq!(subs, 1, "exactly one prologue sub sp");
+        assert_eq!(adds, 1, "exactly one epilogue add sp — SP balanced");
+        // The prologue sub is the very first word; the epilogue add is the
+        // second-to-last (before ret).
+        assert_eq!(w[0], enc::sub_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(w[w.len() - 1], enc::ret());
+        assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 16));
+    }
+
+    #[test]
+    fn three_locals_frame_rounds_to_32() {
+        // 0 params, 3 non-param locals → 3*8 = 24 rounds up to 32.
+        let ops = vec![
+            WasmOp::LocalGet(2), // touch index 2 → 3 locals (0,1,2)
+            WasmOp::End,
+        ];
+        let w = select(&ops, 0).unwrap();
+        assert_eq!(w[0], enc::sub_imm64(enc::SP, enc::SP, 32));
+        // three zeroing stores at offsets 0,8,16
+        assert_eq!(w[1], enc::str_x_imm(enc::XZR, enc::SP, 0));
+        assert_eq!(w[2], enc::str_x_imm(enc::XZR, enc::SP, 8));
+        assert_eq!(w[3], enc::str_x_imm(enc::XZR, enc::SP, 16));
+        // slot for local 2 is at offset 16
+        assert_eq!(w[4], enc::ldr_x_imm(9, enc::SP, 16));
+        // epilogue restores 32
+        assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 32));
     }
 }
