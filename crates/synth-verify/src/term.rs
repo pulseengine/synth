@@ -64,18 +64,24 @@ fn bv_rank(t: &BvTerm) -> u8 {
         BvTerm::Sub(..) => 3,
         BvTerm::Mul(..) => 4,
         BvTerm::Udiv(..) => 5,
-        BvTerm::And(..) => 6,
-        BvTerm::Or(..) => 7,
-        BvTerm::Xor(..) => 8,
-        BvTerm::Shl(..) => 9,
-        BvTerm::Lshr(..) => 10,
-        BvTerm::Ashr(..) => 11,
-        BvTerm::Rotr(..) => 12,
-        BvTerm::Extract { .. } => 13,
-        BvTerm::Concat(..) => 14,
-        BvTerm::ZeroExt { .. } => 15,
-        BvTerm::SignExt { .. } => 16,
-        BvTerm::Ite { .. } => 17,
+        // Urem MUST have its own rank: `ord_bv` asserts (via `unreachable!`)
+        // that rank-equal variants are exhaustively matched below, and there is
+        // no (Udiv, Urem) cross pair — sharing rank 5 made comparing a `Udiv`
+        // against a `Urem` panic. Reachable: the rem model is
+        // `rem = a − (a/b)·b`, so div and rem terms meet under a commutative op.
+        BvTerm::Urem(..) => 6,
+        BvTerm::And(..) => 7,
+        BvTerm::Or(..) => 8,
+        BvTerm::Xor(..) => 9,
+        BvTerm::Shl(..) => 10,
+        BvTerm::Lshr(..) => 11,
+        BvTerm::Ashr(..) => 12,
+        BvTerm::Rotr(..) => 13,
+        BvTerm::Extract { .. } => 14,
+        BvTerm::Concat(..) => 15,
+        BvTerm::ZeroExt { .. } => 16,
+        BvTerm::SignExt { .. } => 17,
+        BvTerm::Ite { .. } => 18,
     }
 }
 
@@ -117,6 +123,7 @@ fn ord_bv(a: &BvTerm, b: &BvTerm) -> Ordering {
         | (BvTerm::Sub(a1, a2), BvTerm::Sub(b1, b2))
         | (BvTerm::Mul(a1, a2), BvTerm::Mul(b1, b2))
         | (BvTerm::Udiv(a1, a2), BvTerm::Udiv(b1, b2))
+        | (BvTerm::Urem(a1, a2), BvTerm::Urem(b1, b2))
         | (BvTerm::And(a1, a2), BvTerm::And(b1, b2))
         | (BvTerm::Or(a1, a2), BvTerm::Or(b1, b2))
         | (BvTerm::Xor(a1, a2), BvTerm::Xor(b1, b2))
@@ -234,6 +241,10 @@ fn canonicalize_bv(t: &BvTerm) -> BvTerm {
         BvTerm::Udiv(a, b) => {
             let (a, b) = bin(a, b);
             BvTerm::Udiv(a, b)
+        }
+        BvTerm::Urem(a, b) => {
+            let (a, b) = bin(a, b);
+            BvTerm::Urem(a, b)
         }
         BvTerm::Shl(a, b) => {
             let (a, b) = bin(a, b);
@@ -843,6 +854,7 @@ fn fmt_bv(t: &BvTerm, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         BvTerm::Sub(a, b) => fmt_bin(f, "bvsub", a, b),
         BvTerm::Mul(a, b) => fmt_bin(f, "bvmul", a, b),
         BvTerm::Udiv(a, b) => fmt_bin(f, "bvudiv", a, b),
+        BvTerm::Urem(a, b) => fmt_bin(f, "bvurem", a, b),
         BvTerm::And(a, b) => fmt_bin(f, "bvand", a, b),
         BvTerm::Or(a, b) => fmt_bin(f, "bvor", a, b),
         BvTerm::Xor(a, b) => fmt_bin(f, "bvxor", a, b),
