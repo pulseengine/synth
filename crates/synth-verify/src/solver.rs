@@ -588,7 +588,7 @@ mod tests {
         let x = BV::new_const("ha_x", width);
         let y = BV::new_const("ha_y", width);
         let z = BV::new_const("ha_z", width);
-        x.bvmul(&y).bvmul(&z).eq(x.bvmul(&y.bvmul(&z))).not()
+        x.bvmul(&y).bvmul(&z).eq(x.bvmul(y.bvmul(&z))).not()
     }
 
     /// Wide enough that no 1 ms budget can finish it (>30 s unbounded).
