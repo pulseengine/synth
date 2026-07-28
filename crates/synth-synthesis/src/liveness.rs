@@ -4072,7 +4072,7 @@ enum JoinCheck {
 ///     that returns a value into a join must not spuriously drop it (the latent
 ///     `bl foo → join → use r0` false positive).
 fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
-    let Some((blocks, live_in, def_b)) = build_join_cfg(instrs) else {
+    let Some((blocks, live_in, def_b, entry_extra)) = build_join_cfg(instrs) else {
         return JoinCheck::NotAttempted {
             reason: "cfg-unmodeled-construct",
         };
@@ -4093,7 +4093,10 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     // (the block_brif_483 `nested` case — R11 defined nowhere in the stream).
     // Over-seeding causes only false NEGATIVES; under-seeding would
     // false-POSITIVE on real code — so seed generously.
-    let entry_seed: BTreeSet<Reg> = [
+    // `entry_extra` (label path: ∅; numeric path: the PRESERVED
+    // pushed-AND-popped callee-saved set) extends the seed — the #819-redo
+    // discriminator; see [`build_join_cfg`] for the full soundness argument.
+    let mut entry_seed: BTreeSet<Reg> = [
         Reg::R0,
         Reg::R1,
         Reg::R2,
@@ -4107,6 +4110,7 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     ]
     .into_iter()
     .collect();
+    entry_seed.extend(entry_extra);
 
     // `def_b` (per-block must-def) and `live_in` are supplied by `build_join_cfg`
     // (which models calls' caller-saved def-set — a detail `block_use_def` alone
@@ -4220,8 +4224,9 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     JoinCheck::Consistent
 }
 
-/// Build the JOIN-check CFG: `(blocks, live_in, def_b)`, or `None` (decline) if
-/// the stream contains a construct the join analysis cannot model.
+/// Build the JOIN-check CFG: `(blocks, live_in, def_b, entry_avail_extra)`, or
+/// `None` (decline) if the stream contains a construct the join analysis cannot
+/// model.
 ///
 /// TWO shapes are modeled, chosen by the stream (VCR-RA-003 optimized-path joins,
 /// #57/#242):
@@ -4236,10 +4241,46 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
 /// A MIXED stream (label-form branches ALONGSIDE numeric ones — the msgq_put
 /// trap-guard shape) stays DECLINED (`None`): the two families need different
 /// target reconstruction; unifying them would guess (decline > guess).
+///
+/// The 4th tuple element is the ENTRY-AVAILABILITY EXTENSION — registers the
+/// availability fixpoint may treat as available at function entry BEYOND the
+/// shared AAPCS/reserved seed. It is the #819-redo discriminator:
+///   - **label path: ∅** (strict semantics, unchanged). The direct /
+///     `--relocatable` selectors never emit a join read of an entry-carried
+///     callee-saved register in valid code, so strictness costs nothing there
+///     and the label-form red-first clobber fixtures keep their teeth.
+///   - **numeric path: the PRESERVED set** — callee-saved registers
+///     pushed-in-the-prologue AND popped-at-every-exit
+///     ([`preserved_callee_saved`]). The DEFAULT optimized selector emits
+///     benign reads of an entry-carried preserved register at a join (e.g. the
+///     dead result-materialization `mov r0, r8` of a void function —
+///     `cf_shapes_500::ifelse`, the #819 false positive that hard-errored a
+///     VALID compile). A preserved register provably holds the CALLER's value
+///     (a well-defined value the prologue/epilogue contract knowingly carries)
+///     on every path that has not redefined it, so counting it available at
+///     entry is truthful — while a read of a NEVER-pushed, never-defined
+///     callee-saved register (allocator emitted a read of a register it never
+///     established — the #226 class) stays a Violation. NOT merely-entry-live:
+///     seeding `live_in[0]` would be self-fulfilling (whatever the stream
+///     reads early becomes "fine", masking garbage reads on push-less
+///     functions); the preserved set is anchored to the prologue/epilogue
+///     save/restore contract instead and is EMPTY when there is no such
+///     contract. Honest-scope residual (documented, undecidable from the
+///     stream): a one-arm redefinition of a preserved register merging with
+///     its entry value at a join is byte-identical between the benign
+///     dead-read shape and a hypothetical allocator mix-up, so the numeric
+///     path cannot flag it without over-rejecting valid compiles — invariant 1
+///     (callee-saved preservation) still bounds the damage (any DEFINED
+///     callee-saved register was saved/restored).
 #[allow(clippy::type_complexity)]
 fn build_join_cfg(
     instrs: &[ArmInstruction],
-) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
+) -> Option<(
+    Vec<BasicBlock>,
+    Vec<BTreeSet<Reg>>,
+    Vec<BTreeSet<Reg>>,
+    BTreeSet<Reg>,
+)> {
     let has_numeric = instrs
         .iter()
         .any(|i| matches!(i.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }));
@@ -4250,9 +4291,58 @@ fn build_join_cfg(
             // different reconstruction — decline > guess).
             return None;
         }
-        return build_join_cfg_numeric(instrs);
+        let (blocks, live_in, def_b) = build_join_cfg_numeric(instrs)?;
+        return Some((blocks, live_in, def_b, preserved_callee_saved(instrs)));
     }
-    build_join_cfg_label(instrs)
+    let (blocks, live_in, def_b) = build_join_cfg_label(instrs)?;
+    Some((blocks, live_in, def_b, BTreeSet::new()))
+}
+
+/// The PRESERVED callee-saved set: registers in R4–R8 that the prologue
+/// (`push {…, lr}`) saves AND every `pop {…, pc}` return epilogue restores.
+/// These provably carry the CALLER's value on any path that has not redefined
+/// them, under a save/restore contract the function itself established — the
+/// available-at-entry discriminator for the NUMERIC join CFG (see
+/// [`build_join_cfg`]). Returns ∅ when there is no LR-prologue or no
+/// `pop {…, pc}` epilogue (no contract → nothing is assumed available; a
+/// `bx lr`-return function gets the STRICT semantics).
+fn preserved_callee_saved(instrs: &[ArmInstruction]) -> BTreeSet<Reg> {
+    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    // Prologue save-set: the first LR-push (mirrors invariant 1's detection).
+    let mut pushed: BTreeSet<Reg> = BTreeSet::new();
+    let mut has_prologue = false;
+    for ins in instrs {
+        if let ArmOp::Push { regs } = &ins.op
+            && regs.contains(&Reg::LR)
+        {
+            has_prologue = true;
+            for r in regs {
+                if CALLEE_SAVED.contains(r) {
+                    pushed.insert(*r);
+                }
+            }
+            break;
+        }
+    }
+    if !has_prologue {
+        return BTreeSet::new();
+    }
+    // Restore side: a register is preserved only if EVERY `pop {…, pc}` return
+    // restores it (an exit that drops the restore breaks the contract).
+    let mut preserved = pushed;
+    let mut saw_pc_pop = false;
+    for ins in instrs {
+        if let ArmOp::Pop { regs } = &ins.op
+            && regs.contains(&Reg::PC)
+        {
+            saw_pc_pop = true;
+            preserved.retain(|r| regs.contains(r));
+        }
+    }
+    if !saw_pc_pop {
+        return BTreeSet::new();
+    }
+    preserved
 }
 
 /// The label-form JOIN-CFG builder (the original `build_join_cfg`). See
