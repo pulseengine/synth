@@ -14821,6 +14821,373 @@ mod tests {
         );
     }
 
+    // ================= across-JOIN on the OPTIMIZED (numeric) path =============
+    //
+    // The default (non-`--relocatable`) path pre-resolves branch displacements to
+    // NUMERIC halfword offsets (`BOffset`/`BCondOffset`, no `Label`). Before this
+    // lane those functions all returned `NotAttempted` for the join check — the
+    // "whole-function" guarantee didn't hold on the shipping path. These tests
+    // exercise `build_join_cfg_numeric` under the #819-redo PRESERVED
+    // entry-availability discriminator (see `build_join_cfg`):
+    //   RED   — a join read of a NEVER-established callee-saved register (not
+    //           pushed, not defined on any path) is a Violation, with and without
+    //           a prologue (the preserved seed is contract-anchored: no
+    //           push/pop contract → nothing seeded);
+    //   GREEN — a join read of a PRESERVED (pushed+popped) register redefined on
+    //           one arm is Consistent (the cf_shapes_500::ifelse class that #819
+    //           wrongly hard-errored), alongside the ported both-paths-define /
+    //           dominator-defined / loop-back-edge no-false-positive cases;
+    //   DECLINE — off-boundary targets and mixed label+numeric streams stay
+    //           loud NotAttempted (decline > guess).
+
+    /// Compute the numeric branch offset (in halfwords) that lands a branch at
+    /// instruction index `branch_idx` exactly on the leader at index
+    /// `target_idx`, using the SAME estimator byte layout the reconstruction
+    /// inverts (`target_byte = branch_byte + 4 + 2·offset`). This makes the
+    /// fixtures robust to per-op size constants: the test builds the exact
+    /// offset the production `ir_to_arm` resolution would, so it round-trips
+    /// through `build_join_cfg_numeric`'s reconstruction.
+    fn numeric_offset_to(instrs: &[ArmInstruction], branch_idx: usize, target_idx: usize) -> i32 {
+        use crate::optimizer_bridge::estimate_arm_byte_size;
+        let byte_of = |idx: usize| -> i64 {
+            let mut cur: i64 = 0;
+            for ins in instrs.iter().take(idx) {
+                cur += match &ins.op {
+                    ArmOp::Label { .. } => 0,
+                    op => estimate_arm_byte_size(op) as i64,
+                };
+            }
+            cur
+        };
+        let branch_byte = byte_of(branch_idx);
+        let target_byte = byte_of(target_idx);
+        // target_byte = branch_byte + 4 + 2·offset ⇒ offset = (target−branch−4)/2
+        let raw = target_byte - branch_byte - 4;
+        debug_assert_eq!(raw % 2, 0, "target not halfword-aligned to branch");
+        (raw / 2) as i32
+    }
+
+    /// Build a numeric-path fixture with a two-way split whose join reads
+    /// `join_read`. `then_def` / `else_def` say which register each arm defines.
+    /// The numeric branch offsets are patched to the exact estimator-derived
+    /// displacements after layout.
+    fn numeric_split_join(then_def: Reg, else_def: Reg, join_read: Reg) -> Vec<ArmInstruction> {
+        // Indices:
+        //   0 push {r4,r5,lr}
+        //   1 cmp r0,#0
+        //   2 bcc EQ -> .else (index 5)     [patched]
+        //   3 mov then_def,#7                (then arm)
+        //   4 b -> .join (index 6)           [patched]
+        //   5 mov else_def,#9                (else arm; target of the bcc)
+        //   6 add r0,join_read,join_read     (join)
+        //   7 pop {r4,r5,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0, // patched -> index 5
+            }),
+            movi(then_def, 7),
+            ins(ArmOp::BOffset { offset: 0 }), // patched -> index 6
+            movi(else_def, 9),
+            add_rr(Reg::R0, join_read, join_read),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        // Patch the offsets to the exact estimator-derived displacements.
+        let bcc_off = numeric_offset_to(&body, 2, 5);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[2].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 4, 6);
+        if let ArmOp::BOffset { offset } = &mut body[4].op {
+            *offset = b_off;
+        }
+        body
+    }
+
+    // ---- numeric across-JOIN: RED (never-established read caught) ----
+    #[test]
+    fn ra003_numeric_red_never_established_read_is_caught() {
+        // The join reads R6 — a callee-saved register that is NOT in the
+        // prologue push and NOT defined on any path: the allocator emitted a
+        // read of a register it never established (the #226 class). The
+        // PRESERVED entry seed must NOT mask this (R6 is outside the push/pop
+        // contract), so the numeric join check fires a Violation — proving the
+        // discriminator is not a blanket accept.
+        let body = numeric_split_join(Reg::R4, Reg::R5, Reg::R6);
+        assert!(
+            !body.iter().any(|i| matches!(i.op, ArmOp::Label { .. })),
+            "fixture must be pure-numeric (no Label) to exercise the numeric CFG"
+        );
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: Reg::R6,
+                    ..
+                })
+            ),
+            "a NUMERIC-path join read of a never-pushed, never-defined register \
+             MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- numeric across-JOIN: RED (push-less function: nothing is seeded) ----
+    #[test]
+    fn ra003_numeric_red_pushless_read_is_caught() {
+        // A leaf function with NO prologue push (returns `bx lr`): the preserved
+        // set is EMPTY — the seed is anchored to the save/restore CONTRACT, not
+        // to what the stream happens to read early (the "merely entry-live"
+        // hack both rejected #819 fixes used would mask exactly this). A join
+        // read of the never-established R6 must stay a Violation.
+        //   0 cmp r0,#0
+        //   1 bcc EQ -> .else (4)   [patched]
+        //   2 mov r1,#7             (then: caller-saved only)
+        //   3 b -> .join (5)        [patched]
+        //   4 mov r2,#9             (else: caller-saved only)
+        //   5 add r0,r6,r6          (join: reads R6 — never established)
+        //   6 bx lr
+        let mut body = vec![
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            }),
+            movi(Reg::R1, 7),
+            ins(ArmOp::BOffset { offset: 0 }),
+            movi(Reg::R2, 9),
+            add_rr(Reg::R0, Reg::R6, Reg::R6),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let bcc_off = numeric_offset_to(&body, 1, 4);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[1].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 3, 5);
+        if let ArmOp::BOffset { offset } = &mut body[3].op {
+            *offset = b_off;
+        }
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: Reg::R6,
+                    ..
+                })
+            ),
+            "with no push/pop contract the preserved seed is EMPTY — a join read \
+             of an unestablished register MUST stay caught, got {verdict:?}"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (the cf_shapes_500::ifelse class) ----
+    #[test]
+    fn ra003_numeric_green_preserved_entry_value_read_is_consistent() {
+        // THE #819 false-positive fixture class, red-first-inverted: the join
+        // reads R4 — PRESERVED (pushed in the prologue, popped at exit) and
+        // redefined on only ONE arm. On the other arm R4 provably holds the
+        // CALLER's value (a well-defined value under the save/restore
+        // contract), which is exactly what the optimized selector's dead
+        // result-materialization of a void function reads
+        // (cf_shapes_500::ifelse `mov r0,r8`). The strict pre-redo semantics
+        // hard-errored this VALID compile with JoinValueNotAvailable; the
+        // PRESERVED discriminator must accept it.
+        let body = numeric_split_join(Reg::R5, Reg::R4, Reg::R4);
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a join read of a PRESERVED (pushed+popped) register must not be \
+             flagged — this over-rejection is the #819 regression class"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (both paths define → silent) ----
+    #[test]
+    fn ra003_numeric_green_both_paths_define_is_consistent() {
+        // BOTH arms place the join value in R4 → available on every incoming
+        // edge. A false positive here would break every real optimized-path
+        // diamond.
+        let body = numeric_split_join(Reg::R4, Reg::R4, Reg::R4);
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a value defined on both numeric-path incoming edges must validate clean"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (dominator-defined survives merge) ----
+    #[test]
+    fn ra003_numeric_green_dominator_defined_is_consistent() {
+        // R4 is defined in the entry (common dominator) BEFORE the split;
+        // neither arm touches it. The availability fixpoint must stay SILENT
+        // (no false positive on dominator-defined) on the numeric CFG just as
+        // on the label one.
+        //   0 push {r4,r5,r6,lr}
+        //   1 mov r4,#42          (dominator-defines R4)
+        //   2 cmp r0,#0
+        //   3 bcc EQ -> .else (6)  [patched]
+        //   4 mov r5,#1            (then: unrelated)
+        //   5 b -> .join (7)       [patched]
+        //   6 mov r6,#2            (else: unrelated)
+        //   7 add r0,r4,r4         (join: reads dominator R4)
+        //   8 pop {r4,r5,r6,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::LR]),
+            movi(Reg::R4, 42),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            }),
+            movi(Reg::R5, 1),
+            ins(ArmOp::BOffset { offset: 0 }),
+            movi(Reg::R6, 2),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::PC]),
+        ];
+        let bcc_off = numeric_offset_to(&body, 3, 6);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[3].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 5, 7);
+        if let ArmOp::BOffset { offset } = &mut body[5].op {
+            *offset = b_off;
+        }
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value must not be flagged at a NUMERIC-path join"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (loop back-edge, universe-init case) ----
+    #[test]
+    fn ra003_numeric_green_loop_back_edge_preserves_availability() {
+        // The universe-init correctness case on the NUMERIC path: a value (R4)
+        // defined before a counted loop and read inside the body. The loop
+        // header is a join of preheader + back-edge (a BACKWARD numeric
+        // branch). A MAY/empty init would false-positive; the MUST/universe
+        // init keeps R4 available across the merge → Consistent.
+        //   0 push {r4,r5,lr}
+        //   1 mov r4,#7        (dominator-defines R4)
+        //   2 mov r5,#0        (counter)
+        //   3 add r0,r4,r4     (.head: reads R4 in body — join leader)
+        //   4 add r5,r5,r5
+        //   5 cmp r5,#0
+        //   6 bcc NE -> .head (3)  [patched, BACKWARD edge]
+        //   7 pop {r4,r5,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            movi(Reg::R4, 7),
+            movi(Reg::R5, 0),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            add_rr(Reg::R5, Reg::R5, Reg::R5),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            }),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        let back_off = numeric_offset_to(&body, 6, 3);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[6].op {
+            *offset = back_off;
+        }
+        assert!(back_off < 0, "the back-edge must be a negative displacement");
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value across a NUMERIC loop back-edge must stay \
+             available (universe-init correctness) — got a false positive"
+        );
+    }
+
+    // ---- numeric across-JOIN: honest decline (off-boundary target) ----
+    #[test]
+    fn ra003_numeric_declines_on_off_boundary_target() {
+        // A numeric branch whose reconstructed byte target does NOT land on an
+        // instruction boundary (estimator/encoder disagreement) must
+        // LOUD-decline to NotAttempted — never guess a CFG. The branch targets
+        // the MIDDLE of the 4-byte movw at index 1 (not a boundary).
+        //   0 push {r4,lr}
+        //   1 movw r4,#0x1234 (4 bytes)
+        //   2 bcc EQ, offset -> mid-movw
+        //   3 add r0,r4,r4
+        //   4 pop {r4,pc}
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 0x1234,
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: {
+                    use crate::optimizer_bridge::estimate_arm_byte_size;
+                    let push_sz = estimate_arm_byte_size(&ArmOp::Push {
+                        regs: vec![Reg::R4, Reg::LR],
+                    }) as i64;
+                    let movw_start = push_sz; // byte of index 1
+                    let bcc_byte = push_sz + 4; // byte of index 2 (movw is 4 bytes)
+                    let target = movw_start + 2; // mid-movw: NOT a boundary
+                    ((target - bcc_byte - 4) / 2) as i32
+                },
+            }),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::NotAttempted { .. }
+            ),
+            "a numeric branch whose target is off an instruction boundary MUST \
+             LOUD-decline (NotAttempted), never guess a CFG"
+        );
+    }
+
+    // ---- numeric across-JOIN: honest decline (mixed label+numeric stream) ----
+    #[test]
+    fn ra003_numeric_declines_on_mixed_label_and_numeric_stream() {
+        // A stream mixing a label-form branch with a numeric one (the msgq_put
+        // trap-guard shape) is DECLINED wholesale — the two branch families
+        // need different target reconstruction; unifying them would guess.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::EQ, ".skip"), // label-form branch
+            ins(ArmOp::BOffset { offset: 1 }), // numeric branch in the same stream
+            label(".skip"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::NotAttempted { .. }
+            ),
+            "a mixed label+numeric stream must LOUD-decline the join check"
+        );
+    }
+
     // ---- VCR-DEC-001 graph-allocator RED-FIRST probe (SYNTH_GRAPH_ALLOC) ----
     // Settles the load-bearing claim "the acceptance oracle gates the new
     // allocator". The value-range graph allocator (crate::graph_alloc) rewrites
