@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **aarch64: linear-memory accesses now BOUNDS-CHECK — `--safety-bounds` was a
+  silent no-op (#865).** The v0.51.0 `-b aarch64` lowering (#851) emitted NO
+  bounds check and every `--safety-bounds` mode (`none`/`software`/`mask`/`mpu`)
+  produced byte-identical unchecked output: a guest address is zero-extended
+  (`uxtw`), so `i32.load`/`i32.store` at `0xFFFFFFFF` reached `x28 + 4 GiB − 1`
+  — an OOB read (disclosure) / write (arbitrary-write) primitive where WASM
+  requires a trap (gale's executed table: 65536, 100000, −1 all returned host
+  memory; wasmtime traps). Now:
+  - **`software` emits a per-access check**: `mov w_k, #K; cmp w_addr, w_k;
+    b.ls +2; brk #0` with `K = limit − memarg.offset − access_size` folded at
+    compile time — one compare proves `uxtw(addr) + offset + size ≤ limit`
+    BEFORE the dereference (width + memarg-offset accounting included: a 4-byte
+    access at `limit−3`, or an `offset=65532` access at addr 4, traps). When
+    `offset + size` already exceed the limit the access unconditionally traps.
+    The static limit (declared min pages × 64 KiB) is sound because
+    `memory.grow` is not lowered on this backend.
+  - **The DEFAULT on `-b aarch64` is now `software`** — the flag-absent path
+    was the silent-unsafe path; unchecked output now requires the explicit
+    `--safety-bounds none` opt-out (which stays byte-identical to v0.51.0
+    output).
+  - **`mask`/`mpu` HARD-ERROR on `-b aarch64`** (CLI and backend, defense in
+    depth) instead of being silently accepted and ignored — the "flag exists
+    but doesn't enforce" class (cf. #651) is refused, never re-emitted.
+  - The single-function path (`-n`) now threads the module's real declared
+    memory limit (previously 0) into the config and the safety manifest.
+  - Gated red-first by `scripts/repro/aarch64_bounds_865_differential.py`
+    (CI `aarch64-oracle`): gale's exact table under unicorn with poisoned
+    OOB memory — in-bounds values match wasmtime, every OOB row must `brk`
+    exactly where wasmtime traps (strict classification: only `brk` counts,
+    an unmapped fault fails), `md5(none) ≠ md5(software)`, default ≡
+    software, and the mask/mpu rejections. RED on the pre-fix binary
+    (15 failures), GREEN after; all pre-existing aarch64 differentials and
+    gale's native matrix (35 ops / 91 checks) unchanged-green.
+
 ## [0.51.0] - 2026-07-23
 
 **"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses

@@ -453,6 +453,8 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_locals_851_differential.py
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
+      - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_bounds_865_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
