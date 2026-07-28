@@ -16,9 +16,11 @@
 //!   An ordeal `Unknown` falls through to Z3's verdict (logged, not fatal —
 //!   `Unknown` is the conservative non-answer, not a verdict).
 //!
-//! Budget: ordeal decides under a conflict budget (`check_with_limit`) so an
-//! adversarial query degrades to a clean conservative `Unknown` instead of
-//! hanging. Override with `SYNTH_ORDEAL_MAX_CONFLICTS` (0 = unbounded).
+//! Budget: every query runs under a **wall-clock deadline**
+//! (`Solver::check_with_deadline`, ordeal ≥0.15) so an adversarial query
+//! degrades to a clean conservative `Unknown` instead of hanging. See
+//! [`DEFAULT_DEADLINE_MS`] for the budget, the env overrides and the
+//! documented limitation.
 
 use crate::term::{BV, Bool};
 use ordeal::{BoolTerm, CheckResult};
@@ -27,7 +29,49 @@ use ordeal::{BoolTerm, CheckResult};
 /// (pulseengine/ordeal#29) decides at a median of ~1 ms and well under this;
 /// the budget exists to bound adversarial shapes (e.g. non-canonicalized
 /// commuted multiplies) to a conservative `Unknown`.
+///
+/// Only consulted when the wall-clock deadline is explicitly disabled
+/// (`SYNTH_ORDEAL_DEADLINE_MS=0`) — ordeal's `Bound` is one-of, so a query
+/// carries either a deadline or a conflict cap, never both.
 const DEFAULT_MAX_CONFLICTS: u64 = 1_000_000;
+
+/// Default **wall-clock** per-query budget, in milliseconds (#848/#849).
+///
+/// This is the real insurance against a solver cliff. A conflict budget does
+/// not map to wall-clock time: the 4–6 h CI hangs of #849 burned hours inside
+/// a single `check` that never came near 1 M conflicts, because there was no
+/// wall-clock floor anywhere in the stack. 15 s is generous — the whole
+/// synth-verify suite (236 queries incl. the 64-bit `bvurem`/`bvsrem` value
+/// VCs) decides in ~35 s total on ordeal 0.16.1 — while capping the worst
+/// single query at a bounded, obviously-not-a-hang cost.
+///
+/// A query that exceeds the deadline yields [`CheckOutcome::Unknown`], which
+/// every caller treats conservatively — it is **never** reported as
+/// `Verified`. Soundness is unaffected: the deadline bounds only
+/// completeness (ordeal's certificate gate and model self-check are
+/// untouched, so an abandoned search can never produce a wrong verdict).
+///
+/// **Documented limitation:** `check_with_deadline` bounds the *SAT search*,
+/// not bit-blasting/canonicalization. A query whose blast alone is
+/// pathological can still exceed the budget before the clock is ever
+/// consulted, so this is a strong bound on the dominant cost — not a
+/// universal wall-clock guard. Treat it as the floor it is, and keep the
+/// hard-query classes (64-bit `bvsrem`/`bvurem`) under CI timing watch.
+const DEFAULT_DEADLINE_MS: u64 = 15_000;
+
+/// Read the configured per-query wall-clock budget.
+///
+/// `SYNTH_ORDEAL_DEADLINE_MS` overrides [`DEFAULT_DEADLINE_MS`]. The value
+/// `0` **disables** the deadline and falls back to the conflict budget — note
+/// this deliberately differs from ordeal's own `check_with_deadline(0)`
+/// (which admits only queries decided before the first conflict); disabling
+/// re-opens the #849 hang class and exists only as a debugging escape hatch.
+pub(crate) fn configured_deadline_ms() -> u64 {
+    std::env::var("SYNTH_ORDEAL_DEADLINE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_DEADLINE_MS)
+}
 
 /// Outcome of a one-shot `check` of the asserted conjunction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,16 +124,21 @@ pub fn new_solver() -> Box<dyn BvSolver> {
 // ordeal backend (default)
 // ---------------------------------------------------------------------------
 
-/// The default engine: pure-Rust `ordeal` with a conflict budget.
+/// The default engine: pure-Rust `ordeal` under a per-query wall-clock
+/// deadline (with a conflict budget as the disabled-deadline fallback).
 pub struct OrdealSolver {
     assertions: Vec<BoolTerm>,
+    /// Wall-clock budget in ms; `0` = deadline disabled (use `max_conflicts`).
+    deadline_ms: u64,
     max_conflicts: u64,
     model: Option<ordeal::Model>,
 }
 
 impl OrdealSolver {
-    /// New solver with the budget from `SYNTH_ORDEAL_MAX_CONFLICTS`
-    /// (default [`DEFAULT_MAX_CONFLICTS`]; 0 = unbounded).
+    /// New solver bounded by `SYNTH_ORDEAL_DEADLINE_MS` (default
+    /// [`DEFAULT_DEADLINE_MS`]; 0 = deadline off), falling back to the
+    /// `SYNTH_ORDEAL_MAX_CONFLICTS` conflict budget (default
+    /// [`DEFAULT_MAX_CONFLICTS`]; 0 = unbounded) when the deadline is off.
     pub fn new() -> Self {
         let max_conflicts = std::env::var("SYNTH_ORDEAL_MAX_CONFLICTS")
             .ok()
@@ -97,8 +146,19 @@ impl OrdealSolver {
             .unwrap_or(DEFAULT_MAX_CONFLICTS);
         Self {
             assertions: Vec::new(),
+            deadline_ms: configured_deadline_ms(),
             max_conflicts,
             model: None,
+        }
+    }
+
+    /// New solver with an explicit wall-clock budget in ms (`0` = deadline
+    /// off). Env-independent, so tests can pin a budget without racing the
+    /// process-global environment.
+    pub fn with_deadline_ms(deadline_ms: u64) -> Self {
+        Self {
+            deadline_ms,
+            ..Self::new()
         }
     }
 }
@@ -123,10 +183,22 @@ impl BvSolver for OrdealSolver {
         for a in &self.assertions {
             solver.assert(a.clone());
         }
-        let result = if self.max_conflicts == 0 {
-            solver.check()
+        // ordeal's `Bound` is one-of (None | Conflicts | Deadline), so a query
+        // carries EITHER the wall-clock deadline (the default, #848/#849) or
+        // the conflict cap — the deadline wins because it is the bound that
+        // actually maps to "CI must not hang".
+        let (result, bound) = if self.deadline_ms > 0 {
+            (
+                solver.check_with_deadline(self.deadline_ms),
+                format!("wall-clock deadline {} ms", self.deadline_ms),
+            )
+        } else if self.max_conflicts == 0 {
+            (solver.check(), "unbounded".to_string())
         } else {
-            solver.check_with_limit(self.max_conflicts)
+            (
+                solver.check_with_limit(self.max_conflicts),
+                format!("conflict budget {}", self.max_conflicts),
+            )
         };
         match result {
             CheckResult::Unsat(_certificate) => CheckOutcome::Unsat,
@@ -134,10 +206,12 @@ impl BvSolver for OrdealSolver {
                 self.model = Some(model);
                 CheckOutcome::Sat
             }
-            CheckResult::Unknown => CheckOutcome::Unknown(format!(
-                "ordeal returned unknown (conflict budget {})",
-                self.max_conflicts
-            )),
+            // Budget/deadline exhaustion (or an out-of-fragment query) is the
+            // conservative non-answer. Callers MUST NOT read it as proven —
+            // `Unknown` never becomes `Verified` anywhere downstream.
+            CheckResult::Unknown => {
+                CheckOutcome::Unknown(format!("ordeal returned unknown ({bound})"))
+            }
         }
     }
 
@@ -249,6 +323,17 @@ mod z3_backend {
 
         fn check(&mut self) -> CheckOutcome {
             let solver = z3::Solver::new();
+            // Same wall-clock floor as the ordeal path (#848/#849): the Z3
+            // Verification job hung for 4-6 h on the very same 64-bit
+            // bvsrem/bvurem queries, so the oracle gets the identical budget.
+            // Z3's `timeout` param is milliseconds; on expiry it answers
+            // `Unknown`, which is the conservative non-answer here too.
+            let deadline_ms = super::configured_deadline_ms();
+            if deadline_ms > 0 {
+                let mut params = z3::Params::new();
+                params.set_u32("timeout", u32::try_from(deadline_ms).unwrap_or(u32::MAX));
+                solver.set_params(&params);
+            }
             for a in &self.assertions {
                 solver.assert(bool_to_z3(a));
             }

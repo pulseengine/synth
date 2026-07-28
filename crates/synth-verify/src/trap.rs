@@ -246,14 +246,43 @@ fn verdict(result: CheckResult) -> TrapVerdict {
     }
 }
 
+/// Discharge a trap VC under the **same per-query wall-clock deadline** as the
+/// [`crate::solver`] seam (#848/#849).
+///
+/// `ordeal::trap::prove_trap_{equivalence,condition_equivalence}` delegate to
+/// the UNBOUNDED `Solver::prove_valid`, so calling them directly would leave
+/// the hardest VC class in the whole validator — the 64-bit `bvsrem`/`bvurem`
+/// div/rem value VCs — with no wall-clock floor at all. That is precisely the
+/// #849 hang path (4–6 h CI runs). So synth builds the identical goal term
+/// (`ot::trap_equivalence_vc` / `ot::trap_condition_equivalence`) and runs the
+/// standard validity-as-UNSAT encoding itself, bounded by
+/// `SYNTH_ORDEAL_DEADLINE_MS`.
+///
+/// A deadline expiry yields [`TrapVerdict::Unknown`] — conservative, never
+/// `Preserved`. The certificate re-check in [`verdict`] is untouched, so the
+/// bound costs completeness only.
+///
+/// Limitation (same as the seam): the deadline governs the SAT *search*, not
+/// bit-blasting.
+fn prove_valid_bounded(goal: ordeal::BoolTerm) -> CheckResult {
+    let mut solver = ordeal::Solver::new();
+    solver.assert(ordeal::BoolTerm::Not(Box::new(goal)));
+    let deadline_ms = crate::solver::configured_deadline_ms();
+    if deadline_ms > 0 {
+        solver.check_with_deadline(deadline_ms)
+    } else {
+        solver.check()
+    }
+}
+
 /// Full trap-preservation gate (trap clause **and** guarded value clause) — for
 /// ops whose value synth models (div/rem). [`TrapVerdict::Preserved`] ⟹ the
 /// lowering preserves both traps and values.
 pub fn prove_trap_equivalence(orig: &DefineOrTrap, opt: &DefineOrTrap) -> TrapVerdict {
-    verdict(ot::prove_trap_equivalence(
+    verdict(prove_valid_bounded(ot::trap_equivalence_vc(
         &orig.to_ordeal(),
         &opt.to_ordeal(),
-    ))
+    )))
 }
 
 /// Trap-clause-only gate (`orig.may_trap ⇔ opt.may_trap`) — for ops whose value
@@ -262,8 +291,8 @@ pub fn prove_trap_equivalence(orig: &DefineOrTrap, opt: &DefineOrTrap) -> TrapVe
 /// [`TrapVerdict::Preserved`] ⟹ the lowering neither drops nor spuriously adds
 /// the trap.
 pub fn prove_trap_condition_equivalence(orig_may_trap: &Bool, opt_may_trap: &Bool) -> TrapVerdict {
-    verdict(ot::prove_trap_condition_equivalence(
+    verdict(prove_valid_bounded(ot::trap_condition_equivalence(
         orig_may_trap.term(),
         opt_may_trap.term(),
-    ))
+    )))
 }
