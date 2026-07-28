@@ -18,6 +18,12 @@ jobs:
     # defaults to the pure-Rust ordeal engine, z3 is behind the off-by-default
     # `z3-solver` feature), so moving back is a possible follow-up.
     runs-on: ubuntu-latest
+    # Outer wall-clock guard (#849). This job ran 4-6 h and timed out on the
+    # GitHub default on EVERY run for three days because nothing anywhere
+    # bounded a solver query. The per-query deadline in synth-verify
+    # (`SYNTH_ORDEAL_DEADLINE_MS`, #848) is the inner floor; this is the outer
+    # one, so a future cliff costs one red job in <1 h, not a burned day.
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -Dwarnings
     steps:
@@ -189,6 +195,11 @@ jobs:
     # that blocked releases. Stays on ubuntu-latest for `sudo` (smithy runners
     # have no sudo); move once libz3-dev is in the smithy toolchains role.
     runs-on: ubuntu-latest
+    # Outer wall-clock guard (#849) — this job hung for 4-6 h alongside `test`
+    # on the same unbounded 64-bit bvsrem/bvurem queries. Inner floor: the
+    # per-query deadline (`SYNTH_ORDEAL_DEADLINE_MS`, #848), applied to the Z3
+    # oracle too.
+    timeout-minutes: 45
     env:
       SYNTH_SOLVER_DIFF: "1"
       # Point z3-sys bindgen at the apt header (libz3-dev installs it here);
