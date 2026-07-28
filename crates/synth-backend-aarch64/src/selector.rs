@@ -1831,6 +1831,7 @@ mod tests {
             arg_counts,
             result_counts,
             &[],
+            MemBounds::Unchecked,
         )
     }
 
@@ -1927,8 +1928,106 @@ mod tests {
             &[0],    // 0 args
             &[1],    // 1 result
             &[true], // ...which is a float
+            MemBounds::Unchecked,
         );
         assert!(r.is_err(), "float-returning callee must loud-decline");
+    }
+
+    // --- #865: software bounds check ---
+
+    fn sel_mem(ops: &[WasmOp], num_params: u32, bounds: MemBounds) -> Vec<u32> {
+        let (w, _) =
+            select_typed_cf_calls(ops, num_params, &[], &[], &[], 0, &[], &[], &[], bounds)
+                .unwrap();
+        w
+    }
+
+    #[test]
+    fn software_bounds_guards_i32_load_exact_sequence() {
+        // (memory 1) i32.load: K = 65536 - 0 - 4 = 65532; the check must
+        // precede the dereference. Pinned against `llvm-objdump` ground truth:
+        //   mov w9,#0xfffc; cmp w0,w9; b.ls +2; brk #0;
+        //   add x9,x28,w0,uxtw; ldr w9,[x9]; mov x0,x9; ret
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
+        assert_eq!(
+            w,
+            vec![
+                0x529F_FF89, // mov w9, #65532
+                enc::cmp(0, 9),
+                enc::bcond(Cond::Ls, 2),
+                enc::brk(0),
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                0xB940_0129, // ldr w9, [x9]
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn software_bounds_accounts_offset_and_width() {
+        // i32.load offset=65532 with limit 65536: K = 65536 - 65532 - 4 = 0 —
+        // only addr 0 is in bounds (bytes 65532..65535). The compare constant
+        // must be 0, not 65532 (offset+width accounting, the at-limit edge).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 65532,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
+        assert_eq!(w[0], enc::mov_imm32(9, 0)[0], "compare constant must be 0");
+        assert!(w.contains(&enc::brk(0)));
+    }
+
+    #[test]
+    fn software_bounds_offset_past_limit_always_traps() {
+        // offset + size > limit: NO i32 address is in bounds — an
+        // unconditional brk precedes the (dead) access.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 70000,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
+        assert_eq!(w[0], enc::brk(0));
+    }
+
+    #[test]
+    fn unchecked_mode_emits_no_trap_check() {
+        // The explicit opt-out stays byte-identical to the pre-#865 lowering.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 1, MemBounds::Unchecked);
+        assert_eq!(
+            w,
+            vec![
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                0xB940_0129, // ldr w9, [x9]
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+        assert!(!w.contains(&enc::brk(0)));
     }
 
     #[test]
