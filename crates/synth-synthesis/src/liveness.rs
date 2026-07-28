@@ -1178,6 +1178,239 @@ pub fn fold_immediate_shifts(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (folded, folds)
 }
 
+/// #846 — cross-block "provably `< 32` (unsigned)" register facts, the
+/// reaching-def upgrade for [`elide_shift_masks`] Pattern B.
+///
+/// The intra-block backward scan in [`elide_shift_masks`] aborts at any
+/// control-flow boundary, so a masking `and rK, rX, #c` (`c < 32`) sitting in
+/// a DIFFERENT basic block from the shift it feeds is invisible — the four
+/// residual gpio-thin masks of #846. This forward MUST-dataflow makes that
+/// def visible exactly when it is sound to use:
+///
+/// - **Lattice.** Per program point, the set of registers whose current value
+///   is provably `< 32` unsigned. Meet at a join = set INTERSECTION over all
+///   predecessors — a fact survives only if EVERY incoming path establishes
+///   it. Solved by worklist to fixpoint (`None` = not-yet-reached ⊤); the
+///   MFP solution is ⊆ the meet-over-all-paths solution, so a reported fact
+///   holds on every path from function entry — never a guess. This is the
+///   #682 invariant in dataflow form: an amount unproven on ANY reaching
+///   path keeps its mod-32 mask.
+/// - **Transfer.** Bounding defs insert: `and rd, _, #c` (`0 <= c <= 31` ⇒
+///   `rd <= c`), `mov rd, #c` / `movw rd, #c` (`c <= 31`), and a register
+///   copy `mov rd, rs` propagates `rs`'s fact. Every other modeled def kills
+///   its target. An op with NO precise [`reg_effect`] (call, pseudo-op,
+///   memory builtin) kills ALL facts — it may write any register. `R12` is
+///   never tracked: it is encoder scratch whose defining `and` this very
+///   pass deletes, so a fact about it could describe an instruction that no
+///   longer exists in the final stream.
+/// - **CFG.** Label-form blocks exactly as [`cfg_liveness`] builds them
+///   (leaders at 0 / every `Label` / after every terminator; successors from
+///   `B`/`Bhs`/`Blo`/`Bcc` targets + fallthrough; `Bx LR` and `pop {…,pc}`
+///   are returns with no successors). Any control flow that cannot be
+///   modeled EXACTLY — numeric-offset branches, `BrTable`, a computed
+///   `Bx rm != LR`, or a branch to a label that does not exist — declines
+///   the WHOLE analysis (`None`): a missing edge would fabricate dominance,
+///   the precise unsoundness the brief forbids. Calls (`Bl`/`Blx`/`Call`/
+///   `CallIndirect`) are NOT control-flow declines: they return inline, so
+///   they are mid-block fact-killers, not edges.
+/// - **Unreachable blocks** keep `in_set = None` and answer `false` —
+///   conservative even though nothing executes there.
+///
+/// Pure analysis over the ORIGINAL stream. The facts stay valid on the
+/// post-elision stream because the pass only (a) deletes `and r12` masks —
+/// writes to untracked `R12`; (b) deletes `movw` consts that
+/// [`reg_dead_by_redef`] proved have no later reader in the ORIGINAL stream,
+/// and any shift this analysis rewrites to read `rK` was such a reader
+/// (via its `and r12, rK, #31`), so a bounding def a kept fact relies on is
+/// never deleted; (c) rewrites shift USES (`r12` → `rK`) — defs unchanged.
+struct Lt32Facts {
+    /// Half-open `[start, end)` instruction span of each basic block.
+    blocks: Vec<(usize, usize)>,
+    /// `block_of[i]` — index of the block containing instruction `i`.
+    block_of: Vec<usize>,
+    /// Solved entry facts per block; `None` = unreachable from entry.
+    in_sets: Vec<Option<BTreeSet<Reg>>>,
+}
+
+/// One-instruction transfer of the [`Lt32Facts`] lattice. See the struct doc
+/// for the soundness argument of each arm.
+fn lt32_step(op: &ArmOp, set: &mut BTreeSet<Reg>) {
+    use ArmOp::*;
+    // R12 is never tracked (encoder scratch; its defining `and` may be
+    // deleted by the elision pass itself).
+    fn add(set: &mut BTreeSet<Reg>, rd: Reg) {
+        if rd != Reg::R12 {
+            set.insert(rd);
+        }
+    }
+    match op {
+        // Control-flow markers write no GP register: identity.
+        Label { .. } | B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. } => {}
+        Bx { rm } if *rm == Reg::LR => {}
+        // Bounding defs.
+        And {
+            rd,
+            op2: Operand2::Imm(c),
+            ..
+        } if (0..=31).contains(c) => add(set, *rd),
+        Mov {
+            rd,
+            op2: Operand2::Imm(c),
+        } if (0..=31).contains(c) => add(set, *rd),
+        Movw { rd, imm16 } if *imm16 <= 31 => add(set, *rd),
+        // Register copy: rd inherits rs's fact (same value, same bound).
+        Mov {
+            rd,
+            op2: Operand2::Reg(rs),
+        } => {
+            if set.contains(rs) {
+                add(set, *rd);
+            } else {
+                set.remove(rd);
+            }
+        }
+        _ => match reg_effect(op) {
+            Some(eff) => {
+                for d in &eff.defs {
+                    set.remove(d);
+                }
+            }
+            // Unmodeled register effect (call / pseudo-op / memory builtin):
+            // may write anything — kill every fact.
+            None => set.clear(),
+        },
+    }
+}
+
+impl Lt32Facts {
+    /// Build + solve, or `None` when the stream's control flow cannot be
+    /// modeled exactly (see struct doc) — callers then keep every mask.
+    fn build(instrs: &[ArmInstruction]) -> Option<Lt32Facts> {
+        use ArmOp::*;
+        let n = instrs.len();
+        if n == 0 {
+            return None;
+        }
+        // 0. Decline any control flow we cannot model EXACTLY.
+        for ins in instrs {
+            match &ins.op {
+                BOffset { .. } | BCondOffset { .. } | BrTable { .. } => return None,
+                Bx { rm } if *rm != Reg::LR => return None,
+                _ => {}
+            }
+        }
+        let is_terminator = |op: &ArmOp| {
+            matches!(op, B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. }) || is_return_terminator(op)
+        };
+        // 1. Leaders: 0, every Label, every instruction after a terminator.
+        let mut is_leader = vec![false; n];
+        is_leader[0] = true;
+        for i in 0..n {
+            if matches!(instrs[i].op, Label { .. }) {
+                is_leader[i] = true;
+            }
+            if is_terminator(&instrs[i].op) && i + 1 < n {
+                is_leader[i + 1] = true;
+            }
+        }
+        let leaders: Vec<usize> = (0..n).filter(|&i| is_leader[i]).collect();
+        let blocks: Vec<(usize, usize)> = leaders
+            .iter()
+            .enumerate()
+            .map(|(bi, &s)| (s, leaders.get(bi + 1).copied().unwrap_or(n)))
+            .collect();
+        let nb = blocks.len();
+        let mut block_of = vec![0usize; n];
+        for (bi, &(s, e)) in blocks.iter().enumerate() {
+            for slot in &mut block_of[s..e] {
+                *slot = bi;
+            }
+        }
+        let block_of_label: BTreeMap<&str, usize> = blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(bi, &(s, _))| match &instrs[s].op {
+                Label { name } => Some((name.as_str(), bi)),
+                _ => None,
+            })
+            .collect();
+        // 2. Successors; a branch to an unknown label declines the analysis.
+        let mut succ: Vec<Vec<usize>> = Vec::with_capacity(nb);
+        for (bi, &(_, e)) in blocks.iter().enumerate() {
+            let fallthrough = (bi + 1 < nb).then_some(bi + 1);
+            let s = match &instrs[e - 1].op {
+                B { label } => vec![*block_of_label.get(label.as_str())?],
+                Bhs { label } | Blo { label } | Bcc { label, .. } => {
+                    let t = *block_of_label.get(label.as_str())?;
+                    let mut v = vec![t];
+                    if let Some(f) = fallthrough
+                        && f != t
+                    {
+                        v.push(f);
+                    }
+                    v
+                }
+                op if is_return_terminator(op) => vec![],
+                _ => fallthrough.into_iter().collect(),
+            };
+            succ.push(s);
+        }
+        // 3. Forward MUST fixpoint: worklist from entry; meet = intersection;
+        //    `None` = unreached ⊤. Sets only shrink after first reach, so the
+        //    iteration terminates.
+        let mut in_sets: Vec<Option<BTreeSet<Reg>>> = vec![None; nb];
+        in_sets[0] = Some(BTreeSet::new()); // entry: nothing proven (params unbounded)
+        let mut work = vec![0usize];
+        while let Some(b) = work.pop() {
+            let Some(mut s) = in_sets[b].clone() else {
+                continue;
+            };
+            for i in blocks[b].0..blocks[b].1 {
+                lt32_step(&instrs[i].op, &mut s);
+            }
+            for &t in &succ[b] {
+                let updated = match &in_sets[t] {
+                    None => {
+                        in_sets[t] = Some(s.clone());
+                        true
+                    }
+                    Some(cur) => {
+                        let met: BTreeSet<Reg> = cur.intersection(&s).copied().collect();
+                        if &met != cur {
+                            in_sets[t] = Some(met);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if updated {
+                    work.push(t);
+                }
+            }
+        }
+        Some(Lt32Facts {
+            blocks,
+            block_of,
+            in_sets,
+        })
+    }
+
+    /// Is `k` provably `< 32` unsigned immediately BEFORE instruction `j`,
+    /// on every path from function entry?
+    fn lt32_at(&self, instrs: &[ArmInstruction], j: usize, k: Reg) -> bool {
+        let b = self.block_of[j];
+        let Some(entry) = &self.in_sets[b] else {
+            return false; // unreachable block — stay conservative
+        };
+        let mut s = entry.clone();
+        for i in self.blocks[b].0..j {
+            lt32_step(&instrs[i].op, &mut s);
+        }
+        s.contains(&k)
+    }
+}
+
 /// #686 — elide the #682 mod-32 shift-amount mask when the amount is
 /// STATICALLY provably `< 32` at the shift.
 ///
@@ -1209,6 +1442,15 @@ pub fn fold_immediate_shifts(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
 ///   at the shift (no redefinition in the window), so the #682 re-mask is a
 ///   no-op: the shift consumes `rK` directly and the `and r12` is dropped.
 ///   Covers the wasm-level `x & 31` / `x & 15` amount idioms.
+/// - **Cross-block range-carried amount (pattern B via [`Lt32Facts`], #846):**
+///   when the masking def lives in a DIFFERENT basic block from the shift,
+///   the intra-block window cannot see it. The [`Lt32Facts`] forward
+///   MUST-dataflow (intersection at joins, fixpoint over the label-form CFG)
+///   proves `rK < 32` at the mask iff on EVERY path from function entry the
+///   last def of `rK` is a bounding def — so no path reaches the shift with
+///   an unproven amount. Same rewrite as pattern B; anything the dataflow
+///   cannot prove (a join with one unmasked path, a call in between, any
+///   unmodeled control flow) keeps the mask.
 ///
 /// A fact-spec value-range premise (`hi < 32` carried through CompileConfig
 /// via the #494 machinery) is the documented follow-up; anything unproven
@@ -1241,6 +1483,10 @@ pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
     let mut out = instrs.to_vec();
     let mut drop: Vec<bool> = vec![false; n];
     let mut elisions = 0usize;
+    // #846: cross-block `< 32` facts (None ⇒ intra-block-only behavior).
+    // Built on the ORIGINAL stream; stays valid on the elided stream — see
+    // the [`Lt32Facts`] doc for why no deleted instruction can carry a fact.
+    let cross = Lt32Facts::build(instrs);
 
     for j in 0..n.saturating_sub(1) {
         // [j] must be the #682 mask: `and r12, rK, #31` …
@@ -1292,21 +1538,22 @@ pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
                 k_read_between = true;
             }
         }
-        let Some(d) = def_site else { continue };
+        let mut elided_here = false;
 
         // Pattern A: the const the amount register holds at the mask, if its
         // def is a pure materialization — `movw` (direct paths) or `mov #imm`
         // (the bridge's small-const form; `movw+movt` large consts land on
         // the RMW `movt` and decline, as does `mvn`).
-        let const_amount = match &out[d].op {
+        let const_amount = def_site.and_then(|d| match &out[d].op {
             ArmOp::Movw { rd: mrd, imm16 } if *mrd == k => Some(u32::from(*imm16)),
             ArmOp::Mov {
                 rd: mrd,
                 op2: Operand2::Imm(c),
             } if *mrd == k && *c >= 0 => Some(*c as u32),
             _ => None,
-        };
-        match (const_amount, &out[d].op) {
+        });
+        if let Some(d) = def_site {
+            match (const_amount, &out[d].op) {
             // Pattern A: const amount — fold to the immediate shift, mod 32.
             // (Red-tested at land time: a force-elide of `c >= 32` via the
             // bare register shift turned 10 rows of
@@ -1346,6 +1593,7 @@ pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
                     drop[d] = true;
                 }
                 elisions += 1;
+                elided_here = true;
             }
             // Pattern B: range-carried amount — `rK = rX & c` with `c < 32`
             // proves `rK < 32`; the #682 re-mask is a no-op. Shift by `rK`.
@@ -1376,10 +1624,42 @@ pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
                 };
                 drop[j] = true;
                 elisions += 1;
+                elided_here = true;
             }
             // Any other def (arithmetic, load, `movt`, `mvn`, …): bound
-            // unproven, mask stays.
+            // unproven intra-block; the cross-block facts below get a say.
             _ => {}
+            }
+        }
+
+        // Pattern B, cross-block (#846): the masking def is not visible in
+        // the intra-block window (different block, or an intervening def that
+        // is itself a copy of a bounded value). Elide iff the MUST-dataflow
+        // proves `rK < 32` on EVERY path reaching the mask — no path can
+        // arrive with an unproven amount (the #682 invariant).
+        if !elided_here
+            && let Some(facts) = cross.as_ref()
+            && facts.lt32_at(instrs, j, k)
+        {
+            out[j + 1].op = match kind {
+                ShiftKind::Lsl => ArmOp::LslReg {
+                    rd,
+                    rn: rn_val,
+                    rm: k,
+                },
+                ShiftKind::Lsr => ArmOp::LsrReg {
+                    rd,
+                    rn: rn_val,
+                    rm: k,
+                },
+                ShiftKind::Asr => ArmOp::AsrReg {
+                    rd,
+                    rn: rn_val,
+                    rm: k,
+                },
+            };
+            drop[j] = true;
+            elisions += 1;
         }
     }
 
@@ -7782,9 +8062,12 @@ mod tests {
     }
 
     #[test]
-    fn elide_686_unmodeled_op_in_window_keeps_the_mask() {
-        // A label between the def and the mask is a control-flow merge —
-        // another def of r3 could arrive there. Mask stays.
+    fn elide_686_label_in_window_now_elides_via_cross_block_facts() {
+        // Pre-#846 the intra-block window kept the mask here: "a label is a
+        // control-flow merge where another def of r3 could arrive". The
+        // cross-block CFG facts PROVE no other def arrives (L1's only in-edge
+        // is the fallthrough; the exact-CFG requirement declines anything it
+        // cannot see), so the elision is sound — register form, movw kept.
         let mut seq = vec![
             ins(ArmOp::Movw {
                 rd: Reg::R3,
@@ -7796,8 +8079,44 @@ mod tests {
         ];
         seq.extend(mask_pair(Reg::R3, lslreg));
         seq.push(ret());
-        let (_, n) = elide_shift_masks(&seq);
-        assert_eq!(n, 0);
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "solo-fallthrough label is a proven-benign merge");
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::LslReg {
+                    rm: Reg::R3,
+                    ..
+                }
+            )),
+            "register-form shift by r3 (cross-block facts don't const-fold)"
+        );
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::Movw { rd: Reg::R3, .. })),
+            "the movw def stays — only the redundant re-mask is dropped"
+        );
+        // The UNSOUND variant — the label having a second in-edge that can
+        // carry an unproven r3 — keeps the mask (see
+        // `elide_846_join_with_unmasked_path_keeps_mask`); here the entry
+        // block itself branches to L1 BEFORE the movw:
+        let mut unsound = vec![
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "L1".to_string(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 8,
+            }),
+            ins(ArmOp::Label {
+                name: "L1".to_string(),
+            }),
+        ];
+        unsound.extend(mask_pair(Reg::R3, lslreg));
+        unsound.push(ret());
+        let (_, n) = elide_shift_masks(&unsound);
+        assert_eq!(n, 0, "a path skipping the movw ⇒ mask stays");
     }
 
     #[test]
@@ -7860,6 +8179,179 @@ mod tests {
         ];
         let (_, n) = elide_shift_masks(&seq);
         assert_eq!(n, 0);
+    }
+
+    // ---- elide_shift_masks cross-block (#846) ----
+
+    // (`label`/`b` helpers are shared with the CFG-liveness tests below.)
+    fn masking_and(rd: Reg, rn: Reg, c: i32) -> ArmInstruction {
+        ins(ArmOp::And {
+            rd,
+            rn,
+            op2: Operand2::Imm(c),
+        })
+    }
+
+    #[test]
+    fn elide_846_cross_block_masked_def_elides() {
+        // and r3,r0,#15 ; b L ; L: and r12,r3,#31 ; lsl r4,r1,r12 ; bx lr
+        // The masking def DOMINATES the shift but sits in another block — the
+        // exact #846 gpio residual shape. The intra-block window aborts at the
+        // label; the cross-block facts prove r3 < 32 on the only path.
+        let mut seq = vec![masking_and(Reg::R3, Reg::R0, 15), b("L")];
+        seq.push(label("L"));
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "cross-block bounded amount elides the #682 re-mask");
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::LslReg {
+                    rd: Reg::R4,
+                    rn: Reg::R1,
+                    rm: Reg::R3
+                }
+            )),
+            "shift consumes r3 directly"
+        );
+        assert!(
+            !out.iter()
+                .any(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. })),
+            "re-mask removed"
+        );
+    }
+
+    #[test]
+    fn elide_846_join_with_unmasked_path_keeps_mask() {
+        // Diamond where only ONE arm masks r3:
+        //   bcc EQ,A ; mov r3,r0 ; b J ; A: and r3,r0,#15 ; J: mask+shift
+        // r3 can reach the shift UNPROVEN via the copy arm — the mask MUST
+        // stay (the #682 invariant at a join).
+        let mut seq = vec![
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "A".to_string(),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            b("J"),
+            label("A"),
+            masking_and(Reg::R3, Reg::R0, 15),
+            label("J"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "one unmasked path ⇒ mask kept");
+    }
+
+    #[test]
+    fn elide_846_join_with_both_paths_masked_elides() {
+        // Same diamond, but BOTH arms bound r3 (#15 / #7): the intersection
+        // at the join carries the fact ⇒ elide.
+        let mut seq = vec![
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "A".to_string(),
+            }),
+            masking_and(Reg::R3, Reg::R0, 7),
+            b("J"),
+            label("A"),
+            masking_and(Reg::R3, Reg::R0, 15),
+            label("J"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "both paths bound r3 ⇒ elide at the join");
+        assert!(
+            !out.iter()
+                .any(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. })),
+        );
+    }
+
+    #[test]
+    fn elide_846_call_between_kills_fact() {
+        // and r3,r0,#15 ; bl f ; and r12,r3,#31 ; lsl — the call is an
+        // unmodeled clobber (could rewrite r3): every fact dies, mask stays.
+        let mut seq = vec![
+            masking_and(Reg::R3, Reg::R0, 15),
+            ins(ArmOp::Bl {
+                label: "f".to_string(),
+            }),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a call between def and shift kills the bound");
+    }
+
+    #[test]
+    fn elide_846_loop_backedge_redef_keeps_mask() {
+        // and r3,r0,#15 ; L: and r12,r3,#31 ; lsl ; add r3,r3,#1 ; b L
+        // The back edge brings an UNBOUNDED redef of r3 into L's join —
+        // the fixpoint intersection must drop the fact and keep the mask.
+        let mut seq = vec![masking_and(Reg::R3, Reg::R0, 15), label("L")];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ins(ArmOp::Add {
+            rd: Reg::R3,
+            rn: Reg::R3,
+            op2: Operand2::Imm(1),
+        }));
+        seq.push(b("L"));
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "loop-carried unbounded redef ⇒ mask kept");
+    }
+
+    #[test]
+    fn elide_846_loop_backedge_remask_elides() {
+        // Same loop but the body RE-BOUNDS r3 before the back edge — both
+        // join inputs (entry + backedge) carry the fact ⇒ elide is sound.
+        let mut seq = vec![masking_and(Reg::R3, Reg::R0, 15), label("L")];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(masking_and(Reg::R3, Reg::R3, 15));
+        seq.push(b("L"));
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "fact holds on entry AND around the back edge");
+    }
+
+    #[test]
+    fn elide_846_copy_of_bounded_value_elides() {
+        // and r5,r0,#15 ; mov r3,r5 ; b L ; L: mask+shift on r3 — the copy
+        // carries r5's bound to r3 across the block boundary.
+        let mut seq = vec![
+            masking_and(Reg::R5, Reg::R0, 15),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            b("L"),
+            label("L"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "register copy propagates the bound");
+    }
+
+    #[test]
+    fn elide_846_unmodeled_control_flow_declines_cross_block() {
+        // A numeric-offset branch anywhere in the stream means the CFG can't
+        // be modeled exactly — the cross-block analysis must decline and the
+        // cross-block shape keeps its mask (intra-block behavior preserved).
+        let mut seq = vec![
+            masking_and(Reg::R3, Reg::R0, 15),
+            b("L"),
+            label("L"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ins(ArmOp::BOffset { offset: 1 }));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "unmodeled control flow ⇒ whole-function decline");
     }
 
     // ---- fold_uxth (#428) ----
