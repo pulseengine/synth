@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RV32 `br_table` lowering (#882)** — the RISC-V selector now lowers
+  `br_table` as a compare-and-branch chain (entry 0 against `x0`, `li`+`beq`
+  per further entry, `jal` to the default), closing the last op gap on gale's
+  `wdg-thin` driver (`wdg_unlock`, `targets: [0, 1, 0], default: 1`). Any index
+  `>= targets.len()` — including "negative" i32s under the unsigned
+  interpretation — lands on the default label, per WASM core semantics. Tables
+  past 16 targets LOUD-DECLINE by name (`BrTableTooLarge`; the jump-table
+  upgrade is a named follow-up), and value-carrying `br_table` (the #509
+  block-arity-threading class) LOUD-DECLINES (`BrTableValueCarrying`) instead
+  of silently miscompiling path-dependent result registers. Execution-verified
+  under unicorn RV32 vs wasmtime across every table entry AND out-of-range /
+  unsigned-edge indices (`scripts/repro/rv32_br_table_882_differential.py`,
+  CI job `rv32-br-table-oracle`, vacuity-guarded against skipped exports).
+
+### Fixed
+
+- **`--target`/backend ISA mismatch is now a hard error (#882)** — `synth
+  compile --target riscv32` without `-b riscv` silently printed
+  `Using backend: arm` and built Thumb code into a RISC-V ELF container,
+  failing only deep in the emitter ("non-CALL_PLT relocation ThmCall reached
+  the RISC-V ELF emitter") — a plausible-looking wrong-ISA object. A
+  recognised `--target` whose ISA family does not match the selected
+  single-ISA backend (arm / riscv / aarch64) now exits non-zero naming the
+  right `-b`; an explicit mismatched `-b` lists the targets it accepts; and an
+  unknown `--target` names the full valid set (now including cortex-m55,
+  cortex-r5, cortex-a53 and riscv32). No behavior change for good input —
+  every valid target/backend pairing resolves exactly as before (gated by
+  `crates/synth-cli/tests/unknown_target_882.rs`).
+
 ## [0.52.0] - 2026-07-29
 
 **"Enforce what we promise."** Every backend in this release stopped

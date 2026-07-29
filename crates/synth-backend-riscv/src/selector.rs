@@ -96,6 +96,12 @@ impl SelectorOptions {
     }
 }
 
+/// #882: largest `br_table` the compare-and-branch-chain lowering accepts.
+/// Each entry costs at most 2 instructions (`li` + `beq`), so 16 targets is a
+/// ≤33-instruction dispatch — past that a real jump table wins and the
+/// selector LOUD-DECLINES (`SelectorError::BrTableTooLarge`) instead.
+pub const BR_TABLE_MAX_TARGETS: usize = 16;
+
 #[derive(Debug, Error)]
 pub enum SelectorError {
     #[error("unsupported wasm op for RV32 skeleton: {0:?}")]
@@ -112,6 +118,29 @@ pub enum SelectorError {
 
     #[error("br depth {depth} out of range (control stack height {height})")]
     BrOutOfRange { depth: u32, height: usize },
+
+    /// #882: `br_table` lowers as a compare-and-branch chain (one `li`+`beq`
+    /// per target), which is only sensible for small tables. A table past the
+    /// threshold needs a real jump table (PC-relative dispatch + bounds check)
+    /// — not implemented; decline loudly by name rather than emit a huge chain.
+    #[error(
+        "RV32 br_table with {targets} targets exceeds the compare-chain \
+         threshold ({max}); jump-table dispatch is not implemented for RV32 — \
+         declining loudly (#882)"
+    )]
+    BrTableTooLarge { targets: usize, max: usize },
+
+    /// #882/#509 class: a `br_table` whose targeted frames would carry values
+    /// (non-zero label arity, or transient values that a taken branch would
+    /// discard) needs block-arity threading the single-pass selector does not
+    /// model — a jump would leave the values in path-dependent registers.
+    /// Loud decline, never a silent path-dependent miscompile.
+    #[error(
+        "RV32 br_table with value-carrying targets (vstack height {height} != \
+         target frame entry height {entry}) needs block-arity threading (#509) \
+         — declining loudly (#882)"
+    )]
+    BrTableValueCarrying { height: usize, entry: usize },
 
     #[error("stack type mismatch at op {op:?}: expected {expected}, found {found} on top of stack")]
     StackTypeMismatch {
@@ -1801,6 +1830,7 @@ impl Selector {
             End => self.lower_end()?,
             Br(depth) => self.lower_br(*depth, op)?,
             BrIf(depth) => self.lower_br_if(*depth, op)?,
+            BrTable { targets, default } => self.lower_br_table(targets, *default, op)?,
 
             Return => {
                 self.emit_return_epilogue();
@@ -2981,6 +3011,105 @@ impl Selector {
             rs1: cond,
             rs2: Reg::ZERO,
             label: target_label,
+        });
+        Ok(())
+    }
+
+    /// #882: `br_table` — pop the i32 index, then dispatch: index `i` branches
+    /// to `targets[i]`; any index `>= targets.len()` (including "negative"
+    /// i32s, which are huge unsigned values) falls through to `default`, per
+    /// WASM core semantics (the index is interpreted unsigned and clamps to
+    /// the default label).
+    ///
+    /// Lowering: a COMPARE-AND-BRANCH CHAIN — for each table entry `i`,
+    /// `li tmp, i; beq idx, tmp, L_target(i)` (entry 0 compares against `x0`
+    /// directly, no materialization), then an unconditional `jal x0, L_default`.
+    /// Equality is sign-agnostic, so `beq` against the constants `0..len-1` is
+    /// exact for the unsigned-index semantics; every non-matching index —
+    /// in-range-of-i32 or not — lands on the default jump. No jump table, no
+    /// data section, no PC-relative table: for the small tables real drivers
+    /// carry (gale's `wdg_unlock` is 3 targets) the chain is both smaller and
+    /// simpler to verify than an indirect dispatch. Tables past
+    /// [`BR_TABLE_MAX_TARGETS`] LOUD-DECLINE (`BrTableTooLarge`) rather than
+    /// emit an unbounded chain — the jump-table upgrade is a named follow-up.
+    ///
+    /// Value-carrying `br_table` (targeted frames entered at a different stack
+    /// height than the post-pop height — i.e. the jump would carry or discard
+    /// vstack values) is the #509 block-arity-threading class: the single-pass
+    /// selector cannot reconcile per-path result registers, so it LOUD-DECLINES
+    /// (`BrTableValueCarrying`) instead of silently miscompiling. Plain
+    /// `Br`/`BrIf` share the underlying limitation; `br_table` checks it
+    /// explicitly because the multi-way dispatch makes the path-dependence
+    /// concrete.
+    fn lower_br_table(
+        &mut self,
+        targets: &[u32],
+        default: u32,
+        op: &WasmOp,
+    ) -> Result<(), SelectorError> {
+        if targets.len() > BR_TABLE_MAX_TARGETS {
+            return Err(SelectorError::BrTableTooLarge {
+                targets: targets.len(),
+                max: BR_TABLE_MAX_TARGETS,
+            });
+        }
+        let idx = self.pop_i32(op)?;
+        // Conservative value-carrying guard (#509 class): every targeted frame
+        // (including the default) must have been entered at exactly the
+        // current post-pop vstack height — then a taken branch moves no
+        // values and the plain-jump lowering is sound.
+        let height = self.vstack.len();
+        for &depth in targets.iter().chain(std::iter::once(&default)) {
+            let ctrl_height = self.ctrl.len();
+            let d = depth as usize;
+            if d >= ctrl_height {
+                return Err(SelectorError::BrOutOfRange {
+                    depth,
+                    height: ctrl_height,
+                });
+            }
+            let entry = self.ctrl[ctrl_height - 1 - d].stack_height_at_entry;
+            if entry != height {
+                return Err(SelectorError::BrTableValueCarrying { height, entry });
+            }
+        }
+        // Compare chain. One scratch register is reused for every non-zero
+        // constant; `idx` is pinned by `pop_i32` so the scratch can't alias it.
+        let mut scratch: Option<Reg> = None;
+        for (i, &depth) in targets.iter().enumerate() {
+            let label = self.target_label_for_depth(depth)?;
+            let rs2 = if i == 0 {
+                Reg::ZERO
+            } else {
+                let tmp = match scratch {
+                    Some(t) => t,
+                    None => {
+                        let t = self.alloc_temp();
+                        scratch = Some(t);
+                        t
+                    }
+                };
+                // i <= BR_TABLE_MAX_TARGETS - 1 always fits addi's imm12.
+                self.out.push(RiscVOp::Addi {
+                    rd: tmp,
+                    rs1: Reg::ZERO,
+                    imm: i as i32,
+                });
+                tmp
+            };
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Eq,
+                rs1: idx,
+                rs2,
+                label,
+            });
+        }
+        // No entry matched → default. This is also where every out-of-range
+        // index (>= targets.len(), unsigned) lands.
+        let default_label = self.target_label_for_depth(default)?;
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: default_label,
         });
         Ok(())
     }
@@ -5243,6 +5372,193 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// #882: gale's exact `wdg_unlock` shape — `br_table { targets: [0, 1, 0],
+    /// default: 1 }` over two nested blocks — must LOWER (it was the last op
+    /// declining on the wdg-thin driver), as a compare-and-branch chain:
+    /// `beq idx, x0` for entry 0, `li`+`beq` for entries 1 and 2, then an
+    /// unconditional `jal` to the default label.
+    #[test]
+    fn br_table_882_gale_shape_lowers() {
+        let out = s(
+            &[
+                WasmOp::Block,
+                WasmOp::Block,
+                WasmOp::LocalGet(0),
+                WasmOp::BrTable {
+                    targets: vec![0, 1, 0],
+                    default: 1,
+                },
+                WasmOp::End,
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        // 3 targets → 3 beq (entry 0 against x0), plus the default jal.
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    ..
+                }
+            )),
+            3,
+            "one beq per table entry: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )),
+            1,
+            "entry 0 compares against x0 directly"
+        );
+        // The default dispatch jal (rd = x0) — distinct from the return jalr.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Jal { rd: Reg::ZERO, .. })) >= 1,
+            "unconditional jal to the default label: {out:?}"
+        );
+    }
+
+    /// #882: a table past `BR_TABLE_MAX_TARGETS` must LOUD-DECLINE by name
+    /// (`BrTableTooLarge`), never emit an unbounded compare chain.
+    #[test]
+    fn br_table_882_large_table_loud_declines() {
+        let targets: Vec<u32> = vec![0; BR_TABLE_MAX_TARGETS + 1];
+        let ops = [
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets,
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        match select(&ops, 1) {
+            Ok(_) => panic!("oversized br_table must decline on RV32"),
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    SelectorError::BrTableTooLarge {
+                        targets: 17,
+                        max: BR_TABLE_MAX_TARGETS
+                    }
+                ),
+                "must surface as BrTableTooLarge, got: {err:?}"
+            ),
+        }
+        // At the threshold itself it must still lower.
+        let targets: Vec<u32> = vec![0; BR_TABLE_MAX_TARGETS];
+        let ops = [
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets,
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        select(&ops, 1).expect("threshold-sized br_table must lower");
+    }
+
+    /// #882/#509 class: a br_table that would carry a vstack value across the
+    /// jump (target frame entered at a lower stack height) must LOUD-DECLINE —
+    /// the single-pass selector cannot reconcile path-dependent result
+    /// registers.
+    #[test]
+    fn br_table_882_value_carrying_loud_declines() {
+        let ops = [
+            WasmOp::Block,
+            WasmOp::I32Const(5), // transient value the jump would discard/carry
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0],
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        match select(&ops, 1) {
+            Ok(_) => panic!("value-carrying br_table must decline on RV32"),
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    SelectorError::BrTableValueCarrying {
+                        height: 1,
+                        entry: 0
+                    }
+                ),
+                "must surface as BrTableValueCarrying, got: {err:?}"
+            ),
+        }
+    }
+
+    /// #882: a br_table depth past the control-stack height is invalid wasm —
+    /// surface `BrOutOfRange`, mirroring `br`.
+    #[test]
+    fn br_table_882_depth_out_of_range() {
+        let ops = [
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0, 7],
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        match select(&ops, 1) {
+            Ok(_) => panic!("out-of-range br_table depth must error"),
+            Err(err) => assert!(
+                matches!(err, SelectorError::BrOutOfRange { depth: 7, .. }),
+                "must surface as BrOutOfRange, got: {err:?}"
+            ),
+        }
+    }
+
+    /// #882: a br_table targeting a LOOP frame branches to the loop HEAD
+    /// (back-edge), mirroring `br` semantics.
+    #[test]
+    fn br_table_882_loop_target_uses_head_label() {
+        let out = s(
+            &[
+                WasmOp::Loop,
+                WasmOp::Block,
+                WasmOp::LocalGet(0),
+                WasmOp::BrTable {
+                    targets: vec![0, 1],
+                    default: 0,
+                },
+                WasmOp::End,
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Entry 1 targets the loop → its beq label must be the loop head.
+        let head = out
+            .iter()
+            .find_map(|op| match op {
+                RiscVOp::Label { name } if name.starts_with("Lloop_head") => Some(name.clone()),
+                _ => None,
+            })
+            .expect("loop head label emitted");
+        assert!(
+            out.iter().any(|op| matches!(
+                op,
+                RiscVOp::Branch { cond: Branch::Eq, label, .. } if *label == head
+            )),
+            "br_table entry targeting the loop must branch to the head label: {out:?}"
+        );
     }
 
     #[test]
