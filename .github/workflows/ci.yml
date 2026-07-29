@@ -576,6 +576,12 @@ jobs:
       - name: Install emulation deps
         # capstone: the #846 gpio-thin oracle's mask census disassembles .text
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install arm-none-eabi-ld (#881 VFP spill oracle)
+        # binutils only (NOT the full gcc-arm-none-eabi): the #881 oracle links
+        # its ET_REL object with a REAL ld so the internal `bl` reloc is proven
+        # to resolve. Skipping the link would make that half of the gate
+        # vacuous, so install the linker rather than weaken the check.
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: Run unreachable trap oracle (#665, thumb2 + rv32)
         run: SYNTH=./target/debug/synth python scripts/repro/unreachable_665_differential.py
       - name: Run rem_s trap-table oracle (#666, rv32)

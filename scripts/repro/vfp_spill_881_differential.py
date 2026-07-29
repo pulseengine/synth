@@ -193,12 +193,39 @@ def main():
     obj = compile_relocatable(tmp)
 
     # Gate 1: falcon flags — every export is an emitted T symbol.
-    nm = subprocess.run(["arm-none-eabi-nm", obj], capture_output=True,
-                        text=True)
-    if nm.returncode != 0:
-        fail("nm failed on the relocatable object")
-    tsyms = {ln.split()[-1] for ln in nm.stdout.splitlines()
-             if " T " in ln}
+    #
+    # Read the symbols from the ELF SYMBOL TABLE via pyelftools rather than
+    # shelling out to `arm-none-eabi-nm`. The ARM GNU toolchain is NOT installed
+    # on the CI runner, so the nm form raised FileNotFoundError there while
+    # passing locally — a host dependency that made this oracle unrunnable in CI
+    # (the #850 class: an oracle that only works on the author's machine is a
+    # local check, not a gate). pyelftools is already a dependency of this job.
+    #
+    # `nm`'s "T" is: STT_FUNC-ish global symbol defined in an executable
+    # section. Reproduced here as: binding GLOBAL, defined (st_shndx is a real
+    # section index, not UND/ABS), and that section is executable (SHF_EXECINSTR).
+    from elftools.elf.elffile import ELFFile  # noqa: PLC0415 (CI dep, local import)
+
+    # Look the symbol table up by TYPE (SHT_SYMTAB), not by name: synth's
+    # relocatable objects emit the symtab with an EMPTY sh_name, so
+    # get_section_by_name(".symtab") returns None on them. `nm` finds it anyway
+    # because it searches by type — which is exactly why the nm form worked and
+    # a by-name port silently reported "no .symtab" on a file that has one.
+    with open(obj, "rb") as fh:
+        ef = ELFFile(fh)
+        symtab = next((s for s in ef.iter_sections()
+                       if s["sh_type"] == "SHT_SYMTAB"), None)
+        if symtab is None:
+            fail("relocatable object has no SHT_SYMTAB section")
+        tsyms = set()
+        for sym in symtab.iter_symbols():
+            if not sym.name or sym["st_info"]["bind"] != "STB_GLOBAL":
+                continue
+            shndx = sym["st_shndx"]
+            if shndx in ("SHN_UNDEF", "SHN_ABS", "SHN_COMMON"):
+                continue
+            if ef.get_section(shndx)["sh_flags"] & 0x4:  # SHF_EXECINSTR
+                tsyms.add(sym.name)
     missing = [e for e in EXPORTS if e not in tsyms]
     if missing:
         fail(f"exports missing from nm -> T: {missing}")
