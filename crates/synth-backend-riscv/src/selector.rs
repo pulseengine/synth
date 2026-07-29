@@ -208,6 +208,34 @@ pub fn select_with_result_types(
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
+    select_with_signatures(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        &[],
+        &[],
+    )
+}
+
+/// Same as [`select_with_result_types`], plus the decoder's per-function
+/// ARG/RESULT count tables (#871: `func_arg_counts[full_idx]` /
+/// `func_result_counts[full_idx]`, imports first). With the tables, a `call`
+/// drains EXACTLY the callee's arity from the vstack (deeper values are
+/// preserved across the call in callee-saved registers) and a 0-result callee
+/// pushes nothing. Empty tables keep the legacy v0.3.1 whole-stack-drain /
+/// always-push behaviour (hand-built modules with no signature info).
+#[allow(clippy::too_many_arguments)]
+pub fn select_with_signatures(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
     //
@@ -244,6 +272,8 @@ pub fn select_with_result_types(
         options,
         func_ret_i64,
         type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
         promote_locals,
         cmp_select_fuse,
     )
@@ -266,12 +296,15 @@ pub fn select_with_result_types(
 /// all charged by construction (#511: measure emitted bytes, don't trust a
 /// side model). Subsets matter: one local's win must not smuggle another
 /// local's loss past the gate.
+#[allow(clippy::too_many_arguments)]
 fn select_inner(
     wasm_ops: &[WasmOp],
     num_params: u32,
     options: SelectorOptions,
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
     promote_locals: bool,
     cmp_select_fuse: bool,
 ) -> Result<RiscVSelection, SelectorError> {
@@ -286,6 +319,8 @@ fn select_inner(
         options,
         func_ret_i64,
         type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
         false,
         None,
         cmp_select_fuse,
@@ -301,6 +336,8 @@ fn select_inner(
         options,
         func_ret_i64,
         type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
         true,
         None,
         cmp_select_fuse,
@@ -329,6 +366,8 @@ fn select_inner(
             options,
             func_ret_i64,
             type_ret_i64,
+            func_arg_counts,
+            func_result_counts,
             true,
             Some(&subset),
             cmp_select_fuse,
@@ -361,6 +400,13 @@ pub(crate) fn emitted_byte_size(ops: &[RiscVOp]) -> usize {
         .sum()
 }
 
+/// #871: true when the RV32 psABI lets a CALLEE clobber `r` (`ra`, `t0..t6`,
+/// `a0..a7`) — a vstack value living there does not survive a `call` and must
+/// be moved to a callee-saved register first.
+fn is_caller_saved(r: Reg) -> bool {
+    matches!(r.num(), 1 | 5..=7 | 10..=17 | 28..=31)
+}
+
 /// One full selection run. `promo_allow` (with `promote_locals`) restricts
 /// promotion to a subset of the candidate locals — the probe knob of
 /// `select_inner`'s measured decision; `None` promotes every mapped candidate.
@@ -373,6 +419,8 @@ fn select_attempt(
     options: SelectorOptions,
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
     promote_locals: bool,
     promo_allow: Option<&std::collections::HashSet<u32>>,
     cmp_select_fuse: bool,
@@ -380,6 +428,8 @@ fn select_attempt(
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
+    ctx.func_arg_counts = func_arg_counts.to_vec();
+    ctx.func_result_counts = func_result_counts.to_vec();
     ctx.promote_locals = promote_locals;
     ctx.promo_allow = promo_allow.cloned();
     ctx.cmp_select_fuse = cmp_select_fuse;
@@ -1166,6 +1216,16 @@ struct Selector {
     /// by the width inference today — call_indirect itself is still
     /// `Unsupported` in this selector.
     type_ret_i64: Vec<bool>,
+    /// #871: per-function argument count (full wasm index, imports first —
+    /// `CompileConfig::func_arg_counts`). With an entry, `lower_call` drains
+    /// EXACTLY that many vstack values as args (deeper stack values are
+    /// preserved across the call); empty = legacy whole-stack drain.
+    func_arg_counts: Vec<u32>,
+    /// #871: per-function result count (full wasm index, imports first —
+    /// `CompileConfig::func_result_counts`). With an entry, a 0-result callee
+    /// pushes NOTHING (the legacy phantom-`a0` push corrupted the stack
+    /// discipline of every later op); empty = legacy always-push.
+    func_result_counts: Vec<u32>,
     /// #472 (VCR-RA RV32 local promotion): non-parameter i32 locals promoted
     /// into callee-saved s-registers (`s8`/`s9`/`s10`). Empty under the
     /// `SYNTH_RV_LOCAL_PROMO=0` opt-out — the frame path is then taken for
@@ -1233,6 +1293,8 @@ impl Selector {
             i64_locals: std::collections::HashSet::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            func_arg_counts: Vec::new(),
+            func_result_counts: Vec::new(),
             promoted: std::collections::HashMap::new(),
             promoted_zero_init: std::collections::HashSet::new(),
             promo_allow: None,
@@ -2951,10 +3013,76 @@ impl Selector {
     ///   selector doesn't yet model that. Use `drop` or `local.tee`
     ///   between values you want to survive a call.
     fn lower_call(&mut self, func_idx: u32, _op: &WasmOp) -> Result<(), SelectorError> {
+        // #871: with the decoder's arity table, drain EXACTLY the callee's
+        // declared argument count (an i64 arg is one table slot AND one
+        // vstack entry, so the counts line up); without a table entry keep
+        // the legacy v0.3.1 whole-stack drain (hand-built modules).
+        let n_args = match self.func_arg_counts.get(func_idx as usize) {
+            Some(&n) => {
+                let n = n as usize;
+                if n > 8 {
+                    // > 8 args spill to the stack per the RV psABI — not
+                    // modeled; decline loudly rather than drop args.
+                    return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+                }
+                if self.vstack.len() < n {
+                    return Err(SelectorError::StackUnderflow(WasmOp::Call(func_idx)));
+                }
+                n
+            }
+            None => self.vstack.len().min(8),
+        };
+
+        // #871: values that SURVIVE the call (deeper than the args) but live
+        // in caller-saved registers (t0..t6; a-regs can appear transiently)
+        // are clobbered by the callee per the RV psABI. Move each into a free
+        // CALLEE-SAVED s-register from the pool before marshalling; pool
+        // exhaustion sets `alloc_exhausted` → the function is SKIPPED loudly,
+        // never silently miscompiled. Done BEFORE the drain so the args are
+        // still vstack-live and their registers can't be picked as targets.
+        let n_survivors = self.vstack.len() - n_args;
+        let callee_saved_pool = [Reg::S1, Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6];
+        for i in 0..n_survivors {
+            let entry = self.vstack[i];
+            let rewrite = |sel: &mut Self, r: Reg| -> Option<Reg> {
+                if !is_caller_saved(r) {
+                    return Some(r);
+                }
+                let live = sel.live_regs();
+                let tgt = callee_saved_pool
+                    .iter()
+                    .copied()
+                    .find(|s| !live.contains(s) && !sel.op_pinned.contains(s));
+                let Some(tgt) = tgt else {
+                    sel.alloc_exhausted = true;
+                    return None;
+                };
+                sel.pin(tgt);
+                sel.out.push(RiscVOp::Addi {
+                    rd: tgt,
+                    rs1: r,
+                    imm: 0,
+                });
+                Some(tgt)
+            };
+            let new_entry = match entry {
+                VstackVal::I32(r) => rewrite(self, r).map(VstackVal::I32),
+                VstackVal::I64 { lo, hi } => match (rewrite(self, lo), rewrite(self, hi)) {
+                    (Some(lo), Some(hi)) => Some(VstackVal::I64 { lo, hi }),
+                    _ => None,
+                },
+            };
+            match new_entry {
+                Some(e) => self.vstack[i] = e,
+                // Pool exhausted: alloc_exhausted is set; the caller turns it
+                // into a skip. Bail out of the lowering with a loud error.
+                None => return Err(SelectorError::Unsupported(WasmOp::Call(func_idx))),
+            }
+        }
+
         // Move the top-of-stack values into a0..a7 in source order.
         // The wasm value stack is LIFO so the *last* push is the right-most
         // arg; we drain into argument registers in reverse.
-        let n_args = self.vstack.len().min(8);
         let args: Vec<VstackVal> = self.vstack.drain(self.vstack.len() - n_args..).collect();
         let arg_regs = [
             Reg::A0,
@@ -3002,15 +3130,58 @@ impl Selector {
         // following `local.set` of an i64 local stores both words instead of
         // tripping the i32 type check. An absent table entry keeps the legacy
         // i32 tagging.
-        if self
-            .func_ret_i64
-            .get(func_idx as usize)
-            .copied()
-            .unwrap_or(false)
-        {
-            self.push_i64(Reg::A0, Reg::A1);
-        } else {
-            self.push_i32(Reg::A0);
+        //
+        // #871: with the decoder's result-count table, a VOID callee pushes
+        // NOTHING (the legacy phantom-`a0` push corrupted the stack discipline
+        // of every op after a void call); a multi-value callee (count > 1)
+        // declines loudly. And the result is COPIED out of a0/a1 into fresh
+        // pool temps immediately: leaving a vstack entry aliased to an a-reg
+        // meant the NEXT call's argument marshalling silently clobbered it
+        // (two seam reads feeding one add — the wdg_sum2 class).
+        let n_results = match self.func_result_counts.get(func_idx as usize) {
+            Some(&c) => {
+                if c > 1 {
+                    return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+                }
+                c
+            }
+            None => 1, // legacy: assume one result
+        };
+        if n_results == 1 {
+            if self
+                .func_ret_i64
+                .get(func_idx as usize)
+                .copied()
+                .unwrap_or(false)
+            {
+                let lo = self.alloc_temp();
+                let hi = self.alloc_temp();
+                if self.alloc_exhausted {
+                    return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+                }
+                self.out.push(RiscVOp::Addi {
+                    rd: lo,
+                    rs1: Reg::A0,
+                    imm: 0,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: hi,
+                    rs1: Reg::A1,
+                    imm: 0,
+                });
+                self.push_i64(lo, hi);
+            } else {
+                let tmp = self.alloc_temp();
+                if self.alloc_exhausted {
+                    return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+                }
+                self.out.push(RiscVOp::Addi {
+                    rd: tmp,
+                    rs1: Reg::A0,
+                    imm: 0,
+                });
+                self.push_i32(tmp);
+            }
         }
         Ok(())
     }
@@ -8381,6 +8552,8 @@ mod tests {
             SelectorOptions::wasm_compliant(),
             &[],
             &[],
+            &[],
+            &[],
             promote,
             false,
         )
@@ -8561,6 +8734,8 @@ mod tests {
             &ops,
             1,
             SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
             &[],
             &[],
             true,
@@ -8791,6 +8966,8 @@ mod tests {
             ops,
             num_params,
             SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
             &[],
             &[],
             false,

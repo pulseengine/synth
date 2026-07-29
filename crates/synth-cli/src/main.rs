@@ -1842,6 +1842,21 @@ fn compile_command(
         // check would misroute it into the ARM builder.
         build_aarch64_elf(&code, &func_name)?
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
+        // #871: the single-function RISC-V wrapper carries no relocation
+        // plumbing — a function whose code contains external-call
+        // placeholders (auipc/jalr pairs awaiting R_RISCV_CALL_PLT) would
+        // ship with dead call sites. Decline loudly; the module path
+        // (`--all-exports`) emits the full `.rela.text`.
+        if !compiled.relocations.is_empty() {
+            anyhow::bail!(
+                "function '{}' contains {} external call site(s), but the \
+                 single-function RISC-V path emits no relocation table — the \
+                 calls would silently target themselves. Compile the module \
+                 with --all-exports (which emits .rela.text, #871).",
+                func_name,
+                compiled.relocations.len()
+            );
+        }
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
         // #758: the single-function self-contained builder ships no data
@@ -3614,7 +3629,7 @@ fn compile_all_exports(
             );
         }
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
-        build_multi_func_riscv_elf(&compiled_funcs, &rv_wasm_data)?
+        build_multi_func_riscv_elf(&compiled_funcs, &all_imports, &rv_wasm_data)?
     } else if has_external_relocations || relocatable {
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
@@ -5064,6 +5079,15 @@ fn build_relocatable_elf(
                          ELF emitter — the aarch64 backend emits its own .rela.text (#851)"
                     )
                 }
+                // #871: R_RISCV_CALL_PLT is emitted only by the EM_RISCV backend
+                // (its own `.rela.text` builder). It can never reach this ARM ELF
+                // relocation path; bail loudly if it somehow does.
+                synth_core::backend::RelocKind::RiscvCallPlt => {
+                    anyhow::bail!(
+                        "internal error: RISC-V CALL_PLT relocation reached the ARM \
+                         ELF emitter — the riscv backend emits its own .rela.text (#871)"
+                    )
+                }
             };
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,
@@ -6461,9 +6485,37 @@ fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
 /// Build a multi-function RISC-V relocatable ELF. `wasm_data` is the #798
 /// packed active-data-segment record blob (`.wasm_data` section; empty ⇒
 /// the section is omitted and the object is byte-identical to pre-#798).
+///
+/// #871: each function's `R_RISCV_CALL_PLT` relocations (external `call`
+/// sites — imports and cross-function calls, 8-byte `auipc`/`jalr`
+/// placeholders in the code bytes) are rebased to `.text` and emitted as a
+/// `.rela.text` section. The selector's `synth_func_{N}` labels (N = full
+/// wasm index, imports first) are mapped to real symbols here: an IMPORT
+/// index → its wasm field name (an UNDEFINED symbol the host linker
+/// resolves — the ARM #197 contract, `U mmio_read32`); a LOCAL index → that
+/// function's defined symbol. An unmapped label (a call to a local function
+/// that was skipped/not compiled) stays `synth_func_N` and becomes an
+/// undefined symbol — loud at link time, never a silent hole.
 #[cfg(feature = "riscv")]
-fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result<Vec<u8>> {
-    use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+fn build_multi_func_riscv_elf(
+    funcs: &[ElfFunction],
+    imports: &[ImportEntry],
+    wasm_data: &[u8],
+) -> Result<Vec<u8>> {
+    use synth_backend_riscv::{Reg, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+
+    // #871: label → symbol mapping (imports first, then compiled functions —
+    // a local function shadows nothing because wasm indices are disjoint).
+    let mut label_to_symbol: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for imp in imports {
+        if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
+            label_to_symbol.insert(format!("synth_func_{}", imp.index), imp.name.clone());
+        }
+    }
+    for func in funcs {
+        label_to_symbol.insert(format!("synth_func_{}", func.wasm_index), func.name.clone());
+    }
 
     // Same placeholder-then-overwrite approach as build_riscv_elf.
     // We accumulate a single .text spanning all functions and patch the
@@ -6471,6 +6523,7 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result
     let mut all_code: Vec<u8> = Vec::new();
     let mut func_byte_ranges: Vec<(usize, usize)> = Vec::new();
     let mut placeholder_funcs: Vec<RiscVElfFunction> = Vec::new();
+    let mut call_relocs: Vec<RiscVCallReloc> = Vec::new();
 
     for func in funcs {
         // Align each function to 4 bytes (RISC-V requires 4-byte instruction alignment).
@@ -6481,6 +6534,28 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result
         all_code.extend_from_slice(&func.code);
         let end = all_code.len();
         func_byte_ranges.push((start, end));
+
+        // #871: rebase this function's call relocations to .text offsets.
+        for reloc in &func.relocations {
+            if !matches!(reloc.kind, synth_core::backend::RelocKind::RiscvCallPlt) {
+                anyhow::bail!(
+                    "internal error: non-CALL_PLT relocation {:?} reached the RISC-V \
+                     ELF emitter (function '{}', offset {}) — the riscv backend only \
+                     produces R_RISCV_CALL_PLT (#871)",
+                    reloc.kind,
+                    func.name,
+                    reloc.offset
+                );
+            }
+            let symbol = label_to_symbol
+                .get(&reloc.symbol)
+                .cloned()
+                .unwrap_or_else(|| reloc.symbol.clone());
+            call_relocs.push(RiscVCallReloc {
+                offset: (start as u32) + reloc.offset,
+                symbol,
+            });
+        }
 
         let n_instrs = (end - start).div_ceil(4);
         let placeholder_ops: Vec<RiscVOp> = (0..n_instrs)
@@ -6498,7 +6573,7 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result
 
     let builder = RiscVElfBuilder::new_relocatable();
     let mut elf = builder
-        .build_with_data(&placeholder_funcs, wasm_data)
+        .build_object(&placeholder_funcs, wasm_data, &call_relocs)
         .context("RISC-V multi-function ELF generation failed")?;
 
     // .text starts immediately after the 52-byte ELF header.
@@ -6511,7 +6586,11 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction], wasm_data: &[u8]) -> Result
 }
 
 #[cfg(not(feature = "riscv"))]
-fn build_multi_func_riscv_elf(_funcs: &[ElfFunction], _wasm_data: &[u8]) -> Result<Vec<u8>> {
+fn build_multi_func_riscv_elf(
+    _funcs: &[ElfFunction],
+    _imports: &[ImportEntry],
+    _wasm_data: &[u8],
+) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 

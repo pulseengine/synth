@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, SelectorOptions, select_with_result_types};
+use crate::selector::{RvBoundsMode, SelectorOptions, select_with_signatures};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -100,6 +100,34 @@ impl Backend for RiscVBackend {
                 ops: compile_to_riscv_ops(&func.ops, cfg, opts, &compiled)?,
             });
             functions.push(compiled);
+        }
+
+        // #871: rewrite external-call labels to real symbol names before the
+        // ELF build. The selector emits `Call { label: "synth_func_N" }` (N =
+        // full wasm index, imports first); map an IMPORT index to its wasm
+        // field name (undefined symbol, host linker resolves — the ARM #197
+        // contract) and a LOCAL index to that function's defined symbol. An
+        // unmapped label (a call to an uncompiled local function) stays as-is
+        // and becomes an undefined `synth_func_N` — loud at link time, never
+        // a silent hole.
+        let mut label_to_symbol: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for imp in &module.imports {
+            if matches!(imp.kind, synth_core::wasm_decoder::ImportKind::Function(_)) {
+                label_to_symbol.insert(format!("synth_func_{}", imp.index), imp.name.clone());
+            }
+        }
+        for (func, compiled) in exports.iter().zip(functions.iter()) {
+            label_to_symbol.insert(format!("synth_func_{}", func.index), compiled.name.clone());
+        }
+        for f in &mut elf_funcs {
+            for op in &mut f.ops {
+                if let crate::riscv_op::RiscVOp::Call { label } = op
+                    && let Some(sym) = label_to_symbol.get(label)
+                {
+                    *label = sym.clone();
+                }
+            }
         }
 
         // #798: ship the module's active data segments as `.wasm_data` records
@@ -223,12 +251,14 @@ fn compile_function_with_opts(
     let ops = ops.as_slice();
     // #312: pass the decoder's "returns i64" tables down so call-fed i64
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
-    let selection = select_with_result_types(
+    let selection = select_with_signatures(
         ops,
         num_params,
         opts,
         &config.func_ret_i64,
         &config.type_ret_i64,
+        &config.func_arg_counts,
+        &config.func_result_counts,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -270,19 +300,35 @@ fn compile_function_with_opts(
     }
 
     // Encode the function via the ELF builder's per-function pipeline so
-    // we benefit from label resolution. We discard the ELF and keep the
-    // raw bytes — that's what `CompiledFunction` carries.
+    // we benefit from label resolution. We keep the raw bytes plus the
+    // external-call relocations (#871) — that's what `CompiledFunction`
+    // carries.
     let elf_func = RiscVElfFunction {
         name: name.to_string(),
         ops: selection.ops,
     };
-    let bytes = encode_function_bytes(&elf_func)?;
+    let (bytes, call_relocs) = encode_function_bytes(&elf_func)?;
+
+    // #871: an external `Call` (an import, or another function in the module)
+    // becomes an 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder plus an
+    // `R_RISCV_CALL_PLT` relocation against the selector's `synth_func_N`
+    // label. The CLI maps `synth_func_{import_index}` to the wasm field name
+    // (undefined symbol, host-resolved) and `synth_func_{local_index}` to the
+    // defined function symbol — the ARM `--relocatable` contract mirrored.
+    let relocations = call_relocs
+        .into_iter()
+        .map(|r| synth_core::backend::CodeRelocation {
+            offset: r.offset,
+            symbol: r.symbol,
+            kind: synth_core::backend::RelocKind::RiscvCallPlt,
+        })
+        .collect();
 
     Ok(CompiledFunction {
         name: name.to_string(),
         code: bytes,
         wasm_ops: ops.to_vec(),
-        relocations: Vec::new(),
+        relocations,
         // RISC-V DWARF `.debug_line` emission is a VCR-DBG-001 follow-up; no
         // source map produced yet (empty ⇒ the emitter skips this backend).
         line_map: Vec::new(),
@@ -352,44 +398,17 @@ fn effective_num_params(ops: &[WasmOp], config: &CompileConfig) -> u32 {
     }
 }
 
-/// Re-encode the selector's output to flat bytes — the same pipeline the ELF
-/// builder uses, but exposed for `compile_function` (which doesn't return ELF).
-fn encode_function_bytes(f: &RiscVElfFunction) -> Result<Vec<u8>, BackendError> {
+/// Re-encode the selector's output to flat bytes + external-call relocations
+/// (#871) — the same per-function assembly `build_object` uses (identical
+/// bytes by construction), exposed for `compile_function` (which doesn't
+/// return ELF). Relocation offsets are function-relative.
+fn encode_function_bytes(
+    f: &RiscVElfFunction,
+) -> Result<(Vec<u8>, Vec<crate::elf_builder::RiscVCallReloc>), BackendError> {
     let builder = RiscVElfBuilder::new_relocatable();
-    let elf = builder
-        .build(std::slice::from_ref(f))
-        .map_err(|e| BackendError::CompilationFailed(format!("RISC-V function emit: {e}")))?;
-
-    // .text starts at offset 52 (ELF header). We need the bytes between header
-    // and the next section. The simplest robust path: re-parse our own ELF.
-    if elf.len() < 52 {
-        return Err(BackendError::CompilationFailed(
-            "ELF too small to contain header".into(),
-        ));
-    }
-    // shoff is at bytes [32..36]
-    let shoff = u32::from_le_bytes([elf[32], elf[33], elf[34], elf[35]]) as usize;
-    // The first section header (after the null one) is .text at shoff + 40.
-    // Pull sh_offset and sh_size for index 1.
-    let text_shdr = shoff + 40;
-    if elf.len() < text_shdr + 40 {
-        return Err(BackendError::CompilationFailed(
-            "section header table truncated".into(),
-        ));
-    }
-    let sh_offset = u32::from_le_bytes([
-        elf[text_shdr + 16],
-        elf[text_shdr + 17],
-        elf[text_shdr + 18],
-        elf[text_shdr + 19],
-    ]) as usize;
-    let sh_size = u32::from_le_bytes([
-        elf[text_shdr + 20],
-        elf[text_shdr + 21],
-        elf[text_shdr + 22],
-        elf[text_shdr + 23],
-    ]) as usize;
-    Ok(elf[sh_offset..sh_offset + sh_size].to_vec())
+    builder
+        .assemble_single_function(f)
+        .map_err(|e| BackendError::CompilationFailed(format!("RISC-V function emit: {e}")))
 }
 
 /// Re-run the selector for a function whose `CompiledFunction` we already have.
@@ -407,12 +426,14 @@ fn compile_to_riscv_ops(
     // (#539/#242), or the two selections would disagree.
     let ops = synth_core::rewrite_memory_grow_zero(ops);
     let ops = ops.as_slice();
-    let selection = select_with_result_types(
+    let selection = select_with_signatures(
         ops,
         num_params,
         opts,
         &config.func_ret_i64,
         &config.type_ret_i64,
+        &config.func_arg_counts,
+        &config.func_result_counts,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)

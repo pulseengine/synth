@@ -46,6 +46,28 @@ pub struct RiscVElfFunction {
     pub ops: Vec<RiscVOp>,
 }
 
+/// #871: one `R_RISCV_CALL_PLT` call-site relocation. `offset` points at the
+/// `auipc` of an 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder pair;
+/// `symbol` is the target symbol name. From [`RiscVElfBuilder::
+/// assemble_single_function`] the offset is FUNCTION-relative; the offsets
+/// passed to [`RiscVElfBuilder::build_object`] are `.text`-relative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiscVCallReloc {
+    pub offset: u32,
+    pub symbol: String,
+}
+
+/// `R_RISCV_CALL_PLT` — the modern auipc+jalr call-pair relocation type
+/// (`R_RISCV_CALL` = 18 is deprecated by the psABI).
+pub const R_RISCV_CALL_PLT: u32 = 19;
+
+/// The 8-byte external-call placeholder the linker patches via
+/// `R_RISCV_CALL_PLT`: `auipc ra, 0` (0x00000097) + `jalr ra, 0(ra)`
+/// (0x000080E7) — the canonical un-relaxed `call` pseudo-instruction
+/// expansion. Register fields are preserved by the relocation (the linker
+/// only patches the immediates).
+pub const CALL_PLACEHOLDER_BYTES: [u8; 8] = [0x97, 0x00, 0x00, 0x00, 0xE7, 0x80, 0x00, 0x00];
+
 /// Output mode — forces the ELF file type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfMode {
@@ -104,22 +126,84 @@ impl RiscVElfBuilder {
         functions: &[RiscVElfFunction],
         wasm_data: &[u8],
     ) -> Result<Vec<u8>, ElfBuildError> {
+        self.build_object(functions, wasm_data, &[])
+    }
+
+    /// #871: assemble ONE function to raw bytes plus its external-call
+    /// relocations (function-relative offsets). This is the byte source the
+    /// backend's `compile_function` path uses — identical bytes to what
+    /// [`Self::build_object`] would place in `.text` for this function.
+    pub fn assemble_single_function(
+        &self,
+        f: &RiscVElfFunction,
+    ) -> Result<(Vec<u8>, Vec<RiscVCallReloc>), ElfBuildError> {
+        let encoder = RiscVEncoder::new_rv32();
+        self.assemble_function(&encoder, f)
+    }
+
+    /// Build the full ELF blob with data records AND `.text`-relative call
+    /// relocations (#871). `extra_call_relocs` covers the CLI path, where the
+    /// function bytes arrive pre-assembled (placeholder ops) and the call
+    /// relocations were captured by `assemble_single_function` at
+    /// per-function compile time. Relocation symbols that match a defined
+    /// function name resolve against that symbol; every other symbol is added
+    /// as an UNDEFINED global (`nm -u` shows `U <symbol>`) for the host
+    /// linker to resolve — exactly the ARM `--relocatable` import contract.
+    /// With no relocations at all the object is byte-identical to the
+    /// pre-#871 layout (no `.rela.text` section, no undefined symbols).
+    pub fn build_object(
+        &self,
+        functions: &[RiscVElfFunction],
+        wasm_data: &[u8],
+        extra_call_relocs: &[RiscVCallReloc],
+    ) -> Result<Vec<u8>, ElfBuildError> {
         let encoder = RiscVEncoder::new_rv32();
 
         // 1. Resolve labels per-function, accumulate code bytes & symbols.
         let mut text: Vec<u8> = Vec::new();
         let mut symbols: Vec<(String, u32, u32)> = Vec::new(); // (name, st_value, st_size)
+        let mut call_relocs: Vec<RiscVCallReloc> = Vec::new();
 
         for f in functions {
             if f.ops.is_empty() {
                 return Err(ElfBuildError::EmptyFunction(f.name.clone()));
             }
             let function_offset = text.len() as u32;
-            let bytes = self.assemble_function(&encoder, f)?;
+            let (bytes, fn_relocs) = self.assemble_function(&encoder, f)?;
             let function_size = bytes.len() as u32;
             text.extend_from_slice(&bytes);
             symbols.push((f.name.clone(), function_offset, function_size));
+            call_relocs.extend(fn_relocs.into_iter().map(|r| RiscVCallReloc {
+                offset: function_offset + r.offset,
+                symbol: r.symbol,
+            }));
         }
+        call_relocs.extend_from_slice(extra_call_relocs);
+
+        // #871: resolve relocation symbols. Defined function names win;
+        // anything else becomes an UNDEFINED global symbol (dedup'd, in
+        // first-use order so output is deterministic).
+        let mut undefined: Vec<String> = Vec::new();
+        for r in &call_relocs {
+            if !symbols.iter().any(|(n, _, _)| n == &r.symbol)
+                && !undefined.iter().any(|u| u == &r.symbol)
+            {
+                undefined.push(r.symbol.clone());
+            }
+        }
+        let sym_index_of = |name: &str| -> u32 {
+            // symtab index: [0] null, [1..] functions, then undefined.
+            if let Some(i) = symbols.iter().position(|(n, _, _)| n == name) {
+                (i + 1) as u32
+            } else {
+                let u = undefined
+                    .iter()
+                    .position(|u| u == name)
+                    .expect("every reloc symbol is defined or collected as undefined");
+                (symbols.len() + 1 + u) as u32
+            }
+        };
+        let has_relocs = !call_relocs.is_empty();
 
         // 2. Section ordering (— entries marked § exist only when `wasm_data`
         //    is non-empty; without it the layout is bit-identical to pre-#798):
@@ -165,6 +249,13 @@ impl RiscVElfBuilder {
             strtab.extend_from_slice(name.as_bytes());
             strtab.push(0);
         }
+        // #871: undefined external symbol names follow the function names.
+        let mut undef_name_offsets: Vec<u32> = Vec::with_capacity(undefined.len());
+        for name in &undefined {
+            undef_name_offsets.push(strtab.len() as u32);
+            strtab.extend_from_slice(name.as_bytes());
+            strtab.push(0);
+        }
 
         // .symtab — entry 0 is reserved (all zero).
         let symtab_offset = elf.len();
@@ -188,7 +279,16 @@ impl RiscVElfBuilder {
             entry[14..16].copy_from_slice(&st_shndx.to_le_bytes());
             elf.extend_from_slice(&entry);
         }
-        let symtab_size = (symbols.len() + 1) * 16;
+        // #871: undefined externals — STB_GLOBAL / STT_NOTYPE / SHN_UNDEF
+        // (`nm` shows them as `U <name>`, exactly like the ARM object).
+        for off in &undef_name_offsets {
+            let mut entry = [0u8; 16];
+            entry[0..4].copy_from_slice(&off.to_le_bytes());
+            entry[12] = 1u8 << 4; // STB_GLOBAL << 4 | STT_NOTYPE
+            // st_value/st_size stay 0, st_shndx stays 0 (SHN_UNDEF).
+            elf.extend_from_slice(&entry);
+        }
+        let symtab_size = (symbols.len() + undefined.len() + 1) * 16;
 
         // .strtab
         let strtab_offset = elf.len();
@@ -196,8 +296,25 @@ impl RiscVElfBuilder {
 
         // .shstrtab — fixed contents
         let shstrtab_offset = elf.len();
-        let shstrtab_data = build_shstrtab(has_wasm_data);
+        let shstrtab_data = build_shstrtab(has_wasm_data, has_relocs);
         elf.extend_from_slice(&shstrtab_data.bytes);
+
+        // #871: .rela.text — placed after .shstrtab, 4-aligned. ELF32 RELA
+        // entries are 12 bytes: r_offset, r_info = (sym << 8) | type,
+        // r_addend (always 0 — the call target is the symbol itself).
+        let mut rela_offset = 0usize;
+        if has_relocs {
+            while elf.len() % 4 != 0 {
+                elf.push(0);
+            }
+            rela_offset = elf.len();
+            for r in &call_relocs {
+                let r_info = (sym_index_of(&r.symbol) << 8) | R_RISCV_CALL_PLT;
+                elf.extend_from_slice(&r.offset.to_le_bytes());
+                elf.extend_from_slice(&r_info.to_le_bytes());
+                elf.extend_from_slice(&0i32.to_le_bytes());
+            }
+        }
 
         // Pad to 4-byte for the section header table.
         while elf.len() % 4 != 0 {
@@ -291,6 +408,23 @@ impl RiscVElfBuilder {
                 sh_entsize: 0,
             },
         ]);
+        // #871: .rela.text appended as the LAST section so every existing
+        // index (.text=1, shstrndx, symtab sh_link) is unchanged — reloc-free
+        // objects stay byte-identical by construction.
+        if has_relocs {
+            shdrs.push(ShEntry {
+                sh_name: shstrtab_data.rela_text_off,
+                sh_type: 4,     // SHT_RELA
+                sh_flags: 0x40, // SHF_INFO_LINK
+                sh_addr: 0,
+                sh_offset: rela_offset as u32,
+                sh_size: (call_relocs.len() * 12) as u32,
+                sh_link: 2 + wasm_data_shift, // .symtab
+                sh_info: 1,                   // relocates .text
+                sh_addralign: 4,
+                sh_entsize: 12,
+            });
+        }
 
         for sh in &shdrs {
             sh.write_into(&mut elf);
@@ -317,7 +451,8 @@ impl RiscVElfBuilder {
         &self,
         encoder: &RiscVEncoder,
         f: &RiscVElfFunction,
-    ) -> Result<Vec<u8>, ElfBuildError> {
+    ) -> Result<(Vec<u8>, Vec<RiscVCallReloc>), ElfBuildError> {
+        let mut relocs: Vec<RiscVCallReloc> = Vec::new();
         // Pass 1: compute byte offset of each label.
         let mut byte_offsets: Vec<u32> = Vec::with_capacity(f.ops.len() + 1);
         let mut labels: HashMap<String, u32> = HashMap::new();
@@ -362,10 +497,13 @@ impl RiscVElfBuilder {
                     bytes.extend_from_slice(&inst.to_le_bytes());
                 }
                 RiscVOp::Call { label } => {
-                    // Skeleton emits a placeholder auipc + jalr ra, 0(ra) — the
-                    // ELF builder for executables will need PC-relative
-                    // relocations; for now we emit a self-resolving local call
-                    // if the label is local, else error.
+                    // A LABEL-local call resolves to a self-contained
+                    // auipc t1 + jalr pair. An EXTERNAL call (#871 — an
+                    // imported function, or another function in the object)
+                    // emits the canonical 8-byte `auipc ra, 0 ; jalr ra,
+                    // 0(ra)` placeholder plus an `R_RISCV_CALL_PLT`
+                    // relocation for the linker to patch — mirroring the
+                    // ARM `BL` + `R_ARM_THM_CALL` import contract.
                     if let Some(&target) = labels.get(label) {
                         let rel = target as i32 - here;
                         // auipc t1, rel[31:12] + carry
@@ -383,9 +521,11 @@ impl RiscVElfBuilder {
                         };
                         bytes.extend_from_slice(&encoder.encode(&jalr)?.to_le_bytes());
                     } else {
-                        return Err(ElfBuildError::Unsupported(
-                            "external call without relocation table",
-                        ));
+                        relocs.push(RiscVCallReloc {
+                            offset: bytes.len() as u32,
+                            symbol: label.clone(),
+                        });
+                        bytes.extend_from_slice(&CALL_PLACEHOLDER_BYTES);
                     }
                 }
                 _ => {
@@ -396,7 +536,7 @@ impl RiscVElfBuilder {
             // Sanity: the byte cursor in pass-1 must match what we actually wrote.
             debug_assert_eq!(bytes.len() as u32, byte_offsets[i + 1]);
         }
-        Ok(bytes)
+        Ok((bytes, relocs))
     }
 }
 
@@ -455,9 +595,10 @@ struct ShstrtabData {
     symtab_off: u32,
     strtab_off: u32,
     shstrtab_off: u32,
+    rela_text_off: u32,
 }
 
-fn build_shstrtab(with_wasm_data: bool) -> ShstrtabData {
+fn build_shstrtab(with_wasm_data: bool, with_relocs: bool) -> ShstrtabData {
     let mut bytes = vec![0u8];
     let text_off = bytes.len() as u32;
     bytes.extend_from_slice(b".text\0");
@@ -476,6 +617,15 @@ fn build_shstrtab(with_wasm_data: bool) -> ShstrtabData {
     bytes.extend_from_slice(b".strtab\0");
     let shstrtab_off = bytes.len() as u32;
     bytes.extend_from_slice(b".shstrtab\0");
+    // Only present when the object carries call relocations (#871) — keeps
+    // reloc-free objects bit-identical to the pre-#871 layout.
+    let rela_text_off = if with_relocs {
+        let off = bytes.len() as u32;
+        bytes.extend_from_slice(b".rela.text\0");
+        off
+    } else {
+        0
+    };
     ShstrtabData {
         bytes,
         text_off,
@@ -483,6 +633,7 @@ fn build_shstrtab(with_wasm_data: bool) -> ShstrtabData {
         symtab_off,
         strtab_off,
         shstrtab_off,
+        rela_text_off,
     }
 }
 
@@ -623,7 +774,7 @@ mod tests {
             name: "f".into(),
             ops: ops.clone(),
         };
-        let assembled = builder.assemble_function(&encoder, &f).unwrap();
+        let (assembled, _relocs) = builder.assemble_function(&encoder, &f).unwrap();
         assert_eq!(
             assembled.len(),
             crate::selector::emitted_byte_size(&ops),
