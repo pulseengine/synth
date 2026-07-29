@@ -1098,6 +1098,50 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/riscv_extern_call_871_differential.py
 
+  rv32-label-return-oracle:
+    name: rv32 label/return dead-code oracle (#882)
+    # #882: gale's i2c-thin driver — a `return` inside a block aborted the
+    # lowering walk, so the frame-closing `end`s never defined their labels
+    # ("undefined label `Lend0`" on i2c_step, loud skip) and reachable
+    # else-arm/post-join code was never lowered. The 4-stage differential:
+    # (1) the synthetic shapes (block-end br_if target past a return, then-arm
+    # return with reachable else, the exact nested i2c_step shape) compile
+    # with all exports, (2) they execute under unicorn (UC_ARCH_RISCV) bit-
+    # identical to wasmtime on both the return path and every resumed join,
+    # (3) gale's pinned REAL i2c_thin_882.wasm compiles 7/7 incl. i2c_step,
+    # (4) a real ld.lld link against mmio stubs + i2c_step execution vs
+    # wasmtime (return values AND the mmio register file) — stage 4 is also
+    # the red gate for the #882 param-clobber-across-call fix (params spilled
+    # to frame slots in call-containing bodies; pre-fix i2c_step compiled but
+    # read the callee's leftover a0). Isolated job: emulation deps here only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Install lld + clang (real-link stage)
+        run: sudo apt-get update && sudo apt-get install -y lld clang
+      - name: Run RV32 label/return dead-code oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/rv32_label_882_differential.py
+
   rv32-mem-size-grow-oracle:
     name: rv32 memory.size / memory.grow execution oracle
     # VCR-SEL-005 (#223/#242): EXECUTE the newly-lowered RV32 memory.size and

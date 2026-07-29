@@ -513,6 +513,30 @@ fn select_attempt(
             });
         }
     }
+    // #882: call-containing body — spill every accessed i32 param from its
+    // caller-saved a-register into the frame slot `compute_local_layout`
+    // reserved for it, ONCE at entry, before the body can reach a `call`.
+    // Every later access reads/writes the slot (see lower_local_get), which
+    // survives calls the way the a-reg does not. Ascending index for
+    // deterministic output; call-free bodies reserved no param slots, so
+    // this emits nothing and their bytes are unchanged.
+    {
+        let mut param_spills: Vec<(u32, i32)> = ctx
+            .local_offsets
+            .iter()
+            .filter(|(idx, _)| (**idx as usize) < ctx.arg_regs.len())
+            .map(|(idx, (off, _))| (*idx, *off))
+            .collect();
+        param_spills.sort_unstable();
+        for (idx, off) in param_spills {
+            let arg = ctx.arg_regs[idx as usize];
+            ctx.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: arg,
+                imm: off,
+            });
+        }
+    }
     ctx.lower_seq(wasm_ops)?;
     // #226: if any allocation ran out of registers that weren't pinning a live
     // vstack value, the function needs spilling we don't yet do — skip it rather
@@ -1184,6 +1208,18 @@ struct ControlFrame {
     /// leave the value in the SAME register(s) at the join. Empty for
     /// blocks/loops and for control-flow-only (arity-0) if/else.
     then_results: Vec<VstackVal>,
+    /// #882: true once a `br`/`br_if` handed out this frame's END label as a
+    /// branch target. Decides whether code after this frame's `end` is
+    /// reachable when the fall-through path died on a `return` (dead-code
+    /// mode): a referenced end label means control can land there, so
+    /// lowering must resume; an unreferenced one keeps the dead region dead.
+    end_referenced: bool,
+    /// #882: for an if/else frame, true when the then-arm ended on a
+    /// `return` (no fall-through into the join). The `end` join then takes
+    /// the ELSE-arm's results verbatim — there is no second arm value to
+    /// reconcile registers with (and `then_results` is empty, so the #343
+    /// arity check must not fire).
+    then_unreachable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1235,6 +1271,21 @@ struct Selector {
     next_label: u32,
     /// Tracks whether we already emitted the function-final return.
     emitted_return: bool,
+    /// #882: true while walking wasm DEAD CODE — the ops after a `return`
+    /// inside an open frame, up to the next join that control can actually
+    /// reach (an `else`, or an `end` whose label is a branch target). Dead
+    /// ops are SKIPPED (no bytes, no vstack effect), but the frame-closing
+    /// `else`/`end` markers are still processed so every branch-target label
+    /// is DEFINED at its correct lexical position. The old behaviour broke
+    /// out of the walk entirely, so a `br_if` past a `return` referenced an
+    /// end label that was never emitted ("undefined label `Lend0`", gale's
+    /// i2c_step) and any reachable else-arm/post-end code was dropped.
+    dead_code: bool,
+    /// #882: nesting depth of frames OPENED inside the dead region. Their
+    /// labels were never created and nothing can branch into them (any such
+    /// branch op is itself dead and skipped), so they are counted and
+    /// skipped wholesale rather than pushed onto `ctrl`.
+    dead_nest: u32,
     /// Phase-1 safety options (bounds-check policy, signed-div overflow trap).
     options: SelectorOptions,
     /// #223: non-parameter local `idx` → `(byte offset, is_i64)` within the
@@ -1328,6 +1379,8 @@ impl Selector {
             op_pinned: Vec::new(),
             next_label: 0,
             emitted_return: false,
+            dead_code: false,
+            dead_nest: 0,
             options,
             local_offsets: std::collections::HashMap::new(),
             local_frame_bytes: 0,
@@ -1399,6 +1452,39 @@ impl Selector {
             }
             self.local_offsets.insert(idx, (offset, is_i64));
             offset += if is_i64 { 8 } else { 4 };
+        }
+        // #882 (found by the i2c_step execution oracle): the a-registers are
+        // CALLER-saved — a `call` clobbers every one of them, so a param
+        // living in its arg register does not survive the function's first
+        // call, and a `local.get <param>` after (or looping back over) a call
+        // read the CALLEE's leftover a-reg. Silent wrong-execution, reachable
+        // on v0.52 with a plain `(call $f) (local.get 0)` — no labels or
+        // returns involved. Fix: in a call-containing body every ACCESSED
+        // i32 param gets a frame slot; the prologue stores the incoming
+        // a-reg once and every access goes through the slot (the exact
+        // non-param-local mechanism, which is already call-safe). Call-free
+        // bodies keep the register path byte-identical. i64 params remain a
+        // loud decline at their access sites (psABI pair marshalling
+        // unmodeled, #312).
+        let has_call = wasm_ops
+            .iter()
+            .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }));
+        if has_call {
+            let mut param_used: BTreeSet<u32> = BTreeSet::new();
+            for op in wasm_ops {
+                match op {
+                    WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
+                        if *i < num_params && !self.i64_locals.contains(i) =>
+                    {
+                        param_used.insert(*i);
+                    }
+                    _ => {}
+                }
+            }
+            for idx in param_used {
+                self.local_offsets.insert(idx, (offset, false));
+                offset += 4;
+            }
         }
         self.local_frame_bytes = offset;
     }
@@ -1618,9 +1704,105 @@ impl Selector {
     fn lower_seq(&mut self, wasm_ops: &[WasmOp]) -> Result<(), SelectorError> {
         for op in wasm_ops {
             self.lower_one(op)?;
+            // #882: `emitted_return` is set ONLY at the FUNCTION-level `end`
+            // (every control frame closed) — a mid-function `return` enters
+            // dead-code mode instead, so the remaining frame-closing `end`s
+            // still define their branch-target labels and reachable
+            // else-arm/post-end code is still lowered.
             if self.emitted_return {
                 break;
             }
+        }
+        Ok(())
+    }
+
+    /// #882: one op of wasm DEAD CODE (after a `return`, before the next
+    /// reachable join). Skips everything except the control skeleton:
+    ///
+    /// * `block`/`loop`/`if` opened here are themselves dead — counted via
+    ///   `dead_nest` and skipped wholesale (no labels exist for them, and any
+    ///   branch to them is inside the same dead region, i.e. also skipped);
+    /// * `else` of the frame that DIED in its then-arm resumes lowering: the
+    ///   `beq` at `if` targets its else label, so the else-arm is reachable
+    ///   (no `jal end` is emitted — the then-arm returned instead of jumping
+    ///   to the join);
+    /// * `end` of a live frame always DEFINES its label(s) at the correct
+    ///   lexical position, and resumes lowering iff control can land there:
+    ///   an if-without-else join (the `beq` false path), an if/else join the
+    ///   then-arm falls into (`jal end` emitted at `else`), or any frame
+    ///   whose end label was handed out to a `br`/`br_if`
+    ///   (`end_referenced`). A loop's end label is never a branch target
+    ///   (loop `br`s target the HEAD), so a loop whose body died stays dead.
+    ///
+    /// On resume the vstack is truncated to the frame's entry height — the
+    /// dead arm produced no join values. For an if/else join whose then-arm
+    /// fell through, the then-arm's results are pushed back (the only
+    /// reachable producer); a dead-both-arms join reached via `br` pushes
+    /// nothing, so a later pop of a would-be result fails LOUDLY as a stack
+    /// error (honest decline) rather than reading a stale register.
+    fn lower_one_dead(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        use WasmOp::*;
+        match op {
+            Block | Loop | If => self.dead_nest += 1,
+            Else if self.dead_nest == 0 => {
+                let frame = self
+                    .ctrl
+                    .last_mut()
+                    .ok_or(SelectorError::ControlMismatch("else without matching if"))?;
+                if frame.kind != FrameKind::If {
+                    return Err(SelectorError::ControlMismatch(
+                        "else where the open frame is not an if",
+                    ));
+                }
+                let else_label = frame
+                    .else_label
+                    .clone()
+                    .ok_or(SelectorError::ControlMismatch("if frame has no else label"))?;
+                frame.kind = FrameKind::Else;
+                frame.then_results = Vec::new();
+                frame.then_unreachable = true;
+                let entry = frame.stack_height_at_entry;
+                self.vstack.truncate(entry);
+                self.out.push(RiscVOp::Label { name: else_label });
+                self.dead_code = false;
+            }
+            End if self.dead_nest == 0 => match self.ctrl.pop() {
+                Some(frame) => {
+                    self.vstack.truncate(frame.stack_height_at_entry);
+                    let resume = match frame.kind {
+                        // if-without-else: the `beq` false path lands here.
+                        FrameKind::If => true,
+                        // if/else: reachable via the then-arm's `jal end`
+                        // (then fell through) or an explicit br to the join.
+                        FrameKind::Else => !frame.then_unreachable || frame.end_referenced,
+                        FrameKind::Block | FrameKind::Loop => frame.end_referenced,
+                    };
+                    if frame.kind == FrameKind::If
+                        && let Some(else_label) = frame.else_label.clone()
+                    {
+                        self.out.push(RiscVOp::Label { name: else_label });
+                    }
+                    if frame.kind == FrameKind::Else && !frame.then_unreachable {
+                        // The then-arm jumped here with its results live.
+                        self.vstack.extend(frame.then_results.iter().copied());
+                    }
+                    self.out.push(RiscVOp::Label {
+                        name: frame.end_label,
+                    });
+                    if resume {
+                        self.dead_code = false;
+                    }
+                }
+                None => {
+                    // Function-level end on a dead path: the terminator was
+                    // already emitted by the `return` — no second epilogue
+                    // (keeps pre-#882 streams byte-identical).
+                    self.emitted_return = true;
+                }
+            },
+            End => self.dead_nest -= 1,
+            // Everything else is dead: no bytes, no vstack effect.
+            _ => {}
         }
         Ok(())
     }
@@ -1633,6 +1815,13 @@ impl Selector {
         // #472: a fusible comparison record only survives from the comparison
         // to the IMMEDIATELY following op — any other op invalidates it.
         let pending_cmp = self.pending_cmp.take();
+        // #882: inside a dead region only the control skeleton is processed
+        // (label definitions + reachability joins); everything else is
+        // skipped. The `pending_cmp` take above already invalidated any
+        // stale fusion record across the dead region.
+        if self.dead_code {
+            return self.lower_one_dead(op);
+        }
         match op {
             // ─── Locals ─────────────────────────────────────────────────
             LocalGet(idx) => self.lower_local_get(*idx, op)?,
@@ -1810,6 +1999,8 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    end_referenced: false,
+                    then_unreachable: false,
                 });
             }
             Loop => {
@@ -1823,6 +2014,8 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    end_referenced: false,
+                    then_unreachable: false,
                 });
             }
             If => self.lower_if(op)?,
@@ -1834,7 +2027,12 @@ impl Selector {
 
             Return => {
                 self.emit_return_epilogue();
-                self.emitted_return = true;
+                // #882: do NOT abort the walk (the old `emitted_return`
+                // break) — the ops after a `return` are wasm dead code, but
+                // the frame-closing `end`s still DEFINE branch-target labels
+                // and an `else`/referenced-`end` join resumes reachability.
+                // Enter dead-code mode; `lower_one_dead` walks the skeleton.
+                self.dead_code = true;
             }
 
             // Cross-function call. WASM-level types tell us how many
@@ -1997,12 +2195,23 @@ impl Selector {
                 return Err(SelectorError::Unsupported(op.clone()));
             }
             let dst = self.alloc_temp();
-            // mv dst, arg
-            self.out.push(RiscVOp::Addi {
-                rd: dst,
-                rs1: self.arg_regs[idx as usize],
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — the param was spilled to its
+                // frame slot in the prologue (its a-reg is caller-saved and
+                // dies at the first call); read the slot, not the register.
+                self.out.push(RiscVOp::Lw {
+                    rd: dst,
+                    rs1: Reg::SP,
+                    imm: off,
+                });
+            } else {
+                // mv dst, arg
+                self.out.push(RiscVOp::Addi {
+                    rd: dst,
+                    rs1: self.arg_regs[idx as usize],
+                    imm: 0,
+                });
+            }
             self.push_i32(dst);
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local lives in a callee-saved s-reg. Alias it
@@ -2061,12 +2270,22 @@ impl Selector {
                 return Err(SelectorError::Unsupported(op.clone()));
             }
             let src = self.pop_i32(op)?;
-            // mv arg, src
-            self.out.push(RiscVOp::Addi {
-                rd: self.arg_regs[idx as usize],
-                rs1: src,
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — the param lives in its frame
+                // slot (see lower_local_get); write the slot.
+                self.out.push(RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: src,
+                    imm: off,
+                });
+            } else {
+                // mv arg, src
+                self.out.push(RiscVOp::Addi {
+                    rd: self.arg_regs[idx as usize],
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local — write the s-reg (`mv reg, src`) instead
@@ -2136,11 +2355,21 @@ impl Selector {
                     });
                 }
             };
-            self.out.push(RiscVOp::Addi {
-                rd: self.arg_regs[idx as usize],
-                rs1: src,
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — tee writes the param's frame
+                // slot (see lower_local_get); the value stays on the vstack.
+                self.out.push(RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: src,
+                    imm: off,
+                });
+            } else {
+                self.out.push(RiscVOp::Addi {
+                    rd: self.arg_regs[idx as usize],
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local — `mv reg, src`, value STAYS on the
@@ -2839,6 +3068,8 @@ impl Selector {
             else_label: Some(else_label),
             stack_height_at_entry: self.vstack.len(),
             then_results: Vec::new(),
+            end_referenced: false,
+            then_unreachable: false,
         });
         Ok(())
     }
@@ -2909,20 +3140,29 @@ impl Selector {
                 // into the same register. When both arms already chose the same
                 // register, NO `mv` is emitted (control-flow-only / register-
                 // symmetric if/else stays byte-identical).
-                let then_results = frame.then_results;
-                let else_results = self.vstack.split_off(frame.stack_height_at_entry);
-                if then_results.len() != else_results.len() {
-                    return Err(SelectorError::ControlMismatch(
-                        "if/else arms disagree on result arity (#343)",
-                    ));
+                if frame.then_unreachable {
+                    // #882: the then-arm ended on a `return` — nothing falls
+                    // into this join from that side, so the else-arm's
+                    // results (already on the vstack, in their own
+                    // registers) ARE the if/else's results. No
+                    // reconciliation, and the #343 arity check must not fire
+                    // against the empty `then_results`.
+                } else {
+                    let then_results = frame.then_results;
+                    let else_results = self.vstack.split_off(frame.stack_height_at_entry);
+                    if then_results.len() != else_results.len() {
+                        return Err(SelectorError::ControlMismatch(
+                            "if/else arms disagree on result arity (#343)",
+                        ));
+                    }
+                    for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
+                        self.reconcile_if_result(*then_v, *else_v)?;
+                    }
+                    // The merged results live in the then-arm's registers —
+                    // push them back so the surrounding code (return / outer
+                    // op) reads them.
+                    self.vstack.extend(then_results);
                 }
-                for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
-                    self.reconcile_if_result(*then_v, *else_v)?;
-                }
-                // The merged results live in the then-arm's registers — push
-                // them back so the surrounding code (return / outer op) reads
-                // them.
-                self.vstack.extend(then_results);
             }
             self.out.push(RiscVOp::Label {
                 name: frame.end_label,
@@ -3114,7 +3354,7 @@ impl Selector {
         Ok(())
     }
 
-    fn target_label_for_depth(&self, depth: u32) -> Result<String, SelectorError> {
+    fn target_label_for_depth(&mut self, depth: u32) -> Result<String, SelectorError> {
         let height = self.ctrl.len();
         let depth = depth as usize;
         if depth >= height {
@@ -3123,14 +3363,20 @@ impl Selector {
                 height,
             });
         }
-        let frame = &self.ctrl[height - 1 - depth];
+        let frame = &mut self.ctrl[height - 1 - depth];
         // For loops, br targets the head; for blocks/ifs, br targets the end.
         let label = match frame.kind {
             FrameKind::Loop => frame
                 .head_label
                 .clone()
                 .expect("loop frame must have a head label"),
-            _ => frame.end_label.clone(),
+            _ => {
+                // #882: the end label is now a real branch target — if the
+                // fall-through path into this frame's `end` later dies on a
+                // `return`, code after the `end` is still reachable.
+                frame.end_referenced = true;
+                frame.end_label.clone()
+            }
         };
         Ok(label)
     }
@@ -9533,5 +9779,229 @@ mod tests {
         let off = s_fuse(&ops, 2, false);
         let on = s_fuse(&ops, 2, true);
         assert_eq!(on, off, "i64 comparisons are out of fusion scope");
+    }
+
+    // ───────── #882: return-inside-frame label definition + dead-code walk ─────────
+
+    /// gale's i2c_step shape: a `return` on the fall-through path of a block
+    /// whose end label is a `br_if` target. Pre-fix the walk aborted at the
+    /// `return`, the `end` never defined `Lend0`, and the ELF builder failed
+    /// with "undefined label". The label must be defined exactly once, AFTER
+    /// the return's `ret`, and the reachable post-end code must be lowered.
+    #[test]
+    fn return_in_block_defines_end_label_882() {
+        let out = s(
+            &[
+                WasmOp::Block,
+                WasmOp::LocalGet(0),
+                WasmOp::BrIf(0),
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::End,
+                WasmOp::I32Const(7),
+                WasmOp::End,
+            ],
+            1,
+        );
+        let label_pos: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, RiscVOp::Label { name } if name == "Lend0"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(label_pos.len(), 1, "Lend0 defined exactly once: {out:?}");
+        let first_ret = out
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    RiscVOp::Jalr {
+                        rd: Reg::ZERO,
+                        rs1: Reg::RA,
+                        imm: 0
+                    }
+                )
+            })
+            .expect("return emitted a ret");
+        assert!(
+            label_pos[0] > first_ret,
+            "Lend0 sits after the return path's ret (its lexical position)"
+        );
+        // The reachable post-end code (i32.const 7) was lowered: a const
+        // materialization exists after the label.
+        assert!(
+            out[label_pos[0]..].iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 7,
+                    ..
+                }
+            )),
+            "post-end code after the br_if join must be lowered: {out:?}"
+        );
+    }
+
+    /// A then-arm ending in `return` must still define the else label and
+    /// RESUME lowering there — the `beq` at `if` targets it, so the else-arm
+    /// is reachable. Pre-fix: "undefined label `Lelse0`" (whole function
+    /// skipped). No `jal end` join jump is emitted for the then-arm (it
+    /// returned instead of falling through).
+    #[test]
+    fn then_arm_return_resumes_else_882() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::I32Const(11),
+                WasmOp::Return,
+                WasmOp::Else,
+                WasmOp::I32Const(22),
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        for name in ["Lelse0", "Lif_end1"] {
+            assert_eq!(
+                count(
+                    &out,
+                    |op| matches!(op, RiscVOp::Label { name: n } if n == name)
+                ),
+                1,
+                "{name} defined exactly once: {out:?}"
+            );
+        }
+        assert_eq!(
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Jal { label, .. } if label == "Lif_end1")
+            ),
+            0,
+            "no join jump for a then-arm that returned: {out:?}"
+        );
+        // The else-arm body was lowered (const 22 materialization present).
+        assert!(
+            out.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 22,
+                    ..
+                }
+            )),
+            "else-arm must be lowered: {out:?}"
+        );
+    }
+
+    /// Dead code after a depth-0 `return` emits NOTHING — byte-identical to
+    /// the stream without it (the pre-#882 behaviour for this shape, which
+    /// the frozen RV32 goldens pin).
+    #[test]
+    fn dead_code_after_return_skipped_882() {
+        let with_dead = s(
+            &[
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::I32Const(2),
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            0,
+        );
+        let without = s(&[WasmOp::I32Const(1), WasmOp::Return, WasmOp::End], 0);
+        assert_eq!(with_dead, without, "dead ops must not change the stream");
+    }
+
+    /// A loop whose body ends in `return`: the loop's end label is never a
+    /// branch target (loop `br`s target the HEAD), so the post-loop code is
+    /// unreachable and stays dead — but the function must still compile and
+    /// its labels must all resolve.
+    #[test]
+    fn loop_body_return_unreferenced_end_stays_dead_882() {
+        let out = s(
+            &[
+                WasmOp::Loop,
+                WasmOp::LocalGet(0),
+                WasmOp::BrIf(0),
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Head label defined; end label defined (0 bytes); nothing between
+        // the return's ret and the trailing epilogue.
+        assert_eq!(
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Label { name } if name == "Lloop_head1")
+            ),
+            1
+        );
+    }
+
+    // ───────── #882: param-clobber-across-call (found by the i2c oracle) ─────────
+
+    /// A param read AFTER a call must come from its frame slot, not the
+    /// caller-saved a-register the callee clobbered. Pre-fix this shape
+    /// compiled cleanly and returned the CALLEE's leftover a0 (silent
+    /// wrong-execution, isolated repro returned 0xdead for f(42)).
+    #[test]
+    fn param_read_after_call_uses_frame_slot_882() {
+        let out = s(
+            &[
+                WasmOp::Call(0),
+                WasmOp::Drop,
+                WasmOp::LocalGet(0),
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Prologue spill: sw a0, off(sp) once.
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: Reg::A0,
+                    ..
+                }
+            )),
+            1,
+            "param must be spilled once at entry: {out:?}"
+        );
+        // The param read is a frame load (`lw _, off(sp)`) — the a0 the
+        // callee clobbered is only read as the call RESULT (the `mv t, a0`
+        // immediately after the call), never as the param.
+        let call_pos = out
+            .iter()
+            .position(|op| matches!(op, RiscVOp::Call { .. }))
+            .expect("call emitted");
+        assert!(
+            count(&out[call_pos..], |op| matches!(
+                op,
+                RiscVOp::Lw {
+                    rs1: Reg::SP,
+                    imm: 0,
+                    ..
+                }
+            )) >= 1,
+            "param read after the call must load the frame slot: {out:?}"
+        );
+    }
+
+    /// Call-free bodies keep the register path — no spill, no frame, bytes
+    /// unchanged (the no-cost guarantee for every existing green function).
+    #[test]
+    fn call_free_param_stays_in_register_882() {
+        let out = s(&[WasmOp::LocalGet(0), WasmOp::End], 1);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sw { .. })
+                || matches!(op, RiscVOp::Lw { .. })),
+            0,
+            "call-free body must not touch the frame for params: {out:?}"
+        );
     }
 }
