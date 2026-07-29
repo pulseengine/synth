@@ -12,18 +12,18 @@ linker resolves).
 
 What this harness proves (each numbered stage hard-fails on violation):
   1. COMPLETENESS — every export of the gale-shaped fixture emits as a
-     defined `T` symbol and `nm -u` lists exactly the two imports
-     (pre-fix: 2 of 6 emitted, no undefined symbols — the RED shape).
+     defined `T` symbol and `nm -u` lists exactly the imports (the 2-fn
+     mmio seam + a void barrier — the common driver seam shape). Pre-fix:
+     only the import-free exports emitted, no undefined symbols (RED).
   2. RELOC READ-BACK — every `.rela.text` entry has type R_RISCV_CALL_PLT
      (19), a 4-aligned r_offset inside `.text`, resolves to the right
      import symbol, and the bytes at r_offset are the exact placeholder
      pair (a reloc at the wrong offset/symbol is a silent link-time
-     miscompile). Site counts per function are checked (wdg_status 1,
-     wdg_kick 1, wdg_set_bit 2, wdg_sum2 2; the import-free controls 0).
+     miscompile). Per-function site counts are checked (see EXPORTS).
   3. ARM PARITY — the SAME wasm compiled `--target cortex-m3 --relocatable`
      has the same defined-export set and the same undefined-import set.
   4. REAL LINK (when ld.lld + clang with RV32 support are on PATH) — the
-     object links against a 2-stub mmio implementation with ZERO undefined
+     object links against a 3-stub mmio implementation with ZERO undefined
      symbols, and the patched call sites are verified to land on the stubs.
   5. EXECUTION — the LINKED image runs under unicorn (UC_ARCH_RISCV /
      RV32) against wasmtime ground truth (imports modelled as a Python
