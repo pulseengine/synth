@@ -328,6 +328,19 @@ enum StackVal {
     /// call-spill machinery preserves a live double as its two aliased words —
     /// bit-exact by the VFP register-file aliasing rule.
     Double { dreg: VfpReg },
+    /// #881 (VCR-RA-004 spill/reload for the VFP file): an f32 value spilled
+    /// to the frame at `[sp, slot]` (the lo 4 bytes of an 8-byte [`SpillState`]
+    /// slot). Like the integer [`StackVal::Spilled`], a spilled VFP entry
+    /// reserves NO S-register, so spilling relieves VFP pressure; it is
+    /// reloaded into a fresh S-register by the pre-op VFP pressure guard
+    /// before the op that consumes it. Only constructed under the
+    /// `vfp_spill_on_exhaustion` retry rung — functions that compile without
+    /// it never see one.
+    FloatSpilled { slot: i32 },
+    /// #881: an f64 value spilled to the frame at `[sp, slot]` (the full
+    /// 8-byte slot; VSTR.64/VLDR.64 keep it bit-exact). Reserves no
+    /// D-register. Rung-only, like [`StackVal::FloatSpilled`].
+    DoubleSpilled { slot: i32 },
 }
 
 impl StackVal {
@@ -352,6 +365,9 @@ impl StackVal {
             // register pair — the integer pop/peek/spill paths that consult
             // this reject a `Double` outright before width matters.
             StackVal::Double { .. } => false,
+            // #881: spilled VFP entries are float-typed — the integer paths
+            // that consult this reject them outright before width matters.
+            StackVal::FloatSpilled { .. } | StackVal::DoubleSpilled { .. } => false,
         }
     }
     /// GI-FPU-002: the S-register of an f32 stack value, if this is one.
@@ -554,6 +570,15 @@ struct SpillState {
     /// exhaustion `Err` — so every function that compiles without it keeps
     /// byte-identical output by construction.
     spill_on_exhaustion: bool,
+    /// #881 (VCR-RA-004): when set, the VFP register file spills too — the
+    /// pre-op VFP pressure guard spills the deepest straight-line-segment
+    /// f32/f64 stack value (farthest next use under LIFO stack discipline)
+    /// into this same slot pool when S0..S15 / the aligned D0..D7 pairs run
+    /// out, and reloads spilled operands before the op that consumes them.
+    /// Default OFF; flipped on only by the backend's retry rung after a first
+    /// pass failed with a GI-FPU-002 exhaustion `Err` — every function that
+    /// compiles without it keeps byte-identical output by construction.
+    vfp_spill_on_exhaustion: bool,
     /// Whether `compute_local_layout` actually reserved the spill area this
     /// state hands slots out of (`has_i64 || force_spill_area`). When it did
     /// NOT (an i32-only first pass), `base` is just the end of the frame and
@@ -579,6 +604,7 @@ impl SpillState {
             base,
             used: vec![false; slots],
             spill_on_exhaustion: false,
+            vfp_spill_on_exhaustion: false,
             area_reserved: true,
         }
     }
@@ -1110,6 +1136,16 @@ fn pop_operand(
              integer path"
                 .to_string(),
         )),
+        // #881: same contract for a SPILLED VFP value — the pre-op pressure
+        // guard reloads the operands of every float-consuming op, so one
+        // reaching an integer pop is invalid wasm or an unlowered shape.
+        StackVal::FloatSpilled { .. } | StackVal::DoubleSpilled { .. } => {
+            Err(synth_core::Error::synthesis(
+                "#881: an integer operation popped a spilled VFP stack value — \
+                 invalid wasm or an unlowered float op reached the integer path"
+                    .to_string(),
+            ))
+        }
         StackVal::Spilled { lo_slot, is_i64 } => {
             // Reload against the *remaining* stack (this entry already popped).
             // i32: one temp + one LDR. i64: a consecutive pair + LDR lo/hi.
@@ -1186,6 +1222,14 @@ fn peek_operand(
              integer path"
                 .to_string(),
         )),
+        // #881: same contract for a spilled VFP value (see `pop_operand`).
+        Some(StackVal::FloatSpilled { .. } | StackVal::DoubleSpilled { .. }) => {
+            Err(synth_core::Error::synthesis(
+                "#881: an integer operation peeked a spilled VFP stack value — \
+                 invalid wasm or an unlowered float op reached the integer path"
+                    .to_string(),
+            ))
+        }
         Some(StackVal::Spilled { lo_slot, is_i64 }) => {
             let lo = if is_i64 {
                 let (lo, hi) = alloc_consecutive_pair(
@@ -2268,6 +2312,18 @@ fn free_vfp_temp(used: &mut [bool; 16], home: &[bool; 16], r: VfpReg) {
 fn pop_float(stack: &mut Vec<StackVal>) -> Result<VfpReg> {
     match stack.pop() {
         Some(StackVal::Float { sreg }) => Ok(sreg),
+        // #881: a spilled f32 reaching a consumer means the pre-op pressure
+        // guard missed a reload site — an internal gap, never a miscompile:
+        // decline the function loudly (the value is in the frame, not in the
+        // S-register a lowering would read).
+        Some(StackVal::FloatSpilled { .. } | StackVal::DoubleSpilled { .. }) => {
+            Err(synth_core::Error::synthesis(
+                "#881: an f32 operation popped a SPILLED VFP value — the VFP \
+                 pressure guard missed a reload site for this op shape; \
+                 declining loudly rather than reading a stale register"
+                    .to_string(),
+            ))
+        }
         Some(_) => Err(synth_core::Error::synthesis(
             "GI-FPU-002: an f32 operation expected an f32 (VFP) operand but the \
              stack top was an integer value — invalid wasm or an unlowered \
@@ -2896,6 +2952,16 @@ fn free_vfp_dtemp(used: &mut [bool; 16], home: &[bool; 16], r: VfpReg) {
 fn pop_double(stack: &mut Vec<StackVal>) -> Result<VfpReg> {
     match stack.pop() {
         Some(StackVal::Double { dreg }) => Ok(dreg),
+        // #881: see `pop_float` — a spilled VFP value reaching a consumer is
+        // a missed guard reload site; loud decline, never a stale read.
+        Some(StackVal::FloatSpilled { .. } | StackVal::DoubleSpilled { .. }) => {
+            Err(synth_core::Error::synthesis(
+                "#881: an f64 operation popped a SPILLED VFP value — the VFP \
+                 pressure guard missed a reload site for this op shape; \
+                 declining loudly rather than reading a stale register"
+                    .to_string(),
+            ))
+        }
         Some(_) => Err(synth_core::Error::synthesis(
             "GI-FPU-002 phase 2: an f64 operation expected an f64 (VFP D) \
              operand but the stack top was not one — invalid wasm or an \
@@ -2908,7 +2974,280 @@ fn pop_double(stack: &mut Vec<StackVal>) -> Result<VfpReg> {
     }
 }
 
-/// True if `op` is one of the in-scope scalar f64 ops this phase-2 increment
+// ============================================================================
+// #881 (VCR-RA-004, epic #242): VFP register-file spilling — the exact
+// analogue of the integer spill-on-exhaustion rung (VCR-RA-001 step 3b-lite)
+// for the S0..S15 / D0..D7 files. Active ONLY under
+// `SpillState::vfp_spill_on_exhaustion` (the backend's retry rung after a
+// first pass failed with a GI-FPU-002 exhaustion Err), so every function that
+// compiles today is produced by exactly yesterday's code path.
+//
+// Design:
+//  * Victim choice: the DEEPEST spillable f32/f64 operand-stack entry within
+//    the current straight-line segment — under LIFO stack discipline the
+//    deepest entry has the farthest next use (the Belady criterion the
+//    integer rung and VCR-RA-001 both use).
+//  * Straight-line safety (`cf_floor`): a spill store emitted inside a
+//    conditionally-executed region must dominate its reload. Entries pushed
+//    BEFORE the last control-flow boundary are never chosen as victims — a
+//    then-arm spill of a value pushed before the `if` would leave the else
+//    path reloading a never-written slot (a silent wrong value). The floor is
+//    reset to the operand-stack depth at every Block/Loop/If/Else/End/Br/
+//    BrIf/BrTable and clamped downward as the stack shrinks, so victims are
+//    always values whose spill store post-dominates their push in the same
+//    segment.
+//  * Slots come from the SAME [`SpillState`] pool as the integer spills (an
+//    f32 uses the lo word of its 8-byte slot; an f64 the full slot), so the
+//    slot-aliasing invariants (#331/#581) carry over unchanged.
+//  * S/D aliasing: `D(i)` = `S(2i):S(2i+1)` is modelled by the ONE shared
+//    16-slot `vfp_used` map (a D-alloc marks both S halves; a D-spill frees
+//    both), so spilling an f32 can open half of an aligned pair and the
+//    D-headroom loop below keeps spilling until a FULL aligned pair is free.
+//  * VSTR/VLDR encode `[sp,#imm]` as imm8*4 (0..=1020): an out-of-range slot
+//    declines loudly instead of silently masking the offset (#180/#185).
+// ============================================================================
+
+/// Emit the VSTR for one spilled VFP value, range-checked. `Ok` is the
+/// instruction pushed; `Err` is the loud VSTR-range decline.
+fn vfp_check_slot_range(slot: i32, is_double: bool) -> Result<()> {
+    let hi = slot + if is_double { 4 } else { 0 };
+    if !(0..=1020).contains(&hi) || !(0..=1020).contains(&slot) {
+        return Err(synth_core::Error::synthesis(format!(
+            "#881: VFP spill slot offset {slot} exceeds the VSTR/VLDR \
+             [sp,#imm] range (1020) — frame too large; declining loudly"
+        )));
+    }
+    Ok(())
+}
+
+/// Spill the DEEPEST spillable VFP operand-stack entry to a fresh frame slot,
+/// freeing its S-register (f32) or aligned S-pair (f64). Spillable = a
+/// [`StackVal::Float`]/[`StackVal::Double`] at position `>= cf_floor` (pushed
+/// in the current straight-line segment, see the module comment above) and
+/// below the top `protect_top` entries (the operands of the op being lowered),
+/// whose register is not a pinned param/local home (a home stays pinned for
+/// the function's extent — freeing it would relieve nothing).
+///
+/// Returns `Ok(true)` on success, `Ok(false)` if nothing spillable remains,
+/// `Err` if the slot pool is exhausted or the slot is out of VSTR range.
+fn spill_deepest_vfp(
+    stack: &mut [StackVal],
+    cf_floor: usize,
+    protect_top: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &[bool; 16],
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    idx: usize,
+) -> Result<bool> {
+    let floor = cf_floor.min(stack.len());
+    let hi = stack.len().saturating_sub(protect_top);
+    let pos = (floor..hi).find(|&p| match stack[p] {
+        StackVal::Float { sreg } => vfp_s_index(sreg).is_some_and(|k| !vfp_home[k]),
+        StackVal::Double { dreg } => {
+            vfp_d_index(dreg).is_some_and(|i| !vfp_home[2 * i] && !vfp_home[2 * i + 1])
+        }
+        _ => false,
+    });
+    let Some(pos) = pos else {
+        return Ok(false);
+    };
+    let slot = spill.alloc().ok_or_else(|| {
+        synth_core::Error::synthesis(
+            "#881: spill-slot pool exhausted while spilling the VFP register \
+             file — function too complex for current register allocator"
+                .to_string(),
+        )
+    })?;
+    match stack[pos] {
+        StackVal::Float { sreg } => {
+            vfp_check_slot_range(slot, false)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32Store {
+                    sd: sreg,
+                    addr: MemAddr::imm(Reg::SP, slot),
+                },
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sreg);
+            stack[pos] = StackVal::FloatSpilled { slot };
+        }
+        StackVal::Double { dreg } => {
+            vfp_check_slot_range(slot, true)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64Store {
+                    dd: dreg,
+                    addr: MemAddr::imm(Reg::SP, slot),
+                },
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dreg);
+            stack[pos] = StackVal::DoubleSpilled { slot };
+        }
+        _ => unreachable!("victim position was matched as Float/Double above"),
+    }
+    Ok(true)
+}
+
+/// Reload the spilled VFP entry at `stack[pos]` (if it is one) into a fresh
+/// S-register / aligned D-pair, spilling deeper segment-local values to make
+/// room when the file is full. No-op for register-resident / integer entries.
+#[allow(clippy::too_many_arguments)] // mirrors the integer spill helpers' threading
+fn vfp_reload_spilled(
+    pos: usize,
+    stack: &mut [StackVal],
+    cf_floor: usize,
+    protect_top: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &[bool; 16],
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    idx: usize,
+) -> Result<()> {
+    match stack[pos] {
+        StackVal::FloatSpilled { slot } => {
+            let sreg = loop {
+                match alloc_vfp_temp(vfp_used) {
+                    Ok(r) => break r,
+                    Err(e) => {
+                        if !spill_deepest_vfp(
+                            stack,
+                            cf_floor,
+                            protect_top,
+                            vfp_used,
+                            vfp_home,
+                            spill,
+                            instructions,
+                            idx,
+                        )? {
+                            return Err(e);
+                        }
+                    }
+                }
+            };
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32Load {
+                    sd: sreg,
+                    addr: MemAddr::imm(Reg::SP, slot),
+                },
+                source_line: Some(idx),
+            });
+            spill.free(slot);
+            stack[pos] = StackVal::Float { sreg };
+        }
+        StackVal::DoubleSpilled { slot } => {
+            let dreg = loop {
+                match alloc_vfp_dtemp(vfp_used) {
+                    Ok(r) => break r,
+                    Err(e) => {
+                        if !spill_deepest_vfp(
+                            stack,
+                            cf_floor,
+                            protect_top,
+                            vfp_used,
+                            vfp_home,
+                            spill,
+                            instructions,
+                            idx,
+                        )? {
+                            return Err(e);
+                        }
+                    }
+                }
+            };
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64Load {
+                    dd: dreg,
+                    addr: MemAddr::imm(Reg::SP, slot),
+                },
+                source_line: Some(idx),
+            });
+            spill.free(slot);
+            stack[pos] = StackVal::Double { dreg };
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Best-effort headroom: spill deepest segment-local VFP values until at
+/// least `need_s` free S-slots AND `need_pairs` free ALIGNED S-pairs (whole
+/// D-registers) exist, or nothing spillable remains. Never fails for lack of
+/// victims (the op's own allocation will then raise the honest exhaustion
+/// `Err` exactly as before this rung existed); only a slot-pool exhaustion /
+/// VSTR-range problem propagates.
+#[allow(clippy::too_many_arguments)] // mirrors the integer spill helpers' threading
+fn vfp_ensure_headroom(
+    need_s: usize,
+    need_pairs: usize,
+    stack: &mut [StackVal],
+    cf_floor: usize,
+    protect_top: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &[bool; 16],
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    idx: usize,
+) -> Result<()> {
+    loop {
+        let free_s = vfp_used.iter().filter(|&&u| !u).count();
+        let free_pairs = (0..8)
+            .filter(|&i| !vfp_used[2 * i] && !vfp_used[2 * i + 1])
+            .count();
+        if free_s >= need_s.max(2 * need_pairs) && free_pairs >= need_pairs {
+            return Ok(());
+        }
+        if !spill_deepest_vfp(
+            stack,
+            cf_floor,
+            protect_top,
+            vfp_used,
+            vfp_home,
+            spill,
+            instructions,
+            idx,
+        )? {
+            return Ok(()); // best-effort: nothing left to spill
+        }
+    }
+}
+
+/// The VFP pressure demand of one wasm op under the #881 rung:
+/// `(reload_window, need_s, need_pairs)` — reload the (up to) `reload_window`
+/// top spilled VFP operands this op will consume, then ensure `need_s` free
+/// S-slots and `need_pairs` free aligned D-pairs before lowering starts. The
+/// numbers are conservative UPPER bounds on the op's transient allocations
+/// (an under-estimate only re-raises the pre-rung exhaustion decline — never
+/// a miscompile; an over-estimate merely spills deeper values early).
+fn vfp_op_demand(op: &WasmOp) -> (usize, usize, usize) {
+    use WasmOp::*;
+    match op {
+        // The #869 i64<->f32/f64 conversion family runs on multi-D-temp f64
+        // machinery (exact two-word build, round-to-odd fixup, #782 decompose).
+        I64TruncF32S | I64TruncF32U | I64TruncSatF32S | I64TruncSatF32U | F32ConvertI64S
+        | F32ConvertI64U | I64TruncF64S | I64TruncF64U | I64TruncSatF64S | I64TruncSatF64U
+        | F64ConvertI64S | F64ConvertI64U => (1, 1, 4),
+        // f32<->f64 width changes hold an S and a D at once.
+        F64PromoteF32 | F32DemoteF64 => (1, 1, 2),
+        // Remaining in-scope f64 ops: binops hold 2 operand D-regs + 1 result.
+        op if is_scope_f64_op(op) => (2, 0, 3),
+        // Pure f32 ops: 2 operands + 1 result S-registers.
+        op if is_scope_f32_op(op) => (2, 2, 0),
+        // f32 memory ops lowered in the main match.
+        F32Load { .. } | F32Store { .. } => (1, 1, 0),
+        // Float select (#782): [val1 val2 cond] — cond is integer; the two
+        // values below it may be VFP (f32 or f64) and the result needs one
+        // fresh register of the same kind.
+        Select => (3, 1, 1),
+        // A float local.set/tee may allocate a fresh pinned home (S or D).
+        LocalSet(_) | LocalTee(_) => (1, 1, 1),
+        // Explicit-return result homing pops the top value (must be resident).
+        // (`End` is a control op — the guard's control arm reloads its top-1
+        // before resetting the straight-line floor.)
+        Return => (1, 0, 0),
+        _ => (0, 0, 0),
+    }
+}
 /// lowers (mirrors the decoder's un-dropped f64 set EXACTLY — every decoded
 /// f64 op must be intercepted before the main match's `select_default`
 /// fallback, which is register-blind). `F64Load`/`F64Store` are lowered in the
@@ -4623,6 +4962,16 @@ pub struct InstructionSelector {
     /// `spill_on_exhaustion`, bit-identity is structural: only functions that
     /// failed BOTH earlier passes ever compile with this set.
     param_backing_on_exhaustion: bool,
+    /// #881 (VCR-RA-004): VFP spill-on-exhaustion retry mode. Default OFF —
+    /// the backend sets it only for a retry after `select_with_stack` failed
+    /// with a GI-FPU-002 register-file exhaustion `Err` (S0..S15 or the
+    /// caller-saved D0..D7 all live). When ON: (a) the shared spill area is
+    /// always reserved in the frame, and (b) the pre-op VFP pressure guard
+    /// spills the deepest straight-line-segment f32/f64 stack value (farthest
+    /// next use, Belady under LIFO discipline) and reloads spilled operands
+    /// before the ops that consume them. Bit-identity is structural, like the
+    /// two integer rungs above.
+    vfp_spill_on_exhaustion: bool,
     /// VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
     /// in callee-saved registers (r4..r8) instead of frame slots, eliminating
     /// their `ldr/str [sp,#off]` traffic — the structural step toward native
@@ -4753,6 +5102,7 @@ impl InstructionSelector {
             next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
+            vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             sel_dsl: sel_dsl_from_env(),
@@ -4804,6 +5154,7 @@ impl InstructionSelector {
             next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
+            vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             sel_dsl: sel_dsl_from_env(),
@@ -4838,6 +5189,15 @@ impl InstructionSelector {
     /// would change its bytes.
     pub fn set_param_backing_on_exhaustion(&mut self, enabled: bool) {
         self.param_backing_on_exhaustion = enabled;
+    }
+
+    /// #881 (VCR-RA-004): enable VFP spill-on-exhaustion. Intended ONLY as
+    /// the backend's retry after `select_with_stack` failed with a GI-FPU-002
+    /// register-file exhaustion `Err` — enabling it reserves the shared spill
+    /// area in the frame, so calling it for a function that compiles without
+    /// it would change its bytes.
+    pub fn set_vfp_spill_on_exhaustion(&mut self, enabled: bool) {
+        self.vfp_spill_on_exhaustion = enabled;
     }
 
     /// #587 pool-grow recovery rung: size the i64 spill-slot pool. Intended
@@ -10088,7 +10448,9 @@ impl InstructionSelector {
             &params_f64_vfp,
             &self.func_ret_i64,
             &self.type_ret_i64,
-            self.spill_on_exhaustion,
+            // #881: the VFP spill rung hands out slots from the same shared
+            // pool, so it must force the area exactly like the integer rung.
+            self.spill_on_exhaustion || self.vfp_spill_on_exhaustion,
             self.param_backing_on_exhaustion,
             calls_float_boundary,
             outgoing_arg_bytes,
@@ -10178,6 +10540,7 @@ impl InstructionSelector {
         // must match the area `compute_local_layout` reserved above.
         let mut spill = SpillState::with_slots(layout.i64_spill_base, self.i64_spill_slots);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
+        spill.vfp_spill_on_exhaustion = self.vfp_spill_on_exhaustion;
         spill.area_reserved = layout.spill_area_reserved;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
@@ -10507,6 +10870,12 @@ impl InstructionSelector {
             }
         }
 
+        // #881: straight-line floor for the VFP spill rung — the operand-stack
+        // depth at the last control-flow boundary. Entries below it were pushed
+        // before a branch/label and are never spill victims (a conditionally-
+        // executed spill store would not dominate its reload). Only consulted
+        // when `vfp_spill_on_exhaustion` is set.
+        let mut vfp_cf_floor: usize = 0;
         for (idx, op) in wasm_ops.iter().enumerate() {
             // Param registers still live at this op — reserved from temp/pair/
             // reload allocation so a constant/result/reload never clobbers a live
@@ -10536,6 +10905,73 @@ impl InstructionSelector {
             for bl in &block_labels {
                 if let Some(r) = bl.result_reg {
                     live_params.push(r);
+                }
+            }
+            // #881 (VCR-RA-004): the VFP pressure guard — rung-only (inert in
+            // every default compile). Control ops reset the straight-line
+            // floor (reloading a spilled top first, so End/Else result
+            // handling always sees a register-resident value); float-demand
+            // ops get their spilled operands reloaded and conservative
+            // register headroom freed by spilling the deepest segment-local
+            // VFP values (farthest next use under LIFO stack discipline).
+            if spill.vfp_spill_on_exhaustion && fpu.is_some() {
+                // Keep the floor meaningful as the stack shrinks.
+                vfp_cf_floor = vfp_cf_floor.min(stack.len());
+                match op {
+                    WasmOp::Block
+                    | WasmOp::Loop
+                    | WasmOp::If
+                    | WasmOp::Else
+                    | WasmOp::End
+                    | WasmOp::Br(_)
+                    | WasmOp::BrIf(_)
+                    | WasmOp::BrTable { .. } => {
+                        if !stack.is_empty() {
+                            vfp_reload_spilled(
+                                stack.len() - 1,
+                                &mut stack,
+                                vfp_cf_floor,
+                                1,
+                                &mut vfp_used,
+                                &vfp_home,
+                                &mut spill,
+                                &mut instructions,
+                                idx,
+                            )?;
+                        }
+                        vfp_cf_floor = stack.len();
+                    }
+                    _ => {
+                        let (window, need_s, need_pairs) = vfp_op_demand(op);
+                        if window + need_s + need_pairs > 0 {
+                            let lo = stack.len().saturating_sub(window);
+                            for pos in lo..stack.len() {
+                                vfp_reload_spilled(
+                                    pos,
+                                    &mut stack,
+                                    vfp_cf_floor,
+                                    window,
+                                    &mut vfp_used,
+                                    &vfp_home,
+                                    &mut spill,
+                                    &mut instructions,
+                                    idx,
+                                )?;
+                            }
+                            vfp_ensure_headroom(
+                                need_s,
+                                need_pairs,
+                                &mut stack,
+                                vfp_cf_floor,
+                                window,
+                                &mut vfp_used,
+                                &vfp_home,
+                                &mut spill,
+                                &mut instructions,
+                                idx,
+                            )?;
+                        }
+                    }
                 }
             }
             // GI-FPU-002 (#619/#369): intercept in-scope scalar f32 ops (and f32
@@ -14053,6 +14489,31 @@ impl InstructionSelector {
                     // R0..R3/NSAA walk consumes since AAPCS-VFP floats occupy
                     // neither). Integer-only callees keep the byte-identical
                     // legacy pop.
+                    // #881: under the VFP spill rung, a float argument may
+                    // have been spilled to the frame while deeper expression
+                    // pressure was relieved — reload every spilled VFP entry
+                    // in the argument window so pop_float/pop_double see
+                    // register-resident values. Non-argument entries stay
+                    // spilled (a frame slot trivially survives the call —
+                    // they need no caller-saved preservation).
+                    if spill.vfp_spill_on_exhaustion && fpu.is_some() && arg_count > 0 {
+                        let n = (arg_count as usize).min(stack.len());
+                        let lo = stack.len() - n;
+                        vfp_cf_floor = vfp_cf_floor.min(stack.len());
+                        for pos in lo..stack.len() {
+                            vfp_reload_spilled(
+                                pos,
+                                &mut stack,
+                                vfp_cf_floor,
+                                n,
+                                &mut vfp_used,
+                                &vfp_home,
+                                &mut spill,
+                                &mut instructions,
+                                idx,
+                            )?;
+                        }
+                    }
                     let (arg_srcs, float_args) = if float_arg_layout.is_empty() {
                         (
                             Self::pop_call_args(
@@ -14493,8 +14954,24 @@ impl InstructionSelector {
                 }
 
                 Drop => {
-                    // Just pop a value from the stack and discard it
-                    stack.pop();
+                    // Just pop a value from the stack and discard it.
+                    // #881 (rung-only, byte-invisible otherwise): a dropped
+                    // VFP value releases its register / spill slot so deep
+                    // drop-heavy shapes don't leak the finite S-file/pool.
+                    match stack.pop() {
+                        Some(StackVal::Float { sreg }) if spill.vfp_spill_on_exhaustion => {
+                            free_vfp_temp(&mut vfp_used, &vfp_home, sreg);
+                        }
+                        Some(StackVal::Double { dreg }) if spill.vfp_spill_on_exhaustion => {
+                            free_vfp_dtemp(&mut vfp_used, &vfp_home, dreg);
+                        }
+                        Some(
+                            StackVal::FloatSpilled { slot } | StackVal::DoubleSpilled { slot },
+                        ) => {
+                            spill.free(slot);
+                        }
+                        _ => {}
+                    }
                 }
 
                 Select => {

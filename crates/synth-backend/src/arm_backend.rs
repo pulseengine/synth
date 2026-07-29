@@ -421,7 +421,8 @@ fn compile_wasm_to_arm(
     let select_direct_attempt = |spill_on_exhaustion: bool,
                                  param_backing_on_exhaustion: bool,
                                  local_promote: bool,
-                                 i64_spill_slots: Option<usize>|
+                                 i64_spill_slots: Option<usize>,
+                                 vfp_spill_on_exhaustion: bool|
      -> Result<Vec<ArmInstruction>, synth_core::Error> {
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
@@ -514,6 +515,10 @@ fn compile_wasm_to_arm(
         selector.set_global_widths(config.global_widths.clone());
         selector.set_spill_on_exhaustion(spill_on_exhaustion);
         selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
+        // #881 (VCR-RA-004): VFP register-file spilling, set ONLY on the retry
+        // after an attempt failed with a GI-FPU-002 exhaustion Err — functions
+        // that compile without it keep byte-identical output by construction.
+        selector.set_vfp_spill_on_exhaustion(vfp_spill_on_exhaustion);
         // #587 pool-grow rung: a larger i64 spill-slot pool, set ONLY on the
         // retry after an attempt failed with the slot-pool-exhausted Err —
         // functions that compile with the default pool keep their frame
@@ -552,34 +557,38 @@ fn compile_wasm_to_arm(
         // returned a recoverable register-exhaustion Err, so a function that
         // compiles on the first attempt is untouched by the later rungs. Returns
         // the result AND which rung produced it (for the #242 measurement below).
-        let recovery_ladder =
-            |promote: bool,
-             i64_spill_slots: Option<usize>|
-             -> (Result<Vec<ArmInstruction>, synth_core::Error>, &'static str) {
-                let mut attempt = select_direct_attempt(false, false, promote, i64_spill_slots);
-                let mut rung = "base";
-                // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
-                // hard-fail is recoverable — retry with spill-on-exhaustion, which
-                // reserves the spill area and spills the deepest stack value when
-                // the pool is full.
-                if let Err(e) = &attempt
-                    && e.to_string().contains(SINGLE_EXHAUSTION)
-                {
-                    attempt = select_direct_attempt(true, false, promote, i64_spill_slots);
-                    rung = "spill";
-                }
-                // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
-                // exhaustion is recoverable too — not by stack spilling (the pair
-                // allocator already spills stack values, #171) but by frame-backing
-                // the params (#204) so they stop pinning R0-R3, with spill kept on.
-                if let Err(e) = &attempt
-                    && e.to_string().contains(PAIR_EXHAUSTION)
-                {
-                    attempt = select_direct_attempt(true, true, promote, i64_spill_slots);
-                    rung = "param-backing";
-                }
-                (attempt, rung)
-            };
+        let recovery_ladder = |promote: bool,
+                               i64_spill_slots: Option<usize>,
+                               vfp_spill: bool|
+         -> (
+            Result<Vec<ArmInstruction>, synth_core::Error>,
+            &'static str,
+        ) {
+            let mut attempt =
+                select_direct_attempt(false, false, promote, i64_spill_slots, vfp_spill);
+            let mut rung = "base";
+            // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
+            // hard-fail is recoverable — retry with spill-on-exhaustion, which
+            // reserves the spill area and spills the deepest stack value when
+            // the pool is full.
+            if let Err(e) = &attempt
+                && e.to_string().contains(SINGLE_EXHAUSTION)
+            {
+                attempt = select_direct_attempt(true, false, promote, i64_spill_slots, vfp_spill);
+                rung = "spill";
+            }
+            // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
+            // exhaustion is recoverable too — not by stack spilling (the pair
+            // allocator already spills stack values, #171) but by frame-backing
+            // the params (#204) so they stop pinning R0-R3, with spill kept on.
+            if let Err(e) = &attempt
+                && e.to_string().contains(PAIR_EXHAUSTION)
+            {
+                attempt = select_direct_attempt(true, true, promote, i64_spill_slots, vfp_spill);
+                rung = "param-backing";
+            }
+            (attempt, rung)
+        };
         // #474: local promotion (default-on since v0.14.0) is an OPTIMIZATION — it
         // must never be the reason a function fails to compile. Run the full ladder
         // with promotion first (so every function that compiles today is
@@ -594,12 +603,14 @@ fn compile_wasm_to_arm(
         // The full pre-#587 recovery sequence (promotion-on ladder, then the
         // #474 promotion-off fallback), parameterized on the pool size so the
         // pool-grow retry below reruns it verbatim.
-        let full_sequence = |slots: Option<usize>| -> (
+        let full_sequence = |slots: Option<usize>,
+                             vfp_spill: bool|
+         -> (
             Result<Vec<ArmInstruction>, synth_core::Error>,
             &'static str,
             bool,
         ) {
-            let (mut attempt, mut rung) = recovery_ladder(promote, slots);
+            let (mut attempt, mut rung) = recovery_ladder(promote, slots, vfp_spill);
             let mut promotion_dropped = false;
             if promote
                 && attempt
@@ -607,7 +618,7 @@ fn compile_wasm_to_arm(
                     .err()
                     .is_some_and(|e| e.to_string().contains("register exhaustion"))
             {
-                let (rescued, off_rung) = recovery_ladder(false, slots);
+                let (rescued, off_rung) = recovery_ladder(false, slots, vfp_spill);
                 if rescued.is_ok() {
                     attempt = rescued;
                     rung = off_rung;
@@ -616,7 +627,7 @@ fn compile_wasm_to_arm(
             }
             (attempt, rung, promotion_dropped)
         };
-        let (mut attempt, mut rung, mut promotion_dropped) = full_sequence(None);
+        let (mut attempt, mut rung, mut promotion_dropped) = full_sequence(None, false);
         // #587 pool-grow retry (the falcon func_60/func_73 remainder): the fixed
         // 8-slot i64 spill pool can exhaust while spilling is otherwise working —
         // an i64-dense function simply has more values simultaneously live than
@@ -637,11 +648,53 @@ fn compile_wasm_to_arm(
             .is_some_and(|e| e.to_string().contains(SLOT_EXHAUSTION))
         {
             let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
-            let (grown, _, grown_dropped) = full_sequence(Some(depth.saturating_add(4)));
+            let (grown, _, grown_dropped) = full_sequence(Some(depth.saturating_add(4)), false);
             if grown.is_ok() {
                 attempt = grown;
                 rung = "pool-grow";
                 promotion_dropped = grown_dropped;
+            }
+        }
+        // #881 (VCR-RA-004): the GI-FPU-002 VFP register-file exhaustion is
+        // recoverable too — retry the ENTIRE sequence with VFP spilling
+        // enabled (the pre-op pressure guard spills the deepest segment-local
+        // f32/f64 stack value into the shared spill area and reloads spilled
+        // operands before their consumers). Deliberately LAST, after every
+        // integer rung, so any function that compiled yesterday is produced
+        // by exactly yesterday's path; the VFP rung only ever fires for
+        // functions whose every existing escape ended in a GI-FPU-002
+        // exhaustion Err (previously an unconditional loud skip). A VFP-
+        // spilling function can in turn exhaust the shared slot pool — the
+        // #587 pool-grow retry composes inside the rung.
+        const VFP_S_EXHAUSTION: &str = "VFP register file exhausted";
+        const VFP_D_EXHAUSTION: &str = "VFP D-register file exhausted";
+        if attempt.as_ref().err().is_some_and(|e| {
+            let msg = e.to_string();
+            msg.contains(VFP_S_EXHAUSTION) || msg.contains(VFP_D_EXHAUSTION)
+        }) {
+            let (vfp, vfp_rung, vfp_dropped) = full_sequence(None, true);
+            let (vfp, vfp_rung, vfp_dropped) = if vfp.as_ref().err().is_some_and(|e| {
+                let msg = e.to_string();
+                msg.contains(SLOT_EXHAUSTION) || msg.contains("spilling the VFP register file")
+            }) {
+                let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
+                let (grown, grown_rung, grown_dropped) =
+                    full_sequence(Some(depth.saturating_add(4)), true);
+                if grown.is_ok() {
+                    (grown, grown_rung, grown_dropped)
+                } else {
+                    (vfp, vfp_rung, vfp_dropped)
+                }
+            } else {
+                (vfp, vfp_rung, vfp_dropped)
+            };
+            if vfp.is_ok() {
+                attempt = vfp;
+                rung = match vfp_rung {
+                    "base" => "vfp-spill",
+                    _ => "vfp-spill+int",
+                };
+                promotion_dropped = vfp_dropped;
             }
         }
         // VCR-RA measurement (#242): log which recovery rung produced the result,
