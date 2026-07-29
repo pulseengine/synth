@@ -16,9 +16,11 @@
 //!   An ordeal `Unknown` falls through to Z3's verdict (logged, not fatal —
 //!   `Unknown` is the conservative non-answer, not a verdict).
 //!
-//! Budget: ordeal decides under a conflict budget (`check_with_limit`) so an
-//! adversarial query degrades to a clean conservative `Unknown` instead of
-//! hanging. Override with `SYNTH_ORDEAL_MAX_CONFLICTS` (0 = unbounded).
+//! Budget: every query runs under a **wall-clock deadline**
+//! (`Solver::check_with_deadline`, ordeal ≥0.15) so an adversarial query
+//! degrades to a clean conservative `Unknown` instead of hanging. See
+//! [`DEFAULT_DEADLINE_MS`] for the budget, the env overrides and the
+//! documented limitation.
 
 use crate::term::{BV, Bool};
 use ordeal::{BoolTerm, CheckResult};
@@ -27,7 +29,63 @@ use ordeal::{BoolTerm, CheckResult};
 /// (pulseengine/ordeal#29) decides at a median of ~1 ms and well under this;
 /// the budget exists to bound adversarial shapes (e.g. non-canonicalized
 /// commuted multiplies) to a conservative `Unknown`.
+///
+/// Only consulted when the wall-clock deadline is explicitly disabled
+/// (`SYNTH_ORDEAL_DEADLINE_MS=0`) — ordeal's `Bound` is one-of, so a query
+/// carries either a deadline or a conflict cap, never both.
 const DEFAULT_MAX_CONFLICTS: u64 = 1_000_000;
+
+/// Default **wall-clock** per-query budget, in milliseconds (#848/#849).
+///
+/// This is the real insurance against a solver cliff. A conflict budget does
+/// not map to wall-clock time: the 4–6 h CI hangs of #849 burned hours inside
+/// a single `check` that never came near 1 M conflicts, because there was no
+/// wall-clock floor anywhere in the stack.
+///
+/// # Why 5 minutes and not 15 seconds
+///
+/// The budget must clear the slowest **legitimate** query with real headroom,
+/// or it converts a sound proof into a spurious `Unknown`. Measured pacer on
+/// a dev host (debug build, ordeal 0.16.1): the pre-existing
+/// `expansion_validator` popcnt-HAKMEM link-1 equivalence decides in
+/// **40.6 s** — a 15 s budget cut it off (it is genuinely hard, not a cliff).
+/// The re-landed 64-bit `bvurem`/`bvsrem` i64-rem value VCs, by contrast,
+/// decide in **2.4 s** for all four tests combined. 5 min is ~7× the pacer,
+/// enough that a slower/parallel-loaded CI runner cannot flake it, while
+/// still turning a solver cliff from "6 hours" into "5 minutes".
+///
+/// The per-query deadline is the INNER floor; the outer one is
+/// `timeout-minutes` on the CI `Test` / `Z3 Verification` jobs (also added in
+/// #848 — neither had one, which is why #849 cost days rather than minutes).
+/// Together they bound both a single cliff and the aggregate.
+///
+/// A query that exceeds the deadline yields [`CheckOutcome::Unknown`], which
+/// every caller treats conservatively — it is **never** reported as
+/// `Verified`. Soundness is unaffected: the deadline bounds only
+/// completeness (ordeal's certificate gate and model self-check are
+/// untouched, so an abandoned search can never produce a wrong verdict).
+///
+/// **Documented limitation:** `check_with_deadline` bounds the *SAT search*,
+/// not bit-blasting/canonicalization. A query whose blast alone is
+/// pathological can still exceed the budget before the clock is ever
+/// consulted, so this is a strong bound on the dominant cost — not a
+/// universal wall-clock guard. Treat it as the floor it is, and keep the
+/// hard-query classes (64-bit `bvsrem`/`bvurem`) under CI timing watch.
+const DEFAULT_DEADLINE_MS: u64 = 300_000;
+
+/// Read the configured per-query wall-clock budget.
+///
+/// `SYNTH_ORDEAL_DEADLINE_MS` overrides [`DEFAULT_DEADLINE_MS`]. The value
+/// `0` **disables** the deadline and falls back to the conflict budget — note
+/// this deliberately differs from ordeal's own `check_with_deadline(0)`
+/// (which admits only queries decided before the first conflict); disabling
+/// re-opens the #849 hang class and exists only as a debugging escape hatch.
+pub(crate) fn configured_deadline_ms() -> u64 {
+    std::env::var("SYNTH_ORDEAL_DEADLINE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_DEADLINE_MS)
+}
 
 /// Outcome of a one-shot `check` of the asserted conjunction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,16 +138,21 @@ pub fn new_solver() -> Box<dyn BvSolver> {
 // ordeal backend (default)
 // ---------------------------------------------------------------------------
 
-/// The default engine: pure-Rust `ordeal` with a conflict budget.
+/// The default engine: pure-Rust `ordeal` under a per-query wall-clock
+/// deadline (with a conflict budget as the disabled-deadline fallback).
 pub struct OrdealSolver {
     assertions: Vec<BoolTerm>,
+    /// Wall-clock budget in ms; `0` = deadline disabled (use `max_conflicts`).
+    deadline_ms: u64,
     max_conflicts: u64,
     model: Option<ordeal::Model>,
 }
 
 impl OrdealSolver {
-    /// New solver with the budget from `SYNTH_ORDEAL_MAX_CONFLICTS`
-    /// (default [`DEFAULT_MAX_CONFLICTS`]; 0 = unbounded).
+    /// New solver bounded by `SYNTH_ORDEAL_DEADLINE_MS` (default
+    /// [`DEFAULT_DEADLINE_MS`]; 0 = deadline off), falling back to the
+    /// `SYNTH_ORDEAL_MAX_CONFLICTS` conflict budget (default
+    /// [`DEFAULT_MAX_CONFLICTS`]; 0 = unbounded) when the deadline is off.
     pub fn new() -> Self {
         let max_conflicts = std::env::var("SYNTH_ORDEAL_MAX_CONFLICTS")
             .ok()
@@ -97,8 +160,19 @@ impl OrdealSolver {
             .unwrap_or(DEFAULT_MAX_CONFLICTS);
         Self {
             assertions: Vec::new(),
+            deadline_ms: configured_deadline_ms(),
             max_conflicts,
             model: None,
+        }
+    }
+
+    /// New solver with an explicit wall-clock budget in ms (`0` = deadline
+    /// off). Env-independent, so tests can pin a budget without racing the
+    /// process-global environment.
+    pub fn with_deadline_ms(deadline_ms: u64) -> Self {
+        Self {
+            deadline_ms,
+            ..Self::new()
         }
     }
 }
@@ -123,10 +197,22 @@ impl BvSolver for OrdealSolver {
         for a in &self.assertions {
             solver.assert(a.clone());
         }
-        let result = if self.max_conflicts == 0 {
-            solver.check()
+        // ordeal's `Bound` is one-of (None | Conflicts | Deadline), so a query
+        // carries EITHER the wall-clock deadline (the default, #848/#849) or
+        // the conflict cap — the deadline wins because it is the bound that
+        // actually maps to "CI must not hang".
+        let (result, bound) = if self.deadline_ms > 0 {
+            (
+                solver.check_with_deadline(self.deadline_ms),
+                format!("wall-clock deadline {} ms", self.deadline_ms),
+            )
+        } else if self.max_conflicts == 0 {
+            (solver.check(), "unbounded".to_string())
         } else {
-            solver.check_with_limit(self.max_conflicts)
+            (
+                solver.check_with_limit(self.max_conflicts),
+                format!("conflict budget {}", self.max_conflicts),
+            )
         };
         match result {
             CheckResult::Unsat(_certificate) => CheckOutcome::Unsat,
@@ -134,10 +220,12 @@ impl BvSolver for OrdealSolver {
                 self.model = Some(model);
                 CheckOutcome::Sat
             }
-            CheckResult::Unknown => CheckOutcome::Unknown(format!(
-                "ordeal returned unknown (conflict budget {})",
-                self.max_conflicts
-            )),
+            // Budget/deadline exhaustion (or an out-of-fragment query) is the
+            // conservative non-answer. Callers MUST NOT read it as proven —
+            // `Unknown` never becomes `Verified` anywhere downstream.
+            CheckResult::Unknown => {
+                CheckOutcome::Unknown(format!("ordeal returned unknown ({bound})"))
+            }
         }
     }
 
@@ -249,6 +337,17 @@ mod z3_backend {
 
         fn check(&mut self) -> CheckOutcome {
             let solver = z3::Solver::new();
+            // Same wall-clock floor as the ordeal path (#848/#849): the Z3
+            // Verification job hung for 4-6 h on the very same 64-bit
+            // bvsrem/bvurem queries, so the oracle gets the identical budget.
+            // Z3's `timeout` param is milliseconds; on expiry it answers
+            // `Unknown`, which is the conservative non-answer here too.
+            let deadline_ms = super::configured_deadline_ms();
+            if deadline_ms > 0 {
+                let mut params = z3::Params::new();
+                params.set_u32("timeout", u32::try_from(deadline_ms).unwrap_or(u32::MAX));
+                solver.set_params(&params);
+            }
             for a in &self.assertions {
                 solver.assert(bool_to_z3(a));
             }
@@ -470,6 +569,100 @@ mod tests {
             solver.assert(&cond);
             assert_eq!(solver.check(), CheckOutcome::Sat);
             assert_eq!(solver.value(&probe), Some(expected));
+        }
+    }
+
+    // --- per-query wall-clock deadline (#848/#849) ---
+
+    /// The negated multiplication-**associativity** goal at a chosen width:
+    /// `¬((x·y)·z == x·(y·z))`. Valid at every width (so a decided verdict is
+    /// always `Unsat`), but *hard* for a CDCL core: commutativity is folded
+    /// away by canonicalization, associativity is not, so proving it needs a
+    /// real multiplier blast + search. This is exactly the shape the deadline
+    /// exists to bound.
+    ///
+    /// Cost scales viciously — measured unbounded on a dev host (debug build,
+    /// ordeal 0.16.1): width 8, 16 and 32 all run **>30 s**, width 3 decides
+    /// in milliseconds. Hence the two widths below.
+    fn mul_assoc_goal(width: u32) -> Bool {
+        let x = BV::new_const("ha_x", width);
+        let y = BV::new_const("ha_y", width);
+        let z = BV::new_const("ha_z", width);
+        x.bvmul(&y).bvmul(&z).eq(x.bvmul(y.bvmul(&z))).not()
+    }
+
+    /// Wide enough that no 1 ms budget can finish it (>30 s unbounded).
+    const HARD_WIDTH: u32 = 8;
+    /// Narrow enough to decide in milliseconds — the cheap validity control.
+    const EASY_WIDTH: u32 = 3;
+
+    /// SOUNDNESS GATE: a query that exceeds its wall-clock deadline must
+    /// degrade to [`CheckOutcome::Unknown`] — **never** `Unsat`, which every
+    /// caller reads as "proven". This is the mechanism that would have turned
+    /// the #849 six-hour hang into a bounded, loud non-answer.
+    ///
+    /// Non-vacuity comes from the narrow control: the SAME construction at
+    /// [`EASY_WIDTH`] decides `Unsat` in milliseconds, so the `Unknown` above
+    /// is the deadline biting a well-formed, in-fragment, *valid* obligation —
+    /// not a query builder bug or an out-of-fragment term. (Associativity is a
+    /// mathematical identity at every width; what the control rules out is a
+    /// coding error in `mul_assoc_goal`, which is the only way this gate could
+    /// go vacuous.) Re-proving the width-8 instance unbounded would cost the
+    /// suite >30 s for no extra information.
+    #[test]
+    fn deadline_degrades_to_unknown_never_to_proven() {
+        // 1 ms: orders of magnitude below what the wide instance needs.
+        let mut bounded = OrdealSolver::with_deadline_ms(1);
+        bounded.assert(&mul_assoc_goal(HARD_WIDTH));
+        let outcome = bounded.check();
+        assert!(
+            matches!(outcome, CheckOutcome::Unknown(_)),
+            "an undecided query must be Unknown, got {outcome:?}"
+        );
+        assert_ne!(
+            outcome,
+            CheckOutcome::Unsat,
+            "SOUNDNESS: a timed-out query must never be reported as proven"
+        );
+        // And it must say *why* — a deadline, not a silent shrug.
+        let CheckOutcome::Unknown(reason) = &outcome else {
+            unreachable!("asserted above")
+        };
+        assert!(
+            reason.contains("deadline"),
+            "the non-answer must name the bound that produced it, got {reason:?}"
+        );
+
+        // Non-vacuity control: same construction, narrow, given the time.
+        let mut control = OrdealSolver::with_deadline_ms(0);
+        control.assert(&mul_assoc_goal(EASY_WIDTH));
+        assert_eq!(
+            control.check(),
+            CheckOutcome::Unsat,
+            "control: the mul-associativity goal is well-formed and valid"
+        );
+    }
+
+    /// The deadline must not cost decidability on ordinary queries: the whole
+    /// equivalence corpus still decides under the shipped default budget.
+    #[test]
+    fn default_deadline_decides_the_corpus() {
+        for (label, query, expect_unsat) in corpus() {
+            let mut solver = OrdealSolver::new();
+            solver.assert(&query);
+            let outcome = solver.check();
+            assert_ne!(
+                outcome,
+                CheckOutcome::Unknown(format!(
+                    "ordeal returned unknown (wall-clock deadline {DEFAULT_DEADLINE_MS} ms)"
+                )),
+                "{label}: default budget must not starve an ordinary query"
+            );
+            if expect_unsat {
+                assert_eq!(outcome, CheckOutcome::Unsat, "{label}");
+            } else {
+                assert_eq!(outcome, CheckOutcome::Sat, "{label}");
+            }
         }
     }
 

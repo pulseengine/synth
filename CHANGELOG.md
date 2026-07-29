@@ -204,6 +204,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     software, and the mask/mpu rejections. RED on the pre-fix binary
     (15 failures), GREEN after; all pre-existing aarch64 differentials and
     gale's native matrix (35 ops / 91 checks) unchanged-green.
+- **Per-query wall-clock deadline on every SMT solve (#848/#849).** `synth-verify`
+  now bounds every ordeal query with `Solver::check_with_deadline` (ordeal
+  ≥0.15) — default **300 000 ms**, override with `SYNTH_ORDEAL_DEADLINE_MS`
+  (`0` disables it and falls back to the pre-existing
+  `SYNTH_ORDEAL_MAX_CONFLICTS` conflict cap; ordeal's `Bound` is one-of, so a
+  query carries a deadline *or* a conflict cap, never both). The bound covers
+  **both** solve seams: `solver::OrdealSolver::check` *and* `trap::prove_trap_*`,
+  which previously called `ordeal::trap::prove_trap_*` → the **unbounded**
+  `Solver::prove_valid` — i.e. the hardest VC class in the validator (the
+  64-bit `bvsrem`/`bvurem` div/rem value VCs) had no wall-clock floor at all.
+  synth now builds the same goal term (`trap_equivalence_vc` /
+  `trap_condition_equivalence`) and discharges it under the deadline itself.
+  The Z3 differential oracle gets the identical budget via z3's `timeout`
+  param — note the trap VCs are ordeal-only by construction (they never route
+  through `new_solver`), so the `Z3 Verification` job hung on the *same ordeal*
+  queries, not on Z3; the z3 budget is defence in depth for the value-VC path
+  that does use the oracle. Expiry degrades to `ValidationResult::Unknown` /
+  `TrapVerdict::Unknown` — an undecided query is **never** reported
+  `Verified`/`Preserved`; the certificate re-check and model self-check are
+  untouched, so the bound costs completeness only, never soundness. Gated
+  red-first by `solver::tests::deadline_degrades_to_unknown_never_to_proven`
+  (a 1 ms budget on a hard query yields `Unknown` and names the deadline; the
+  same construction, narrow, decides `Unsat`, so the gate is not vacuous).
+  **Documented limitation:**
+  `check_with_deadline` bounds the SAT *search*, not bit-blasting — it is a
+  strong bound on the dominant cost, not a universal wall-clock guard.
+  Complemented by an outer `timeout-minutes` on the CI `Test` (60) and
+  `Z3 Verification` (45) jobs, neither of which had one — which is why #849
+  cost days rather than minutes.
+- **Native i64 `rem_u`/`rem_s` value model re-landed (#844, closes #848).**
+  `ArmSemantics` no longer HAVOCs the i64 remainder: `I64RemU`/`I64RemS`
+  compose the 64-bit operands from their register halves (`concat`), apply the
+  native `bvurem`/`bvsrem`, and split the result back to the `rd` pair, with
+  the ÷0 trap reconstructed from the pseudo-op's `elide_zero_guard` field.
+  `verify_i64_rem_value_preservation` asserts the **full** obligation (trap
+  clause *and* guarded value clause) against the ABI return pair `R0:R1`, so a
+  lowering that computes the wrong remainder — or writes it to the wrong
+  register pair — is now `Invalid` where the HAVOC model accepted it. #844 was
+  reverted in v0.50 (`db0f1f2`) because ordeal 0.12 hung on these queries
+  (#849); **ordeal 0.16.1** fixes both blast regressions (signed ordeal#97,
+  unsigned ordeal#101) and the new deadline is the standing insurance.
+  Measured: the four correctness/destination i64-rem tests (8 × 64-bit
+  `bvurem`/`bvsrem` value+trap VCs) decide in **2.4 s**. Non-vacuity is gated,
+  not narrated, at two strengths — `i64_rem_wrong_destination_register_is_rejected`
+  and `i64_rem_value_model_closes_a_trap_only_gap` (the old trap-only VC
+  *accepts* the same wrong-destination lowering the new value VC *rejects*) pin
+  the accepted-under-havoc → rejected-now discriminator on the register file,
+  and `i64_rem_wrong_signedness_is_rejected` pins it on the **arithmetic**: a
+  `rem_u` lowered to the signed pseudo-op (or vice versa) writes the *right*
+  registers and preserves the ÷0 trap, so only a real value model can reject
+  it — it does, with the expected counterexamples (negative dividend / negative
+  divisor). That SAT search is the corpus's slowest rem query at ~23 s locally
+  (vs the 300 s budget) and is free in suite wall-clock, running behind the
+  pre-existing 40 s popcnt-HAKMEM proof. Verify-only: byte-invisible, frozen
+  codegen anchors untouched. Supersedes #854.
 
 ## [0.51.0] - 2026-07-23
 
