@@ -1155,6 +1155,18 @@ struct ControlFrame {
     /// leave the value in the SAME register(s) at the join. Empty for
     /// blocks/loops and for control-flow-only (arity-0) if/else.
     then_results: Vec<VstackVal>,
+    /// #882: true once a `br`/`br_if` handed out this frame's END label as a
+    /// branch target. Decides whether code after this frame's `end` is
+    /// reachable when the fall-through path died on a `return` (dead-code
+    /// mode): a referenced end label means control can land there, so
+    /// lowering must resume; an unreferenced one keeps the dead region dead.
+    end_referenced: bool,
+    /// #882: for an if/else frame, true when the then-arm ended on a
+    /// `return` (no fall-through into the join). The `end` join then takes
+    /// the ELSE-arm's results verbatim — there is no second arm value to
+    /// reconcile registers with (and `then_results` is empty, so the #343
+    /// arity check must not fire).
+    then_unreachable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1206,6 +1218,21 @@ struct Selector {
     next_label: u32,
     /// Tracks whether we already emitted the function-final return.
     emitted_return: bool,
+    /// #882: true while walking wasm DEAD CODE — the ops after a `return`
+    /// inside an open frame, up to the next join that control can actually
+    /// reach (an `else`, or an `end` whose label is a branch target). Dead
+    /// ops are SKIPPED (no bytes, no vstack effect), but the frame-closing
+    /// `else`/`end` markers are still processed so every branch-target label
+    /// is DEFINED at its correct lexical position. The old behaviour broke
+    /// out of the walk entirely, so a `br_if` past a `return` referenced an
+    /// end label that was never emitted ("undefined label `Lend0`", gale's
+    /// i2c_step) and any reachable else-arm/post-end code was dropped.
+    dead_code: bool,
+    /// #882: nesting depth of frames OPENED inside the dead region. Their
+    /// labels were never created and nothing can branch into them (any such
+    /// branch op is itself dead and skipped), so they are counted and
+    /// skipped wholesale rather than pushed onto `ctrl`.
+    dead_nest: u32,
     /// Phase-1 safety options (bounds-check policy, signed-div overflow trap).
     options: SelectorOptions,
     /// #223: non-parameter local `idx` → `(byte offset, is_i64)` within the
@@ -1299,6 +1326,8 @@ impl Selector {
             op_pinned: Vec::new(),
             next_label: 0,
             emitted_return: false,
+            dead_code: false,
+            dead_nest: 0,
             options,
             local_offsets: std::collections::HashMap::new(),
             local_frame_bytes: 0,
@@ -1589,9 +1618,105 @@ impl Selector {
     fn lower_seq(&mut self, wasm_ops: &[WasmOp]) -> Result<(), SelectorError> {
         for op in wasm_ops {
             self.lower_one(op)?;
+            // #882: `emitted_return` is set ONLY at the FUNCTION-level `end`
+            // (every control frame closed) — a mid-function `return` enters
+            // dead-code mode instead, so the remaining frame-closing `end`s
+            // still define their branch-target labels and reachable
+            // else-arm/post-end code is still lowered.
             if self.emitted_return {
                 break;
             }
+        }
+        Ok(())
+    }
+
+    /// #882: one op of wasm DEAD CODE (after a `return`, before the next
+    /// reachable join). Skips everything except the control skeleton:
+    ///
+    /// * `block`/`loop`/`if` opened here are themselves dead — counted via
+    ///   `dead_nest` and skipped wholesale (no labels exist for them, and any
+    ///   branch to them is inside the same dead region, i.e. also skipped);
+    /// * `else` of the frame that DIED in its then-arm resumes lowering: the
+    ///   `beq` at `if` targets its else label, so the else-arm is reachable
+    ///   (no `jal end` is emitted — the then-arm returned instead of jumping
+    ///   to the join);
+    /// * `end` of a live frame always DEFINES its label(s) at the correct
+    ///   lexical position, and resumes lowering iff control can land there:
+    ///   an if-without-else join (the `beq` false path), an if/else join the
+    ///   then-arm falls into (`jal end` emitted at `else`), or any frame
+    ///   whose end label was handed out to a `br`/`br_if`
+    ///   (`end_referenced`). A loop's end label is never a branch target
+    ///   (loop `br`s target the HEAD), so a loop whose body died stays dead.
+    ///
+    /// On resume the vstack is truncated to the frame's entry height — the
+    /// dead arm produced no join values. For an if/else join whose then-arm
+    /// fell through, the then-arm's results are pushed back (the only
+    /// reachable producer); a dead-both-arms join reached via `br` pushes
+    /// nothing, so a later pop of a would-be result fails LOUDLY as a stack
+    /// error (honest decline) rather than reading a stale register.
+    fn lower_one_dead(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        use WasmOp::*;
+        match op {
+            Block | Loop | If => self.dead_nest += 1,
+            Else if self.dead_nest == 0 => {
+                let frame = self
+                    .ctrl
+                    .last_mut()
+                    .ok_or(SelectorError::ControlMismatch("else without matching if"))?;
+                if frame.kind != FrameKind::If {
+                    return Err(SelectorError::ControlMismatch(
+                        "else where the open frame is not an if",
+                    ));
+                }
+                let else_label = frame
+                    .else_label
+                    .clone()
+                    .ok_or(SelectorError::ControlMismatch("if frame has no else label"))?;
+                frame.kind = FrameKind::Else;
+                frame.then_results = Vec::new();
+                frame.then_unreachable = true;
+                let entry = frame.stack_height_at_entry;
+                self.vstack.truncate(entry);
+                self.out.push(RiscVOp::Label { name: else_label });
+                self.dead_code = false;
+            }
+            End if self.dead_nest == 0 => match self.ctrl.pop() {
+                Some(frame) => {
+                    self.vstack.truncate(frame.stack_height_at_entry);
+                    let resume = match frame.kind {
+                        // if-without-else: the `beq` false path lands here.
+                        FrameKind::If => true,
+                        // if/else: reachable via the then-arm's `jal end`
+                        // (then fell through) or an explicit br to the join.
+                        FrameKind::Else => !frame.then_unreachable || frame.end_referenced,
+                        FrameKind::Block | FrameKind::Loop => frame.end_referenced,
+                    };
+                    if frame.kind == FrameKind::If
+                        && let Some(else_label) = frame.else_label.clone()
+                    {
+                        self.out.push(RiscVOp::Label { name: else_label });
+                    }
+                    if frame.kind == FrameKind::Else && !frame.then_unreachable {
+                        // The then-arm jumped here with its results live.
+                        self.vstack.extend(frame.then_results.iter().copied());
+                    }
+                    self.out.push(RiscVOp::Label {
+                        name: frame.end_label,
+                    });
+                    if resume {
+                        self.dead_code = false;
+                    }
+                }
+                None => {
+                    // Function-level end on a dead path: the terminator was
+                    // already emitted by the `return` — no second epilogue
+                    // (keeps pre-#882 streams byte-identical).
+                    self.emitted_return = true;
+                }
+            },
+            End => self.dead_nest -= 1,
+            // Everything else is dead: no bytes, no vstack effect.
+            _ => {}
         }
         Ok(())
     }
@@ -1604,6 +1729,13 @@ impl Selector {
         // #472: a fusible comparison record only survives from the comparison
         // to the IMMEDIATELY following op — any other op invalidates it.
         let pending_cmp = self.pending_cmp.take();
+        // #882: inside a dead region only the control skeleton is processed
+        // (label definitions + reachability joins); everything else is
+        // skipped. The `pending_cmp` take above already invalidated any
+        // stale fusion record across the dead region.
+        if self.dead_code {
+            return self.lower_one_dead(op);
+        }
         match op {
             // ─── Locals ─────────────────────────────────────────────────
             LocalGet(idx) => self.lower_local_get(*idx, op)?,
@@ -1781,6 +1913,8 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    end_referenced: false,
+                    then_unreachable: false,
                 });
             }
             Loop => {
@@ -1794,6 +1928,8 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    end_referenced: false,
+                    then_unreachable: false,
                 });
             }
             If => self.lower_if(op)?,
@@ -1804,7 +1940,12 @@ impl Selector {
 
             Return => {
                 self.emit_return_epilogue();
-                self.emitted_return = true;
+                // #882: do NOT abort the walk (the old `emitted_return`
+                // break) — the ops after a `return` are wasm dead code, but
+                // the frame-closing `end`s still DEFINE branch-target labels
+                // and an `else`/referenced-`end` join resumes reachability.
+                // Enter dead-code mode; `lower_one_dead` walks the skeleton.
+                self.dead_code = true;
             }
 
             // Cross-function call. WASM-level types tell us how many
@@ -2809,6 +2950,8 @@ impl Selector {
             else_label: Some(else_label),
             stack_height_at_entry: self.vstack.len(),
             then_results: Vec::new(),
+            end_referenced: false,
+            then_unreachable: false,
         });
         Ok(())
     }
@@ -2879,20 +3022,29 @@ impl Selector {
                 // into the same register. When both arms already chose the same
                 // register, NO `mv` is emitted (control-flow-only / register-
                 // symmetric if/else stays byte-identical).
-                let then_results = frame.then_results;
-                let else_results = self.vstack.split_off(frame.stack_height_at_entry);
-                if then_results.len() != else_results.len() {
-                    return Err(SelectorError::ControlMismatch(
-                        "if/else arms disagree on result arity (#343)",
-                    ));
+                if frame.then_unreachable {
+                    // #882: the then-arm ended on a `return` — nothing falls
+                    // into this join from that side, so the else-arm's
+                    // results (already on the vstack, in their own
+                    // registers) ARE the if/else's results. No
+                    // reconciliation, and the #343 arity check must not fire
+                    // against the empty `then_results`.
+                } else {
+                    let then_results = frame.then_results;
+                    let else_results = self.vstack.split_off(frame.stack_height_at_entry);
+                    if then_results.len() != else_results.len() {
+                        return Err(SelectorError::ControlMismatch(
+                            "if/else arms disagree on result arity (#343)",
+                        ));
+                    }
+                    for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
+                        self.reconcile_if_result(*then_v, *else_v)?;
+                    }
+                    // The merged results live in the then-arm's registers —
+                    // push them back so the surrounding code (return / outer
+                    // op) reads them.
+                    self.vstack.extend(then_results);
                 }
-                for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
-                    self.reconcile_if_result(*then_v, *else_v)?;
-                }
-                // The merged results live in the then-arm's registers — push
-                // them back so the surrounding code (return / outer op) reads
-                // them.
-                self.vstack.extend(then_results);
             }
             self.out.push(RiscVOp::Label {
                 name: frame.end_label,
@@ -2985,7 +3137,7 @@ impl Selector {
         Ok(())
     }
 
-    fn target_label_for_depth(&self, depth: u32) -> Result<String, SelectorError> {
+    fn target_label_for_depth(&mut self, depth: u32) -> Result<String, SelectorError> {
         let height = self.ctrl.len();
         let depth = depth as usize;
         if depth >= height {
@@ -2994,14 +3146,20 @@ impl Selector {
                 height,
             });
         }
-        let frame = &self.ctrl[height - 1 - depth];
+        let frame = &mut self.ctrl[height - 1 - depth];
         // For loops, br targets the head; for blocks/ifs, br targets the end.
         let label = match frame.kind {
             FrameKind::Loop => frame
                 .head_label
                 .clone()
                 .expect("loop frame must have a head label"),
-            _ => frame.end_label.clone(),
+            _ => {
+                // #882: the end label is now a real branch target — if the
+                // fall-through path into this frame's `end` later dies on a
+                // `return`, code after the `end` is still reachable.
+                frame.end_referenced = true;
+                frame.end_label.clone()
+            }
         };
         Ok(label)
     }

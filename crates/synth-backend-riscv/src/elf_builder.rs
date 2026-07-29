@@ -31,6 +31,17 @@ pub enum ElfBuildError {
     #[error("undefined label `{0}`")]
     UndefinedLabel(String),
 
+    /// #882 hard gate: a label defined MORE than once in one function's
+    /// stream. The resolution map is last-wins on insert, so a duplicate
+    /// would silently rebind every reference to the later position — a
+    /// wrong-offset branch, i.e. a silent miscompile. The selector's
+    /// monotonic `fresh_label` counter makes duplicates unconstructible
+    /// today; this emit-time check makes that a structural invariant
+    /// (every referenced label resolves to EXACTLY ONE definition inside
+    /// the current function) instead of a convention.
+    #[error("duplicate label `{0}` (defined at byte {1} and byte {2})")]
+    DuplicateLabel(String, u32, u32),
+
     #[error("function `{0}` is empty")]
     EmptyFunction(String),
 
@@ -461,7 +472,13 @@ impl RiscVElfBuilder {
             byte_offsets.push(cursor);
             match op {
                 RiscVOp::Label { name } => {
-                    labels.insert(name.clone(), cursor);
+                    // #882 hard gate: exactly-one definition per label per
+                    // function. `insert` is last-wins — a duplicate would
+                    // silently rebind every reference to the later position
+                    // (a wrong-offset branch). Hard-error instead.
+                    if let Some(prev) = labels.insert(name.clone(), cursor) {
+                        return Err(ElfBuildError::DuplicateLabel(name.clone(), prev, cursor));
+                    }
                 }
                 RiscVOp::Call { .. } => cursor += 8, // auipc + jalr pair
                 _ => cursor += 4,
