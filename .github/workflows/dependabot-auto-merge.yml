@@ -18,12 +18,51 @@ jobs:
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@v3
-      - name: Enable auto-merge for patch + minor updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+      # A 0.x MINOR bump is BREAKING by semver convention (for 0.x the MINOR
+      # component is the de-facto major), but Dependabot reports it as
+      # `semver-minor` because the major component is still 0. That gap bit synth
+      # TWICE on the SAME dep: ordeal 0.9->0.12 (added `BvTerm::Urem`, broke every
+      # exhaustive match) and again 0.9->0.16 (#864 — landed with NO CI run and
+      # left `main` uncompilable). So: HOLD when the previous version is 0.x and
+      # the minor component changed.
+      - name: Classify 0.x-minor as breaking (hold)
+        id: zerox
+        env:
+          # Via env (never interpolated into the script body): this is a
+          # pull_request_target workflow with contents:write, so no
+          # ${{ }} expansion inside `run:`.
+          PREV_VERSION: ${{ steps.meta.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          hold=false
+          if [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
+            case "$PREV_VERSION" in
+              0.*)
+                pm=$(printf '%s' "$PREV_VERSION" | cut -d. -f2)
+                nm=$(printf '%s' "$NEW_VERSION" | cut -d. -f2)
+                [ "$pm" != "$nm" ] && hold=true
+                ;;
+            esac
+          fi
+          echo "hold=$hold" >> "$GITHUB_OUTPUT"
+          echo "0.x-minor hold=$hold ($PREV_VERSION -> $NEW_VERSION)"
+      - name: Enable auto-merge for patch + true-minor updates
+        if: (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') && steps.zerox.outputs.hold != 'true'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Comment + label held 0.x-minor bumps
+        if: steps.zerox.outputs.hold == 'true'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREV_VERSION: ${{ steps.meta.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
+        run: |
+          gh pr edit "$PR_URL" --add-label "major-bump-hold" 2>/dev/null || true
+          gh pr comment "$PR_URL" --body "🔒 **0.x MINOR bump — held for manual review.** \`$PREV_VERSION\` → \`$NEW_VERSION\`: for a 0.x crate the MINOR component is the de-facto major, so this is BREAKING even though Dependabot labels it \`semver-minor\`. This gap broke synth twice on \`ordeal\` (0.9→0.12 added \`BvTerm::Urem\`, breaking every exhaustive match; 0.9→0.16 in #864 landed with no CI run and left main uncompilable). Build EVERY affected feature set (incl. \`--features z3-solver\`) and run the full \`synth-verify\` suite before merging."
       - name: Comment + label major updates for manual review
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
         run: |
