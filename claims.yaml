@@ -766,3 +766,126 @@ claims:
         pattern: 'let \(hi, lo\) = \(at\(ceiling\)\?, at\(0\)\?\);'
         glob: ['crates/synth-backend/src/wcet_loops.rs']
         expect: 1
+
+  # ---------------------------------------------------------------------------
+  # #880 — FEATURE_MATRIX template prose pins. The staleness gate only proves
+  # committed doc == render(template); it cannot see WRONG TEMPLATE PROSE
+  # (v0.51 called shipped aarch64 div/rem/popcnt/calls "not yet"/"declined";
+  # v0.52 called the shipped-and-DEFAULT #865 OOB-trap a "follow-on" — both
+  # caught only by a human cold read at tag time). These claims pin the
+  # template's load-bearing capability phrases VERBATIM and bind each to
+  # independent evidence: the oracle that EXECUTES the capability exists AND
+  # is CI-WIRED (the #879 lesson — an unwired oracle gates nothing), plus a
+  # code anchor where a stable one exists. LIMIT (stated honestly): a
+  # verbatim pin catches DRIFT of a pinned phrase — weakening/rewording a
+  # shipped capability reddens CI and forces a deliberate ledger bump next to
+  # the evidence — but it cannot catch a brand-NEW false claim typed into the
+  # template; that residual stays on review, and on extending this list
+  # whenever a new load-bearing phrase lands.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-MATRIX-AARCH64-BOUNDS-DEFAULT
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "**BOUNDS-CHECKED by default** — an out-of-bounds access traps (`brk`) exactly where wasmtime traps"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/aarch64_bounds_865_differential.py
+      - kind: count-min                      # the oracle is CI-wired, not shelfware
+        pattern: 'aarch64_bounds_865_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+      - kind: count-min                      # the enforcing default's code anchor
+        pattern: 'MemBounds::Software'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        min: 1
+
+  - id: SYNTH-MATRIX-AARCH64-DIVREM-POPCNT
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "`div_s/div_u/rem_s/rem_u` (with the ÷0 + INT_MIN/−1 WASM trap guards) and `popcnt` (#851)"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/aarch64_divrem_851_differential.py
+      - kind: count-min
+        pattern: 'aarch64_divrem_851_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
+  - id: SYNTH-MATRIX-CALL-INDIRECT-FLASH-TABLE
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "self-contained dispatch is PC-relative via a flash funcref table (v0.47)"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/call_indirect_275_selfcontained_execution_differential.py
+      - kind: count-min
+        pattern: 'call_indirect_275_selfcontained_execution_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
+  - id: SYNTH-MATRIX-TRUNC-SAT
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps)"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/trunc_sat_782_differential.py
+      - kind: count-min
+        pattern: 'trunc_sat_782_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
+  # The v0.51/v0.52-CLASS defect this lane FIXED in the same PR: the template
+  # still said "RV32 warns loudly on dropped initializer bytes" four releases
+  # after #798 (v0.48) shipped the segments and replaced the warning with a
+  # hard error. The corrected phrase is pinned to the hard-error call site in
+  # the RV32 backend and to the full-boot oracle.
+  - id: SYNTH-MATRIX-RV32-DATA-SHIP
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "RV32 ships active data segments as `.wasm_data` records — the emitted blob is read back and any served/runtime disagreement hard-errors the compile (#798, v0.48)"
+    evidence:
+      - kind: count-eq                       # the read-back hard-error in the backend
+        pattern: 'validate_served_image'
+        glob: ['crates/synth-backend-riscv/src/backend.rs']
+        expect: 1
+      - kind: file-exists
+        path: scripts/repro/rv32_data_798_boot_differential.py
+      - kind: count-min                      # #879-class: the boot oracle must be CI-wired
+        pattern: 'rv32_data_798_boot_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
+  # Same class, second find of this audit: the WCET decline row still listed
+  # "calls" as a blanket D two releases after phase-3 inter-procedural
+  # composition (v0.48) bounded direct local calls.
+  - id: SYNTH-MATRIX-WCET-COMPOSITION
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "`total = own + Σ site-multiplier × callee-total` over direct `BL` calls to local bounded callees (v0.48, phase 3); a declined callee propagates its decline UP"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-backend/src/wcet_compose.rs
+      - kind: file-exists
+        path: crates/synth-backend/src/wcet_recursion.rs
+      - kind: file-exists
+        path: crates/synth-backend/src/wcet_loops.rs
+      - kind: file-exists
+        path: crates/synth-cli/tests/wcet_bound_gate.rs
+      - kind: verbatim                       # the honest residual row stays adjacent
+        text: "Unhinted data-dependent loops, indirect/external calls, tree/mutual recursion, i64 software div/rem, non-M3/M4 cores | D"
+
+  # ---------------------------------------------------------------------------
+  # #879 — the gpio-thin oracle's CI wiring, pinned so it cannot be silently
+  # UN-wired again (it sat un-wired for two releases while its size claim
+  # headlined v0.50.1 and v0.52.0). Pins the script + the pinned real-driver
+  # fixture, capstone in the job's dep install (the mask census disassembles
+  # .text), and the CI-side NON-ZERO check-count assertion (exit 0 alone is
+  # not trusted — the "0 ops accepted PASS" lesson).
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-GPIO-846-ORACLE-CI-WIRED
+    doc: .github/workflows/ci.yml
+    text: "scripts/repro/gpio_thin_846_differential.py"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/gpio_thin_846_differential.py
+      - kind: file-exists
+        path: scripts/repro/gpio_thin_846.loom.wasm
+      - kind: verbatim
+        text: "pip install wasmtime unicorn pyelftools capstone"
+      - kind: verbatim
+        text: 'grep -q "^#846 CHECKS=75/75" gpio846.out'

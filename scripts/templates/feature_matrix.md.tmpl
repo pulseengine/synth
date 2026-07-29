@@ -79,7 +79,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 |-----------|--------|-----------------|
 | SMT translation validation | Y | ordeal (pure-Rust QF_BV) default since v0.27.0; Z3 demoted to a feature-gated differential oracle |
 | Trap-preservation VC (VCR-VER-002) | Y (live classes) | Dropped WASM traps: i32 + i64 div/rem, memory OOB (all widths), `call_indirect`, `unreachable`, float→int trunc |
-| Static-data addressing VC (VCR-VER-003) | Y | Byte-equality of served vs runtime-image static data (the #757 wrong-segment class); spanned accesses, self-contained ROM image; RV32 warns loudly on dropped initializer bytes |
+| Static-data addressing VC (VCR-VER-003) | Y | Byte-equality of served vs runtime-image static data (the #757 wrong-segment class); spanned accesses, self-contained ROM image; RV32 ships active data segments as `.wasm_data` records — the emitted blob is read back and any served/runtime disagreement hard-errors the compile (#798, v0.48) |
 | Proof-carrying specialization (`SYNTH_FACT_SPEC`) | Y (opt-in) | ordeal-certified elisions from loom `wsc.facts` invariants (#494) |
 
 ### WCET (Track D, #778)
@@ -89,7 +89,9 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | `--emit-wcet` sound per-function cycle bounds | Y | `synth-wcet-v1` sidecar; documented Cortex-M3/M4 worst-case per-op cycles (max over {M3, M4}); sound-critical model constants pinned in `claims.yaml` |
 | Statically-proven const-bound loop bounds | Y | Conservative symbolic walk over the final encoded stream (v0.47); nested-multiplicative |
 | `--wcet-hints` (untrusted hint seam) | Y | Every hint verified against synth's own derived trip count or rejected with a machine reason — never trusted into a bound |
-| Data-dependent loops, calls, i64 software div/rem, non-M3/M4 cores | D | Loud decline with machine reason |
+| Inter-procedural composition (direct call graph) | Y | `total = own + Σ site-multiplier × callee-total` over direct `BL` calls to local bounded callees (v0.48, phase 3); a declined callee propagates its decline UP |
+| Bounded single-self-recursion + masked-ceiling data-dependent loops | Y (hint-gated) | Depth/trip are always synth-DERIVED (mask-bounded, entry-independent), never the raw hint; too-low or unverifiable hints rejected with machine reasons (phases 4–5) |
+| Unhinted data-dependent loops, indirect/external calls, tree/mutual recursion, i64 software div/rem, non-M3/M4 cores | D | Loud decline with machine reason |
 
 ---
 

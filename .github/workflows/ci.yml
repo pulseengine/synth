@@ -574,7 +574,8 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        # capstone: the #846 gpio-thin oracle's mask census disassembles .text
+        run: pip install wasmtime unicorn pyelftools capstone
       - name: Run unreachable trap oracle (#665, thumb2 + rv32)
         run: SYNTH=./target/debug/synth python scripts/repro/unreachable_665_differential.py
       - name: Run rem_s trap-table oracle (#666, rv32)
@@ -589,6 +590,20 @@ jobs:
       # elision never fires unsoundly (red-tested at land time).
       - name: Run i32 shift-mask oracle with mask elision ON (#686)
         run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+      # #846/#879: gale's REAL gpio-thin driver (pinned loom.wasm, never a
+      # synthetic) under the default-ON mask elision — BOTH halves of the
+      # v0.50.1 headline claim: (a) .text shrinks and the redundant mod-32
+      # masks strictly drop, (b) 75 mmio (addr,value) traces + returns are
+      # bit-identical vs wasmtime across a pin sweep INCLUDING pin >= 32 (the
+      # boundary an unsound elision would corrupt). #879: this gate existed
+      # for two releases but was never CI-wired. The grep asserts the
+      # NON-ZERO check count from the script's machine-readable summary —
+      # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
+      - name: Run gpio-thin size + mmio execution oracle (#846/#879, cortex-m3)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
+          grep -q "^#846 CHECKS=75/75" gpio846.out
       # #752: the software bounds guard must trap the top-of-address-space
       # wraparound class — the retired shape ADD-computed the end address
       # mod 2^32, so `addr >= 2^32 - (offset+size-1)` wrapped small, passed
@@ -819,6 +834,18 @@ jobs:
       # needs pyelftools ONLY (no unicorn/wasmtime).
       - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
         run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
+      # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
+      # un-wired in the same #879 audit as the gpio gate. clang+lld build a
+      # bare-metal riscv32 firmware from synth's object + generated startup/
+      # linker script; unicorn boots it FROM _reset so the record-copy loop
+      # (declaration order => later-wins) is what initializes linear memory;
+      # result vs wasmtime. The script LOUD-fails on missing tools (never a
+      # skip) and this wiring is pinned in claims.yaml
+      # (SYNTH-MATRIX-RV32-DATA-SHIP).
+      - name: Install clang + lld (riscv32 bare-metal, #798 boot oracle)
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
+        run: SYNTH=./target/debug/synth python scripts/repro/rv32_data_798_boot_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
