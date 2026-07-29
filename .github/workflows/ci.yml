@@ -474,6 +474,12 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_bounds_865_differential.py
+      - name: Run #851 v0.53 op-surface oracle (select x4 types + wrap/extends + drop/nop + memory.size/grow)
+        # The VCR-SEL-005 third-backend closes: select (CSEL/FCSEL) incl.
+        # NaN/-0 carry, wrap/extends with POISONED upper argument bits (the
+        # AAPCS64 x-view hazard), drop/nop, fixed-memory size/grow parity
+        # against a min=max module (growth failure is spec-forced there).
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_surface_851_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
