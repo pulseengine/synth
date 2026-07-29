@@ -2019,10 +2019,10 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
         F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U | F32DemoteF64
         | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
         | I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U | I64TruncF64S
-        | I64TruncF64U | I64TruncF32S | I64TruncF32U
-        | I32TruncSatF32S | I32TruncSatF32U | I32TruncSatF64S | I32TruncSatF64U
-        | I64TruncSatF32S | I64TruncSatF32U | I64TruncSatF64S | I64TruncSatF64U
-        | F32ReinterpretI32 | I32ReinterpretF32 | F64ReinterpretI64 | I64ReinterpretF64 => (1, 1),
+        | I64TruncF64U | I64TruncF32S | I64TruncF32U | I32TruncSatF32S | I32TruncSatF32U
+        | I32TruncSatF64S | I32TruncSatF64U | I64TruncSatF32S | I64TruncSatF32U
+        | I64TruncSatF64S | I64TruncSatF64U | F32ReinterpretI32 | I32ReinterpretF32
+        | F64ReinterpretI64 | I64ReinterpretF64 => (1, 1),
 
         // Constants: push 1
         I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => (0, 1),
@@ -2758,7 +2758,15 @@ fn try_lower_f32(
             });
             free_vfp_temp(vfp_used, vfp_home, sm);
             emit_i64_trunc_f64_domain_guard(
-                dd, signed, idx, vfp_used, vfp_home, stack, next_temp, spill, instructions,
+                dd,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
                 reserved,
             )?;
             lower_i64_trunc_sat_from_f64(
@@ -4367,7 +4375,15 @@ fn try_lower_f64(
                 dm
             };
             emit_i64_trunc_f64_domain_guard(
-                work, signed, idx, vfp_used, vfp_home, stack, next_temp, spill, instructions,
+                work,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
                 reserved,
             )?;
             lower_i64_trunc_sat_from_f64(

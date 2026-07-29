@@ -525,7 +525,12 @@ fn classify(op: &WasmOp) -> ParityClass {
         | I32TruncSatF32S
         | I32TruncSatF32U
         | I64TruncSatF32S
-        | I64TruncSatF32U => StructurallyExcluded(FLOAT),
+        | I64TruncSatF32U
+        // #869: the f32-source i64-target TRAPPING truncations (ARM32 m7dp
+        // lowers them via the i64 domain guard + #782 decompose; RV32 has no
+        // floats — target-parameterized like the rest of the float surface).
+        | I64TruncF32S
+        | I64TruncF32U => StructurallyExcluded(FLOAT),
         // ─── f64 (StructurallyExcluded — target-parameterized) ───────────
         F64Add
         | F64Sub
@@ -648,7 +653,7 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
         F32Load { offset: 0, align: 2 }, F32Store { offset: 0, align: 2 },
         F32ConvertI32S, F32ConvertI32U, F32ConvertI64S, F32ConvertI64U, F32DemoteF64,
         F32ReinterpretI32, I32ReinterpretF32, I32TruncF32S, I32TruncF32U, I32TruncSatF32S,
-        I32TruncSatF32U, I64TruncSatF32S, I64TruncSatF32U,
+        I32TruncSatF32U, I64TruncSatF32S, I64TruncSatF32U, I64TruncF32S, I64TruncF32U,
         // f64
         F64Add, F64Sub, F64Mul, F64Div, F64Eq, F64Ne, F64Lt, F64Le, F64Gt, F64Ge, F64Abs,
         F64Neg, F64Ceil, F64Floor, F64Trunc, F64Nearest, F64Sqrt, F64Min, F64Max,

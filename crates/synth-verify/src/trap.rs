@@ -161,9 +161,8 @@ pub fn trap_div(op: DivOp, dividend: &BV, divisor: &BV) -> Bool {
 
 /// Map a float→int truncation [`WasmOp`] to its
 /// `(float format, integer target, signedness)` triple; `None` for any
-/// non-trunc op. Covers all six trunc variants synth's decoder produces
-/// (`i64.trunc_f32_s/u` are not `WasmOp` variants; the raw [`trap_trunc`]
-/// builder still covers those shapes if they ever land).
+/// non-trunc op. Covers all eight trunc variants synth's decoder produces
+/// (`i64.trunc_f32_s/u` gained `WasmOp` variants + an ARM lowering in #869).
 pub fn trunc_op(op: &WasmOp) -> Option<(FpFmt, IntTarget, bool)> {
     Some(match op {
         WasmOp::I32TruncF32S => (FpFmt::F32, IntTarget::I32, true),
@@ -172,6 +171,10 @@ pub fn trunc_op(op: &WasmOp) -> Option<(FpFmt, IntTarget, bool)> {
         WasmOp::I32TruncF64U => (FpFmt::F64, IntTarget::I32, false),
         WasmOp::I64TruncF64S => (FpFmt::F64, IntTarget::I64, true),
         WasmOp::I64TruncF64U => (FpFmt::F64, IntTarget::I64, false),
+        // #869: the f32-source i64-target pair — WasmOp variants (and an ARM
+        // lowering) exist now; the raw builder always covered the shape.
+        WasmOp::I64TruncF32S => (FpFmt::F32, IntTarget::I64, true),
+        WasmOp::I64TruncF32U => (FpFmt::F32, IntTarget::I64, false),
         _ => return None,
     })
 }

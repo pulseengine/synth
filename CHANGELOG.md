@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ARM 64-bit integer↔float conversion family lowered (#869, + the #756
+  `i64.trunc_f64` pair)** — all eight ops that previously loud-skipped their
+  function with `GI-FPU-001` now compile on `cortex-m7dp` (the falcon target),
+  unblocking `falcon:cascade/rate#tick`, `position#tick`, and `ekf#estimate`
+  at their public entry points. ARMv7E-M VFP has no 64-bit-integer `VCVT`, so
+  the lowerings are **self-contained multi-step expansions** (no `__aeabi`
+  runtime dependency, unicorn-executable):
+  - `f64.convert_i64_{s,u}`: exact two-word build — `VCVT` each 32-bit half,
+    scale the high word by 2^32 (exact), one `VADD.F64` = the single correct
+    round-to-nearest-even.
+  - `f32.convert_i64_{s,u}`: the same build plus a Fast2Sum exact residual and
+    a branch-free **round-to-odd** integer fixup before the `VCVT.F32.F64`
+    demote — the naive demote double-rounds (e.g. `0x8000_0080_0000_0001`
+    must round UP to 2^63+2^40 in f32; the f64 intermediate erases the sticky
+    bit). Round-to-odd at 53 bits makes the two-step rounding exactly equal
+    the direct 64→24 RNE (Boldo–Melquiond).
+  - `i64.trunc_f32_{s,u}` / `i64.trunc_f64_{s,u}` (**TRAPPING**, WASM §4.3.3):
+    the #709-class i64 domain guard (`-2^63 <= x < 2^63` signed /
+    `-1 < x < 2^64` unsigned, ordered compares + `UDF`; NaN fails the first
+    compare) in front of the #782 word-decompose, which for a guarded operand
+    provably never saturates. A bare decompose — or a bare `__aeabi_f2lz`
+    call — would saturate where WASM requires a trap: the
+    #633/#666/#709/#665/#642 silent-miscompile class.
+
+  CI gate: `scripts/repro/i64_float_conv_869_differential.py` — bit-exact vs
+  wasmtime under unicorn on every boundary row **with the trap rows executed
+  on both sides** (NaN, ±inf, 2^63, −2^63, 2^64, the largest-below-bound
+  f32/f64 values), the double-rounding killer patterns, and ≥10k fixed-seed
+  random patterns per direction (96k checks). Frozen fixtures 10/10
+  byte-identical (byte-changing only for modules using these ops).
+
+### Fixed
+
+- **Single-precision targets (m4f/m7) now loud-decline the whole #869 family
+  by name at the selector preamble** (listed in the f64 capability scope):
+  every member's lowering runs on double-precision machinery, and the
+  pre-existing `i64.trunc_sat_f32_{s,u}` promote-to-f64 path previously slid
+  past the capability gate to be caught only later at ISA validation. Same
+  honest-skip outcome, one gate earlier and named.
+
 ## [0.51.0] - 2026-07-23
 
 **"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses

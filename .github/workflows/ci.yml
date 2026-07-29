@@ -618,6 +618,16 @@ jobs:
       # This gate caught the optimized-path silent-NOP drop at land time.
       - name: Run trunc_sat boundary oracle (#782a, m7dp+m4f+aarch64)
         run: SYNTH=./target/debug/synth python scripts/repro/trunc_sat_782_differential.py
+      # #869: the 64-bit integer<->float conversion family (gale's six +
+      # the #756 i64.trunc_f64 pair) on cortex-m7dp — converts bit-exact
+      # (incl. the round-to-odd double-rounding killers), the TRAPPING trunc
+      # forms EXECUTED on every NaN/±inf/2^63/-2^63/2^64 boundary row (a
+      # wasmtime trap must be an ARM UDF stop — the #709-class silent-
+      # miscompile gate), m4f loud-decline honesty, falcon-flags symbol
+      # presence, and >=10k fixed-seed fuzz per direction. This gate caught
+      # the range-realloc cross-barrier live-in miscompile at land time.
+      - name: Run i64<->float conversion family oracle (#869, m7dp+m4f)
+        run: SYNTH=./target/debug/synth python scripts/repro/i64_float_conv_869_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values

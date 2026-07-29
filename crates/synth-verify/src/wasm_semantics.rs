@@ -931,6 +931,21 @@ impl WasmSemantics {
                 BV::new_const("i64_trunc_f64u_result", 64)
             }
 
+            // #869: the f32-source i64-target trapping truncations — modeled
+            // like their f64 twins (uninterpreted 64-bit result; the TRAP
+            // side is carried by `trap::trunc_op` + `trap_trunc`). Without
+            // these arms the wildcard would hand back a 32-BIT symbolic const
+            // for a 64-bit-typed op.
+            WasmOp::I64TruncF32S => {
+                assert_eq!(inputs.len(), 1, "I64TruncF32S requires 1 input");
+                BV::new_const("i64_trunc_f32s_result", 64)
+            }
+
+            WasmOp::I64TruncF32U => {
+                assert_eq!(inputs.len(), 1, "I64TruncF32U requires 1 input");
+                BV::new_const("i64_trunc_f32u_result", 64)
+            }
+
             WasmOp::I32TruncF64S => {
                 assert_eq!(inputs.len(), 1, "I32TruncF64S requires 1 input");
                 // Truncate f64 to signed i32

@@ -176,9 +176,16 @@ impl TranslationValidator {
                 | WasmOp::I32TruncF32S
                 | WasmOp::I32TruncF32U
                 // f64→i32 trunc (#756): D-register domain guard, condition-only
-                // VC. NOT `I64TruncF64S/U`: the selector loud-declines those
-                // (no i64 register-pair lowering on 32-bit ARM), so there is no
-                // shipped guard to validate — a gate entry would be dead.
+                // VC. NOT `I64TruncF64S/U` / `I64TruncF32S/U`: since #869 the
+                // shipping `select_with_stack` DOES lower them (i64 domain
+                // guard + #782 decompose), but they are never expressed as a
+                // `SynthesisRule` (this gate's input), and the symbolic ARM
+                // exec model does not yet interpret the F64 compare/decompose
+                // chain their guard rides on — a gate entry here would
+                // false-red, not protect. Their trap behavior is
+                // EXECUTION-gated instead (the #869 differential runs every
+                // NaN/±inf/2^63/-2^63/2^64 trap row on both sides); the
+                // symbolic wiring is the named #756-class residual.
                 | WasmOp::I32TruncF64S
                 | WasmOp::I32TruncF64U
         )
