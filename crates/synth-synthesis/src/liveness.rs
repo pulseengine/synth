@@ -14064,6 +14064,104 @@ mod tests {
         );
     }
 
+    /// #872 follow-on, found by the whole-function VCR-RA-003 validator on
+    /// `sret_decide` (`CalleeSavedNotRestored { reg: R7 }`, which HARD-ERRORED
+    /// the compile and dropped the `shim` function).
+    ///
+    /// A `Pop` register list is NOT a renameable operand: it is a bitmask whose
+    /// stack layout is REGISTER-NUMBER order, paired with the prologue `Push`,
+    /// carrying the #490 callee-saved contract. And `Pop {…, PC}` is a RETURN —
+    /// so a LIVE one in the MIDDLE of a segment (the sret-shim shape: a real
+    /// epilogue followed by an unreachable second one) has defs that look
+    /// segment-locally DEAD, because the trailing pop re-defines them. The
+    /// colourer duly recoloured them — RED-FIRST, this test on the unfixed pass
+    /// emitted `pop {r7,r6,r5,r4,r2,pc}` for `pop {r4,r5,r6,r7,r8,pc}`,
+    /// restoring r2-r7 from the stack image the push laid out for r4-r8 and
+    /// leaving the caller's r8 clobbered. `validate_segment_rewrite` misses it
+    /// for the same reason the pass proposed it — walking backward, the seeded
+    /// `r7~r7` is discharged by the DEAD trailing pop before the walk reaches
+    /// the live one, the segment-local model having no notion of a mid-segment
+    /// control transfer. So this is pinned at the PASS.
+    #[test]
+    fn realloc_never_recolours_a_pop_register_list_872() {
+        let epilogue_regs = vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC];
+        let seg = vec![
+            ins(ArmOp::Ldr {
+                rd: Reg::R2,
+                addr: MemAddr {
+                    base: Reg::SP,
+                    offset: 8,
+                    offset_reg: None,
+                },
+            }),
+            // Short-lived intermediates on r4/r6 — recolourable, and recolouring
+            // THEM is fine; that freedom is what makes the pop's dead-looking
+            // defs attractive rename targets.
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R4,
+                op2: Operand2::Imm(32),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R6),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(72),
+            }),
+            // THE LIVE RETURN, mid-segment.
+            ins(ArmOp::Pop {
+                regs: epilogue_regs.clone(),
+            }),
+            // Unreachable second epilogue — the thing that makes the live pop's
+            // defs look dead to a segment-local last-use analysis.
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(72),
+            }),
+            ins(ArmOp::Pop {
+                regs: epilogue_regs.clone(),
+            }),
+        ];
+        let pool = [
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ];
+        let (out, stats) = reallocate_function(&seg, &pool);
+        assert_eq!(out.len(), seg.len(), "the pass never adds or drops ops");
+        for (i, (before, after)) in seg.iter().zip(out.iter()).enumerate() {
+            match (&before.op, &after.op) {
+                (ArmOp::Pop { regs: o }, ArmOp::Pop { regs: r }) => assert_eq!(
+                    o, r,
+                    "instruction {i}: a Pop register list was recoloured \
+                     (#872 / #490 CalleeSavedNotRestored): {out:?}"
+                ),
+                (ArmOp::Pop { .. }, other) => {
+                    panic!("instruction {i}: Pop rewritten into {other:?}")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            stats.validator_rejects, 0,
+            "the pass must not propose rewrites its own validator rejects"
+        );
+    }
+
     #[test]
     fn validator_accepts_a_legitimate_internal_rename() {
         // Hand-built valid rewrite: the interior r5 range (born 0, dies 1) of
