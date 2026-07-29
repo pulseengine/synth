@@ -31,6 +31,17 @@ pub enum ElfBuildError {
     #[error("undefined label `{0}`")]
     UndefinedLabel(String),
 
+    /// #882 hard gate: a label defined MORE than once in one function's
+    /// stream. The resolution map is last-wins on insert, so a duplicate
+    /// would silently rebind every reference to the later position — a
+    /// wrong-offset branch, i.e. a silent miscompile. The selector's
+    /// monotonic `fresh_label` counter makes duplicates unconstructible
+    /// today; this emit-time check makes that a structural invariant
+    /// (every referenced label resolves to EXACTLY ONE definition inside
+    /// the current function) instead of a convention.
+    #[error("duplicate label `{0}` (defined at byte {1} and byte {2})")]
+    DuplicateLabel(String, u32, u32),
+
     #[error("function `{0}` is empty")]
     EmptyFunction(String),
 
@@ -461,7 +472,13 @@ impl RiscVElfBuilder {
             byte_offsets.push(cursor);
             match op {
                 RiscVOp::Label { name } => {
-                    labels.insert(name.clone(), cursor);
+                    // #882 hard gate: exactly-one definition per label per
+                    // function. `insert` is last-wins — a duplicate would
+                    // silently rebind every reference to the later position
+                    // (a wrong-offset branch). Hard-error instead.
+                    if let Some(prev) = labels.insert(name.clone(), cursor) {
+                        return Err(ElfBuildError::DuplicateLabel(name.clone(), prev, cursor));
+                    }
                 }
                 RiscVOp::Call { .. } => cursor += 8, // auipc + jalr pair
                 _ => cursor += 4,
@@ -831,6 +848,55 @@ mod tests {
             builder.build(&[f]),
             Err(ElfBuildError::UndefinedLabel(_))
         ));
+    }
+
+    /// #882 hard gate: a label defined twice in one function is a HARD error.
+    /// The map insert is last-wins, so a duplicate would silently rebind
+    /// every reference to the later position — a wrong-offset branch, i.e. a
+    /// silent miscompile. This makes "every referenced label resolves to
+    /// exactly one definition inside the current function" structural.
+    #[test]
+    fn duplicate_label_rejected_882() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                RiscVOp::Label { name: "L".into() },
+                nop_op(),
+                RiscVOp::Label { name: "L".into() },
+                RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: "L".into(),
+                },
+            ],
+        };
+        match builder.build(&[f]) {
+            Err(ElfBuildError::DuplicateLabel(name, first, second)) => {
+                assert_eq!(name, "L");
+                assert_eq!((first, second), (0, 4));
+            }
+            other => panic!("duplicate label must hard-error, got {other:?}"),
+        }
+    }
+
+    /// #882: the same label name in TWO DIFFERENT functions is fine — label
+    /// resolution is per-function (the map is rebuilt for each function), so
+    /// a reference can never bind across function boundaries.
+    #[test]
+    fn same_label_name_across_functions_ok_882() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let mk = |name: &str| RiscVElfFunction {
+            name: name.into(),
+            ops: vec![
+                RiscVOp::Label { name: "L".into() },
+                nop_op(),
+                RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: "L".into(),
+                },
+            ],
+        };
+        assert!(builder.build(&[mk("f"), mk("g")]).is_ok());
     }
 
     /// #798: `build` (no data) and `build_with_data(&[], …)` are BYTE-identical
