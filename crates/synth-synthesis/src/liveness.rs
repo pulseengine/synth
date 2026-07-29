@@ -3271,10 +3271,15 @@ fn op_shape(op: &ArmOp) -> Option<ArmOp> {
 /// downstream code to behave identically, the rewritten execution's value in
 /// `rewritten_reg` must equal the original execution's value in `orig_reg`."
 ///
-/// - **Exit seed:** for every register the original segment *writes* (the
-///   per-register last-written set), require `r ~ r` — the pass's live-out
-///   pinning contract (later segments read live-outs from their original
-///   registers). One refinement, because the seed models the segment's exit
+/// - **Exit seed:** for every register EITHER segment *writes* (the union of
+///   the two per-register last-written sets), require `r ~ r` — the pass's
+///   live-out pinning contract (later segments read live-outs from their
+///   original registers), PLUS the #872 half: a rewritten-side write to a
+///   register the original never defines must also prove exit identity,
+///   which a genuine clobber of a pass-through value (a live-in dead at its
+///   last *in-segment* use but read by post-segment code — unmodeled
+///   `reg_effect = None` ops read unknowable register sets) cannot.
+///   One refinement, because the seed models the segment's exit
 ///   INTERFACE: when the segment ends in a function return (`pop {..., pc}`),
 ///   the AAPCS caller-saved scratch registers `R2/R3/R12/LR` are dead-out by
 ///   calling convention (synth's own callers never read them after a call),
@@ -3312,13 +3317,20 @@ fn op_shape(op: &ArmOp) -> Option<ArmOp> {
 /// value of the same field — which in concrete syntax is necessarily the same
 /// register on each side.
 ///
-/// **Honest v1 bound** (matches the pass's own cross-segment contract, which
-/// pins only registers the original holds at exit): a rewritten-side write to
+/// **The former honest-v1 bound is CLOSED (#872):** a rewritten-side write to
 /// a register the original segment never defines (clobbering a pass-through
-/// value) is accepted when that write is segment-internally dead. Closing
-/// this requires cross-segment liveness (step 5) for both the pass and the
-/// validator. Everything else in the renames-only class — wrong renames, def
-/// redirects, live clobbers, swapped destinations, RMW splits — is rejected.
+/// value) used to be accepted when segment-internally dead — and that shared
+/// blind spot let the validator certify the #869 `f32.convert_i64_u`
+/// miscompile (`mvns r3, r3` recoloured onto a live-in the following
+/// unmodeled `I64Add` expansion still read). The exit seed now covers the
+/// union of both sides' written registers, so the validated contract is full
+/// exit register-file equivalence: every register written by either side
+/// proves identity at exit, and registers written by neither trivially hold
+/// their entry values on both sides. No cross-segment liveness is assumed —
+/// which is exactly why it is sound in front of `reg_effect = None` ops
+/// whose reads are unknowable. Everything in the renames-only class — wrong
+/// renames, def redirects, live clobbers, pass-through clobbers, swapped
+/// destinations, RMW splits — is rejected.
 pub fn validate_segment_rewrite(
     orig: &[ArmInstruction],
     rewritten: &[ArmInstruction],
@@ -3367,7 +3379,19 @@ pub fn validate_segment_rewrite_exempting(
         effects.push((eo, er));
     }
 
-    // Exit seed: identity equations for the original's written registers.
+    // Exit seed: identity equations for every register EITHER side writes.
+    // Seeding the original's written set enforces the pass's live-out pinning
+    // contract; seeding the REWRITTEN side's written set as well (#872)
+    // rejects a rewrite that clobbers a register the original never defines —
+    // a pass-through value (e.g. a live-in whose last modeled use is early)
+    // that post-segment code may still read. The segment cannot know its
+    // readers (a following `reg_effect = None` op reads an unknowable
+    // register set), so the only sound exit contract is register-file
+    // equivalence: registers written by either side must prove identity, and
+    // registers written by neither hold their entry values on both sides.
+    // Before #872 the rewritten side was NOT seeded, and the validator
+    // ACCEPTED the #869 `mvns r3, r3` live-in clobber its own pass produced —
+    // the mirror-pinning blind spot this seed closes.
     // At a function return (`pop {..., pc}` as the final instruction) the
     // AAPCS caller-saved scratch registers are dead-out by convention and
     // are exempted; everywhere else every written register is conservatively
@@ -3379,7 +3403,7 @@ pub fn validate_segment_rewrite_exempting(
     let aapcs_dead_at_return = [Reg::R2, Reg::R3, Reg::R12, Reg::LR];
     let mut eqs: BTreeSet<(Reg, Reg)> = effects
         .iter()
-        .flat_map(|(eo, _)| eo.defs.iter())
+        .flat_map(|(eo, er)| eo.defs.iter().chain(er.defs.iter()))
         .filter(|r| !(ends_in_return && aapcs_dead_at_return.contains(r)))
         .filter(|r| !exempt.contains(r))
         .map(|r| (*r, *r))
@@ -3461,10 +3485,13 @@ pub struct ReallocStats {
 ///     to its original register, so values produced by earlier segments are
 ///     read where they were left;
 ///   - per physical register, the LAST range opened (the one holding the
-///     register's value at segment exit) is pinned to its original register,
-///     so later segments find live-outs where they expect them — whether or
-///     not they actually read them (cross-segment liveness is step 5's
-///     refinement, not assumed here);
+///     register's value at segment exit) is pinned to its original register
+///     AND (#872) extended live-through to the segment end, so later readers
+///     — modeled ones in following segments and unmodeled `reg_effect = None`
+///     ops whose register reads are unknowable — find EVERY register's exit
+///     value where the original left it, whether or not the segment-local
+///     view saw a use (cross-segment liveness is step 5's refinement, not
+///     assumed here; a live-in's last in-segment use is NOT a death point);
 ///   - ranges on registers outside `pool` (reserved R9–R12, SP) are identity-
 ///     assigned and never enter the colouring (their registers cannot collide
 ///     with pool colours).
@@ -5178,7 +5205,7 @@ fn try_reallocate_segment(
             seg.last().map(|i| &i.op)
         );
     }
-    let Some(ranges) = straight_line_value_ranges(seg) else {
+    let Some(mut ranges) = straight_line_value_ranges(seg) else {
         if dbg {
             eprintln!("[postex-dbg] realloc decline: value_ranges=None");
         }
@@ -5186,6 +5213,39 @@ fn try_reallocate_segment(
     };
     if ranges.is_empty() {
         return SegmentOutcome::Declined;
+    }
+    // #872 exit-state equivalence: extend each register's EXIT-HOLDING range
+    // (the last range opened on it — including a pass-through live-in the
+    // segment never redefines) to the segment end, so no other value can be
+    // recoloured onto that register after its last in-segment use. The
+    // segment-local last-use is NOT a death point: segment-local analysis
+    // cannot see the readers that follow — an unmodeled `reg_effect = None`
+    // op (i64-pair pseudo-ops, FP reinterprets, calls) reads an unknowable
+    // register set, and a later segment reads live-ins where the greedy
+    // selector left them. The sound contract is therefore that the rewritten
+    // segment leaves EVERY physical register with the same exit value as the
+    // original: exit-holding ranges are pinned to their original register
+    // (below) AND — this extension — keep it to the end, closing the reuse
+    // window that miscompiled #869's `f32.convert_i64_u` (`mvns r3, r3`
+    // recoloured onto a live-in the following `I64Add` expansion still read).
+    // Registers with no range at all stay untouched on both sides (#677
+    // absent-colour blockers below; reserved registers identity-assign).
+    // Ranges wholly BEFORE a register's final def may still recolour onto it
+    // — the final def overwrites them on both sides, so exit state is
+    // unaffected. Under `relaxed_exit` (VCR-VER-001 terminal segment) only
+    // R0/R1 are observable past the `bx lr`, so only their exit-holding
+    // ranges are extended — matching the pin/exemption sets below.
+    {
+        let mut exit_holder: BTreeMap<Reg, usize> = BTreeMap::new();
+        for r in &ranges {
+            exit_holder.insert(r.reg, r.vreg); // creation order → last wins
+        }
+        for (reg, vreg) in exit_holder {
+            if relaxed_exit && !matches!(reg, Reg::R0 | Reg::R1) {
+                continue;
+            }
+            ranges[vreg].last_use = seg.len(); // vreg == index by construction
+        }
     }
     let pool_index: BTreeMap<Reg, usize> = pool.iter().enumerate().map(|(i, r)| (*r, i)).collect();
     let adj = range_interference(&ranges);
@@ -11747,14 +11807,20 @@ mod tests {
         // little freedom — the honest property is SOUNDNESS, not shrinkage.
         //
         // VCR-RA-003 UPDATE: the backward-dataflow validator found that the
-        // colourer's candidate rewrite for THIS segment relocates the first
+        // colourer's candidate rewrite for THIS segment relocated the first
         // r6 value onto r0 AFTER r0's pinned last range dies (dies-at-birth
         // non-interference), changing r0's EXIT value (3 → r3+r4). For a
         // mid-function segment a downstream read of r0 would then be a
-        // miscompile — the pinning protects where the last range LIVES, not
-        // the register's exit state. The validator therefore REJECTS the
-        // rewrite and the pass keeps the original bytes: soundness is now
-        // FULL identity here, enforced by the gate rather than assumed.
+        // miscompile — the pinning protected where the last range LIVES, not
+        // the register's exit state.
+        //
+        // #872 UPDATE: the pass now extends every register's exit-holding
+        // range live-through to the segment end, so the exit-state-changing
+        // candidate is never PROPOSED — `validator_rejects` must be 0 (a
+        // nonzero count is a pass bug by contract) and the bytes stay
+        // identical. The validator retains independent teeth for this class
+        // (`validator_rejects_pass_through_live_in_clobber_872` feeds it the
+        // bad rewrite directly).
         let seq = vec![
             ins(ArmOp::Movw {
                 rd: Reg::R0,
@@ -11805,12 +11871,11 @@ mod tests {
         let (out, stats) = reallocate_function(&seq, &pool);
         assert_eq!(stats.segments, 1);
         assert_eq!(
-            stats.validator_rejects, 1,
-            "the exit-state-changing candidate rewrite must be caught"
+            stats.validator_rejects, 0,
+            "the pass must no longer PROPOSE the exit-state-changing rewrite (#872)"
         );
-        assert_eq!(stats.reallocated, 0);
-        // The rejected segment passes through byte-identical — the safe
-        // fallback IS the original greedy code.
+        // Whether the segment recolours identically or declines, the bytes
+        // are the original greedy code — soundness is FULL identity here.
         assert_eq!(out, seq);
     }
 
@@ -13780,19 +13845,27 @@ mod tests {
     }
 
     #[test]
-    fn validator_accepts_dead_def_redirect_the_documented_v1_bound() {
-        // HONEST BOUND (documented on validate_segment_rewrite): a
-        // segment-internally DEAD def redirected to a register the original
-        // never writes is accepted — the validated contract covers exactly
-        // the original's last-written exit state (the pass's own pinning
-        // contract). Closing this needs cross-segment liveness (step 5).
+    fn validator_rejects_dead_def_redirect_onto_unwritten_register_872() {
+        // The FORMER honest-v1 bound, closed by #872: a segment-internally
+        // DEAD def redirected onto a register the original never writes used
+        // to be accepted — but segment-local deadness proves nothing about
+        // the post-segment readers (unmodeled ops read unknowable register
+        // sets, later segments read pass-through live-ins), so the rewrite
+        // changes r7's exit value and must be rejected.
         let seg = dead_def_segment();
         let mut rew = seg.clone();
         rew[0].op = ArmOp::Movw {
             rd: Reg::R7,
             imm16: 1,
-        }; // dead in both; r7 not in the original's written set
-        assert_eq!(validate_segment_rewrite(&seg, &rew), Ok(()));
+        }; // dead in-segment, but clobbers pass-through r7's exit value
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew),
+            Err(RewriteViolation::DefClobbersEquation {
+                index: 0,
+                orig: Reg::R7,
+                rewritten: Reg::R7
+            })
+        );
         // ... and a redirect that is dead in BOTH segments w.r.t. the
         // written-set contract (movw r0 overwritten by the add) is likewise
         // accepted — genuinely equivalent exit state, not a miss.
@@ -13819,23 +13892,145 @@ mod tests {
         );
     }
 
+    /// The #872 shape (the #869-era `f32.convert_i64_u` miscompile, minimized):
+    /// a pass-through live-in (`r3`, read once early, never redefined in the
+    /// segment) whose physical register the pass reused for a segment-internal
+    /// intermediate after its last *modeled* use — while an unmodeled op AFTER
+    /// the segment (`I64Add` pseudo-op / FP-reinterpret `vmov`) still reads
+    /// `r3`. `r2` is redefined at 3 so the intermediate born at 1 is NOT `r2`'s
+    /// exit range (unpinned, free to recolour — the reuse window).
+    fn pass_through_live_in_segment_872() -> Vec<ArmInstruction> {
+        vec![
+            // 0: orr r7, r5, r6 — intermediate A from live-ins r5/r6
+            ins(ArmOp::Orr {
+                rd: Reg::R7,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R6),
+            }),
+            // 1: mvn r2, r3 — intermediate B; LAST in-segment use of live-in r3
+            ins(ArmOp::Mvn {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+            // 2: add r0, r2, r7 — consume A and B
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R7),
+            }),
+            // 3: movw r2, #0 — r2 redefined: B is not r2's exit-holding range
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 0,
+            }),
+            // 4: add r1, r2, r0
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ]
+    }
+
+    /// The #872 bad rewrite: intermediate B recoloured onto the pass-through
+    /// live-in's register r3 (`mvn r3, r3`), clobbering r3's exit value —
+    /// exactly the `mvns r3, r3` reuse in the #869 disassembly. Original exit
+    /// r3 = entry r3; rewritten exit r3 = ~entry r3.
+    fn pass_through_live_in_bad_rewrite_872() -> Vec<ArmInstruction> {
+        let mut rew = pass_through_live_in_segment_872();
+        rew[1].op = ArmOp::Mvn {
+            rd: Reg::R3,
+            op2: Operand2::Reg(Reg::R3),
+        };
+        rew[2].op = ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R3,
+            op2: Operand2::Reg(Reg::R7),
+        };
+        rew
+    }
+
+    #[test]
+    fn validator_rejects_pass_through_live_in_clobber_872() {
+        // RED-FIRST evidence for #872: before the fix the validator ACCEPTED
+        // this rewrite (its exit seed covered only registers the ORIGINAL
+        // writes, so the pass-through r3 had no equation — the same
+        // segment-local last-use assumption the pass itself made: consistent
+        // wrongness, the VCR-ORACLE mirror-pinning class). Post-segment code
+        // (modeled reader in a later segment, or an unmodeled reg_effect=None
+        // op) observes r3's exit value, so the rewrite is a miscompile.
+        let seg = pass_through_live_in_segment_872();
+        let rew = pass_through_live_in_bad_rewrite_872();
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew),
+            Err(RewriteViolation::DefClobbersEquation {
+                index: 1,
+                orig: Reg::R3,
+                rewritten: Reg::R3
+            }),
+            "pass-through live-in clobber must be rejected (#872)"
+        );
+    }
+
+    #[test]
+    fn realloc_preserves_pass_through_live_in_exit_state_872() {
+        // RED-FIRST evidence for #872 at pass level: with a pool ordered so
+        // the colourer's preferred colour for intermediate B is exactly the
+        // pass-through live-in's register (everything else reserved-identity),
+        // the unfixed pass emits `mvn r3, r3` — and its validator accepted it.
+        // The fixed pass must leave EVERY register's exit value equal to the
+        // original's: r3 is never written by the original segment, so no
+        // rewrite may define it.
+        let seg = pass_through_live_in_segment_872();
+        let (out, stats) = reallocate_function(&seg, &[Reg::R3, Reg::R2]);
+        for i in &out {
+            if let Some(e) = reg_effect(&i.op) {
+                assert!(
+                    !e.defs.contains(&Reg::R3),
+                    "rewritten segment defines the pass-through live-in r3 \
+                     (exit-state divergence, #872): {out:?}"
+                );
+            }
+        }
+        // And the pass must never have shipped a rewrite its validator had to
+        // save it from: a nonzero count is a pass bug by contract.
+        assert_eq!(stats.validator_rejects, 0, "pass proposed an unsound rewrite");
+    }
+
     #[test]
     fn validator_accepts_a_legitimate_internal_rename() {
         // Hand-built valid rewrite: the interior r5 range (born 0, dies 1) of
-        // reshuffle_segment moved to r4; inputs (r0) and live-outs
-        // (r1/r2/r5-final) untouched.
+        // reshuffle_segment moved to r2 — a register the segment WRITES, whose
+        // exit-holding def (the `mov r2, ...` at 1) overwrites the recoloured
+        // value on both sides, so exit register-file equivalence holds.
+        // Inputs (r0) and live-outs (r1/r2/r5-final) untouched.
         let seg = reshuffle_segment();
         let mut rew = seg.clone();
         rew[0].op = ArmOp::Add {
-            rd: Reg::R4,
+            rd: Reg::R2,
             rn: Reg::R0,
             op2: Operand2::Imm(1),
         };
         rew[1].op = ArmOp::Mov {
             rd: Reg::R2,
-            op2: Operand2::Reg(Reg::R4),
+            op2: Operand2::Reg(Reg::R2),
         };
         assert_eq!(validate_segment_rewrite(&seg, &rew), Ok(()));
+        // The SAME interior rename targeted at r4 — a register neither side
+        // otherwise writes — is now rejected (#872): segment-locally r4's
+        // rewritten write is dead, but its exit value diverges from the
+        // original's pass-through r4.
+        let mut rew_r4 = seg.clone();
+        rew_r4[0].op = ArmOp::Add {
+            rd: Reg::R4,
+            rn: Reg::R0,
+            op2: Operand2::Imm(1),
+        };
+        rew_r4[1].op = ArmOp::Mov {
+            rd: Reg::R2,
+            op2: Operand2::Reg(Reg::R4),
+        };
+        assert!(validate_segment_rewrite(&seg, &rew_r4).is_err());
     }
 
     // --- VCR-RA-003 criterion 2: seeded mutation campaign ----------------
