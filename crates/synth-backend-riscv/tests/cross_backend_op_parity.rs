@@ -58,7 +58,17 @@
 //! RV32 is evidence the i32 Zbb deferral is closable by routing i32 rotate
 //! through the same shift+or sequence — the concrete next VCR-SEL-005 codegen
 //! step (byte-changing, gated; not asserted here).
+//!
+//! SUB-SHAPE NOTE (#882). The ledger is one probe per `WasmOp` variant, so it
+//! speaks about an op as a whole. When a lowering lands that is deliberately
+//! PARTIAL, closing the whole-op entry must not erase the residual: `br_table`
+//! lowers on both backends as of v0.53 (entry deleted), but RV32 still
+//! loud-declines >16 targets and value-carrying tables where ARM does not.
+//! That residual is asserted by name in `br_table_subshape_asymmetry_882`,
+//! which fails in both directions just like the ledger. A future partial
+//! lowering should follow the same pattern rather than widen the probe.
 
+use synth_backend_riscv::SelectorError;
 use synth_backend_riscv::selector::select as riscv_select;
 use synth_synthesis::{BoundsCheckConfig, InstructionSelector, RuleDatabase, WasmOp, WasmOp::*};
 
@@ -779,12 +789,15 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
             "RV32 selector has no MemoryFill arm (loud Unsupported); RV32 bulk-memory \
              (#374) not yet lowered — deferred, VCR-SEL-005",
         ),
-        // ---- structured control-flow multi-target branch (measured 2026-07-17) ----
-        (
-            "br_table",
-            "RV32 selector has no BrTable arm (loud Unsupported); the jump-table \
-             dispatch is not yet lowered on RV32 — deferred, VCR-SEL-005",
-        ),
+        // ---- structured control-flow multi-target branch ----
+        // (br_table CLOSED v0.53, #882 — RV32 now lowers it as a compare-and-
+        //  branch chain, so the whole-op divergence is gone and the ledger entry
+        //  was deleted. The op is at parity on the probed shape. The two
+        //  REMAINING sub-shape asymmetries (>16 targets; value-carrying) are NOT
+        //  hidden by that deletion — they are asserted BY NAME in
+        //  `br_table_subshape_asymmetry_882` below, which goes red in both
+        //  directions exactly like this ledger does. Execution differential:
+        //  scripts/repro/rv32_br_table_882_differential.py.)
         // ---- sub-word i64 memory (measured 2026-07-17; the full-word i64.load /
         //      i64.store DO lower on both — only the sub-word extend/truncate
         //      variants are the gap) ----
@@ -964,5 +977,122 @@ fn ledger_labels_are_live_integer_core_ops() {
         dangling.is_empty(),
         "known-divergence ledger references labels that are not live \
          IntegerCore ops (typo, removed op, or reclassified): {dangling:?}"
+    );
+}
+
+/// SUB-SHAPE ASYMMETRY, STATED NOT HIDDEN (#882, measured 2026-07-29).
+///
+/// The op-level ledger is one probe per `WasmOp` variant, so closing
+/// `br_table` on RV32 (#882) correctly deletes the whole-op divergence entry —
+/// the probed shape now lowers on BOTH backends. But `br_table` is not ONE
+/// shape, and RV32's lowering is deliberately partial: it LOUD-DECLINES two
+/// sub-shapes that ARM still accepts. Deleting the ledger entry without saying
+/// so would let that residual disappear from the gate, which is exactly the
+/// dishonesty the op-parity ledger exists to prevent. So the residual is
+/// asserted here, by name, with the decline reason:
+///
+///   * `>16 targets` → `BrTableTooLarge`. The RV32 lowering is a compare-and-
+///     branch CHAIN (no data section, no PC-relative table), so cost is linear
+///     in the target count; past `BR_TABLE_MAX_TARGETS` it refuses rather than
+///     emit an unbounded chain. The jump-table upgrade is the named follow-up.
+///   * `value-carrying` → `BrTableValueCarrying`. The #509 block-arity-
+///     threading class: the single-pass RV32 selector cannot reconcile
+///     per-path result registers, so it refuses rather than silently
+///     miscompile a path-dependent value.
+///
+/// HONEST READ OF THE ARM SIDE: `arm_lowers == true` here means only "the ARM
+/// selector returns Ok", NOT "ARM is verified correct on that shape" — the ARM
+/// selector shares the #509 limitation on plain `Br`/`BrIf` and does not
+/// perform the value-carrying check at all. This test therefore records a
+/// CAPABILITY asymmetry, not a correctness verdict on ARM.
+///
+/// Like the ledger, this fails in BOTH directions: if RV32 later lowers these
+/// shapes (jump table / #509 arity threading), this test goes red and whoever
+/// closed the gap must delete the corresponding claim — a documented gap must
+/// not outlive the gap it documents.
+#[test]
+fn br_table_subshape_asymmetry_882() {
+    // The shape the op-level ledger probes: <=16 targets, non-value-carrying,
+    // in-range depths. AT PARITY — this is why the ledger entry was deleted.
+    let at_parity = [
+        Block,
+        Block,
+        LocalGet(0),
+        BrTable {
+            targets: vec![0],
+            default: 1,
+        },
+        End,
+        End,
+    ];
+    assert!(
+        arm_lowers(&at_parity, 1) && riscv_lowers(&at_parity, 1),
+        "the br_table shape the op-parity ledger probes must lower on BOTH \
+         backends (#882); if it stopped, re-add the known-divergence entry"
+    );
+
+    // Residual 1: past BR_TABLE_MAX_TARGETS (16) the RV32 chain refuses.
+    let too_large = [
+        Block,
+        Block,
+        LocalGet(0),
+        BrTable {
+            targets: vec![0; 17],
+            default: 1,
+        },
+        End,
+        End,
+    ];
+    assert!(
+        arm_lowers(&too_large, 1),
+        "ARM is expected to still lower a 17-target br_table; if it now \
+         declines too, this is no longer an asymmetry — delete this claim"
+    );
+    // Pin the DECLINE REASON, not merely "Err": a bare `is_err()` would also be
+    // satisfied by an unrelated stack-underflow artifact in the probe, which
+    // would make this claim vacuous.
+    assert!(
+        matches!(
+            riscv_select(&too_large, 1),
+            Err(SelectorError::BrTableTooLarge {
+                targets: 17,
+                max: 16
+            })
+        ),
+        "RV32 must decline a 17-target br_table AS BrTableTooLarge; got {:?}. \
+         If it now lowers, the jump-table upgrade landed — delete this claim; \
+         if it errors differently, the probe is no longer measuring this gap.",
+        riscv_select(&too_large, 1).map(|_| "Ok")
+    );
+
+    // Residual 2: value-carrying (#509 block-arity threading).
+    let value_carrying = [
+        Block,
+        Block,
+        I32Const(7),
+        LocalGet(0),
+        BrTable {
+            targets: vec![0],
+            default: 1,
+        },
+        Drop,
+        End,
+        Drop,
+        End,
+    ];
+    assert!(
+        arm_lowers(&value_carrying, 1),
+        "ARM is expected to still accept a value-carrying br_table (it does \
+         not perform the #509 check); if it now declines, delete this claim"
+    );
+    assert!(
+        matches!(
+            riscv_select(&value_carrying, 1),
+            Err(SelectorError::BrTableValueCarrying { .. })
+        ),
+        "RV32 must decline a value-carrying br_table AS BrTableValueCarrying; \
+         got {:?}. If it now lowers, #509 arity threading landed — delete this \
+         claim; if it errors differently, the probe stopped measuring the gap.",
+        riscv_select(&value_carrying, 1).map(|_| "Ok")
     );
 }
