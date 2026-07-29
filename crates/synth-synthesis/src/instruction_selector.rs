@@ -3802,14 +3802,30 @@ fn lower_f32_convert_i64(
         },
         instructions,
     );
+    // 64-bit `s += delta` as MODELED Adds/Adc — deliberately NOT the
+    // `ArmOp::I64Add` pseudo-op (same bytes): `reg_effect` returns None for
+    // the i64-pair family, which makes it a range-realloc SEGMENT BARRIER
+    // whose reads of slo/shi are INVISIBLE to the segment-local liveness —
+    // the colorer then reuses slo/shi for intermediates after their last
+    // in-segment use and the pair reaching the final VMOV is garbage (caught
+    // by the #869 differential at land time; the segment validator shares
+    // the same last-use assumption, so it accepted the wrong rewrite). With
+    // Adds/Adc the uses sit INSIDE the segment at its end: the live-in
+    // ranges of slo/shi span the whole segment and the defs are the pinned
+    // exit ranges — sound under reallocation by construction.
     emit(
-        ArmOp::I64Add {
-            rdlo: slo,
-            rdhi: shi,
-            rnlo: slo,
-            rnhi: shi,
-            rmlo: tmp,
-            rmhi: tlo,
+        ArmOp::Adds {
+            rd: slo,
+            rn: slo,
+            op2: Operand2::Reg(tmp),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Adc {
+            rd: shi,
+            rn: shi,
+            op2: Operand2::Reg(tlo),
         },
         instructions,
     );
