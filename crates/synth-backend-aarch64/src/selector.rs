@@ -24,12 +24,28 @@
 //! "more-total-than-WASM" class is guarded, not naive), `popcnt` (SIMD
 //! `CNT`+`ADDV`), f64↔i64 reinterpret, linear-memory load/store, non-param
 //! locals, direct `call`, and full control flow (`if`/`else`/`loop`/`return`).
+//! The VCR-SEL-005 third-backend enumeration (#851, v0.53) then closed:
+//! `select` (branchless `CSEL`/`FCSEL`, both register files), `drop`/`nop`,
+//! `i32.wrap_i64`, `i64.extend_i32_{s,u}`, the five in-place sign extensions
+//! (`i32/i64.extend8/16/32_s` — `SXTB`/`SXTH`/`SXTW`), and fixed-memory
+//! `memory.size`/`memory.grow` (declared-min page count / branchless
+//! `grow(0)≡size`, `grow(n>0)`→−1, the #539 rule — growth failure is
+//! §-permitted and keeps the #865 static bounds limit sound).
 //!
-//! **Deliberately still declined (loud-skip, never wrong code):**
+//! **Deliberately still declined (loud-skip, never wrong code) — the
+//! mechanically-derived complement lives in the cross-backend op-parity oracle
+//! (`crates/synth-backend-riscv/tests/cross_backend_op_parity.rs`, aarch64
+//! leg):**
 //! - `call_indirect`, import calls, `>8` integer args, multi-result or
 //!   float-result callees (returned in v0/d0, not x0), a caller reading its own
-//!   params across a call (param-homing is a later increment).
-//! - `br_table`, value-carrying `block`/`loop`/`if`, and register spilling.
+//!   params across a call (param-homing is a later increment), and WRITING a
+//!   parameter (`local.set`/`tee` on a param index).
+//! - `br_table`, value-carrying `block`/`loop`/`if`, register spilling,
+//!   `global.get`/`global.set` (no globals substrate), and bulk memory
+//!   (`memory.copy`/`memory.fill`).
+//! - Float rounding (`ceil`/`floor`/`trunc`/`nearest`), f32/f64 linear-memory
+//!   load/store, i64→float converts, and the TRAPPING i64-target truncations
+//!   (the saturating forms do lower).
 //! - Data-segment init and the startup that establishes the `x28` linear-memory
 //!   base (the load/store lowering is correct given the base precondition;
 //!   wiring it at runtime is a follow-on). OOB accesses TRAP since #865 under
@@ -1706,6 +1722,146 @@ pub fn select_typed_cf_calls(
                     stack.push(Val::gp(dst));
                 }
             }
+            // --- #851 / VCR-SEL-005 third-backend op-surface closes ---
+            //
+            // `nop` executes nothing (WASM §4.4.1); no code, no stack effect.
+            WasmOp::Nop => {}
+            // `drop` pops and discards the top value (either register file);
+            // purely a value-stack bookkeeping op, no code emitted.
+            WasmOp::Drop => {
+                stack
+                    .pop()
+                    .ok_or_else(|| SelectError("drop underflow".into()))?;
+            }
+            // `select`: [v1 v2 c] → c != 0 ? v1 : v2 (WASM §4.4.1) — the
+            // branchless conditional gale flagged in #851. Lowered to
+            // `cmp w_c, wzr` + `csel`/`fcsel` on NE (c nonzero picks v1).
+            // Width-agnostic X/D forms carry both i32/i64 (resp. f32/f64)
+            // correctly: consumers read the low half through w/s views, the
+            // same convention the epilogue and `fmov d0, dN` already use.
+            // Both operands must live in the SAME register file (validated
+            // wasm guarantees same type; a mismatch here is loud, not silent).
+            WasmOp::Select => {
+                let cond = pop_gp(&mut stack, "select")?;
+                let v2 = stack
+                    .pop()
+                    .ok_or_else(|| SelectError("select underflow".into()))?;
+                let v1 = stack
+                    .pop()
+                    .ok_or_else(|| SelectError("select underflow".into()))?;
+                if v1.file != v2.file {
+                    return Err(SelectError(
+                        "select: operand register-file mismatch (GP vs FP)".into(),
+                    ));
+                }
+                // cmp reads only `cond`; csel/fcsel read v1/v2 before writing
+                // dst (single instruction), so dst may safely reuse any of the
+                // three just-popped registers.
+                words.push(enc::cmp(cond, enc::WZR));
+                match v1.file {
+                    File::Gp => {
+                        let dst = alloc_temp(&stack)?;
+                        words.push(enc::csel64(dst, v1.reg, v2.reg, Cond::Ne));
+                        stack.push(Val::gp(dst));
+                    }
+                    File::Fp => {
+                        let dst = alloc_ftemp(&stack)?;
+                        words.push(enc::fcsel_d(dst, v1.reg, v2.reg, Cond::Ne));
+                        stack.push(Val::fp(dst));
+                    }
+                }
+            }
+            // `i32.wrap_i64` — take the low 32 bits. `mov wd, wn` (w-form orr)
+            // reads the low half and ZEROES the upper half, so the result is a
+            // clean i32 regardless of the source's upper bits.
+            WasmOp::I32WrapI64 => unop(&mut words, &mut stack, enc::mov_reg)?,
+            // `i64.extend_i32_u` — zero-extend: the same `mov wd, wn` (w-form
+            // writes zero-extend to 64 bits by architecture).
+            WasmOp::I64ExtendI32U => unop(&mut words, &mut stack, enc::mov_reg)?,
+            // `i64.extend_i32_s` / `i64.extend32_s` — sign-extend the low word
+            // (SXTW). Reads only the low 32 bits, so garbage upper source bits
+            // (e.g. an i32 param's) never leak.
+            WasmOp::I64ExtendI32S => unop(&mut words, &mut stack, enc::sxtw)?,
+            WasmOp::I64Extend32S => unop(&mut words, &mut stack, enc::sxtw)?,
+            // in-place sign extensions (sign-extension operators proposal)
+            WasmOp::I32Extend8S => unop(&mut words, &mut stack, enc::sxtb)?,
+            WasmOp::I32Extend16S => unop(&mut words, &mut stack, enc::sxth)?,
+            WasmOp::I64Extend8S => unop(&mut words, &mut stack, enc::sxtb64)?,
+            WasmOp::I64Extend16S => unop(&mut words, &mut stack, enc::sxth64)?,
+            // `memory.size` (#851): this backend never lowers a real grow (see
+            // MemoryGrow below), so the module's declared minimum IS the
+            // runtime size — the same static argument that makes the #865
+            // bounds limit sound — and memory.size is the compile-time page
+            // count. Needs the limit, so it declines honestly under
+            // `--safety-bounds none` (no limit is threaded there).
+            WasmOp::MemorySize(mem) => {
+                if *mem != 0 {
+                    return Err(SelectError(format!(
+                        "memory.size on memory {mem}: multi-memory is not \
+                         supported for aarch64 (#406) — loud-declining"
+                    )));
+                }
+                let MemBounds::Software { limit_bytes } = bounds else {
+                    return Err(SelectError(
+                        "memory.size needs the module's memory limit, which is \
+                         not threaded under --safety-bounds none — \
+                         loud-declining (#851)"
+                            .into(),
+                    ));
+                };
+                let dst = alloc_temp(&stack)?;
+                for w in enc::mov_imm32(dst, (limit_bytes / 65536) as u32) {
+                    words.push(w);
+                }
+                stack.push(Val::gp(dst));
+            }
+            // `memory.grow` (#851): the linear memory is a FIXED host buffer of
+            // the declared minimum size, so growth always fails — which WASM
+            // explicitly permits (§4.4.7: grow MAY fail, returning −1).
+            // `grow(0)` trivially succeeds and returns the current page count
+            // (grow(0) ≡ size, the #539 rule). Lowered branchless:
+            //   mov t0, #pages ; mov t1, #-1 ; cmp delta, wzr ; csel t0 eq
+            // Keeping the failure static means the #865 bounds limit stays
+            // sound (the limit can never move at runtime).
+            WasmOp::MemoryGrow(mem) => {
+                if *mem != 0 {
+                    return Err(SelectError(format!(
+                        "memory.grow on memory {mem}: multi-memory is not \
+                         supported for aarch64 (#406) — loud-declining"
+                    )));
+                }
+                let MemBounds::Software { limit_bytes } = bounds else {
+                    return Err(SelectError(
+                        "memory.grow needs the module's memory limit, which is \
+                         not threaded under --safety-bounds none — \
+                         loud-declining (#851)"
+                            .into(),
+                    ));
+                };
+                let delta = pop_gp(&mut stack, "memory.grow")?;
+                // Reserve `delta` so the two scratch temps are distinct from it.
+                stack.push(Val::gp(delta));
+                let mut free = TEMPS
+                    .iter()
+                    .copied()
+                    .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+                let (Some(t0), Some(t1)) = (free.next(), free.next()) else {
+                    stack.pop();
+                    return Err(SelectError(
+                        "value-stack too deep (memory.grow needs 2 GP temps)".into(),
+                    ));
+                };
+                stack.pop();
+                for w in enc::mov_imm32(t0, (limit_bytes / 65536) as u32) {
+                    words.push(w);
+                }
+                for w in enc::mov_imm32(t1, u32::MAX) {
+                    words.push(w);
+                }
+                words.push(enc::cmp(delta, enc::WZR));
+                words.push(enc::csel(t0, t0, t1, Cond::Eq));
+                stack.push(Val::gp(t0));
+            }
             other => {
                 return Err(SelectError(format!(
                     "unsupported wasm op for aarch64 subset: {other:?}"
@@ -3168,6 +3324,157 @@ mod tests {
         assert_eq!(w[0], enc::sub_imm64(enc::SP, enc::SP, 16));
         assert_eq!(w[w.len() - 1], enc::ret());
         assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 16));
+    }
+
+    // --- #851 / VCR-SEL-005 third-backend op-surface closes ---
+
+    #[test]
+    fn select_gp_lowers_to_cmp_csel() {
+        // (param i32 i32 i32) select(v1=p0, v2=p1, c=p2):
+        //   cmp w2, wzr ; csel x9, x0, x1, ne ; mov x0, x9 ; ret
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 3).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cmp(2, enc::WZR),
+                enc::csel64(9, 0, 1, Cond::Ne),
+                enc::mov_reg64(0, 9),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_fp_lowers_to_cmp_fcsel() {
+        // (param f32 f32 i32): FP operands (s0, s1 under the independent NSRN
+        // counter), GP condition (w0). fcsel on NE picks v1.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let w = select_typed(&ops, 3, &[true, true, false], &[]).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                enc::cmp(0, enc::WZR),
+                enc::fcsel_d(16, 0, 1, Cond::Ne),
+                enc::fmov_d(0, 16),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_mixed_files_loud_declines() {
+        // v1 GP, v2 FP — a register-file mismatch must be loud, never silent.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::F32Const(1.0),
+            WasmOp::I32Const(1),
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        assert!(select(&ops, 0).is_err());
+    }
+
+    #[test]
+    fn drop_pops_and_emits_nothing() {
+        // const 7 (movz) is dropped; result is p0 already in x0 → just ret.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(7),
+            WasmOp::Drop,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(w, vec![enc::movz(9, 7), enc::ret()]);
+    }
+
+    #[test]
+    fn nop_emits_nothing() {
+        let ops = vec![WasmOp::Nop, WasmOp::LocalGet(0), WasmOp::Nop, WasmOp::End];
+        let w = select(&ops, 1).unwrap();
+        assert_eq!(w, vec![enc::ret()]);
+    }
+
+    #[test]
+    fn wrap_and_extends_lower_to_mov_sxt() {
+        for (op, want) in [
+            (WasmOp::I32WrapI64, enc::mov_reg(9, 0)),
+            (WasmOp::I64ExtendI32U, enc::mov_reg(9, 0)),
+            (WasmOp::I64ExtendI32S, enc::sxtw(9, 0)),
+            (WasmOp::I64Extend32S, enc::sxtw(9, 0)),
+            (WasmOp::I32Extend8S, enc::sxtb(9, 0)),
+            (WasmOp::I32Extend16S, enc::sxth(9, 0)),
+            (WasmOp::I64Extend8S, enc::sxtb64(9, 0)),
+            (WasmOp::I64Extend16S, enc::sxth64(9, 0)),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let w = select(&ops, 1).unwrap();
+            assert_eq!(
+                w,
+                vec![want, enc::mov_reg64(0, 9), enc::ret()],
+                "lowering mismatch for {op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_size_is_page_count_constant() {
+        // (memory 2) → 131072 bytes → memory.size = 2.
+        let ops = vec![WasmOp::MemorySize(0), WasmOp::End];
+        let w = sel_mem(&ops, 0, MemBounds::Software { limit_bytes: 131072 });
+        assert_eq!(
+            w,
+            vec![enc::movz(9, 2), enc::mov_reg64(0, 9), enc::ret()]
+        );
+    }
+
+    #[test]
+    fn memory_grow_zero_is_size_nonzero_is_minus_one() {
+        // grow(delta): mov t0,#pages ; mov t1,#-1 ; cmp delta,wzr ; csel eq.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::MemoryGrow(0),
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
+        let mut expect = vec![enc::movz(9, 1)];
+        expect.extend(enc::mov_imm32(10, u32::MAX));
+        expect.push(enc::cmp(0, enc::WZR));
+        expect.push(enc::csel(9, 9, 10, Cond::Eq));
+        expect.push(enc::mov_reg64(0, 9));
+        expect.push(enc::ret());
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn memory_size_declines_without_limit() {
+        // Under --safety-bounds none no limit is threaded — decline loudly.
+        let ops = vec![WasmOp::MemorySize(0), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            MemBounds::Unchecked,
+        );
+        assert!(r.is_err());
     }
 
     #[test]
