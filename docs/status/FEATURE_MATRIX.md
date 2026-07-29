@@ -46,14 +46,14 @@ soundness feature, not an absence.
 | f32 scalar via VFP | Y (FPU targets) | Complete op set incl. all six comparisons, NaN-aware (v0.41); requires an FPU target (e.g. `cortex-m4f`) |
 | f64 scalar via VFP | Y (FPU targets) | Complete (v0.43, #369 closed); marshalling + AAPCS-VFP mixed params |
 | Trapping float→int truncations | Y | Domain-guarded (trap, not saturate) — the #709 soundness class |
-| Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residuals: i64-from-f32 declines on single-precision (needs the f64 promote); a pressure-dependent f32 class on `--relocatable cortex-m7dp` still tracked in #782 |
+| Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residuals: i64-from-f32 declines on single-precision (needs the f64 promote); the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail is tracked in #881 (#782 closed) |
 | Control flow (block, loop, if/else, br, br_if, br_table) | Y | Renode execution tests |
 | Function calls (direct + `call_indirect`) | Y | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained dispatch is PC-relative via a flash funcref table (v0.47) |
 | Memory (load/store incl. sub-word, size/grow) | Y | `memory.grow` returns -1 on fixed-memory embedded targets; grow(0) ≡ size |
-| Multi-memory | D | Module-level loud decline with machine reason (#406 phase 1); fused components need single-memory mode |
+| Multi-memory | P | N memories lower to N distinct native base regions on ARM `--relocatable` (memory 0 keeps the runtime R11 base; memory k>0 via its own `__synth_wasm_data_<k>` symbol, #406) with an execution differential; everything outside that lane declines loudly — self-contained, native-pointer-abi, shadow-stack, riscv/aarch64, cross-memory copy/fill, i64/f32 access on memory k>0 |
 | Globals, select, locals | Y | R9-based globals; cmp→select fusion default-on |
 | SIMD (ARM Helium MVE) | R | Cortex-M55 encoding exists; untested on silicon/emulator; SIMD functions loud-skip on all other targets (category-level gate, #680) |
-| Component Model | P | Parses + ABI lift/lower; execution needs kiln-builtins; `cabi-arena-realloc` binds natively on self-contained dissolves (#418 partially open) |
+| Component Model | P | Parses + ABI lift/lower; execution needs kiln-builtins; `cabi-arena-realloc` binds natively on self-contained dissolves since v0.47 (#418 closed) |
 
 ---
 
@@ -79,7 +79,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 |-----------|--------|-----------------|
 | SMT translation validation | Y | ordeal (pure-Rust QF_BV) default since v0.27.0; Z3 demoted to a feature-gated differential oracle |
 | Trap-preservation VC (VCR-VER-002) | Y (live classes) | Dropped WASM traps: i32 + i64 div/rem, memory OOB (all widths), `call_indirect`, `unreachable`, float→int trunc |
-| Static-data addressing VC (VCR-VER-003) | Y | Byte-equality of served vs runtime-image static data (the #757 wrong-segment class); spanned accesses, self-contained ROM image; RV32 warns loudly on dropped initializer bytes |
+| Static-data addressing VC (VCR-VER-003) | Y | Byte-equality of served vs runtime-image static data (the #757 wrong-segment class); spanned accesses, self-contained ROM image; RV32 ships active data segments as `.wasm_data` records — the emitted blob is read back and any served/runtime disagreement hard-errors the compile (#798, v0.48) |
 | Proof-carrying specialization (`SYNTH_FACT_SPEC`) | Y (opt-in) | ordeal-certified elisions from loom `wsc.facts` invariants (#494) |
 
 ### WCET (Track D, #778)
@@ -89,7 +89,9 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | `--emit-wcet` sound per-function cycle bounds | Y | `synth-wcet-v1` sidecar; documented Cortex-M3/M4 worst-case per-op cycles (max over {M3, M4}); sound-critical model constants pinned in `claims.yaml` |
 | Statically-proven const-bound loop bounds | Y | Conservative symbolic walk over the final encoded stream (v0.47); nested-multiplicative |
 | `--wcet-hints` (untrusted hint seam) | Y | Every hint verified against synth's own derived trip count or rejected with a machine reason — never trusted into a bound |
-| Data-dependent loops, calls, i64 software div/rem, non-M3/M4 cores | D | Loud decline with machine reason |
+| Inter-procedural composition (direct call graph) | Y | `total = own + Σ site-multiplier × callee-total` over direct `BL` calls to local bounded callees (v0.48, phase 3); a declined callee propagates its decline UP |
+| Bounded single-self-recursion + masked-ceiling data-dependent loops | Y (hint-gated) | Depth/trip are always synth-DERIVED (mask-bounded, entry-independent), never the raw hint; too-low or unverifiable hints rejected with machine reasons (phases 4–5) |
+| Unhinted data-dependent loops, indirect/external calls, tree/mutual recursion, i64 software div/rem, non-M3/M4 cores | D | Loud decline with machine reason |
 
 ---
 
@@ -129,6 +131,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   their coverage is listed above, not implied.
 - Broad hardware validation is still missing: silicon evidence is
   fixture-scoped (gale), emulation is Renode/QEMU/unicorn.
-- Known open soundness/coverage residuals are tracked as issues (e.g. #782:
-  `trunc_sat` + a pressure-dependent f32 class on `--relocatable cortex-m7dp`;
-  #418: real dissolved-component fixture).
+- Known open soundness/coverage residuals are tracked as issues (e.g. #881:
+  the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail; #882:
+  RV32 real-driver `br_table`/label declines; #872: range-realloc
+  cross-barrier liveness blind spot).
