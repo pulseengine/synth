@@ -334,7 +334,10 @@ claims:
         glob: ['crates/synth-synthesis/src/instruction_selector.rs']
         expect: 1
       - kind: verbatim                       # the honest residual stays adjacent
-        text: "#782"
+        # (was "#782" until the v0.53 #880 audit: #782 closed v0.49–v0.52 and
+        # the README kept citing it as open, saying trunc_sat "not decoded"
+        # two releases after it shipped — the successor residual is #881)
+        text: "#881"
 
   # call_indirect: self-contained dispatch shipped v0.47 (#275 closed) with a
   # red-first execution differential; the README must not regress to either the
@@ -848,6 +851,22 @@ claims:
         path: scripts/repro/rv32_data_798_boot_differential.py
       - kind: count-min                      # #879-class: the boot oracle must be CI-wired
         pattern: 'rv32_data_798_boot_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
+  # Multi-memory: the matrix said "D — module-level loud decline" while the
+  # #406 per-memory lowering (N distinct native base regions, execution
+  # differential CI-wired) had been shipping — the v0.51 understatement class.
+  - id: SYNTH-MATRIX-MULTI-MEMORY
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "N memories lower to N distinct native base regions on ARM `--relocatable`"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-cli/tests/multi_memory_406.rs
+      - kind: file-exists
+        path: scripts/repro/multi_memory_406_differential.py
+      - kind: count-min
+        pattern: 'multi_memory_406_differential\.py'
         glob: ['.github/workflows/ci.yml']
         min: 1
 
