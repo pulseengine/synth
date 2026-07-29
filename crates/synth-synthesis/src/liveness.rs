@@ -14162,6 +14162,71 @@ mod tests {
         );
     }
 
+    /// HONEST RESIDUAL BOUND (#872), pinned so it cannot be silently assumed
+    /// away: `validate_segment_rewrite` does NOT catch a recoloured
+    /// `Pop {…, PC}` that sits in the MIDDLE of a segment. It has no notion of
+    /// a mid-segment control transfer, so walking backward it discharges the
+    /// seeded `r7~r7` exit equation at the UNREACHABLE trailing pop, long
+    /// before the walk reaches the live one — and then accepts anything the
+    /// live pop does. This is the one place the #872 union exit seed does not
+    /// reach, and it is why that class is pinned at the PASS
+    /// (`realloc_never_recolours_a_pop_register_list_872`, `arch_pinned`) with
+    /// the whole-function `validate_final_allocation` as the independent
+    /// backstop — it returns `CalleeSavedNotRestored` on exactly this stream,
+    /// which is how the defect was found.
+    ///
+    /// Closing it in the segment validator needs intra-segment control-flow
+    /// modelling (a `Pop {…, PC}` is a return, not a straight-line op) — the
+    /// same "segment-local analysis cannot see the barrier" root cause as #872
+    /// itself. Change this assertion to a rejection when that lands.
+    #[test]
+    fn validator_misses_midsegment_pop_clobber_the_documented_872_bound() {
+        let epi = vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC];
+        let mk = |first: Vec<Reg>| {
+            vec![
+                ins(ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(72),
+                }),
+                ins(ArmOp::Pop { regs: first }),
+                ins(ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(72),
+                }),
+                ins(ArmOp::Pop { regs: epi.clone() }),
+            ]
+        };
+        let orig = mk(epi.clone());
+        // The live epilogue restores r2-r7 from a stack image laid out for
+        // r4-r8: the caller's r8 is clobbered. A real miscompile.
+        let bad = mk(vec![Reg::R7, Reg::R6, Reg::R5, Reg::R4, Reg::R2, Reg::PC]);
+        assert_eq!(
+            validate_segment_rewrite(&orig, &bad),
+            Ok(()),
+            "documented bound moved — if the segment validator now REJECTS the \
+             mid-segment pop clobber, that is a win: update this pin to expect \
+             the rejection and say so"
+        );
+        // The whole-function validator is NOT blind to it — the backstop that
+        // actually caught this in the field must stay red on this stream.
+        assert!(
+            matches!(
+                validate_final_allocation(&[
+                    ins(ArmOp::Push {
+                        regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+                    }),
+                    ins(ArmOp::Pop {
+                        regs: vec![Reg::R7, Reg::R6, Reg::R5, Reg::R4, Reg::R2, Reg::PC],
+                    }),
+                ]),
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotRestored { .. })
+            ),
+            "the whole-function backstop must stay red on the clobbering epilogue"
+        );
+    }
+
     #[test]
     fn validator_accepts_a_legitimate_internal_rename() {
         // Hand-built valid rewrite: the interior r5 range (born 0, dies 1) of
