@@ -188,19 +188,35 @@ def stage3_arm_parity(arm_obj):
 
 
 def find_rv32_linker():
-    """Return (clang, lld) paths when both can target rv32, else None."""
-    clang = shutil.which("clang") or "/opt/homebrew/opt/llvm/bin/clang"
-    lld = shutil.which("ld.lld") or "/opt/homebrew/opt/llvm/bin/ld.lld"
-    if not (os.path.exists(lld) and os.path.exists(clang)):
+    """Return (clang, lld) paths when both can target rv32, else None.
+
+    Apple clang has no RISC-V backend, so prefer a Homebrew/PATH LLVM clang
+    and PROBE each candidate by assembling a nop for riscv32.
+    """
+    clangs = [
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+        shutil.which("clang"),
+    ]
+    llds = [
+        shutil.which("ld.lld"),
+        "/opt/homebrew/opt/llvm/bin/ld.lld",
+        "/usr/local/opt/llvm/bin/ld.lld",
+    ]
+    lld = next((c for c in llds if c and os.path.exists(c)), None)
+    if lld is None:
         return None
-    probe = subprocess.run(
-        [clang, "--target=riscv32-unknown-elf", "-march=rv32imac", "-x", "assembler",
-         "-c", "-", "-o", os.devnull],
-        input="nop\n", capture_output=True, text=True,
-    )
-    if probe.returncode != 0:
-        return None
-    return clang, lld
+    for clang in clangs:
+        if not clang or not os.path.exists(clang):
+            continue
+        probe = subprocess.run(
+            [clang, "--target=riscv32-unknown-elf", "-march=rv32imac", "-x", "assembler",
+             "-c", "-", "-o", os.devnull],
+            input="nop\n", capture_output=True, text=True,
+        )
+        if probe.returncode == 0:
+            return clang, lld
+    return None
 
 
 STUB_ASM = """
