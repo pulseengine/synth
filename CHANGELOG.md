@@ -86,6 +86,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Known limitations stay LOUD declines, named: >8 args, i64 args,
   multi-value results, `call_indirect`; the single-function RISC-V CLI path
   refuses external-call functions rather than dropping their relocs.
+- **VCR-RA-003 across-JOIN validation on the optimized (numeric-branch) path
+  (#242, the #819 redo).** The whole-function allocation validator's invariant 4
+  (join-value availability) previously loud-declined `NotAttempted` on the
+  DEFAULT optimized path's pre-resolved `BOffset`/`BCondOffset` streams; a
+  numeric join-CFG builder now reconstructs branch targets from the estimator
+  byte layout (off-boundary or mixed label+numeric streams still LOUD-decline —
+  decline > guess) and runs the MUST-availability fixpoint there too. The #819
+  over-rejection is fixed by the PRESERVED entry-availability discriminator:
+  callee-saved registers pushed-in-the-prologue AND popped-at-every-exit count
+  available at entry on the numeric path (they provably hold the caller's value
+  under the save/restore contract — the benign dead result-`mov` of a void
+  function, `cf_shapes_500::ifelse`, now compiles instead of hard-erroring),
+  while never-established reads (not pushed, not defined on any path — the
+  allocator-confusion class) stay Violations, with and without a prologue. The
+  label-form path keeps its STRICT semantics unchanged — the existing red-first
+  across-join clobber fixtures still fire. 8 new `ra003_numeric_*` red/green/
+  decline tests; frozen `.text` byte-identical (the validator emits nothing).
 - **ISA-model adequacy (#867): "proved against a simplified model" is now an
   explicit, counted, CI-pinned trusted-base entry.** #682's shape — a green
   Qed while shipped code silently miscompiled, because the SIMPLIFIED

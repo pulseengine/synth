@@ -4072,7 +4072,7 @@ enum JoinCheck {
 ///     that returns a value into a join must not spuriously drop it (the latent
 ///     `bl foo → join → use r0` false positive).
 fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
-    let Some((blocks, live_in, def_b)) = build_join_cfg(instrs) else {
+    let Some((blocks, live_in, def_b, entry_extra)) = build_join_cfg(instrs) else {
         return JoinCheck::NotAttempted {
             reason: "cfg-unmodeled-construct",
         };
@@ -4093,7 +4093,10 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     // (the block_brif_483 `nested` case — R11 defined nowhere in the stream).
     // Over-seeding causes only false NEGATIVES; under-seeding would
     // false-POSITIVE on real code — so seed generously.
-    let entry_seed: BTreeSet<Reg> = [
+    // `entry_extra` (label path: ∅; numeric path: the PRESERVED
+    // pushed-AND-popped callee-saved set) extends the seed — the #819-redo
+    // discriminator; see [`build_join_cfg`] for the full soundness argument.
+    let mut entry_seed: BTreeSet<Reg> = [
         Reg::R0,
         Reg::R1,
         Reg::R2,
@@ -4107,6 +4110,7 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     ]
     .into_iter()
     .collect();
+    entry_seed.extend(entry_extra);
 
     // `def_b` (per-block must-def) and `live_in` are supplied by `build_join_cfg`
     // (which models calls' caller-saved def-set — a detail `block_use_def` alone
@@ -4191,6 +4195,24 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
         }
         for &r in &live_in[b] {
             if !avail_in[b].contains(&r) {
+                if std::env::var_os("RA003_DEBUG").is_some() {
+                    eprintln!("=== RA003 numeric JOIN violation: reg={r:?} join_block={b} ===");
+                    for (bi, blk) in blocks.iter().enumerate() {
+                        eprintln!(
+                            "  B{bi} [{}..{}) succ={:?} preds={:?} def={:?} live_in={:?} avail_in={:?}",
+                            blk.start,
+                            blk.end,
+                            blk.succ,
+                            preds[bi],
+                            def_b[bi],
+                            live_in[bi],
+                            avail_in[bi]
+                        );
+                    }
+                    for (i, ins) in instrs.iter().enumerate() {
+                        eprintln!("    [{i}] {:?}", ins.op);
+                    }
+                }
                 return JoinCheck::Violation(RaFinalViolation::JoinValueNotAvailable {
                     reg: r,
                     join_block: b,
@@ -4202,21 +4224,139 @@ fn check_join_availability(instrs: &[ArmInstruction]) -> JoinCheck {
     JoinCheck::Consistent
 }
 
-/// Build the JOIN-check CFG: `(blocks, live_in, def_b)`, or `None` (decline) if
-/// the stream contains a construct the join analysis cannot model in complete
-/// label form. See [`check_join_availability`] for how it differs from the shared
+/// Build the JOIN-check CFG: `(blocks, live_in, def_b, entry_avail_extra)`, or
+/// `None` (decline) if the stream contains a construct the join analysis cannot
+/// model.
+///
+/// TWO shapes are modeled, chosen by the stream (VCR-RA-003 optimized-path joins,
+/// #57/#242):
+///   - **label-form** (`B`/`Bcc`/`Bhs`/`Blo` to a `Label`): the direct /
+///     `--relocatable` selector path — see [`build_join_cfg_label`];
+///   - **pre-resolved NUMERIC** (`BOffset`/`BCondOffset` with a computed
+///     PC-relative halfword displacement, no `Label`): the DEFAULT optimized path
+///     — see [`build_join_cfg_numeric`], which reconstructs each branch's target
+///     instruction index from the estimator byte layout (the #604/#606 geometry
+///     mirror) and builds the CFG from those.
+///
+/// A MIXED stream (label-form branches ALONGSIDE numeric ones — the msgq_put
+/// trap-guard shape) stays DECLINED (`None`): the two families need different
+/// target reconstruction; unifying them would guess (decline > guess).
+///
+/// The 4th tuple element is the ENTRY-AVAILABILITY EXTENSION — registers the
+/// availability fixpoint may treat as available at function entry BEYOND the
+/// shared AAPCS/reserved seed. It is the #819-redo discriminator:
+///   - **label path: ∅** (strict semantics, unchanged). The direct /
+///     `--relocatable` selectors never emit a join read of an entry-carried
+///     callee-saved register in valid code, so strictness costs nothing there
+///     and the label-form red-first clobber fixtures keep their teeth.
+///   - **numeric path: the PRESERVED set** — callee-saved registers
+///     pushed-in-the-prologue AND popped-at-every-exit
+///     ([`preserved_callee_saved`]). The DEFAULT optimized selector emits
+///     benign reads of an entry-carried preserved register at a join (e.g. the
+///     dead result-materialization `mov r0, r8` of a void function —
+///     `cf_shapes_500::ifelse`, the #819 false positive that hard-errored a
+///     VALID compile). A preserved register provably holds the CALLER's value
+///     (a well-defined value the prologue/epilogue contract knowingly carries)
+///     on every path that has not redefined it, so counting it available at
+///     entry is truthful — while a read of a NEVER-pushed, never-defined
+///     callee-saved register (allocator emitted a read of a register it never
+///     established — the #226 class) stays a Violation. NOT merely-entry-live:
+///     seeding `live_in[0]` would be self-fulfilling (whatever the stream
+///     reads early becomes "fine", masking garbage reads on push-less
+///     functions); the preserved set is anchored to the prologue/epilogue
+///     save/restore contract instead and is EMPTY when there is no such
+///     contract. Honest-scope residual (documented, undecidable from the
+///     stream): a one-arm redefinition of a preserved register merging with
+///     its entry value at a join is byte-identical between the benign
+///     dead-read shape and a hypothetical allocator mix-up, so the numeric
+///     path cannot flag it without over-rejecting valid compiles — invariant 1
+///     (callee-saved preservation) still bounds the damage (any DEFINED
+///     callee-saved register was saved/restored).
+#[allow(clippy::type_complexity)]
+fn build_join_cfg(
+    instrs: &[ArmInstruction],
+) -> Option<(
+    Vec<BasicBlock>,
+    Vec<BTreeSet<Reg>>,
+    Vec<BTreeSet<Reg>>,
+    BTreeSet<Reg>,
+)> {
+    let has_numeric = instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }));
+    let has_label = instrs.iter().any(|i| matches!(i.op, ArmOp::Label { .. }));
+    if has_numeric {
+        if has_label {
+            // Mixed label+numeric stream: decline (the two branch families need
+            // different reconstruction — decline > guess).
+            return None;
+        }
+        let (blocks, live_in, def_b) = build_join_cfg_numeric(instrs)?;
+        return Some((blocks, live_in, def_b, preserved_callee_saved(instrs)));
+    }
+    let (blocks, live_in, def_b) = build_join_cfg_label(instrs)?;
+    Some((blocks, live_in, def_b, BTreeSet::new()))
+}
+
+/// The PRESERVED callee-saved set: registers in R4–R8 that the prologue
+/// (`push {…, lr}`) saves AND every `pop {…, pc}` return epilogue restores.
+/// These provably carry the CALLER's value on any path that has not redefined
+/// them, under a save/restore contract the function itself established — the
+/// available-at-entry discriminator for the NUMERIC join CFG (see
+/// [`build_join_cfg`]). Returns ∅ when there is no LR-prologue or no
+/// `pop {…, pc}` epilogue (no contract → nothing is assumed available; a
+/// `bx lr`-return function gets the STRICT semantics).
+fn preserved_callee_saved(instrs: &[ArmInstruction]) -> BTreeSet<Reg> {
+    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    // Prologue save-set: the first LR-push (mirrors invariant 1's detection).
+    let mut pushed: BTreeSet<Reg> = BTreeSet::new();
+    let mut has_prologue = false;
+    for ins in instrs {
+        if let ArmOp::Push { regs } = &ins.op
+            && regs.contains(&Reg::LR)
+        {
+            has_prologue = true;
+            for r in regs {
+                if CALLEE_SAVED.contains(r) {
+                    pushed.insert(*r);
+                }
+            }
+            break;
+        }
+    }
+    if !has_prologue {
+        return BTreeSet::new();
+    }
+    // Restore side: a register is preserved only if EVERY `pop {…, pc}` return
+    // restores it (an exit that drops the restore breaks the contract).
+    let mut preserved = pushed;
+    let mut saw_pc_pop = false;
+    for ins in instrs {
+        if let ArmOp::Pop { regs } = &ins.op
+            && regs.contains(&Reg::PC)
+        {
+            saw_pc_pop = true;
+            preserved.retain(|r| regs.contains(r));
+        }
+    }
+    if !saw_pc_pop {
+        return BTreeSet::new();
+    }
+    preserved
+}
+
+/// The label-form JOIN-CFG builder (the original `build_join_cfg`). See
+/// [`check_join_availability`] for how it differs from the shared
 /// [`cfg_liveness`]: `Bx {LR}` is a return SINK and `Bl`/`Blx`/`Call` are
 /// FALL-THROUGH with a caller-saved def-set. Everything else that is not a
 /// label-form branch (`BOffset`/`BCondOffset`, `BrTable`, computed `Bx`, and any
 /// op with no [`reg_effect`] that is not one of the admitted terminators) makes
 /// this decline — never a partial/guessed CFG.
 #[allow(clippy::type_complexity)]
-fn build_join_cfg(
+fn build_join_cfg_label(
     instrs: &[ArmInstruction],
 ) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
     use ArmOp::*;
-    // Caller-saved registers a call defines (all get fresh values across it).
-    const CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
 
     // How the JOIN CFG classifies a terminator. Distinct from `classify`: a
     // `bx lr` return is a SINK (no successors, not a decline) and a call is
@@ -4341,11 +4481,206 @@ fn build_join_cfg(
         b.succ = succ;
     }
 
-    // 5. Per-block use/def and live-in, with the call def-set folded in. We
-    //    compute use/def locally (mirroring `block_use_def`) so a call inside a
-    //    block contributes CALL_DEFS to `def` and — critically for live-in — a
-    //    read of a caller-saved reg BEFORE the call in the same block is a
-    //    genuine use, while a read AFTER the call is satisfied by the call def.
+    // 5-6. Per-block use/def + live-in (shared, CFG-shape-agnostic).
+    let (live_in, def_b) = join_cfg_livein_defb(instrs, &blocks);
+
+    Some((blocks, live_in, def_b))
+}
+
+/// The pre-resolved NUMERIC JOIN-CFG builder (VCR-RA-003 optimized-path joins,
+/// #57/#242). The DEFAULT optimized path emits `BOffset`/`BCondOffset` with a
+/// computed halfword displacement and NO `Label`; the label builder declined
+/// wholesale for these (the "optimized numeric-target path is not covered" hole).
+/// This builder reconstructs each numeric branch's TARGET instruction index from
+/// the EXACT same estimator byte layout the #604/#606 geometry helpers use, makes
+/// each target a block leader, and builds the CFG from those. The availability
+/// fixpoint then runs on the optimized path.
+///
+/// SOUNDNESS VALVE (decline > guess). Any branch whose reconstructed target does
+/// not land on an instruction boundary — the estimator disagreeing with the
+/// encoder for this stream — makes the WHOLE function decline (`None`), exactly
+/// like the geometry helper. A `Bl`/`Blx`/`Call` is FALL-THROUGH with a
+/// caller-saved def-set. `BrTable`, computed `Bx`, and any op with no
+/// [`reg_effect`] that is not an admitted terminator decline. Runs ONLY on
+/// no-`Label` numeric streams (the mixed case is declined upstream in
+/// [`build_join_cfg`]).
+#[allow(clippy::type_complexity)]
+fn build_join_cfg_numeric(
+    instrs: &[ArmInstruction],
+) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+    use ArmOp::*;
+
+    // Numeric-CFG terminator classification. Same policy as the label builder's
+    // `jclassify`, but the branch families are the NUMERIC ones.
+    enum NTerm {
+        Uncond,
+        Cond,
+        Fall,
+        Return,
+        Unsupported,
+    }
+    fn nclassify(op: &ArmOp) -> NTerm {
+        use ArmOp::*;
+        match op {
+            BOffset { .. } => NTerm::Uncond,
+            BCondOffset { .. } => NTerm::Cond,
+            Bx { rm: Reg::LR } => NTerm::Return,
+            Bl { .. } | Blx { .. } | Call { .. } => NTerm::Fall,
+            // Label-form branches must not appear here (mixed stream is declined
+            // upstream); if one somehow does, decline rather than misinterpret.
+            B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. } | Label { .. } => NTerm::Unsupported,
+            Bx { .. } | BrTable { .. } | CallIndirect { .. } => NTerm::Unsupported,
+            _ => NTerm::Fall,
+        }
+    }
+
+    let n = instrs.len();
+    if n == 0 {
+        return Some((vec![], vec![], vec![]));
+    }
+
+    // 1. Admission: every instruction is a numeric branch, an admitted terminator
+    //    (return/call), or a precise-effect op. No `Label` reaches here.
+    for ins in instrs {
+        match nclassify(&ins.op) {
+            NTerm::Unsupported => return None,
+            NTerm::Uncond | NTerm::Cond | NTerm::Return => {}
+            NTerm::Fall => {
+                let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
+                if !is_call && reg_effect(&ins.op).is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+
+    // 2. Byte layout — the exact mirror of the resolved-branch geometry helper
+    //    (`Label` = 0 bytes; there are none here, but keep the arm for parity).
+    //    `byte_offsets[i]` = byte address of instruction `i`; `byte_offsets[n]` =
+    //    total size.
+    let mut byte_offsets: Vec<i64> = Vec::with_capacity(n + 1);
+    let mut cur: i64 = 0;
+    for ins in instrs {
+        byte_offsets.push(cur);
+        cur += match &ins.op {
+            Label { .. } => 0,
+            op => estimate_arm_byte_size(op) as i64,
+        };
+    }
+    byte_offsets.push(cur);
+
+    // 3. Reconstruct each branch's TARGET instruction index. Off-boundary or
+    //    out-of-range → decline the whole function (estimator/encoder disagree).
+    //    A target index of `n` (branch to function end) is a valid SINK-like
+    //    successor (no block starts there); modeled as "no successor".
+    let mut branch_target: Vec<Option<usize>> = vec![None; n];
+    for (i, ins) in instrs.iter().enumerate() {
+        let offset = match &ins.op {
+            BOffset { offset } => *offset,
+            BCondOffset { offset, .. } => *offset,
+            _ => continue,
+        };
+        let target_byte = byte_offsets[i] + 4 + 2 * offset as i64;
+        if target_byte < 0 {
+            return None; // target before function start: unmappable
+        }
+        let ti = byte_offsets.partition_point(|&b| b < target_byte);
+        if byte_offsets.get(ti) != Some(&target_byte) {
+            return None; // target inside an instruction: unmappable
+        }
+        branch_target[i] = Some(ti); // ti may be `n` (function end)
+    }
+
+    // 4. Leaders: instr 0, every in-range branch target, and the instruction
+    //    after any branch or return (a branch/return ends a block).
+    let mut is_leader = vec![false; n];
+    is_leader[0] = true;
+    for i in 0..n {
+        if let Some(ti) = branch_target[i]
+            && ti < n
+        {
+            is_leader[ti] = true;
+        }
+        let ends_block = matches!(
+            nclassify(&instrs[i].op),
+            NTerm::Uncond | NTerm::Cond | NTerm::Return
+        );
+        if ends_block && i + 1 < n {
+            is_leader[i + 1] = true;
+        }
+    }
+    let leaders: Vec<usize> = (0..n).filter(|&i| is_leader[i]).collect();
+
+    // 5. Blocks span [leader, next_leader).
+    let mut blocks: Vec<BasicBlock> = leaders
+        .iter()
+        .enumerate()
+        .map(|(bi, &start)| BasicBlock {
+            start,
+            end: leaders.get(bi + 1).copied().unwrap_or(n),
+            succ: vec![],
+        })
+        .collect();
+    let block_of_start: BTreeMap<usize, usize> = blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, b)| (b.start, bi))
+        .collect();
+
+    // 6. Successors. A target index maps to the block starting there; a target of
+    //    `n` (function end) yields no successor (sink-like). Because every
+    //    in-range target was made a leader, `block_of_start` must contain it.
+    let mut succs: Vec<Vec<usize>> = Vec::with_capacity(blocks.len());
+    for b in &blocks {
+        let last = b.end - 1;
+        let fallthrough = block_of_start.get(&b.end).copied();
+        let succ = match nclassify(&instrs[last].op) {
+            NTerm::Uncond => match branch_target[last] {
+                Some(ti) if ti < n => vec![*block_of_start.get(&ti)?],
+                Some(_) => vec![], // branch to function end: sink
+                None => return None,
+            },
+            NTerm::Cond => {
+                let mut s = match branch_target[last] {
+                    Some(ti) if ti < n => vec![*block_of_start.get(&ti)?],
+                    Some(_) => vec![], // taken edge exits the function
+                    None => return None,
+                };
+                if let Some(f) = fallthrough
+                    && !s.contains(&f)
+                {
+                    s.push(f);
+                }
+                s
+            }
+            NTerm::Return => vec![], // sink
+            NTerm::Fall => fallthrough.into_iter().collect(),
+            NTerm::Unsupported => return None,
+        };
+        succs.push(succ);
+    }
+    for (b, succ) in blocks.iter_mut().zip(succs) {
+        b.succ = succ;
+    }
+
+    // 7. Per-block use/def + live-in (shared, CFG-shape-agnostic).
+    let (live_in, def_b) = join_cfg_livein_defb(instrs, &blocks);
+
+    Some((blocks, live_in, def_b))
+}
+
+/// Per-block (use/def + backward-liveness live-in) for a JOIN CFG, shared by the
+/// label and numeric builders (it reads only block spans + successors, so the two
+/// paths get IDENTICAL dataflow). A call inside a block contributes
+/// [`JOIN_CALL_DEFS`] to `def` and — critically for live-in — a read of a
+/// caller-saved reg BEFORE the call in the same block is a genuine use, while a
+/// read AFTER it is satisfied by the call def. Returns `(live_in, def_b)`.
+fn join_cfg_livein_defb(
+    instrs: &[ArmInstruction],
+    blocks: &[BasicBlock],
+) -> (Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>) {
+    use ArmOp::*;
     let nb = blocks.len();
     let mut use_b = vec![BTreeSet::<Reg>::new(); nb];
     let mut def_b = vec![BTreeSet::<Reg>::new(); nb];
@@ -4365,7 +4700,7 @@ fn build_join_cfg(
             }
             if is_call {
                 // A call defines the whole caller-saved set (return + clobbers).
-                for d in CALL_DEFS {
+                for d in JOIN_CALL_DEFS {
                     defined.insert(d);
                 }
             }
@@ -4374,7 +4709,7 @@ fn build_join_cfg(
         def_b[bi] = defined;
     }
 
-    // 6. Backward liveness fixpoint (same shape as `cfg_liveness` step 5).
+    // Backward liveness fixpoint (same shape as `cfg_liveness` step 5).
     let mut live_in = vec![BTreeSet::<Reg>::new(); nb];
     let mut live_out = vec![BTreeSet::<Reg>::new(); nb];
     let mut changed = true;
@@ -4398,8 +4733,13 @@ fn build_join_cfg(
         }
     }
 
-    Some((blocks, live_in, def_b))
+    (live_in, def_b)
 }
+
+/// The caller-saved set a `bl`/`blx`/`call` DEFINES across the JOIN CFG (all get
+/// fresh values across the AAPCS call boundary — R0/R1 = return, R2/R3/R12 =
+/// clobbered). Shared by both JOIN-CFG builders.
+const JOIN_CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
 
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
@@ -14478,6 +14818,376 @@ mod tests {
             RaFinalVerdict::Consistent,
             "a dominator-defined value read across a loop back-edge must stay \
              available (the universe-init correctness case) — got a false positive"
+        );
+    }
+
+    // ================= across-JOIN on the OPTIMIZED (numeric) path =============
+    //
+    // The default (non-`--relocatable`) path pre-resolves branch displacements to
+    // NUMERIC halfword offsets (`BOffset`/`BCondOffset`, no `Label`). Before this
+    // lane those functions all returned `NotAttempted` for the join check — the
+    // "whole-function" guarantee didn't hold on the shipping path. These tests
+    // exercise `build_join_cfg_numeric` under the #819-redo PRESERVED
+    // entry-availability discriminator (see `build_join_cfg`):
+    //   RED   — a join read of a NEVER-established callee-saved register (not
+    //           pushed, not defined on any path) is a Violation, with and without
+    //           a prologue (the preserved seed is contract-anchored: no
+    //           push/pop contract → nothing seeded);
+    //   GREEN — a join read of a PRESERVED (pushed+popped) register redefined on
+    //           one arm is Consistent (the cf_shapes_500::ifelse class that #819
+    //           wrongly hard-errored), alongside the ported both-paths-define /
+    //           dominator-defined / loop-back-edge no-false-positive cases;
+    //   DECLINE — off-boundary targets and mixed label+numeric streams stay
+    //           loud NotAttempted (decline > guess).
+
+    /// Compute the numeric branch offset (in halfwords) that lands a branch at
+    /// instruction index `branch_idx` exactly on the leader at index
+    /// `target_idx`, using the SAME estimator byte layout the reconstruction
+    /// inverts (`target_byte = branch_byte + 4 + 2·offset`). This makes the
+    /// fixtures robust to per-op size constants: the test builds the exact
+    /// offset the production `ir_to_arm` resolution would, so it round-trips
+    /// through `build_join_cfg_numeric`'s reconstruction.
+    fn numeric_offset_to(instrs: &[ArmInstruction], branch_idx: usize, target_idx: usize) -> i32 {
+        use crate::optimizer_bridge::estimate_arm_byte_size;
+        let byte_of = |idx: usize| -> i64 {
+            let mut cur: i64 = 0;
+            for ins in instrs.iter().take(idx) {
+                cur += match &ins.op {
+                    ArmOp::Label { .. } => 0,
+                    op => estimate_arm_byte_size(op) as i64,
+                };
+            }
+            cur
+        };
+        let branch_byte = byte_of(branch_idx);
+        let target_byte = byte_of(target_idx);
+        // target_byte = branch_byte + 4 + 2·offset ⇒ offset = (target−branch−4)/2
+        let raw = target_byte - branch_byte - 4;
+        debug_assert_eq!(raw % 2, 0, "target not halfword-aligned to branch");
+        (raw / 2) as i32
+    }
+
+    /// Build a numeric-path fixture with a two-way split whose join reads
+    /// `join_read`. `then_def` / `else_def` say which register each arm defines.
+    /// The numeric branch offsets are patched to the exact estimator-derived
+    /// displacements after layout.
+    fn numeric_split_join(then_def: Reg, else_def: Reg, join_read: Reg) -> Vec<ArmInstruction> {
+        // Indices:
+        //   0 push {r4,r5,lr}
+        //   1 cmp r0,#0
+        //   2 bcc EQ -> .else (index 5)     [patched]
+        //   3 mov then_def,#7                (then arm)
+        //   4 b -> .join (index 6)           [patched]
+        //   5 mov else_def,#9                (else arm; target of the bcc)
+        //   6 add r0,join_read,join_read     (join)
+        //   7 pop {r4,r5,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0, // patched -> index 5
+            }),
+            movi(then_def, 7),
+            ins(ArmOp::BOffset { offset: 0 }), // patched -> index 6
+            movi(else_def, 9),
+            add_rr(Reg::R0, join_read, join_read),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        // Patch the offsets to the exact estimator-derived displacements.
+        let bcc_off = numeric_offset_to(&body, 2, 5);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[2].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 4, 6);
+        if let ArmOp::BOffset { offset } = &mut body[4].op {
+            *offset = b_off;
+        }
+        body
+    }
+
+    // ---- numeric across-JOIN: RED (never-established read caught) ----
+    #[test]
+    fn ra003_numeric_red_never_established_read_is_caught() {
+        // The join reads R6 — a callee-saved register that is NOT in the
+        // prologue push and NOT defined on any path: the allocator emitted a
+        // read of a register it never established (the #226 class). The
+        // PRESERVED entry seed must NOT mask this (R6 is outside the push/pop
+        // contract), so the numeric join check fires a Violation — proving the
+        // discriminator is not a blanket accept.
+        let body = numeric_split_join(Reg::R4, Reg::R5, Reg::R6);
+        assert!(
+            !body.iter().any(|i| matches!(i.op, ArmOp::Label { .. })),
+            "fixture must be pure-numeric (no Label) to exercise the numeric CFG"
+        );
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: Reg::R6,
+                    ..
+                })
+            ),
+            "a NUMERIC-path join read of a never-pushed, never-defined register \
+             MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- numeric across-JOIN: RED (push-less function: nothing is seeded) ----
+    #[test]
+    fn ra003_numeric_red_pushless_read_is_caught() {
+        // A leaf function with NO prologue push (returns `bx lr`): the preserved
+        // set is EMPTY — the seed is anchored to the save/restore CONTRACT, not
+        // to what the stream happens to read early (the "merely entry-live"
+        // hack both rejected #819 fixes used would mask exactly this). A join
+        // read of the never-established R6 must stay a Violation.
+        //   0 cmp r0,#0
+        //   1 bcc EQ -> .else (4)   [patched]
+        //   2 mov r1,#7             (then: caller-saved only)
+        //   3 b -> .join (5)        [patched]
+        //   4 mov r2,#9             (else: caller-saved only)
+        //   5 add r0,r6,r6          (join: reads R6 — never established)
+        //   6 bx lr
+        let mut body = vec![
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            }),
+            movi(Reg::R1, 7),
+            ins(ArmOp::BOffset { offset: 0 }),
+            movi(Reg::R2, 9),
+            add_rr(Reg::R0, Reg::R6, Reg::R6),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let bcc_off = numeric_offset_to(&body, 1, 4);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[1].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 3, 5);
+        if let ArmOp::BOffset { offset } = &mut body[3].op {
+            *offset = b_off;
+        }
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::JoinValueNotAvailable {
+                    reg: Reg::R6,
+                    ..
+                })
+            ),
+            "with no push/pop contract the preserved seed is EMPTY — a join read \
+             of an unestablished register MUST stay caught, got {verdict:?}"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (the cf_shapes_500::ifelse class) ----
+    #[test]
+    fn ra003_numeric_green_preserved_entry_value_read_is_consistent() {
+        // THE #819 false-positive fixture class, red-first-inverted: the join
+        // reads R4 — PRESERVED (pushed in the prologue, popped at exit) and
+        // redefined on only ONE arm. On the other arm R4 provably holds the
+        // CALLER's value (a well-defined value under the save/restore
+        // contract), which is exactly what the optimized selector's dead
+        // result-materialization of a void function reads
+        // (cf_shapes_500::ifelse `mov r0,r8`). The strict pre-redo semantics
+        // hard-errored this VALID compile with JoinValueNotAvailable; the
+        // PRESERVED discriminator must accept it.
+        let body = numeric_split_join(Reg::R5, Reg::R4, Reg::R4);
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a join read of a PRESERVED (pushed+popped) register must not be \
+             flagged — this over-rejection is the #819 regression class"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (both paths define → silent) ----
+    #[test]
+    fn ra003_numeric_green_both_paths_define_is_consistent() {
+        // BOTH arms place the join value in R4 → available on every incoming
+        // edge. A false positive here would break every real optimized-path
+        // diamond.
+        let body = numeric_split_join(Reg::R4, Reg::R4, Reg::R4);
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a value defined on both numeric-path incoming edges must validate clean"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (dominator-defined survives merge) ----
+    #[test]
+    fn ra003_numeric_green_dominator_defined_is_consistent() {
+        // R4 is defined in the entry (common dominator) BEFORE the split;
+        // neither arm touches it. The availability fixpoint must stay SILENT
+        // (no false positive on dominator-defined) on the numeric CFG just as
+        // on the label one.
+        //   0 push {r4,r5,r6,lr}
+        //   1 mov r4,#42          (dominator-defines R4)
+        //   2 cmp r0,#0
+        //   3 bcc EQ -> .else (6)  [patched]
+        //   4 mov r5,#1            (then: unrelated)
+        //   5 b -> .join (7)       [patched]
+        //   6 mov r6,#2            (else: unrelated)
+        //   7 add r0,r4,r4         (join: reads dominator R4)
+        //   8 pop {r4,r5,r6,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::LR]),
+            movi(Reg::R4, 42),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            }),
+            movi(Reg::R5, 1),
+            ins(ArmOp::BOffset { offset: 0 }),
+            movi(Reg::R6, 2),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::PC]),
+        ];
+        let bcc_off = numeric_offset_to(&body, 3, 6);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[3].op {
+            *offset = bcc_off;
+        }
+        let b_off = numeric_offset_to(&body, 5, 7);
+        if let ArmOp::BOffset { offset } = &mut body[5].op {
+            *offset = b_off;
+        }
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value must not be flagged at a NUMERIC-path join"
+        );
+    }
+
+    // ---- numeric across-JOIN: GREEN (loop back-edge, universe-init case) ----
+    #[test]
+    fn ra003_numeric_green_loop_back_edge_preserves_availability() {
+        // The universe-init correctness case on the NUMERIC path: a value (R4)
+        // defined before a counted loop and read inside the body. The loop
+        // header is a join of preheader + back-edge (a BACKWARD numeric
+        // branch). A MAY/empty init would false-positive; the MUST/universe
+        // init keeps R4 available across the merge → Consistent.
+        //   0 push {r4,r5,lr}
+        //   1 mov r4,#7        (dominator-defines R4)
+        //   2 mov r5,#0        (counter)
+        //   3 add r0,r4,r4     (.head: reads R4 in body — join leader)
+        //   4 add r5,r5,r5
+        //   5 cmp r5,#0
+        //   6 bcc NE -> .head (3)  [patched, BACKWARD edge]
+        //   7 pop {r4,r5,pc}
+        let mut body = vec![
+            push_prologue(vec![Reg::R4, Reg::R5, Reg::LR]),
+            movi(Reg::R4, 7),
+            movi(Reg::R5, 0),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            add_rr(Reg::R5, Reg::R5, Reg::R5),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            }),
+            pop_epilogue(vec![Reg::R4, Reg::R5, Reg::PC]),
+        ];
+        let back_off = numeric_offset_to(&body, 6, 3);
+        if let ArmOp::BCondOffset { offset, .. } = &mut body[6].op {
+            *offset = back_off;
+        }
+        assert!(
+            back_off < 0,
+            "the back-edge must be a negative displacement"
+        );
+        assert_eq!(
+            validate_final_allocation(&body),
+            RaFinalVerdict::Consistent,
+            "a dominator-defined value across a NUMERIC loop back-edge must stay \
+             available (universe-init correctness) — got a false positive"
+        );
+    }
+
+    // ---- numeric across-JOIN: honest decline (off-boundary target) ----
+    #[test]
+    fn ra003_numeric_declines_on_off_boundary_target() {
+        // A numeric branch whose reconstructed byte target does NOT land on an
+        // instruction boundary (estimator/encoder disagreement) must
+        // LOUD-decline to NotAttempted — never guess a CFG. The branch targets
+        // the MIDDLE of the 4-byte movw at index 1 (not a boundary).
+        //   0 push {r4,lr}
+        //   1 movw r4,#0x1234 (4 bytes)
+        //   2 bcc EQ, offset -> mid-movw
+        //   3 add r0,r4,r4
+        //   4 pop {r4,pc}
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 0x1234,
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: {
+                    use crate::optimizer_bridge::estimate_arm_byte_size;
+                    let push_sz = estimate_arm_byte_size(&ArmOp::Push {
+                        regs: vec![Reg::R4, Reg::LR],
+                    }) as i64;
+                    let movw_start = push_sz; // byte of index 1
+                    let bcc_byte = push_sz + 4; // byte of index 2 (movw is 4 bytes)
+                    let target = movw_start + 2; // mid-movw: NOT a boundary
+                    ((target - bcc_byte - 4) / 2) as i32
+                },
+            }),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::NotAttempted { .. }
+            ),
+            "a numeric branch whose target is off an instruction boundary MUST \
+             LOUD-decline (NotAttempted), never guess a CFG"
+        );
+    }
+
+    // ---- numeric across-JOIN: honest decline (mixed label+numeric stream) ----
+    #[test]
+    fn ra003_numeric_declines_on_mixed_label_and_numeric_stream() {
+        // A stream mixing a label-form branch with a numeric one (the msgq_put
+        // trap-guard shape) is DECLINED wholesale — the two branch families
+        // need different target reconstruction; unifying them would guess.
+        let body = vec![
+            push_prologue(vec![Reg::R4, Reg::LR]),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            bcc(Condition::EQ, ".skip"),       // label-form branch
+            ins(ArmOp::BOffset { offset: 1 }), // numeric branch in the same stream
+            label(".skip"),
+            add_rr(Reg::R0, Reg::R4, Reg::R4),
+            pop_epilogue(vec![Reg::R4, Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::NotAttempted { .. }
+            ),
+            "a mixed label+numeric stream must LOUD-decline the join check"
         );
     }
 
