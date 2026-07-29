@@ -484,6 +484,30 @@ fn select_attempt(
             });
         }
     }
+    // #882: call-containing body — spill every accessed i32 param from its
+    // caller-saved a-register into the frame slot `compute_local_layout`
+    // reserved for it, ONCE at entry, before the body can reach a `call`.
+    // Every later access reads/writes the slot (see lower_local_get), which
+    // survives calls the way the a-reg does not. Ascending index for
+    // deterministic output; call-free bodies reserved no param slots, so
+    // this emits nothing and their bytes are unchanged.
+    {
+        let mut param_spills: Vec<(u32, i32)> = ctx
+            .local_offsets
+            .iter()
+            .filter(|(idx, _)| (**idx as usize) < ctx.arg_regs.len())
+            .map(|(idx, (off, _))| (*idx, *off))
+            .collect();
+        param_spills.sort_unstable();
+        for (idx, off) in param_spills {
+            let arg = ctx.arg_regs[idx as usize];
+            ctx.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: arg,
+                imm: off,
+            });
+        }
+    }
     ctx.lower_seq(wasm_ops)?;
     // #226: if any allocation ran out of registers that weren't pinning a live
     // vstack value, the function needs spilling we don't yet do — skip it rather
@@ -1400,6 +1424,39 @@ impl Selector {
             self.local_offsets.insert(idx, (offset, is_i64));
             offset += if is_i64 { 8 } else { 4 };
         }
+        // #882 (found by the i2c_step execution oracle): the a-registers are
+        // CALLER-saved — a `call` clobbers every one of them, so a param
+        // living in its arg register does not survive the function's first
+        // call, and a `local.get <param>` after (or looping back over) a call
+        // read the CALLEE's leftover a-reg. Silent wrong-execution, reachable
+        // on v0.52 with a plain `(call $f) (local.get 0)` — no labels or
+        // returns involved. Fix: in a call-containing body every ACCESSED
+        // i32 param gets a frame slot; the prologue stores the incoming
+        // a-reg once and every access goes through the slot (the exact
+        // non-param-local mechanism, which is already call-safe). Call-free
+        // bodies keep the register path byte-identical. i64 params remain a
+        // loud decline at their access sites (psABI pair marshalling
+        // unmodeled, #312).
+        let has_call = wasm_ops
+            .iter()
+            .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }));
+        if has_call {
+            let mut param_used: BTreeSet<u32> = BTreeSet::new();
+            for op in wasm_ops {
+                match op {
+                    WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
+                        if *i < num_params && !self.i64_locals.contains(i) =>
+                    {
+                        param_used.insert(*i);
+                    }
+                    _ => {}
+                }
+            }
+            for idx in param_used {
+                self.local_offsets.insert(idx, (offset, false));
+                offset += 4;
+            }
+        }
         self.local_frame_bytes = offset;
     }
 
@@ -2108,12 +2165,23 @@ impl Selector {
                 return Err(SelectorError::Unsupported(op.clone()));
             }
             let dst = self.alloc_temp();
-            // mv dst, arg
-            self.out.push(RiscVOp::Addi {
-                rd: dst,
-                rs1: self.arg_regs[idx as usize],
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — the param was spilled to its
+                // frame slot in the prologue (its a-reg is caller-saved and
+                // dies at the first call); read the slot, not the register.
+                self.out.push(RiscVOp::Lw {
+                    rd: dst,
+                    rs1: Reg::SP,
+                    imm: off,
+                });
+            } else {
+                // mv dst, arg
+                self.out.push(RiscVOp::Addi {
+                    rd: dst,
+                    rs1: self.arg_regs[idx as usize],
+                    imm: 0,
+                });
+            }
             self.push_i32(dst);
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local lives in a callee-saved s-reg. Alias it
@@ -2172,12 +2240,22 @@ impl Selector {
                 return Err(SelectorError::Unsupported(op.clone()));
             }
             let src = self.pop_i32(op)?;
-            // mv arg, src
-            self.out.push(RiscVOp::Addi {
-                rd: self.arg_regs[idx as usize],
-                rs1: src,
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — the param lives in its frame
+                // slot (see lower_local_get); write the slot.
+                self.out.push(RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: src,
+                    imm: off,
+                });
+            } else {
+                // mv arg, src
+                self.out.push(RiscVOp::Addi {
+                    rd: self.arg_regs[idx as usize],
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local — write the s-reg (`mv reg, src`) instead
@@ -2247,11 +2325,21 @@ impl Selector {
                     });
                 }
             };
-            self.out.push(RiscVOp::Addi {
-                rd: self.arg_regs[idx as usize],
-                rs1: src,
-                imm: 0,
-            });
+            if let Some(&(off, _)) = self.local_offsets.get(&idx) {
+                // #882: call-containing body — tee writes the param's frame
+                // slot (see lower_local_get); the value stays on the vstack.
+                self.out.push(RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: src,
+                    imm: off,
+                });
+            } else {
+                self.out.push(RiscVOp::Addi {
+                    rd: self.arg_regs[idx as usize],
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else if let Some(&reg) = self.promoted.get(&idx) {
             // #472: promoted i32 local — `mv reg, src`, value STAYS on the
