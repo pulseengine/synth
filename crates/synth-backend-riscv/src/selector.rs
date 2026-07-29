@@ -3040,7 +3040,25 @@ impl Selector {
         // exhaustion sets `alloc_exhausted` → the function is SKIPPED loudly,
         // never silently miscompiled. Done BEFORE the drain so the args are
         // still vstack-live and their registers can't be picked as targets.
+        //
+        // CONTROL-FLOW GUARD: the preservation `mv` is emitted on THIS path
+        // only, but the vstack rewrite is shared by every path (the selector
+        // is single-pass). Inside a control frame (if/else arm, block with a
+        // br past the call, loop) another path could reach the survivor's
+        // consumer WITHOUT executing the mv — a path-dependent silent
+        // miscompile. Decline loudly instead: calls inside control flow are
+        // supported only when the stack exactly matches the callee's arity
+        // in caller-saved-clobberable values (the common driver shape).
         let n_survivors = self.vstack.len() - n_args;
+        if n_survivors > 0 && !self.ctrl.is_empty() {
+            let needs_move = self.vstack[..n_survivors].iter().any(|v| match v {
+                VstackVal::I32(r) => is_caller_saved(*r),
+                VstackVal::I64 { lo, hi } => is_caller_saved(*lo) || is_caller_saved(*hi),
+            });
+            if needs_move {
+                return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+            }
+        }
         let callee_saved_pool = [Reg::S1, Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6];
         for i in 0..n_survivors {
             let entry = self.vstack[i];

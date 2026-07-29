@@ -287,9 +287,6 @@ def wasmtime_ground_truth():
             store = wasmtime.Store()
             module = wasmtime.Module(store.engine, open(WAT).read())
 
-            def read32(addr):
-                return mmio.get(addr - MMIO_BASE, 0) - (1 << 32) * 0  # raw u32
-
             def _to_i32(v):
                 return v - (1 << 32) if v >= (1 << 31) else v
 
@@ -329,15 +326,22 @@ def stage5_execute(linked, syms, truth):
         elf = ELFFile(f)
         segs = []
         for seg in elf.iter_segments():
-            if seg["p_type"] == "PT_LOAD":
+            if seg["p_type"] == "PT_LOAD" and seg["p_memsz"] > 0:
                 segs.append((seg["p_vaddr"], seg.data()))
+    if not segs:
+        die("stage5: linked image has no PT_LOAD segments")
+    # Cover every loadable segment with 4K-aligned mappings.
+    lo = min(v for v, _ in segs) & ~0xFFF
+    hi = max(v + len(d) for v, d in segs)
+    hi = (hi + 0xFFF) & ~0xFFF
 
     checked = 0
     for (fn, args), (want_ret, want_mmio) in truth.items():
         uc = Uc(UC_ARCH_RISCV, UC_MODE_RISCV32)
-        uc.mem_map(CODE & ~0xFFFF, 0x40000)
+        uc.mem_map(lo, hi - lo)
         uc.mem_map(0x80000, 0x20000)  # stack
-        uc.mem_map(RET & ~0xFFF, 0x1000)
+        if not (lo <= RET < hi):
+            uc.mem_map(RET & ~0xFFF, 0x1000)
         uc.mem_map(MMIO_BASE, MMIO_SIZE)
         for vaddr, data in segs:
             uc.mem_write(vaddr, data)
