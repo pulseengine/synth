@@ -540,6 +540,13 @@ pub enum RelocKind {
     /// word-offset immediate of the `bl` at `offset` to reach the target symbol.
     /// Emitted only by the `EM_AARCH64` backend's `.rela.text`.
     AArch64Call26,
+    /// R_RISCV_CALL_PLT (ELF type 19) — a RISC-V `auipc`+`jalr` call pair
+    /// (#871). The RV32 analogue of [`RelocKind::ThmCall`]: `offset` points at
+    /// the `auipc` of an 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder and
+    /// the linker patches BOTH instructions' immediates to reach the target
+    /// symbol (the modern form; `R_RISCV_CALL` is deprecated). Emitted only by
+    /// the `EM_RISCV` backend's `.rela.text`.
+    RiscvCallPlt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
