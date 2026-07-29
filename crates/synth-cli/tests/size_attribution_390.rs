@@ -128,8 +128,22 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 // gust_mix (no register shifts) is unchanged. Execution UNCHANGED — re-pinned
 // only after gust_spill_fwd_390_differential.py PASSED on the new default-on
 // bytes (gust_poll return + post-call state struct vs wasmtime).
+// RE-PINNED for the #872 range-realloc cross-barrier soundness fix (v0.53):
+// gust_poll 692→696 (+4). This is a SOUNDNESS COST, deliberately paid. The pass
+// no longer treats a segment live-in as dead at its last IN-SEGMENT use, so a
+// register holding a value post-segment code may still read is no longer a
+// recolouring target. gust_poll carries the exact #869 shape the issue reported:
+//     base:  movw r3, #0     mvns r5, r3     <- writes pass-through r3
+//     now:   movw r5, #0     mvns r5, r5     <- r3's exit value preserved
+// The +4 is the knock-on colouring change in the udiv/mls block downstream (one
+// const materialization the tighter colouring leaves un-DCE'd, `lsl.w`→`lsls`
+// recovering 2 B of it). func_0/func_1/gust_mix are byte-IDENTICAL.
+// Execution UNCHANGED — re-pinned only after gust_spill_fwd_390_differential.py
+// PASSED on the new bytes (gust_poll return + post-call state struct vs
+// wasmtime, in default and both lever opt-outs), alongside the full
+// trap-semantics oracle set and the #494 bounds differential.
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 692),
+    ("gust_poll", 696),
     ("gust_mix", 32),
     ("func_0", 380),
     ("func_1", 60),
