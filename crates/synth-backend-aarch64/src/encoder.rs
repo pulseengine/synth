@@ -286,7 +286,11 @@ pub fn cset(rd: Reg, cond: Cond) -> u32 {
 /// The cond field is the ARCHITECTURAL (non-inverted) encoding, same as
 /// `b.<cond>`. Clang ground truth: `csel w9, w10, w11, ne` = 0x1A8B1149.
 pub fn csel(rd: Reg, rn: Reg, rm: Reg, cond: Cond) -> u32 {
-    0x1A80_0000 | ((rm as u32) << 16) | (cond.bcond_field() << 12) | ((rn as u32) << 5) | (rd as u32)
+    0x1A80_0000
+        | ((rm as u32) << 16)
+        | (cond.bcond_field() << 12)
+        | ((rn as u32) << 5)
+        | (rd as u32)
 }
 /// `csel xd, xn, xm, <cond>` — 64-bit form. Clang: `csel x9, x10, x11, ne` =
 /// 0x9A8B1149. Width-agnostic for the wasm `select` lowering: an i32 result is
@@ -298,7 +302,11 @@ pub fn csel64(rd: Reg, rn: Reg, rm: Reg, cond: Cond) -> u32 {
 /// `fcsel sd, sn, sm, <cond>` — FP conditional select, single precision.
 /// Clang ground truth: `fcsel s16, s17, s18, ne` = 0x1E321E30.
 pub fn fcsel_s(rd: FReg, rn: FReg, rm: FReg, cond: Cond) -> u32 {
-    0x1E20_0C00 | ((rm as u32) << 16) | (cond.bcond_field() << 12) | ((rn as u32) << 5) | (rd as u32)
+    0x1E20_0C00
+        | ((rm as u32) << 16)
+        | (cond.bcond_field() << 12)
+        | ((rn as u32) << 5)
+        | (rd as u32)
 }
 /// `fcsel dd, dn, dm, <cond>` — double-precision form. Clang: `fcsel d16, d17,
 /// d18, ne` = 0x1E721E30. Used width-agnostically for the wasm `select` on FP

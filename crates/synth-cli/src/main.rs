@@ -2687,7 +2687,7 @@ fn compile_all_exports(
         all_extra_memory_segments, // #406: (mem_idx>0, offset, bytes) init segments on non-default memories
         multi_memory_decline,      // #406: decode-level reason multi-memory must decline (if any)
         default_memory_nonconst_data, // #851: memory-0 segment with a non-const offset (legacy-dropped at decode)
-        all_call_indirect_guards,  // #642: table size + closed-world type verdicts
+        all_call_indirect_guards,     // #642: table size + closed-world type verdicts
         all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
@@ -2994,8 +2994,8 @@ fn compile_all_exports(
             module.extra_memory_data_segments,
             module.multi_memory_decline,
             module.default_memory_nonconst_data, // #851
-            guards,        // #642
-            funcref_slots, // #275
+            guards,                              // #642
+            funcref_slots,                       // #275
         )
     };
 

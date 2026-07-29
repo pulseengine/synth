@@ -3433,21 +3433,20 @@ mod tests {
     fn memory_size_is_page_count_constant() {
         // (memory 2) → 131072 bytes → memory.size = 2.
         let ops = vec![WasmOp::MemorySize(0), WasmOp::End];
-        let w = sel_mem(&ops, 0, MemBounds::Software { limit_bytes: 131072 });
-        assert_eq!(
-            w,
-            vec![enc::movz(9, 2), enc::mov_reg64(0, 9), enc::ret()]
+        let w = sel_mem(
+            &ops,
+            0,
+            MemBounds::Software {
+                limit_bytes: 131072,
+            },
         );
+        assert_eq!(w, vec![enc::movz(9, 2), enc::mov_reg64(0, 9), enc::ret()]);
     }
 
     #[test]
     fn memory_grow_zero_is_size_nonzero_is_minus_one() {
         // grow(delta): mov t0,#pages ; mov t1,#-1 ; cmp delta,wzr ; csel eq.
-        let ops = vec![
-            WasmOp::LocalGet(0),
-            WasmOp::MemoryGrow(0),
-            WasmOp::End,
-        ];
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::MemoryGrow(0), WasmOp::End];
         let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
         let mut expect = vec![enc::movz(9, 1)];
         expect.extend(enc::mov_imm32(10, u32::MAX));

@@ -998,47 +998,201 @@ fn a64_extended_surface(
     const CALL_INDIRECT: &str = "call_indirect needs a function table + type/null/OOB trap guards \
          (§4.4.8); no aarch64 table substrate yet — loud-declined, #851";
 
-    let some = |label: &'static str,
-                num_params: u32,
-                ops: Vec<WasmOp>,
-                expect: Result<(), &'static str>| Some((label, num_params, ops, expect));
+    let some =
+        |label: &'static str,
+         num_params: u32,
+         ops: Vec<WasmOp>,
+         expect: Result<(), &'static str>| Some((label, num_params, ops, expect));
 
     match op {
         // ─── handled by the IntegerCore parity leg ───────────────────────
-        I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or
-        | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Clz | I32Ctz
-        | I32Popcnt | I32Extend8S | I32Extend16S | I32Eqz | I32Eq | I32Ne | I32LtS | I32LtU
-        | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU | I32Const(_) | I32Load { .. }
-        | I32Store { .. } | I32Load8S { .. } | I32Load8U { .. } | I32Load16S { .. }
-        | I32Load16U { .. } | I32Store8 { .. } | I32Store16 { .. } | Block | Loop | Br(_)
-        | BrIf(_) | BrTable { .. } | Return | If | Else | End | Call(_) | LocalGet(_)
-        | LocalSet(_) | LocalTee(_) | GlobalGet(_) | GlobalSet(_) | MemorySize(_)
-        | MemoryGrow(_) | MemoryCopy | MemoryFill | Drop | Select | Unreachable | Nop
-        | I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64And | I64Or
-        | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Clz | I64Ctz
-        | I64Popcnt | I64Eqz | I64Eq | I64Ne | I64LtS | I64LtU | I64LeS | I64LeU | I64GtS
-        | I64GtU | I64GeS | I64GeU | I64Const(_) | I64Load { .. } | I64Store { .. }
-        | I64Load8S { .. } | I64Load8U { .. } | I64Load16S { .. } | I64Load16U { .. }
-        | I64Load32S { .. } | I64Load32U { .. } | I64Store8 { .. } | I64Store16 { .. }
-        | I64Store32 { .. } | I64ExtendI32S | I64ExtendI32U | I32WrapI64 | I64Extend8S
-        | I64Extend16S | I64Extend32S => None,
+        I32Add
+        | I32Sub
+        | I32Mul
+        | I32DivS
+        | I32DivU
+        | I32RemS
+        | I32RemU
+        | I32And
+        | I32Or
+        | I32Xor
+        | I32Shl
+        | I32ShrS
+        | I32ShrU
+        | I32Rotl
+        | I32Rotr
+        | I32Clz
+        | I32Ctz
+        | I32Popcnt
+        | I32Extend8S
+        | I32Extend16S
+        | I32Eqz
+        | I32Eq
+        | I32Ne
+        | I32LtS
+        | I32LtU
+        | I32LeS
+        | I32LeU
+        | I32GtS
+        | I32GtU
+        | I32GeS
+        | I32GeU
+        | I32Const(_)
+        | I32Load { .. }
+        | I32Store { .. }
+        | I32Load8S { .. }
+        | I32Load8U { .. }
+        | I32Load16S { .. }
+        | I32Load16U { .. }
+        | I32Store8 { .. }
+        | I32Store16 { .. }
+        | Block
+        | Loop
+        | Br(_)
+        | BrIf(_)
+        | BrTable { .. }
+        | Return
+        | If
+        | Else
+        | End
+        | Call(_)
+        | LocalGet(_)
+        | LocalSet(_)
+        | LocalTee(_)
+        | GlobalGet(_)
+        | GlobalSet(_)
+        | MemorySize(_)
+        | MemoryGrow(_)
+        | MemoryCopy
+        | MemoryFill
+        | Drop
+        | Select
+        | Unreachable
+        | Nop
+        | I64Add
+        | I64Sub
+        | I64Mul
+        | I64DivS
+        | I64DivU
+        | I64RemS
+        | I64RemU
+        | I64And
+        | I64Or
+        | I64Xor
+        | I64Shl
+        | I64ShrS
+        | I64ShrU
+        | I64Rotl
+        | I64Rotr
+        | I64Clz
+        | I64Ctz
+        | I64Popcnt
+        | I64Eqz
+        | I64Eq
+        | I64Ne
+        | I64LtS
+        | I64LtU
+        | I64LeS
+        | I64LeU
+        | I64GtS
+        | I64GtU
+        | I64GeS
+        | I64GeU
+        | I64Const(_)
+        | I64Load { .. }
+        | I64Store { .. }
+        | I64Load8S { .. }
+        | I64Load8U { .. }
+        | I64Load16S { .. }
+        | I64Load16U { .. }
+        | I64Load32S { .. }
+        | I64Load32U { .. }
+        | I64Store8 { .. }
+        | I64Store16 { .. }
+        | I64Store32 { .. }
+        | I64ExtendI32S
+        | I64ExtendI32U
+        | I32WrapI64
+        | I64Extend8S
+        | I64Extend16S
+        | I64Extend32S => None,
 
         // ─── f32 arithmetic / compares — lower (m3/m4, #538) ─────────────
-        F32Add => some("f32.add", 0, vec![F32Const(1.5), F32Const(2.5), F32Add], Ok(())),
-        F32Sub => some("f32.sub", 0, vec![F32Const(1.5), F32Const(2.5), F32Sub], Ok(())),
-        F32Mul => some("f32.mul", 0, vec![F32Const(1.5), F32Const(2.5), F32Mul], Ok(())),
-        F32Div => some("f32.div", 0, vec![F32Const(1.5), F32Const(2.5), F32Div], Ok(())),
-        F32Eq => some("f32.eq", 0, vec![F32Const(1.0), F32Const(2.0), F32Eq], Ok(())),
-        F32Ne => some("f32.ne", 0, vec![F32Const(1.0), F32Const(2.0), F32Ne], Ok(())),
-        F32Lt => some("f32.lt", 0, vec![F32Const(1.0), F32Const(2.0), F32Lt], Ok(())),
-        F32Le => some("f32.le", 0, vec![F32Const(1.0), F32Const(2.0), F32Le], Ok(())),
-        F32Gt => some("f32.gt", 0, vec![F32Const(1.0), F32Const(2.0), F32Gt], Ok(())),
-        F32Ge => some("f32.ge", 0, vec![F32Const(1.0), F32Const(2.0), F32Ge], Ok(())),
+        F32Add => some(
+            "f32.add",
+            0,
+            vec![F32Const(1.5), F32Const(2.5), F32Add],
+            Ok(()),
+        ),
+        F32Sub => some(
+            "f32.sub",
+            0,
+            vec![F32Const(1.5), F32Const(2.5), F32Sub],
+            Ok(()),
+        ),
+        F32Mul => some(
+            "f32.mul",
+            0,
+            vec![F32Const(1.5), F32Const(2.5), F32Mul],
+            Ok(()),
+        ),
+        F32Div => some(
+            "f32.div",
+            0,
+            vec![F32Const(1.5), F32Const(2.5), F32Div],
+            Ok(()),
+        ),
+        F32Eq => some(
+            "f32.eq",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Eq],
+            Ok(()),
+        ),
+        F32Ne => some(
+            "f32.ne",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Ne],
+            Ok(()),
+        ),
+        F32Lt => some(
+            "f32.lt",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Lt],
+            Ok(()),
+        ),
+        F32Le => some(
+            "f32.le",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Le],
+            Ok(()),
+        ),
+        F32Gt => some(
+            "f32.gt",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Gt],
+            Ok(()),
+        ),
+        F32Ge => some(
+            "f32.ge",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Ge],
+            Ok(()),
+        ),
         F32Abs => some("f32.abs", 0, vec![F32Const(-1.5), F32Abs], Ok(())),
         F32Neg => some("f32.neg", 0, vec![F32Const(1.5), F32Neg], Ok(())),
         F32Sqrt => some("f32.sqrt", 0, vec![F32Const(2.0), F32Sqrt], Ok(())),
-        F32Min => some("f32.min", 0, vec![F32Const(1.0), F32Const(2.0), F32Min], Ok(())),
-        F32Max => some("f32.max", 0, vec![F32Const(1.0), F32Const(2.0), F32Max], Ok(())),
+        F32Min => some(
+            "f32.min",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Min],
+            Ok(()),
+        ),
+        F32Max => some(
+            "f32.max",
+            0,
+            vec![F32Const(1.0), F32Const(2.0), F32Max],
+            Ok(()),
+        ),
         F32Copysign => some(
             "f32.copysign",
             0,
@@ -1050,7 +1204,12 @@ fn a64_extended_surface(
         F32Ceil => some("f32.ceil", 0, vec![F32Const(1.5), F32Ceil], Err(ROUNDING)),
         F32Floor => some("f32.floor", 0, vec![F32Const(1.5), F32Floor], Err(ROUNDING)),
         F32Trunc => some("f32.trunc", 0, vec![F32Const(1.5), F32Trunc], Err(ROUNDING)),
-        F32Nearest => some("f32.nearest", 0, vec![F32Const(1.5), F32Nearest], Err(ROUNDING)),
+        F32Nearest => some(
+            "f32.nearest",
+            0,
+            vec![F32Const(1.5), F32Nearest],
+            Err(ROUNDING),
+        ),
         // ─── f32 memory — GAP ────────────────────────────────────────────
         F32Load { .. } => some(
             "f32.load",
@@ -1078,8 +1237,18 @@ fn a64_extended_surface(
             Err(FP_MEM),
         ),
         // ─── f32 conversions ─────────────────────────────────────────────
-        F32ConvertI32S => some("f32.convert_i32_s", 0, vec![I32Const(5), F32ConvertI32S], Ok(())),
-        F32ConvertI32U => some("f32.convert_i32_u", 0, vec![I32Const(5), F32ConvertI32U], Ok(())),
+        F32ConvertI32S => some(
+            "f32.convert_i32_s",
+            0,
+            vec![I32Const(5), F32ConvertI32S],
+            Ok(()),
+        ),
+        F32ConvertI32U => some(
+            "f32.convert_i32_u",
+            0,
+            vec![I32Const(5), F32ConvertI32U],
+            Ok(()),
+        ),
         F32ConvertI64S => some(
             "f32.convert_i64_s",
             0,
@@ -1092,7 +1261,12 @@ fn a64_extended_surface(
             vec![I64Const(5), F32ConvertI64U],
             Err(I64_TO_FP),
         ),
-        F32DemoteF64 => some("f32.demote_f64", 0, vec![F64Const(1.5), F32DemoteF64], Ok(())),
+        F32DemoteF64 => some(
+            "f32.demote_f64",
+            0,
+            vec![F64Const(1.5), F32DemoteF64],
+            Ok(()),
+        ),
         F32ReinterpretI32 => some(
             "f32.reinterpret_i32",
             0,
@@ -1105,8 +1279,18 @@ fn a64_extended_surface(
             vec![F32Const(1.0), I32ReinterpretF32],
             Ok(()),
         ),
-        I32TruncF32S => some("i32.trunc_f32_s", 0, vec![F32Const(1.5), I32TruncF32S], Ok(())),
-        I32TruncF32U => some("i32.trunc_f32_u", 0, vec![F32Const(1.5), I32TruncF32U], Ok(())),
+        I32TruncF32S => some(
+            "i32.trunc_f32_s",
+            0,
+            vec![F32Const(1.5), I32TruncF32S],
+            Ok(()),
+        ),
+        I32TruncF32U => some(
+            "i32.trunc_f32_u",
+            0,
+            vec![F32Const(1.5), I32TruncF32U],
+            Ok(()),
+        ),
         I32TruncSatF32S => some(
             "i32.trunc_sat_f32_s",
             0,
@@ -1145,21 +1329,81 @@ fn a64_extended_surface(
         ),
 
         // ─── f64 arithmetic / compares — lower (m3/m4, #538) ─────────────
-        F64Add => some("f64.add", 0, vec![F64Const(1.5), F64Const(2.5), F64Add], Ok(())),
-        F64Sub => some("f64.sub", 0, vec![F64Const(1.5), F64Const(2.5), F64Sub], Ok(())),
-        F64Mul => some("f64.mul", 0, vec![F64Const(1.5), F64Const(2.5), F64Mul], Ok(())),
-        F64Div => some("f64.div", 0, vec![F64Const(1.5), F64Const(2.5), F64Div], Ok(())),
-        F64Eq => some("f64.eq", 0, vec![F64Const(1.0), F64Const(2.0), F64Eq], Ok(())),
-        F64Ne => some("f64.ne", 0, vec![F64Const(1.0), F64Const(2.0), F64Ne], Ok(())),
-        F64Lt => some("f64.lt", 0, vec![F64Const(1.0), F64Const(2.0), F64Lt], Ok(())),
-        F64Le => some("f64.le", 0, vec![F64Const(1.0), F64Const(2.0), F64Le], Ok(())),
-        F64Gt => some("f64.gt", 0, vec![F64Const(1.0), F64Const(2.0), F64Gt], Ok(())),
-        F64Ge => some("f64.ge", 0, vec![F64Const(1.0), F64Const(2.0), F64Ge], Ok(())),
+        F64Add => some(
+            "f64.add",
+            0,
+            vec![F64Const(1.5), F64Const(2.5), F64Add],
+            Ok(()),
+        ),
+        F64Sub => some(
+            "f64.sub",
+            0,
+            vec![F64Const(1.5), F64Const(2.5), F64Sub],
+            Ok(()),
+        ),
+        F64Mul => some(
+            "f64.mul",
+            0,
+            vec![F64Const(1.5), F64Const(2.5), F64Mul],
+            Ok(()),
+        ),
+        F64Div => some(
+            "f64.div",
+            0,
+            vec![F64Const(1.5), F64Const(2.5), F64Div],
+            Ok(()),
+        ),
+        F64Eq => some(
+            "f64.eq",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Eq],
+            Ok(()),
+        ),
+        F64Ne => some(
+            "f64.ne",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Ne],
+            Ok(()),
+        ),
+        F64Lt => some(
+            "f64.lt",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Lt],
+            Ok(()),
+        ),
+        F64Le => some(
+            "f64.le",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Le],
+            Ok(()),
+        ),
+        F64Gt => some(
+            "f64.gt",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Gt],
+            Ok(()),
+        ),
+        F64Ge => some(
+            "f64.ge",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Ge],
+            Ok(()),
+        ),
         F64Abs => some("f64.abs", 0, vec![F64Const(-1.5), F64Abs], Ok(())),
         F64Neg => some("f64.neg", 0, vec![F64Const(1.5), F64Neg], Ok(())),
         F64Sqrt => some("f64.sqrt", 0, vec![F64Const(2.0), F64Sqrt], Ok(())),
-        F64Min => some("f64.min", 0, vec![F64Const(1.0), F64Const(2.0), F64Min], Ok(())),
-        F64Max => some("f64.max", 0, vec![F64Const(1.0), F64Const(2.0), F64Max], Ok(())),
+        F64Min => some(
+            "f64.min",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Min],
+            Ok(()),
+        ),
+        F64Max => some(
+            "f64.max",
+            0,
+            vec![F64Const(1.0), F64Const(2.0), F64Max],
+            Ok(()),
+        ),
         F64Copysign => some(
             "f64.copysign",
             0,
@@ -1171,7 +1415,12 @@ fn a64_extended_surface(
         F64Ceil => some("f64.ceil", 0, vec![F64Const(1.5), F64Ceil], Err(ROUNDING)),
         F64Floor => some("f64.floor", 0, vec![F64Const(1.5), F64Floor], Err(ROUNDING)),
         F64Trunc => some("f64.trunc", 0, vec![F64Const(1.5), F64Trunc], Err(ROUNDING)),
-        F64Nearest => some("f64.nearest", 0, vec![F64Const(1.5), F64Nearest], Err(ROUNDING)),
+        F64Nearest => some(
+            "f64.nearest",
+            0,
+            vec![F64Const(1.5), F64Nearest],
+            Err(ROUNDING),
+        ),
         // ─── f64 memory — GAP ────────────────────────────────────────────
         F64Load { .. } => some(
             "f64.load",
@@ -1199,8 +1448,18 @@ fn a64_extended_surface(
             Err(FP_MEM),
         ),
         // ─── f64 conversions ─────────────────────────────────────────────
-        F64ConvertI32S => some("f64.convert_i32_s", 0, vec![I32Const(5), F64ConvertI32S], Ok(())),
-        F64ConvertI32U => some("f64.convert_i32_u", 0, vec![I32Const(5), F64ConvertI32U], Ok(())),
+        F64ConvertI32S => some(
+            "f64.convert_i32_s",
+            0,
+            vec![I32Const(5), F64ConvertI32S],
+            Ok(()),
+        ),
+        F64ConvertI32U => some(
+            "f64.convert_i32_u",
+            0,
+            vec![I32Const(5), F64ConvertI32U],
+            Ok(()),
+        ),
         F64ConvertI64S => some(
             "f64.convert_i64_s",
             0,
@@ -1213,7 +1472,12 @@ fn a64_extended_surface(
             vec![I64Const(5), F64ConvertI64U],
             Err(I64_TO_FP),
         ),
-        F64PromoteF32 => some("f64.promote_f32", 0, vec![F32Const(1.5), F64PromoteF32], Ok(())),
+        F64PromoteF32 => some(
+            "f64.promote_f32",
+            0,
+            vec![F32Const(1.5), F64PromoteF32],
+            Ok(()),
+        ),
         F64ReinterpretI64 => some(
             "f64.reinterpret_i64",
             0,
@@ -1226,8 +1490,18 @@ fn a64_extended_surface(
             vec![F64Const(1.0), I64ReinterpretF64],
             Ok(()),
         ),
-        I32TruncF64S => some("i32.trunc_f64_s", 0, vec![F64Const(1.5), I32TruncF64S], Ok(())),
-        I32TruncF64U => some("i32.trunc_f64_u", 0, vec![F64Const(1.5), I32TruncF64U], Ok(())),
+        I32TruncF64S => some(
+            "i32.trunc_f64_s",
+            0,
+            vec![F64Const(1.5), I32TruncF64S],
+            Ok(()),
+        ),
+        I32TruncF64U => some(
+            "i32.trunc_f64_u",
+            0,
+            vec![F64Const(1.5), I32TruncF64U],
+            Ok(()),
+        ),
         I32TruncSatF64S => some(
             "i32.trunc_sat_f64_s",
             0,
@@ -1350,16 +1624,15 @@ fn a64_extended_surface(
         | I8x16GtU | I8x16LeS | I8x16LeU | I8x16GeS | I8x16GeU | I8x16Splat
         | I8x16ExtractLaneS(_) | I8x16ExtractLaneU(_) | I8x16ReplaceLane(_) | I8x16Shuffle(_)
         | I8x16Swizzle | I16x8Add | I16x8Sub | I16x8Mul | I16x8Neg | I16x8Eq | I16x8Ne
-        | I16x8LtS | I16x8LtU | I16x8GtS | I16x8GtU | I16x8LeS | I16x8LeU | I16x8GeS
-        | I16x8GeU | I16x8Splat | I16x8ExtractLaneS(_) | I16x8ExtractLaneU(_)
-        | I16x8ReplaceLane(_) | I32x4Add | I32x4Sub | I32x4Mul | I32x4Neg | I32x4Eq | I32x4Ne
-        | I32x4LtS | I32x4LtU | I32x4GtS | I32x4GtU | I32x4LeS | I32x4LeU | I32x4GeS
-        | I32x4GeU | I32x4Splat | I32x4ExtractLane(_) | I32x4ReplaceLane(_) | I64x2Add
-        | I64x2Sub | I64x2Mul | I64x2Neg | I64x2Eq | I64x2Ne | I64x2LtS | I64x2GtS | I64x2LeS
-        | I64x2GeS | I64x2Splat | I64x2ExtractLane(_) | I64x2ReplaceLane(_) | F32x4Add
-        | F32x4Sub | F32x4Mul | F32x4Div | F32x4Abs | F32x4Neg | F32x4Sqrt | F32x4Eq | F32x4Ne
-        | F32x4Lt | F32x4Le | F32x4Gt | F32x4Ge | F32x4Splat | F32x4ExtractLane(_)
-        | F32x4ReplaceLane(_) => some(
+        | I16x8LtS | I16x8LtU | I16x8GtS | I16x8GtU | I16x8LeS | I16x8LeU | I16x8GeS | I16x8GeU
+        | I16x8Splat | I16x8ExtractLaneS(_) | I16x8ExtractLaneU(_) | I16x8ReplaceLane(_)
+        | I32x4Add | I32x4Sub | I32x4Mul | I32x4Neg | I32x4Eq | I32x4Ne | I32x4LtS | I32x4LtU
+        | I32x4GtS | I32x4GtU | I32x4LeS | I32x4LeU | I32x4GeS | I32x4GeU | I32x4Splat
+        | I32x4ExtractLane(_) | I32x4ReplaceLane(_) | I64x2Add | I64x2Sub | I64x2Mul | I64x2Neg
+        | I64x2Eq | I64x2Ne | I64x2LtS | I64x2GtS | I64x2LeS | I64x2GeS | I64x2Splat
+        | I64x2ExtractLane(_) | I64x2ReplaceLane(_) | F32x4Add | F32x4Sub | F32x4Mul | F32x4Div
+        | F32x4Abs | F32x4Neg | F32x4Sqrt | F32x4Eq | F32x4Ne | F32x4Lt | F32x4Le | F32x4Gt
+        | F32x4Ge | F32x4Splat | F32x4ExtractLane(_) | F32x4ReplaceLane(_) => some(
             "simd (grouped)",
             0,
             vec![V128Const([0; 16]), V128Const([0; 16]), op.clone()],
@@ -1517,6 +1790,7 @@ fn aarch64_integer_op_parity_851() {
 ///   * expected-Lowers but declines → capability regression (red);
 ///   * expected-Declines but lowers → stale gap entry (red until the entry is
 ///     flipped to `Ok(())` — a gap claim must not outlive the gap).
+///
 /// The `Err(reason)` entries of [`a64_extended_surface`], together with the
 /// [`aarch64_known_divergences`] ledger, ARE the definitive mechanically-
 /// derived "what aarch64 does not lower" list.

@@ -1,5 +1,5 @@
 {
-  "aarch64_selector_ops": 148,
+  "aarch64_selector_ops": 161,
   "arm_refinement_assumed_connection": 5,
   "arm_semantics_axioms": 72,
   "backends": [
