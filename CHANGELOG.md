@@ -35,6 +35,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blanket loud-decline two releases after phase-3 inter-procedural
   composition. Honest limit: verbatim pins catch drift of pinned phrases, not
   brand-new false prose — that residual stays on review.
+- **RISC-V: a `return` inside a block/loop/if no longer aborts the lowering
+  walk** (#882). The abort skipped the frame-closing `end`s, so a `br`/`br_if`
+  past the `return` referenced a label that was never defined — gale's i2c-thin
+  driver failed with `undefined label 'Lend0'` on `i2c_step` (loud skip). The
+  selector now walks the dead region's control skeleton: every branch-target
+  label is defined at its correct lexical position and lowering resumes at each
+  reachable join (an else-arm, a `br_if`-targeted block end). i2c-thin now
+  compiles 7/7 and `i2c_step` executes bit-identical to wasmtime under unicorn
+  (return values + mmio register file), via the new 4-stage
+  `rv32_label_882_differential.py` CI oracle with gale's real wasm pinned.
+- **RISC-V: params are call-safe** — a `local.get <param>` after a `call` read
+  the callee's leftover a-register (a-regs are caller-saved), a **silent
+  wrong-execution** reachable on v0.52.0 with a plain `(call $f) (local.get 0)`
+  (isolated repro returned `0xdead` instead of the param). Found by executing
+  the newly-lowering `i2c_step`. In call-containing bodies every accessed i32
+  param is now spilled once at entry to a frame slot and accessed through it;
+  call-free bodies are byte-identical.
+
+### Added
+- **RISC-V emit-time label invariant (#882 hard gate):** every referenced label
+  must resolve to exactly one definition inside the current function — a
+  duplicate definition (which last-wins insertion would silently rebind to a
+  wrong offset) is now a hard `DuplicateLabel` error, alongside the existing
+  `UndefinedLabel`. Converts the wrong-offset-branch class from "maybe silent"
+  to "always loud".
 
 ## [0.52.0] - 2026-07-29
 
