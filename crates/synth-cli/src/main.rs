@@ -654,7 +654,7 @@ fn main() -> Result<()> {
             // precedence; `--bounds-check` is the legacy alias and emits a
             // single-line deprecation notice when used.
             let resolved_safety_bounds =
-                resolve_safety_bounds(safety_bounds.as_deref(), bounds_check)?;
+                resolve_safety_bounds(safety_bounds.as_deref(), bounds_check, &backend)?;
 
             // Resolve the CycloneDX SBOM destination. `--sbom` with no value
             // means "next to the ELF" (`<output>.cdx.json`); `--sbom PATH`
@@ -1133,8 +1133,9 @@ fn maybe_run_loom(enabled: bool, wasm_bytes: Vec<u8>) -> Result<Vec<u8>> {
 fn resolve_safety_bounds(
     safety_bounds: Option<&str>,
     legacy_bounds_check: bool,
+    backend: &str,
 ) -> Result<SafetyBounds> {
-    if let Some(v) = safety_bounds {
+    let resolved = if let Some(v) = safety_bounds {
         let parsed = SafetyBounds::parse(v).map_err(|e| anyhow::anyhow!(e))?;
         if legacy_bounds_check {
             eprintln!(
@@ -1142,13 +1143,34 @@ fn resolve_safety_bounds(
                 parsed.as_str()
             );
         }
-        return Ok(parsed);
-    }
-    if legacy_bounds_check {
+        parsed
+    } else if legacy_bounds_check {
         eprintln!("warning: --bounds-check is deprecated; use --safety-bounds=software instead");
-        return Ok(SafetyBounds::Software);
+        SafetyBounds::Software
+    } else if backend == "aarch64" {
+        // #865: the aarch64 DEFAULT is `software` — enforce, don't hope. The
+        // v0.51.0 lowering emitted no bounds check at all, so the flag-absent
+        // path was the silent-unsafe path (OOB reads/writes up to 4 GiB past
+        // the guest memory where wasmtime traps). Unchecked output now requires
+        // the explicit `--safety-bounds none` opt-out.
+        SafetyBounds::Software
+    } else {
+        SafetyBounds::None
+    };
+    // #865: mask/mpu are NOT implemented on aarch64 — in v0.51.0 they were
+    // silently accepted and produced byte-identical UNCHECKED output (the
+    // "flag exists but doesn't enforce" class, cf. #651). Hard-error instead.
+    if backend == "aarch64" && matches!(resolved, SafetyBounds::Mask | SafetyBounds::Mpu) {
+        anyhow::bail!(
+            "--safety-bounds {} is not implemented on the aarch64 backend — \
+             refusing to silently emit UNCHECKED memory accesses (#865). Use \
+             --safety-bounds software (the default: per-access bounds checks \
+             that trap out-of-bounds) or --safety-bounds none (explicit \
+             unchecked opt-out).",
+            resolved.as_str()
+        );
     }
-    Ok(SafetyBounds::None)
+    Ok(resolved)
 }
 
 /// Emit the `safety-manifest.json` sidecar when any safety knob is active.
@@ -1541,6 +1563,11 @@ fn compile_command(
     // #758: set when the single-function compile path decodes a module carrying
     // active data segments — the single-func cortex-m builder can't ship them.
     let mut single_func_has_data_segments = false;
+    // #865: the module's declared minimum linear-memory size (memory 0, bytes).
+    // The single-function path previously never threaded memory context into
+    // the config; the aarch64 software bounds check needs the real limit (a 0
+    // limit would make every access an always-trap for a `(memory 1)` module).
+    let mut single_func_linear_memory_bytes: u32 = 0;
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
@@ -1602,6 +1629,13 @@ fn compile_command(
             // this path would silently read zeros. Record so the cortex-m call
             // below loud-declines rather than emit that silent miscompile.
             single_func_has_data_segments = !module.data_segments.is_empty();
+            // #865: capture memory 0's declared minimum size for the aarch64
+            // software bounds check (pages × 64 KiB).
+            single_func_linear_memory_bytes = module
+                .memories
+                .first()
+                .map(|m| m.initial_bytes())
+                .unwrap_or(0);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             func_params_f32_all = module.func_params_f32.clone();
@@ -1824,6 +1858,17 @@ fn compile_command(
         // reserved stack size under --stack-layout=low; default = 0x2000_0100
         // (byte-identical).
         linmem_base: stack_layout.optimized_linmem_base(),
+        // #865: thread the module's declared memory limit so the aarch64
+        // software bounds check compares against the REAL size. Scoped to the
+        // aarch64 backend: the ARM/RV32 single-function paths never consumed
+        // this field (it defaulted to 0), and widening it here could move
+        // frozen ARM anchor bytes — those paths derive memory context in
+        // `compile_all_exports` instead.
+        linear_memory_bytes: if backend.name() == "aarch64" {
+            single_func_linear_memory_bytes
+        } else {
+            0
+        },
         ..CompileConfig::default()
     };
 
@@ -1896,11 +1941,16 @@ fn compile_command(
     file.write_all(&elf_data)
         .context("Failed to write ELF data")?;
 
-    // Phase 1: write the safety-manifest sidecar whenever any safety knob
-    // is active. Single-function path uses 0 for linear-memory-bytes because
-    // the WASM was supplied as a raw function-body slice — `compile_all_exports`
-    // has the module context and threads through the real value.
-    maybe_emit_safety_manifest(&output, target_spec, safety_bounds, 0)?;
+    // Phase 1: write the safety-manifest sidecar whenever any safety knob is
+    // active. #865: the single-function path now records the module's declared
+    // memory-0 minimum (it previously hardcoded 0; the demo path, which has no
+    // input module, still reports 0).
+    maybe_emit_safety_manifest(
+        &output,
+        target_spec,
+        safety_bounds,
+        single_func_linear_memory_bytes,
+    )?;
 
     // Emit a CycloneDX SBOM when requested. Only possible when synth compiled
     // an actual WASM module (not a built-in demo, which has no input file).
