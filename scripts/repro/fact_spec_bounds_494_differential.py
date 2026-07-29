@@ -324,11 +324,16 @@ def main():
           f"+ 4 B from SYNTH_SHIFT_MASK_ELIDE, default-on since v0.50.1 (#846): "
           f"the elision trims BOTH builds but 4 B more off the specialized poll "
           f"[guarded 232->226, specialized 104->94]); unguarded floor {f_len} B")
-    # 132 = 128 (guard elision) + 4 (shift-mask elision fires more on the
-    # specialized build; SYNTH_SHIFT_MASK_ELIDE default-on since v0.50.1/#846).
-    # With SYNTH_SHIFT_MASK_ELIDE=0 this is exactly 128 (the pre-flip win).
-    if b_len - s_len != 132:
-        sys.exit(f"byte win drifted: expected exactly 132 B "
+    # 140 = 128 (guard elision) + 4 (shift-mask elision fires more on the
+    # specialized build; SYNTH_SHIFT_MASK_ELIDE default-on since v0.50.1/#846)
+    # + 8 (#872, v0.53: the exit-holding-range rule recoloured `poll`'s
+    # segments off r7/r8, shrinking the prologue to a 16-bit push and several
+    # intermediates to 16-bit encodings). The +8 is a GUARD-FREE-lowering win,
+    # NOT a guard-elision win: the guarded build is unchanged at 226 B and the
+    # unguarded floor moved with the specialized build (94 -> 86), so the
+    # byte-identity ratchet asserted just below still holds exactly.
+    if b_len - s_len != 140:
+        sys.exit(f"byte win drifted: expected exactly 140 B "
                  f"(got {b_len - s_len})")
     scode, sbase, ssyms = load(spec_elf)
     fcode, _, _ = load(floor_elf)
