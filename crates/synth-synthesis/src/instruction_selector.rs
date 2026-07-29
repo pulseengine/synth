@@ -2019,9 +2019,10 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
         F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U | F32DemoteF64
         | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
         | I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U | I64TruncF64S
-        | I64TruncF64U | I32TruncSatF32S | I32TruncSatF32U | I32TruncSatF64S | I32TruncSatF64U
-        | I64TruncSatF32S | I64TruncSatF32U | I64TruncSatF64S | I64TruncSatF64U
-        | F32ReinterpretI32 | I32ReinterpretF32 | F64ReinterpretI64 | I64ReinterpretF64 => (1, 1),
+        | I64TruncF64U | I64TruncF32S | I64TruncF32U | I32TruncSatF32S | I32TruncSatF32U
+        | I32TruncSatF64S | I32TruncSatF64U | I64TruncSatF32S | I64TruncSatF32U
+        | I64TruncSatF64S | I64TruncSatF64U | F32ReinterpretI32 | I32ReinterpretF32
+        | F64ReinterpretI64 | I64ReinterpretF64 => (1, 1),
 
         // Constants: push 1
         I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => (0, 1),
@@ -2309,6 +2310,16 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
             | I32TruncSatF32U
             | I64TruncSatF32S
             | I64TruncSatF32U
+            // #869: the f32 half of the 64-bit integer<->float family — the
+            // TRAPPING i64<-f32 truncations (i64 domain guard + promote +
+            // #782 decompose) and the i64->f32 converts (exact two-word f64
+            // build + round-to-odd fixup + demote). All four also appear in
+            // `is_scope_f64_op` — their lowerings run on f64 machinery, so
+            // the DP capability gate must fire for them.
+            | I64TruncF32S
+            | I64TruncF32U
+            | F32ConvertI64S
+            | F32ConvertI64U
             // #708 (phase 1b): un-dropped f32 memory-load + f32<->i32 bitcasts.
             // `F32Load` itself is lowered in the main `select_with_stack` match
             // (it needs `self`'s bounds/base-rewrite machinery); listing it here
@@ -2730,6 +2741,65 @@ fn try_lower_f32(
                 reserved,
             )
         }
+        op @ (I64TruncF32S | I64TruncF32U) => {
+            // #869: the TRAPPING `i64.trunc_f32_{s,u}` — promote to f64
+            // (EXACT: sign/NaN/±inf preserved), run the #709-class i64 domain
+            // guard (§4.3.3: TRAP on NaN/out-of-range — the bounds are exact
+            // on the promoted value, see `emit_i64_trunc_f64_domain_guard`),
+            // then the #782 word-decompose, which for a guarded in-range
+            // operand computes the exact truncation (it can no longer
+            // saturate). DP-only like every f64-machinery op (preamble gate).
+            let signed = matches!(op, I64TruncF32S);
+            let sm = pop_float(stack)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64PromoteF32 { dd, sm },
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            emit_i64_trunc_f64_domain_guard(
+                dd,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )?;
+            lower_i64_trunc_sat_from_f64(
+                dd,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )
+        }
+        op @ (F32ConvertI64S | F32ConvertI64U) => {
+            // #869: `f32.convert_i64_{s,u}` — exact two-word f64 build +
+            // round-to-odd fixup + single demote rounding (see
+            // `lower_f32_convert_i64` for why the naive promote-then-demote
+            // double-rounds). DP-only (preamble gate).
+            let signed = matches!(op, F32ConvertI64S);
+            lower_f32_convert_i64(
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )
+        }
         F32ReinterpretI32 => {
             // #708: i32 bits → f32 (VMOV Sd, Rm). Pure bit-cast, no conversion.
             let rm = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
@@ -2888,6 +2958,25 @@ fn is_scope_f64_op(op: &WasmOp) -> bool {
             | I32TruncSatF64U
             | I64TruncSatF64S
             | I64TruncSatF64U
+            // #869 (+#756): the 64-bit integer<->float conversion family.
+            // The f64-source/-target members are f64 ops outright; the
+            // f32-source/-target members (and the pre-existing f32-source
+            // i64-target trunc_sat pair, whose promote-to-f64 lowering
+            // predates this entry) are listed here because their lowerings
+            // run on DOUBLE-precision machinery (F64PromoteF32 / the #782
+            // word-decompose / the exact two-word f64 build) — a
+            // single-precision target (m4f/m7) must loud-decline them via
+            // the preamble DP gate, never emit undefined VCVT.F64 encodings.
+            | F64ConvertI64S
+            | F64ConvertI64U
+            | I64TruncF64S
+            | I64TruncF64U
+            | F32ConvertI64S
+            | F32ConvertI64U
+            | I64TruncF32S
+            | I64TruncF32U
+            | I64TruncSatF32S
+            | I64TruncSatF32U
     )
 }
 
@@ -3292,6 +3381,476 @@ fn blend_word(
         source_line: Some(idx),
     });
     Ok(())
+}
+
+/// #869 (SOUNDNESS): the i64-target domain guard for the TRAPPING
+/// `i64.trunc_f32_{s,u}` / `i64.trunc_f64_{s,u}` — the 64-bit twin of the
+/// #709 f32 guard and the #369 `i32.trunc_f64_*` guard. WASM §4.3.3 requires
+/// a TRAP on NaN or an out-of-i64-range operand; the #782 word-decompose this
+/// guard precedes SATURATES instead (NaN → 0), so running it bare would be a
+/// silent miscompile (the #633/#666/#709/#665/#642 "ARM more-total-than-WASM"
+/// class). Emitting the guard first makes the decompose provably exact.
+///
+/// Valid domain, checked on the (exactly promoted) f64 operand — every bound
+/// exactly representable in f64, and for the f32-source twins the SAME bounds
+/// are exact after the lossless `VCVT.F64.F32` promote:
+///   trunc_*_s: -2^63 <= x < 2^63   (inclusive lower: -2^63 is a valid input
+///              truncating to INT64_MIN, and no f32/f64 value exists strictly
+///              between -2^63-1 and -2^63, so `>=` captures the exact set)
+///   trunc_*_u:  -1.0 <  x < 2^64   (strict lower: (-1,0) truncates to 0)
+/// All compares are ORDERED (false on NaN), so a NaN fails the first guard
+/// and falls to the UDF — same idiom as every existing trunc guard
+/// (`F64 compare; CMP #0; B.NE +0 skip; UDF`).
+#[allow(clippy::too_many_arguments)]
+fn emit_i64_trunc_f64_domain_guard(
+    work: VfpReg,
+    signed: bool,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &[bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<()> {
+    // 2^63 / -2^63 / 2^64 / -1.0 as exact f64 bit patterns.
+    const POW2_63: u64 = 0x43E0_0000_0000_0000;
+    const NEG_POW2_63: u64 = 0xC3E0_0000_0000_0000;
+    const POW2_64: u64 = 0x43F0_0000_0000_0000;
+    const NEG_ONE: u64 = 0xBFF0_0000_0000_0000;
+    let (hi, lo) = if signed {
+        (POW2_63, NEG_POW2_63)
+    } else {
+        (POW2_64, NEG_ONE)
+    };
+    let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    let mut emit_guard = |bound: u64, upper: bool| -> Result<()> {
+        let d_bound = materialize_f64_const(
+            bound,
+            idx,
+            vfp_used,
+            stack,
+            next_temp,
+            spill,
+            instructions,
+            reserved,
+        )?;
+        // Upper: x < hi (F64Lt). Lower: x >= -2^63 (F64Ge, signed) or
+        // x > -1.0 (F64Gt, unsigned). All yield rd=0 on NaN.
+        let cmp = if upper {
+            ArmOp::F64Lt {
+                rd,
+                dn: work,
+                dm: d_bound,
+            }
+        } else if signed {
+            ArmOp::F64Ge {
+                rd,
+                dn: work,
+                dm: d_bound,
+            }
+        } else {
+            ArmOp::F64Gt {
+                rd,
+                dn: work,
+                dm: d_bound,
+            }
+        };
+        instructions.push(ArmInstruction {
+            op: cmp,
+            source_line: Some(idx),
+        });
+        instructions.push(ArmInstruction {
+            op: ArmOp::Cmp {
+                rn: rd,
+                op2: Operand2::Imm(0),
+            },
+            source_line: Some(idx),
+        });
+        // Skip the UDF when in-range (rd != 0); else fall through to trap.
+        instructions.push(ArmInstruction {
+            op: ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            source_line: Some(idx),
+        });
+        instructions.push(ArmInstruction {
+            op: ArmOp::Udf { imm: 0 },
+            source_line: Some(idx),
+        });
+        free_vfp_dtemp(vfp_used, vfp_home, d_bound);
+        Ok(())
+    };
+    emit_guard(hi, true)?; // upper: x < hi (also traps NaN)
+    emit_guard(lo, false)?; // lower: x >= -2^63 (s) / x > -1.0 (u)
+    Ok(())
+}
+
+/// #869: build the CORRECTLY-ROUNDED f64 value of an i64 register pair —
+/// the `f64.convert_i64_{s,u}` lowering, and (with `want_residual`) the
+/// double-rounding-safe front half of `f32.convert_i64_{s,u}`. ARMv7 VFP has
+/// no 64-bit-integer VCVT, so the value is assembled from two exact 32-bit
+/// conversions:
+///
+/// ```text
+///   a = (f64)(hi as u32/s32) * 2^32   ; both steps EXACT (32-bit value into
+///                                     ;   53-bit mantissa; power-of-two scale)
+///   b = (f64)(lo as u32)              ; EXACT
+///   s = a + b                         ; IEEE add = ONE correct RNE rounding
+///                                     ;   of the exact sum  hi*2^32 + lo
+/// ```
+///
+/// For an f64 target `s` IS the answer. For an f32 target, demoting `s`
+/// would DOUBLE-ROUND (64 -> 53 RNE -> 24 RNE loses the sticky information;
+/// e.g. u64 0x8000_0080_0000_0001 must round UP to 2^63+2^40 in f32 but the
+/// f64 intermediate erases the `..0001`). So the caller also needs the EXACT
+/// residual `t = (hi:lo) - s`, computed error-free by Fast2Sum — valid
+/// because `a` is a multiple of 2^32 with `|a| >= 2^32 > |b|` whenever
+/// `hi != 0`, and when `hi == 0` the add was exact so `t` computes to +0:
+///
+/// ```text
+///   z = s - a                         ; exact (Sterbenz/Fast2Sum step)
+///   t = b - z                         ; exact residual, == 0 iff s is exact
+/// ```
+///
+/// Returns `(s, Some(t))` with both D-temps live (caller frees), or
+/// `(s, None)` without the residual computation.
+#[allow(clippy::too_many_arguments)]
+fn lower_f64_from_i64_pair(
+    lo: Reg,
+    hi: Reg,
+    signed: bool,
+    want_residual: bool,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &mut [bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<(VfpReg, Option<VfpReg>)> {
+    const POW2_32: u64 = 0x41F0_0000_0000_0000; // 2^32, exact
+    // b = (f64)(u32)lo — exact. Convert BOTH words before any core-temp
+    // allocation (materialize_f64_const grabs two core scratches, which must
+    // not collide with a just-popped pair).
+    let d_b = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64ConvertI32U { dd: d_b, rm: lo },
+        source_line: Some(idx),
+    });
+    // a = (f64)(hi as s32/u32) — exact; sign of the whole i64 lives here.
+    let d_a = alloc_vfp_dtemp(vfp_used)?;
+    let cvt_hi = if signed {
+        ArmOp::F64ConvertI32S { dd: d_a, rm: hi }
+    } else {
+        ArmOp::F64ConvertI32U { dd: d_a, rm: hi }
+    };
+    instructions.push(ArmInstruction {
+        op: cvt_hi,
+        source_line: Some(idx),
+    });
+    // a *= 2^32 — exact power-of-two scale.
+    let d_scale = materialize_f64_const(
+        POW2_32,
+        idx,
+        vfp_used,
+        stack,
+        next_temp,
+        spill,
+        instructions,
+        reserved,
+    )?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Mul {
+            dd: d_a,
+            dn: d_a,
+            dm: d_scale,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_scale);
+    // s = a + b — the single correct rounding.
+    let d_s = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Add {
+            dd: d_s,
+            dn: d_a,
+            dm: d_b,
+        },
+        source_line: Some(idx),
+    });
+    if !want_residual {
+        free_vfp_dtemp(vfp_used, vfp_home, d_a);
+        free_vfp_dtemp(vfp_used, vfp_home, d_b);
+        return Ok((d_s, None));
+    }
+    // Fast2Sum: z = s - a (exact); t = b - z (exact residual).
+    let d_z = alloc_vfp_dtemp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Sub {
+            dd: d_z,
+            dn: d_s,
+            dm: d_a,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_a);
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64Sub {
+            dd: d_z,
+            dn: d_b,
+            dm: d_z,
+        },
+        source_line: Some(idx),
+    });
+    free_vfp_dtemp(vfp_used, vfp_home, d_b);
+    Ok((d_s, Some(d_z)))
+}
+
+/// #869: lower `f32.convert_i64_{s,u}` — pop the i64 pair, build the exact
+/// f64 sum + residual ([`lower_f64_from_i64_pair`]), force the 53-bit
+/// intermediate to ROUND-TO-ODD with a branch-free integer fixup, then demote.
+/// Round-to-odd with >= 2 guard bits (53 >= 24+2) makes the double rounding
+/// exact (Boldo–Melquiond): `RN_24(RO_53(x)) == RN_24(x)` for every real x,
+/// so the emitted f32 is the correctly-rounded conversion WASM §4.3.3
+/// requires. The fixup:
+///
+/// ```text
+///   inexact = (t != 0)                ; t is the EXACT residual, +0 iff exact
+///   if inexact && LSB(s) == 0:        ; s must become its ODD neighbor
+///       s(bits) += sign(t)==sign(s) ? +1 : -1
+///                                     ; IEEE bit patterns are monotone in
+///                                     ;   magnitude: ±1 on the 64-bit pattern
+///                                     ;   IS nextafter toward/away from zero,
+///                                     ;   correct across binade boundaries,
+///                                     ;   and always flips mantissa parity
+/// ```
+/// realised branch-free over the register pairs (adj ∈ {0,1}, d = sign-diff
+/// mask ∈ {0,-1}, delta = (adj ^ d) - d ∈ {-1,0,+1}). `s` can never be ±0
+/// when inexact (|s| > 2^31), and never overflows to ±inf (|s| <= 2^64).
+#[allow(clippy::too_many_arguments)]
+fn lower_f32_convert_i64(
+    signed: bool,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &mut [bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<bool> {
+    // Pop the i64 operand (reloads a spilled pair; `lo` names the pair).
+    let lo = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
+    let hi = i64_pair_hi(lo)?;
+    let (d_s, d_t) = lower_f64_from_i64_pair(
+        lo,
+        hi,
+        signed,
+        true,
+        idx,
+        vfp_used,
+        vfp_home,
+        stack,
+        next_temp,
+        spill,
+        instructions,
+        reserved,
+    )?;
+    let d_t = d_t.expect("want_residual returns Some");
+    // Five core scratches, kept mutually distinct via the reserved list
+    // (grown as each is handed out — the alloc_temp discipline used by the
+    // #782 decompose).
+    let mut resv: Vec<Reg> = reserved.to_vec();
+    let grab = |resv: &mut Vec<Reg>,
+                stack: &mut Vec<StackVal>,
+                next_temp: &mut u8,
+                instructions: &mut Vec<ArmInstruction>,
+                spill: &mut SpillState|
+     -> Result<Reg> {
+        let r = alloc_temp_or_spill(next_temp, stack, instructions, spill, resv, idx)?;
+        resv.push(r);
+        Ok(r)
+    };
+    let slo = grab(&mut resv, stack, next_temp, instructions, spill)?;
+    let shi = grab(&mut resv, stack, next_temp, instructions, spill)?;
+    let tlo = grab(&mut resv, stack, next_temp, instructions, spill)?;
+    let thi = grab(&mut resv, stack, next_temp, instructions, spill)?;
+    let tmp = grab(&mut resv, stack, next_temp, instructions, spill)?;
+    let emit = |op: ArmOp, instructions: &mut Vec<ArmInstruction>| {
+        instructions.push(ArmInstruction {
+            op,
+            source_line: Some(idx),
+        });
+    };
+    emit(
+        ArmOp::I64ReinterpretF64 {
+            rdlo: slo,
+            rdhi: shi,
+            dm: d_s,
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::I64ReinterpretF64 {
+            rdlo: tlo,
+            rdhi: thi,
+            dm: d_t,
+        },
+        instructions,
+    );
+    free_vfp_dtemp(vfp_used, vfp_home, d_t);
+    // Combined zero test over BOTH of t's words FIRST (the residual is often
+    // a power of two whose LOW word is all-zero, so testing tlo alone would
+    // miss real inexactness — the fatal under-round). Fast2Sum's residual of
+    // an exact sum is +0 under RNE (never -0), so all-zero-bits iff exact.
+    emit(
+        ArmOp::Orr {
+            rd: tmp,
+            rn: tlo,
+            op2: Operand2::Reg(thi),
+        },
+        instructions,
+    );
+    // d = ASR(shi ^ thi, 31) ∈ {0,-1}: 0 when sign(s) == sign(t) (odd
+    // neighbor lies away from zero: bits+1), -1 when they differ (toward
+    // zero: bits-1). Reads the ORIGINAL thi (the Orr above only wrote tmp).
+    emit(
+        ArmOp::Eor {
+            rd: thi,
+            rn: shi,
+            op2: Operand2::Reg(thi),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Asr {
+            rd: thi,
+            rn: thi,
+            shift: 31,
+        },
+        instructions,
+    );
+    // inexact = (tmp | -tmp) >> 31 ∈ {0,1}  (t's words are dead; reuse tlo).
+    emit(
+        ArmOp::Rsb {
+            rd: tlo,
+            rn: tmp,
+            imm: 0,
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Orr {
+            rd: tlo,
+            rn: tlo,
+            op2: Operand2::Reg(tmp),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Lsr {
+            rd: tlo,
+            rn: tlo,
+            shift: 31,
+        },
+        instructions,
+    );
+    // adj = inexact & ~LSB(s) & 1 — flip to the odd neighbor only when the
+    // sum was inexact AND s's mantissa LSB is even (an odd s already IS the
+    // round-to-odd result).
+    emit(
+        ArmOp::Mvn {
+            rd: tmp,
+            op2: Operand2::Reg(slo),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::And {
+            rd: tmp,
+            rn: tmp,
+            op2: Operand2::Reg(tlo),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::And {
+            rd: tmp,
+            rn: tmp,
+            op2: Operand2::Imm(1),
+        },
+        instructions,
+    );
+    // delta = (adj ^ d) - d ∈ {-1, 0, +1}; sign-extend into a pair and add.
+    emit(
+        ArmOp::Eor {
+            rd: tmp,
+            rn: tmp,
+            op2: Operand2::Reg(thi),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Sub {
+            rd: tmp,
+            rn: tmp,
+            op2: Operand2::Reg(thi),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Asr {
+            rd: tlo,
+            rn: tmp,
+            shift: 31,
+        },
+        instructions,
+    );
+    // 64-bit `s += delta` as MODELED Adds/Adc — deliberately NOT the
+    // `ArmOp::I64Add` pseudo-op (same bytes): `reg_effect` returns None for
+    // the i64-pair family, which makes it a range-realloc SEGMENT BARRIER
+    // whose reads of slo/shi are INVISIBLE to the segment-local liveness —
+    // the colorer then reuses slo/shi for intermediates after their last
+    // in-segment use and the pair reaching the final VMOV is garbage (caught
+    // by the #869 differential at land time; the segment validator shares
+    // the same last-use assumption, so it accepted the wrong rewrite). With
+    // Adds/Adc the uses sit INSIDE the segment at its end: the live-in
+    // ranges of slo/shi span the whole segment and the defs are the pinned
+    // exit ranges — sound under reallocation by construction.
+    emit(
+        ArmOp::Adds {
+            rd: slo,
+            rn: slo,
+            op2: Operand2::Reg(tmp),
+        },
+        instructions,
+    );
+    emit(
+        ArmOp::Adc {
+            rd: shi,
+            rn: shi,
+            op2: Operand2::Reg(tlo),
+        },
+        instructions,
+    );
+    // Back to the FP file: s' (round-to-odd) then the single 24-bit rounding.
+    emit(
+        ArmOp::F64ReinterpretI64 {
+            dd: d_s,
+            rmlo: slo,
+            rmhi: shi,
+        },
+        instructions,
+    );
+    let sd = alloc_vfp_temp(vfp_used)?;
+    emit(ArmOp::F32DemoteF64 { sd, dm: d_s }, instructions);
+    free_vfp_dtemp(vfp_used, vfp_home, d_s);
+    stack.push(StackVal::Float { sreg: sd });
+    Ok(true)
 }
 
 /// Lower an in-scope scalar f64 op onto the caller-saved D-register file.
@@ -3787,6 +4346,84 @@ fn try_lower_f64(
                 instructions,
                 reserved,
             )
+        }
+        op @ (I64TruncF64S | I64TruncF64U) => {
+            // #869 (+#756): the TRAPPING `i64.trunc_f64_{s,u}` — the #709-class
+            // i64 domain guard (§4.3.3: TRAP on NaN/out-of-range) followed by
+            // the #782 word-decompose, which for a guarded in-range operand
+            // computes the exact truncation (it provably never saturates).
+            let signed = matches!(op, I64TruncF64S);
+            let dm = pop_double(stack)?;
+            // The decompose consumes its operand (frees it internally, and the
+            // signed path VABSes through it). A pinned param/local HOME must
+            // survive — hand it a fresh copy (same hazard as the sat twin).
+            let dm_is_home = vfp_d_index(dm).is_some_and(|d| vfp_home[2 * d]);
+            let work = if dm_is_home {
+                let copy = alloc_vfp_dtemp(vfp_used)?;
+                emit_d_copy(
+                    copy,
+                    dm,
+                    idx,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
+                copy
+            } else {
+                dm
+            };
+            emit_i64_trunc_f64_domain_guard(
+                work,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )?;
+            lower_i64_trunc_sat_from_f64(
+                work,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )
+        }
+        op @ (F64ConvertI64S | F64ConvertI64U) => {
+            // #869: `f64.convert_i64_{s,u}` — the exact two-word build:
+            // (f64)(hi as s32/u32) * 2^32 + (f64)(u32)lo. Every step but the
+            // final VADD is exact, and IEEE VADD delivers the one correct
+            // round-to-nearest-even of the exact sum — bit-identical to a
+            // native 64-bit conversion (§4.3.3).
+            let signed = matches!(op, F64ConvertI64S);
+            let lo = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
+            let hi = i64_pair_hi(lo)?;
+            let (dd, _) = lower_f64_from_i64_pair(
+                lo,
+                hi,
+                signed,
+                false,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )?;
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
         }
         _ => Ok(false),
     }
@@ -6530,6 +7167,16 @@ impl InstructionSelector {
                      shipping select_with_stack selector lowers it (#782)"
                 )));
             }
+            // #869: same selector asymmetry for the TRAPPING f32->i64
+            // truncations — `select_with_stack` lowers them (i64 domain guard
+            // + promote + #782 decompose); this register-blind fallback
+            // loud-declines (decline > wrong).
+            op @ (I64TruncF32S | I64TruncF32U) if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?}: select_default has no i64 register-pair path — the \
+                     shipping select_with_stack selector lowers it (#869)"
+                )));
+            }
 
             // F32 rounding pseudo-ops — emit ArmOp variants, encoder expands to
             // multi-instruction sequences using FPSCR rounding-mode manipulation
@@ -6578,9 +7225,13 @@ impl InstructionSelector {
                 vec![ArmOp::F32Copysign { sd, sn, sm }]
             }
 
+            // #869: lowered by the shipping `select_with_stack` (exact
+            // two-word f64 build + round-to-odd fixup + demote); this
+            // register-blind fallback keeps the honest decline.
             op @ (F32ConvertI64S | F32ConvertI64U) if self.fpu.is_some() => {
                 return Err(synth_core::Error::synthesis(format!(
-                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
+                    "{op:?}: select_default has no i64 register-pair path — the \
+                     shipping select_with_stack selector lowers it (#869)"
                 )));
             }
 
@@ -6627,7 +7278,9 @@ impl InstructionSelector {
             | I32TruncSatF32S
             | I32TruncSatF32U
             | I64TruncSatF32S
-            | I64TruncSatF32U) => {
+            | I64TruncSatF32U
+            | I64TruncF32S
+            | I64TruncF32U) => {
                 return Err(synth_core::Error::synthesis(format!(
                     "target {} has no FPU; cannot compile {op:?}",
                     self.target_name
@@ -6832,20 +7485,22 @@ impl InstructionSelector {
                 vec![ArmOp::F64Copysign { dd, dn, dm }]
             }
 
-            // F64 i64 conversions: VCVT.{F64,S32}.{S32,F64} with i64 register
-            // pairs is not implemented in this register-blind `select_default`
-            // fallback. Surface a typed error. NOTE (#782): the two
-            // `I64TruncSatF64*` forms ARE lowered on the shipping
-            // `select_with_stack` path (v0.49 finale); they decline here only
-            // because select_default lacks the pair machinery, and a normal
-            // compile never routes them through this arm. The trapping
-            // `I64TruncF64*` and `F64ConvertI64*` remain genuinely unimplemented.
+            // F64 i64 conversions: i64 register pairs are not implemented in
+            // this register-blind `select_default` fallback. Surface a typed
+            // error. NOTE (#782/#869): ALL of these forms ARE lowered on the
+            // shipping `select_with_stack` path (trunc_sat via the v0.49
+            // word-decompose; the trapping `I64TruncF64*` via the i64 domain
+            // guard + decompose and `F64ConvertI64*` via the exact two-word
+            // build, both #869). They decline here only because
+            // select_default lacks the pair machinery, and a normal compile
+            // never routes them through this arm.
             op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U
             | I64TruncSatF64S | I64TruncSatF64U)
                 if self.has_double_fpu() =>
             {
                 return Err(synth_core::Error::synthesis(format!(
-                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
+                    "{op:?}: select_default has no i64 register-pair path — the \
+                     shipping select_with_stack selector lowers it (#869)"
                 )));
             }
 

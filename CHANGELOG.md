@@ -7,8 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-07-29
+
+**"Enforce what we promise."** Every backend in this release stopped
+over-promising somewhere, and each gap was closed by *executing* the fix rather
+than inspecting it:
+
+- **aarch64 memory accesses now bounds-check.** `--safety-bounds` was a **silent
+  no-op** on that backend — `none`, `software`, `mask`, `mpu` produced
+  byte-identical output, and with `uxtw` zero-extension a guest address reached
+  up to 4 GiB past its linear memory: OOB read = disclosure, OOB store =
+  arbitrary write, where wasmtime traps (#865). The default now *enforces*;
+  unimplemented modes hard-error instead of degrading.
+- **ARM lowers the whole 64-bit integer↔float family** (8 ops, incl. the #756
+  `i64.trunc_f64` gap) — previously every member loud-skipped its function,
+  which blocked three falcon cascade stages at their public entry points (#869).
+  ARMv7E-M VFP has no 64-bit `VCVT`, so these are self-contained expansions with
+  WASM-faithful trap guards (the builtins don't trap either).
+- **RISC-V emits external-call relocations**, so seam-importing drivers lower
+  instead of being declined — the cross-architecture claim now holds for real
+  modules, not only import-free ones (#871).
+- **Native i64 `rem_u`/`rem_s` SMT modeling returns**, behind a per-query
+  wall-clock deadline so a future solver cliff degrades to `Unknown` instead of
+  hanging CI for hours (#844/#848/#849).
+- **The proof-vs-model debt is now a counted number.** All 50 selector rules are
+  proved against the *simplified* model, 0 against the Sail-derived one, and the
+  connection between them rests on 5 assumed items — pinned so it can only
+  shrink, with `B`/`BL`/`BX`/`VMOV` reported as touched by **no proof at all**
+  (#867).
+- **The allocator's across-join acceptance oracle bites correctly** — proven by
+  breaking it, after two earlier attempts silently masked their own red tests
+  (#242/#819).
+
+Two defects were found *by the oracles themselves* mid-flight: RV32 non-leaf
+functions never saved `ra` (caught by execution after byte, relocation and link
+checks were all green — not user-reachable before this release), and #872, where
+a default-on allocator pass reuses a register still read by an unmodeled op
+**and its validator shares the blind spot** — filed, contained, and left open
+because the honest fix belongs to the allocator endgame.
+
 ### Added
 
+- **ARM 64-bit integer↔float conversion family lowered (#869, + the #756
+  `i64.trunc_f64` pair)** — all eight ops that previously loud-skipped their
+  function with `GI-FPU-001` now compile on `cortex-m7dp` (the falcon target),
+  unblocking `falcon:cascade/rate#tick`, `position#tick`, and `ekf#estimate`
+  at their public entry points. ARMv7E-M VFP has no 64-bit-integer `VCVT`, so
+  the lowerings are **self-contained multi-step expansions** (no `__aeabi`
+  runtime dependency, unicorn-executable):
+  - `f64.convert_i64_{s,u}`: exact two-word build — `VCVT` each 32-bit half,
+    scale the high word by 2^32 (exact), one `VADD.F64` = the single correct
+    round-to-nearest-even.
+  - `f32.convert_i64_{s,u}`: the same build plus a Fast2Sum exact residual and
+    a branch-free **round-to-odd** integer fixup before the `VCVT.F32.F64`
+    demote — the naive demote double-rounds (e.g. `0x8000_0080_0000_0001`
+    must round UP to 2^63+2^40 in f32; the f64 intermediate erases the sticky
+    bit). Round-to-odd at 53 bits makes the two-step rounding exactly equal
+    the direct 64→24 RNE (Boldo–Melquiond).
+  - `i64.trunc_f32_{s,u}` / `i64.trunc_f64_{s,u}` (**TRAPPING**, WASM §4.3.3):
+    the #709-class i64 domain guard (`-2^63 <= x < 2^63` signed /
+    `-1 < x < 2^64` unsigned, ordered compares + `UDF`; NaN fails the first
+    compare) in front of the #782 word-decompose, which for a guarded operand
+    provably never saturates. A bare decompose — or a bare `__aeabi_f2lz`
+    call — would saturate where WASM requires a trap: the
+    #633/#666/#709/#665/#642 silent-miscompile class.
+
+  CI gate: `scripts/repro/i64_float_conv_869_differential.py` — bit-exact vs
+  wasmtime under unicorn on every boundary row **with the trap rows executed
+  on both sides** (NaN, ±inf, 2^63, −2^63, 2^64, the largest-below-bound
+  f32/f64 values), the double-rounding killer patterns, and ≥10k fixed-seed
+  random patterns per direction (96k checks). Frozen fixtures 10/10
+  byte-identical (byte-changing only for modules using these ops).
+
+- **RISC-V external-call relocations — seam-importing drivers now lower
+  (#871).** On `-b riscv`, any exported function calling an IMPORTED function
+  was skipped ("external call without relocation table") even under
+  `--relocatable` — gale's thin-seam drivers (defined by importing the
+  2-function mmio seam) could not dissolve to RISC-V at all, while the
+  identical wasm lowered fine on `cortex-m3`. The backend now mirrors the ARM
+  `--relocatable` import contract (#197): an external `call` emits the
+  canonical un-relaxed 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder pair
+  plus an **`R_RISCV_CALL_PLT`** relocation (type 19, the modern form —
+  `R_RISCV_CALL` is deprecated) in a new `.rela.text` section, against the
+  import's wasm field name as an UNDEFINED global symbol (`nm -u` shows
+  `U mmio_read32`, exactly like the ARM object). Calls to other functions in
+  the same object resolve against their defined symbols; a call to an
+  uncompiled local function becomes an undefined `synth_func_N` — loud at
+  link time, never a silent hole. Reloc-free objects are byte-identical to
+  the pre-#871 layout by construction (no `.rela.text`, no undefined
+  symbols). Gale's fixture shape goes 2/6 exports emitted → **6/6 + the two
+  undefined imports**.
+- **RV32 exact-arity call lowering (#871).** The v0.3.1 RV32 `call`
+  convention drained the ENTIRE value stack as arguments and always pushed a
+  phantom `a0` result — any call with extra values on the stack (two seam
+  reads feeding one `i32.add`) either declined or would have miscompiled.
+  `lower_call` now consumes the decoder's per-function signature tables
+  (`func_arg_counts`/`func_result_counts`, already in `CompileConfig`):
+  exactly the callee's arity is drained, values surviving the call are moved
+  out of caller-saved registers into pool s-registers first (exhaustion =
+  loud skip, never a silent clobber), void callees push nothing, and call
+  results are copied out of `a0`/`a1` immediately so a later call's argument
+  marshalling cannot clobber them. Modules without signature tables keep the
+  legacy behaviour. Byte-safe: call-containing RV32 functions never emitted
+  before this change.
+- **CI: `rv32-extern-call-reloc-oracle` (#871).** Five-stage differential
+  (`scripts/repro/riscv_extern_call_871_differential.py` on the gale-shaped
+  `riscv_extern_call_871.wat`): (1) all exports emit + `nm -u` lists exactly
+  the imports, (2) pyelftools read-back of every `.rela.text` entry — type
+  19, 4-aligned in-`.text` offset, right symbol, exact placeholder bytes at
+  the site (a wrong offset/symbol is a silent link-time miscompile), (3)
+  ARM-shape parity on the same wasm, (4) a REAL link via `ld.lld` against a
+  2-stub mmio implementation with the patched `auipc`/`jalr` targets decoded
+  and checked to land on the stubs, (5) execution of the linked image under
+  unicorn (RV32) vs wasmtime ground truth — return values AND final mmio
+  memory bit-identical, covering the LOCAL-call shape (reloc against a
+  DEFINED symbol, no undefined symbol invented) alongside the imports.
+  Known limitations stay LOUD declines, named: >8 args, i64 args,
+  multi-value results, `call_indirect`; the single-function RISC-V CLI path
+  refuses external-call functions rather than dropping their relocs.
+- **VCR-RA-003 across-JOIN validation on the optimized (numeric-branch) path
+  (#242, the #819 redo).** The whole-function allocation validator's invariant 4
+  (join-value availability) previously loud-declined `NotAttempted` on the
+  DEFAULT optimized path's pre-resolved `BOffset`/`BCondOffset` streams; a
+  numeric join-CFG builder now reconstructs branch targets from the estimator
+  byte layout (off-boundary or mixed label+numeric streams still LOUD-decline —
+  decline > guess) and runs the MUST-availability fixpoint there too. The #819
+  over-rejection is fixed by the PRESERVED entry-availability discriminator:
+  callee-saved registers pushed-in-the-prologue AND popped-at-every-exit count
+  available at entry on the numeric path (they provably hold the caller's value
+  under the save/restore contract — the benign dead result-`mov` of a void
+  function, `cf_shapes_500::ifelse`, now compiles instead of hard-erroring),
+  while never-established reads (not pushed, not defined on any path — the
+  allocator-confusion class) stay Violations, with and without a prologue. The
+  label-form path keeps its STRICT semantics unchanged — the existing red-first
+  across-join clobber fixtures still fire. 8 new `ra003_numeric_*` red/green/
+  decline tests; frozen `.text` byte-identical (the validator emits nothing).
 - **ISA-model adequacy (#867): "proved against a simplified model" is now an
   explicit, counted, CI-pinned trusted-base entry.** #682's shape — a green
   Qed while shipped code silently miscompiled, because the SIMPLIFIED
@@ -49,6 +182,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   families — #682 itself was a form-level gap. No test executes the Rocq
   model (differential suites exercise compiler OUTPUT); the artifact records
   that explicitly instead of implying test coverage.
+
+### Changed
+
+- **#846 — cross-block reaching-def shift-mask elision (`Lt32Facts`); gpio-thin
+  506 → 502 B, and the 0.11.50 "490 B" baseline shown to be PRE-#682
+  UNSOUND.** v0.50.1's default-on
+  `SYNTH_SHIFT_MASK_ELIDE` recovered gale's real 656 B `gpio_thin_846.loom.wasm`
+  from 534 → 506 B but left **4 residual `and r12,rN,#31` re-masks** whose
+  bounding `and rN,#c` (`c < 32`) sits in a DIFFERENT basic block — invisible
+  to the intra-block Pattern-B window, which (correctly) aborts at every
+  label. `elide_shift_masks` now consults a forward MUST-dataflow of
+  "provably `< 32` unsigned" register facts over the exact label-form CFG:
+  intersection meet at joins, worklist fixpoint, so a mask is elided **only
+  when every path from function entry reaches the shift with a bounding
+  last-def** of the amount register — one unmasked path, an intervening call
+  (kills all facts), a loop back-edge carrying an unbounded redef, or ANY
+  unmodeled control flow (`BOffset`/`BrTable`/computed `Bx` → whole-function
+  decline) keeps the mask, the #682 invariant in dataflow form. gpio-thin:
+  **506 → 502 B, 4 → 3 redundant masks** (`gpio_toggle`'s cross-block
+  copy-carried `pin & 0xf` site now elides; the 75-trace mmio execution
+  differential incl. pin ≥ 32 — the mod-32 boundary — stays bit-identical vs
+  wasmtime on the new bytes; frozen anchors byte-identical, no re-freeze).
+  The last 3 sites (all in `gpio_configure`, read off the shipped object) are
+  HONESTLY kept, not missed:
+  - `and ip,r8,#31` at `0xdc` is **LOAD-BEARING, permanently**: its amount is
+    `lsl.w r8, r6, #2` on `r6 = ldr [sp,#0x24]`, a frame-reloaded RAW param
+    with no source mask. `mode << 2 >= 32` for `mode >= 8`, where WASM
+    §4.3.2 requires shift-by-`(k mod 32)` but bare ARM `LSL` by ≥ 32 yields
+    0 — eliding it IS the #682 miscompile. (The only bound on `r6`,
+    `cmp r6,#6`, sits four instructions AFTER the shift and feeds a select,
+    so it neither dominates nor constrains.)
+  - `and ip,r4,#31` at `0xac` and `and ip,r0,#31` at `0x100` are the STM32
+    CRL/CRH idiom `sel ? p*4 : p*4−32` (the second is a frame-slot reload of
+    the first, via `str [sp,#0x1c]` / `ldr [sp,#0x1c]`). `< 32` holds only
+    through the branch correlation `sel ⟺ p*4 < 32` — relational,
+    IT-block + frame-slot reasoning outside ANY value-range dataflow.
+    Recovering these is a named follow-up (correlated/predicate-aware ranges).
+
+  **gale's 490 B target is not soundly reachable, and the arithmetic proves
+  why**: each residual mask is a 4-byte `and.w`, and `502 − 3×4 = 490`
+  EXACTLY. The 0.11.50 baseline therefore had NO mod-32 mask at these three
+  sites — it predates #682 and emitted the bare register shift, i.e. the 490 B
+  figure is the size of the *unsound* lowering. 502 B is the sound floor for
+  this driver until relational ranges land, and the +12 B over 0.11.50 is
+  precisely the price of the #682 fix at 3 sites (1 of which can never be
+  paid back).
+
+### Fixed
+
+- **Single-precision targets (m4f/m7) now loud-decline the whole #869 family
+  by name at the selector preamble** (listed in the f64 capability scope):
+  every member's lowering runs on double-precision machinery, and the
+  pre-existing `i64.trunc_sat_f32_{s,u}` promote-to-f64 path previously slid
+  past the capability gate to be caught only later at ISA validation. Same
+  honest-skip outcome, one gate earlier and named.
+- **RV32 non-leaf functions now save/restore `ra` (#871).** A body containing
+  a `call` clobbers `ra`, so without a prologue save the function's `ret`
+  jumps back into its own call site (infinite loop / wild jump).
+  `preserve_callee_saved` now spills `ra` for any call-containing body, and
+  VCR-RA-003 (RV32) REQUIRES it — an unsaved-`ra` non-leaf stream is a
+  `CalleeSavedNotSaved { RA }` violation that hard-errors the compile, pinned
+  red-first across import, `func_N`, and `synth_func_N` call labels.
+  **Not user-reachable before this release**: verified against a
+  main/v0.51.0-built binary, EVERY RV32 call shape — imported, local,
+  self-recursive, with and without `--relocatable`, and via the
+  single-function `--func-name` path — declined with
+  `unsupported in skeleton: external call without relocation table`
+  (`Backend::compile_module` has no caller, so every RV32 function was
+  assembled alone and no `Call` label ever resolved). So no shipped RV32
+  object ever contained a call site; the defect was introduced and fixed
+  inside this change, caught by the execution stage of its own oracle after
+  the byte/reloc/link stages were all green.
+
+- **aarch64: linear-memory accesses now BOUNDS-CHECK — `--safety-bounds` was a
+  silent no-op (#865).** The v0.51.0 `-b aarch64` lowering (#851) emitted NO
+  bounds check and every `--safety-bounds` mode (`none`/`software`/`mask`/`mpu`)
+  produced byte-identical unchecked output: a guest address is zero-extended
+  (`uxtw`), so `i32.load`/`i32.store` at `0xFFFFFFFF` reached `x28 + 4 GiB − 1`
+  — an OOB read (disclosure) / write (arbitrary-write) primitive where WASM
+  requires a trap (gale's executed table: 65536, 100000, −1 all returned host
+  memory; wasmtime traps). Now:
+  - **`software` emits a per-access check**: `mov w_k, #K; cmp w_addr, w_k;
+    b.ls +2; brk #0` with `K = limit − memarg.offset − access_size` folded at
+    compile time — one compare proves `uxtw(addr) + offset + size ≤ limit`
+    BEFORE the dereference (width + memarg-offset accounting included: a 4-byte
+    access at `limit−3`, or an `offset=65532` access at addr 4, traps). When
+    `offset + size` already exceed the limit the access unconditionally traps.
+    The static limit (declared min pages × 64 KiB) is sound because
+    `memory.grow` is not lowered on this backend.
+  - **The DEFAULT on `-b aarch64` is now `software`** — the flag-absent path
+    was the silent-unsafe path; unchecked output now requires the explicit
+    `--safety-bounds none` opt-out (which stays byte-identical to v0.51.0
+    output).
+  - **`mask`/`mpu` HARD-ERROR on `-b aarch64`** (CLI and backend, defense in
+    depth) instead of being silently accepted and ignored — the "flag exists
+    but doesn't enforce" class (cf. #651) is refused, never re-emitted.
+  - The single-function path (`-n`) now threads the module's real declared
+    memory limit (previously 0) into the config and the safety manifest.
+  - Gated red-first by `scripts/repro/aarch64_bounds_865_differential.py`
+    (CI `aarch64-oracle`): gale's exact table under unicorn with poisoned
+    OOB memory — in-bounds values match wasmtime, every OOB row must `brk`
+    exactly where wasmtime traps (strict classification: only `brk` counts,
+    an unmapped fault fails), `md5(none) ≠ md5(software)`, default ≡
+    software, and the mask/mpu rejections. RED on the pre-fix binary
+    (15 failures), GREEN after; all pre-existing aarch64 differentials and
+    gale's native matrix (35 ops / 91 checks) unchanged-green.
+- **Per-query wall-clock deadline on every SMT solve (#848/#849).** `synth-verify`
+  now bounds every ordeal query with `Solver::check_with_deadline` (ordeal
+  ≥0.15) — default **300 000 ms**, override with `SYNTH_ORDEAL_DEADLINE_MS`
+  (`0` disables it and falls back to the pre-existing
+  `SYNTH_ORDEAL_MAX_CONFLICTS` conflict cap; ordeal's `Bound` is one-of, so a
+  query carries a deadline *or* a conflict cap, never both). The bound covers
+  **both** solve seams: `solver::OrdealSolver::check` *and* `trap::prove_trap_*`,
+  which previously called `ordeal::trap::prove_trap_*` → the **unbounded**
+  `Solver::prove_valid` — i.e. the hardest VC class in the validator (the
+  64-bit `bvsrem`/`bvurem` div/rem value VCs) had no wall-clock floor at all.
+  synth now builds the same goal term (`trap_equivalence_vc` /
+  `trap_condition_equivalence`) and discharges it under the deadline itself.
+  The Z3 differential oracle gets the identical budget via z3's `timeout`
+  param — note the trap VCs are ordeal-only by construction (they never route
+  through `new_solver`), so the `Z3 Verification` job hung on the *same ordeal*
+  queries, not on Z3; the z3 budget is defence in depth for the value-VC path
+  that does use the oracle. Expiry degrades to `ValidationResult::Unknown` /
+  `TrapVerdict::Unknown` — an undecided query is **never** reported
+  `Verified`/`Preserved`; the certificate re-check and model self-check are
+  untouched, so the bound costs completeness only, never soundness. Gated
+  red-first by `solver::tests::deadline_degrades_to_unknown_never_to_proven`
+  (a 1 ms budget on a hard query yields `Unknown` and names the deadline; the
+  same construction, narrow, decides `Unsat`, so the gate is not vacuous).
+  **Documented limitation:**
+  `check_with_deadline` bounds the SAT *search*, not bit-blasting — it is a
+  strong bound on the dominant cost, not a universal wall-clock guard.
+  Complemented by an outer `timeout-minutes` on the CI `Test` (60) and
+  `Z3 Verification` (45) jobs, neither of which had one — which is why #849
+  cost days rather than minutes.
+- **Native i64 `rem_u`/`rem_s` value model re-landed (#844, closes #848).**
+  `ArmSemantics` no longer HAVOCs the i64 remainder: `I64RemU`/`I64RemS`
+  compose the 64-bit operands from their register halves (`concat`), apply the
+  native `bvurem`/`bvsrem`, and split the result back to the `rd` pair, with
+  the ÷0 trap reconstructed from the pseudo-op's `elide_zero_guard` field.
+  `verify_i64_rem_value_preservation` asserts the **full** obligation (trap
+  clause *and* guarded value clause) against the ABI return pair `R0:R1`, so a
+  lowering that computes the wrong remainder — or writes it to the wrong
+  register pair — is now `Invalid` where the HAVOC model accepted it. #844 was
+  reverted in v0.50 (`db0f1f2`) because ordeal 0.12 hung on these queries
+  (#849); **ordeal 0.16.1** fixes both blast regressions (signed ordeal#97,
+  unsigned ordeal#101) and the new deadline is the standing insurance.
+  Measured: the four correctness/destination i64-rem tests (8 × 64-bit
+  `bvurem`/`bvsrem` value+trap VCs) decide in **2.4 s**. Non-vacuity is gated,
+  not narrated, at two strengths — `i64_rem_wrong_destination_register_is_rejected`
+  and `i64_rem_value_model_closes_a_trap_only_gap` (the old trap-only VC
+  *accepts* the same wrong-destination lowering the new value VC *rejects*) pin
+  the accepted-under-havoc → rejected-now discriminator on the register file,
+  and `i64_rem_wrong_signedness_is_rejected` pins it on the **arithmetic**: a
+  `rem_u` lowered to the signed pseudo-op (or vice versa) writes the *right*
+  registers and preserves the ÷0 trap, so only a real value model can reject
+  it — it does, with the expected counterexamples (negative dividend / negative
+  divisor). That SAT search is the corpus's slowest rem query at ~23 s locally
+  (vs the 300 s budget) and is free in suite wall-clock, running behind the
+  pre-existing 40 s popcnt-HAKMEM proof. Verify-only: byte-invisible, frozen
+  codegen anchors untouched. Supersedes #854.
+
 
 ## [0.51.0] - 2026-07-23
 

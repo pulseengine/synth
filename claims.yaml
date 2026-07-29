@@ -430,8 +430,10 @@ claims:
   # in-progress, not implemented. LIVE (derived-ARM-trap-term) classes now:
   # i32 div/rem, i64 div/rem (#756, field-derived), unreachable, i32
   # load/store (all widths), call_indirect, i32.trunc_f32_s/u, i32.trunc_f64_s/u
-  # (#756, D-register guard). i64.trunc_f64 has no shipped lowering (selector
-  # declines it) — its classifier is unit-gated only.
+  # (#756, D-register guard). i64.trunc_f32/f64 SHIP a guarded lowering since
+  # #869, but their symbolic ARM-side wiring (F64 compare/decompose chain) is
+  # the named residual — classifier unit-gated + EXECUTION-gated (the #869
+  # differential runs every trap row under unicorn), not yet derived-term VC.
   # Phase B (ordeal 0.9.1, ordeal#59/TR-020): float→int trunc trap class
   # covered — trunc_op/trap_trunc wrapper + #709 boundary-table eval gate.
   - id: SYNTH-VCR-VER-002-STATUS

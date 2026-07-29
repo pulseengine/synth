@@ -18,6 +18,12 @@ jobs:
     # defaults to the pure-Rust ordeal engine, z3 is behind the off-by-default
     # `z3-solver` feature), so moving back is a possible follow-up.
     runs-on: ubuntu-latest
+    # Outer wall-clock guard (#849). This job ran 4-6 h and timed out on the
+    # GitHub default on EVERY run for three days because nothing anywhere
+    # bounded a solver query. The per-query deadline in synth-verify
+    # (`SYNTH_ORDEAL_DEADLINE_MS`, #848) is the inner floor; this is the outer
+    # one, so a future cliff costs one red job in <1 h, not a burned day.
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -Dwarnings
     steps:
@@ -197,6 +203,11 @@ jobs:
     # that blocked releases. Stays on ubuntu-latest for `sudo` (smithy runners
     # have no sudo); move once libz3-dev is in the smithy toolchains role.
     runs-on: ubuntu-latest
+    # Outer wall-clock guard (#849) — this job hung for 4-6 h alongside `test`
+    # on the same unbounded 64-bit bvsrem/bvurem queries. Inner floor: the
+    # per-query deadline (`SYNTH_ORDEAL_DEADLINE_MS`, #848), applied to the Z3
+    # oracle too.
+    timeout-minutes: 45
     env:
       SYNTH_SOLVER_DIFF: "1"
       # Point z3-sys bindgen at the apt header (libz3-dev installs it here);
@@ -461,6 +472,8 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_locals_851_differential.py
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
+      - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
+        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_bounds_865_differential.py
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
@@ -626,6 +639,16 @@ jobs:
       # This gate caught the optimized-path silent-NOP drop at land time.
       - name: Run trunc_sat boundary oracle (#782a, m7dp+m4f+aarch64)
         run: SYNTH=./target/debug/synth python scripts/repro/trunc_sat_782_differential.py
+      # #869: the 64-bit integer<->float conversion family (gale's six +
+      # the #756 i64.trunc_f64 pair) on cortex-m7dp — converts bit-exact
+      # (incl. the round-to-odd double-rounding killers), the TRAPPING trunc
+      # forms EXECUTED on every NaN/±inf/2^63/-2^63/2^64 boundary row (a
+      # wasmtime trap must be an ARM UDF stop — the #709-class silent-
+      # miscompile gate), m4f loud-decline honesty, falcon-flags symbol
+      # presence, and >=10k fixed-seed fuzz per direction. This gate caught
+      # the range-realloc cross-barrier live-in miscompile at land time.
+      - name: Run i64<->float conversion family oracle (#869, m7dp+m4f)
+        run: SYNTH=./target/debug/synth python scripts/repro/i64_float_conv_869_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -969,6 +992,46 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_addr_fold_riscv_differential.py
+
+  rv32-extern-call-reloc-oracle:
+    name: rv32 external-call relocation oracle (#871)
+    # #871: the gale thin-seam driver shape — exported functions calling an
+    # imported 2-function mmio seam — must LOWER on `-b riscv --relocatable`
+    # (pre-fix: every seam-using export was skipped, so no driver could
+    # dissolve to RISC-V). The differential verifies (1) every export emits +
+    # `nm -u` lists exactly the imports, (2) each `.rela.text` entry is a real
+    # R_RISCV_CALL_PLT at a placeholder auipc/jalr pair with the right symbol
+    # (a wrong offset/symbol is a silent link-time miscompile), (3) ARM-shape
+    # parity on the same wasm, (4) a REAL link (ld.lld) against mmio stubs,
+    # and (5) execution of the linked image under unicorn (UC_ARCH_RISCV) vs
+    # wasmtime ground truth. Isolated job: emulation deps pip-installed here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Install lld + clang (real-link stage)
+        run: sudo apt-get update && sudo apt-get install -y lld clang
+      - name: Run RV32 external-call relocation oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/riscv_extern_call_871_differential.py
 
   rv32-mem-size-grow-oracle:
     name: rv32 memory.size / memory.grow execution oracle

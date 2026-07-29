@@ -26,7 +26,7 @@ pub mod selector;
 pub mod startup;
 
 pub use backend::RiscVBackend;
-pub use elf_builder::{ElfMode, RiscVElfBuilder, RiscVElfFunction};
+pub use elf_builder::{ElfMode, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction};
 pub use encoder::{RiscVEncoder, RiscVEncodingError};
 pub use linker_script::{LinkerScriptConfig, RiscVLinkerScriptGenerator};
 pub use pmp::{PMPAllocator, PMPEntry, PMPError, PMPMode, PMPPermissions};
