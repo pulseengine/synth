@@ -196,6 +196,31 @@ impl Backend for AArch64Backend {
         // non-exported helper containing an unsupported op now FAILS the compile
         // instead of being silently ignored — the loud-skip contract, applied to
         // the whole reachable local set.
+        // #851: active data segments are NOT materialized by this backend —
+        // there is no data section, no startup, and no x28-establishing code
+        // (the base is an embedder precondition). Compiling a data-carrying
+        // module would ship its initialized region reading ZEROS where WASM
+        // guarantees segment bytes: the silent-miscompile class (#757/#758/
+        // #798 on the other backends). Decline loudly; data-segment init is a
+        // documented follow-on.
+        if !module.data_segments.is_empty() {
+            return Err(BackendError::CompilationFailed(format!(
+                "module carries {} active data segment(s), but the aarch64 \
+                 backend does not materialize data segments — a load from the \
+                 initialized region would silently read zeros; refusing \
+                 (#851). Data-segment init is a documented follow-on.",
+                module.data_segments.len()
+            )));
+        }
+        // A memory-0 segment with a NON-CONST offset is legacy-dropped at
+        // decode (absent from data_segments) — the recorded reason is the only
+        // trace. Same silent-miscompile class; same loud refusal.
+        if let Some(reason) = &module.default_memory_nonconst_data {
+            return Err(BackendError::CompilationFailed(format!(
+                "aarch64: {reason} — refusing to ship the region uninitialized \
+                 (#851)"
+            )));
+        }
         let locals: Vec<&_> = module
             .functions
             .iter()

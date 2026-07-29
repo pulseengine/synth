@@ -296,6 +296,14 @@ pub struct DecodedModule {
     /// must decline LOUDLY with this reason; single-memory modules never set
     /// it.
     pub multi_memory_decline: Option<String>,
+    /// #851 — `Some(reason)` when an active data segment on MEMORY 0 has a
+    /// NON-CONSTANT offset expression: such a segment cannot be placed at
+    /// compile time and is absent from [`Self::data_segments`] (the legacy
+    /// drop, kept frozen for the ARM/RV32 paths). Recording it lets a backend
+    /// with no runtime-offset placement (aarch64) decline LOUDLY instead of
+    /// shipping the region uninitialized — the segment would otherwise be
+    /// INVISIBLE to any post-decode honesty check.
+    pub default_memory_nonconst_data: Option<String>,
     /// Import entries (module name, field name, kind)
     pub imports: Vec<ImportEntry>,
     /// Number of imported functions (for distinguishing import calls from local calls)
@@ -687,6 +695,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // reason multi-memory lowering must be declined (if any).
     let mut extra_memory_data_segments: Vec<(u32, u32, Vec<u8>)> = Vec::new();
     let mut multi_memory_decline: Option<String> = None;
+    // #851: memory-0 active segment with a non-const offset (legacy-dropped).
+    let mut default_memory_nonconst_data: Option<String> = None;
     let mut globals: Vec<WasmGlobal> = Vec::new();
     let mut imports = Vec::new();
     let mut func_index = 0u32;
@@ -1107,9 +1117,21 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         if memory_index == 0 {
                             // Memory-0 behavior unchanged (frozen): a const-
                             // offset segment is captured, anything else keeps
-                            // the legacy drop.
+                            // the legacy drop — but #851 RECORDS the drop so a
+                            // backend without runtime-offset placement can
+                            // decline loudly instead of shipping the region
+                            // uninitialized (the segment is otherwise
+                            // invisible post-decode).
                             if let Some(off) = const_off {
                                 data_segments.push((off, data.data.to_vec()));
+                            } else {
+                                default_memory_nonconst_data.get_or_insert(
+                                    "active data segment on memory 0 has a \
+                                     non-constant offset expression — it cannot \
+                                     be placed at compile time and is NOT in \
+                                     data_segments (#851)"
+                                        .to_string(),
+                                );
                             }
                         } else if let Some(off) = const_off {
                             // VCR-MEM-002 phase 1 (#406): capture non-default-
@@ -1299,6 +1321,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         data_segments,
         extra_memory_data_segments,
         multi_memory_decline,
+        default_memory_nonconst_data,
         imports,
         num_imported_funcs,
         func_arg_counts,

@@ -1562,7 +1562,10 @@ fn compile_command(
     let mut startup_globals_words: Vec<u32> = Vec::new();
     // #758: set when the single-function compile path decodes a module carrying
     // active data segments — the single-func cortex-m builder can't ship them.
+    // #851: the aarch64 single-function path declines on them too (it ships no
+    // data at all), including the non-const-offset segment decode legacy-drops.
     let mut single_func_has_data_segments = false;
+    let mut single_func_nonconst_data: Option<String> = None;
     // #865: the module's declared minimum linear-memory size (memory 0, bytes).
     // The single-function path previously never threaded memory context into
     // the config; the aarch64 software bounds check needs the real limit (a 0
@@ -1629,6 +1632,7 @@ fn compile_command(
             // this path would silently read zeros. Record so the cortex-m call
             // below loud-declines rather than emit that silent miscompile.
             single_func_has_data_segments = !module.data_segments.is_empty();
+            single_func_nonconst_data = module.default_memory_nonconst_data.clone();
             // #865: capture memory 0's declared minimum size for the aarch64
             // software bounds check (pages × 64 KiB).
             single_func_linear_memory_bytes = module
@@ -1880,6 +1884,21 @@ fn compile_command(
     info!("Encoded {} bytes of machine code", code.len());
 
     let elf_data = if backend.name() == "aarch64" {
+        // #851: the aarch64 object ships no data segments — a data-carrying
+        // module's initialized region would silently read zeros (the
+        // #757/#758/#798 class). Decline loudly, mirroring the cortex-m
+        // single-function guard below.
+        if single_func_has_data_segments {
+            anyhow::bail!(
+                "module carries active data segment(s), but the aarch64 \
+                 backend does not materialize data segments — a load from the \
+                 initialized region would silently read zeros; refusing \
+                 (#851). Data-segment init is a documented follow-on."
+            );
+        }
+        if let Some(reason) = &single_func_nonconst_data {
+            anyhow::bail!("aarch64: {reason} — refusing to ship the region uninitialized (#851)");
+        }
         // #546: emit the AArch64 backend's own EM_AARCH64 ELF64 object, not the
         // ARM (EM_ARM/ELF32) wrapper. The A64 codegen is correct; only the
         // container differs. Discriminate on backend name, not target family:
@@ -2667,6 +2686,7 @@ fn compile_all_exports(
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
         all_extra_memory_segments, // #406: (mem_idx>0, offset, bytes) init segments on non-default memories
         multi_memory_decline,      // #406: decode-level reason multi-memory must decline (if any)
+        default_memory_nonconst_data, // #851: memory-0 segment with a non-const offset (legacy-dropped at decode)
         all_call_indirect_guards,  // #642: table size + closed-world type verdicts
         all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
@@ -2779,6 +2799,7 @@ fn compile_all_exports(
             Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
             Vec::new(), // #406: non-default-memory data segments are single-module .wasm only
             None,       // #406: the WAST fixture suite is single-memory — no decline reason
+            None,       // #851: WAST fixtures carry no data segments (see #237 above)
             // #642: the multi-module WAST merge has no single table image to
             // verify — the default guards DECLINE any call_indirect (the WAST
             // fixture suite carries none), never an unchecked branch.
@@ -2972,6 +2993,7 @@ fn compile_all_exports(
             // decline reason (e.g. a non-const segment offset on memory k).
             module.extra_memory_data_segments,
             module.multi_memory_decline,
+            module.default_memory_nonconst_data, // #851
             guards,        // #642
             funcref_slots, // #275
         )
@@ -3596,6 +3618,28 @@ fn compile_all_exports(
     }
 
     let elf_data = if is_aarch64 {
+        // #851: the aarch64 object ships NO data segments (no data section,
+        // no startup — the x28 base itself is an embedder precondition). A
+        // data-carrying module would have its initialized region silently
+        // read ZEROS where WASM guarantees segment bytes — the #757/#758/#798
+        // silent-miscompile class. Decline loudly; data-segment init is a
+        // documented follow-on.
+        if !all_data_segments.is_empty() {
+            anyhow::bail!(
+                "module carries {} active data segment(s), but the aarch64 \
+                 backend does not materialize data segments (no data section \
+                 or startup) — a load from the initialized region would \
+                 silently read zeros; refusing (#851). Data-segment init is a \
+                 documented follow-on.",
+                all_data_segments.len()
+            );
+        }
+        // A memory-0 segment with a NON-CONST offset was legacy-dropped at
+        // decode (absent from all_data_segments); the recorded reason is its
+        // only trace. Same class, same refusal.
+        if let Some(reason) = &default_memory_nonconst_data {
+            anyhow::bail!("aarch64: {reason} — refusing to ship the region uninitialized (#851)");
+        }
         // #546: the AArch64 backend emits its own EM_AARCH64 ELF64 (ET_REL)
         // object. This must precede the `has_external_relocations || relocatable`
         // arm so `-b aarch64 --relocatable` isn't stolen into the ARM builder.
