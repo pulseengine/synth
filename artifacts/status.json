@@ -1,11 +1,16 @@
 {
   "aarch64_selector_ops": 148,
+  "arm_refinement_assumed_connection": 5,
+  "arm_semantics_axioms": 72,
   "backends": [
     "arm-thumb2-cortex-m",
     "arm-a32-cortex-r5",
     "riscv32-rv32imac",
     "aarch64-a64"
   ],
+  "isa_model_bridge_validated": 26,
+  "isa_model_simplified_only": 68,
+  "isa_model_uncovered": 4,
   "kani_harnesses": 18,
   "rocq_admit_tactics": 2,
   "rocq_admitted": 3,
@@ -15,6 +20,7 @@
   "sel_dsl_pilot_qed": 7,
   "sel_dsl_rule_qed": 50,
   "sel_dsl_rules": 50,
+  "sel_rules_simplified_basis": 50,
   "version": "0.51.0",
   "verus_spec_fns": 8,
   "wasmcert_bridge_qed": 104

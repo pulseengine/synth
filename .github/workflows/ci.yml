@@ -165,6 +165,14 @@ jobs:
         run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
+      # #867: coverage OF the ISA semantics model. Re-derives
+      # artifacts/model-coverage.json (static heuristic, documented in the
+      # script) and fails if the committed artifact is stale or hand-edited;
+      # prints the COMPLEMENT — modelled ISA behaviours no proof exercises —
+      # loudly in the job log. The tier counts flow into status.json via
+      # claims.yaml, so this step is what keeps those numbers honest.
+      - name: Model-coverage artifact freshness + uncovered-complement report (867)
+        run: python3 scripts/model_coverage_audit.py --check
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
       # (exit 0) so a flake can't block merges; a real mismatch = red.
