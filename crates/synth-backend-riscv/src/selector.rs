@@ -1030,10 +1030,22 @@ fn preserve_callee_saved(out: &mut Vec<RiscVOp>, local_bytes: i32) {
             saved.push(rd);
         }
     }
-    if saved.is_empty() && local_bytes == 0 {
+    // #871: a body containing a `call` clobbers RA (both the external
+    // auipc/jalr pair and the local expansion write ra), so a non-leaf
+    // function must save/restore it like a callee-saved register — or its
+    // `ret` jumps back into the function's own call site forever instead of
+    // returning to the caller. Invisible pre-#871 only because
+    // call-containing RV32 functions never emitted.
+    let has_call = out.iter().any(|op| matches!(op, RiscVOp::Call { .. }));
+    if saved.is_empty() && local_bytes == 0 && !has_call {
         return;
     }
     saved.sort_by_key(|r| *r as u8); // deterministic slot order
+    if has_call {
+        // RA gets the last slot (kept out of the sorted s-reg order so slot
+        // assignment stays deterministic and s-reg offsets are unchanged).
+        saved.push(Reg::RA);
+    }
     // 16-byte-aligned frame (RV psABI): [ locals 0..local_bytes | saved regs ].
     let frame = (local_bytes + (saved.len() as i32) * 4 + 15) & !15;
     // Saved registers sit just above the locals region.
@@ -8548,7 +8560,21 @@ mod tests {
         .unwrap()
         .ops;
         assert_eq!(count_sw_sp(&r, 0), 1, "single-word store: {r:?}");
-        assert_eq!(count_sw_sp(&r, 4), 0, "no hi-word store: {r:?}");
+        // #871: the call forces an RA save (`sw ra, 4(sp)` — the slot above
+        // the 4-byte locals region). The i32 tagging assertion is that NO
+        // DATA hi-word is stored at off 4 — only the RA save may sit there.
+        assert_eq!(
+            count(&r, |op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2,
+                    imm: 4
+                } if *rs2 != Reg::RA
+            )),
+            0,
+            "no hi-word store: {r:?}"
+        );
     }
 
     /// #312: i64 *params* are not modeled (an i64 param needs an a-register

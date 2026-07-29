@@ -202,7 +202,7 @@ pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
     let mut saved: BTreeSet<Reg> = BTreeSet::new();
     for ins in instrs {
         if let Some((_, rs2)) = sp_slot_store(ins)
-            && is_saved_by_pass(rs2)
+            && (is_saved_by_pass(rs2) || rs2 == Reg::RA)
         {
             saved.insert(rs2);
         }
@@ -216,6 +216,14 @@ pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
         {
             defined_cs.insert(rd);
         }
+    }
+    // #871: a body containing a `call` clobbers RA (the auipc/jalr pair and
+    // the local-call expansion both write ra). A non-leaf function whose
+    // prologue does not save RA returns into its own call site instead of the
+    // caller — the exact miscompile the #871 execution oracle caught. Require
+    // the save exactly like a written s-register.
+    if instrs.iter().any(|op| matches!(op, RiscVOp::Call { .. })) {
+        defined_cs.insert(Reg::RA);
     }
     for r in &defined_cs {
         if !saved.contains(r) {
@@ -242,9 +250,10 @@ pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
             while j > 0 {
                 j -= 1;
                 match &instrs[j] {
+                    // #871: the epilogue also reloads RA for non-leaf bodies.
                     RiscVOp::Lw {
                         rd, rs1: Reg::SP, ..
-                    } if is_saved_by_pass(*rd) => {
+                    } if is_saved_by_pass(*rd) || *rd == Reg::RA => {
                         restored.insert(*rd);
                     }
                     // Frame teardown `addi sp,sp,N` is part of the epilogue.
@@ -582,6 +591,57 @@ mod tests {
     // ── Phase-2 decline: a Call yields NotAttempted (never a false pass) ────
     #[test]
     fn ra003rv_call_boundary_is_not_attempted() {
+        // #871: a call-containing body must carry the RA save/restore the
+        // pass now emits (see `ra003rv_unsaved_ra_in_nonleaf_is_violation`
+        // for the red case) — with it, the call boundary is the phase-2
+        // NotAttempted decline, as before.
+        let body = vec![
+            Addi {
+                rd: Reg::SP,
+                rs1: Reg::SP,
+                imm: -16,
+            },
+            Sw {
+                rs1: Reg::SP,
+                rs2: Reg::RA,
+                imm: 0,
+            },
+            Addi {
+                rd: Reg::A0,
+                rs1: Reg::ZERO,
+                imm: 1,
+            },
+            Call {
+                label: "callee".to_string(),
+            },
+            Lw {
+                rd: Reg::RA,
+                rs1: Reg::SP,
+                imm: 0,
+            },
+            Addi {
+                rd: Reg::SP,
+                rs1: Reg::SP,
+                imm: 16,
+            },
+            Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(
+            validate_final_allocation_rv32(&body),
+            RaFinalVerdict::NotAttempted {
+                reason: "rv32-call-boundary"
+            },
+        );
+    }
+
+    // ── #871: a non-leaf body that never saves RA is the return-into-own-
+    // call-site miscompile the execution oracle caught — a VIOLATION, red-first.
+    #[test]
+    fn ra003rv_unsaved_ra_in_nonleaf_is_violation() {
         let body = vec![
             Addi {
                 rd: Reg::A0,
@@ -599,16 +659,25 @@ mod tests {
         ];
         assert_eq!(
             validate_final_allocation_rv32(&body),
-            RaFinalVerdict::NotAttempted {
-                reason: "rv32-call-boundary"
-            },
+            RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: Reg::RA }),
         );
     }
 
     // ── A Call does NOT mask a straight-line violation before it ───────────
     #[test]
     fn ra003rv_violation_before_call_still_fires() {
+        // RA is saved (#871) so the only violation left is the s2 clobber.
         let body = vec![
+            Addi {
+                rd: Reg::SP,
+                rs1: Reg::SP,
+                imm: -16,
+            },
+            Sw {
+                rs1: Reg::SP,
+                rs2: Reg::RA,
+                imm: 0,
+            },
             Addi {
                 rd: Reg::S2,
                 rs1: Reg::ZERO,
@@ -616,6 +685,16 @@ mod tests {
             }, // unsaved s2 clobber
             Call {
                 label: "callee".to_string(),
+            },
+            Lw {
+                rd: Reg::RA,
+                rs1: Reg::SP,
+                imm: 0,
+            },
+            Addi {
+                rd: Reg::SP,
+                rs1: Reg::SP,
+                imm: 16,
             },
             Jalr {
                 rd: Reg::ZERO,

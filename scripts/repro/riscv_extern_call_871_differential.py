@@ -87,7 +87,8 @@ CASES = {
 MMIO_INIT = {0x0: 0xDEADBEEF, 0x4: 0x00000001, 0x8: 0x40000000, 0x10: 0x12345678}
 MMIO_SIZE = 0x1000
 
-CODE, STK, RET = 0x100000, 0x90000, 0x200000
+CODE = 0x100000
+STK_BASE, STK, RET = 0x60000000, 0x60010000, 0x70000000
 
 
 def die(msg):
@@ -355,9 +356,8 @@ def stage5_execute(linked, syms, truth):
     for (fn, args), (want_ret, want_mmio) in truth.items():
         uc = Uc(UC_ARCH_RISCV, UC_MODE_RISCV32)
         uc.mem_map(lo, hi - lo)
-        uc.mem_map(0x80000, 0x20000)  # stack
-        if not (lo <= RET < hi):
-            uc.mem_map(RET & ~0xFFF, 0x1000)
+        uc.mem_map(STK_BASE, 0x20000)  # stack, far from the image
+        uc.mem_map(RET, 0x1000)
         uc.mem_map(MMIO_BASE, MMIO_SIZE)
         for vaddr, data in segs:
             uc.mem_write(vaddr, data)
