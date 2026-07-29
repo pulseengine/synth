@@ -4508,8 +4508,8 @@ fn build_join_cfg_label(
 fn build_join_cfg_numeric(
     instrs: &[ArmInstruction],
 ) -> Option<(Vec<BasicBlock>, Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>)> {
-    use ArmOp::*;
     use crate::optimizer_bridge::estimate_arm_byte_size;
+    use ArmOp::*;
 
     // Numeric-CFG terminator classification. Same policy as the label builder's
     // `jclassify`, but the branch families are the NUMERIC ones.
@@ -15108,7 +15108,10 @@ mod tests {
         if let ArmOp::BCondOffset { offset, .. } = &mut body[6].op {
             *offset = back_off;
         }
-        assert!(back_off < 0, "the back-edge must be a negative displacement");
+        assert!(
+            back_off < 0,
+            "the back-edge must be a negative displacement"
+        );
         assert_eq!(
             validate_final_allocation(&body),
             RaFinalVerdict::Consistent,
@@ -15173,7 +15176,7 @@ mod tests {
                 rn: Reg::R0,
                 op2: Operand2::Imm(0),
             }),
-            bcc(Condition::EQ, ".skip"), // label-form branch
+            bcc(Condition::EQ, ".skip"),       // label-form branch
             ins(ArmOp::BOffset { offset: 1 }), // numeric branch in the same stream
             label(".skip"),
             add_rr(Reg::R0, Reg::R4, Reg::R4),
