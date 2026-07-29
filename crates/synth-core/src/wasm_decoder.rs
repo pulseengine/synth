@@ -2258,6 +2258,21 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
         I32TruncF32S => Some(WasmOp::I32TruncF32S),
         I32TruncF32U => Some(WasmOp::I32TruncF32U),
+        // #869: the 64-bit integer<->float conversion family — previously all
+        // dropped here (`_ => None`), which loud-skipped every function using
+        // them (3 of 5 falcon cascade stages at their public entry points).
+        // ARMv7E-M VFP has no 64-bit-integer<->float instruction (VCVT on
+        // FPv4-SP/FPv5-D16 encodes only S32/U32 <-> F32/F64), so the ARM32
+        // lowering is a self-contained multi-step expansion on cortex-m7dp
+        // (see `try_lower_f32`/`try_lower_f64`); the TRAPPING trunc forms
+        // carry the #709-class i64 domain guard (WASM §4.3.3 requires a trap
+        // on NaN/out-of-range — the saturating decompose alone would be a
+        // silent miscompile). Backends without the machinery (RV32, aarch64's
+        // current subset, single-precision ARM) still loud-decline downstream.
+        F32ConvertI64S => Some(WasmOp::F32ConvertI64S),
+        F32ConvertI64U => Some(WasmOp::F32ConvertI64U),
+        I64TruncF32S => Some(WasmOp::I64TruncF32S),
+        I64TruncF32U => Some(WasmOp::I64TruncF32U),
         // #782a: the nontrapping trunc_sat family (0xFC-prefixed,
         // saturating-float-to-int proposal) — TOTAL ops (§4.3.2: NaN → 0,
         // out-of-range saturates to INT_MIN/INT_MAX, no traps). Un-dropped so
@@ -2309,8 +2324,8 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // splice, f32.demote_f64 / i32<->f64 conversions via VCVT
         // (i32.trunc_f64_* carries the #709 trap-on-out-of-range domain
         // guard). Still m7dp-only (the selector preamble honest-rejects any
-        // f64 op elsewhere). Remaining dropped f64 surface: the i64<->f64
-        // conversions and reinterprets (need lowered i64 pair plumbing).
+        // f64 op elsewhere). The i64<->f64 reinterprets were un-dropped by
+        // #851 and the i64<->f64 conversions by #869 (below).
         F64Ceil => Some(WasmOp::F64Ceil),
         F64Floor => Some(WasmOp::F64Floor),
         F64Trunc => Some(WasmOp::F64Trunc),
@@ -2323,6 +2338,14 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F64ConvertI32U => Some(WasmOp::F64ConvertI32U),
         I32TruncF64S => Some(WasmOp::I32TruncF64S),
         I32TruncF64U => Some(WasmOp::I32TruncF64U),
+        // #869 (+#756): the f64 half of the 64-bit integer<->float family —
+        // i64->f64 exact two-word VCVT+scale+add, i64.trunc_f64_* via the
+        // #709-class i64 domain guard + the #782 word-decompose. See the f32
+        // group above for the family story.
+        F64ConvertI64S => Some(WasmOp::F64ConvertI64S),
+        F64ConvertI64U => Some(WasmOp::F64ConvertI64U),
+        I64TruncF64S => Some(WasmOp::I64TruncF64S),
+        I64TruncF64U => Some(WasmOp::I64TruncF64U),
         // #782a: f64-source trunc_sat twins (see the f32 group above). falcon
         // v1.123 carries 7× i32.trunc_sat_f64_s — the m7dp double-precision
         // VCVT twins lower the i32-target forms; i64 targets loud-decline.

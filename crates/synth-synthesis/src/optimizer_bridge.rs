@@ -1055,6 +1055,13 @@ impl OptimizerBridge {
                 | WasmOp::I32TruncSatF32U
                 | WasmOp::I64TruncSatF32S
                 | WasmOp::I64TruncSatF32U
+                // #869: the TRAPPING f32->i64 truncations — same reasoning as
+                // the trunc_sat group above (a float-typed operand the
+                // optimized path cannot map; omitting them would be the #615
+                // silent-drop class). Their convert twins F32ConvertI64S/U
+                // are already listed with the f32 conversions.
+                | WasmOp::I64TruncF32S
+                | WasmOp::I64TruncF32U
                 // f64 arithmetic
                 | WasmOp::F64Add
                 | WasmOp::F64Sub

@@ -163,6 +163,7 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         | F32ReinterpretI32 | I32ReinterpretF32 | I32TruncF32S | I32TruncF32U | F64ConvertI32S
         | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32 | F64ReinterpretI64
         | I64ReinterpretF64 | I64TruncF64S | I64TruncF64U | I32TruncF64S | I32TruncF64U
+        | I64TruncF32S | I64TruncF32U
         | I32TruncSatF32S | I32TruncSatF32U | I32TruncSatF64S | I32TruncSatF64U
         | I64TruncSatF32S | I64TruncSatF32U | I64TruncSatF64S | I64TruncSatF64U => modeled(1, 1),
 

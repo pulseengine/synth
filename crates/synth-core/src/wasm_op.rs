@@ -365,6 +365,11 @@ pub enum WasmOp {
     I64TruncF64U,      // Truncate f64 to unsigned i64
     I32TruncF64S,      // Truncate f64 to signed i32
     I32TruncF64U,      // Truncate f64 to unsigned i32
+    // #869: the f32-source i64-target TRAPPING truncations — the only two
+    // members of the 64-bit integer<->float conversion family that had no
+    // WasmOp variant at all (the rest existed but were dropped at decode).
+    I64TruncF32S, // Truncate f32 to signed i64 (traps on NaN/out-of-range)
+    I64TruncF32U, // Truncate f32 to unsigned i64 (traps on NaN/out-of-range)
 
     // Nontrapping f64→int (saturating-float-to-int, §4.3.2 trunc_sat — see
     // the f32 group above for the semantics).
