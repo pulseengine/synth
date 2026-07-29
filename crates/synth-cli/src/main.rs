@@ -1116,8 +1116,14 @@ fn resolve_target_spec(
                  for {name}, use `-b {required_backend}`"
             );
         }
+        // "an AArch64", "a RISC-V" — the family names are a closed set, so a
+        // lookup beats a vowel heuristic ("an ARM" is right, "an RISC-V" is not).
+        let article = match spec.family {
+            ArchFamily::ArmCortexA => "an",
+            _ => "a",
+        };
         anyhow::bail!(
-            "--target {name} is a {family} target, but no backend was selected, so the \
+            "--target {name} is {article} {family} target, but no backend was selected, so the \
              default 'arm' backend would silently produce a wrong-ISA object — refusing.\n\
              pass `-b {required_backend}` for this target, or pick an ARM target: {arm}",
             arm = backend_accepted_targets("arm").unwrap_or("(none)"),
