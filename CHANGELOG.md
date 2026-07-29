@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`--target`/backend ISA mismatch is now a hard error (#882)** — `synth
+- **`--target`/backend ISA mismatch is now a hard error (#882).** `synth
   compile --target riscv32` without `-b riscv` silently printed
   `Using backend: arm` and built Thumb code into a RISC-V ELF container,
   failing only deep in the emitter ("non-CALL_PLT relocation ThmCall reached
@@ -37,6 +37,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cortex-r5, cortex-a53 and riscv32). No behavior change for good input —
   every valid target/backend pairing resolves exactly as before (gated by
   `crates/synth-cli/tests/unknown_target_882.rs`).
+- **The gpio-thin gate is now a gate (#879).** `gpio_thin_846_differential.py`
+  — the check behind the v0.50.1 (534→506 B) and v0.52.0 (506→502 B) headline
+  size claims, and the only harness that executes gale's real driver across a
+  pin sweep *including pin ≥ 32* (the mod-32 boundary an unsound shift-mask
+  elision would corrupt) — was never wired into CI. It now runs in the ARM
+  trap-semantics oracle job (capstone added to that job's deps for the mask
+  census), the CI step greps the script's machine-readable `#846 CHECKS=75/75`
+  summary so a vacuous exit-0 cannot pass, and the script itself hard-fails on
+  zero/short check sweeps, zero mmio trace events, or missing import call
+  sites. The same audit found and wired the second shelfware oracle:
+  `rv32_data_798_boot_differential.py` (the #798 full-boot gate). Both wirings
+  are pinned in `claims.yaml` so they cannot be silently un-wired again.
+- **Feature-matrix template prose is now claim-gated (#880).** The doc-honesty
+  gate verified the matrix against its *render*, never its *content* — wrong
+  template prose reproduced faithfully and stayed green (the v0.51 "div/rem
+  declined" / v0.52 "OOB-trap is a follow-on" cold-read defects). The
+  template's load-bearing capability phrases are now pinned verbatim in
+  `claims.yaml`, each bound to the oracle that executes the capability *and*
+  to that oracle's CI wiring (red-first verified: falsifying a pinned phrase
+  reddens `claim-check` even after regenerating the render). The same audit
+  fixed two live defects of exactly this class: the matrix still said "RV32
+  warns loudly on dropped initializer bytes" four releases after #798 shipped
+  the segments with a hard-error read-back, and still listed WCET "calls" as a
+  blanket loud-decline two releases after phase-3 inter-procedural
+  composition. Honest limit: verbatim pins catch drift of pinned phrases, not
+  brand-new false prose — that residual stays on review.
 
 ## [0.52.0] - 2026-07-29
 

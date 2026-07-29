@@ -263,9 +263,18 @@ def main():
     # (b) EXECUTION half — on the flag-ON bytes, across the pin sweep incl >=32.
     syms, code, base = elf_syms_text(elf_on)
     wpc, rpc = import_call_sites(elf_on, base)
+    # ANTI-VACUITY (#879): if the reloc walk finds NO mmio call sites, the
+    # unicorn side never models the peripheral and the whole execution half
+    # degenerates. That must be a LOUD failure, never a silent 75/75.
+    if not wpc or not rpc:
+        sys.exit(f"VACUOUS: no mmio import call sites found in {elf_on} "
+                 f"(write sites={len(wpc)}, read sites={len(rpc)}) — the "
+                 f"reloc walk is broken or the fixture lost its imports")
     print("=== #846 EXECUTION UNCHANGED (flag-ON bytes vs wasmtime) ===")
+    expected = len(EXPORTS) * len(PINS)
     exec_ok = True
     checks = 0
+    trace_events = 0
     for export, idx, mkargs in EXPORTS:
         for pin in PINS:
             args = mkargs(pin)
@@ -275,6 +284,7 @@ def main():
             ok = (gt_trace == un_trace) and (gt_ret == un_ret
                                              if gt_ret is not None else True)
             checks += 1
+            trace_events += len(gt_trace)
             if not ok:
                 exec_ok = False
                 print(f"  MISMATCH {export}(pin={pin}):")
@@ -283,9 +293,22 @@ def main():
     if exec_ok:
         print(f"  {checks}/{checks} match — mmio (addr,value) sequences + returns "
               f"bit-identical across pins {PINS} (incl. >=32 mod-32 boundary)")
+    # ANTI-VACUITY (#879): the sweep must have RUN something. A zero check
+    # count, a short sweep, or a sweep whose ground-truth traces were all
+    # empty is a gate that measured nothing — hard-fail, never green.
+    if checks == 0 or checks != expected:
+        sys.exit(f"VACUOUS: ran {checks} checks, expected {expected} "
+                 f"({len(EXPORTS)} exports x {len(PINS)} pins)")
+    if trace_events == 0:
+        sys.exit("VACUOUS: 0 mmio trace events across the whole sweep — "
+                 "wasmtime ground truth exercised no peripheral traffic, so "
+                 "the trace comparison compared nothing")
 
     print("=== RESULT ===")
     ok = size_ok and exec_ok
+    # Machine-readable summary line for the CI step's non-zero-count grep
+    # (asserted in .github/workflows/ci.yml — exit 0 alone is not trusted).
+    print(f"#846 CHECKS={checks}/{expected} trace_events={trace_events}")
     print("gpio-thin #846: PASS" if ok else "gpio-thin #846: FAIL")
     sys.exit(0 if ok else 1)
 
