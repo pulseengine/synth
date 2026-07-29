@@ -5232,16 +5232,36 @@ fn try_reallocate_segment(
     // absent-colour blockers below; reserved registers identity-assign).
     // Ranges wholly BEFORE a register's final def may still recolour onto it
     // — the final def overwrites them on both sides, so exit state is
-    // unaffected. Under `relaxed_exit` (VCR-VER-001 terminal segment) only
-    // R0/R1 are observable past the `bx lr`, so only their exit-holding
-    // ranges are extended — matching the pin/exemption sets below.
+    // unaffected.
+    //
+    // EXEMPTIONS — deliberately the SAME sets `validate_segment_rewrite`
+    // already exempts from its exit seed, so the pass proposes exactly what
+    // the validator can certify (`validator_rejects == 0` is the contract;
+    // a wider pass rule would only cost recolourings the oracle accepts):
+    //   - `ends_in_return` (`pop {..., pc}` last): R2/R3/R12/LR are AAPCS
+    //     caller-saved scratch, dead-out past a function return, so their
+    //     exit values are unobservable and their post-last-use windows stay
+    //     reusable. Without this the pass loses legal recolourings on every
+    //     return-terminated segment (measured: flight_seam's `mul r3, r2, r3`
+    //     tail) with zero soundness gain.
+    //   - `relaxed_exit` (VCR-VER-001 terminal segment): only R0/R1 are
+    //     observable past the `bx lr`, so only their exit-holding ranges are
+    //     extended — matching the pin/exemption sets below.
     {
+        let ends_in_return = matches!(
+            seg.last().map(|i| &i.op),
+            Some(ArmOp::Pop { regs }) if regs.contains(&Reg::PC)
+        );
+        let aapcs_dead_at_return = [Reg::R2, Reg::R3, Reg::R12, Reg::LR];
         let mut exit_holder: BTreeMap<Reg, usize> = BTreeMap::new();
         for r in &ranges {
             exit_holder.insert(r.reg, r.vreg); // creation order → last wins
         }
         for (reg, vreg) in exit_holder {
             if relaxed_exit && !matches!(reg, Reg::R0 | Reg::R1) {
+                continue;
+            }
+            if ends_in_return && aapcs_dead_at_return.contains(&reg) {
                 continue;
             }
             ranges[vreg].last_use = seg.len(); // vreg == index by construction
@@ -13994,7 +14014,10 @@ mod tests {
         }
         // And the pass must never have shipped a rewrite its validator had to
         // save it from: a nonzero count is a pass bug by contract.
-        assert_eq!(stats.validator_rejects, 0, "pass proposed an unsound rewrite");
+        assert_eq!(
+            stats.validator_rejects, 0,
+            "pass proposed an unsound rewrite"
+        );
     }
 
     #[test]
