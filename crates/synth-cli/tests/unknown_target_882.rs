@@ -58,7 +58,10 @@ fn unknown_target_hard_errors_with_valid_set() {
         "must name the bad target:\n{text}"
     );
     for name in ["cortex-m3", "rv32imac", "esp32c3", "cortex-a53"] {
-        assert!(text.contains(name), "valid set must include {name}:\n{text}");
+        assert!(
+            text.contains(name),
+            "valid set must include {name}:\n{text}"
+        );
     }
     // And it must never have reached backend selection.
     assert!(
@@ -100,7 +103,10 @@ fn riscv_target_with_defaulted_arm_backend_hard_errors() {
 #[test]
 fn explicit_backend_target_mismatch_hard_errors() {
     let (ok, text) = run(&["--target", "cortex-m3", "-b", "riscv"]);
-    assert!(!ok, "cortex-m3 on -b riscv must exit non-zero, got:\n{text}");
+    assert!(
+        !ok,
+        "cortex-m3 on -b riscv must exit non-zero, got:\n{text}"
+    );
     assert!(
         text.contains("does not accept --target cortex-m3"),
         "{text}"
@@ -113,8 +119,22 @@ fn explicit_backend_target_mismatch_hard_errors() {
 fn good_target_backend_pairings_still_compile() {
     for args in [
         &["--target", "cortex-m3", "--all-exports"][..],
-        &["--target", "rv32imac", "-b", "riscv", "--all-exports", "--relocatable"][..],
-        &["--target", "esp32c3", "-b", "riscv", "--all-exports", "--relocatable"][..],
+        &[
+            "--target",
+            "rv32imac",
+            "-b",
+            "riscv",
+            "--all-exports",
+            "--relocatable",
+        ][..],
+        &[
+            "--target",
+            "esp32c3",
+            "-b",
+            "riscv",
+            "--all-exports",
+            "--relocatable",
+        ][..],
     ] {
         let (ok, text) = run(args);
         assert!(ok, "good input {args:?} must still compile:\n{text}");

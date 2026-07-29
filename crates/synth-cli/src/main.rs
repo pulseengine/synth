@@ -1031,9 +1031,9 @@ struct ElfFunction {
 /// backends (w2c2/awsm/wasker) are target-agnostic and return `None`.
 fn backend_accepted_targets(backend: &str) -> Option<&'static str> {
     match backend {
-        "arm" => Some(
-            "cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55, cortex-r5",
-        ),
+        "arm" => {
+            Some("cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55, cortex-r5")
+        }
         "riscv" => Some("rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32"),
         "aarch64" => Some("cortex-a53"),
         _ => None,
@@ -1072,14 +1072,15 @@ fn resolve_target_spec(
     let (name, spec) = match target {
         // from_triple lists the supported target names in its error.
         Some(name) => {
-            let spec = TargetSpec::from_triple(name).map_err(|e| {
-                match backend_accepted_targets(backend) {
-                    Some(list) if backend_explicit => anyhow::anyhow!(
-                        "{e}\ntargets accepted by backend '{backend}': {list}"
-                    ),
-                    _ => anyhow::anyhow!("{e}"),
-                }
-            })?;
+            let spec =
+                TargetSpec::from_triple(name).map_err(|e| {
+                    match backend_accepted_targets(backend) {
+                        Some(list) if backend_explicit => {
+                            anyhow::anyhow!("{e}\ntargets accepted by backend '{backend}': {list}")
+                        }
+                        _ => anyhow::anyhow!("{e}"),
+                    }
+                })?;
             (name, spec)
         }
         // No --target given: pick a backend-appropriate default so `-b riscv`
@@ -8726,7 +8727,12 @@ mod tests {
     /// "Using backend: arm" and built Thumb code into a RISC-V ELF container.
     #[test]
     fn test_resolve_target_spec_riscv_target_arm_default_backend_errors_882() {
-        for name in ["riscv32", "rv32imac", "esp32c3", "riscv32imac-unknown-none-elf"] {
+        for name in [
+            "riscv32",
+            "rv32imac",
+            "esp32c3",
+            "riscv32imac-unknown-none-elf",
+        ] {
             let err = resolve_target_spec(Some(name), false, "arm", false).unwrap_err();
             let msg = err.to_string();
             assert!(msg.contains("RISC-V"), "{name}: {msg}");
@@ -8740,10 +8746,7 @@ mod tests {
     fn test_resolve_target_spec_explicit_backend_mismatch_errors_882() {
         let err = resolve_target_spec(Some("cortex-m3"), false, "riscv", true).unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("does not accept --target cortex-m3"),
-            "{msg}"
-        );
+        assert!(msg.contains("does not accept --target cortex-m3"), "{msg}");
         assert!(msg.contains("rv32imac"), "{msg}");
         assert!(msg.contains("-b arm"), "{msg}");
 
