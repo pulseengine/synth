@@ -3884,6 +3884,32 @@ pub enum RaFinalViolation {
     /// lesson). Params/SP/LR are seeded available at entry, so a join reading a
     /// param is never flagged (documented boundary).
     JoinValueNotAvailable { reg: Reg, join_block: usize },
+    /// #881 (VFP extension): within one straight-line segment, a VFP frame
+    /// slot half `[sp,#slot]` is overwritten by a second live VFP value
+    /// (different source, or the same source after an intervening
+    /// redefinition) while the first value stored there is still needed — a
+    /// later VLDR of the slot reads the wrong value. The VFP twin of
+    /// [`RaFinalViolation::SpillSlotAliased`], at 4-byte-half granularity so
+    /// an `F32Store` clobbering half of a live `F64Store`'s slot is caught.
+    /// A re-store of the PROVABLY SAME value (same source S-word, no
+    /// redefinition in between — the legal preserve-then-arg-stage overlap)
+    /// is benign and not flagged.
+    VfpSpillSlotAliased {
+        slot: i32,
+        first_store: usize,
+        overwriting_store: usize,
+        stale_reload: usize,
+    },
+    /// #881 (VFP extension of the across-CALL invariant): the S-register word
+    /// `S{word}` (word in 2..16; each `D(i)` = words `2i`/`2i+1`) holds a value
+    /// defined before a `bl`/`blx`/`call` and read after it with no
+    /// intervening redefinition — yet ALL of S0..S15/D0..D7 are AAPCS-VFP
+    /// CALLER-saved, so the callee is free to clobber it. A correct
+    /// allocation spills such a value to the frame across the call
+    /// (`preserve_vfp_caller_saved` / a #881 spill slot). Words 0/1 (S0/S1 =
+    /// D0) are DELIBERATELY excluded: a call DEFINES them (the float return
+    /// value) — the documented false-negative twin of the R0/R1 exclusion.
+    VfpCallerSavedLiveAcrossCall { word: usize, call_index: usize },
 }
 
 /// The verdict of the UNCONDITIONAL final register-allocation validator
@@ -4206,6 +4232,20 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
         return RaFinalVerdict::Violation(v);
     }
 
+    // ---- Invariants 5+6 (#881): the VFP register file ----
+    // An unvalidated VFP allocation is exactly the #872 shape (a pass whose
+    // validator cannot see its errors): the VFP spill/reload machinery gets
+    // the same two whole-stream checks the integer file has — slot aliasing
+    // per straight-line segment, and caller-saved liveness across calls —
+    // over the shared S-word file (D(i) = S(2i):S(2i+1) aliasing modeled at
+    // word granularity).
+    if let Some(v) = check_vfp_slot_aliasing(instrs) {
+        return RaFinalVerdict::Violation(v);
+    }
+    if let Some(v) = check_vfp_caller_saved_across_calls(instrs) {
+        return RaFinalVerdict::Violation(v);
+    }
+
     // ---- Invariant 4: value availability across a join (phase 2) ----
     match check_join_availability(instrs) {
         JoinCheck::Consistent => {}
@@ -4252,6 +4292,327 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
 /// STRICTER route: require the post-call read to be reached with NO intervening
 /// def AND on the straight-line fall-through (we stop the forward scan at the
 /// first branch/label/call), so we never invent a cross-CF read.
+/// #881: the S-register WORD indices (0..=31; `S(k)` = word `k`, `D(i)` =
+/// words `2i`,`2i+1`) a [`crate::rules::VfpReg`] covers. `None` for the MVE
+/// Q-registers (not scalar VFP).
+fn vfp_reg_words(r: &crate::rules::VfpReg) -> Option<[Option<usize>; 2]> {
+    use crate::rules::VfpReg::*;
+    Some(match r {
+        S0 => [Some(0), None],
+        S1 => [Some(1), None],
+        S2 => [Some(2), None],
+        S3 => [Some(3), None],
+        S4 => [Some(4), None],
+        S5 => [Some(5), None],
+        S6 => [Some(6), None],
+        S7 => [Some(7), None],
+        S8 => [Some(8), None],
+        S9 => [Some(9), None],
+        S10 => [Some(10), None],
+        S11 => [Some(11), None],
+        S12 => [Some(12), None],
+        S13 => [Some(13), None],
+        S14 => [Some(14), None],
+        S15 => [Some(15), None],
+        D0 => [Some(0), Some(1)],
+        D1 => [Some(2), Some(3)],
+        D2 => [Some(4), Some(5)],
+        D3 => [Some(6), Some(7)],
+        D4 => [Some(8), Some(9)],
+        D5 => [Some(10), Some(11)],
+        D6 => [Some(12), Some(13)],
+        D7 => [Some(14), Some(15)],
+        D8 => [Some(16), Some(17)],
+        D9 => [Some(18), Some(19)],
+        D10 => [Some(20), Some(21)],
+        D11 => [Some(22), Some(23)],
+        D12 => [Some(24), Some(25)],
+        D13 => [Some(26), Some(27)],
+        D14 => [Some(28), Some(29)],
+        D15 => [Some(30), Some(31)],
+        _ => return None,
+    })
+}
+
+/// #881: word-level VFP register effect of one [`ArmOp`] —
+/// `Some((defs, uses))` over S-word indices for the ops whose VFP footprint
+/// is EXACTLY their listed operands, `None` for the compound VFP lowerings
+/// the encoder expands with internal sequences (trunc-with-guard, min/max
+/// NaN fix-ups, copysign, VRINT forms, the i64<->float family) — the checker
+/// stops/conservatively-widens at `None` rather than guessing (decline >
+/// guess, applied to the checker itself). Ops with NO VFP operands return
+/// `Some(empty)` — an integer op provably touches no S-word.
+#[allow(clippy::type_complexity)]
+fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
+    use ArmOp::*;
+    let w = |r: &crate::rules::VfpReg| -> Option<Vec<usize>> {
+        vfp_reg_words(r).map(|ws| ws.iter().flatten().copied().collect())
+    };
+    let some2 = |defs: Vec<usize>, uses: Vec<usize>| Some((defs, uses));
+    match op {
+        // Three-operand arithmetic: d <- n op m.
+        F32Add { sd, sn, sm }
+        | F32Sub { sd, sn, sm }
+        | F32Mul { sd, sn, sm }
+        | F32Div { sd, sn, sm } => some2(w(sd)?, [w(sn)?, w(sm)?].concat()),
+        F64Add { dd, dn, dm }
+        | F64Sub { dd, dn, dm }
+        | F64Mul { dd, dn, dm }
+        | F64Div { dd, dn, dm } => some2(w(dd)?, [w(dn)?, w(dm)?].concat()),
+        // Two-operand: d <- op m (single-instruction forms only).
+        F32Abs { sd, sm } | F32Neg { sd, sm } | F32Sqrt { sd, sm } => some2(w(sd)?, w(sm)?),
+        F64Abs { dd, dm } | F64Neg { dd, dm } | F64Sqrt { dd, dm } => some2(w(dd)?, w(dm)?),
+        // Compares read both VFP operands, write a core register.
+        F32Eq { sn, sm, .. }
+        | F32Ne { sn, sm, .. }
+        | F32Lt { sn, sm, .. }
+        | F32Le { sn, sm, .. }
+        | F32Gt { sn, sm, .. }
+        | F32Ge { sn, sm, .. } => some2(vec![], [w(sn)?, w(sm)?].concat()),
+        F64Eq { dn, dm, .. }
+        | F64Ne { dn, dm, .. }
+        | F64Lt { dn, dm, .. }
+        | F64Le { dn, dm, .. }
+        | F64Gt { dn, dm, .. }
+        | F64Ge { dn, dm, .. } => some2(vec![], [w(dn)?, w(dm)?].concat()),
+        // Materializations / loads define; stores use.
+        F32Const { sd, .. } | F32Load { sd, .. } => some2(w(sd)?, vec![]),
+        F64Const { dd, .. } | F64Load { dd, .. } => some2(w(dd)?, vec![]),
+        F32Store { sd, .. } => some2(vec![], w(sd)?),
+        F64Store { dd, .. } => some2(vec![], w(dd)?),
+        // Register-file crossings whose footprint is exactly the operands.
+        F32ConvertI32S { sd, .. } | F32ConvertI32U { sd, .. } => some2(w(sd)?, vec![]),
+        F64ConvertI32S { dd, .. } | F64ConvertI32U { dd, .. } => some2(w(dd)?, vec![]),
+        F32ReinterpretI32 { sd, .. } => some2(w(sd)?, vec![]),
+        I32ReinterpretF32 { sm, .. } => some2(vec![], w(sm)?),
+        F64ReinterpretI64 { dd, .. } => some2(w(dd)?, vec![]),
+        I64ReinterpretF64 { dm, .. } => some2(vec![], w(dm)?),
+        F64PromoteF32 { dd, sm } => some2(w(dd)?, w(sm)?),
+        F32DemoteF64 { sd, dm } => some2(w(sd)?, w(dm)?),
+        // Compound lowerings (encoder-expanded multi-instruction sequences
+        // whose internal VFP footprint is not visible here): UNMODELED.
+        F32Ceil { .. }
+        | F32Floor { .. }
+        | F32Trunc { .. }
+        | F32Nearest { .. }
+        | F32Min { .. }
+        | F32Max { .. }
+        | F32Copysign { .. }
+        | F64Ceil { .. }
+        | F64Floor { .. }
+        | F64Trunc { .. }
+        | F64Nearest { .. }
+        | F64Min { .. }
+        | F64Max { .. }
+        | F64Copysign { .. }
+        | F32ConvertI64S { .. }
+        | F32ConvertI64U { .. }
+        | F64ConvertI64S { .. }
+        | F64ConvertI64U { .. }
+        | I32TruncF32S { .. }
+        | I32TruncF32U { .. }
+        | I32TruncF64S { .. }
+        | I32TruncF64U { .. }
+        | I64TruncF64S { .. }
+        | I64TruncF64U { .. } => None,
+        // MVE (vector) ops: unmodeled — Q-registers alias the S-file.
+        MveAddF32 { .. }
+        | MveSubF32 { .. }
+        | MveMulF32 { .. }
+        | MveNegF32 { .. }
+        | MveAbsF32 { .. }
+        | MveCmpEqF32 { .. }
+        | MveCmpNeF32 { .. }
+        | MveCmpLtF32 { .. }
+        | MveCmpLeF32 { .. }
+        | MveCmpGtF32 { .. }
+        | MveCmpGeF32 { .. }
+        | MveDupF32 { .. }
+        | MveExtractLaneF32 { .. }
+        | MveReplaceLaneF32 { .. }
+        | MveDivF32 { .. }
+        | MveSqrtF32 { .. } => None,
+        // Every other op is integer-only: provably no S-word footprint.
+        _ => some2(vec![], vec![]),
+    }
+}
+
+/// #881 (VFP twin of invariant 2): per-straight-line-segment VFP spill-slot
+/// non-aliasing at 4-byte-half granularity. See
+/// [`RaFinalViolation::VfpSpillSlotAliased`].
+fn check_vfp_slot_aliasing(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
+    use ArmOp::*;
+    #[derive(Clone)]
+    struct HalfState {
+        owner_store: usize,
+        // The source S-word this half was stored from, and the word's
+        // def-version at store time — a later store of the SAME word at the
+        // SAME version provably re-stores the identical value (benign, the
+        // preserve-then-arg-stage overlap).
+        src_word: usize,
+        src_version: u64,
+        owner_reloaded: bool,
+        shadowed: Option<(usize, usize)>,
+    }
+    let mut i = 0usize;
+    while i < instrs.len() {
+        if !is_straight_line(&instrs[i].op) {
+            i += 1;
+            continue;
+        }
+        let mut halves: BTreeMap<i32, HalfState> = BTreeMap::new();
+        // Def-version per S-word (0..32): bumped on every def; bumped for ALL
+        // words on an unmodeled VFP op (conservative: the benign-refresh
+        // proof needs "no redefinition", and an unmodeled op might define).
+        let mut version = [0u64; 32];
+        while i < instrs.len() && is_straight_line(&instrs[i].op) {
+            // (a) store/load slot tracking (before the def bump: a store
+            // reads its source's PRE-instruction value).
+            let mut store_halves: Vec<(i32, usize)> = Vec::new(); // (half, src_word)
+            let mut load_halves: Vec<i32> = Vec::new();
+            match &instrs[i].op {
+                F32Store { sd, addr } if sp_slot(addr).is_some() => {
+                    if let Some([Some(w0), None]) = vfp_reg_words(sd) {
+                        store_halves.push((sp_slot(addr).unwrap(), w0));
+                    }
+                }
+                F64Store { dd, addr } if sp_slot(addr).is_some() => {
+                    if let Some([Some(w0), Some(w1)]) = vfp_reg_words(dd) {
+                        let slot = sp_slot(addr).unwrap();
+                        store_halves.push((slot, w0));
+                        store_halves.push((slot + 4, w1));
+                    }
+                }
+                F32Load { addr, .. } if sp_slot(addr).is_some() => {
+                    load_halves.push(sp_slot(addr).unwrap());
+                }
+                F64Load { addr, .. } if sp_slot(addr).is_some() => {
+                    let slot = sp_slot(addr).unwrap();
+                    load_halves.push(slot);
+                    load_halves.push(slot + 4);
+                }
+                _ => {}
+            }
+            for half in load_halves {
+                if let Some(st) = halves.get_mut(&half) {
+                    if let Some((first_store, overwriting_store)) = st.shadowed {
+                        return Some(RaFinalViolation::VfpSpillSlotAliased {
+                            slot: half,
+                            first_store,
+                            overwriting_store,
+                            stale_reload: i,
+                        });
+                    }
+                    st.owner_reloaded = true;
+                }
+            }
+            for (half, src_word) in store_halves {
+                let v = version[src_word.min(31)];
+                let shadowed = match halves.get(&half) {
+                    Some(prev) if !prev.owner_reloaded => {
+                        if prev.src_word == src_word && prev.src_version == v {
+                            // Provably the same value re-stored: benign.
+                            prev.shadowed
+                        } else {
+                            Some((prev.owner_store, i))
+                        }
+                    }
+                    Some(prev) => prev.shadowed,
+                    None => None,
+                };
+                halves.insert(
+                    half,
+                    HalfState {
+                        owner_store: i,
+                        src_word,
+                        src_version: v,
+                        owner_reloaded: false,
+                        shadowed,
+                    },
+                );
+            }
+            // (b) def-version bump AFTER the slot tracking.
+            match vfp_word_effect(&instrs[i].op) {
+                Some((defs, _)) => {
+                    for d in defs {
+                        version[d.min(31)] += 1;
+                    }
+                }
+                None => {
+                    for v in version.iter_mut() {
+                        *v += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
+/// #881 (VFP twin of the across-CALL invariant): a VFP S-word live across a
+/// `bl`/`blx`/`call`. Same structure as [`check_caller_saved_across_calls`]
+/// — backward straight-line producer scan, forward straight-line consumer
+/// scan, both stopping conservatively at barriers and unmodeled ops — over
+/// S-words 2..16 (words 0/1 = the S0/D0 return, excluded; words >= 16 =
+/// D8..D15 are CALLEE-saved, out of scope for a caller-side check).
+fn check_vfp_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
+    use ArmOp::*;
+    let is_call = |op: &ArmOp| matches!(op, Bl { .. } | Blx { .. } | Call { .. });
+    for (ci, ins) in instrs.iter().enumerate() {
+        if !is_call(&ins.op) {
+            continue;
+        }
+        for word in 2..16usize {
+            // (a) pre-call producer.
+            let mut has_producer = false;
+            for prev in instrs[..ci].iter().rev() {
+                if !is_straight_line(&prev.op) {
+                    break;
+                }
+                match vfp_word_effect(&prev.op) {
+                    Some((defs, _)) => {
+                        if defs.contains(&word) {
+                            has_producer = true;
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            if !has_producer {
+                continue;
+            }
+            // (b) post-call consumer on the straight-line fall-through.
+            let mut read_after = false;
+            for next in &instrs[ci + 1..] {
+                if !is_straight_line(&next.op) {
+                    break;
+                }
+                match vfp_word_effect(&next.op) {
+                    Some((defs, uses)) => {
+                        if uses.contains(&word) {
+                            read_after = true;
+                            break;
+                        }
+                        if defs.contains(&word) {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            if read_after {
+                return Some(RaFinalViolation::VfpCallerSavedLiveAcrossCall {
+                    word,
+                    call_index: ci,
+                });
+            }
+        }
+    }
+    None
+}
+
 fn check_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
     use ArmOp::*;
     const CALLER_SAVED: [Reg; 3] = [Reg::R2, Reg::R3, Reg::R12];

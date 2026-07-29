@@ -1460,7 +1460,8 @@ fn compile_wasm_to_arm(
                 "VCR-RA-003: register-allocation validation FAILED — {v:?}. \
                  The emitted stream violates a register-allocation invariant \
                  (callee-saved preservation #490 / spill-slot non-aliasing #331 \
-                 / caller-saved-across-call / join-value-availability); this is a \
+                 / caller-saved-across-call / join-value-availability / the #881 \
+                 VFP twins); this is a \
                  compiler bug, not a program error. Refusing to emit a \
                  miscompiled object."
             ));
