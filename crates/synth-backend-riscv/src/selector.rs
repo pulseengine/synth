@@ -9514,9 +9514,14 @@ mod tests {
         // The reachable post-end code (i32.const 7) was lowered: a const
         // materialization exists after the label.
         assert!(
-            out[label_pos[0]..]
-                .iter()
-                .any(|op| matches!(op, RiscVOp::Addi { rs1: Reg::ZERO, imm: 7, .. })),
+            out[label_pos[0]..].iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 7,
+                    ..
+                }
+            )),
             "post-end code after the br_if join must be lowered: {out:?}"
         );
     }
@@ -9543,20 +9548,32 @@ mod tests {
         );
         for name in ["Lelse0", "Lif_end1"] {
             assert_eq!(
-                count(&out, |op| matches!(op, RiscVOp::Label { name: n } if n == name)),
+                count(
+                    &out,
+                    |op| matches!(op, RiscVOp::Label { name: n } if n == name)
+                ),
                 1,
                 "{name} defined exactly once: {out:?}"
             );
         }
         assert_eq!(
-            count(&out, |op| matches!(op, RiscVOp::Jal { label, .. } if label == "Lif_end1")),
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Jal { label, .. } if label == "Lif_end1")
+            ),
             0,
             "no join jump for a then-arm that returned: {out:?}"
         );
         // The else-arm body was lowered (const 22 materialization present).
         assert!(
-            out.iter()
-                .any(|op| matches!(op, RiscVOp::Addi { rs1: Reg::ZERO, imm: 22, .. })),
+            out.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 22,
+                    ..
+                }
+            )),
             "else-arm must be lowered: {out:?}"
         );
     }
@@ -9601,7 +9618,10 @@ mod tests {
         // Head label defined; end label defined (0 bytes); nothing between
         // the return's ret and the trailing epilogue.
         assert_eq!(
-            count(&out, |op| matches!(op, RiscVOp::Label { name } if name == "Lloop_head1")),
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Label { name } if name == "Lloop_head1")
+            ),
             1
         );
     }
