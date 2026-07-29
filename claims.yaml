@@ -82,6 +82,51 @@ status_fields:
     kind: count
     pattern: 'Qed\.'
     glob: ['coq/Synth/ARM/SailArmBridge.v']
+  # -- ISA-model basis (#867): the #682-class trusted base, made countable.
+  # STATIC textual classification (a heuristic, labelled as one): a rule
+  # theorem is "stated against the simplified model" iff its conclusion runs
+  # the flat ArmSemantics.v executor on the rule's sequence — the literal
+  # `exec_program (rule_` text in VcrSelRules.v. What this can miss: a theorem
+  # phrased through an alias of exec_program, or a future Sail-basis theorem
+  # that ALSO mentions exec_program; today neither exists, and the companion
+  # invariants in SYNTH-ISA-MODEL-BASIS (rule-theorem count == simplified-basis
+  # conclusion count, zero SailArmBridge imports) pin that.
+  sel_rules_simplified_basis:
+    kind: count
+    pattern: 'exec_program \(rule_'
+    glob: ['coq/Synth/Synth/VcrSelRules.v']
+  # ArmRefinement.v's ASSUMED simplified->Sail connection, itemized:
+  # `Admitted.` + `admit.` tactics + the opaque `Axiom sail_exec_instr`.
+  # The number that should only shrink (toward real Sail-generated semantics).
+  arm_refinement_assumed_connection:
+    kind: count
+    pattern: '(?:Admitted\.)|(?:^\s*admit\.)|(?:^\s*(?:Axiom|Parameter) )'
+    glob: ['coq/Synth/ARM/ArmRefinement.v']
+  # The simplified model's OWN axiomatic surface: float/conversion bit-level
+  # operations taken on faith inside the very model the proofs execute.
+  arm_semantics_axioms:
+    kind: count
+    pattern: '^\s*(?:Axiom|Parameter) '
+    glob: ['coq/Synth/ARM/ArmSemantics.v']
+  # -- #867 phase 2: model-coverage tier counts, read from the COMMITTED
+  # artifacts/model-coverage.json (whose freshness vs re-derivation is gated
+  # by `scripts/model_coverage_audit.py --check` in the claim-check CI job —
+  # so these counts cannot go stale OR be hand-edited without a red build).
+  # Tier names are unique to the arm_instr universe in that artifact.
+  isa_model_bridge_validated:
+    kind: count
+    pattern: '"tier": "bridge-validated"'
+    glob: ['artifacts/model-coverage.json']
+  isa_model_simplified_only:
+    kind: count
+    pattern: '"tier": "simplified-only"'
+    glob: ['artifacts/model-coverage.json']
+  # THE COMPLEMENT (the #867 headline): modelled ISA behaviours NO proof
+  # exercises — the candidate list for the next silent miscompile.
+  isa_model_uncovered:
+    kind: count
+    pattern: '"tier": "uncovered"'
+    glob: ['artifacts/model-coverage.json']
   wasmcert_bridge_qed:
     kind: count
     pattern: 'Qed\.'
@@ -476,6 +521,72 @@ claims:
         equals: approved
       - kind: file-exists                    # lemma count flows via status.json
         path: coq/Synth/ARM/SailArmBridge.v
+
+  # ---------------------------------------------------------------------------
+  # ISA-model basis (#867) — the #682 class made an explicit, counted,
+  # CI-pinned trusted-base entry. #682's shape: a green Qed against the
+  # SIMPLIFIED hand-written semantics (ArmSemantics.v modelled LSL_reg with
+  # Wasm's mod-32 masking, not ARMv7-M's Rm[7:0]) while shipped code silently
+  # miscompiled — the proof was fine, the MODEL was unfaithful. These pins
+  # count how much of the proof surface still rests on the simplified model
+  # rather than the Sail-derived one, and how much of the simplified->Sail
+  # connection is assumed. count-eq (not count-max) on purpose: movement in
+  # EITHER direction must update coq/STATUS.md and this ledger together — a
+  # new simplified-basis rule theorem is a VISIBLE debt bump, never silent.
+  # Classification is STATIC and textual (documented at the
+  # sel_rules_simplified_basis status field above): it counts theorem
+  # conclusions of the literal form `exec_program (rule_...)`.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ISA-MODEL-BASIS
+    doc: coq/STATUS.md
+    text: '"is my semantics model faithful?" has no formal solution'
+    evidence:
+      - kind: verbatim                       # "covered" != "faithful" must stay in the doc
+        text: '**"covered" ≠ "faithful"**'
+      - kind: count-eq                       # all 50 rule theorems conclude via the simplified executor
+        pattern: 'exec_program \(rule_'
+        glob: ['coq/Synth/Synth/VcrSelRules.v']
+        expect: 50
+      - kind: count-same                     # rule theorems == simplified-basis conclusions,
+        legs:                                # 1:1 — a future Sail-basis rule theorem breaks
+          - name: rule-correct-theorems      # this pair and forces reclassification HERE
+            pattern: '^(?:Theorem|Lemma) rule_\w+_correct'
+            glob: ['coq/Synth/Synth/VcrSelRules.v']
+          - name: simplified-basis-conclusions
+            pattern: 'exec_program \(rule_'
+            glob: ['coq/Synth/Synth/VcrSelRules.v']
+      - kind: count-eq                       # VcrSelRules imports NOTHING Sail-derived
+        pattern: 'Require Import Synth\.ARM\.SailArmBridge'
+        glob: ['coq/Synth/Synth/VcrSelRules.v']
+        expect: 0
+      - kind: count-eq                       # expansion-tier re-proofs are ALSO simplified-basis
+        pattern: '^(?:Theorem|Lemma) rule_\w+_expansion_correct'
+        glob: ['coq/Synth/Synth/VcrSelExpansion.v']
+        expect: 10
+      - kind: count-eq                       # the assumed simplified->Sail connection:
+        pattern: '(?:Admitted\.)|(?:^\s*admit\.)|(?:^\s*(?:Axiom|Parameter) )'
+        glob: ['coq/Synth/ARM/ArmRefinement.v']  # 2 Admitted + 2 admit. + 1 opaque Axiom
+        expect: 5
+      - kind: count-eq                       # the simplified model's own axiom surface
+        pattern: '^\s*(?:Axiom|Parameter) '
+        glob: ['coq/Synth/ARM/ArmSemantics.v']
+        expect: 72
+      - kind: status-field                   # the numbers flow to status.json
+        name: sel_rules_simplified_basis
+      - kind: status-field
+        name: arm_refinement_assumed_connection
+      - kind: status-field
+        name: arm_semantics_axioms
+      - kind: file-exists                    # phase 2: the coverage artifact +
+        path: artifacts/model-coverage.json  # its loud complement report
+      - kind: file-exists
+        path: scripts/model_coverage_audit.py
+      - kind: status-field
+        name: isa_model_uncovered
+      - kind: status-field
+        name: isa_model_simplified_only
+      - kind: status-field
+        name: isa_model_bridge_validated
 
   # VCR-WASM-001 (Track B): WASM source semantics anchored on WasmCert-Coq.
   # Phase 1 (v0.45): i32.add. Phase 2 (v0.47): the i32 integer fragment batch
