@@ -1300,7 +1300,8 @@ impl Lt32Facts {
             }
         }
         let is_terminator = |op: &ArmOp| {
-            matches!(op, B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. }) || is_return_terminator(op)
+            matches!(op, B { .. } | Bhs { .. } | Blo { .. } | Bcc { .. })
+                || is_return_terminator(op)
         };
         // 1. Leaders: 0, every Label, every instruction after a terminator.
         let mut is_leader = vec![false; n];
@@ -1554,81 +1555,81 @@ pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
         });
         if let Some(d) = def_site {
             match (const_amount, &out[d].op) {
-            // Pattern A: const amount — fold to the immediate shift, mod 32.
-            // (Red-tested at land time: a force-elide of `c >= 32` via the
-            // bare register shift turned 10 rows of
-            // `i32_shift_mask_682_differential.py` red on both paths — the
-            // #682 oracle guards this pass's mod-32 obligation.)
-            (Some(c), _) => {
-                let s = c & 31;
-                out[j + 1].op = match (kind, s) {
-                    // shift-by-0 ⇒ identity move (imm5==0 means shift-by-32
-                    // for LSR/ASR; LSL #0 is representable but MOV is the
-                    // single uniform, encoder-clean identity).
-                    (_, 0) => ArmOp::Mov {
-                        rd,
-                        op2: Operand2::Reg(rn_val),
-                    },
-                    (ShiftKind::Lsl, s) => ArmOp::Lsl {
-                        rd,
-                        rn: rn_val,
-                        shift: s,
-                    },
-                    (ShiftKind::Lsr, s) => ArmOp::Lsr {
-                        rd,
-                        rn: rn_val,
-                        shift: s,
-                    },
-                    (ShiftKind::Asr, s) => ArmOp::Asr {
-                        rd,
-                        rn: rn_val,
-                        shift: s,
-                    },
-                };
-                drop[j] = true;
-                // The movw is a dead store only if the shift (now immediate)
-                // was `rK`'s sole reader: nothing read it inside the window,
-                // and it is redefined-before-read after the pair.
-                if !k_read_between && reg_dead_by_redef(k, &instrs[j + 2..]) {
-                    drop[d] = true;
+                // Pattern A: const amount — fold to the immediate shift, mod 32.
+                // (Red-tested at land time: a force-elide of `c >= 32` via the
+                // bare register shift turned 10 rows of
+                // `i32_shift_mask_682_differential.py` red on both paths — the
+                // #682 oracle guards this pass's mod-32 obligation.)
+                (Some(c), _) => {
+                    let s = c & 31;
+                    out[j + 1].op = match (kind, s) {
+                        // shift-by-0 ⇒ identity move (imm5==0 means shift-by-32
+                        // for LSR/ASR; LSL #0 is representable but MOV is the
+                        // single uniform, encoder-clean identity).
+                        (_, 0) => ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Reg(rn_val),
+                        },
+                        (ShiftKind::Lsl, s) => ArmOp::Lsl {
+                            rd,
+                            rn: rn_val,
+                            shift: s,
+                        },
+                        (ShiftKind::Lsr, s) => ArmOp::Lsr {
+                            rd,
+                            rn: rn_val,
+                            shift: s,
+                        },
+                        (ShiftKind::Asr, s) => ArmOp::Asr {
+                            rd,
+                            rn: rn_val,
+                            shift: s,
+                        },
+                    };
+                    drop[j] = true;
+                    // The movw is a dead store only if the shift (now immediate)
+                    // was `rK`'s sole reader: nothing read it inside the window,
+                    // and it is redefined-before-read after the pair.
+                    if !k_read_between && reg_dead_by_redef(k, &instrs[j + 2..]) {
+                        drop[d] = true;
+                    }
+                    elisions += 1;
+                    elided_here = true;
                 }
-                elisions += 1;
-                elided_here = true;
-            }
-            // Pattern B: range-carried amount — `rK = rX & c` with `c < 32`
-            // proves `rK < 32`; the #682 re-mask is a no-op. Shift by `rK`.
-            (
-                None,
-                ArmOp::And {
-                    rd: ard,
-                    op2: Operand2::Imm(c),
-                    ..
-                },
-            ) if *ard == k && (0..=31).contains(c) => {
-                out[j + 1].op = match kind {
-                    ShiftKind::Lsl => ArmOp::LslReg {
-                        rd,
-                        rn: rn_val,
-                        rm: k,
+                // Pattern B: range-carried amount — `rK = rX & c` with `c < 32`
+                // proves `rK < 32`; the #682 re-mask is a no-op. Shift by `rK`.
+                (
+                    None,
+                    ArmOp::And {
+                        rd: ard,
+                        op2: Operand2::Imm(c),
+                        ..
                     },
-                    ShiftKind::Lsr => ArmOp::LsrReg {
-                        rd,
-                        rn: rn_val,
-                        rm: k,
-                    },
-                    ShiftKind::Asr => ArmOp::AsrReg {
-                        rd,
-                        rn: rn_val,
-                        rm: k,
-                    },
-                };
-                drop[j] = true;
-                elisions += 1;
-                elided_here = true;
-            }
-            // Any other def (arithmetic, load, `movt`, `mvn`, …): bound
-            // unproven intra-block; the cross-block facts below get a say.
-            _ => {}
+                ) if *ard == k && (0..=31).contains(c) => {
+                    out[j + 1].op = match kind {
+                        ShiftKind::Lsl => ArmOp::LslReg {
+                            rd,
+                            rn: rn_val,
+                            rm: k,
+                        },
+                        ShiftKind::Lsr => ArmOp::LsrReg {
+                            rd,
+                            rn: rn_val,
+                            rm: k,
+                        },
+                        ShiftKind::Asr => ArmOp::AsrReg {
+                            rd,
+                            rn: rn_val,
+                            rm: k,
+                        },
+                    };
+                    drop[j] = true;
+                    elisions += 1;
+                    elided_here = true;
+                }
+                // Any other def (arithmetic, load, `movt`, `mvn`, …): bound
+                // unproven intra-block; the cross-block facts below get a say.
+                _ => {}
             }
         }
 
@@ -8082,13 +8083,8 @@ mod tests {
         let (out, n) = elide_shift_masks(&seq);
         assert_eq!(n, 1, "solo-fallthrough label is a proven-benign merge");
         assert!(
-            out.iter().any(|i| matches!(
-                i.op,
-                ArmOp::LslReg {
-                    rm: Reg::R3,
-                    ..
-                }
-            )),
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::LslReg { rm: Reg::R3, .. })),
             "register-form shift by r3 (cross-block facts don't const-fold)"
         );
         assert!(
@@ -8342,11 +8338,7 @@ mod tests {
         // A numeric-offset branch anywhere in the stream means the CFG can't
         // be modeled exactly — the cross-block analysis must decline and the
         // cross-block shape keeps its mask (intra-block behavior preserved).
-        let mut seq = vec![
-            masking_and(Reg::R3, Reg::R0, 15),
-            b("L"),
-            label("L"),
-        ];
+        let mut seq = vec![masking_and(Reg::R3, Reg::R0, 15), b("L"), label("L")];
         seq.extend(mask_pair(Reg::R3, lslreg));
         seq.push(ins(ArmOp::BOffset { offset: 1 }));
         seq.push(ret());

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **#846 finale — gpio-thin back to its 0.11.50 floor: cross-block
+  reaching-def masks (`Lt32Facts`).** v0.50.1's default-on
+  `SYNTH_SHIFT_MASK_ELIDE` recovered gale's real 656 B `gpio_thin_846.loom.wasm`
+  from 534 → 506 B but left **4 residual `and r12,rN,#31` re-masks** whose
+  bounding `and rN,#c` (`c < 32`) sits in a DIFFERENT basic block — invisible
+  to the intra-block Pattern-B window, which (correctly) aborts at every
+  label. `elide_shift_masks` now consults a forward MUST-dataflow of
+  "provably `< 32` unsigned" register facts over the exact label-form CFG:
+  intersection meet at joins, worklist fixpoint, so a mask is elided **only
+  when every path from function entry reaches the shift with a bounding
+  last-def** of the amount register — one unmasked path, an intervening call
+  (kills all facts), a loop back-edge carrying an unbounded redef, or ANY
+  unmodeled control flow (`BOffset`/`BrTable`/computed `Bx` → whole-function
+  decline) keeps the mask, the #682 invariant in dataflow form. gpio-thin:
+  **506 → 502 B, 4 → 3 redundant masks** (`gpio_toggle`'s cross-block
+  copy-carried `pin & 0xf` site now elides; the 75-trace mmio execution
+  differential incl. pin ≥ 32 — the mod-32 boundary — stays bit-identical vs
+  wasmtime on the new bytes; frozen anchors byte-identical, no re-freeze).
+  The last 3 sites (all `gpio_configure`) are HONESTLY kept, not missed:
+  one mask is **load-bearing** — its amount is `mode << 2` on the RAW
+  third param, no source mask, so eliding it would reintroduce the exact
+  #682 unsoundness 0.11.50's bare register shift had (unobservable in this
+  driver only because a later clamp-select conditionally discards the
+  value) — and the other two are the STM32 CRL/CRH idiom
+  `sel ? p*4 : p*4−32` (+ a frame-slot reload of it), where `< 32` holds
+  only via the branch-correlation `sel ⟺ p*4 < 32` — relational,
+  IT-block + frame-slot reasoning outside any sound value-range dataflow;
+  a named follow-up, with 490 B not soundly reachable without it.
+
 ## [0.51.0] - 2026-07-23
 
 **"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses
