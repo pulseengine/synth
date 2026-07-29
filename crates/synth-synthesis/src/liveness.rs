@@ -16180,4 +16180,210 @@ mod tests {
             "the identity rewrite must pass — the gate is non-vacuous"
         );
     }
+
+    // =====================================================================
+    // #881: the VFP twins of the RA-003 invariants (red-first pins).
+    // The live-fixture red evidence: injecting a dropped S2 preservation in
+    // preserve_vfp_caller_saved fired VfpCallerSavedLiveAcrossCall{word:2}
+    // on spill_call, and forcing every VFP spill onto slot 0 in
+    // spill_deepest_vfp fired VfpSpillSlotAliased on deep_s/deep_d — these
+    // unit pins keep both detections from regressing.
+    // =====================================================================
+
+    use crate::rules::VfpReg;
+
+    fn f32c(sd: VfpReg) -> ArmInstruction {
+        ins(ArmOp::F32Const { sd, value: 1.5 })
+    }
+    fn f32st(sd: VfpReg, off: i32) -> ArmInstruction {
+        ins(ArmOp::F32Store {
+            sd,
+            addr: MemAddr::imm(Reg::SP, off),
+        })
+    }
+    fn f32ld(sd: VfpReg, off: i32) -> ArmInstruction {
+        ins(ArmOp::F32Load {
+            sd,
+            addr: MemAddr::imm(Reg::SP, off),
+        })
+    }
+
+    /// RED: two DIFFERENT live VFP values sharing one frame slot — the later
+    /// reload consumes the overwriting value.
+    #[test]
+    fn ra003_vfp_slot_aliased_two_live_values_caught_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            f32st(VfpReg::S2, 0), // value A -> [sp,0]
+            f32c(VfpReg::S3),
+            f32st(VfpReg::S3, 0), // value B overwrites A (A never reloaded)
+            f32ld(VfpReg::S4, 0), // reload expecting A, reads B
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 0, .. })
+            ),
+            "two live VFP values sharing a slot must be a violation"
+        );
+    }
+
+    /// RED: an F32Store clobbering HALF of a live F64Store's slot (the S/D
+    /// aliasing hazard the half-granularity model exists for).
+    #[test]
+    fn ra003_vfp_slot_aliased_f32_over_f64_half_caught_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            ins(ArmOp::F64Const {
+                dd: VfpReg::D1,
+                value: 2.25,
+            }),
+            ins(ArmOp::F64Store {
+                dd: VfpReg::D1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }), // D1 -> [sp,8..16]
+            f32c(VfpReg::S1),
+            f32st(VfpReg::S1, 12), // clobbers the HI half of the live f64
+            ins(ArmOp::F64Load {
+                dd: VfpReg::D2,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }), // reload expecting the f64: hi half is S1'''s bits
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 12, .. })
+            ),
+            "an F32Store into half of a live F64 slot must be a violation"
+        );
+    }
+
+    /// GREEN: a re-store of the PROVABLY SAME value (same source word, no
+    /// redefinition between) is the legal preserve-then-arg-stage overlap.
+    #[test]
+    fn ra003_vfp_slot_same_value_refresh_benign_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            f32st(VfpReg::S2, 0), // preserve S2
+            f32st(VfpReg::S2, 0), // arg-stage S2 again — same bytes
+            f32ld(VfpReg::S3, 0),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            !matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(_)
+            ),
+            "a same-value re-store must be benign (no false positive)"
+        );
+    }
+
+    /// RED: the same-source refresh is NOT benign after the source register
+    /// was redefined — the second store writes a DIFFERENT value.
+    #[test]
+    fn ra003_vfp_slot_refresh_after_redef_caught_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            f32st(VfpReg::S2, 0), // value A
+            f32c(VfpReg::S2),     // S2 redefined -> value B
+            f32st(VfpReg::S2, 0), // stores B over the still-live A
+            f32ld(VfpReg::S3, 0),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 0, .. })
+            ),
+            "a re-store after the source was redefined must be a violation"
+        );
+    }
+
+    /// RED: an S-word live across a bl with no spill/reload — the AAPCS-VFP
+    /// caller-saved clobber (the dropped-preservation injection shape).
+    #[test]
+    fn ra003_vfp_caller_saved_live_across_call_caught_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::F32Add {
+                sd: VfpReg::S3,
+                sn: VfpReg::S2,
+                sm: VfpReg::S2,
+            }), // reads S2 straight after the call
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpCallerSavedLiveAcrossCall {
+                    word: 2,
+                    ..
+                })
+            ),
+            "an S-word live across a bl without preservation must be a violation"
+        );
+    }
+
+    /// GREEN: the shipped preserve/restore pattern — VSTR before the bl,
+    /// VLDR after (the reload REDEFINES the word before any use).
+    #[test]
+    fn ra003_vfp_caller_saved_preserved_across_call_ok_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            f32st(VfpReg::S2, 0), // preserve
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            f32ld(VfpReg::S2, 0), // restore (redefines S2)
+            ins(ArmOp::F32Add {
+                sd: VfpReg::S3,
+                sn: VfpReg::S2,
+                sm: VfpReg::S2,
+            }),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            !matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(_)
+            ),
+            "the preserve/restore pattern must not be flagged"
+        );
+    }
+
+    /// GREEN: S0/S1 (the D0 float return) are excluded — the "use the call'''s
+    /// float result" pattern is not a clobber.
+    #[test]
+    fn ra003_vfp_return_words_excluded_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S0),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::F32Add {
+                sd: VfpReg::S2,
+                sn: VfpReg::S0,
+                sm: VfpReg::S0,
+            }), // consumes the callee'''s S0 result
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            !matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(_)
+            ),
+            "S0/S1 across a call is the float-return pattern, not a clobber"
+        );
+    }
 }
