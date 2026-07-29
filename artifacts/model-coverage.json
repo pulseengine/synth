@@ -1,0 +1,1071 @@
+{
+  "_meta": {
+    "coverage_sources": {
+      "rocq_proofs": true,
+      "tests": false,
+      "tests_note": "No test executes the Rocq model. The differential/emulation/silicon suites exercise the COMPILER'S OUTPUT, not the model (#867's middle methodology row). Model-level differential against a vendor suite is #867 item 4, explicitly out of scope for v0.52."
+    },
+    "generated_by": "scripts/model_coverage_audit.py (re-run it; do not hand-edit)",
+    "honesty": [
+      "\"is my semantics model faithful?\" has no formal solution \u2014 provenance + differential validation + model coverage is the state of the art, not a proof.",
+      "\"covered\" != \"faithful\": a definition exercised by a proof against a simplified model is still only as good as that model.",
+      "bridge-validated means agreement with an ASL-transcribed recomputation was PROVEN for some form of the instruction; the transcription itself is trusted, and coverage of one form does not cover all forms (the #682 LSL_reg bug was in a covered-looking family).",
+      "The uncovered complement is an UNDER-approximation: token false-positives can only shrink it, never grow it."
+    ],
+    "issue": 867,
+    "method": "STATIC textual heuristic \u2014 see the script docstring for exactly what is matched and the disclosed false-positive/false-negative directions. NOT a mechanical adequacy metric."
+  },
+  "targets": {
+    "arm-thumb2-simplified-model": {
+      "entries": [
+        {
+          "bridge_theorems": [
+            "sail_bridge_add_reg"
+          ],
+          "name": "ADD",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_sub_reg"
+          ],
+          "name": "SUB",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MUL",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "SDIV",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "UDIV",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MLS",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_adds_reg"
+          ],
+          "name": "ADDS",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_adc_reg"
+          ],
+          "name": "ADC",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_subs_reg"
+          ],
+          "name": "SUBS",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_sbc_reg"
+          ],
+          "name": "SBC",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_sbcs_reg"
+          ],
+          "name": "SBCS",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/VcrSelExpansion.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_and_reg"
+          ],
+          "name": "AND",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_orr_reg"
+          ],
+          "name": "ORR",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_eor_reg"
+          ],
+          "name": "EOR",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_mvn_reg"
+          ],
+          "name": "MVN",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_lsl_imm"
+          ],
+          "name": "LSL",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_lsr_imm"
+          ],
+          "name": "LSR",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_asr_imm"
+          ],
+          "name": "ASR",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_ror_imm"
+          ],
+          "name": "ROR",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_lsl_reg",
+            "sail_bridge_lsl_reg_zero"
+          ],
+          "name": "LSL_reg",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_lsr_reg",
+            "sail_bridge_lsr_reg_zero"
+          ],
+          "name": "LSR_reg",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_asr_reg",
+            "sail_bridge_asr_reg_zero"
+          ],
+          "name": "ASR_reg",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_ror_reg",
+            "sail_bridge_ror_reg_zero"
+          ],
+          "name": "ROR_reg",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_rsb_reg"
+          ],
+          "name": "RSB",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelPilot.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_mov_reg"
+          ],
+          "name": "MOV",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_movw"
+          ],
+          "name": "MOVW",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_movt"
+          ],
+          "name": "MOVT",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVEQ",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVNE",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVLT",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVLE",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVGT",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVGE",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVLO",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVLS",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVHI",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "MOVHS",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_cmp_reg"
+          ],
+          "name": "CMP",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v",
+            "coq/Synth/Synth/VcrSelExpansion.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_cmp_cond_reg"
+          ],
+          "name": "CMPCond",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/VcrSelExpansion.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "CLZ",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "RBIT",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "POPCNT",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "LDR",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "STR",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "UDF",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [
+            "sail_bridge_cmn_reg"
+          ],
+          "name": "CMN",
+          "proof_layer_refs": [
+            "coq/Synth/ARM/SailArmBridge.v",
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/CorrectnessI32.v"
+          ],
+          "tier": "bridge-validated"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "B",
+          "proof_layer_refs": [],
+          "tier": "uncovered"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "BL",
+          "proof_layer_refs": [],
+          "tier": "uncovered"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "BX",
+          "proof_layer_refs": [],
+          "tier": "uncovered"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "BCondOffset",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VADD_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSUB_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VMUL_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VDIV_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSQRT_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VABS_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VNEG_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VADD_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSUB_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VMUL_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VDIV_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSQRT_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VABS_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VNEG_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCMP_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCMP_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCVT_F32_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCVT_F64_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCVT_S32_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VCVT_F32_S32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VMOV",
+          "proof_layer_refs": [],
+          "tier": "uncovered"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VMOV_ARM_TO_VFP",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VMOV_VFP_TO_ARM",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VLDR_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSTR_F32",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VLDR_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "VSTR_F64",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64MulPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ShlPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ShrUPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ShrSPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64RotlPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64RotrPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ClzPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64CtzPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64PopcntPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64SetCond",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64SetCondZ",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64DivSPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64DivUPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64RemSPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64RemUPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ConstPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ExtendI32SPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64ExtendI32UPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I32WrapI64Pseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64LoadPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64StorePseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/Compilation.v"
+          ],
+          "tier": "simplified-only"
+        }
+      ],
+      "summary": {
+        "bridge-validated": 26,
+        "simplified-only": 68,
+        "total": 98,
+        "uncovered": 4
+      },
+      "universe": "arm_instr constructors (coq/Synth/ARM/ArmInstructions.v)"
+    },
+    "sail-bridge-definitions": {
+      "entries": [
+        {
+          "name": "sail_add_with_carry",
+          "tier": "proof-exercised",
+          "uses": 18
+        },
+        {
+          "name": "sail_not",
+          "tier": "proof-exercised",
+          "uses": 10
+        },
+        {
+          "name": "sail_add_r_result",
+          "tier": "proof-exercised",
+          "uses": 4
+        },
+        {
+          "name": "sail_add_r_flags",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_cmp_r_flags",
+          "tier": "proof-exercised",
+          "uses": 4
+        },
+        {
+          "name": "sail_sub_r_result",
+          "tier": "proof-exercised",
+          "uses": 4
+        },
+        {
+          "name": "sail_sub_r_flags",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_rsb_r_result",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_cmn_r_flags",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_adc_r_result",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_sbc_r_result",
+          "tier": "proof-exercised",
+          "uses": 4
+        },
+        {
+          "name": "sail_and_r",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_orr_r",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_eor_r",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_lsl_c",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_lsr_c",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_asr_c",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_ror_c",
+          "tier": "proof-exercised",
+          "uses": 2
+        },
+        {
+          "name": "sail_shift_c",
+          "tier": "proof-exercised",
+          "uses": 22
+        },
+        {
+          "name": "sail_shift_amount8",
+          "tier": "proof-exercised",
+          "uses": 8
+        },
+        {
+          "name": "sail_movt_result",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_condition_holds",
+          "tier": "proof-exercised",
+          "uses": 3
+        },
+        {
+          "name": "sail_sbcs_r_flags",
+          "tier": "proof-exercised",
+          "uses": 3
+        }
+      ],
+      "summary": {
+        "proof-exercised": 23,
+        "total": 23
+      },
+      "universe": "sail_* Definitions/Fixpoints (coq/Synth/ARM/SailArmBridge.v)"
+    }
+  }
+}

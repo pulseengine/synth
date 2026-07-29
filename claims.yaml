@@ -108,6 +108,25 @@ status_fields:
     kind: count
     pattern: '^\s*(?:Axiom|Parameter) '
     glob: ['coq/Synth/ARM/ArmSemantics.v']
+  # -- #867 phase 2: model-coverage tier counts, read from the COMMITTED
+  # artifacts/model-coverage.json (whose freshness vs re-derivation is gated
+  # by `scripts/model_coverage_audit.py --check` in the claim-check CI job —
+  # so these counts cannot go stale OR be hand-edited without a red build).
+  # Tier names are unique to the arm_instr universe in that artifact.
+  isa_model_bridge_validated:
+    kind: count
+    pattern: '"tier": "bridge-validated"'
+    glob: ['artifacts/model-coverage.json']
+  isa_model_simplified_only:
+    kind: count
+    pattern: '"tier": "simplified-only"'
+    glob: ['artifacts/model-coverage.json']
+  # THE COMPLEMENT (the #867 headline): modelled ISA behaviours NO proof
+  # exercises — the candidate list for the next silent miscompile.
+  isa_model_uncovered:
+    kind: count
+    pattern: '"tier": "uncovered"'
+    glob: ['artifacts/model-coverage.json']
   wasmcert_bridge_qed:
     kind: count
     pattern: 'Qed\.'
@@ -558,6 +577,16 @@ claims:
         name: arm_refinement_assumed_connection
       - kind: status-field
         name: arm_semantics_axioms
+      - kind: file-exists                    # phase 2: the coverage artifact +
+        path: artifacts/model-coverage.json  # its loud complement report
+      - kind: file-exists
+        path: scripts/model_coverage_audit.py
+      - kind: status-field
+        name: isa_model_uncovered
+      - kind: status-field
+        name: isa_model_simplified_only
+      - kind: status-field
+        name: isa_model_bridge_validated
 
   # VCR-WASM-001 (Track B): WASM source semantics anchored on WasmCert-Coq.
   # Phase 1 (v0.45): i32.add. Phase 2 (v0.47): the i32 integer fragment batch

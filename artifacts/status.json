@@ -8,6 +8,9 @@
     "riscv32-rv32imac",
     "aarch64-a64"
   ],
+  "isa_model_bridge_validated": 26,
+  "isa_model_simplified_only": 68,
+  "isa_model_uncovered": 4,
   "kani_harnesses": 18,
   "rocq_admit_tactics": 2,
   "rocq_admitted": 3,

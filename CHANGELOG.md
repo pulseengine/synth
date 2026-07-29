@@ -30,6 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   formal solution* — provenance + differential validation + model coverage is
   the state of the art, not a proof; "covered" ≠ "faithful". Docs/ledger-only
   change: byte-invisible to codegen.
+- **ISA-model coverage + the uncovered complement (#867 items 1+2, first
+  cut).** `scripts/model_coverage_audit.py` emits
+  `artifacts/model-coverage.json`: every modelled ISA behaviour (all 98
+  `arm_instr` constructors) classified bridge-validated (26) /
+  simplified-only (68) / **uncovered (4)**, plus the 23 `sail_*`
+  ASL-transcribed definitions (all currently proof-exercised). The LOUD
+  artifact is the complement — modelled behaviours NO proof exercises, the
+  candidate list for the next #682-class silent miscompile (Kind 2
+  `--print_ivc_complement` framing): today **`B`, `BL`, `BX`, `VMOV`** —
+  the control-flow-transfer/call-linkage instructions and the VFP↔VFP move
+  are modelled but exercised by no proof at all. CI freshness-gates the
+  committed artifact (`--check` in the claim-check job) and the tier counts
+  flow into `status.json`/the feature matrix. Static textual heuristic,
+  labelled as one in `_meta.honesty`; token false-positives can only SHRINK
+  the reported complement (it is an under-approximation), and constructor-
+  granularity coverage does not rule out form-level gaps inside covered
+  families — #682 itself was a form-level gap. No test executes the Rocq
+  model (differential suites exercise compiler OUTPUT); the artifact records
+  that explicitly instead of implying test coverage.
 
 ## [0.51.0] - 2026-07-23
 

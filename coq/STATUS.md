@@ -65,6 +65,24 @@ specific instruction forms against ASL-transcribed recomputations, which is
 evidence toward faithfulness, not a proof of model adequacy (no such proof
 exists).
 
+### Model coverage and the uncovered complement (#867 phase 2)
+
+`scripts/model_coverage_audit.py` (CI: freshness-gated in the claim-check job)
+classifies every modelled ISA behaviour — each `arm_instr` constructor — into
+bridge-validated / simplified-only / **uncovered**, and every `sail_*`
+ASL-transcribed definition into exercised/unexercised, emitting
+`artifacts/model-coverage.json`. The LOUD part is the complement: modelled
+behaviours that NO proof exercises are the candidate list for the next
+#682-class silent miscompile (the Kind 2 `--print_ivc_complement` framing —
+treat everything the proofs did not need as unverified). Tier counts flow to
+`artifacts/status.json` (`isa_model_bridge_validated` /
+`isa_model_simplified_only` / `isa_model_uncovered`) rather than being
+hand-carried here. It is a STATIC textual heuristic, labelled as one in the
+artifact's `_meta.honesty` block; token false-positives can only SHRINK the
+reported complement, so the true unexercised surface is at least as large as
+reported, and coverage at constructor granularity does not rule out form-level
+gaps inside covered families (#682 itself was a form-level gap).
+
 ## 2026-07 executor upgrade: SBCS + CMPcc + a branch-taking executor (#242)
 
 The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
