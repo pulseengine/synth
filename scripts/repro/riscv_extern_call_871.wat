@@ -54,6 +54,21 @@
     i32.const 5
     i32.add)
 
+  ;; LOCAL (non-imported) call — the same `RiscVOp::Call`, resolved against a
+  ;; DEFINED symbol rather than an undefined import. Pre-#871 this declined
+  ;; with the identical "external call without relocation table" skeleton
+  ;; error (verified against a v0.51.0/main-built binary), so the local-call
+  ;; path is newly emitted here too and must be gated alongside the imports:
+  ;; it exercises the non-leaf RA save/restore with NO undefined symbol.
+  (func $bump (param i32) (result i32)
+    local.get 0
+    i32.const 7
+    i32.add)
+
+  (func (export "wdg_local_call") (param i32) (result i32)
+    local.get 0
+    call $bump)
+
   ;; import-free control: proves the non-seam path is untouched.
   (func (export "wdg_is_running") (param i32) (result i32)
     local.get 0

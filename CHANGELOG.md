@@ -50,10 +50,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2-stub mmio implementation with the patched `auipc`/`jalr` targets decoded
   and checked to land on the stubs, (5) execution of the linked image under
   unicorn (RV32) vs wasmtime ground truth — return values AND final mmio
-  memory bit-identical. Known limitations stay LOUD declines, named: >8
-  args, i64 args, multi-value results, `call_indirect`; the single-function
-  RISC-V CLI path refuses external-call functions rather than dropping their
-  relocs.
+  memory bit-identical, covering the LOCAL-call shape (reloc against a
+  DEFINED symbol, no undefined symbol invented) alongside the imports.
+  Known limitations stay LOUD declines, named: >8 args, i64 args,
+  multi-value results, `call_indirect`; the single-function RISC-V CLI path
+  refuses external-call functions rather than dropping their relocs.
+
+### Fixed
+
+- **RV32 non-leaf functions now save/restore `ra` (#871).** A body containing
+  a `call` clobbers `ra`, so without a prologue save the function's `ret`
+  jumps back into its own call site (infinite loop / wild jump).
+  `preserve_callee_saved` now spills `ra` for any call-containing body, and
+  VCR-RA-003 (RV32) REQUIRES it — an unsaved-`ra` non-leaf stream is a
+  `CalleeSavedNotSaved { RA }` violation that hard-errors the compile, pinned
+  red-first across import, `func_N`, and `synth_func_N` call labels.
+  **Not user-reachable before this release**: verified against a
+  main/v0.51.0-built binary, EVERY RV32 call shape — imported, local,
+  self-recursive, with and without `--relocatable`, and via the
+  single-function `--func-name` path — declined with
+  `unsupported in skeleton: external call without relocation table`
+  (`Backend::compile_module` has no caller, so every RV32 function was
+  assembled alone and no `Call` label ever resolved). So no shipped RV32
+  object ever contained a call site; the defect was introduced and fixed
+  inside this change, caught by the execution stage of its own oracle after
+  the byte/reloc/link stages were all green.
 
 ## [0.51.0] - 2026-07-23
 

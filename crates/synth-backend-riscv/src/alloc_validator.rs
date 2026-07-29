@@ -663,6 +663,38 @@ mod tests {
         );
     }
 
+    // ── #871: the unsaved-RA violation is CALL-SHAPE-AGNOSTIC ─────────────
+    // A LOCAL call (`synth_func_N`, resolved against a defined symbol) is the
+    // same `RiscVOp::Call` as an imported one, so the RA requirement fires on
+    // it identically. Pinned explicitly: the local-call path is newly emitted
+    // by #871 too, and "the validator only guards the import shape" would be
+    // a partial fix.
+    #[test]
+    fn ra003rv_unsaved_ra_local_call_is_violation_too_871() {
+        for label in ["synth_func_0", "func_3", "mmio_read32"] {
+            let body = vec![
+                Addi {
+                    rd: Reg::A0,
+                    rs1: Reg::ZERO,
+                    imm: 1,
+                },
+                Call {
+                    label: label.to_string(),
+                },
+                Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ];
+            assert_eq!(
+                validate_final_allocation_rv32(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: Reg::RA }),
+                "unsaved RA must be a violation for call label {label:?}"
+            );
+        }
+    }
+
     // ── A Call does NOT mask a straight-line violation before it ───────────
     #[test]
     fn ra003rv_violation_before_call_still_fires() {

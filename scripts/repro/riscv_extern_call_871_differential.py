@@ -68,6 +68,7 @@ EXPORTS = {
     "wdg_set_bit": 2,
     "wdg_sum2": 2,
     "wdg_flush": 1,
+    "wdg_local_call": 1,
     "wdg_is_running": 0,
     "wdg_lock": 0,
 }
@@ -80,6 +81,7 @@ CASES = {
     "wdg_set_bit": [(MMIO_BASE, 1), (MMIO_BASE + 4, 0x80000000), (MMIO_BASE + 8, 0)],
     "wdg_sum2": [(MMIO_BASE, MMIO_BASE + 4), (MMIO_BASE + 8, MMIO_BASE + 8)],
     "wdg_flush": [(7,), (0x40000000,)],
+    "wdg_local_call": [(0,), (5,), (0xFFFFFFFF,), (0x7FFFFFFF,)],
     "wdg_is_running": [(0,), (1,), (0xFFFFFFFE,)],
     "wdg_lock": [(1,), (0x20000001,)],
 }
@@ -130,6 +132,8 @@ def stage1_completeness(obj):
     if missing:
         die(f"stage1: exports missing from RV32 object (the #871 RED shape): {sorted(missing)}")
     if undefined != IMPORTS:
+        # A local-call target leaking in here would mean synth emitted an
+        # undefined symbol for a function it actually defines (#871).
         die(f"stage1: undefined symbols {sorted(undefined)} != expected {sorted(IMPORTS)}")
     print(f"stage1 OK: {len(EXPORTS)} exports defined (T), nm -u == {sorted(IMPORTS)}")
     return defined
@@ -155,8 +159,14 @@ def stage2_reloc_readback(obj, defined):
                 die(f"stage2: reloc at {roff:#x} has addend {rel['r_addend']}, want 0")
             if roff % 4 != 0 or roff + 8 > len(text_bytes):
                 die(f"stage2: reloc offset {roff:#x} misaligned or out of .text")
-            if rsym not in IMPORTS:
-                die(f"stage2: reloc at {roff:#x} targets '{rsym}', not an import")
+            # #871: a reloc target is either an IMPORT (undefined, host-linked)
+            # or a DEFINED local function in this same object (the local-call
+            # path, which must NOT invent an undefined symbol).
+            if rsym not in IMPORTS and rsym not in defined:
+                die(
+                    f"stage2: reloc at {roff:#x} targets '{rsym}' — neither an "
+                    f"import nor a symbol defined in this object"
+                )
             got = text_bytes[roff : roff + 8]
             if got != CALL_PLACEHOLDER:
                 die(
@@ -269,6 +279,13 @@ def stage4_link(obj, tools, tmp):
                         syms[sym.name] = sym["st_value"]
         text = elf.get_section_by_name(".text")
         base, data = text["sh_addr"], text.data()
+    # #871: a patched call must land on the START of a real function — a stub
+    # (import) or a function defined by the synth object (the local-call
+    # path). Resolving by symbol ADDRESS (not "is it a stub") means a reloc
+    # that pointed at the wrong function, or mid-function, still fails.
+    addr_to_name = {}
+    for name, addr in syms.items():
+        addr_to_name.setdefault(addr, set()).add(name)
     stub_addrs = {syms["mmio_read32"], syms["mmio_write32"], syms["mmio_barrier"]}
     call_targets = []
     for off in range(0, len(data) - 4, 4):
@@ -284,13 +301,34 @@ def stage4_link(obj, tools, tmp):
             lo -= 0x1000
         target = (base + off + (hi << 12) + lo) & 0xFFFFFFFF
         call_targets.append(target)
-    bad = [hex(t) for t in call_targets if t not in stub_addrs]
+    bad = [hex(t) for t in call_targets if t not in addr_to_name]
     if bad:
-        die(f"stage4: patched auipc/jalr call(s) target {bad}, not the mmio stubs {sorted(hex(a) for a in stub_addrs)}")
+        die(
+            f"stage4: patched auipc/jalr call(s) target {bad}, which is not the "
+            f"start of any defined symbol (wrong offset or wrong symbol)"
+        )
     expected_sites = sum(EXPORTS.values())
     if len(call_targets) != expected_sites:
         die(f"stage4: found {len(call_targets)} patched call pairs, expected {expected_sites}")
-    print(f"stage4 OK: real link (ld.lld) resolved both stubs; {len(call_targets)} call sites land on them")
+    # The import calls must reach the stubs, and the local call must reach a
+    # NON-stub function defined by synth itself.
+    n_stub_calls = sum(1 for t in call_targets if t in stub_addrs)
+    n_local_calls = len(call_targets) - n_stub_calls
+    want_local = EXPORTS["wdg_local_call"]
+    if n_local_calls != want_local:
+        die(
+            f"stage4: {n_local_calls} call(s) target a local function, expected "
+            f"{want_local} (the wdg_local_call site)"
+        )
+    local_targets = {
+        n for t in call_targets if t not in stub_addrs for n in addr_to_name[t]
+    }
+    if not local_targets or local_targets & IMPORTS:
+        die(f"stage4: local call resolved to {sorted(local_targets)} — expected a synth-defined function")
+    print(
+        f"stage4 OK: real link (ld.lld); {n_stub_calls} import call(s) land on the "
+        f"mmio stubs and {n_local_calls} local call(s) on {sorted(local_targets)}"
+    )
     return linked, syms
 
 
