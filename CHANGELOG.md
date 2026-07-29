@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ISA-model adequacy (#867): "proved against a simplified model" is now an
+  explicit, counted, CI-pinned trusted-base entry.** #682's shape — a green
+  Qed while shipped code silently miscompiled, because the SIMPLIFIED
+  `ArmSemantics.v` model (not the proof) was unfaithful to ARMv7-M — becomes
+  ledger numbers instead of an implicit assumption: all **50/50** selector-DSL
+  rule theorems (`VcrSelRules.v`) are stated against the simplified executor
+  (0 against the Sail-derived model; +10 expansion-tier re-proofs likewise),
+  the simplified→Sail connection carries **5** assumed obligations
+  (`ArmRefinement.v`: 2 `Admitted.` + 2 `admit.` + 1 opaque
+  `Axiom sail_exec_instr`), and the simplified model itself rests on **72**
+  axioms. Pinned as `SYNTH-ISA-MODEL-BASIS` in `claims.yaml`, re-derived every
+  commit by `scripts/claim_check.py` (new `sel_rules_simplified_basis`,
+  `arm_refinement_assumed_connection`, `arm_semantics_axioms` fields in
+  `artifacts/status.json` + the generated feature matrix): adding a rule
+  proved only against the simplified model reddens CI and forces a visible
+  ledger bump. Classification is STATIC and textual — a heuristic, labelled as
+  one in the ledger. The honest framing (Armstrong et al., POPL 2019 §7) is
+  kept verbatim in `coq/STATUS.md`: *"is my semantics model faithful?" has no
+  formal solution* — provenance + differential validation + model coverage is
+  the state of the art, not a proof; "covered" ≠ "faithful". Docs/ledger-only
+  change: byte-invisible to codegen.
+
 ## [0.51.0] - 2026-07-23
 
 **"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses

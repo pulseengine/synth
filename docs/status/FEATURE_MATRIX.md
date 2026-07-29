@@ -67,6 +67,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | Rocq proof suite | 591 Qed / 3 Admitted (+2 `admit.` tactics) | T1 result-correspondence for all i32 and i64 selection; T2 existence-only for float/SIMD; trusted base: 93 Axiom/Parameter declarations |
 | Verified selector DSL (VCR-SEL-001) | 50 rules / 50 Qed (1:1, + 7 pilot Qed) | The Rocq-proved rules ARE the shipped lowering path for their covered ops; model generated from the shipped rule table (#667), so selector drift breaks the matching proof |
 | Sail/ASL ISA bridge (VCR-ISA-001) | 92 Qed | `coq/Synth/ARM/SailArmBridge.v` |
+| ISA-model basis (#867) | 50/50 rule theorems stated against the SIMPLIFIED `ArmSemantics.v` model (0 against the Sail-derived one) · 5 assumed simplified→Sail obligations (`ArmRefinement.v`) · 72 simplified-model axioms | The counted #682-class trusted base — "covered" ≠ "faithful": a Qed against a simplified model is only as good as that model; see `coq/STATUS.md` |
 | WasmCert-Coq source anchor (VCR-WASM-001) | 104 Qed | `coq/Synth/WASM/WasmCertBridge.v` — i32 integer fragment refined against pinned WasmCert-Coq rules |
 | Kani (bounded model checking) | 18 harnesses | ARM encoder properties |
 | Verus (SMT contracts) | 8 spec functions | `synth-synthesis/src/contracts.rs` |
