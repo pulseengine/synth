@@ -62,6 +62,119 @@
     f64.add f64.add f64.add f64.add
     f32.demote_f64)
 
+  ;; f32 spilled ACROSS a call: ~12 live f32 while calling a helper — the
+  ;; spilled entries are frame-resident (no caller-saved preservation needed),
+  ;; the register-resident rest rides the #719 VFP call-spill area.
+  (func $helper (param $v f32) (result f32)
+    local.get $v
+    f32.const 2.0
+    f32.mul)
+  (func $spill_call (export "spill_call") (param $a f32) (result f32)
+    f32.const 1.5
+    f32.const 2.5
+    f32.const 3.25
+    f32.const 4.125
+    f32.const 5.5
+    f32.const 6.25
+    f32.const 7.125
+    f32.const 8.5
+    f32.const 9.25
+    f32.const 10.125
+    f32.const 11.5
+    f32.const 12.25
+    f32.const 13.125
+    f32.const 14.5
+    f32.const 15.25
+    local.get $a
+    call $helper
+    f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add f32.add)
+
+  ;; Pinned f32 local homes + a deep tree: homes are never spill victims,
+  ;; the expression temps around them are.
+  (func $deep_local (export "deep_local") (param $a f32) (result f32)
+    (local $t f32) (local $u f32)
+    local.get $a
+    f32.const 3.0
+    f32.mul
+    local.set $t
+    local.get $a
+    f32.const 5.0
+    f32.add
+    local.set $u
+    local.get $t
+    local.get $u
+    f32.const 1.5
+    f32.const 2.5
+    f32.const 3.25
+    f32.const 4.125
+    f32.const 5.5
+    f32.const 6.25
+    f32.const 7.125
+    f32.const 8.5
+    f32.const 9.25
+    f32.const 10.125
+    f32.const 11.5
+    f32.const 12.25
+    f32.const 13.125
+    f32.const 14.5
+    f32.const 15.25
+    f32.const 16.125
+    f32.add f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add f32.add)
+
+  ;; The falcon clamp idiom under pressure: select over two f32 with a deep
+  ;; live stack (exercises the select reload window: [val1 val2 cond]).
+  (func $deep_select (export "deep_select") (param $a f32) (param $c i32) (result f32)
+    f32.const 1.5
+    f32.const 2.5
+    f32.const 3.25
+    f32.const 4.125
+    f32.const 5.5
+    f32.const 6.25
+    f32.const 7.125
+    f32.const 8.5
+    f32.const 9.25
+    f32.const 10.125
+    f32.const 11.5
+    f32.const 12.25
+    f32.const 13.125
+    f32.const 14.5
+    f32.const 15.25
+    f32.const 16.125
+    local.get $a
+    f32.const 100.0
+    local.get $c
+    select
+    f32.add f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add f32.add f32.add
+    f32.add f32.add f32.add f32.add)
+
+  ;; Interleaved S/D pressure: live f32 values below live f64 values in the
+  ;; ONE aliased register file, with promotes churning transient S-regs
+  ;; between D allocations — D-alloc must keep finding ALIGNED pairs (or
+  ;; spill until one frees) in a fragmented shared file.
+  (func $deep_sd_mix (export "deep_sd_mix") (param $a f32) (result f32)
+    local.get $a
+    f32.const 1.5
+    f32.const 2.5
+    f32.const 3.25
+    f32.const 4.125
+    f32.const 5.5
+    f32.const 6.25
+    f32.const 7.125
+    f64.const 10.25
+    f64.const 11.5
+    f64.const 12.25
+    f64.const 13.125
+    f64.const 14.5
+    f64.const 15.25
+    f64.add f64.add f64.add f64.add f64.add
+    f32.demote_f64
+    f32.add f32.add f32.add f32.add f32.add f32.add f32.add f32.add)
+
   ;; The #869 shape: i64->f32 converts (D-register machinery: exact two-word
   ;; f64 build + round-to-odd fixup + demote) under a live f32 stack.
   (func $deep_mix (export "deep_mix") (param $x i64) (param $y i64) (result f32)
