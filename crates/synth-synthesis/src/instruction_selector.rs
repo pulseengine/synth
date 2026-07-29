@@ -3665,11 +3665,11 @@ fn lower_f32_convert_i64(
     // (grown as each is handed out — the alloc_temp discipline used by the
     // #782 decompose).
     let mut resv: Vec<Reg> = reserved.to_vec();
-    let mut grab = |resv: &mut Vec<Reg>,
-                    stack: &mut Vec<StackVal>,
-                    next_temp: &mut u8,
-                    instructions: &mut Vec<ArmInstruction>,
-                    spill: &mut SpillState|
+    let grab = |resv: &mut Vec<Reg>,
+                stack: &mut Vec<StackVal>,
+                next_temp: &mut u8,
+                instructions: &mut Vec<ArmInstruction>,
+                spill: &mut SpillState|
      -> Result<Reg> {
         let r = alloc_temp_or_spill(next_temp, stack, instructions, spill, resv, idx)?;
         resv.push(r);
@@ -3680,7 +3680,7 @@ fn lower_f32_convert_i64(
     let tlo = grab(&mut resv, stack, next_temp, instructions, spill)?;
     let thi = grab(&mut resv, stack, next_temp, instructions, spill)?;
     let tmp = grab(&mut resv, stack, next_temp, instructions, spill)?;
-    let mut emit = |op: ArmOp, instructions: &mut Vec<ArmInstruction>| {
+    let emit = |op: ArmOp, instructions: &mut Vec<ArmInstruction>| {
         instructions.push(ArmInstruction {
             op,
             source_line: Some(idx),

@@ -3034,11 +3034,12 @@ mod tests {
         // is no longer flagged — and since phase 2 (#369) so is the lowered
         // f64 subset (`f64.add` here; the m7dp-only capability gate lives in
         // the selector). Since phase 3 the f64 op TAIL (`f64.min` here) is
-        // decoded too; an out-of-scope scalar float op (`i64.trunc_f64_s` —
-        // the i64<->f64 conversions need lowered pair plumbing) is STILL
-        // flagged (loud-skip), never silently dropped — the #369 honesty
-        // contract holds for the not-yet-lowered surface. A pure-integer
-        // function stays clean.
+        // decoded too; and since #869 the 64-bit integer<->float conversion
+        // family (`i64.trunc_f64_s` here) decodes as well — the scalar float
+        // decode surface is complete, with capability gating (m7dp-only)
+        // living in the selector. The flag-never-drop honesty contract for
+        // the remaining undecoded float surface is pinned by the
+        // float-global test below. A pure-integer function stays clean.
         let wat = r#"
             (module
                 (func (export "fadd") (param f32 f32) (result f32)
@@ -3107,11 +3108,17 @@ mod tests {
             "f64.min must decode to WasmOp::F64Min: {:?}",
             dmin.ops
         );
-        // Out-of-scope scalar double op: still flagged, never dropped.
+        // #869: the i64<->f64 conversions are now IN scope — decoded, not
+        // flagged (the m7dp capability gate lives in the selector preamble).
         assert!(
-            dtrunc64.unsupported.is_some(),
-            "i64.trunc_f64_s must still flag the function unsupported (out of scope), got {:?}",
+            dtrunc64.unsupported.is_none(),
+            "#869: i64.trunc_f64_s must now decode (not be flagged), got {:?}",
             dtrunc64.unsupported
+        );
+        assert!(
+            dtrunc64.ops.contains(&WasmOp::I64TruncF64S),
+            "i64.trunc_f64_s must decode to WasmOp::I64TruncF64S: {:?}",
+            dtrunc64.ops
         );
         assert!(
             iadd.unsupported.is_none(),
