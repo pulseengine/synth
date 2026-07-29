@@ -927,6 +927,145 @@ mod tests {
         assert_eq!(field(symtab, 24), 4, "sh_link -> .strtab at index 4");
     }
 
+    /// #871: an external `Call` assembles to the canonical 8-byte
+    /// `auipc ra, 0 ; jalr ra, 0(ra)` placeholder plus a function-relative
+    /// `R_RISCV_CALL_PLT` reloc record — no more "external call without
+    /// relocation table" error.
+    #[test]
+    fn external_call_emits_placeholder_and_reloc_871() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "caller".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Call {
+                    label: "mmio_read32".into(),
+                },
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let (bytes, relocs) = builder.assemble_single_function(&f).unwrap();
+        assert_eq!(bytes.len(), 16, "nop + 8B call pair + ret");
+        assert_eq!(&bytes[4..12], &CALL_PLACEHOLDER_BYTES);
+        assert_eq!(
+            relocs,
+            vec![RiscVCallReloc {
+                offset: 4,
+                symbol: "mmio_read32".into()
+            }]
+        );
+    }
+
+    /// #871: `build_object` emits `.rela.text` (SHT_RELA, entsize 12, type 19
+    /// entries) and an UNDEFINED global symbol per unresolved reloc target,
+    /// while a defined function name resolves to its own symtab index. Walk
+    /// the section headers by hand, like a linker would.
+    #[test]
+    fn build_object_emits_rela_text_and_undefined_symbols_871() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let callee = RiscVElfFunction {
+            name: "callee".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let caller = RiscVElfFunction {
+            name: "caller".into(),
+            ops: vec![
+                RiscVOp::Call {
+                    label: "mmio_read32".into(),
+                },
+                RiscVOp::Call {
+                    label: "callee".into(),
+                },
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let elf = builder.build_object(&[callee, caller], &[], &[]).unwrap();
+
+        let shoff = u32::from_le_bytes(elf[32..36].try_into().unwrap()) as usize;
+        let shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap()) as usize;
+        assert_eq!(shnum, 6, "null/.text/.symtab/.strtab/.shstrtab/.rela.text");
+        let shdr = |i: usize| &elf[shoff + i * 40..shoff + (i + 1) * 40];
+        let field =
+            |h: &[u8], o: usize| u32::from_le_bytes(h[o..o + 4].try_into().unwrap()) as usize;
+        // The last section is .rela.text.
+        let rela = shdr(5);
+        assert_eq!(field(rela, 4), 4, "SHT_RELA");
+        assert_eq!(field(rela, 24), 2, "sh_link -> .symtab");
+        assert_eq!(field(rela, 28), 1, "sh_info -> .text");
+        assert_eq!(field(rela, 36), 12, "sh_entsize");
+        let (roff, rsz) = (field(rela, 16), field(rela, 20));
+        assert_eq!(rsz, 24, "two RELA entries");
+        // Entry 0: the import call at caller+0 (callee is 8 bytes, caller
+        // starts at 8) → r_offset 8, type 19.
+        let e0 = &elf[roff..roff + 12];
+        let r_offset0 = u32::from_le_bytes(e0[0..4].try_into().unwrap());
+        let r_info0 = u32::from_le_bytes(e0[4..8].try_into().unwrap());
+        assert_eq!(r_offset0, 8);
+        assert_eq!(r_info0 & 0xFF, R_RISCV_CALL_PLT);
+        let import_sym = (r_info0 >> 8) as usize;
+        // Entry 1: the local call to `callee` resolves to symbol index 1.
+        let e1 = &elf[roff + 12..roff + 24];
+        let r_offset1 = u32::from_le_bytes(e1[0..4].try_into().unwrap());
+        let r_info1 = u32::from_le_bytes(e1[4..8].try_into().unwrap());
+        assert_eq!(r_offset1, 16);
+        assert_eq!(r_info1 & 0xFF, R_RISCV_CALL_PLT);
+        assert_eq!((r_info1 >> 8) as usize, 1, "callee = first symtab entry");
+        // The import symbol is UNDEFINED (st_shndx 0) and named mmio_read32.
+        let symtab = shdr(2);
+        let (soff, _ssz) = (field(symtab, 16), field(symtab, 20));
+        let sym = &elf[soff + import_sym * 16..soff + import_sym * 16 + 16];
+        let st_shndx = u16::from_le_bytes(sym[14..16].try_into().unwrap());
+        assert_eq!(st_shndx, 0, "SHN_UNDEF");
+        let strtab = shdr(3);
+        let stroff = field(strtab, 16);
+        let name_off = stroff + u32::from_le_bytes(sym[0..4].try_into().unwrap()) as usize;
+        let end = elf[name_off..].iter().position(|&b| b == 0).unwrap() + name_off;
+        assert_eq!(&elf[name_off..end], b"mmio_read32");
+        // Placeholder bytes sit at both reloc sites in .text.
+        let text = shdr(1);
+        let toff = field(text, 16);
+        assert_eq!(&elf[toff + 8..toff + 16], &CALL_PLACEHOLDER_BYTES);
+        assert_eq!(&elf[toff + 16..toff + 24], &CALL_PLACEHOLDER_BYTES);
+    }
+
+    /// #871: an object with NO call relocations is byte-identical to the
+    /// pre-#871 layout — no `.rela.text`, no undefined symbols, no shstrtab
+    /// entry. (The frozen RV32 fixtures rely on this.)
+    #[test]
+    fn reloc_free_object_layout_unchanged_871() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let elf = builder.build(std::slice::from_ref(&f)).unwrap();
+        let shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap());
+        assert_eq!(shnum, 5, "no .rela.text section");
+        assert!(!elf.windows(10).any(|w| w == b".rela.text"));
+    }
+
     #[test]
     fn executable_mode_writes_text_base_in_symbols() {
         let builder = RiscVElfBuilder::new_executable(0x80000000, 0x80000000);
