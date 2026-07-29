@@ -850,6 +850,55 @@ mod tests {
         ));
     }
 
+    /// #882 hard gate: a label defined twice in one function is a HARD error.
+    /// The map insert is last-wins, so a duplicate would silently rebind
+    /// every reference to the later position — a wrong-offset branch, i.e. a
+    /// silent miscompile. This makes "every referenced label resolves to
+    /// exactly one definition inside the current function" structural.
+    #[test]
+    fn duplicate_label_rejected_882() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                RiscVOp::Label { name: "L".into() },
+                nop_op(),
+                RiscVOp::Label { name: "L".into() },
+                RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: "L".into(),
+                },
+            ],
+        };
+        match builder.build(&[f]) {
+            Err(ElfBuildError::DuplicateLabel(name, first, second)) => {
+                assert_eq!(name, "L");
+                assert_eq!((first, second), (0, 4));
+            }
+            other => panic!("duplicate label must hard-error, got {other:?}"),
+        }
+    }
+
+    /// #882: the same label name in TWO DIFFERENT functions is fine — label
+    /// resolution is per-function (the map is rebuilt for each function), so
+    /// a reference can never bind across function boundaries.
+    #[test]
+    fn same_label_name_across_functions_ok_882() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let mk = |name: &str| RiscVElfFunction {
+            name: name.into(),
+            ops: vec![
+                RiscVOp::Label { name: "L".into() },
+                nop_op(),
+                RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: "L".into(),
+                },
+            ],
+        };
+        assert!(builder.build(&[mk("f"), mk("g")]).is_ok());
+    }
+
     /// #798: `build` (no data) and `build_with_data(&[], …)` are BYTE-identical
     /// — the `.wasm_data` section, its shstrtab name, and the index shift only
     /// exist when there are records to ship. Frozen data-free objects are

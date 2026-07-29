@@ -9464,4 +9464,208 @@ mod tests {
         let on = s_fuse(&ops, 2, true);
         assert_eq!(on, off, "i64 comparisons are out of fusion scope");
     }
+
+    // ───────── #882: return-inside-frame label definition + dead-code walk ─────────
+
+    /// gale's i2c_step shape: a `return` on the fall-through path of a block
+    /// whose end label is a `br_if` target. Pre-fix the walk aborted at the
+    /// `return`, the `end` never defined `Lend0`, and the ELF builder failed
+    /// with "undefined label". The label must be defined exactly once, AFTER
+    /// the return's `ret`, and the reachable post-end code must be lowered.
+    #[test]
+    fn return_in_block_defines_end_label_882() {
+        let out = s(
+            &[
+                WasmOp::Block,
+                WasmOp::LocalGet(0),
+                WasmOp::BrIf(0),
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::End,
+                WasmOp::I32Const(7),
+                WasmOp::End,
+            ],
+            1,
+        );
+        let label_pos: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, RiscVOp::Label { name } if name == "Lend0"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(label_pos.len(), 1, "Lend0 defined exactly once: {out:?}");
+        let first_ret = out
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    RiscVOp::Jalr {
+                        rd: Reg::ZERO,
+                        rs1: Reg::RA,
+                        imm: 0
+                    }
+                )
+            })
+            .expect("return emitted a ret");
+        assert!(
+            label_pos[0] > first_ret,
+            "Lend0 sits after the return path's ret (its lexical position)"
+        );
+        // The reachable post-end code (i32.const 7) was lowered: a const
+        // materialization exists after the label.
+        assert!(
+            out[label_pos[0]..]
+                .iter()
+                .any(|op| matches!(op, RiscVOp::Addi { rs1: Reg::ZERO, imm: 7, .. })),
+            "post-end code after the br_if join must be lowered: {out:?}"
+        );
+    }
+
+    /// A then-arm ending in `return` must still define the else label and
+    /// RESUME lowering there — the `beq` at `if` targets it, so the else-arm
+    /// is reachable. Pre-fix: "undefined label `Lelse0`" (whole function
+    /// skipped). No `jal end` join jump is emitted for the then-arm (it
+    /// returned instead of falling through).
+    #[test]
+    fn then_arm_return_resumes_else_882() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::I32Const(11),
+                WasmOp::Return,
+                WasmOp::Else,
+                WasmOp::I32Const(22),
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        for name in ["Lelse0", "Lif_end1"] {
+            assert_eq!(
+                count(&out, |op| matches!(op, RiscVOp::Label { name: n } if n == name)),
+                1,
+                "{name} defined exactly once: {out:?}"
+            );
+        }
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Jal { label, .. } if label == "Lif_end1")),
+            0,
+            "no join jump for a then-arm that returned: {out:?}"
+        );
+        // The else-arm body was lowered (const 22 materialization present).
+        assert!(
+            out.iter()
+                .any(|op| matches!(op, RiscVOp::Addi { rs1: Reg::ZERO, imm: 22, .. })),
+            "else-arm must be lowered: {out:?}"
+        );
+    }
+
+    /// Dead code after a depth-0 `return` emits NOTHING — byte-identical to
+    /// the stream without it (the pre-#882 behaviour for this shape, which
+    /// the frozen RV32 goldens pin).
+    #[test]
+    fn dead_code_after_return_skipped_882() {
+        let with_dead = s(
+            &[
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::I32Const(2),
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            0,
+        );
+        let without = s(&[WasmOp::I32Const(1), WasmOp::Return, WasmOp::End], 0);
+        assert_eq!(with_dead, without, "dead ops must not change the stream");
+    }
+
+    /// A loop whose body ends in `return`: the loop's end label is never a
+    /// branch target (loop `br`s target the HEAD), so the post-loop code is
+    /// unreachable and stays dead — but the function must still compile and
+    /// its labels must all resolve.
+    #[test]
+    fn loop_body_return_unreferenced_end_stays_dead_882() {
+        let out = s(
+            &[
+                WasmOp::Loop,
+                WasmOp::LocalGet(0),
+                WasmOp::BrIf(0),
+                WasmOp::I32Const(1),
+                WasmOp::Return,
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Head label defined; end label defined (0 bytes); nothing between
+        // the return's ret and the trailing epilogue.
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Label { name } if name == "Lloop_head1")),
+            1
+        );
+    }
+
+    // ───────── #882: param-clobber-across-call (found by the i2c oracle) ─────────
+
+    /// A param read AFTER a call must come from its frame slot, not the
+    /// caller-saved a-register the callee clobbered. Pre-fix this shape
+    /// compiled cleanly and returned the CALLEE's leftover a0 (silent
+    /// wrong-execution, isolated repro returned 0xdead for f(42)).
+    #[test]
+    fn param_read_after_call_uses_frame_slot_882() {
+        let out = s(
+            &[
+                WasmOp::Call(0),
+                WasmOp::Drop,
+                WasmOp::LocalGet(0),
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Prologue spill: sw a0, off(sp) once.
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: Reg::A0,
+                    ..
+                }
+            )),
+            1,
+            "param must be spilled once at entry: {out:?}"
+        );
+        // The param read is a frame load (`lw _, off(sp)`) — the a0 the
+        // callee clobbered is only read as the call RESULT (the `mv t, a0`
+        // immediately after the call), never as the param.
+        let call_pos = out
+            .iter()
+            .position(|op| matches!(op, RiscVOp::Call { .. }))
+            .expect("call emitted");
+        assert!(
+            count(&out[call_pos..], |op| matches!(
+                op,
+                RiscVOp::Lw {
+                    rs1: Reg::SP,
+                    imm: 0,
+                    ..
+                }
+            )) >= 1,
+            "param read after the call must load the frame slot: {out:?}"
+        );
+    }
+
+    /// Call-free bodies keep the register path — no spill, no frame, bytes
+    /// unchanged (the no-cost guarantee for every existing green function).
+    #[test]
+    fn call_free_param_stays_in_register_882() {
+        let out = s(&[WasmOp::LocalGet(0), WasmOp::End], 1);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sw { .. })
+                || matches!(op, RiscVOp::Lw { .. })),
+            0,
+            "call-free body must not touch the frame for params: {out:?}"
+        );
+    }
 }
