@@ -50,13 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reverted in v0.50 (`db0f1f2`) because ordeal 0.12 hung on these queries
   (#849); **ordeal 0.16.1** fixes both blast regressions (signed ordeal#97,
   unsigned ordeal#101) and the new deadline is the standing insurance.
-  Measured: the four i64-rem tests (8 × 64-bit `bvurem`/`bvsrem` value+trap
-  VCs) decide in **2.4 s**. Non-vacuity is gated, not narrated —
-  `i64_rem_wrong_destination_register_is_rejected` and
-  `i64_rem_value_model_closes_a_trap_only_gap` (the old trap-only VC *accepts*
-  the same wrong-destination lowering the new value VC *rejects*) pin the
-  accepted-under-havoc → rejected-now discriminator. Verify-only:
-  byte-invisible, frozen codegen anchors untouched. Supersedes #854.
+  Measured: the four correctness/destination i64-rem tests (8 × 64-bit
+  `bvurem`/`bvsrem` value+trap VCs) decide in **2.4 s**. Non-vacuity is gated,
+  not narrated, at two strengths — `i64_rem_wrong_destination_register_is_rejected`
+  and `i64_rem_value_model_closes_a_trap_only_gap` (the old trap-only VC
+  *accepts* the same wrong-destination lowering the new value VC *rejects*) pin
+  the accepted-under-havoc → rejected-now discriminator on the register file,
+  and `i64_rem_wrong_signedness_is_rejected` pins it on the **arithmetic**: a
+  `rem_u` lowered to the signed pseudo-op (or vice versa) writes the *right*
+  registers and preserves the ÷0 trap, so only a real value model can reject
+  it — it does, with the expected counterexamples (negative dividend / negative
+  divisor). That SAT search is the corpus's slowest rem query at ~23 s locally
+  (vs the 300 s budget) and is free in suite wall-clock, running behind the
+  pre-existing 40 s popcnt-HAKMEM proof. Verify-only: byte-invisible, frozen
+  codegen anchors untouched. Supersedes #854.
 
 ## [0.51.0] - 2026-07-23
 

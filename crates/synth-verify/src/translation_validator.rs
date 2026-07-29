@@ -2215,6 +2215,38 @@ mod tests {
         });
     }
 
+    /// RED / NON-VACUITY on the ARITHMETIC, not just the register file: a
+    /// lowering that computes the remainder with the WRONG SIGNEDNESS —
+    /// `rem_u` lowered to the signed pseudo-op, or `rem_s` to the unsigned one
+    /// — writes to the correct ABI pair `R0:R1` and preserves the ÷0 trap, so
+    /// the destination check above cannot see it. Only a real value model can:
+    /// `bvurem` and `bvsrem` differ exactly when an operand's sign bit is set.
+    ///
+    /// This is the strictly stronger discriminator. It fails under HAVOC (both
+    /// sides unconstrained ⟹ Verified) and under any model that got the value
+    /// "shape" right but the operation wrong, and the counterexamples it
+    /// produces are the expected ones (a negative dividend for `rem_u`-as-
+    /// `rem_s`, a negative divisor for `rem_s`-as-`rem_u`).
+    #[test]
+    fn i64_rem_wrong_signedness_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // (spec op, lowering op) — same ABI destination, wrong arithmetic.
+            for (spec, lowered) in [
+                (WasmOp::I64RemU, WasmOp::I64RemS),
+                (WasmOp::I64RemS, WasmOp::I64RemU),
+            ] {
+                let arm_ops = i64_rem_with_dest(&lowered, Reg::R0, Reg::R1);
+                let result = validator.verify_trap_preservation(&spec, &arm_ops).unwrap();
+                assert!(
+                    matches!(result, ValidationResult::Invalid { .. }),
+                    "RED: {spec:?} lowered as {lowered:?} computes the wrong remainder \
+                     into the right registers — must be Invalid, got {result:?}"
+                );
+            }
+        });
+    }
+
     /// NON-VACUITY control: the correct-destination and wrong-destination
     /// lowerings must give OPPOSITE verdicts. A gate that returned the same
     /// verdict for both (as the HAVOC model did — both trivially valued) would
