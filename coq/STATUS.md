@@ -25,6 +25,64 @@ re-derive `Qed.`/`Admitted.`/`admit.` counts from `coq/Synth/**/*.v` on every
 commit. When a proof lands, update this file, README.md, CLAUDE.md AND
 `claims.yaml` in the same PR.
 
+## ISA-model basis — the #682-class trusted base (#867)
+
+**The model, not the proof, is where the last silent miscompile lived.** #682:
+`rule_i32_shl_correct` carried a green Qed while shipped Thumb-2 code
+miscompiled shift amounts ≥ 32, because `ArmSemantics.v` modelled `LSL_reg`
+with Wasm's mod-32 masking instead of ARMv7-M's `Rm[7:0]`. The proof was fine;
+the model was unfaithful; the proof was therefore vacuous against silicon.
+Following Sail's own validation methodology (Armstrong et al., POPL 2019 §7:
+provenance / differential validation / model coverage), this section makes the
+"proved against a SIMPLIFIED model rather than the Sail-derived one" surface an
+explicit, counted, CI-pinned trusted-base entry (claims.yaml
+`SYNTH-ISA-MODEL-BASIS`). The honest framing, kept verbatim from #867:
+**"is my semantics model faithful?" has no formal solution** — provenance +
+differential validation + model coverage is the state of the art, not a proof.
+And **"covered" ≠ "faithful"**: a definition exercised by a proof against a
+simplified model is still only as good as that model.
+
+Re-derived by `scripts/claim_check.py` on every commit via STATIC textual
+classification — a heuristic, labelled as one; the ledger entry documents
+exactly what each pattern counts and what it can miss. Movement in EITHER
+direction reddens CI: a new rule proved only against the simplified model must
+bump these numbers here AND in `claims.yaml` — visible debt, never hidden.
+
+| Trusted-base entry | Count | Meaning |
+|---|---|---|
+| Selector-DSL rule theorems stated against the SIMPLIFIED model | **50 of 50** | Every `rule_*_correct` conclusion in `VcrSelRules.v` runs the flat `ArmSemantics.v` executor (`exec_program (rule_…)`); **0** are stated against the Sail-derived model, and the file imports nothing from `SailArmBridge.v` |
+| Expansion-tier re-proofs, also simplified-basis | **10** | `VcrSelExpansion.v`'s `rule_*_expansion_correct` theorems (the I64SetCond dual-precision chains) — deeper than the flat rules, same simplified executor |
+| Assumed simplified→Sail connection (`ArmRefinement.v`) | **5** | 2 `Admitted.` + 2 `admit.` + 1 opaque `Axiom sail_exec_instr` — the refinement from the simplified model to the authoritative Sail semantics is substantially ASSUMED (superseded per-instruction-form by `SailArmBridge.v`, but the general theorem is not proven) |
+| Simplified model's own axiom surface (`ArmSemantics.v`) | **72** | float/conversion bit-level operations taken as axioms inside the very model the proofs execute |
+
+What SHRINKS these numbers: re-stating rule theorems against a Sail-derived
+executable semantics (the VCR-ISA-001 endgame), replacing the opaque
+`sail_exec_instr` axiom with real Sail-generated definitions, and
+de-axiomatizing the float semantics. What the numbers do NOT claim: that the
+`sail_bridge_*` per-instruction-form correspondence theorems in
+`SailArmBridge.v` make the covered instructions "faithful" — they validate
+specific instruction forms against ASL-transcribed recomputations, which is
+evidence toward faithfulness, not a proof of model adequacy (no such proof
+exists).
+
+### Model coverage and the uncovered complement (#867 phase 2)
+
+`scripts/model_coverage_audit.py` (CI: freshness-gated in the claim-check job)
+classifies every modelled ISA behaviour — each `arm_instr` constructor — into
+bridge-validated / simplified-only / **uncovered**, and every `sail_*`
+ASL-transcribed definition into exercised/unexercised, emitting
+`artifacts/model-coverage.json`. The LOUD part is the complement: modelled
+behaviours that NO proof exercises are the candidate list for the next
+#682-class silent miscompile (the Kind 2 `--print_ivc_complement` framing —
+treat everything the proofs did not need as unverified). Tier counts flow to
+`artifacts/status.json` (`isa_model_bridge_validated` /
+`isa_model_simplified_only` / `isa_model_uncovered`) rather than being
+hand-carried here. It is a STATIC textual heuristic, labelled as one in the
+artifact's `_meta.honesty` block; token false-positives can only SHRINK the
+reported complement, so the true unexercised surface is at least as large as
+reported, and coverage at constructor granularity does not rule out form-level
+gaps inside covered families (#682 itself was a form-level gap).
+
 ## 2026-07 executor upgrade: SBCS + CMPcc + a branch-taking executor (#242)
 
 The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
