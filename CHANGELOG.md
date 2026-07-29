@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-07-29
+
+**"Enforce what we promise."** Every backend in this release stopped
+over-promising somewhere, and each gap was closed by *executing* the fix rather
+than inspecting it:
+
+- **aarch64 memory accesses now bounds-check.** `--safety-bounds` was a **silent
+  no-op** on that backend — `none`, `software`, `mask`, `mpu` produced
+  byte-identical output, and with `uxtw` zero-extension a guest address reached
+  up to 4 GiB past its linear memory: OOB read = disclosure, OOB store =
+  arbitrary write, where wasmtime traps (#865). The default now *enforces*;
+  unimplemented modes hard-error instead of degrading.
+- **ARM lowers the whole 64-bit integer↔float family** (8 ops, incl. the #756
+  `i64.trunc_f64` gap) — previously every member loud-skipped its function,
+  which blocked three falcon cascade stages at their public entry points (#869).
+  ARMv7E-M VFP has no 64-bit `VCVT`, so these are self-contained expansions with
+  WASM-faithful trap guards (the builtins don't trap either).
+- **RISC-V emits external-call relocations**, so seam-importing drivers lower
+  instead of being declined — the cross-architecture claim now holds for real
+  modules, not only import-free ones (#871).
+- **Native i64 `rem_u`/`rem_s` SMT modeling returns**, behind a per-query
+  wall-clock deadline so a future solver cliff degrades to `Unknown` instead of
+  hanging CI for hours (#844/#848/#849).
+- **The proof-vs-model debt is now a counted number.** All 50 selector rules are
+  proved against the *simplified* model, 0 against the Sail-derived one, and the
+  connection between them rests on 5 assumed items — pinned so it can only
+  shrink, with `B`/`BL`/`BX`/`VMOV` reported as touched by **no proof at all**
+  (#867).
+- **The allocator's across-join acceptance oracle bites correctly** — proven by
+  breaking it, after two earlier attempts silently masked their own red tests
+  (#242/#819).
+
+Two defects were found *by the oracles themselves* mid-flight: RV32 non-leaf
+functions never saved `ra` (caught by execution after byte, relocation and link
+checks were all green — not user-reachable before this release), and #872, where
+a default-on allocator pass reuses a register still read by an unmodeled op
+**and its validator shares the blind spot** — filed, contained, and left open
+because the honest fix belongs to the allocator endgame.
+
 ### Added
 
 - **ARM 64-bit integer↔float conversion family lowered (#869, + the #756
@@ -144,6 +183,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model (differential suites exercise compiler OUTPUT); the artifact records
   that explicitly instead of implying test coverage.
 
+### Changed
+
+- **#846 — cross-block reaching-def shift-mask elision (`Lt32Facts`); gpio-thin
+  506 → 502 B, and the 0.11.50 "490 B" baseline shown to be PRE-#682
+  UNSOUND.** v0.50.1's default-on
+  `SYNTH_SHIFT_MASK_ELIDE` recovered gale's real 656 B `gpio_thin_846.loom.wasm`
+  from 534 → 506 B but left **4 residual `and r12,rN,#31` re-masks** whose
+  bounding `and rN,#c` (`c < 32`) sits in a DIFFERENT basic block — invisible
+  to the intra-block Pattern-B window, which (correctly) aborts at every
+  label. `elide_shift_masks` now consults a forward MUST-dataflow of
+  "provably `< 32` unsigned" register facts over the exact label-form CFG:
+  intersection meet at joins, worklist fixpoint, so a mask is elided **only
+  when every path from function entry reaches the shift with a bounding
+  last-def** of the amount register — one unmasked path, an intervening call
+  (kills all facts), a loop back-edge carrying an unbounded redef, or ANY
+  unmodeled control flow (`BOffset`/`BrTable`/computed `Bx` → whole-function
+  decline) keeps the mask, the #682 invariant in dataflow form. gpio-thin:
+  **506 → 502 B, 4 → 3 redundant masks** (`gpio_toggle`'s cross-block
+  copy-carried `pin & 0xf` site now elides; the 75-trace mmio execution
+  differential incl. pin ≥ 32 — the mod-32 boundary — stays bit-identical vs
+  wasmtime on the new bytes; frozen anchors byte-identical, no re-freeze).
+  The last 3 sites (all in `gpio_configure`, read off the shipped object) are
+  HONESTLY kept, not missed:
+  - `and ip,r8,#31` at `0xdc` is **LOAD-BEARING, permanently**: its amount is
+    `lsl.w r8, r6, #2` on `r6 = ldr [sp,#0x24]`, a frame-reloaded RAW param
+    with no source mask. `mode << 2 >= 32` for `mode >= 8`, where WASM
+    §4.3.2 requires shift-by-`(k mod 32)` but bare ARM `LSL` by ≥ 32 yields
+    0 — eliding it IS the #682 miscompile. (The only bound on `r6`,
+    `cmp r6,#6`, sits four instructions AFTER the shift and feeds a select,
+    so it neither dominates nor constrains.)
+  - `and ip,r4,#31` at `0xac` and `and ip,r0,#31` at `0x100` are the STM32
+    CRL/CRH idiom `sel ? p*4 : p*4−32` (the second is a frame-slot reload of
+    the first, via `str [sp,#0x1c]` / `ldr [sp,#0x1c]`). `< 32` holds only
+    through the branch correlation `sel ⟺ p*4 < 32` — relational,
+    IT-block + frame-slot reasoning outside ANY value-range dataflow.
+    Recovering these is a named follow-up (correlated/predicate-aware ranges).
+
+  **gale's 490 B target is not soundly reachable, and the arithmetic proves
+  why**: each residual mask is a 4-byte `and.w`, and `502 − 3×4 = 490`
+  EXACTLY. The 0.11.50 baseline therefore had NO mod-32 mask at these three
+  sites — it predates #682 and emitted the bare register shift, i.e. the 490 B
+  figure is the size of the *unsound* lowering. 502 B is the sound floor for
+  this driver until relational ranges land, and the +12 B over 0.11.50 is
+  precisely the price of the #682 fix at 3 sites (1 of which can never be
+  paid back).
+
 ### Fixed
 
 - **Single-precision targets (m4f/m7) now loud-decline the whole #869 family
@@ -169,7 +254,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object ever contained a call site; the defect was introduced and fixed
   inside this change, caught by the execution stage of its own oracle after
   the byte/reloc/link stages were all green.
-### Fixed
 
 - **aarch64: linear-memory accesses now BOUNDS-CHECK — `--safety-bounds` was a
   silent no-op (#865).** The v0.51.0 `-b aarch64` lowering (#851) emitted NO
@@ -259,51 +343,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (vs the 300 s budget) and is free in suite wall-clock, running behind the
   pre-existing 40 s popcnt-HAKMEM proof. Verify-only: byte-invisible, frozen
   codegen anchors untouched. Supersedes #854.
-### Changed
 
-- **#846 — cross-block reaching-def shift-mask elision (`Lt32Facts`); gpio-thin
-  506 → 502 B, and the 0.11.50 "490 B" baseline shown to be PRE-#682
-  UNSOUND.** v0.50.1's default-on
-  `SYNTH_SHIFT_MASK_ELIDE` recovered gale's real 656 B `gpio_thin_846.loom.wasm`
-  from 534 → 506 B but left **4 residual `and r12,rN,#31` re-masks** whose
-  bounding `and rN,#c` (`c < 32`) sits in a DIFFERENT basic block — invisible
-  to the intra-block Pattern-B window, which (correctly) aborts at every
-  label. `elide_shift_masks` now consults a forward MUST-dataflow of
-  "provably `< 32` unsigned" register facts over the exact label-form CFG:
-  intersection meet at joins, worklist fixpoint, so a mask is elided **only
-  when every path from function entry reaches the shift with a bounding
-  last-def** of the amount register — one unmasked path, an intervening call
-  (kills all facts), a loop back-edge carrying an unbounded redef, or ANY
-  unmodeled control flow (`BOffset`/`BrTable`/computed `Bx` → whole-function
-  decline) keeps the mask, the #682 invariant in dataflow form. gpio-thin:
-  **506 → 502 B, 4 → 3 redundant masks** (`gpio_toggle`'s cross-block
-  copy-carried `pin & 0xf` site now elides; the 75-trace mmio execution
-  differential incl. pin ≥ 32 — the mod-32 boundary — stays bit-identical vs
-  wasmtime on the new bytes; frozen anchors byte-identical, no re-freeze).
-  The last 3 sites (all in `gpio_configure`, read off the shipped object) are
-  HONESTLY kept, not missed:
-  - `and ip,r8,#31` at `0xdc` is **LOAD-BEARING, permanently**: its amount is
-    `lsl.w r8, r6, #2` on `r6 = ldr [sp,#0x24]`, a frame-reloaded RAW param
-    with no source mask. `mode << 2 >= 32` for `mode >= 8`, where WASM
-    §4.3.2 requires shift-by-`(k mod 32)` but bare ARM `LSL` by ≥ 32 yields
-    0 — eliding it IS the #682 miscompile. (The only bound on `r6`,
-    `cmp r6,#6`, sits four instructions AFTER the shift and feeds a select,
-    so it neither dominates nor constrains.)
-  - `and ip,r4,#31` at `0xac` and `and ip,r0,#31` at `0x100` are the STM32
-    CRL/CRH idiom `sel ? p*4 : p*4−32` (the second is a frame-slot reload of
-    the first, via `str [sp,#0x1c]` / `ldr [sp,#0x1c]`). `< 32` holds only
-    through the branch correlation `sel ⟺ p*4 < 32` — relational,
-    IT-block + frame-slot reasoning outside ANY value-range dataflow.
-    Recovering these is a named follow-up (correlated/predicate-aware ranges).
-
-  **gale's 490 B target is not soundly reachable, and the arithmetic proves
-  why**: each residual mask is a 4-byte `and.w`, and `502 − 3×4 = 490`
-  EXACTLY. The 0.11.50 baseline therefore had NO mod-32 mask at these three
-  sites — it predates #682 and emitted the bare register shift, i.e. the 490 B
-  figure is the size of the *unsound* lowering. 502 B is the sound floor for
-  this driver until relational ranges land, and the +12 B over 0.11.50 is
-  precisely the price of the #682 fix at 3 sites (1 of which can never be
-  paid back).
 
 ## [0.51.0] - 2026-07-23
 
