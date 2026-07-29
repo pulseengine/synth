@@ -1366,8 +1366,8 @@ impl Lt32Facts {
             let Some(mut s) = in_sets[b].clone() else {
                 continue;
             };
-            for i in blocks[b].0..blocks[b].1 {
-                lt32_step(&instrs[i].op, &mut s);
+            for ins in &instrs[blocks[b].0..blocks[b].1] {
+                lt32_step(&ins.op, &mut s);
             }
             for &t in &succ[b] {
                 let updated = match &in_sets[t] {
@@ -1405,8 +1405,8 @@ impl Lt32Facts {
             return false; // unreachable block — stay conservative
         };
         let mut s = entry.clone();
-        for i in self.blocks[b].0..j {
-            lt32_step(&instrs[i].op, &mut s);
+        for ins in &instrs[self.blocks[b].0..j] {
+            lt32_step(&ins.op, &mut s);
         }
         s.contains(&k)
     }
