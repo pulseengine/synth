@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **#846 finale — gpio-thin back to its 0.11.50 floor: cross-block
-  reaching-def masks (`Lt32Facts`).** v0.50.1's default-on
+- **#846 — cross-block reaching-def shift-mask elision (`Lt32Facts`); gpio-thin
+  506 → 502 B, and the 0.11.50 "490 B" baseline shown to be PRE-#682
+  UNSOUND.** v0.50.1's default-on
   `SYNTH_SHIFT_MASK_ELIDE` recovered gale's real 656 B `gpio_thin_846.loom.wasm`
   from 534 → 506 B but left **4 residual `and r12,rN,#31` re-masks** whose
   bounding `and rN,#c` (`c < 32`) sits in a DIFFERENT basic block — invisible
@@ -27,16 +28,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy-carried `pin & 0xf` site now elides; the 75-trace mmio execution
   differential incl. pin ≥ 32 — the mod-32 boundary — stays bit-identical vs
   wasmtime on the new bytes; frozen anchors byte-identical, no re-freeze).
-  The last 3 sites (all `gpio_configure`) are HONESTLY kept, not missed:
-  one mask is **load-bearing** — its amount is `mode << 2` on the RAW
-  third param, no source mask, so eliding it would reintroduce the exact
-  #682 unsoundness 0.11.50's bare register shift had (unobservable in this
-  driver only because a later clamp-select conditionally discards the
-  value) — and the other two are the STM32 CRL/CRH idiom
-  `sel ? p*4 : p*4−32` (+ a frame-slot reload of it), where `< 32` holds
-  only via the branch-correlation `sel ⟺ p*4 < 32` — relational,
-  IT-block + frame-slot reasoning outside any sound value-range dataflow;
-  a named follow-up, with 490 B not soundly reachable without it.
+  The last 3 sites (all in `gpio_configure`, read off the shipped object) are
+  HONESTLY kept, not missed:
+  - `and ip,r8,#31` at `0xdc` is **LOAD-BEARING, permanently**: its amount is
+    `lsl.w r8, r6, #2` on `r6 = ldr [sp,#0x24]`, a frame-reloaded RAW param
+    with no source mask. `mode << 2 >= 32` for `mode >= 8`, where WASM
+    §4.3.2 requires shift-by-`(k mod 32)` but bare ARM `LSL` by ≥ 32 yields
+    0 — eliding it IS the #682 miscompile. (The only bound on `r6`,
+    `cmp r6,#6`, sits four instructions AFTER the shift and feeds a select,
+    so it neither dominates nor constrains.)
+  - `and ip,r4,#31` at `0xac` and `and ip,r0,#31` at `0x100` are the STM32
+    CRL/CRH idiom `sel ? p*4 : p*4−32` (the second is a frame-slot reload of
+    the first, via `str [sp,#0x1c]` / `ldr [sp,#0x1c]`). `< 32` holds only
+    through the branch correlation `sel ⟺ p*4 < 32` — relational,
+    IT-block + frame-slot reasoning outside ANY value-range dataflow.
+    Recovering these is a named follow-up (correlated/predicate-aware ranges).
+
+  **gale's 490 B target is not soundly reachable, and the arithmetic proves
+  why**: each residual mask is a 4-byte `and.w`, and `502 − 3×4 = 490`
+  EXACTLY. The 0.11.50 baseline therefore had NO mod-32 mask at these three
+  sites — it predates #682 and emitted the bare register shift, i.e. the 490 B
+  figure is the size of the *unsound* lowering. 502 B is the sound floor for
+  this driver until relational ranges land, and the +12 B over 0.11.50 is
+  precisely the price of the #682 fix at 3 sites (1 of which can never be
+  paid back).
 
 ## [0.51.0] - 2026-07-23
 
