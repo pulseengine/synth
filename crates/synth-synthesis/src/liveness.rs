@@ -8334,6 +8334,73 @@ mod tests {
     }
 
     #[test]
+    fn elide_846_branched_over_masking_def_keeps_mask() {
+        // THE decisive non-dominance case, and the one a "nearest textually
+        // preceding def" / "last def wins" scan gets WRONG:
+        //   b S ; and r3,r0,#15 ; S: and r12,r3,#31 ; lsl r4,r1,r12 ; bx lr
+        // The masking `and` sits textually BEFORE the shift yet is on NO path
+        // to it — the unconditional branch jumps over it, so at the shift `r3`
+        // is still the raw (unbounded) parameter. Only a flow-sensitive
+        // reaching-def can see this; the mask MUST stay (#682).
+        let mut seq = vec![b("S"), masking_and(Reg::R3, Reg::R0, 15), label("S")];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a branched-over def does not dominate ⇒ mask kept");
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. })),
+            "the mod-32 mask survives"
+        );
+    }
+
+    #[test]
+    fn elide_846_conditionally_skipped_masking_def_keeps_mask() {
+        // bcc EQ,S ; and r3,r0,#15 ; S: mask+shift — the taken edge SKIPS the
+        // bounding def, so one path reaches the shift with `r3` unproven. The
+        // fallthrough path alone must not carry the elision.
+        let mut seq = vec![
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "S".to_string(),
+            }),
+            masking_and(Reg::R3, Reg::R0, 15),
+            label("S"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "conditionally-skipped def ⇒ mask kept");
+    }
+
+    #[test]
+    fn elide_846_join_with_undefined_path_keeps_mask() {
+        // Diamond where the non-masking arm does not touch `r3` AT ALL — it
+        // arrives as the raw parameter, with no unbounded *def* for a def-scan
+        // to trip over. The entry fact set is empty, so the intersection at
+        // the join still drops the bound.
+        let mut seq = vec![
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "A".to_string(),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Imm(1),
+            }),
+            b("J"),
+            label("A"),
+            masking_and(Reg::R3, Reg::R0, 15),
+            label("J"),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "an arm that never bounds r3 ⇒ mask kept");
+    }
+
+    #[test]
     fn elide_846_unmodeled_control_flow_declines_cross_block() {
         // A numeric-offset branch anywhere in the stream means the CFG can't
         // be modeled exactly — the cross-block analysis must decline and the
