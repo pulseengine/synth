@@ -8478,29 +8478,35 @@ mod tests {
         )
         .unwrap()
         .ops;
-        // lo (a0) at off 0, hi (a1) at off 4.
+        // #871: the a0:a1 result pair is copied into fresh temps right after
+        // the call (leaving it aliased to a-regs let a later call's argument
+        // marshalling clobber it), so the local stores write the COPIES: the
+        // copy `addi tlo, a0, 0` / `addi thi, a1, 0` must exist, and lo/hi
+        // words are stored at off 0/4 and loaded back.
         assert!(
             count(&out, |op| matches!(
                 op,
-                RiscVOp::Sw {
-                    rs1: Reg::SP,
-                    rs2: Reg::A0,
-                    imm: 0
+                RiscVOp::Addi {
+                    rs1: Reg::A0,
+                    imm: 0,
+                    ..
                 }
-            )) == 1,
-            "a0 (lo) stored at off 0: {out:?}"
+            )) >= 1,
+            "lo (a0) copied to a temp after the call: {out:?}"
         );
         assert!(
             count(&out, |op| matches!(
                 op,
-                RiscVOp::Sw {
-                    rs1: Reg::SP,
-                    rs2: Reg::A1,
-                    imm: 4
+                RiscVOp::Addi {
+                    rs1: Reg::A1,
+                    imm: 0,
+                    ..
                 }
-            )) == 1,
-            "a1 (hi) stored at off 4: {out:?}"
+            )) >= 1,
+            "hi (a1) copied to a temp after the call: {out:?}"
         );
+        assert_eq!(count_sw_sp(&out, 0), 1, "lo stored at off 0: {out:?}");
+        assert_eq!(count_sw_sp(&out, 4), 1, "hi stored at off 4: {out:?}");
         assert_eq!(count_lw_sp(&out, 0), 1);
         assert_eq!(count_lw_sp(&out, 4), 1);
     }

@@ -60,13 +60,14 @@ SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 R_RISCV_CALL_PLT = 19
 CALL_PLACEHOLDER = bytes([0x97, 0x00, 0x00, 0x00, 0xE7, 0x80, 0x00, 0x00])
 
-IMPORTS = {"mmio_read32", "mmio_write32"}
+IMPORTS = {"mmio_read32", "mmio_write32", "mmio_barrier"}
 EXPORTS = {
     # name -> expected number of R_RISCV_CALL_PLT sites
     "wdg_status": 1,
     "wdg_kick": 1,
     "wdg_set_bit": 2,
     "wdg_sum2": 2,
+    "wdg_flush": 1,
     "wdg_is_running": 0,
     "wdg_lock": 0,
 }
@@ -78,6 +79,7 @@ CASES = {
     "wdg_kick": [(MMIO_BASE,), (MMIO_BASE + 0x10,)],
     "wdg_set_bit": [(MMIO_BASE, 1), (MMIO_BASE + 4, 0x80000000), (MMIO_BASE + 8, 0)],
     "wdg_sum2": [(MMIO_BASE, MMIO_BASE + 4), (MMIO_BASE + 8, MMIO_BASE + 8)],
+    "wdg_flush": [(7,), (0x40000000,)],
     "wdg_is_running": [(0,), (1,), (0xFFFFFFFE,)],
     "wdg_lock": [(1,), (0x20000001,)],
 }
@@ -212,6 +214,11 @@ mmio_write32:
     sw a1, 0(a0)
     mv a0, a1
     ret
+    .globl mmio_barrier
+mmio_barrier:
+    lui t0, 0x30000
+    sw a0, 0xF8(t0)
+    ret
 """
 
 
@@ -245,7 +252,7 @@ def stage4_link(obj, tools, tmp):
                         syms[sym.name] = sym["st_value"]
         text = elf.get_section_by_name(".text")
         base, data = text["sh_addr"], text.data()
-    stub_addrs = {syms["mmio_read32"], syms["mmio_write32"]}
+    stub_addrs = {syms["mmio_read32"], syms["mmio_write32"], syms["mmio_barrier"]}
     call_targets = []
     for off in range(0, len(data) - 4, 4):
         (auipc,) = struct.unpack_from("<I", data, off)
@@ -302,7 +309,14 @@ def wasmtime_ground_truth():
             write_f = wasmtime.Func(
                 store, wasmtime.FuncType([i32, i32], [i32]), mmio_write, access_caller=True
             )
-            inst = wasmtime.Instance(store, module, [read_f, write_f])
+
+            def mmio_barrier(caller, val):
+                mmio[0xF8] = val & 0xFFFFFFFF
+
+            barrier_f = wasmtime.Func(
+                store, wasmtime.FuncType([i32], []), mmio_barrier, access_caller=True
+            )
+            inst = wasmtime.Instance(store, module, [read_f, write_f, barrier_f])
             f = inst.exports(store)[fn]
             signed = [a - (1 << 32) if a >= (1 << 31) else a for a in args]
             ret = f(store, *signed) & 0xFFFFFFFF

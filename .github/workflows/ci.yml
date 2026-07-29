@@ -962,6 +962,46 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_addr_fold_riscv_differential.py
 
+  rv32-extern-call-reloc-oracle:
+    name: rv32 external-call relocation oracle (#871)
+    # #871: the gale thin-seam driver shape — exported functions calling an
+    # imported 2-function mmio seam — must LOWER on `-b riscv --relocatable`
+    # (pre-fix: every seam-using export was skipped, so no driver could
+    # dissolve to RISC-V). The differential verifies (1) every export emits +
+    # `nm -u` lists exactly the imports, (2) each `.rela.text` entry is a real
+    # R_RISCV_CALL_PLT at a placeholder auipc/jalr pair with the right symbol
+    # (a wrong offset/symbol is a silent link-time miscompile), (3) ARM-shape
+    # parity on the same wasm, (4) a REAL link (ld.lld) against mmio stubs,
+    # and (5) execution of the linked image under unicorn (UC_ARCH_RISCV) vs
+    # wasmtime ground truth. Isolated job: emulation deps pip-installed here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Install lld + clang (real-link stage)
+        run: sudo apt-get update && sudo apt-get install -y lld clang
+      - name: Run RV32 external-call relocation oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/riscv_extern_call_871_differential.py
+
   rv32-mem-size-grow-oracle:
     name: rv32 memory.size / memory.grow execution oracle
     # VCR-SEL-005 (#223/#242): EXECUTE the newly-lowered RV32 memory.size and

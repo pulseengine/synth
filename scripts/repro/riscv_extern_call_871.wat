@@ -12,6 +12,10 @@
 (module
   (import "env" "mmio_read32" (func $mmio_read32 (param i32) (result i32)))
   (import "env" "mmio_write32" (func $mmio_write32 (param i32 i32) (result i32)))
+  ;; VOID import — the common driver-seam shape. Exercises the #871
+  ;; func_result_counts path: a 0-result callee must push NOTHING (the legacy
+  ;; phantom-a0 push corrupted every op after a void call).
+  (import "env" "mmio_barrier" (func $mmio_barrier (param i32)))
 
   ;; read a register: one import call, arg straight from the param.
   (func (export "wdg_status") (param i32) (result i32)
@@ -39,6 +43,15 @@
     call $mmio_read32
     local.get 1
     call $mmio_read32
+    i32.add)
+
+  ;; void-import call followed by more work: no phantom result may remain on
+  ;; the stack (the add must see exactly [local0, 5]).
+  (func (export "wdg_flush") (param i32) (result i32)
+    local.get 0
+    call $mmio_barrier
+    local.get 0
+    i32.const 5
     i32.add)
 
   ;; import-free control: proves the non-seam path is untouched.

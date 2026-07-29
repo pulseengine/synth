@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RISC-V external-call relocations — seam-importing drivers now lower
+  (#871).** On `-b riscv`, any exported function calling an IMPORTED function
+  was skipped ("external call without relocation table") even under
+  `--relocatable` — gale's thin-seam drivers (defined by importing the
+  2-function mmio seam) could not dissolve to RISC-V at all, while the
+  identical wasm lowered fine on `cortex-m3`. The backend now mirrors the ARM
+  `--relocatable` import contract (#197): an external `call` emits the
+  canonical un-relaxed 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder pair
+  plus an **`R_RISCV_CALL_PLT`** relocation (type 19, the modern form —
+  `R_RISCV_CALL` is deprecated) in a new `.rela.text` section, against the
+  import's wasm field name as an UNDEFINED global symbol (`nm -u` shows
+  `U mmio_read32`, exactly like the ARM object). Calls to other functions in
+  the same object resolve against their defined symbols; a call to an
+  uncompiled local function becomes an undefined `synth_func_N` — loud at
+  link time, never a silent hole. Reloc-free objects are byte-identical to
+  the pre-#871 layout by construction (no `.rela.text`, no undefined
+  symbols). Gale's fixture shape goes 2/6 exports emitted → **6/6 + the two
+  undefined imports**.
+- **RV32 exact-arity call lowering (#871).** The v0.3.1 RV32 `call`
+  convention drained the ENTIRE value stack as arguments and always pushed a
+  phantom `a0` result — any call with extra values on the stack (two seam
+  reads feeding one `i32.add`) either declined or would have miscompiled.
+  `lower_call` now consumes the decoder's per-function signature tables
+  (`func_arg_counts`/`func_result_counts`, already in `CompileConfig`):
+  exactly the callee's arity is drained, values surviving the call are moved
+  out of caller-saved registers into pool s-registers first (exhaustion =
+  loud skip, never a silent clobber), void callees push nothing, and call
+  results are copied out of `a0`/`a1` immediately so a later call's argument
+  marshalling cannot clobber them. Modules without signature tables keep the
+  legacy behaviour. Byte-safe: call-containing RV32 functions never emitted
+  before this change.
+- **CI: `rv32-extern-call-reloc-oracle` (#871).** Five-stage differential
+  (`scripts/repro/riscv_extern_call_871_differential.py` on the gale-shaped
+  `riscv_extern_call_871.wat`): (1) all exports emit + `nm -u` lists exactly
+  the imports, (2) pyelftools read-back of every `.rela.text` entry — type
+  19, 4-aligned in-`.text` offset, right symbol, exact placeholder bytes at
+  the site (a wrong offset/symbol is a silent link-time miscompile), (3)
+  ARM-shape parity on the same wasm, (4) a REAL link via `ld.lld` against a
+  2-stub mmio implementation with the patched `auipc`/`jalr` targets decoded
+  and checked to land on the stubs, (5) execution of the linked image under
+  unicorn (RV32) vs wasmtime ground truth — return values AND final mmio
+  memory bit-identical. Known limitations stay LOUD declines, named: >8
+  args, i64 args, multi-value results, `call_indirect`; the single-function
+  RISC-V CLI path refuses external-call functions rather than dropping their
+  relocs.
+
 ## [0.51.0] - 2026-07-23
 
 **"aarch64 runs real WASM modules."** The `-b aarch64` host-native backend crosses
