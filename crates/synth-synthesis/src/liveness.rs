@@ -5270,6 +5270,50 @@ fn try_reallocate_segment(
     let pool_index: BTreeMap<Reg, usize> = pool.iter().enumerate().map(|(i, r)| (*r, i)).collect();
     let adj = range_interference(&ranges);
 
+    // ARCHITECTURAL REGISTER LISTS (#872 follow-on, caught by the whole-function
+    // VCR-RA-003 validator on `sret_decide`): a `Push`/`Pop` register list is
+    // NOT a renameable operand. It is a bitmask whose stack layout is the
+    // register NUMBER order, matched pairwise between the prologue push and
+    // every epilogue pop, and it carries the #490 callee-saved contract. A
+    // `Pop {…, PC}` in the MIDDLE of a segment is a return, so its defs look
+    // segment-locally dead (a later pop re-defines them) and the colourer
+    // happily recoloured them — `pop {r4,r5,r6,r7,r8,pc}` became
+    // `pop {r6,r5,r4,r3,r2,pc}`, restoring r2-r6 instead of r4-r8 and leaving
+    // the caller's r7/r8 clobbered (`CalleeSavedNotRestored { reg: R7 }`).
+    // Identity-pin every range a `Push` USES or a `Pop` DEFINES. Byte-neutral
+    // on the shipped corpus: at a segment's own prologue/epilogue these ranges
+    // are already pinned as inputs (`def == 0`) / exit-holders — this only
+    // catches the mid-segment return, whose ranges are dead-on-arrival and so
+    // interfere with nothing, costing no other recolouring.
+    let mut arch_pinned: BTreeSet<usize> = BTreeSet::new();
+    {
+        let mut current: BTreeMap<Reg, usize> = BTreeMap::new();
+        let mut next = 0usize; // same numbering as `straight_line_value_ranges`
+        for ins in seg {
+            let Some(e) = reg_effect(&ins.op) else {
+                return SegmentOutcome::Declined;
+            };
+            let arch = matches!(&ins.op, ArmOp::Push { .. } | ArmOp::Pop { .. });
+            for u in &e.uses {
+                let v = *current.entry(*u).or_insert_with(|| {
+                    let v = next;
+                    next += 1;
+                    v
+                });
+                if arch {
+                    arch_pinned.insert(v);
+                }
+            }
+            for d in &e.defs {
+                current.insert(*d, next);
+                if arch {
+                    arch_pinned.insert(next);
+                }
+                next += 1;
+            }
+        }
+    }
+
     // Pins: inputs (def == 0) and per-register last-opened ranges (live-outs)
     // keep their original register. Reserved-register ranges are identity-
     // assigned outside the colouring. With `relaxed_exit` (VCR-VER-001
@@ -5293,7 +5337,7 @@ fn try_reallocate_segment(
                 pool_nodes.insert(r.vreg);
                 let exit_pinned = last_opened.get(&r.reg) == Some(&r.vreg)
                     && (!relaxed_exit || matches!(r.reg, Reg::R0 | Reg::R1));
-                if r.def == 0 || exit_pinned {
+                if r.def == 0 || exit_pinned || arch_pinned.contains(&r.vreg) {
                     pins.insert(r.vreg, idx);
                 }
             }
