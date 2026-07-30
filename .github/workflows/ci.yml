@@ -191,24 +191,34 @@ jobs:
       # weeks without blocking anything — which is the same failure mode the
       # gate exists to kill.
       #
-      # ANTI-VACUITY: it must not become the thing it polices. `set -o pipefail`
-      # (a bare `| tee` reports tee's status, always 0), and the verdict is NOT
-      # taken from exit 0 alone — the summary the gate wrote is re-read and a
-      # NON-ZERO wired count over a NON-EMPTY script set is asserted, so a run
-      # that silently measured nothing fails instead of greening.
+      # ANTI-VACUITY: it must not become the thing it polices.
+      #   * `set -euo pipefail` EXPLICITLY. A bare `| tee` reports tee's status
+      #     (always 0), and — found by mutating this very step — `pipefail`
+      #     WITHOUT `-e` is not enough either: the script's status is its LAST
+      #     command's, so the inert-gate mutation greened the step while the
+      #     gate itself printed FAIL and exited 1. Actions' default shell is
+      #     `bash -e`, but this step does not lean on that default.
+      #   * The verdict is re-derived from the summary the gate WROTE, not from
+      #     exit 0: a non-empty script set, a non-zero wired count, zero
+      #     undeclared, zero wired-but-unreferenced, and zero failures.
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
-          set -o pipefail
+          set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
           s = json.load(open("/tmp/oracle-wiring.json"))["summary"]
-          if s["total"] < 100 or s["wired"] < 1 or s["undeclared"] != 0:
-              sys.exit(f"VACUOUS/DRIFTED oracle-wiring summary: {s}")
+          bad = [k for k, v in (("total<100", s["total"] < 100),
+                                ("wired==0", s["wired"] < 1),
+                                ("undeclared", s["undeclared"]),
+                                ("wired_unreferenced", s["wired_unreferenced"]),
+                                ("failures", s["failures"])) if v]
+          if bad:
+              sys.exit(f"oracle-wiring gate VACUOUS or DRIFTED {bad}: {s}")
           print(f"oracle-wiring gate is non-vacuous: it classified {s['total']} "
                 f"scripts, {s['wired']} of them wired, {s['manual']} manual, "
-                f"{s['unwired']} unwired-debt.")
+                f"{s['unwired']} unwired-debt, 0 inert.")
           PY
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP

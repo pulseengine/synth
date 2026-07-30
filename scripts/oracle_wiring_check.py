@@ -212,6 +212,13 @@ def summarize(records):
         if s == "manual" and r.get("category"):
             by_cat[r["category"]] = by_cat.get(r["category"], 0) + 1
     out["manual_by_category"] = dict(sorted(by_cat.items()))
+    # The INERT-GATE count, carried in the summary on purpose: a consumer must
+    # be able to reach the verdict from the summary ALONE, without trusting an
+    # exit status. (Found by mutation: with only `pipefail` and no `-e`, a shell
+    # wrapper whose last command was the summary check greened this very case.)
+    out["wired_unreferenced"] = sum(
+        1 for r in records if r["status"] == "wired" and not r["workflows"]
+    )
     return out
 
 
@@ -261,6 +268,8 @@ def main():
             "  manual by category: "
             + ", ".join(f"{k}={v}" for k, v in summary["manual_by_category"].items())
         )
+
+    summary["failures"] = len(fails)
 
     if args.json:
         pathlib.Path(args.json).write_text(
