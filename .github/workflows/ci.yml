@@ -997,6 +997,24 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+      - name: Build synth
+        run: cargo build -p synth-cli
+      # THE DEFAULT PATH, not the spike. The gate above guards the flag-OFF
+      # graph-colouring allocator; this step asks the same ABI question of the
+      # allocator every `synth compile` actually runs, and holds the answer to a
+      # floor: ZERO violations (a violation is either a real shipping miscompile
+      # or — far likelier, since the shipping bytes are frozen-pinned and
+      # execution-differentialed — a FALSE REJECTION by the new instrument, and
+      # neither may pass silently), plus a pinned `Holds` count so a change that
+      # makes the checker SEE LESS of the shipping path is visible instead of
+      # absorbed. Red-first in both directions (injected violation; stub binary
+      # emitting no verdicts) — see the script docstring.
+      - name: Audit the SHIPPING allocator against the ABI contract (#242)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
+          grep -q "^VCR-VER-004-SHIPPING .* VIOLATED=0 " vcr_ver_004_ship.out
+          test "$(grep -c '^  Holds ' vcr_ver_004_ship.out)" -eq 1
       # The grep asserts the machine-readable 4/4 AND a non-zero OK count (#890):
       # exit 0 alone is not trusted, and a run that silently skipped every
       # assertion would otherwise pass while gating nothing.
