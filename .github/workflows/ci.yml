@@ -472,8 +472,12 @@ jobs:
     # WASM traps must TRAP under emulation, in-range must match bit-exactly)
     # + min/max NaN/±0 matrix + copysign. #851 added div/rem (SDIV/UDIV+MSUB
     # with WASM ÷0 + INT_MIN/-1 trap guards, execution-verified), popcnt (SIMD
-    # CNT/ADDV), and f64<->i64 reinterpret; the decline-matrix probe now
-    # asserts only rounding + i64<->float conversions still LOUD-decline.
+    # CNT/ADDV), and f64<->i64 reinterpret. v0.54 L2 completes the SCALAR float
+    # surface — rounding (FRINT), f32/f64 load/store (bounds-checked), i64->
+    # float converts, and the DOMAIN-GUARDED trapping i64-target truncations —
+    # so the decline-matrix probe now asserts the STRUCTURAL declines
+    # (call_indirect, br_table, param writes, globals, bulk memory,
+    # value-carrying blocks, SIMD) still LOUD-decline.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -521,6 +525,28 @@ jobs:
         # AAPCS64 x-view hazard), drop/nop, fixed-memory size/grow parity
         # against a min=max module (growth failure is spec-forced there).
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_surface_851_differential.py
+      - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
+        # The four classes the VCR-SEL-005 third-backend parity gate listed as
+        # Err(reason). The soundness-critical one is TRAP_TRUNC_I64: A64
+        # FCVTZ{S,U} SATURATE where WASM §4.3.3 TRAPS, so the harness runs a
+        # FULL boundary table (both sides of ±2^63 / 2^64, the nearest float
+        # inside/outside each bound, ±0, ±inf, NaN) and requires every trap
+        # case to ACTUALLY TRAP. Rounding is compared bit-exactly over a
+        # halfway table, which is what makes the "FRINTN is ties-to-EVEN"
+        # claim real rather than assumed.
+        #
+        # `pipefail` + a grep asserting a NON-ZERO, non-collapsed check count:
+        # an oracle that silently stops exercising anything must go red (#890).
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/aarch64_float_completion_851_differential.py \
+            | tee /tmp/a64_floatdiff.log
+          grep -Eq '^[0-9]+ wasmtime cases \([0-9]+ trap cases\)' /tmp/a64_floatdiff.log
+          n=$(sed -n 's/^\([0-9]*\) wasmtime cases.*/\1/p' /tmp/a64_floatdiff.log)
+          t=$(sed -n 's/^[0-9]* wasmtime cases (\([0-9]*\) trap cases).*/\1/p' /tmp/a64_floatdiff.log)
+          echo "float-completion oracle ran $n checks, $t of them trap cases"
+          [ "${n:-0}" -ge 300 ] || { echo "oracle ran too few checks ($n)"; exit 1; }
+          [ "${t:-0}" -ge 40 ] || { echo "oracle ran too few TRAP cases ($t)"; exit 1; }
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
