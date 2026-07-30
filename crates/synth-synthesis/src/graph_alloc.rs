@@ -1384,6 +1384,12 @@ mod tests {
                 rn: Reg::R2,
                 op2: Operand2::Reg(Reg::R1),
             }),
+            // A WELL-FORMED function: it returns. VCR-VER-004 declines a stream
+            // with no return sink rather than passing it vacuously, so a fixture
+            // without an epilogue is not a function this pass may apply to.
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
         ];
         let out = reallocate(&body, &POOL).expect("straight-line function colours");
         // The rewrite must pass the trace-equality validator (it did, or
@@ -1442,6 +1448,12 @@ mod tests {
                 rd: Reg::R1,
                 rn: Reg::R0,
                 op2: Operand2::Reg(Reg::R0),
+            }),
+            // 3: the epilogue — see the note in the test above. Appending it at
+            // index 3 leaves the def indices this test reasons about (0, 1, 2)
+            // untouched.
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
             }),
         ];
         // The r1 range opened at instruction 1 is free (def index 1, overwritten

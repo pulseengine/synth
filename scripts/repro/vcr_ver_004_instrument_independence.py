@@ -40,6 +40,14 @@ own source; a forward evaluation always produces exactly one value for R0 at eac
 return, so there is always exactly one obligation per sink and there is no seed
 to shrink.
 
+**Proven RED-FIRST, and the evidence is reproducible.** Change `abi_gate` in
+`graph_alloc.rs` to treat `AbiContractVerdict::Violated` as an accept, rebuild,
+and re-run with the mutation applied: the compiler prints
+`whole-function colouring APPLIED (validated)` and EMITS the miscompile, so
+assertions (3) and (4) both fail. With the gate intact it prints
+`DECLINED → shipping reallocate_function`. The gate is load-bearing, not
+decorative.
+
 Run (needs cargo; no emulator, no solver):
     python3 scripts/repro/vcr_ver_004_instrument_independence.py
 Exits nonzero if any of (1)-(4) does not hold. ALWAYS restores the tree.
