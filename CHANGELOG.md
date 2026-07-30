@@ -141,6 +141,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   divergent call-containing functions) which the CI wiring re-asserts from the
   `CALLSHAPES=` summary field (#890). 56/56 checks, 19 engaged functions of which
   6 are call shapes.
+- **VCR-VER-004 — the ABI observable-contract validator: a per-compilation check
+  that fails *differently*** (#242).
+
+  v0.53 measured something uncomfortable. Emptying `cfg_exit_observable` — the
+  exit contract the join-aware graph allocator and its own CFG validator *share*
+  — makes the compiler emit code that leaves the return value **in the wrong
+  register**, and **both** per-compilation validators accept it:
+  `validate_cfg_rewrite` returns `Ok` and VCR-RA-003 `validate_final_allocation`
+  returns `Consistent`. Only execution caught it. Two independent-*looking*
+  instruments, one shared blind spot — #872's lesson one level up, and a direct
+  counterexample to the claim that per-compilation validation is an independent
+  check on the code generator.
+
+  The response is not a third file on the same axis. **Independence is not
+  obtained by writing a second checker, only by checking a different WAY**, and
+  `abi_contract::validate_abi_contract` differs on four axes that matter:
+
+  - **Its obligation cannot be emptied.** The exit obligation is
+    `RETURN_CONTRACT_REGS = [R0, R1]`, a constant of the AAPCS hard-named in the
+    module's own source. Deleting `cfg_exit_observable` outright would not change
+    one line of it.
+  - **It is forward, and a forward value analysis is structurally incapable of
+    the fail-open mode that bit v0.53.** `validate_cfg_rewrite` is a backward
+    MUST-analysis whose obligation set is a *variable* — and the empty set is a
+    fixpoint, so an empty seed means zero obligations means vacuous green. A
+    forward evaluation always produces *exactly one* value for `R0` at each
+    return. There is no seed to shrink.
+  - **Its evidence is a value, not a name-pair.** Per side independently it
+    builds a value graph (`Init(r)` / `Def(i,k)` / `Phi(b,n)`) and compares by
+    **greatest-fixpoint bisimulation**; on a deterministic term graph that is
+    equality of the infinite unfoldings, so loops and back edges are handled
+    coinductively rather than by unrolling. `Init(r)` is one node *shared* by
+    both sides — the AAPCS **parameter** half of the anchor, so reading an
+    argument out of the wrong register is a value change too.
+  - **It takes nothing from the pass.** The signature is `(orig, rewritten)`; the
+    CFG is re-derived from both streams' label-form branch structure and the two
+    must agree. The v0.50 join attempt failed precisely by letting the pass hand
+    the checker its own seed.
+
+  **Result, by re-running v0.53's exact mutation** (committed as
+  `scripts/repro/mutations/v053_shared_exit_contract.patch`, not reconstructed):
+  the two dataflow validators stay green on the same compilation while
+  VCR-VER-004 rejects with `Violated { sink: 81, reg: R0 }` on
+  `brif_outer_740::poll` — the function that returned `0x1111` instead of its
+  parameter — and the miscompile is **not emitted**. CI-wired as
+  `instrument-independence-oracle`, which asserts the *baseline* direction first
+  (the unmutated compiler must still apply and must not be rejected) so a
+  false-rejection regression fails before the mutation is even reached. The
+  script is proven red-first: make `abi_gate` treat `Violated` as an accept and
+  the mutated compiler goes back to emitting the miscompile.
+
+  **The gate costs nothing.** Over the ARM repro corpus: 617 functions, 275
+  applied, `40822 → 40776` bytes — v0.53's result *to the byte*, with the check
+  conservative enough to demand both `R0` and `R1` for every function and to
+  decline whenever it cannot analyze. `NotAttempted` is a **decline**, not an
+  accept: if a decline counted as acceptance, a change that made the check
+  universally inapplicable would disable it silently.
+
+  **And it was measured against the shipping allocator, not just the spike.**
+  `SYNTH_ABI_CONTRACT_AUDIT=1` reports the same verdict for
+  `reallocate_function_post_exhaust`, the allocator every `synth compile` runs:
+  **`Holds` 376 · `NotAttempted` 241 · `Violated` 0** over 617 functions — the
+  observable return contract *proven* on ~61 % of the shipping path with zero
+  false rejections against a known-good allocator, declines named
+  (`unmodeled-op` 159, `call` 62, `indirect-call` 11, `numeric-offset-branch` 9).
+  Held to a CI floor by `vcr_ver_004_shipping_path_audit.py` (zero violations, a
+  pinned `Holds` count so lost coverage is visible rather than absorbed), itself
+  red-first in both directions including the vacuity case where the hook is not
+  wired at all.
+
+  Honest residuals, in the module docs and the FEATURE_MATRIX honest summary
+  rather than implied away: **memory is not in the obligation** (a store-only
+  misrename is a false negative here — the class `validate_cfg_rewrite` *does*
+  cover when its seed is intact; the two instruments are complementary, not
+  redundant); **the op model is still shared** via `liveness::reg_effect`, so a
+  mismodeled op remains a blind spot common to all three, and until
+  `synth-verify`'s independent `ArmSemantics` is pinned against it, "three
+  independent validators" would be an overclaim; and on the **default path this
+  is an audit, not a gate** — hard-erroring a user's compile on a checker whose
+  false-positive rate is measured rather than proven is a flip that wants its own
+  evidence.
+
+  There is deliberately **no SMT solver** here, and deliberately no opt-out env
+  var. A renames-only rewrite changes no opcode and no immediate, so the two
+  sides' terms are ground applications of the *same* uninterpreted operators;
+  deciding their equality is congruence closure with no side conditions — exactly
+  the structural equality the partition refinement already computes. A solver
+  would cost a dependency (and the `synth-verify` → `synth-synthesis` edge runs
+  the wrong way) to decide the same thing. An opt-out would be a footgun, not
+  evidence.
+
+  Frozen anchors 10/10; the graph allocator is flag-off and the shipping-path
+  hook is report-only, so no emitted byte moves.
 
 ## [0.53.0] - 2026-07-30
 

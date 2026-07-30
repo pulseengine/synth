@@ -145,3 +145,30 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   by `validate_cfg_rewrite` AND VCR-RA-003 *both*, caught only by execution
   (VCR-DEC-001, flag-off). Two validators sharing a blind spot agree without
   adding evidence.
+- **That second residual is now closed STATICALLY** (VCR-VER-004, v0.54):
+  `abi_contract::validate_abi_contract` is a FORWARD, value-level check whose
+  obligation is the AAPCS result registers hard-named in its own source and whose
+  CFG is re-derived from both instruction streams — it takes nothing from the
+  pass, so emptying the shared exit contract cannot empty it. Re-running v0.53's
+  exact mutation, the two dataflow validators stay green (`validate_cfg_rewrite`
+  → Ok, VCR-RA-003 → Consistent) while this one rejects with a concrete violation
+  naming `R0`, and the miscompile is not emitted. That is a CI job, not a claim.
+- What VCR-VER-004 does **not** close, stated plainly:
+  - It is a **gate only on the flag-off** graph-colouring allocator. On the
+    DEFAULT path it is a report-only audit held to a CI floor — measured
+    `Holds 376 / NotAttempted 241 / Violated 0` over 617 corpus functions, so it
+    proves the observable return contract on ~61 % of the shipping path and
+    declines (never guesses) on the rest. Making it gate the default path means
+    hard-erroring a user's compile on a checker whose false-positive rate is
+    measured, not proven; that flip is deliberately not taken here.
+  - **Memory is not in its obligation.** A mis-renamed store address that a later
+    load reads back is a false negative for this instrument (it is covered by
+    `validate_cfg_rewrite`'s use-equations when that seed is intact — the two are
+    complementary, which is what independence looks like, not redundancy).
+  - **The op model is still shared.** Def/use extraction runs through
+    `liveness::reg_effect`, so a *mismodeled op* remains a blind spot common to
+    all three instruments. VCR-VER-004 closes the shared-*contract* hole, not the
+    shared-*op-model* hole. `synth-verify`'s `ArmSemantics::encode_op` is a
+    genuinely second model of the same operations; pinning the two against each
+    other is the next rung, and until it is done "three independent validators"
+    would be an overclaim.
