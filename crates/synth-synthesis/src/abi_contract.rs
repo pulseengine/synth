@@ -71,6 +71,33 @@
 //! contract: arguments arrive in `R0`–`R3` on both sides, so a rewrite that
 //! reads a parameter out of the wrong register produces a different term.
 //!
+//! ## Calls (VCR-DEC-001 increment 3, #896)
+//!
+//! A `bl`/`blx` is **not** effect-free, and treating it as one would be exactly
+//! the fail-open mode this module exists to eliminate. It gets the ONE shared
+//! AAPCS definition, [`crate::liveness::call_effect`] — the same
+//! `defs = {R0..R3, R12, LR}` / `uses = {R0..R3}` (+ the `blx` target) that the
+//! pass and `validate_cfg_rewrite` consume — deliberately reused rather than
+//! restated, because two divergent call models would be a fresh instance of the
+//! shared-blind-spot class this module attacks.
+//!
+//! In the forward walk that falls out naturally: each clobbered register is
+//! rebound to a **fresh** `Def(call_i, k)` node whose operands are the *pre-call*
+//! argument values, and `R4`–`R11`/`SP` flow through untouched. So
+//!
+//! * a call result is an opaque value, equal across the two sides exactly when
+//!   the same callee was handed the same arguments — a rewrite that renames what
+//!   feeds an argument is caught;
+//! * a value the rewrite parked in caller-saved scratch *across* the call is
+//!   rebound to the call's own node, so it can no longer bisimulate with the
+//!   value the original delivers at the return — the "recoloured across a call"
+//!   miscompile is caught as a **value** disagreement, without any liveness
+//!   reasoning.
+//!
+//! The `Call`/`CallIndirect` **pseudo**-ops still decline: they expand downstream
+//! into a guard + table load + `blx`, so this stream's register footprint is not
+//! the final code's.
+//!
 //! Values are compared by **greatest-fixpoint bisimulation** (partition
 //! refinement over the two graphs at once). On a deterministic term graph
 //! bisimilarity is exactly equality of the infinite unfoldings, so loops and
@@ -114,13 +141,20 @@
 //!   hole, not the shared-*op-model* hole. `synth-verify`'s
 //!   `ArmSemantics::encode_op` is a genuinely second model of the same ops, and
 //!   pinning the two against each other is the obvious next rung.
-//! * **Scope is the label-form leaf shape.** Calls, `BrTable`, numeric-offset
-//!   branches, computed `Bx`, duplicate/unresolvable labels and any op
-//!   `reg_effect` does not model produce a loud [`AbiContractVerdict::NotAttempted`]
-//!   naming the construct. There is no silent pass on a shape this cannot analyze.
+//! * **Scope is the label-form shape.** `BrTable`, numeric-offset branches,
+//!   computed `Bx`, the `Call`/`CallIndirect` pseudo-ops,
+//!   duplicate/unresolvable labels and any op `reg_effect` does not model produce
+//!   a loud [`AbiContractVerdict::NotAttempted`] naming the construct. There is
+//!   no silent pass on a shape this cannot analyze.
+//! * **A call's MEMORY effect is not modeled** — a consequence of the memory
+//!   limitation above, restated because a call is where it is easiest to forget:
+//!   the callee may write memory, and a later load is keyed on its instruction
+//!   index and address operands rather than on a store chain. Sound for a
+//!   renames-only rewrite (both sides execute the same callee at the same point);
+//!   not a claim about the callee's effects.
 
 use crate::instruction_selector::ArmInstruction;
-use crate::liveness::{is_straight_line, reg_effect};
+use crate::liveness::{call_effect, is_straight_line, reg_effect};
 use crate::rules::{ArmOp, Reg};
 use std::collections::BTreeMap;
 
@@ -218,6 +252,10 @@ fn is_return_term(op: &ArmOp) -> bool {
 enum Cf<'a> {
     /// Straight-line: [`reg_effect`] must model it.
     Straight,
+    /// A direct or indirect CALL (`bl` / `blx`). Falls through like a
+    /// straight-line op, but its register effect is the AAPCS
+    /// [`call_effect`] rather than [`reg_effect`].
+    CallOp,
     /// A `Label` — starts a block, no effect.
     Label,
     /// Unconditional branch to a label.
@@ -237,17 +275,50 @@ fn classify(op: &ArmOp) -> Cf<'_> {
         B { label } => Cf::Uncond(label.as_str()),
         Bhs { label } | Blo { label } | Bcc { label, .. } => Cf::Cond(label.as_str()),
         BOffset { .. } | BCondOffset { .. } => Cf::Reject("numeric-offset-branch"),
-        Bl { .. } | Call { .. } => Cf::Reject("call"),
-        Blx { .. } | CallIndirect { .. } => Cf::Reject("indirect-call"),
         BrTable { .. } => Cf::Reject("br-table"),
         Bx { rm } if *rm == Reg::LR => Cf::Return,
         Bx { .. } => Cf::Reject("computed-branch"),
+        // VCR-DEC-001 increment 3 (#896): a `bl`/`blx` is MODELED, using the ONE
+        // shared AAPCS definition. Keyed on `call_effect` returning `Some`
+        // rather than on a variant list, so this classifier and the pass's
+        // notion of "a call this allocator may colour across" cannot drift
+        // apart — two divergent call models would be a fresh instance of the
+        // shared-blind-spot class this module exists to attack. The `Call` /
+        // `CallIndirect` PSEUDO-ops get `None` (they expand downstream into a
+        // guard + table load + `blx`, so this stream's register footprint is not
+        // the final code's) and fall through to the loud declines below.
+        op if call_effect(op).is_some() => Cf::CallOp,
+        Bl { .. } | Call { .. } => Cf::Reject("call-pseudo-op"),
+        Blx { .. } | CallIndirect { .. } => Cf::Reject("indirect-call-pseudo-op"),
         // Anything left must be straight-line; `is_straight_line` is the shared
         // predicate and this arm asserts the two classifications agree, so a new
         // control-flow variant added to `ArmOp` without a case here cannot slip
         // through as "straight-line with no effect".
         other if is_straight_line(other) => Cf::Straight,
         _ => Cf::Reject("unclassified-control-flow"),
+    }
+}
+
+/// An instruction's register effect: `(defs, uses)`, in the order
+/// [`reg_effect`] / [`call_effect`] report them. `None` = carries no register
+/// effect at all (pure control flow).
+type Effect = Option<(Vec<Reg>, Vec<Reg>)>;
+
+/// The register effect of instruction `op`, or `None` if it carries none
+/// (pure control flow: `Label` / `B` / `Bcc` / `bx lr`).
+///
+/// `Err` means "this checker cannot model it" — a loud decline, never a silent
+/// no-effect walk-past.
+fn effect_of(op: &ArmOp) -> Result<Effect, &'static str> {
+    match classify(op) {
+        Cf::Reject(why) => Err(why),
+        Cf::Straight => reg_effect(op)
+            .map(|e| Some((e.defs, e.uses)))
+            .ok_or("unmodeled-op"),
+        Cf::CallOp => call_effect(op)
+            .map(|e| Some((e.defs, e.uses)))
+            .ok_or("unmodeled-call"),
+        Cf::Label | Cf::Uncond(_) | Cf::Cond(_) | Cf::Return => Ok(None),
     }
 }
 
@@ -287,7 +358,8 @@ fn derive_cfg(instrs: &[ArmInstruction]) -> Result<Vec<Blk>, &'static str> {
                 false
             }
             Cf::Uncond(_) | Cf::Cond(_) | Cf::Return => true,
-            Cf::Straight => is_return_term(&ins.op),
+            // A call FALLS THROUGH: it does not end a basic block.
+            Cf::Straight | Cf::CallOp => is_return_term(&ins.op),
         };
         if ends_block && i + 1 < instrs.len() {
             is_leader[i + 1] = true;
@@ -319,7 +391,7 @@ fn derive_cfg(instrs: &[ArmInstruction]) -> Result<Vec<Blk>, &'static str> {
                 fallthrough.ok_or("cond-branch-falls-off-end")?,
             ],
             Cf::Return => Vec::new(),
-            Cf::Label | Cf::Straight => {
+            Cf::Label | Cf::Straight | Cf::CallOp => {
                 if is_return_term(last) {
                     Vec::new()
                 } else {
@@ -396,10 +468,13 @@ pub fn validate_abi_contract(
     }
 
     // ---- Renames-only precondition, re-checked here ----------------------
-    // Control flow must be literally identical (a register allocator renames
-    // operands; it never rewrites control flow), and every straight-line pair
-    // must be the same operation with matching def/use arity.
-    let mut eff: Vec<Option<(Vec<Reg>, Vec<Reg>)>> = Vec::with_capacity(orig.len());
+    // Control flow AND calls must be literally identical (a register allocator
+    // renames operands; it never rewrites control flow, and — the increment-3
+    // rule `validate_cfg_rewrite` also enforces — never rewrites a call's
+    // architectural operands, `blx`'s target register included). Every
+    // straight-line pair must be the same operation with matching def/use arity.
+    let mut eff: Vec<Effect> = Vec::with_capacity(orig.len());
+    let mut eff_r: Vec<Effect> = Vec::with_capacity(orig.len());
     for (o, r) in orig.iter().zip(rewritten) {
         if !is_straight_line(&o.op) || !is_straight_line(&r.op) {
             if o.op != r.op {
@@ -407,7 +482,14 @@ pub fn validate_abi_contract(
                     reason: "control-flow-rewritten",
                 };
             }
-            eff.push(None);
+            // Identical ops, so the SAME effect twice — and for a `bl`/`blx`
+            // that effect is the AAPCS clobber, not nothing.
+            let e = match effect_of(&o.op) {
+                Ok(e) => e,
+                Err(reason) => return NotAttempted { reason },
+            };
+            eff.push(e.clone());
+            eff_r.push(e);
             continue;
         }
         let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {
@@ -421,19 +503,8 @@ pub fn validate_abi_contract(
             };
         }
         eff.push(Some((eo.defs, eo.uses)));
-        // The rewritten side's def/use registers are read below from its own
-        // `reg_effect`; only the ARITY needs to match here.
+        eff_r.push(Some((er.defs, er.uses)));
     }
-    let eff_r: Vec<Option<(Vec<Reg>, Vec<Reg>)>> = rewritten
-        .iter()
-        .map(|r| {
-            if is_straight_line(&r.op) {
-                reg_effect(&r.op).map(|e| (e.defs, e.uses))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // ---- Predecessors -----------------------------------------------------
     let nb = blocks.len();
@@ -481,19 +552,20 @@ pub fn validate_abi_contract(
 
     // Forward walk, per side, per block.
     let mut out = [vec![[0usize; NREG]; nb], vec![[0usize; NREG]; nb]];
-    for (side, stream) in [orig, rewritten].into_iter().enumerate() {
+    for side in 0..2 {
         let effects = if side == 0 { &eff } else { &eff_r };
         for (b, blk) in blocks.iter().enumerate() {
             let mut env = phi[side][b];
-            for i in blk.start..blk.end {
-                if !is_straight_line(&stream[i].op) {
-                    // Control flow: identical on both sides, no register effect.
+            // The effect vector is total: `None` means "carries no register
+            // effect" and is reached ONLY for pure control flow
+            // (`Label`/`B`/`Bcc`/`bx lr`), because `effect_of` turned every
+            // other unmodeled shape into a decline above. A `bl`/`blx` is
+            // `Some(call_effect)`, so it is NEVER walked past as a no-op — its
+            // clobbered registers get FRESH nodes below and its callee-saved
+            // registers flow through untouched.
+            for (i, e) in effects.iter().enumerate().take(blk.end).skip(blk.start) {
+                let Some((defs, uses)) = e else {
                     continue;
-                }
-                let Some((defs, uses)) = &effects[i] else {
-                    return NotAttempted {
-                        reason: "unmodeled-op",
-                    };
                 };
                 let operands: Vec<usize> = uses.iter().map(|u| env[reg_ix(*u)]).collect();
                 for (k, d) in defs.iter().enumerate() {
@@ -810,17 +882,105 @@ mod tests {
 
     // ---- loud declines, never a silent pass -------------------------------
 
+    // ---- calls (VCR-DEC-001 increment 3, #896) ---------------------------
+
+    fn bl(f: &str) -> ArmInstruction {
+        ins(ArmOp::Bl {
+            label: f.to_string(),
+        })
+    }
+
+    /// `held` carries a value across a call, then it is returned:
+    ///   movw held,#7 ; bl f ; mov r0,held ; bx lr
+    fn across_call(held: Reg) -> Vec<ArmInstruction> {
+        vec![movw(held, 7), bl("f"), mov(Reg::R0, held), bx_lr()]
+    }
+
     #[test]
-    fn a_call_declines_loudly() {
+    fn a_call_is_modeled_not_declined() {
+        let s = across_call(Reg::R4);
+        assert_eq!(validate_abi_contract(&s, &s), AbiContractVerdict::Holds);
+    }
+
+    #[test]
+    fn recolouring_a_callee_saved_value_to_another_callee_saved_holds() {
+        let o = across_call(Reg::R4);
+        let r = across_call(Reg::R7);
+        assert_eq!(validate_abi_contract(&o, &r), AbiContractVerdict::Holds);
+    }
+
+    #[test]
+    fn recolouring_a_live_value_into_caller_saved_across_a_call_is_violated() {
+        // THE miscompile increment 3 must not commit: the value is parked in
+        // R2, which the AAPCS destroys at the call. The forward walk rebinds R2
+        // to the CALL's own node, so it can no longer bisimulate with the
+        // original's `movw` — caught as a VALUE disagreement, with no liveness
+        // reasoning anywhere.
+        let o = across_call(Reg::R4);
+        let r = across_call(Reg::R2);
+        assert_eq!(
+            validate_abi_contract(&o, &r),
+            AbiContractVerdict::Violated {
+                sink: 3,
+                reg: Reg::R0
+            }
+        );
+    }
+
+    #[test]
+    fn returning_the_call_result_directly_holds() {
+        // r0 after `bl` is the callee's result on both sides.
+        let s = vec![bl("f"), bx_lr()];
+        assert_eq!(validate_abi_contract(&s, &s), AbiContractVerdict::Holds);
+    }
+
+    #[test]
+    fn renaming_what_feeds_a_call_argument_is_violated() {
+        // Same callee, DIFFERENT argument value ⇒ the result node's operands
+        // differ ⇒ the returned value differs. `call_effect`'s `uses` are what
+        // make this visible; without them the two calls would look identical.
+        let o = vec![mov(Reg::R0, Reg::R4), bl("f"), bx_lr()];
+        let r = vec![mov(Reg::R0, Reg::R5), bl("f"), bx_lr()];
+        assert_eq!(
+            validate_abi_contract(&o, &r),
+            AbiContractVerdict::Violated {
+                sink: 2,
+                reg: Reg::R0
+            }
+        );
+    }
+
+    #[test]
+    fn a_rewritten_call_target_declines_loudly() {
+        // A register allocator never rewrites a call's architectural operands —
+        // the rule `validate_cfg_rewrite` enforces too. A stream where one did
+        // must decline, not be analyzed under the shared-skeleton assumption.
+        let o = vec![bl("f"), bx_lr()];
+        let r = vec![bl("g"), bx_lr()];
+        assert_eq!(
+            validate_abi_contract(&o, &r),
+            AbiContractVerdict::NotAttempted {
+                reason: "control-flow-rewritten"
+            }
+        );
+    }
+
+    #[test]
+    fn the_call_pseudo_op_still_declines_loudly() {
+        // `Call` expands downstream into a guard + table load + `blx`, so this
+        // stream's register footprint is not the final code's.
         let s = vec![
-            ins(ArmOp::Bl {
-                label: "f".to_string(),
+            ins(ArmOp::Call {
+                rd: Reg::R0,
+                func_idx: 3,
             }),
             bx_lr(),
         ];
         assert_eq!(
             validate_abi_contract(&s, &s),
-            AbiContractVerdict::NotAttempted { reason: "call" }
+            AbiContractVerdict::NotAttempted {
+                reason: "call-pseudo-op"
+            }
         );
     }
 
@@ -910,22 +1070,25 @@ mod tests {
     }
 
     #[test]
-    fn a_call_in_the_middle_of_a_block_declines() {
+    fn an_unanalyzable_op_in_the_middle_of_a_block_declines() {
         // The fail-open bug this module's own red-first testing found: a `bl`
         // that is not a block ENDER must still be rejected. Modeling it as a
         // no-op would hide the AAPCS clobber of R0-R3/R12 — the same
         // "unmodeled construct silently certified" shape as #872.
         let s = vec![
             add(Reg::R0, Reg::R0, Reg::R1),
-            ins(ArmOp::Bl {
-                label: "f".to_string(),
+            ins(ArmOp::BrTable {
+                rd: Reg::R0,
+                index_reg: Reg::R1,
+                targets: vec![],
+                default: 0,
             }),
             add(Reg::R0, Reg::R0, Reg::R1),
             bx_lr(),
         ];
         assert_eq!(
             validate_abi_contract(&s, &s),
-            AbiContractVerdict::NotAttempted { reason: "call" }
+            AbiContractVerdict::NotAttempted { reason: "br-table" }
         );
     }
 
