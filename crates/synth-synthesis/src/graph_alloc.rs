@@ -281,8 +281,8 @@ fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>>
 mod joins {
     use super::*;
     use crate::liveness::{
-        BasicBlock, RegEffect, cfg_exit_observable, color_ranges, is_straight_line, reg_effect,
-        rewrite_op_maps, validate_cfg_rewrite,
+        BasicBlock, RegEffect, cfg_exit_observable, is_straight_line, reg_effect, rewrite_op_maps,
+        validate_cfg_rewrite,
     };
     use crate::rules::ArmOp;
 
@@ -321,7 +321,10 @@ mod joins {
         Cond(&'a str),
         Ret,
         Fall,
-        No,
+        /// Outside the increment-2 scope, with the reason NAMED so the corpus
+        /// decline histogram is actionable evidence for the next increment
+        /// rather than one opaque `cfg-unmodeled-construct` bucket.
+        No(&'static str),
     }
 
     fn classify(op: &ArmOp) -> Term<'_> {
@@ -335,14 +338,19 @@ mod joins {
             // let the range-realloc pass recolour `pop {r4..r8,pc}` into
             // `pop {r6,r5,r4,r3,r2,pc}`.
             Pop { regs } if regs.contains(&Reg::PC) => Term::Ret,
-            BOffset { .. }
-            | BCondOffset { .. }
-            | Bx { .. }
-            | BrTable { .. }
-            | Bl { .. }
-            | Blx { .. }
-            | Call { .. }
-            | CallIndirect { .. } => Term::No,
+            // Pre-resolved numeric branches: the displacement is already baked
+            // into the stream, so a rename that changes a Thumb encoding width
+            // would silently overshoot the target (#606). Re-resolving them is
+            // the named next increment.
+            BOffset { .. } | BCondOffset { .. } => Term::No("numeric-branch"),
+            // A call needs the AAPCS argument + caller-saved clobber contract
+            // modeled in BOTH the pass and the validator (a validator that
+            // treats `bl` as effect-free would accept a non-identity equation
+            // across it). Named follow-up.
+            Bl { .. } | Blx { .. } | Call { .. } => Term::No("call"),
+            CallIndirect { .. } => Term::No("call-indirect"),
+            BrTable { .. } => Term::No("br-table"),
+            Bx { .. } => Term::No("computed-bx"),
             _ => Term::Fall,
         }
     }
@@ -350,30 +358,30 @@ mod joins {
     /// The label-form CFG of `instrs`, or `None` to decline. Sound by
     /// construction: a `Some` is a COMPLETE CFG (every block reachable from the
     /// entry, every terminator modeled), never a partial guess.
-    pub(super) fn build_cfg(instrs: &[ArmInstruction]) -> Option<Vec<BasicBlock>> {
+    pub(super) fn build_cfg(instrs: &[ArmInstruction]) -> Result<Vec<BasicBlock>, &'static str> {
         let n = instrs.len();
         if n == 0 {
-            return None;
+            return Err("empty");
         }
         // 1. Admission.
         let mut labels: BTreeSet<&str> = BTreeSet::new();
         for ins in instrs {
             match classify(&ins.op) {
-                Term::No => return None,
+                Term::No(why) => return Err(why),
                 Term::Uncond(_) | Term::Cond(_) => {}
                 Term::Ret | Term::Fall => {
                     if !matches!(ins.op, ArmOp::Label { .. })
                         && !matches!(ins.op, ArmOp::Bx { .. })
                         && reg_effect(&ins.op).is_none()
                     {
-                        return None;
+                        return Err("unmodeled-op");
                     }
                 }
             }
             if let ArmOp::Label { name } = &ins.op
                 && !labels.insert(name.as_str())
             {
-                return None; // duplicate label ⇒ ambiguous CFG
+                return Err("duplicate-label"); // ambiguous CFG
             }
         }
         // 2. Leaders.
@@ -417,9 +425,9 @@ mod joins {
         for b in &blocks {
             let fallthrough = block_of_start.get(&b.end).copied();
             succs.push(match classify(&instrs[b.end - 1].op) {
-                Term::Uncond(l) => vec![*block_of_label.get(l)?],
+                Term::Uncond(l) => vec![*block_of_label.get(l).ok_or("unknown-label")?],
                 Term::Cond(l) => {
-                    let t = *block_of_label.get(l)?;
+                    let t = *block_of_label.get(l).ok_or("unknown-label")?;
                     let mut s = vec![t];
                     if let Some(f) = fallthrough
                         && f != t
@@ -432,8 +440,8 @@ mod joins {
                 // A non-return block that falls off the end of the function is
                 // a stream we do not understand: decline rather than invent a
                 // sink (an invented sink would silently drop its exit contract).
-                Term::Fall => vec![fallthrough?],
-                Term::No => return None,
+                Term::Fall => vec![fallthrough.ok_or("falls-off-end")?],
+                Term::No(why) => return Err(why),
             });
         }
         for (b, s) in blocks.iter_mut().zip(succs) {
@@ -454,9 +462,9 @@ mod joins {
             }
         }
         if seen.iter().any(|r| !r) {
-            return None;
+            return Err("unreachable-block");
         }
-        Some(blocks)
+        Ok(blocks)
     }
 
     /// Simple union-find over web ids.
@@ -746,13 +754,107 @@ mod joins {
         })
     }
 
+    /// Chaitin/Briggs colouring with a **churn-minimising colour preference**.
+    ///
+    /// `chaitin_core` (which `color_ranges` wraps) selects the LOWEST free
+    /// colour. Across a whole branchy function that repacks nearly every value
+    /// into R0/R1 — measured on `loop_param_bound_663::sum_const`, where the
+    /// repack put the loop's compare result on top of the register a later
+    /// `forward_stack_reloads` was forwarding through, replacing two `mov`s with
+    /// two `ldr`s INSIDE the loop: +2 bytes and **+22 cycles** on the WCET bound.
+    /// A whole-function allocator that ignores what the rest of the pipeline is
+    /// about to do is not automatically better than a greedy one.
+    ///
+    /// So the select phase prefers, in order:
+    ///   1. the web's ORIGINAL register, when that register is CALLER-saved
+    ///      (R0-R3) — a value already in scratch has nothing to gain by moving,
+    ///      and moving it only disturbs downstream passes;
+    ///   2. the lowest free CALLER-saved colour — this is the actual objective:
+    ///      evacuate R4-R8 so `shrink_callee_saved_saves` can drop the
+    ///      prologue's push/pop entries;
+    ///   3. the web's original register (now necessarily callee-saved), keeping
+    ///      churn at zero when no scratch register is available;
+    ///   4. the lowest free colour, as a last resort.
+    ///
+    /// NOT implemented by changing `chaitin_core`: that core is shared with the
+    /// SHIPPING `reallocate_function`, so a different select order there would
+    /// move the frozen bytes. The simplify/optimistic-spill half is the same
+    /// algorithm, deliberately mirrored rather than reused for that reason.
+    fn color_webs_biased(
+        adj: &BTreeMap<usize, BTreeSet<usize>>,
+        k: usize,
+        precolored: &BTreeMap<usize, usize>,
+        costs: &BTreeMap<usize, usize>,
+        orig_colour: &BTreeMap<usize, usize>,
+        caller_saved: usize,
+    ) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
+        let cost_of = |n: &usize| costs.get(n).copied().unwrap_or(1);
+        let mut work: BTreeMap<usize, BTreeSet<usize>> = adj
+            .iter()
+            .filter(|(n, _)| !precolored.contains_key(n))
+            .map(|(n, nbrs)| (*n, nbrs.clone()))
+            .collect();
+        let mut stack: Vec<usize> = Vec::with_capacity(work.len());
+        while !work.is_empty() {
+            let pick = work
+                .iter()
+                .find(|(_, nbrs)| nbrs.len() < k)
+                .map(|(n, _)| *n)
+                .unwrap_or_else(|| {
+                    work.iter()
+                        .min_by(|a, b| {
+                            (cost_of(a.0) * b.1.len())
+                                .cmp(&(cost_of(b.0) * a.1.len()))
+                                .then(a.0.cmp(b.0))
+                        })
+                        .map(|(n, _)| *n)
+                        .unwrap()
+                });
+            let nbrs = work.remove(&pick).unwrap_or_default();
+            for n in &nbrs {
+                if let Some(s) = work.get_mut(n) {
+                    s.remove(&pick);
+                }
+            }
+            stack.push(pick);
+        }
+        let mut colour: BTreeMap<usize, usize> = precolored.clone();
+        let mut spilled: BTreeSet<usize> = BTreeSet::new();
+        while let Some(n) = stack.pop() {
+            let mut used = vec![false; k];
+            for nb in adj.get(&n).into_iter().flatten() {
+                if let Some(&c) = colour.get(nb)
+                    && c < k
+                {
+                    used[c] = true;
+                }
+            }
+            let own = orig_colour.get(&n).copied();
+            let pick = own
+                .filter(|&c| c < caller_saved && c < k && !used[c])
+                .or_else(|| (0..caller_saved.min(k)).find(|&c| !used[c]))
+                .or_else(|| own.filter(|&c| c < k && !used[c]))
+                .or_else(|| (0..k).find(|&c| !used[c]));
+            match pick {
+                Some(c) => {
+                    colour.insert(n, c);
+                }
+                None => {
+                    spilled.insert(n);
+                }
+            }
+        }
+        (colour, spilled)
+    }
+
     /// The increment-2 entry point. See the module doc for scope and oracles.
     pub(super) fn reallocate_across_joins(
         instrs: &[ArmInstruction],
         pool: &[Reg],
     ) -> Option<Vec<ArmInstruction>> {
-        let Some(blocks) = build_cfg(instrs) else {
-            return decline("cfg-unmodeled-construct");
+        let blocks = match build_cfg(instrs) {
+            Ok(b) => b,
+            Err(why) => return decline(why),
         };
         // A single-block function is increment 1's domain (tried first); this
         // path exists for the branchy ones.
@@ -957,7 +1059,24 @@ mod joins {
                 }
             }
         }
-        let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &costs);
+        // Each web's ORIGINAL colour — the churn-minimising bias's input.
+        let orig_colour: BTreeMap<usize, usize> = (0..webs.n_webs)
+            .filter_map(|w| pool_index.get(&webs.reg_of[w]).map(|&c| (w, c)))
+            .collect();
+        // The caller-saved prefix of the pool (R0-R3): the registers a value can
+        // move INTO for free, because they need no prologue save.
+        let caller_saved = pool
+            .iter()
+            .take_while(|r| matches!(r, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3))
+            .count();
+        let (coloring, spilled) = color_webs_biased(
+            &pool_adj,
+            pool.len(),
+            &pins,
+            &costs,
+            &orig_colour,
+            caller_saved,
+        );
         if !spilled.is_empty() {
             // Spill-code insertion across joins is a named follow-up; the
             // shipping path HAS spill support, so decline to it.
@@ -979,9 +1098,37 @@ mod joins {
                 if *b >= webs.n_webs {
                     continue;
                 }
+                // Skip edges whose BOTH endpoints are PINNED (identity-fixed by
+                // the ABI/architecture, or reserved and never coloured at all).
+                // A pinned web's register is not a choice the colourer made — it
+                // is the original's — so two pinned webs "sharing" a register is
+                // exactly the original code's behaviour, not a conflict. The
+                // edge exists only because the conservative exit contract makes
+                // a register live at the return with NO unifying use, so its
+                // entry web and its arm-local def web both land in the sink's
+                // live set (measured: 16 corpus functions declined wholesale on
+                // `1(R1)~16(R1) -> R1/R1`). The shipping pass exempts the same
+                // pair class for the same reason. Pool↔pool and pinned↔free
+                // edges are still enforced, and `validate_cfg_rewrite` proves
+                // the dataflow either way.
+                let fixed = |w: &usize| pins.contains_key(w) || !pool_nodes.contains(w);
+                if fixed(a) && fixed(b) {
+                    continue;
+                }
                 match (assignment.get(a), assignment.get(b)) {
                     (Some(x), Some(y)) if x != y => {}
-                    _ => return decline("edge-recheck"),
+                    _ => {
+                        if std::env::var("SYNTH_GRAPH_ALLOC_DUMP").is_ok() {
+                            eprintln!(
+                                "[ga-dump] edge-recheck {a}({:?})~{b}({:?}) -> {:?}/{:?}",
+                                webs.reg_of[*a],
+                                webs.reg_of[*b],
+                                assignment.get(a),
+                                assignment.get(b)
+                            );
+                        }
+                        return decline("edge-recheck");
+                    }
                 }
             }
         }
