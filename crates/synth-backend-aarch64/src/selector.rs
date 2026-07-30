@@ -2379,6 +2379,173 @@ mod tests {
         assert_eq!(w, vec![enc::add(9, 0, 1), enc::mov_reg64(0, 9), enc::ret()]);
     }
 
+    /// #851 lane L3 — the exact `call_indirect` guard sequence.
+    ///
+    /// The execution differential covers BEHAVIOUR, but it cannot distinguish
+    /// the UNSIGNED bounds compare (`b.lo`) from a signed one (`b.lt`): under
+    /// emulation a negative index passes a signed guard and then faults on the
+    /// unmapped scaled address, so it traps either way. On real silicon that
+    /// address can be MAPPED, and the dispatch would branch into it. The
+    /// condition is therefore pinned here, where it is decidable.
+    #[test]
+    fn call_indirect_guard_sequence_uses_an_unsigned_bounds_compare() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+            WasmOp::End,
+        ];
+        let ctx = ModuleCtx {
+            substrate_emitted: true,
+            global_is64: vec![],
+            tables: vec![(4, 0)],
+            type_class_ids: vec![3],
+            type_arg_counts: vec![0],
+            type_result_counts: vec![0],
+            type_ret_float: vec![false],
+        };
+        let (w, _sites, relocs) = select_typed_cf_calls(
+            &ops,
+            1,
+            &[],
+            &[],
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            MemBounds::Unchecked,
+            &ctx,
+        )
+        .unwrap();
+        // Prologue: stp x29,x30 ; sub sp,#16 ; str x0,[sp] (param homing) ;
+        // ldr x9,[sp] (local.get 0).
+        assert_eq!(w[0], enc::stp_fp_lr_pre16());
+        assert_eq!(w[2], enc::str_x_imm(0, enc::SP, 0));
+        assert_eq!(w[3], enc::ldr_x_imm(9, enc::SP, 0));
+        // Guard 1 — OOB. UNSIGNED (`Lo`), so 0xFFFFFFFF is ABOVE 4, not below.
+        assert_eq!(w[4], enc::cmp_imm(9, 4));
+        assert_eq!(
+            w[5],
+            enc::bcond(Cond::Lo, 2),
+            "the table bounds compare must be UNSIGNED (b.lo): a signed b.lt \
+             lets a negative index through, and uxtw then scales it into an \
+             address that can be mapped on real silicon"
+        );
+        assert_eq!(w[6], enc::brk(0));
+        // Table address: adrp+add (relocated), then + idx*8.
+        assert_eq!(w[7], enc::adrp(IP0, 0));
+        assert_eq!(w[8], enc::add_imm64(IP0, IP0, 0));
+        assert_eq!(w[9], enc::add_ext_uxtw_sh(IP0, IP0, 9, 3));
+        // Guard 2 — the structural class id (which is also the null check).
+        assert_eq!(w[10], enc::ldr_w(IP1, IP0, 0));
+        assert_eq!(w[11], enc::cmp_imm(IP1, 3));
+        assert_eq!(w[12], enc::bcond(Cond::Eq, 2));
+        assert_eq!(w[13], enc::brk(0));
+        // Branch into the slot's trampoline at slot+4.
+        assert_eq!(w[14], enc::add_imm64(IP0, IP0, 4));
+        assert_eq!(w[15], enc::blr(IP0));
+        // The adrp/add pair must carry its two relocations against the table.
+        assert_eq!(relocs.len(), 2);
+        assert!(relocs.iter().all(|r| r.symbol == FUNC_TABLE_SYMBOL));
+        assert_eq!(relocs[0].offset, 7 * 4);
+        assert!(matches!(relocs[0].kind, RelocKind::AArch64AdrPrelPgHi21));
+        assert_eq!(relocs[1].offset, 8 * 4);
+        assert!(matches!(relocs[1].kind, RelocKind::AArch64AddAbsLo12Nc));
+    }
+
+    /// Both module-level features are FAIL-SAFE: with the default context (no
+    /// substrate emitted) they LOUD-DECLINE rather than address a region the
+    /// driver never placed.
+    #[test]
+    fn globals_and_call_indirect_decline_without_an_emitted_substrate() {
+        for ops in [
+            vec![WasmOp::GlobalGet(0), WasmOp::End],
+            vec![WasmOp::I32Const(1), WasmOp::GlobalSet(0), WasmOp::End],
+            vec![
+                WasmOp::I32Const(0),
+                WasmOp::CallIndirect {
+                    type_index: 0,
+                    table_index: 0,
+                },
+                WasmOp::End,
+            ],
+        ] {
+            let r = sel_calls(&ops, 0, 0, &[0], &[0]);
+            assert!(
+                r.is_err(),
+                "must decline without an emitted substrate: {ops:?}"
+            );
+        }
+    }
+
+    /// The globals lowering addresses `__synth_globals + k*8` with a SIZE-SCALED
+    /// immediate: `k*2` for the `w` view, `k` for the `x` view. Getting the
+    /// scaling wrong reads a neighbouring slot.
+    #[test]
+    fn global_get_scales_the_slot_offset_per_access_width() {
+        let ctx = ModuleCtx {
+            substrate_emitted: true,
+            global_is64: vec![false, true, false],
+            ..ModuleCtx::default()
+        };
+        let sel = |ops: Vec<WasmOp>| {
+            select_typed_cf_calls(
+                &ops,
+                0,
+                &[],
+                &[],
+                &[],
+                0,
+                &[],
+                &[],
+                &[],
+                MemBounds::Unchecked,
+                &ctx,
+            )
+            .unwrap()
+        };
+        // global 2 is i32 → byte offset 16 → `ldr w` scaled immediate 4.
+        let (w, _, _) = sel(vec![WasmOp::GlobalGet(2), WasmOp::End]);
+        assert_eq!(w[0], enc::adrp(9, 0));
+        assert_eq!(w[1], enc::add_imm64(9, 9, 0));
+        assert_eq!(w[2], enc::ldr_w(9, 9, 4));
+        // global 1 is i64 → byte offset 8 → `ldr x` scaled immediate 1.
+        let (w, _, _) = sel(vec![WasmOp::GlobalGet(1), WasmOp::End]);
+        assert_eq!(w[2], enc::ldr_x(9, 9, 1));
+        // A store mirrors it, and the base temp must DIFFER from the value.
+        let (w, _, _) = sel(vec![WasmOp::I32Const(7), WasmOp::GlobalSet(2), WasmOp::End]);
+        let store = w[w.len() - 2];
+        assert_eq!(store, enc::str_w(9, 10, 4));
+    }
+
+    /// A global index past the emitted region LOUD-DECLINES.
+    #[test]
+    fn global_index_past_the_region_declines() {
+        let ctx = ModuleCtx {
+            substrate_emitted: true,
+            global_is64: vec![false],
+            ..ModuleCtx::default()
+        };
+        let ops = vec![WasmOp::GlobalGet(5), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            MemBounds::Unchecked,
+            &ctx,
+        );
+        assert!(r.is_err());
+    }
+
     #[test]
     fn call_to_import_loud_declines() {
         // func 0 is an import (num_imports = 1); calling it declines.
