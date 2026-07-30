@@ -109,6 +109,61 @@ lop2 extend16_s "(i64.extend16_s (local.get 0))" 40000 0 32767 0
 # f32 select through the reinterpret wrapper: NaN vs 1.0 both directions.
 op2 f32.select "(i32.reinterpret_f32 (select (f32.reinterpret_i32 (local.get 0))(f32.reinterpret_i32 (local.get 1))(i32.lt_u (local.get 0)(local.get 1))))" 2143289344 1065353216 1065353216 2143289344 0 2147483648
 
+# --- v0.54 L2 (#851): the float-completion surface ---
+# f32/f64 rounding, i64->float converts and the TRAPPING i64-target
+# truncations. Args and results travel as BIT PATTERNS through reinterprets, so
+# the comparison is bit-exact (±0 sign and NaN passthrough included).
+# f32/f64 LOAD/STORE are deliberately NOT here: they need `x28` = linear-memory
+# base on entry, which this bare JIT runner cannot establish — they are
+# execution-verified under unicorn in
+# scripts/repro/aarch64_float_completion_851_differential.py.
+
+# unary f32 op, i32 bit pattern in and out.
+fop1(){ local nm="$1" op="$2"; shift 2; local h; h=$(hexof '(param i32)(result i32)' "(i32.reinterpret_f32 ($op (f32.reinterpret_i32 (local.get 0))))"); [ -z "$h" ]&&{ dec="$dec $nm";return;}; acc=$((acc+1))
+  for a in "$@"; do local g o gh oh; g=$("$W/r32" "$h" "$(sd $a)" 0 2>/dev/null); o=$("$WASMTIME" run --invoke f "$W/t.wasm" "$(sd $a)" 2>/dev/null); gh=$(printf '%08x' $((g&0xffffffff)) 2>/dev/null); oh=$(printf '%08x' $((o&0xffffffff)) 2>/dev/null); n=$((n+1)); [ "$gh" = "$oh" ]||bad="$bad $nm(0x$(printf '%08x' $((a&0xffffffff)))):s=0x$gh,w=0x$oh"; done; }
+# unary f64 op, i64 bit pattern in and out.
+dop1(){ local nm="$1" op="$2"; shift 2; local h; h=$(hexof '(param i64 i64)(result i64)' "(i64.reinterpret_f64 ($op (f64.reinterpret_i64 (local.get 0))))"); [ -z "$h" ]&&{ dec="$dec $nm";return;}; acc=$((acc+1))
+  for a in "$@"; do local g o; g=$("$W/r64" "$h" "$a" 0 2>/dev/null); o=$("$WASMTIME" run --invoke f "$W/t.wasm" "$a" 0 2>/dev/null); n=$((n+1)); [ "$g" = "$o" ]||bad="$bad $nm($a):s=$g,w=$o"; done; }
+# i64-in / i64-bit-pattern-out (the i64->float converts, compared bit-exactly).
+cvt64(){ local nm="$1" b="$2"; shift 2; local h; h=$(hexof '(param i64 i64)(result i64)' "$b"); [ -z "$h" ]&&{ dec="$dec $nm";return;}; acc=$((acc+1))
+  for a in "$@"; do local g o; g=$("$W/r64" "$h" "$a" 0 2>/dev/null); o=$("$WASMTIME" run --invoke f "$W/t.wasm" "$a" 0 2>/dev/null); n=$((n+1)); [ "$g" = "$o" ]||bad="$bad $nm($a):s=$g,w=$o"; done; }
+# TRAPPING op: the JIT runner's signal handler prints TRAP; wasmtime exits
+# non-zero with no stdout. Normalize both so a "traps where wasmtime traps"
+# disagreement is a MISCOMPILE, not an unnoticed empty string.
+trap64(){ local nm="$1" b="$2"; shift 2; local h; h=$(hexof '(param i64 i64)(result i64)' "$b"); [ -z "$h" ]&&{ dec="$dec $nm";return;}; acc=$((acc+1))
+  for a in "$@"; do local g o; g=$("$W/r64" "$h" "$a" 0 2>/dev/null); o=$("$WASMTIME" run --invoke f "$W/t.wasm" "$a" 0 2>/dev/null); [ -z "$o" ]&&o=TRAP; [ -z "$g" ]&&g=TRAP; n=$((n+1)); [ "$g" = "$o" ]||bad="$bad $nm($a):s=$g,w=$o"; done; }
+
+# Rounding. The halfway values are load-bearing: WASM `nearest` is
+# ties-to-EVEN, so 0.5->0, 1.5->2, 2.5->2, 3.5->4 — a ties-away lowering
+# (A64 FRINTA instead of FRINTN) fails exactly here. ±inf/NaN/1e30 catch the
+# other classic wrong lowering, a round-trip through a 32-bit integer.
+F32R="1056964608 1069547520 1075838976 1080033280 3204448256 3217031168 3223322624 3227516928 1072902963 3220386611 0 2147483648 2139095040 4286578688 2143289344 1900671690 4048155338 1258291199"
+for r in ceil floor trunc nearest; do fop1 "f32.$r" "f32.$r" $F32R; done
+F64R="4602678819172646912 4609434218613702656 4612811918334230528 4615063718147915776 -4620693217682128896 -4613937818241073152 4611235658464650854 -4612136378390124954 9218868437227405312 -4503599627370496 9221120237041090560 9094988921128908188 4841369599423283199"
+for r in ceil floor trunc nearest; do dop1 "f64.$r" "f64.$r" $F64R; done
+
+# i64 -> float converts. Above 2^24 (f32) / 2^53 (f64) the convert must ROUND
+# to nearest-EVEN; the ±1/±3 offsets past each onset pin that.
+CVTV="0 1 -1 16777216 16777217 16777219 -16777217 -16777219 9007199254740992 9007199254740993 9007199254740995 4611686018427387904 9223372036854775807 -9223372036854775808"
+cvt64 f64.convert_i64_s "(i64.reinterpret_f64 (f64.convert_i64_s (local.get 0)))" $CVTV
+cvt64 f64.convert_i64_u "(i64.reinterpret_f64 (f64.convert_i64_u (local.get 0)))" $CVTV
+cvt64 f32.convert_i64_s "(i64.extend_i32_u (i32.reinterpret_f32 (f32.convert_i64_s (local.get 0))))" $CVTV
+cvt64 f32.convert_i64_u "(i64.extend_i32_u (i32.reinterpret_f32 (f32.convert_i64_u (local.get 0))))" $CVTV
+
+# TRAPPING i64-target truncations — the soundness-critical class. A64
+# FCVTZ{S,U} SATURATE where WASM traps, so every out-of-range/NaN input below
+# MUST trap; the in-range ones must match bit-exactly. Inputs are f64/f32 bit
+# patterns: ±2^63 and ±2^64 exactly, the nearest representable value strictly
+# inside each bound, -1.0/-0.5 (the strict unsigned lower bound), ±inf, NaN.
+# (The full both-sides-of-every-boundary table lives in the differential; this
+# is gale's on-silicon confirmation that traps really fire.)
+T64D="4890909195324358656 4890909195324358655 -4332462841530417152 -4332462841530417151 4895412794951729152 4895412794951729151 -4616189618054758400 -4620693217682128896 9218868437227405312 -4503599627370496 9221120237041090560 0 -9223372036854775808 4886405595696988160"
+trap64 i64.trunc_f64_s "(i64.trunc_f64_s (f64.reinterpret_i64 (local.get 0)))" $T64D
+trap64 i64.trunc_f64_u "(i64.trunc_f64_u (f64.reinterpret_i64 (local.get 0)))" $T64D
+T64S="1593835520 1593835519 3741319168 3741319169 1602224128 1602224127 3212836864 3204448256 2139095040 4286578688 2143289344 0 2147483648 1266679808"
+trap64 i64.trunc_f32_s "(i64.trunc_f32_s (f32.reinterpret_i32 (i32.wrap_i64 (local.get 0))))" $T64S
+trap64 i64.trunc_f32_u "(i64.trunc_f32_u (f32.reinterpret_i32 (i32.wrap_i64 (local.get 0))))" $T64S
+
 echo "aarch64: $acc ops accepted, $n native checks. Declined frontier:$dec"
 if [ -z "$bad" ]; then echo "PASS: all accepted aarch64 ops match wasmtime"; exit 0
 else echo "FAIL: aarch64 MISCOMPILE:$bad"; exit 1; fi
