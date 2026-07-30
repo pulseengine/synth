@@ -31,8 +31,15 @@ measure first, flip on evidence. This script is that measurement, held to a
 floor.
 
 Measured at the time of writing (v0.54, 617 corpus functions, --relocatable):
-    Holds 376 · NotAttempted 241 · Violated 0
-    declines: unmodeled-op 159, call 62, indirect-call 11, numeric-offset-branch 9
+    Holds 422 · NotAttempted 195 · Violated 0
+    declines: unmodeled-op 174, indirect-call-pseudo-op 11,
+              numeric-offset-branch 10
+
+Before the AAPCS call model landed (VCR-DEC-001 increment 3, #896) this read
+`Holds 376 · NotAttempted 241`, with `call 62` its second-largest decline. The
+62 direct-call declines are GONE, not reclassified; `unmodeled-op` rose 159 ->
+174 because functions that used to stop at the call now get further and reach an
+FP / i64-pair op instead — the decline MOVED, it did not vanish.
 
 Proven RED-FIRST, by real exit code, in both directions:
   * a stub `SYNTH` that emits a `Violated` line -> exit 1, naming the fixture;
@@ -56,10 +63,13 @@ REPO = Path(__file__).resolve().parents[2]
 REPRO = REPO / "scripts/repro"
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
-# Set below the measured 376 so ordinary corpus churn is not noise, but close
-# enough that losing a whole construct class (a `reg_effect` arm, the label-form
-# CFG, the return-sink recognition) trips it.
-HOLDS_FLOOR = 340
+# Set below the measured 422 so ordinary corpus churn is not noise, but close
+# enough that losing a whole construct class (a `reg_effect` arm, the AAPCS
+# `call_effect`, the label-form CFG, the return-sink recognition) trips it.
+# Raised from 340 when VCR-DEC-001 increment 3 (#896) made calls modelable: a
+# floor left at the pre-call-model value would have silently absorbed losing the
+# entire call model again.
+HOLDS_FLOOR = 400
 
 VERDICT = re.compile(r"\[abi-contract-audit\] (Holds|Violated|NotAttempted)(.*)")
 REASON = re.compile(r'reason: "([a-z-]+)"')

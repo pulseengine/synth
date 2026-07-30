@@ -156,8 +156,9 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 - What VCR-VER-004 does **not** close, stated plainly:
   - It is a **gate only on the flag-off** graph-colouring allocator. On the
     DEFAULT path it is a report-only audit held to a CI floor — measured
-    `Holds 376 / NotAttempted 241 / Violated 0` over 617 corpus functions, so it
-    proves the observable return contract on ~61 % of the shipping path and
+    `Holds 422 / NotAttempted 195 / Violated 0` over 617 corpus functions, so it
+    proves the observable return contract on ~68 % of the shipping path —
+    `bl`/`blx` calls included, via the shared AAPCS `liveness::call_effect` — and
     declines (never guesses) on the rest. Making it gate the default path means
     hard-erroring a user's compile on a checker whose false-positive rate is
     measured, not proven; that flip is deliberately not taken here.

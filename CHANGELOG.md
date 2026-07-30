@@ -192,20 +192,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script is proven red-first: make `abi_gate` treat `Violated` as an accept and
   the mutated compiler goes back to emitting the miscompile.
 
-  **The gate costs nothing.** Over the ARM repro corpus: 617 functions, 275
-  applied, `40822 → 40776` bytes — v0.53's result *to the byte*, with the check
-  conservative enough to demand both `R0` and `R1` for every function and to
-  decline whenever it cannot analyze. `NotAttempted` is a **decline**, not an
-  accept: if a decline counted as acceptance, a change that made the check
-  universally inapplicable would disable it silently.
+  **The gate costs nothing.** Over the ARM repro corpus, composed with
+  VCR-DEC-001 increment 3 (#896): 617 functions, **307 applied**,
+  `40822 → 40722` bytes (−100 B relocatable, −120 B self-contained) — increment
+  3's result *to the byte*, with the check conservative enough to demand both
+  `R0` and `R1` for every function and to decline whenever it cannot analyze.
+  `NotAttempted` is a **decline**, not an accept: if a decline counted as
+  acceptance, a change that made the check universally inapplicable would disable
+  it silently.
+
+  **Calls are modelled, not exempted.** Increment 3 taught the allocator to
+  colour *across calls*, taking 57 of 68 `call` declines — every one of which
+  this gate would have declined again. The fix was to model the AAPCS call
+  effect, reusing `liveness::call_effect` (the *one* definition the pass and
+  `validate_cfg_rewrite` already share, because two divergent call models would
+  be a fresh instance of the very blind-spot class this module attacks) rather
+  than to weaken `abi_gate`. The forward design needed no special case: each
+  clobbered register `{R0-R3, R12, LR}` is rebound to a **fresh** node whose
+  operands are the *pre-call* argument values, while `R4-R11`/`SP` flow through.
+  So a call result is an opaque value equal across the sides exactly when the
+  same callee got the same arguments, and a value the rewrite parked in
+  caller-saved scratch *across* a call is rebound to the call's own node — it can
+  no longer bisimulate with what the original delivers at the return. Increment
+  3's own warning ("a validator treating `bl` as effect-free would accept a
+  non-identity equation across it") is discharged here as a **value**
+  disagreement, with no liveness reasoning anywhere. The `Call`/`CallIndirect`
+  *pseudo*-ops still decline: they expand downstream into a guard + table load +
+  `blx`, so this stream's register footprint is not the final code's.
 
   **And it was measured against the shipping allocator, not just the spike.**
   `SYNTH_ABI_CONTRACT_AUDIT=1` reports the same verdict for
   `reallocate_function_post_exhaust`, the allocator every `synth compile` runs:
-  **`Holds` 376 · `NotAttempted` 241 · `Violated` 0** over 617 functions — the
-  observable return contract *proven* on ~61 % of the shipping path with zero
+  **`Holds` 422 · `NotAttempted` 195 · `Violated` 0** over 617 functions — the
+  observable return contract *proven* on ~68 % of the shipping path with zero
   false rejections against a known-good allocator, declines named
-  (`unmodeled-op` 159, `call` 62, `indirect-call` 11, `numeric-offset-branch` 9).
+  (`unmodeled-op` 174, `indirect-call-pseudo-op` 11, `numeric-offset-branch` 10).
+  Modelling calls moved this from `Holds 376 / NotAttempted 241`: the 62
+  direct-call declines are **gone**, not reclassified, while `unmodeled-op` rose
+  159 → 174 because functions that used to stop at the call now get further and
+  reach an FP / i64-pair op instead. The decline *moved*; it did not vanish.
   Held to a CI floor by `vcr_ver_004_shipping_path_audit.py` (zero violations, a
   pinned `Holds` count so lost coverage is visible rather than absorbed), itself
   red-first in both directions including the vacuity case where the hook is not
