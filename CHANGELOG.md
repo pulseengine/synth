@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **VCR-DEC-001 increment 2 — the graph-colouring allocator colours ACROSS
+  if/else joins (epic #242, still flag-off `SYNTH_GRAPH_ALLOC`).** Increment 1
+  could only colour a function that was ONE straight-line segment. The shipping
+  `reallocate_function` handles branchy functions by cutting them into maximal
+  straight-line segments and pinning each segment's inputs and per-register exit
+  holders — and those pins are exactly where the greedy allocator's weakness
+  concentrates: an if/else arm's first `movw r4, #400` is a segment-index-0 def,
+  so segment-local analysis is FORCED to treat it as a segment input and cannot
+  move it, even though whole-function liveness shows the value is born there,
+  dies two instructions later, and never crosses the join. Increment 2 builds the
+  function's label-form CFG, splits each register's def-use chains into
+  cross-block **webs** (reaching-def fixpoint), takes interference from CFG
+  liveness, and colours the whole function at once — so two arms' values, never
+  simultaneously live, share one register and the callee-saved save/restore
+  disappears under `shrink_callee_saved_saves`.
+  **MEASURED** (`scripts/repro/vcr_dec_001_join_alloc_measure.py`, 617 corpus
+  functions, 275 applied, `.text` sizes from the ELF symtab and SOUND cycle
+  bounds from `--emit-wcet`): **−46 bytes (−0.11 %) and −25 worst-case cycles
+  (−0.18 %); 8 functions shrank, 1 grew, 0 cycle regressions.** That is the
+  v0.54 flip input, and it says *not yet* — the reach is the limit, not the
+  soundness. In the measured (label-form) scope 164 functions decline on an
+  unmodeled i64/FP op and 68 on a call; on the DEFAULT self-contained path a
+  further 43 decline on pre-resolved numeric branches, whose displacements are
+  already baked so a rename that changes a Thumb encoding width would overshoot
+  (#606). Every decline is now named in a machine-readable histogram instead of
+  one opaque bucket, which is what makes the next increment schedulable. Two defects the measurement itself found are fixed here: an
+  edge-recheck that rejected two *pinned* webs of one register (16 functions
+  declined wholesale), and `chaitin_core`'s lowest-free-colour select repacking
+  whole functions into R0/R1 — which on `loop_param_bound_663::sum_const` landed
+  the loop's compare result on the register a later `forward_stack_reloads` was
+  forwarding through, turning two `mov`s into two `ldr`s inside the loop for
+  **+22 cycles**. A whole-function allocator that ignores what the rest of the
+  pipeline is about to do is not automatically better than a greedy one, so the
+  select now prefers a web's own register when it is already caller-saved, then
+  the lowest free caller-saved colour (the actual objective: evacuate R4–R8).
+  `chaitin_core` itself is deliberately untouched — it is shared with the
+  shipping pass, so a different select order there would move the frozen bytes.
+  **The oracles are the point.** The acceptance gate is
+  `liveness::validate_cfg_rewrite`, the straight-line Rideau/Leroy trace-equality
+  validator lifted to a backward MUST-fixpoint over the CFG (union at joins,
+  back edges included); it computes its own exit contract, so the pass cannot
+  hand it a weakened seed — the v0.50 join attempt failed exactly there. Because
+  that validator SHARES the CFG shape with the pass it validates, and #872 is the
+  standing lesson that a validator can share its pass's blind spot, the divergent
+  bytes are now EXECUTED: `vcr_dec_001_join_alloc_execution_differential.py`
+  (unicorn vs wasmtime, 38 checks over 13 engaged functions, CI-wired) is proven
+  non-vacuous by MUTATION — emptying the shared exit contract emits code leaving
+  the return value in the wrong register, and `validate_cfg_rewrite` *and*
+  VCR-RA-003 both ACCEPT it while only the execution gate catches it. `Push`/`Pop`
+  register lists are identity-pinned (the #888 class) and a mid-stream
+  `pop {…, pc}` is modelled as a RETURN sink. **Flag-OFF is byte-identical** —
+  frozen anchors 10/10, no default flip.
 - **RV32 `br_table` lowering (#882)** — the RISC-V selector now lowers
   `br_table` as a compare-and-branch chain (entry 0 against `x0`, `li`+`beq`
   per further entry, `jal` to the default), closing the last op gap on gale's
