@@ -1,3 +1,4 @@
+# ci-status: manual (scratch) — a #204 bring-up probe hardcoded to /tmp/gz.bin with hand-transcribed import-stub offsets from one historical `synth disasm` run; it prints stores and asserts nothing. Both inputs are stale by construction, so it can only be re-run by hand against a fresh disassembly.
 from unicorn import *
 from unicorn.arm_const import *
 code=open('/tmp/gz.bin','rb').read()

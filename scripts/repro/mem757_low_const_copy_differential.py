@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#757 RED-FIRST differential — the low-const-below-string chunked static copy.
 
 The six 0.43.0 reconstructions all found the wide-head source addend CORRECT,

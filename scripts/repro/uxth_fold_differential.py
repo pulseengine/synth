@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA uxth/uxtb fold validation oracle (#428, epic #242).
 
 The fold rewrites `movw rM,#0xffff; and rD,rN,rM` -> `uxth rD,rN` (and the 0xff /
@@ -15,6 +16,7 @@ Run (venv with wasmtime+unicorn+capstone+pyelftools, e.g. /tmp/armv):
   /tmp/armv/bin/python scripts/repro/uxth_fold_differential.py
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -32,7 +34,9 @@ from unicorn.arm_const import (
 )
 
 WAT = "scripts/repro/uxth_fold.wat"
-SYNTH = "./target/debug/synth"
+# CI wires this via the SYNTH env var (#890); the literal stays the
+# local-dev default.
+SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 CODE, LIN, STK, RET = 0x200000, 0x40000, 0x180000, 0x300000
 

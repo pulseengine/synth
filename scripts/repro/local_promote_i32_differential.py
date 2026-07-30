@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA local-promotion validation oracle (#390, epic #242).
 
 `local_promote_i32.wat` is built to defeat the #193 non-vacuity trap: 7

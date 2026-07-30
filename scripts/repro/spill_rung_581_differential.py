@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#581 — DIRECT-selector spill-rung differential: unicorn vs wasmtime.
 
 The direct selector's spill rung (the backend's exhaustion retry,

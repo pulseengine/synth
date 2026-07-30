@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA-002 / VCR-ORACLE-001 (#390, #242) — EXECUTION-validate dead-frame elision.
 
 `compute_local_layout` reserves a frame slot (`sub sp,#N` / `add sp,#N`) for every
@@ -25,6 +26,7 @@ Run (needs wasmtime + unicorn + pyelftools, e.g. a venv):
 
 Exits nonzero on any mismatch or vacuity failure.
 """
+import os
 import subprocess
 import sys
 
@@ -39,7 +41,9 @@ from unicorn.arm_const import (
 )
 
 WASM = "scripts/repro/leaf_caller_saved.wat"
-SYNTH = "./target/debug/synth"
+# CI wires this via the SYNTH env var (#890); the literal stays the
+# local-dev default.
+SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 ELF_OFF, ELF_ON = "/tmp/leaf_frame_off.elf", "/tmp/leaf_frame_on.elf"
 CODE, LIN, STK, RET = 0x200000, 0x40000, 0x90000, 0x300000
 

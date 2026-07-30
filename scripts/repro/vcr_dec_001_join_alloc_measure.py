@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: manual (measurement) — the #242 join-allocator COMPARISON deliverable (bytes and --emit-wcet bounds, graph-alloc ON vs OFF) whose whole point is a number to judge a flip by; it deliberately has no verdict. The allocator's correctness is gated by the wired VCR-DEC-001 differential jobs.
 """VCR-DEC-001 increments 2+3 — MEASURE the join- and call-aware graph-colouring
 allocator against the shipping greedy/segment allocator (epic #242, the North
 Star).

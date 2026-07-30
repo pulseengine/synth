@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: manual (measurement) — prints the #390 .text size-attribution table (named causal buckets) for the beat-LLVM lanes; it is a REPORT with no pass/fail. The numbers it produces are pinned by crates/synth-cli/tests/size_attribution_390.rs, which cargo test runs — that is the gate.
 """size_attribution_390.py — quantify and attribute synth's .text size on the
 gust hot path (issue #390, rivet VCR-PERF-001).
 

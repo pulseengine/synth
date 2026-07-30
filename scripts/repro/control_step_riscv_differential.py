@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#223 / #798 — control_step on RISC-V: correctness + ABI + shipped-data differential.
 
 After #218 (reachable) + #220 (callee-saved ABI) + #223 (Select, non-param

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#757 RED-FIRST differential — memmove (`memory.copy`) from a STATIC pointer.
 
 gale's real mechanism: a RawVec-grow `call` followed by a `memory.copy` whose

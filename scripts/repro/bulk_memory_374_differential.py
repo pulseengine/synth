@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#374 — memory.copy / memory.fill (bulk-memory) numeric differential.
 
 synth had no bulk-memory lowering: `memory.copy`/`memory.fill` fell through the

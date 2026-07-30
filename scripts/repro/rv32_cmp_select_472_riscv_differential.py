@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#472 — RV32 cmp→select fusion (VCR-SEL-004 port) differential oracle.
 
 Ports the ARM cmp→select lever to RV32: an i32 comparison that DIRECTLY feeds

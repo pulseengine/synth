@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#778 phase 4 (#49) recursion-bound soundness cross-check: execute a compiled
 BOUNDED self-recursion under unicorn (Thumb-2) and confirm the composed
 recursion bound is a sound upper bound on the ACTUAL total executed cost across

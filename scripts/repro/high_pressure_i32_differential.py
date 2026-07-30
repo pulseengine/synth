@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA-001 step 3b-lite (#242) — spill-on-exhaustion differential oracle.
 
 `high_pressure_i32.wat` keeps 10 i32 constants simultaneously live (plus both

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#472 — RV32 i32 local-promotion lever (VCR-RA) differential oracle.
 
 Ports the ARM local-promotion lever (#390/#457/#458) to RV32: non-parameter i32
