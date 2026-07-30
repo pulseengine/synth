@@ -396,6 +396,23 @@ pub struct CompileConfig {
     /// DECLINES every `call_indirect` lowering: an unchecked indirect branch
     /// is never emitted (WASM Core §4.4.8 requires OOB/type-mismatch traps).
     pub call_indirect_guards: crate::wasm_decoder::CallIndirectGuards,
+    /// #851 lane L3: result count per FUNCTION TYPE (see
+    /// [`crate::wasm_decoder::DecodedModule::type_result_counts`]). The aarch64
+    /// `call_indirect` lowering needs the 0-vs-1 result distinction for a callee
+    /// it knows only by its static type.
+    pub type_result_counts: Vec<u32>,
+    /// #851 lane L3, aarch64 only — the driver has EMITTED the module-level
+    /// substrate the globals and `call_indirect` lowerings address: the `.data`
+    /// globals image (`__synth_globals`) and the `.text` funcref table
+    /// (`__synth_func_table`), both produced by
+    /// `synth_backend_aarch64::substrate::plan`.
+    ///
+    /// FAIL-SAFE BY DEFAULT (`false`): the aarch64 selector LOUD-DECLINES
+    /// `global.get`/`global.set`/`call_indirect` unless this is set, so a driver
+    /// that compiles function bodies but never emits the regions cannot ship
+    /// code addressing a symbol that does not exist. Set only on the two paths
+    /// that call `plan()` and place its output in the object.
+    pub a64_substrate_emitted: bool,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -495,6 +512,8 @@ impl Default for CompileConfig {
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.
             call_indirect_guards: crate::wasm_decoder::CallIndirectGuards::default(),
+            type_result_counts: Vec::new(),
+            a64_substrate_emitted: false,
             // #778 phase 2: no --wcet-hints file ⇒ no hints. Consulted ONLY by
             // the WCET sidecar computation — never by codegen (the emitted
             // bytes are byte-identical with or without hints).
