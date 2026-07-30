@@ -995,8 +995,6 @@ fn a64_extended_surface(
     op: &WasmOp,
 ) -> Option<(&'static str, u32, Vec<WasmOp>, Result<(), &'static str>)> {
     // Gap reasons, shared per class.
-    const FP_MEM: &str = "aarch64 selector has no f32/f64 load/store arm (linear-memory FP access \
-         needs LDR/STR (SIMD&FP) forms) — deferred, #851";
     const TRAP_TRUNC_I64: &str = "aarch64 selector has no TRAPPING i64-target truncation arm (needs the \
          #709-class i64 domain guard; the SATURATING i64 forms do lower) — \
          deferred, #851";
@@ -1214,7 +1212,7 @@ fn a64_extended_surface(
         F32Floor => some("f32.floor", 0, vec![F32Const(1.5), F32Floor], Ok(())),
         F32Trunc => some("f32.trunc", 0, vec![F32Const(1.5), F32Trunc], Ok(())),
         F32Nearest => some("f32.nearest", 0, vec![F32Const(1.5), F32Nearest], Ok(())),
-        // ─── f32 memory — GAP ────────────────────────────────────────────
+        // ─── f32 memory — lowered (LDR/STR s, bounds-checked, v0.54 L2) ──
         F32Load { .. } => some(
             "f32.load",
             0,
@@ -1225,7 +1223,7 @@ fn a64_extended_surface(
                     align: 2,
                 },
             ],
-            Err(FP_MEM),
+            Ok(()),
         ),
         F32Store { .. } => some(
             "f32.store",
@@ -1238,7 +1236,7 @@ fn a64_extended_surface(
                     align: 2,
                 },
             ],
-            Err(FP_MEM),
+            Ok(()),
         ),
         // ─── f32 conversions ─────────────────────────────────────────────
         F32ConvertI32S => some(
@@ -1420,7 +1418,7 @@ fn a64_extended_surface(
         F64Floor => some("f64.floor", 0, vec![F64Const(1.5), F64Floor], Ok(())),
         F64Trunc => some("f64.trunc", 0, vec![F64Const(1.5), F64Trunc], Ok(())),
         F64Nearest => some("f64.nearest", 0, vec![F64Const(1.5), F64Nearest], Ok(())),
-        // ─── f64 memory — GAP ────────────────────────────────────────────
+        // ─── f64 memory — lowered (LDR/STR d, bounds-checked, v0.54 L2) ──
         F64Load { .. } => some(
             "f64.load",
             0,
@@ -1431,7 +1429,7 @@ fn a64_extended_surface(
                     align: 3,
                 },
             ],
-            Err(FP_MEM),
+            Ok(()),
         ),
         F64Store { .. } => some(
             "f64.store",
@@ -1444,7 +1442,7 @@ fn a64_extended_surface(
                     align: 3,
                 },
             ],
-            Err(FP_MEM),
+            Ok(()),
         ),
         // ─── f64 conversions ─────────────────────────────────────────────
         F64ConvertI32S => some(

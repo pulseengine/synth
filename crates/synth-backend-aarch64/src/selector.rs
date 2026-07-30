@@ -1080,6 +1080,49 @@ pub fn select_typed_cf_calls(
         Ok(())
     };
 
+    // v0.54 L2 (#851) — an FP load: pop the i32 address, dereference
+    // `[x28 + uxtw(addr) + offset]` with the SIMD&FP `ldr s/d`, push the value
+    // into the FP file.
+    //
+    // The address arithmetic and the #865 SOFTWARE BOUNDS CHECK are the SAME
+    // `form_ea` the integer loads use — an FP access is bounds-checked by
+    // default exactly like an i32 one, and traps (`brk`) where wasmtime traps.
+    // Only the data register file differs: the destination is a fresh FP temp,
+    // so the GP `ea` temp is free again the instant the load retires.
+    let fload = |words: &mut Vec<u32>,
+                 stack: &mut Vec<Val>,
+                 offset: u32,
+                 size_log2: u32,
+                 ldr_op: fn(FReg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let addr = pop_gp(stack, "fload")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        // The FP destination lives in a DIFFERENT file than `ea`, so it cannot
+        // alias it — no read-before-write reuse trick is needed (or possible).
+        let dst = alloc_ftemp(stack)?;
+        words.push(ldr_op(dst, ea, imm.unwrap_or(0)));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+
+    // v0.54 L2 (#851) — an FP store: pop the FP value, then the i32 address,
+    // and write `size` bytes to `[x28 + uxtw(addr) + offset]`. Bounds-checked
+    // by the shared `form_ea` (#865). Unlike the GP store there is no need to
+    // keep the value artificially live across the EA allocation: `form_ea`
+    // hands out GP temps only, and the value lives in the FP file.
+    let fstore = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  offset: u32,
+                  size_log2: u32,
+                  str_op: fn(FReg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let val = pop_fp(stack, "fstore")?;
+        let addr = pop_gp(stack, "fstore")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        words.push(str_op(val, ea, imm.unwrap_or(0)));
+        Ok(())
+    };
+
     for op in ops {
         match op {
             WasmOp::LocalGet(i) => {
@@ -1658,6 +1701,23 @@ pub fn select_typed_cf_calls(
             WasmOp::I64Store32 { offset, .. } => {
                 store(&mut words, &mut stack, *offset, 2, enc::str_w)?
             }
+            // v0.54 L2 (#851) — f32/f64 linear-memory access. Same address
+            // path and same #865 bounds check as the integer forms; only the
+            // data register file differs (`ldr/str s` = 4 bytes, `d` = 8).
+            // WASM float load/store move BIT PATTERNS, so a NaN payload and
+            // the sign of ±0 survive a round-trip intact.
+            WasmOp::F32Load { offset, .. } => {
+                fload(&mut words, &mut stack, *offset, 2, enc::ldr_s)?
+            }
+            WasmOp::F32Store { offset, .. } => {
+                fstore(&mut words, &mut stack, *offset, 2, enc::str_s)?
+            }
+            WasmOp::F64Load { offset, .. } => {
+                fload(&mut words, &mut stack, *offset, 3, enc::ldr_d)?
+            }
+            WasmOp::F64Store { offset, .. } => {
+                fstore(&mut words, &mut stack, *offset, 3, enc::str_d)?
+            }
             // --- #851 direct `call` ---
             //
             // AAPCS64: pop `argc` integer args off the value stack, marshal them
@@ -2194,6 +2254,126 @@ mod tests {
         ];
         let w = sel_mem(&ops, 1, MemBounds::Software { limit_bytes: 65536 });
         assert_eq!(w[0], enc::brk(0));
+    }
+
+    // --- v0.54 L2 (#851): f32/f64 linear-memory access ---
+
+    fn sel_mem_typed(
+        ops: &[WasmOp],
+        num_params: u32,
+        f32s: &[bool],
+        f64s: &[bool],
+        bounds: MemBounds,
+    ) -> Vec<u32> {
+        let (w, _) =
+            select_typed_cf_calls(ops, num_params, f32s, f64s, &[], 0, &[], &[], &[], bounds)
+                .unwrap();
+        w
+    }
+
+    #[test]
+    fn f32_load_is_bounds_checked_then_ldr_s() {
+        // (param i32) f32.load — the FP load must go through the SAME #865
+        // check as i32.load: K = 65536 - 0 - 4 = 65532, compare BEFORE the
+        // dereference, `brk` on OOB. Then `ldr s16, [x9]` (FP destination, so
+        // the GP `ea` temp is not reused as the data register).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(
+            &ops,
+            1,
+            &[],
+            &[],
+            MemBounds::Software { limit_bytes: 65536 },
+        );
+        assert_eq!(
+            w,
+            vec![
+                0x529F_FF89, // mov w9, #65532
+                enc::cmp(0, 9),
+                enc::bcond(Cond::Ls, 2),
+                enc::brk(0),
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                enc::ldr_s(FTEMPS[0], 9, 0),
+                enc::fmov_d(0, FTEMPS[0]),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn f64_store_is_bounds_checked_with_dword_width() {
+        // f64.store must account for the 8-byte access width in the bound:
+        // K = 65536 - 0 - 8 = 65528 (NOT 65532) — an 8-byte store at 65532
+        // would run 4 bytes past the limit.
+        let ops = vec![
+            WasmOp::LocalGet(0), // i32 address
+            WasmOp::LocalGet(1), // f64 value
+            WasmOp::F64Store {
+                offset: 0,
+                align: 3,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(
+            &ops,
+            2,
+            &[],
+            &[false, true],
+            MemBounds::Software { limit_bytes: 65536 },
+        );
+        assert_eq!(w[0], enc::mov_imm32(9, 65528)[0], "K must be limit - 8");
+        assert!(w.contains(&enc::brk(0)), "OOB must trap");
+        assert!(
+            w.contains(&enc::str_d(0, 9, 0)),
+            "must store the d view of the value register; got {w:#010X?}"
+        );
+    }
+
+    #[test]
+    fn fp_mem_offset_folds_into_the_scaled_immediate() {
+        // A size-aligned offset within imm12 range folds into the load: for
+        // `ldr s` the encoded imm12 is offset/4, for `ldr d` offset/8.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F32Load {
+                offset: 16,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(&ops, 1, &[], &[], MemBounds::Unchecked);
+        assert_eq!(
+            w,
+            vec![
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                enc::ldr_s(FTEMPS[0], 9, 4), // imm12 = 16/4
+                enc::fmov_d(0, FTEMPS[0]),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fp_store_rejects_a_gp_value_operand() {
+        // Type confusion guard: an i32 on the stack fed to f32.store must ERROR
+        // rather than store the wrong register file.
+        let ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::I32Const(42),
+            WasmOp::F32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        assert!(select_typed(&ops, 0, &[], &[]).is_err());
     }
 
     #[test]
