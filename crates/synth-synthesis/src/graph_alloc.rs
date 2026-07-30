@@ -65,10 +65,29 @@ pub fn enabled() -> bool {
 /// run on the output unchanged (so a value homed in R4-R8 still gets its
 /// callee-saved push — the invariant VCR-RA-003 guards).
 pub fn reallocate(instrs: &[ArmInstruction], pool: &[Reg]) -> Option<Vec<ArmInstruction>> {
+    if std::env::var("SYNTH_GRAPH_ALLOC_DUMP").is_ok() {
+        eprintln!("[ga-dump] ---- function, {} instrs ----", instrs.len());
+        for (i, ins) in instrs.iter().enumerate() {
+            eprintln!("[ga-dump] {i:3}: {:?}", ins.op);
+        }
+    }
+    // INCREMENT 1 (v0.50) — whole straight-line functions. Tried FIRST and left
+    // bit-for-bit as it shipped, so the increment-1 corpus stays byte-identical.
+    if let Some(out) = reallocate_straight_line(instrs, pool) {
+        return Some(out);
+    }
+    // INCREMENT 2 (v0.53, this lane) — colour ACROSS if/else joins.
+    joins::reallocate_across_joins(instrs, pool)
+}
+
+/// Increment 1: the whole-straight-line-function colouring, unchanged.
+fn reallocate_straight_line(
+    instrs: &[ArmInstruction],
+    pool: &[Reg],
+) -> Option<Vec<ArmInstruction>> {
     // BOUNDED SCOPE: the whole function must be ONE straight-line segment. Any
-    // control-flow / call / unmodeled op → decline (shipping path segments such
-    // functions; this spike does not, by design — increment 2 is the whole-
-    // function webs across joins).
+    // control-flow / call / unmodeled op → decline (increment 2 below takes the
+    // branchy ones; anything neither handles falls back to the shipping path).
     if instrs.is_empty() {
         return None;
     }
@@ -211,6 +230,830 @@ fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>>
         }
     }
     Some(costs)
+}
+
+/// VCR-DEC-001 **increment 2** — colour a whole branchy function ACROSS its
+/// control-flow joins.
+///
+/// **Why joins.** Increment 1 could only colour a function that was one
+/// straight-line segment; the shipping `reallocate_function` handles branchy
+/// functions by cutting them into maximal straight-line segments and pinning
+/// each segment's inputs (`def == 0`) and per-register exit holders to their
+/// original registers. Those pins are exactly where the greedy allocator's
+/// weakness concentrates: an if/else arm's first `movw r4, #400` is a
+/// segment-index-0 def, so segment-local analysis is FORCED to treat it as a
+/// segment input and cannot move it — even though whole-function liveness shows
+/// the value is born there, dies two instructions later, and never crosses the
+/// join. Every arm therefore keeps whatever register the greedy selector
+/// happened to hand it, and the callee-saved ones drag a `push {r4-r8,lr}` /
+/// `pop {r4-r8,pc}` behind them.
+///
+/// **What this does instead.** Build the function's label-form CFG, split every
+/// physical register's def-use chains into cross-block **webs** (a def site and
+/// every use its definition reaches, unified through joins by a reaching-def
+/// fixpoint), build interference over WEBS from CFG liveness, and colour the
+/// whole function at once with Chaitin/Briggs. Two values in opposite arms of an
+/// if/else are never simultaneously live, so they share one register — which is
+/// how the else-arm's R4 becomes R2 and the callee-saved save/restore
+/// disappears under the downstream `shrink_callee_saved_saves`.
+///
+/// **Acceptance oracle first (the L4/#872 lesson).** The rewrite is accepted
+/// only if [`validate_cfg_rewrite`] — the CFG-lifted backward must-fixpoint
+/// version of the trace-equality validator — proves it preserves dataflow on
+/// EVERY path, with an exit contract the validator computes itself (the pass
+/// cannot hand it a weakened seed). The pass mirrors that contract exactly in
+/// its own pins, so a colouring it proposes is one the oracle can certify.
+/// Downstream, the unconditional VCR-RA-003 [`validate_final_allocation`]
+/// re-checks the final stream through an INDEPENDENTLY written CFG builder, and
+/// the execution differential is the runtime backstop. That layering is the
+/// honest answer to "a validator can share its pass's blind spot": this
+/// validator shares the CFG *shape* with the pass, so it is necessary, not
+/// sufficient — which is why RA-003 and unicorn execution both gate it.
+///
+/// **Bounded scope — declines, never hard-fails.** `None` (→ the shipping
+/// `reallocate_function`) on: numeric/pre-resolved branches (`BOffset`/
+/// `BCondOffset` — their displacements are already baked, so a rename that
+/// changes a Thumb encoding width would silently overshoot; the label form is
+/// resolved AFTER this pass), calls (`Bl`/`Blx`/`Call`/`CallIndirect` — the
+/// AAPCS argument/clobber contract is a named follow-up), `BrTable`, computed
+/// `Bx`, duplicate/unknown labels, unreachable blocks, any op without a precise
+/// [`reg_effect`], any spill, and any validator rejection.
+mod joins {
+    use super::*;
+    use crate::liveness::{
+        BasicBlock, RegEffect, cfg_exit_observable, color_ranges, is_straight_line, reg_effect,
+        rewrite_op_maps, validate_cfg_rewrite,
+    };
+    use crate::rules::ArmOp;
+
+    /// Every architectural register the analysis tracks (pool + reserved).
+    const ALL_REGS: [Reg; 16] = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+        Reg::R8,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+        Reg::R12,
+        Reg::SP,
+        Reg::LR,
+        Reg::PC,
+    ];
+
+    /// Decline diagnostics: `SYNTH_GRAPH_ALLOC_STATS=1` names WHY a branchy
+    /// function fell back to the shipping pass, so a "did nothing" result is
+    /// never mistaken for "nothing to do".
+    fn decline<T>(reason: &str) -> Option<T> {
+        if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+            eprintln!("[graph-alloc] join colouring DECLINED: {reason}");
+        }
+        None
+    }
+
+    enum Term<'a> {
+        Uncond(&'a str),
+        Cond(&'a str),
+        Ret,
+        Fall,
+        No,
+    }
+
+    fn classify(op: &ArmOp) -> Term<'_> {
+        use ArmOp::*;
+        match op {
+            B { label } => Term::Uncond(label),
+            Bhs { label } | Blo { label } | Bcc { label, .. } => Term::Cond(label),
+            Bx { rm: Reg::LR } => Term::Ret,
+            // A `pop {…, pc}` IS a return — the #888 class. Modeling it as a
+            // plain register-list def (which `reg_effect` alone would) is what
+            // let the range-realloc pass recolour `pop {r4..r8,pc}` into
+            // `pop {r6,r5,r4,r3,r2,pc}`.
+            Pop { regs } if regs.contains(&Reg::PC) => Term::Ret,
+            BOffset { .. }
+            | BCondOffset { .. }
+            | Bx { .. }
+            | BrTable { .. }
+            | Bl { .. }
+            | Blx { .. }
+            | Call { .. }
+            | CallIndirect { .. } => Term::No,
+            _ => Term::Fall,
+        }
+    }
+
+    /// The label-form CFG of `instrs`, or `None` to decline. Sound by
+    /// construction: a `Some` is a COMPLETE CFG (every block reachable from the
+    /// entry, every terminator modeled), never a partial guess.
+    pub(super) fn build_cfg(instrs: &[ArmInstruction]) -> Option<Vec<BasicBlock>> {
+        let n = instrs.len();
+        if n == 0 {
+            return None;
+        }
+        // 1. Admission.
+        let mut labels: BTreeSet<&str> = BTreeSet::new();
+        for ins in instrs {
+            match classify(&ins.op) {
+                Term::No => return None,
+                Term::Uncond(_) | Term::Cond(_) => {}
+                Term::Ret | Term::Fall => {
+                    if !matches!(ins.op, ArmOp::Label { .. })
+                        && !matches!(ins.op, ArmOp::Bx { .. })
+                        && reg_effect(&ins.op).is_none()
+                    {
+                        return None;
+                    }
+                }
+            }
+            if let ArmOp::Label { name } = &ins.op
+                && !labels.insert(name.as_str())
+            {
+                return None; // duplicate label ⇒ ambiguous CFG
+            }
+        }
+        // 2. Leaders.
+        let mut leader = vec![false; n];
+        leader[0] = true;
+        for i in 0..n {
+            if matches!(instrs[i].op, ArmOp::Label { .. }) {
+                leader[i] = true;
+            }
+            if matches!(
+                classify(&instrs[i].op),
+                Term::Uncond(_) | Term::Cond(_) | Term::Ret
+            ) && i + 1 < n
+            {
+                leader[i + 1] = true;
+            }
+        }
+        let starts: Vec<usize> = (0..n).filter(|&i| leader[i]).collect();
+        let mut blocks: Vec<BasicBlock> = starts
+            .iter()
+            .enumerate()
+            .map(|(bi, &start)| BasicBlock {
+                start,
+                end: starts.get(bi + 1).copied().unwrap_or(n),
+                succ: vec![],
+            })
+            .collect();
+        let block_of_start: BTreeMap<usize, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(bi, b)| (b.start, bi))
+            .collect();
+        let mut block_of_label: BTreeMap<&str, usize> = BTreeMap::new();
+        for (bi, b) in blocks.iter().enumerate() {
+            if let ArmOp::Label { name } = &instrs[b.start].op {
+                block_of_label.insert(name.as_str(), bi);
+            }
+        }
+        // 3. Successors.
+        let mut succs: Vec<Vec<usize>> = Vec::with_capacity(blocks.len());
+        for b in &blocks {
+            let fallthrough = block_of_start.get(&b.end).copied();
+            succs.push(match classify(&instrs[b.end - 1].op) {
+                Term::Uncond(l) => vec![*block_of_label.get(l)?],
+                Term::Cond(l) => {
+                    let t = *block_of_label.get(l)?;
+                    let mut s = vec![t];
+                    if let Some(f) = fallthrough
+                        && f != t
+                    {
+                        s.push(f);
+                    }
+                    s
+                }
+                Term::Ret => vec![],
+                // A non-return block that falls off the end of the function is
+                // a stream we do not understand: decline rather than invent a
+                // sink (an invented sink would silently drop its exit contract).
+                Term::Fall => vec![fallthrough?],
+                Term::No => return None,
+            });
+        }
+        for (b, s) in blocks.iter_mut().zip(succs) {
+            b.succ = s;
+        }
+        // 4. Every block must be reachable from the entry — an unreachable
+        //    block's demands never reach the entry check, so a CFG that hides
+        //    one would validate vacuously.
+        let mut seen = vec![false; blocks.len()];
+        let mut work = vec![0usize];
+        seen[0] = true;
+        while let Some(b) = work.pop() {
+            for &s in &blocks[b].succ {
+                if !seen[s] {
+                    seen[s] = true;
+                    work.push(s);
+                }
+            }
+        }
+        if seen.iter().any(|r| !r) {
+            return None;
+        }
+        Some(blocks)
+    }
+
+    /// Simple union-find over web ids.
+    struct Uf(Vec<usize>);
+    impl Uf {
+        fn new(n: usize) -> Self {
+            Uf((0..n).collect())
+        }
+        fn find(&mut self, mut x: usize) -> usize {
+            while self.0[x] != x {
+                self.0[x] = self.0[self.0[x]];
+                x = self.0[x];
+            }
+            x
+        }
+        fn union(&mut self, a: usize, b: usize) {
+            let (a, b) = (self.find(a), self.find(b));
+            if a != b {
+                self.0[b] = a;
+            }
+        }
+    }
+
+    /// Per-instruction effect (`None` for control flow / labels).
+    fn effects(instrs: &[ArmInstruction]) -> Vec<Option<RegEffect>> {
+        instrs
+            .iter()
+            .map(|i| {
+                if is_straight_line(&i.op) {
+                    reg_effect(&i.op)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The exit contract, taken VERBATIM from the oracle
+    /// ([`crate::liveness::cfg_exit_observable`]) rather than restated here.
+    /// Used as `live_out` at every sink, so a register the caller can observe
+    /// stays live from its last definition all the way to the return and its
+    /// holder web interferes with everything in between — the pass therefore
+    /// never proposes a colouring the validator would reject for clobbering an
+    /// exit-observable register. A register NEITHER side defines is live from
+    /// the function entry, so its entry web interferes with every web and no
+    /// value can be renamed onto it (the seqblocks case: a void function's
+    /// unwritten R0 is not a free rename target, because this pass cannot see
+    /// the wasm signature that would prove it dead).
+    fn exit_live(instrs: &[ArmInstruction], sink_end: usize) -> BTreeSet<Reg> {
+        cfg_exit_observable(&instrs[sink_end - 1].op)
+    }
+
+    /// Backward per-block register liveness over the CFG.
+    fn liveness(
+        instrs: &[ArmInstruction],
+        eff: &[Option<RegEffect>],
+        blocks: &[BasicBlock],
+    ) -> (Vec<BTreeSet<Reg>>, Vec<BTreeSet<Reg>>) {
+        let nb = blocks.len();
+        let mut use_b = vec![BTreeSet::<Reg>::new(); nb];
+        let mut def_b = vec![BTreeSet::<Reg>::new(); nb];
+        for (bi, b) in blocks.iter().enumerate() {
+            let mut defined = BTreeSet::new();
+            for e in eff[b.start..b.end].iter().flatten() {
+                for u in &e.uses {
+                    if !defined.contains(u) {
+                        use_b[bi].insert(*u);
+                    }
+                }
+                for d in &e.defs {
+                    defined.insert(*d);
+                }
+            }
+            def_b[bi] = defined;
+        }
+        let mut live_in = vec![BTreeSet::<Reg>::new(); nb];
+        let mut live_out = vec![BTreeSet::<Reg>::new(); nb];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for bi in (0..nb).rev() {
+                let out: BTreeSet<Reg> = if blocks[bi].succ.is_empty() {
+                    exit_live(instrs, blocks[bi].end)
+                } else {
+                    blocks[bi]
+                        .succ
+                        .iter()
+                        .flat_map(|&s| live_in[s].iter().copied())
+                        .collect()
+                };
+                let mut in_ = use_b[bi].clone();
+                in_.extend(out.difference(&def_b[bi]).copied());
+                if out != live_out[bi] {
+                    live_out[bi] = out;
+                    changed = true;
+                }
+                if in_ != live_in[bi] {
+                    live_in[bi] = in_;
+                    changed = true;
+                }
+            }
+        }
+        (live_in, live_out)
+    }
+
+    /// Everything the colourer needs, derived from the CFG in one pass.
+    struct Webs {
+        /// web id per (instruction, def register), and the entry pseudo-defs.
+        def_web: BTreeMap<(usize, Reg), usize>,
+        entry_web: BTreeMap<Reg, usize>,
+        /// The (unique) original register of each web.
+        reg_of: Vec<Reg>,
+        /// `reach_before[i][r]` — the webs that may hold `r` immediately before
+        /// `i`. A SET, not a single web: two definitions of one register that
+        /// reach a common point but die there (each arm's own `movw r4, #k`)
+        /// are genuinely SEPARATE values and must stay separately colourable.
+        /// Merging them — the obvious "one holder per register per point"
+        /// shortcut — silently pins every arm-local value back to the greedy
+        /// selector's register and makes this whole pass an identity transform.
+        /// Wherever a single holder is REQUIRED (a use, an apply-time rename)
+        /// the set is a singleton by construction: `r` live at a point means
+        /// some downstream use reads it, and that use unified every definition
+        /// reaching it.
+        reach_before: Vec<BTreeMap<Reg, BTreeSet<usize>>>,
+        /// `reach_after[i][r]` — the webs that may hold `r` immediately after `i`.
+        reach_after: Vec<BTreeMap<Reg, BTreeSet<usize>>>,
+        n_webs: usize,
+    }
+
+    /// Split every physical register's def-use chains into cross-block webs.
+    ///
+    /// Because a use of `r` can only be reached by definitions OF `r`, every web
+    /// carries exactly ONE original register — webs partition per-register def
+    /// sites, they never merge two registers. The cross-arm sharing this pass
+    /// exists for comes from ABSENCE of interference between two arms' webs, not
+    /// from merging them.
+    fn build_webs(
+        instrs: &[ArmInstruction],
+        eff: &[Option<RegEffect>],
+        blocks: &[BasicBlock],
+    ) -> Option<Webs> {
+        // Def sites: one pseudo-def per register at function entry, then one per
+        // (instruction, def register).
+        let mut reg_of: Vec<Reg> = Vec::new();
+        let mut entry_web: BTreeMap<Reg, usize> = BTreeMap::new();
+        for r in ALL_REGS {
+            entry_web.insert(r, reg_of.len());
+            reg_of.push(r);
+        }
+        let mut def_web: BTreeMap<(usize, Reg), usize> = BTreeMap::new();
+        for (i, e) in eff.iter().enumerate() {
+            if let Some(e) = e {
+                for d in &e.defs {
+                    def_web.insert((i, *d), reg_of.len());
+                    reg_of.push(*d);
+                }
+            }
+        }
+        let n_sites = reg_of.len();
+        let mut uf = Uf::new(n_sites);
+
+        // Forward reaching-def fixpoint over the CFG. `in_b[bi][r]` = the set of
+        // def sites of `r` that may reach block `bi`'s entry.
+        type ReachMap = BTreeMap<Reg, BTreeSet<usize>>;
+        let nb = blocks.len();
+        let entry_reach: ReachMap = ALL_REGS
+            .iter()
+            .map(|r| (*r, BTreeSet::from([entry_web[r]])))
+            .collect();
+        let mut in_b: Vec<ReachMap> = vec![BTreeMap::new(); nb];
+        let mut out_b: Vec<ReachMap> = vec![BTreeMap::new(); nb];
+        in_b[0] = entry_reach.clone();
+        let transfer = |bi: usize, mut m: ReachMap| -> ReachMap {
+            for i in blocks[bi].start..blocks[bi].end {
+                if let Some(e) = &eff[i] {
+                    for d in &e.defs {
+                        m.insert(*d, BTreeSet::from([def_web[&(i, *d)]]));
+                    }
+                }
+            }
+            m
+        };
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for bi in 0..nb {
+                let mut inm: ReachMap = if bi == 0 {
+                    entry_reach.clone()
+                } else {
+                    BTreeMap::new()
+                };
+                for (pb, blk) in blocks.iter().enumerate() {
+                    if blk.succ.contains(&bi) {
+                        for (r, s) in &out_b[pb] {
+                            inm.entry(*r).or_default().extend(s.iter().copied());
+                        }
+                    }
+                }
+                if bi == 0 {
+                    for (r, s) in &entry_reach {
+                        inm.entry(*r).or_default().extend(s.iter().copied());
+                    }
+                }
+                if inm != in_b[bi] {
+                    in_b[bi] = inm;
+                    changed = true;
+                }
+                let outm = transfer(bi, in_b[bi].clone());
+                if outm != out_b[bi] {
+                    out_b[bi] = outm;
+                    changed = true;
+                }
+            }
+        }
+
+        // Replay each block, unifying at uses; record per-instruction reach maps.
+        let n = instrs.len();
+        let mut reach_before_sets: Vec<ReachMap> = vec![BTreeMap::new(); n];
+        let mut reach_after_sets: Vec<ReachMap> = vec![BTreeMap::new(); n];
+        for (bi, b) in blocks.iter().enumerate() {
+            let mut cur = in_b[bi].clone();
+            for i in b.start..b.end {
+                reach_before_sets[i] = cur.clone();
+                if let Some(e) = &eff[i] {
+                    for u in &e.uses {
+                        let set = cur.get(u)?;
+                        let mut it = set.iter().copied();
+                        let first = it.next()?;
+                        for d in it {
+                            uf.union(first, d);
+                        }
+                        // A single-field RMW (`movt`, `SelectMove`) reads and
+                        // writes ONE register field: its old and new webs must
+                        // land on the same colour, so unify them. Doing this for
+                        // every same-register def/use pair is a conservative
+                        // over-approximation (it can only force an assignment
+                        // the ORIGINAL already had), and `rewrite_op_maps`
+                        // independently rejects any residual disagreement.
+                        if e.defs.contains(u) {
+                            uf.union(first, def_web[&(i, *u)]);
+                        }
+                    }
+                    for d in &e.defs {
+                        cur.insert(*d, BTreeSet::from([def_web[&(i, *d)]]));
+                    }
+                }
+                reach_after_sets[i] = cur.clone();
+            }
+        }
+
+        // Canonicalise each reaching set through union-find — WITHOUT merging
+        // distinct webs. Two definitions of one register reaching a common
+        // point where the register is DEAD stay separate values; that is
+        // exactly the cross-arm freedom this pass exists to exploit.
+        let canon = |m: &ReachMap, uf: &mut Uf| -> BTreeMap<Reg, BTreeSet<usize>> {
+            m.iter()
+                .map(|(r, s)| (*r, s.iter().map(|d| uf.find(*d)).collect()))
+                .collect()
+        };
+        let mut reach_before: Vec<BTreeMap<Reg, BTreeSet<usize>>> = Vec::with_capacity(n);
+        for m in &reach_before_sets {
+            reach_before.push(canon(m, &mut uf));
+        }
+        let mut reach_after: Vec<BTreeMap<Reg, BTreeSet<usize>>> = Vec::with_capacity(n);
+        for m in &reach_after_sets {
+            reach_after.push(canon(m, &mut uf));
+        }
+        let entry_web: BTreeMap<Reg, usize> = entry_web
+            .into_iter()
+            .map(|(r, w)| (r, uf.find(w)))
+            .collect();
+        let def_web: BTreeMap<(usize, Reg), usize> =
+            def_web.into_iter().map(|(k, w)| (k, uf.find(w))).collect();
+        // Every web carries one register (a use of `r` only unifies defs of `r`).
+        for (k, w) in &def_web {
+            if reg_of[*w] != k.1 {
+                return None;
+            }
+        }
+        Some(Webs {
+            def_web,
+            entry_web,
+            reg_of,
+            reach_before,
+            reach_after,
+            n_webs: n_sites,
+        })
+    }
+
+    /// The increment-2 entry point. See the module doc for scope and oracles.
+    pub(super) fn reallocate_across_joins(
+        instrs: &[ArmInstruction],
+        pool: &[Reg],
+    ) -> Option<Vec<ArmInstruction>> {
+        let Some(blocks) = build_cfg(instrs) else {
+            return decline("cfg-unmodeled-construct");
+        };
+        // A single-block function is increment 1's domain (tried first); this
+        // path exists for the branchy ones.
+        if blocks.len() < 2 {
+            return decline("single-block");
+        }
+        let eff = effects(instrs);
+        // Every instruction is either a modeled straight-line op or pure control
+        // flow the rename passes through verbatim.
+        for (i, ins) in instrs.iter().enumerate() {
+            if eff[i].is_none() && is_straight_line(&ins.op) {
+                return decline("unmodeled-op");
+            }
+        }
+        let Some(webs) = build_webs(instrs, &eff, &blocks) else {
+            return decline("web-construction");
+        };
+        let (live_in, live_out) = liveness(instrs, &eff, &blocks);
+
+        // ---- Interference over WEBS ------------------------------------
+        let mut adj: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        let node = |w: usize, adj: &mut BTreeMap<usize, BTreeSet<usize>>| {
+            adj.entry(w).or_default();
+        };
+        let edge = |a: usize, b: usize, adj: &mut BTreeMap<usize, BTreeSet<usize>>| {
+            if a != b {
+                adj.entry(a).or_default().insert(b);
+                adj.entry(b).or_default().insert(a);
+            }
+        };
+        for w in 0..webs.n_webs {
+            node(w, &mut adj);
+        }
+        // Live web sets at every program point; simultaneously-live webs form a
+        // clique, and EVERY def (dead-on-arrival ones included — they still WRITE
+        // the register) interferes with everything live immediately after it.
+        let live_webs =
+            |regs: &BTreeSet<Reg>, m: &BTreeMap<Reg, BTreeSet<usize>>| -> BTreeSet<usize> {
+                regs.iter()
+                    .filter_map(|r| m.get(r))
+                    .flat_map(|s| s.iter().copied())
+                    .collect()
+            };
+        for (bi, b) in blocks.iter().enumerate() {
+            // Block entry.
+            let entry_set = live_webs(&live_in[bi], &webs.reach_before[b.start]);
+            for a in &entry_set {
+                for c in &entry_set {
+                    edge(*a, *c, &mut adj);
+                }
+            }
+            // Per-instruction. `live` tracks registers live AFTER `i`, walked
+            // backward from the block's live-out.
+            let mut live_regs = live_out[bi].clone();
+            for i in (b.start..b.end).rev() {
+                let after = live_webs(&live_regs, &webs.reach_after[i]);
+                for a in &after {
+                    for c in &after {
+                        edge(*a, *c, &mut adj);
+                    }
+                }
+                if let Some(e) = &eff[i] {
+                    for d in &e.defs {
+                        let dw = webs.def_web[&(i, *d)];
+                        for c in &after {
+                            edge(dw, *c, &mut adj);
+                        }
+                        // Co-defined registers (Umull rdlo/rdhi, a Pop list)
+                        // are simultaneously written and must stay distinct.
+                        for d2 in &e.defs {
+                            edge(dw, webs.def_web[&(i, *d2)], &mut adj);
+                        }
+                    }
+                    for d in &e.defs {
+                        live_regs.remove(d);
+                    }
+                    for u in &e.uses {
+                        live_regs.insert(*u);
+                    }
+                }
+            }
+        }
+
+        // ---- Pins ------------------------------------------------------
+        let pool_index: BTreeMap<Reg, usize> =
+            pool.iter().enumerate().map(|(i, r)| (*r, i)).collect();
+        let mut pins: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut assignment: BTreeMap<usize, Reg> = BTreeMap::new();
+        let mut pool_nodes: BTreeSet<usize> = BTreeSet::new();
+        for w in 0..webs.n_webs {
+            let r = webs.reg_of[w];
+            match pool_index.get(&r) {
+                None => {
+                    // Reserved (R9-R12, SP, LR, PC): identity, never coloured.
+                    assignment.insert(w, r);
+                }
+                Some(_) => {
+                    pool_nodes.insert(w);
+                }
+            }
+        }
+        let pin = |w: usize, pins: &mut BTreeMap<usize, usize>| {
+            if let Some(&idx) = pool_index.get(&webs.reg_of[w]) {
+                pins.insert(w, idx);
+            }
+        };
+        // (a) Function inputs arrive in their incoming registers.
+        for w in webs.entry_web.values() {
+            pin(*w, &mut pins);
+        }
+        // (b) The exit contract: whatever holds an exit-observable register at a
+        //     sink keeps that register. Mirrors `validate_cfg_rewrite`'s seed.
+        for b in blocks.iter() {
+            if !b.succ.is_empty() {
+                continue;
+            }
+            for r in exit_live(instrs, b.end) {
+                for w in webs.reach_after[b.end - 1].get(&r).into_iter().flatten() {
+                    pin(*w, &mut pins);
+                }
+            }
+        }
+        // (c) ARCHITECTURAL REGISTER LISTS (#888): a `Push`/`Pop` register list
+        //     is a bitmask whose stack layout is register-NUMBER order, matched
+        //     pairwise between prologue and epilogue, and it carries the #490
+        //     callee-saved contract. Identity-pin every web a `Push` USES or a
+        //     `Pop` DEFINES — recolouring one restores registers from a stack
+        //     image laid out for different ones.
+        for (i, ins) in instrs.iter().enumerate() {
+            if !matches!(&ins.op, ArmOp::Push { .. } | ArmOp::Pop { .. }) {
+                continue;
+            }
+            let Some(e) = &eff[i] else { return None };
+            for u in &e.uses {
+                for w in webs.reach_before[i].get(u).into_iter().flatten() {
+                    pin(*w, &mut pins);
+                }
+            }
+            for d in &e.defs {
+                pin(webs.def_web[&(i, *d)], &mut pins);
+            }
+        }
+
+        // ---- #677 absent-colour blockers -------------------------------
+        // A pool register with NO web in this function is not thereby a free
+        // rename target. Whole-function scope makes an absent CALLER-saved
+        // register genuinely free, but introducing an absent CALLEE-saved one
+        // would grow the prologue this pass exists to shrink — and on the direct
+        // path the prologue push list is fixed before we run. Block every absent
+        // pool colour, exactly the shipping pass's discipline: an identity-shaped
+        // colouring within the PRESENT registers always exists, so this never
+        // costs a recolouring the original bytes did not already have.
+        let present: BTreeSet<Reg> = (0..webs.n_webs)
+            .filter(|w| adj.get(w).is_some_and(|a| !a.is_empty()) || pins.contains_key(w))
+            .map(|w| webs.reg_of[w])
+            .chain(instrs.iter().enumerate().flat_map(|(i, _)| {
+                eff[i]
+                    .iter()
+                    .flat_map(|e| e.defs.iter().chain(e.uses.iter()).copied())
+                    .collect::<Vec<_>>()
+            }))
+            .collect();
+        let mut next_blocker = webs.n_webs;
+        for (idx, reg) in pool.iter().enumerate() {
+            if present.contains(reg) {
+                continue;
+            }
+            let blocker = next_blocker;
+            next_blocker += 1;
+            pins.insert(blocker, idx);
+            for w in &pool_nodes {
+                adj.entry(*w).or_default().insert(blocker);
+            }
+            adj.insert(blocker, pool_nodes.iter().copied().collect());
+        }
+
+        // ---- Colour ----------------------------------------------------
+        let pool_adj: BTreeMap<usize, BTreeSet<usize>> = adj
+            .iter()
+            .filter(|(w, _)| pool_nodes.contains(w) || pins.contains_key(w))
+            .filter(|(w, _)| **w >= webs.n_webs || pool_nodes.contains(w))
+            .map(|(w, nbrs)| {
+                (
+                    *w,
+                    nbrs.iter()
+                        .copied()
+                        .filter(|m| *m >= webs.n_webs || pool_nodes.contains(m))
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut costs: BTreeMap<usize, usize> = BTreeMap::new();
+        for (i, e) in eff.iter().enumerate() {
+            if let Some(e) = e {
+                for u in &e.uses {
+                    for w in webs.reach_before[i].get(u).into_iter().flatten() {
+                        *costs.entry(*w).or_insert(0) += 1;
+                    }
+                }
+                for d in &e.defs {
+                    *costs.entry(webs.def_web[&(i, *d)]).or_insert(0) += 1;
+                }
+            }
+        }
+        let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &costs);
+        if !spilled.is_empty() {
+            // Spill-code insertion across joins is a named follow-up; the
+            // shipping path HAS spill support, so decline to it.
+            return decline("needs-spill");
+        }
+        for (w, c) in &coloring {
+            if *w < webs.n_webs {
+                assignment.insert(*w, pool[*c]);
+            }
+        }
+
+        // Defense in depth, independent of the colourer: re-check every
+        // interference edge against the final assignment.
+        for (a, nbrs) in &adj {
+            if *a >= webs.n_webs {
+                continue;
+            }
+            for b in nbrs {
+                if *b >= webs.n_webs {
+                    continue;
+                }
+                match (assignment.get(a), assignment.get(b)) {
+                    (Some(x), Some(y)) if x != y => {}
+                    _ => return decline("edge-recheck"),
+                }
+            }
+        }
+
+        if std::env::var("SYNTH_GRAPH_ALLOC_DUMP").is_ok() {
+            for w in 0..webs.n_webs {
+                if !pool_nodes.contains(&w) {
+                    continue;
+                }
+                eprintln!(
+                    "[ga-dump] web {w} reg={:?} pin={:?} -> {:?} nbrs={:?}",
+                    webs.reg_of[w],
+                    pins.get(&w),
+                    assignment.get(&w),
+                    adj.get(&w)
+                );
+            }
+        }
+
+        // ---- Apply -----------------------------------------------------
+        let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
+        for (i, ins) in instrs.iter().enumerate() {
+            let Some(e) = &eff[i] else {
+                out.push(ins.clone()); // control flow: verbatim
+                continue;
+            };
+            let mut use_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+            for u in &e.uses {
+                // A USE has exactly one reaching web: it unified every
+                // definition that reaches it. A non-singleton here would mean
+                // the replay disagrees with the fixpoint — decline, never guess.
+                let set = webs.reach_before[i].get(u)?;
+                if set.len() != 1 {
+                    return decline("ambiguous-reaching-web");
+                }
+                let w = *set.iter().next()?;
+                use_map.insert(*u, *assignment.get(&w)?);
+            }
+            let mut def_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+            for d in &e.defs {
+                let w = webs.def_web[&(i, *d)];
+                def_map.insert(*d, *assignment.get(&w)?);
+            }
+            out.push(ArmInstruction {
+                op: rewrite_op_maps(&ins.op, &use_map, &def_map)?,
+                source_line: ins.source_line,
+            });
+        }
+
+        // ---- The acceptance oracle -------------------------------------
+        // A rewrite the CFG-lifted trace-equality validator cannot justify is
+        // DROPPED (the function falls back to the shipping pass) — never
+        // emitted. `validate_cfg_rewrite` computes its own exit contract, so
+        // this cannot be weakened from here.
+        match validate_cfg_rewrite(instrs, &out, &blocks) {
+            Ok(()) => {
+                if out == instrs {
+                    // Identity rewrite: let the shipping pass have the function
+                    // (it may still find a segment-local win we did not).
+                    decline("identity-colouring")
+                } else {
+                    Some(out)
+                }
+            }
+            Err(v) => {
+                if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                    eprintln!("[graph-alloc] join colouring REJECTED by validator: {v:?}");
+                }
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
