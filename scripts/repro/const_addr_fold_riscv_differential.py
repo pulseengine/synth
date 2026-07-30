@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA RV32 lever (#472 step 2, epic #242) — EXECUTION-validate const-addr-fold.
 
 `SYNTH_RV_ADDR_FOLD=1` folds a constant memory address into the access immediate

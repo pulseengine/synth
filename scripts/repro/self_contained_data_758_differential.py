@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#758 — the DEFAULT self-contained `--cortex-m` image silently DROPS active
 `(data …)` segments.
 

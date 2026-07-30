@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#539 — EXECUTION-validate the memory.grow(0) fix on both ARM lowering paths.
 
 Before the fix, every `memory.grow` lowered to a constant `-1`, so the legal

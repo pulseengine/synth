@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#757 investigation harness — the multi-chunk static-copy differential.
 
 #757 reported a SILENT MISCOMPILE regression from the #746 fix: a chunked copy

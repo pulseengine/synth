@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#457 read-before-write local zero-init oracle (ARM direct + optimized, RV32).
 
 `read_before_write_local_zeroinit.wat` declares ONE i32 param and ONE never-

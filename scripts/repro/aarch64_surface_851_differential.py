@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#851 v0.53 — execution-differential for the aarch64 op-surface closes.
 
 The VCR-SEL-005 third-backend enumeration (cross_backend_op_parity.rs, aarch64

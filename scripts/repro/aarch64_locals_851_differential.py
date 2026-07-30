@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#851 — aarch64 NON-PARAM LOCALS execution differential (RED-first).
 
 Compiles `aarch64_locals_851.wat` with `synth compile -b aarch64`, then executes

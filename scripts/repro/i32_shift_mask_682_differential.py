@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#682 — thumb-2 i32 shifts must reduce the amount mod 32 (WASM §4.3.2).
 
 ARMv7-M register-controlled shifts consume Rm[7:0] and yield 0 (LSL/LSR) or

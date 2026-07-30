@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#503-i64 — AAPCS 64-bit STACK-param differential oracle (epic #242).
 
 Compiles `i64_stack_param_503.wat` — every shape of the previously-declined

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#377 — `--safety-bounds software` optimized-path enforcement differential.
 
 Pre-fix, `--safety-bounds software` emitted NO bounds check on the optimized

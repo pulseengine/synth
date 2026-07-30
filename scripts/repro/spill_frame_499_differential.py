@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#499 — EXECUTION-validate optimized-path spill-frame teardown on return.
 
 The optimized (non-`--relocatable`) ARM path allocates a spill frame

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#782(b) — EXECUTION-validate float `select` + explicit float `return`.
 
 The dominant decline class on the real falcon-flight-v1.123 fused core

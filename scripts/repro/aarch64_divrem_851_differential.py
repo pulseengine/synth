@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#851 — aarch64 integer div/rem trap-and-value EXECUTION differential.
 
 A64 SDIV/UDIV are TOTAL where WASM `idiv`/`irem` (Core §4.3.2) are PARTIAL, so

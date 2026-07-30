@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#642 — call_indirect bounds-guard oracle: OOB index must TRAP, not branch.
 
 The Thumb-2 `call_indirect` expansion (`lsl.w ip, idx, #2; ldr.w ip, [r11,

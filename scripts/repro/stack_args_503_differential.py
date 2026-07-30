@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#503 (epic #242) — EXECUTION-validate the AAPCS stack-argument path for
 functions with >8 scalar i32 params/args.
 

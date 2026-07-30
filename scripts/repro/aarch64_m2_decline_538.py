@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
 The broadening in m2 covers the full i32/i64 integer ALU, but four classes are

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#275 — the DIRECT reachable call graph must EXECUTE on the self-contained
 `--cortex-m` image (no --relocatable, no loader).
 

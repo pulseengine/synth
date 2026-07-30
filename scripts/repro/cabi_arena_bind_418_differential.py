@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#418 — self-contained binding of `env::__cabi_arena_realloc` (the meld
 dissolve gap): EXECUTION differential vs wasmtime.
 

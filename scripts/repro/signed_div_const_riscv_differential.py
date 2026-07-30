@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#232 — RV32 signed-division-by-constant overflow-guard clobber.
 
 v0.11.26's lowest-free allocator (#231) materialized the `INT_MIN`/`-1` overflow

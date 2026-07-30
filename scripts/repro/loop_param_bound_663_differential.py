@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#663 — thumb-2 parameter-bounded loop: live param bound clobbered by the
 induction increment (loop exits after 1 iteration).
 
