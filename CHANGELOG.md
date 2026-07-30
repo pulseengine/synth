@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-07-30
+
+**"The last mile" — seven lanes.** falcon's VFP wall comes down, RISC-V compiles
+gale's real drivers, aarch64 becomes *measurable*, and the allocator's blind
+spots get named.
+
+The recurring story of this release is that **the defects were found by
+instruments, not by looking for them.** Every lane was dispatched at a known
+issue; five of them surfaced something nobody had gone looking for:
+
+- The **#872 fix** (range-realloc pass *and* its validator, which had been
+  certifying its own pass's miscompile) turned up a second, older defect: the
+  pass was **recolouring a `Pop` register list** — `pop {r4..r8,pc}` becoming
+  `pop {r6,r5,r4,r3,r2,pc}`, restoring registers from a stack image laid out for
+  different ones. A `Pop {…,PC}` *is* a return, so when one sits mid-segment its
+  defs look segment-locally dead. Latent since the pass shipped; base and the
+  #872 commit both dodged it by colouring luck.
+- Root-causing **`undefined label Lend0`** (#882) rather than declining it
+  exposed a neighbour: RISC-V `local.get <param>` after a `call` read a clobbered
+  register.
+- The **#880 prose gate**, one release old, caught a stale capability claim on
+  its first cross-lane interaction — and its own audit found four more.
+- Wiring the **#881 VFP oracle** (which existed, was committed, and was
+  referenced *nowhere* — a green PR board with its central gate inert) exposed a
+  host dependency in a single CI cycle that no local run could have surfaced.
+- The **VCR-DEC-001 join colourer** proved its new CFG validator non-vacuous by
+  mutation and discovered that a wrong-return-register miscompile is accepted by
+  `validate_cfg_rewrite` **and** VCR-RA-003 *both*. Only execution catches it.
+  Two independent validators, one shared blind spot — #872 recurring a level up.
+
+That last one is the sharpest argument for the North Star yet: **independence is
+not something you get by writing a second checker, only by checking a different
+way.** Gates that share assumptions fail together and look like corroboration.
+
+Also closed: **aarch64 was absent from the cross-backend op-parity gate** (#883),
+so nothing could say what armv8 did not lower — 25 hand-written probes against a
+~279-variant universe. VCR-SEL-005 now covers a third backend, universe-complete
+with no wildcard arm, and the 13 gaps it *measured* were closed (148 → 161 ops).
+And a fourth instance of the #757/#758/#798 silent-zero class: aarch64 accepted
+modules with active data segments while emitting no data section, so initialized
+regions read zeros. It now refuses loudly.
+
 ### Added
 
 - **VCR-DEC-001 increment 2 — the graph-colouring allocator colours ACROSS
@@ -75,7 +117,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsigned-edge indices (`scripts/repro/rv32_br_table_882_differential.py`,
   CI job `rv32-br-table-oracle`, vacuity-guarded against skipped exports).
 
+- **VFP register-file spilling — the GI-FPU-002 exhaustion rung is gone
+  (#881, VCR-RA-004, epic #242).** `VCR-RA-001` gave the INTEGER file Belady
+  spilling in v0.24; the VFP file never got it, so five falcon v1.128 entry
+  points died on `S0..S15 all live` (phase 1) or `caller-saved VFP D-register
+  file exhausted` (phase 2) — the wall v0.52's #869 fix moved rather than
+  removed. Both files now spill and reload, with a cycle-safe parallel-move
+  resolver for the swap/cycle cases, and **`VCR-RA-003` was extended to SEE the
+  VFP file** (slot-aliasing + caller-saved-across-call twins) — an unvalidated
+  VFP allocation would have been precisely the #872 shape. Gated by a new
+  execution differential: 7 spilled-VFP shapes on `-t cortex-m7dp
+  --relocatable`, **109 rows bit-identical to wasmtime**, NaN-aware per WASM
+  §4.3.3, with the internal `bl` resolved by a real link so an unresolved
+  relocation cannot be silently skipped.
+
+- **aarch64 is now MEASURABLE: VCR-SEL-005 covers a third backend (#883), and
+  the 13 gaps it measured are closed (#851).** The parity oracle was
+  universe-complete for ARM↔RV32 — every one of the ~279 `WasmOp` variants
+  classified with **no wildcard arm**, so a new op cannot be added without
+  classifying it — but aarch64 was absent from it entirely. Its only breadth
+  check was 25 hand-written probes, so "what does aarch64 not lower?" had no
+  mechanical answer and gap-picking was guesswork. aarch64 now sits in the same
+  no-wildcard enumeration; the 31 `Err(reason)` entries name the missing
+  selector arm **and the A64 instruction that would implement it** (`FRINTP`/
+  `FRINTM`/`FRINTZ`/`FRINTN` for rounding, `SCVTF`/`UCVTF` x-forms for
+  i64→float, LDR/STR SIMD&FP forms for FP memory), making the decline list a
+  work plan rather than an absence. The 13 ops closed off that list —
+  `select` (branchless `CSEL`/`FCSEL`, all four value types), `drop`/`nop`,
+  `i32.wrap_i64`, `i64.extend_i32_{s,u}`, the five `extend8/16/32_s` sign
+  extensions, and fixed-memory `memory.size`/`memory.grow` — take the selector
+  from **148 to 161** ops, each execution-verified (gale's matrix 35 → 45).
+
 ### Fixed
+
+- **range-realloc cross-barrier live-in soundness — the pass AND its validator
+  (#872).** Default-on `SYNTH_RANGE_REALLOC` reused a segment live-in's register
+  after its last IN-SEGMENT use while an unmodeled (`reg_effect=None`) op past
+  the segment still read it — **and `validate_segment_rewrite` shared the blind
+  spot**, so the validator CERTIFIED the wrong rewrite. Shipped #782 survived on
+  shape luck, not soundness. Both halves are fixed: a validator that still
+  shares its pass's blind spot is not a fix. Independence proven by MUTATION —
+  reverting only the validator's exit seed reddens two tests, reverting only the
+  pass extension reddens a third.
+
+  Fixing it surfaced a **second, older defect on the same default-on path**: the
+  pass was recolouring a `Pop` REGISTER LIST — `pop {r4,r5,r6,r7,r8,pc}` became
+  `pop {r6,r5,r4,r3,r2,pc}`, restoring r2–r6 from a stack image laid out for
+  r4–r8 and leaving the caller's r7/r8 clobbered. A `Pop {…,PC}` *is* a return,
+  so when one sits mid-segment its defs look segment-locally dead because a
+  trailing unreachable pop re-defines them. Latent since the pass shipped; base
+  and the #872 commit both avoided it by colouring luck. Fixed byte-neutrally by
+  identity-pinning every range a `Push` uses or a `Pop` defines.
+
+  **This changes shipped bytes on the default path** — `gust_poll` 692 → 696 B
+  (the `movw r3,#0; mvns r5,r3` pass-through shape being fixed, visible in the
+  output) and the fact-spec derived delta 132 → 140. A soundness cost, paid
+  deliberately. Frozen anchors unchanged, 10/10. Honest residual, stated because
+  it is otherwise only a code comment: `validate_segment_rewrite` still does NOT
+  catch a recoloured mid-segment `Pop {…, PC}`; that class is pinned at the pass
+  via `arch_pinned`, with whole-function `validate_final_allocation` as the
+  independent backstop.
+
 
 - **`--target`/backend ISA mismatch is now a hard error (#882).** `synth
   compile --target riscv32` without `-b riscv` silently printed
@@ -106,9 +208,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   template prose reproduced faithfully and stayed green (the v0.51 "div/rem
   declined" / v0.52 "OOB-trap is a follow-on" cold-read defects). The
   template's load-bearing capability phrases are now pinned verbatim in
-  `claims.yaml`, each bound to the oracle that executes the capability *and*
-  to that oracle's CI wiring (red-first verified: falsifying a pinned phrase
-  reddens `claim-check` even after regenerating the render). The same audit
+  `claims.yaml`, and all but one are bound to the oracle that executes the
+  capability *and* to that oracle's CI wiring (red-first verified: falsifying a
+  pinned phrase reddens `claim-check` even after regenerating the render). The
+  exception is named rather than glossed: `SYNTH-MATRIX-WCET-COMPOSITION` has
+  only `file-exists` evidence — no oracle binding, no `ci.yml` `count-min` —
+  so the sound-WCET-bound row, one of the more safety-load-bearing claims in
+  the matrix, is pinned more weakly than the rest. (`wcet_bound_gate.rs` does
+  run under `cargo test --workspace`, so the capability itself is gated; it is
+  the *claim's evidence chain* that does not reach it.) Tracked with the other
+  unwired-oracle work in #890. The same audit
   fixed two live defects of exactly this class: the matrix still said "RV32
   warns loudly on dropped initializer bytes" four releases after #798 shipped
   the segments with a hard-error read-back, and still listed WCET "calls" as a
@@ -133,7 +242,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   param is now spilled once at entry to a frame slot and accessed through it;
   call-free bodies are byte-identical.
 
-### Added
 - **RISC-V emit-time label invariant (#882 hard gate):** every referenced label
   must resolve to exactly one definition inside the current function — a
   duplicate definition (which last-wins insertion would silently rebind to a

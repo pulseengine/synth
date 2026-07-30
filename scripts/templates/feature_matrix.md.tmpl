@@ -46,7 +46,7 @@ soundness feature, not an absence.
 | f32 scalar via VFP | Y (FPU targets) | Complete op set incl. all six comparisons, NaN-aware (v0.41); requires an FPU target (e.g. `cortex-m4f`) |
 | f64 scalar via VFP | Y (FPU targets) | Complete (v0.43, #369 closed); marshalling + AAPCS-VFP mixed params |
 | Trapping float→int truncations | Y | Domain-guarded (trap, not saturate) — the #709 soundness class |
-| Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residuals: i64-from-f32 declines on single-precision (needs the f64 promote); the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail is tracked in #881 (#782 closed) |
+| Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residual: i64-from-f32 declines on single-precision FPUs (needs the f64 promote). The falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail closed in v0.53 via VFP register-file spilling (#881); #782 closed v0.49 |
 | Control flow (block, loop, if/else, br, br_if, br_table) | Y | Renode execution tests |
 | Function calls (direct + `call_indirect`) | Y | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained dispatch is PC-relative via a flash funcref table (v0.47) |
 | Memory (load/store incl. sub-word, size/grow) | Y | `memory.grow` returns -1 on fixed-memory embedded targets; grow(0) ≡ size |
@@ -131,7 +131,17 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   their coverage is listed above, not implied.
 - Broad hardware validation is still missing: silicon evidence is
   fixture-scoped (gale), emulation is Renode/QEMU/unicorn.
-- Known open soundness/coverage residuals are tracked as issues (e.g. #881:
-  the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail; #882:
-  RV32 real-driver `br_table`/label declines; #872: range-realloc
-  cross-barrier liveness blind spot).
+- Known open soundness/coverage residuals are tracked as issues (e.g. #890:
+  57 of 130 differential oracles are not CI-wired and nothing distinguishes
+  "manual by design" from "forgotten" — an absent gate is invisible to a green
+  board; #851: the aarch64 op-surface gaps the VCR-SEL-005 third-backend oracle
+  now enumerates mechanically; #846: two `gpio-thin` CRL/CRH sites still need
+  relational ranges).
+- Two residuals live in code comments rather than issues, and are restated here
+  so they are not implied away: `validate_segment_rewrite` does NOT catch a
+  recoloured `Pop {…, PC}` in the MIDDLE of a segment (pinned at the pass via
+  `arch_pinned`, with whole-function `validate_final_allocation` as the
+  independent backstop — #872); and a wrong-return-register rewrite is accepted
+  by `validate_cfg_rewrite` AND VCR-RA-003 *both*, caught only by execution
+  (VCR-DEC-001, flag-off). Two validators sharing a blind spot agree without
+  adding evidence.
