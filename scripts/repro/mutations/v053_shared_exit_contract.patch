@@ -1,8 +1,8 @@
 diff --git a/crates/synth-synthesis/src/graph_alloc.rs b/crates/synth-synthesis/src/graph_alloc.rs
-index cd205ea..f079b45 100644
+index 94d944d..128d900 100644
 --- a/crates/synth-synthesis/src/graph_alloc.rs
 +++ b/crates/synth-synthesis/src/graph_alloc.rs
-@@ -842,11 +842,9 @@ mod joins {
+@@ -926,11 +926,9 @@ mod joins {
                  }
              }
              let own = orig_colour.get(&n).copied();
@@ -18,7 +18,7 @@ index cd205ea..f079b45 100644
                  Some(c) => {
                      colour.insert(n, c);
 diff --git a/crates/synth-synthesis/src/liveness.rs b/crates/synth-synthesis/src/liveness.rs
-index 4a7a07a..819b3b9 100644
+index 0f6e67c..4109561 100644
 --- a/crates/synth-synthesis/src/liveness.rs
 +++ b/crates/synth-synthesis/src/liveness.rs
 @@ -3490,9 +3490,9 @@ pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
@@ -33,4 +33,4 @@ index 4a7a07a..819b3b9 100644
 +    BTreeSet::new()
  }
  
- /// VCR-DEC-001 increment 2 — the CFG-lifted translation validator: prove a
+ /// VCR-DEC-001 **increment 3** — the AAPCS register contract of a CALL, as a
