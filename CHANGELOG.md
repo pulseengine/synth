@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **#890 — the oracle-wiring gate: fix the factory, not the bugs.**
+  `scripts/repro/*.py` are synth's execution oracles, and **69 of 150 were
+  referenced by no workflow** — nothing ran them. v0.53 hand-wired three and the
+  unwired count still went *up*, because instances were fixed while the mechanism
+  that produces them was untouched. The defect was never "69 broken gates": many
+  are legitimately manual (a pinned vendor drop, real silicon, a toolchain CI
+  does not install). The defect is that **nothing distinguished "manual by
+  design" from "forgotten"**, so telling them apart meant reading all 150 — the
+  audit that kept rediscovering this one instance at a time.
+
+  Every repro script now carries exactly one `# ci-status:` declaration —
+  `wired`, `manual (<category>) — reason`, or `unwired — reason` — and
+  `scripts/oracle_wiring_check.py` (a step of the already-**required**
+  `claim-check` job) fails the build when a script declares `wired` but no
+  workflow **step** runs it, when a `manual`/`unwired` declaration has no real
+  reason or an out-of-vocabulary category, or when a script declares nothing at
+  all. New oracles are forced to choose. "Runs it" is derived from the *parsed*
+  workflow (a step's `run:` body and its `with:`/`env:` values), not a raw grep —
+  a mention in a comment does not wire an oracle, and a gate satisfiable by prose
+  is the failure shape this one exists to reject. Rationale, the categorized
+  manual set, and the six-mutation red-first transcript (plus the real
+  `Claim Check` CI red): `scripts/repro/ORACLE_WIRING.md`.
+
+- **#890 — 63 forgotten oracles wired.** Each was verified green locally against
+  a freshly built synth before wiring, using the compile line from its own
+  documented `Run:` block; they run in four new sweep jobs (selector / memory /
+  rv32 / wcet) plus one step in the existing fact-spec job. Among what was *not*
+  being gated: the six `mem757_*` red-first reconstructions of gale's
+  wrong-segment miscompile (#757); every RV32 oracle for a regression gale found
+  on real silicon (#220, #226, #232, #317, #343); all four WCET soundness
+  cross-checks — the only thing that *executes* the fixtures and checks
+  `bound_cycles >= executed_instructions`, i.e. the evidence behind the
+  sound-WCET claim; and the #494 `rem_u` identity differential behind the
+  beat-clang headline. Final surface: **145 wired / 7 manual / 0 unwired**,
+  ratcheted in `claims.yaml` (`SYNTH-ORACLE-WIRING-890`) — the wired count is a
+  floor, manual a ceiling, and *unwired a ceiling of zero*, so new debt is a red
+  build rather than a silent backlog entry.
+
+### Fixed
+
+- **#890 — `sret_decide_differential.py` was a gate that could not fail.** It
+  printed `MISMATCH <-- BUG` and still exited 0. The verdict is now the exit
+  status (proved by mutation: flipping the `-35` expectation gives `rc=1`).
+  `base_cse`, `leaf_dead_frame`, `load_store_big_offset_382` and `uxth_fold`
+  hardcoded `./target/{debug,release}/synth`; all four now honour `$SYNTH` with
+  the same literal default.
+
+- **#890 — the gate's own CI step was vacuous, and a mutation caught it.**
+  `set -o pipefail` without `-e` means the shell's status is its *last*
+  command's: the inert-gate mutation greened the step while the gate printed
+  `FAIL` and exited 1. The step now sets `-euo pipefail` explicitly (rather than
+  leaning on Actions' default `bash -e`) and re-derives its verdict from the JSON
+  summary the gate wrote — non-empty script set, non-zero wired count, zero
+  `undeclared` / `wired_unreferenced` / `failures` — instead of trusting exit 0.
+
+### Added
+
 - **VCR-DEC-001 increment 3 (#242): the graph-colouring allocator colours ACROSS
   CALLS.** Increment 2's second-largest decline bucket was `call` /
   `call-indirect` — 68 of the measured corpus — because a `bl` had no modeled

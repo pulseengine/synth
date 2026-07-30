@@ -2251,6 +2251,11 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: a32 i64 execution differential (#615, cortex-r5)
         run: |
           ./target/debug/synth compile scripts/repro/a32_i64_615.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/a615.o
@@ -2384,6 +2389,11 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: bulk-memory copy/fill numeric differential (#374)
         run: |
           ./target/debug/synth compile scripts/repro/bulk_memory_374_diff.wat -o /tmp/bmd.elf --target cortex-m7dp --all-exports --safety-bounds software
@@ -2455,6 +2465,11 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: control_step RV32 correctness + ABI + shipped data (#223/#798)
         run: |
           ./target/debug/synth compile scripts/repro/control_step.wasm -b riscv -t rv32imac --all-exports --relocatable -o /tmp/cs_rv.o
@@ -2528,6 +2543,11 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: WCET phase-2 const-loop bound soundness (#778)
         run: python scripts/repro/wcet_phase2_778_unicorn_soundness.py
       - name: WCET phase-3 inter-procedural composition soundness (#778)
