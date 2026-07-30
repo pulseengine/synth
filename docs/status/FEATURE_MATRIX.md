@@ -7,7 +7,7 @@
 > stale. All numbers come from [`artifacts/status.json`](../../artifacts/status.json),
 > which is re-derived from source on every run — never hand-edited.
 
-**Workspace version:** 0.52.0
+**Workspace version:** 0.53.0
 
 ---
 

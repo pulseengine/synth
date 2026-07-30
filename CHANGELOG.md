@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-07-30
+
+**"The last mile" — seven lanes.** falcon's VFP wall comes down, RISC-V compiles
+gale's real drivers, aarch64 becomes *measurable*, and the allocator's blind
+spots get named.
+
+The recurring story of this release is that **the defects were found by
+instruments, not by looking for them.** Every lane was dispatched at a known
+issue; five of them surfaced something nobody had gone looking for:
+
+- The **#872 fix** (range-realloc pass *and* its validator, which had been
+  certifying its own pass's miscompile) turned up a second, older defect: the
+  pass was **recolouring a `Pop` register list** — `pop {r4..r8,pc}` becoming
+  `pop {r6,r5,r4,r3,r2,pc}`, restoring registers from a stack image laid out for
+  different ones. A `Pop {…,PC}` *is* a return, so when one sits mid-segment its
+  defs look segment-locally dead. Latent since the pass shipped; base and the
+  #872 commit both dodged it by colouring luck.
+- Root-causing **`undefined label Lend0`** (#882) rather than declining it
+  exposed a neighbour: RISC-V `local.get <param>` after a `call` read a clobbered
+  register.
+- The **#880 prose gate**, one release old, caught a stale capability claim on
+  its first cross-lane interaction — and its own audit found four more.
+- Wiring the **#881 VFP oracle** (which existed, was committed, and was
+  referenced *nowhere* — a green PR board with its central gate inert) exposed a
+  host dependency in a single CI cycle that no local run could have surfaced.
+- The **VCR-DEC-001 join colourer** proved its new CFG validator non-vacuous by
+  mutation and discovered that a wrong-return-register miscompile is accepted by
+  `validate_cfg_rewrite` **and** VCR-RA-003 *both*. Only execution catches it.
+  Two independent validators, one shared blind spot — #872 recurring a level up.
+
+That last one is the sharpest argument for the North Star yet: **independence is
+not something you get by writing a second checker, only by checking a different
+way.** Gates that share assumptions fail together and look like corroboration.
+
+Also closed: **aarch64 was absent from the cross-backend op-parity gate** (#883),
+so nothing could say what armv8 did not lower — 25 hand-written probes against a
+~279-variant universe. VCR-SEL-005 now covers a third backend, universe-complete
+with no wildcard arm, and the 13 gaps it *measured* were closed (148 → 161 ops).
+And a fourth instance of the #757/#758/#798 silent-zero class: aarch64 accepted
+modules with active data segments while emitting no data section, so initialized
+regions read zeros. It now refuses loudly.
+
 ### Added
 
 - **VCR-DEC-001 increment 2 — the graph-colouring allocator colours ACROSS
