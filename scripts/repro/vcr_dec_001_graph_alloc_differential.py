@@ -18,22 +18,33 @@ sound, on the ARM fixture corpus (arm / cortex-m4, --all-exports --relocatable):
       validating the new allocator's REAL output (observed via
       SYNTH_RA003_VERBOSE, not inferred from returncode).
 
-  (3) FLAG-ON ≡ FLAG-OFF on the whole corpus. This is a DESIGNED PROPERTY, not a
-      null result: on a straight-line function graph_alloc and the shipping
-      `reallocate_function` use the same pins (inputs + last-opened live-outs),
-      the same chaitin_core, and the same single-segment scope, so their outputs
-      are byte-identical BY CONSTRUCTION; everywhere else graph_alloc declines.
-      graph_alloc's output ⊆ {shipping bytes, decline}, so divergence is
-      impossible in increment 1. Execution correctness therefore follows
-      TRANSITIVELY: flag-on bytes = shipping bytes on applied functions, and the
-      shipping bytes are already wasmtime-gated by the frozen execution
-      differentials. (A passive flag-on-vs-wasmtime corpus would merely re-test
-      the shipping compiler, so it is deliberately NOT built here.)
+  (3) NO SILENT DRIFT, NO GROWTH. Increment 1 could assert flag-on ≡ flag-off
+      corpus-wide: on a straight-line function the spike and the shipping
+      `reallocate_function` shared pins, chaitin_core and scope, so byte
+      identity held BY CONSTRUCTION and execution correctness followed
+      TRANSITIVELY. Increment 2 (v0.53) colours ACROSS if/else joins with a
+      different pin set and a churn-minimising colour bias, so applied
+      functions genuinely DIVERGE — that identity claim is retired. What
+      replaces it is two checks that still bite:
+        (3a) a fixture on which the allocator did NOT apply must be
+             byte-identical — no drift may leak in through a decline path;
+        (3b) a fixture on which it DID apply must not GROW its `.text`;
+        (3c) at least two fixtures must actually diverge, or increment 2's
+             reach has regressed and this file is gating increment 1 only.
+      Execution correctness for the DIVERGENT bytes is no longer transitive and
+      is gated separately, by
+      `vcr_dec_001_join_alloc_execution_differential.py` (unicorn vs wasmtime
+      on the flag-ON image).
 
-The red-first teeth — "a colouring bug → the acceptance oracle catches it" — are
-the unit probe `graph_alloc_bad_rename_rejected_by_segment_validator` in
-liveness.rs: validate_segment_rewrite (the trace-equality gate graph_alloc
-invokes) rejects a value-flow-breaking merge-rename and accepts the identity.
+The red-first teeth are two-layer. Unit: `graph_alloc_bad_rename_rejected_by_\
+segment_validator` in liveness.rs (validate_segment_rewrite rejects a
+value-flow-breaking merge-rename). Whole-pass, by MUTATION: emptying
+`cfg_exit_observable` — the exit contract the pass and its CFG validator SHARE —
+while removing the colour bias that masks it produces code that leaves the
+return value in the wrong register; `validate_cfg_rewrite` AND VCR-RA-003 both
+ACCEPT it, and only the execution differential catches it (16 wrong results).
+That is the #872 lesson made concrete: this validator is necessary, not
+sufficient.
 
 Usage: python3 vcr_dec_001_graph_alloc_differential.py <synth-binary>
 Exit 0 = all three properties hold; nonzero = a violation.
@@ -151,9 +162,10 @@ def main():
         print(f"  {wasm:<24} {sha(t)[:12]} len={len(t):<5} {'OK' if ok else 'MISMATCH <--'}")
         fails += 0 if ok else 1
 
-    # ---- Property 2+3: flag-on APPLIES + RA-003 Consistent + ≡ flag-off ------
-    print("== (2)(3) flag-on: applies, RA-003 Consistent, ≡ flag-off ==")
+    # ---- Property 2+3: flag-on APPLIES + RA-003 Consistent + no drift/growth -
+    print("== (2)(3) flag-on: applies, RA-003 Consistent, no drift, no growth ==")
     applied_fixtures = 0
+    diverged_fixtures = 0
     for wasm in CORPUS:
         r_off, off_elf = compile_arm(synth, wasm, {})
         r_on, on_elf = compile_arm(
@@ -172,15 +184,24 @@ def main():
         # if applied > 0, at least one Consistent appears and NO Violation.
         consistent = on_stderr.count("VCR-RA-003: Consistent")
         violation = "register-allocation validation FAILED" in on_stderr
-        # Byte-identity flag-on ≡ flag-off (the designed property).
-        ident = text_of(off_elf) == text_of(on_elf)
+        t_off, t_on = text_of(off_elf), text_of(on_elf)
+        ident = t_off == t_on
         if applied > 0:
             applied_fixtures += 1
-        ok = ident and not violation and (applied == 0 or consistent > 0)
-        tag = []
-        tag.append(f"applied={applied}")
-        tag.append(f"RA003-consistent={consistent}")
-        tag.append("bytes≡" if ident else "BYTES-DIFFER<--")
+        if not ident:
+            diverged_fixtures += 1
+        # (3a) no drift on a fixture the allocator never touched.
+        drift = applied == 0 and not ident
+        # (3b) an applied fixture may change bytes, but must not GROW.
+        grew = applied > 0 and len(t_on) > len(t_off)
+        ok = not drift and not grew and not violation and (applied == 0 or consistent > 0)
+        tag = [f"applied={applied}", f"RA003-consistent={consistent}",
+               f"bytes {len(t_off)}->{len(t_on)}",
+               "≡" if ident else "diverged"]
+        if drift:
+            tag.append("DRIFT-WITHOUT-APPLY<--")
+        if grew:
+            tag.append("GREW<--")
         if violation:
             tag.append("RA003-VIOLATION<--")
         print(f"  {wasm:<24} {'  '.join(tag)} {'OK' if ok else 'FAIL <--'}")
@@ -191,6 +212,14 @@ def main():
     print(f"== applying fixtures: {applied_fixtures} (must be ≥ 2 for non-vacuity) ==")
     if applied_fixtures < 2:
         print("  VACUOUS: graph_alloc never applied — increment-1 scope regressed.")
+        fails += 1
+    # (3c) increment 2 must actually reach past increment 1's byte-identical
+    # domain, or (3a)/(3b) degenerate into "the flag does nothing".
+    print(f"== diverging fixtures: {diverged_fixtures} (must be ≥ 2 for "
+          f"increment-2 non-vacuity) ==")
+    if diverged_fixtures < 2:
+        print("  VACUOUS: no fixture's bytes changed — the join colouring "
+              "(increment 2) no longer reaches this corpus.")
         fails += 1
 
     # DEEPER non-vacuity: prove graph_alloc's byte-match is NOT a trivial identity
@@ -224,7 +253,8 @@ def main():
     if fails:
         print(f"VIOLATION: {fails} check(s) failed.")
         return 1
-    print("OK: flag-off frozen, flag-on applies + RA-003 Consistent + ≡ flag-off.")
+    print("OK: flag-off frozen; flag-on applies, RA-003 Consistent, "
+          "no drift on non-applied, no growth on applied.")
     return 0
 
 

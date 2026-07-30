@@ -3453,6 +3453,259 @@ pub fn validate_segment_rewrite_exempting(
     Ok(())
 }
 
+/// [`rewrite_op`] made public for the VCR-DEC-001 whole-function allocator
+/// ([`crate::graph_alloc`]): rewrite `op`'s register operands through a `use`
+/// map and a `def` map. `None` on an op this module does not model, or when an
+/// RMW field's def and use disagree (a single register field cannot be renamed
+/// two ways). The straight-line pass reaches this via
+/// [`apply_range_coloring`]; the CFG-wide allocator needs the per-instruction
+/// form because its rename maps come from cross-block *webs*, not from a
+/// straight-line range replay.
+pub fn rewrite_op_maps(
+    op: &ArmOp,
+    use_map: &BTreeMap<Reg, Reg>,
+    def_map: &BTreeMap<Reg, Reg>,
+) -> Option<ArmOp> {
+    rewrite_op(op, use_map, def_map)
+}
+
+/// The registers whose value at a function return is OBSERVABLE — the exit
+/// contract [`validate_cfg_rewrite`] seeds and [`crate::graph_alloc`] mirrors in
+/// its own liveness, so the pass proposes exactly what the oracle certifies
+/// (#888 measured what a pass/validator mismatch costs: four "failures" that
+/// were one bug).
+///
+/// The WHOLE register file, minus — at a `pop {…, pc}` return only — the AAPCS
+/// caller-saved scratch `{R2, R3, R12, LR}` that [`validate_segment_rewrite`]
+/// already treats as dead-out there. A `bx lr` return gets NO exemption: at this
+/// pipeline position `LR` still carries the return address and the callee-saved
+/// save/restore has not been synthesized, so nothing new is claimed about it.
+/// Deliberately NOT derived from "registers either side writes": that heuristic
+/// makes the seed depend on the rewrite, which is how a pass can shrink its own
+/// acceptance test.
+pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
+    use Reg::*;
+    const ALL: [Reg; 16] = [
+        R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, SP, LR, PC,
+    ];
+    let pop_return = matches!(terminator, ArmOp::Pop { regs } if regs.contains(&Reg::PC));
+    const AAPCS_DEAD_AT_POP_RETURN: [Reg; 4] = [R2, R3, R12, LR];
+    ALL.into_iter()
+        .filter(|r| !(pop_return && AAPCS_DEAD_AT_POP_RETURN.contains(r)))
+        .collect()
+}
+
+/// VCR-DEC-001 increment 2 — the CFG-lifted translation validator: prove a
+/// renames-only rewrite of a WHOLE branchy function preserves its dataflow
+/// **across control-flow joins**.
+///
+/// [`validate_segment_rewrite`] is the straight-line Rideau/Leroy pairwise
+/// trace-equality check: seed identity equations at the segment exit, walk
+/// backward discharging them at defs and generating them at uses, and require
+/// every survivor to be identity at entry. This is the same argument lifted to
+/// a CFG by a **backward must-fixpoint**:
+///
+/// ```text
+///   eqs_out[b] = ⋃ { eqs_in[s] : s ∈ succ(b) }      (ALL successors' demands)
+///   eqs_in[b]  = transfer_b(eqs_out[b])              (the straight-line walk)
+///   eqs_out[sink] = { (r,r) : r ∈ exit_observable(sink) }
+///   REQUIRE eqs_in[entry] ⊆ identity
+/// ```
+///
+/// The transfer is monotone and the lattice (subsets of `Reg × Reg`) is finite,
+/// so iterating from `∅` converges to the least fixpoint — the exact set of
+/// equations the exit contract forces backward through every path, back edges
+/// included. An equation a def cannot discharge is an immediate reject
+/// (rejection is monotone in the equation set, so failing early is sound).
+///
+/// **The exit contract is computed HERE, not supplied by the caller** — the
+/// deliberate anti-pattern guard: the v0.50 join-enforcement attempt failed by
+/// letting the pass hand the checker its own seed, and two `entry_seed` hacks
+/// then masked the red signal. The seed is register-file equivalence in the
+/// #872 sense: identity for every register EITHER side writes anywhere in the
+/// function (so a rewrite that clobbers a pass-through the original never
+/// touches is rejected), minus — at a `pop {…, pc}` return sink only — the
+/// AAPCS caller-saved scratch `{R2, R3, R12, LR}` that
+/// [`validate_segment_rewrite`] already exempts. A `bx lr` sink gets the STRICT
+/// seed (no exemption): at this pipeline position `LR` still carries the return
+/// address and the callee-saved save/restore has not been synthesized yet.
+///
+/// Control-flow instructions (`Label`, `B`, `Bcc`, `Bx`, …) have no
+/// [`reg_effect`] and are required to be **byte-for-byte identical** on both
+/// sides — a register allocator renames operands, it never rewrites control
+/// flow. So branch conditions and labels cannot drift, and flag equality at a
+/// `Bcc` follows from the equations its `Cmp`'s uses generate.
+///
+/// `blocks` must be a complete CFG of `orig` (each block's `[start, end)` and
+/// successors). Structural preconditions are re-checked here rather than
+/// trusted: blocks must tile `0..len` in order, a return terminator may appear
+/// only as a block's LAST instruction (the #872/#888 mid-segment `pop {…, pc}`
+/// class), and every successorless block must end in a recognized return.
+pub fn validate_cfg_rewrite(
+    orig: &[ArmInstruction],
+    rewritten: &[ArmInstruction],
+    blocks: &[BasicBlock],
+) -> Result<(), RewriteViolation> {
+    if orig.len() != rewritten.len() {
+        return Err(RewriteViolation::LengthMismatch {
+            orig: orig.len(),
+            rewritten: rewritten.len(),
+        });
+    }
+    if orig.is_empty() {
+        return Ok(());
+    }
+    // NOT `|| blocks.is_empty()`: an empty CFG for a NON-empty stream would
+    // then validate every rewrite vacuously. It falls through to the tiling
+    // check below, which rejects it.
+
+    // ---- Structural re-check of the supplied CFG (never trusted) ----------
+    // Blocks must tile the whole stream in order, so every instruction is
+    // walked exactly once by the transfer below.
+    let mut expect = 0usize;
+    for b in blocks {
+        if b.start != expect || b.end <= b.start || b.end > orig.len() {
+            return Err(RewriteViolation::Unmodeled { index: b.start });
+        }
+        for &s in &b.succ {
+            if s >= blocks.len() {
+                return Err(RewriteViolation::Unmodeled { index: b.start });
+            }
+        }
+        expect = b.end;
+    }
+    if expect != orig.len() {
+        return Err(RewriteViolation::Unmodeled { index: expect });
+    }
+
+    // ---- Pass 1: per-instruction correspondence --------------------------
+    // Straight-line ops must be shape-equal with matching def/use arity;
+    // everything else (control flow) must be literally identical.
+    let mut effects: Vec<Option<(RegEffect, RegEffect)>> = Vec::with_capacity(orig.len());
+    for (i, (o, r)) in orig.iter().zip(rewritten).enumerate() {
+        if !is_straight_line(&o.op) || !is_straight_line(&r.op) {
+            if o.op != r.op {
+                return Err(RewriteViolation::ShapeMismatch { index: i });
+            }
+            effects.push(None);
+            continue;
+        }
+        let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {
+            return Err(RewriteViolation::Unmodeled { index: i });
+        };
+        let (Some(so), Some(sr)) = (op_shape(&o.op), op_shape(&r.op)) else {
+            return Err(RewriteViolation::Unmodeled { index: i });
+        };
+        if so != sr || eo.defs.len() != er.defs.len() || eo.uses.len() != er.uses.len() {
+            return Err(RewriteViolation::ShapeMismatch { index: i });
+        }
+        effects.push(Some((eo, er)));
+    }
+
+    // A return terminator may only be a block's LAST instruction — the exact
+    // shape #888 found miscompiling (`pop {…, pc}` mid-segment looks like a
+    // plain register-list def to a straight-line walk).
+    for b in blocks {
+        for i in b.start..b.end - 1 {
+            if is_return_terminator(&orig[i].op) || is_return_terminator(&rewritten[i].op) {
+                return Err(RewriteViolation::Unmodeled { index: i });
+            }
+        }
+    }
+
+    // ---- Exit contract (computed here; see the doc comment) --------------
+    let mut sink_seed: Vec<Option<BTreeSet<(Reg, Reg)>>> = vec![None; blocks.len()];
+    for (bi, b) in blocks.iter().enumerate() {
+        if !b.succ.is_empty() {
+            continue;
+        }
+        if !is_return_terminator(&orig[b.end - 1].op) {
+            // A successorless block that is not a recognized return: the CFG is
+            // incomplete (falls off the end / unmodeled terminator). Decline.
+            return Err(RewriteViolation::Unmodeled { index: b.end - 1 });
+        }
+        sink_seed[bi] = Some(
+            cfg_exit_observable(&orig[b.end - 1].op)
+                .into_iter()
+                .map(|r| (r, r))
+                .collect(),
+        );
+    }
+
+    // ---- Backward must-fixpoint ------------------------------------------
+    let nb = blocks.len();
+    let mut eqs_in: Vec<BTreeSet<(Reg, Reg)>> = vec![BTreeSet::new(); nb];
+    // Monotone transfer over a finite lattice: |Reg|² equations × nb blocks
+    // bounds the number of productive rounds. The cap is defensive only.
+    let cap = nb.saturating_mul(16 * 16).saturating_add(64);
+    let mut rounds = 0usize;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        rounds += 1;
+        if rounds > cap {
+            return Err(RewriteViolation::Unmodeled { index: 0 });
+        }
+        for bi in (0..nb).rev() {
+            let b = &blocks[bi];
+            let mut eqs: BTreeSet<(Reg, Reg)> = match &sink_seed[bi] {
+                Some(seed) => seed.clone(),
+                None => {
+                    let mut out = BTreeSet::new();
+                    for &s in &b.succ {
+                        out.extend(eqs_in[s].iter().copied());
+                    }
+                    out
+                }
+            };
+            for i in (b.start..b.end).rev() {
+                let Some((eo, er)) = &effects[i] else {
+                    continue; // control flow: identical on both sides, no effect
+                };
+                let pairs: BTreeSet<(Reg, Reg)> = eo
+                    .defs
+                    .iter()
+                    .copied()
+                    .zip(er.defs.iter().copied())
+                    .collect();
+                let defs_o: BTreeSet<Reg> = eo.defs.iter().copied().collect();
+                let defs_r: BTreeSet<Reg> = er.defs.iter().copied().collect();
+                let mut above: BTreeSet<(Reg, Reg)> = BTreeSet::new();
+                for eq in &eqs {
+                    if !defs_o.contains(&eq.0) && !defs_r.contains(&eq.1) {
+                        above.insert(*eq);
+                    } else if !pairs.contains(eq) {
+                        return Err(RewriteViolation::DefClobbersEquation {
+                            index: i,
+                            orig: eq.0,
+                            rewritten: eq.1,
+                        });
+                    }
+                }
+                for (uo, ur) in eo.uses.iter().zip(er.uses.iter()) {
+                    above.insert((*uo, *ur));
+                }
+                eqs = above;
+            }
+            if eqs != eqs_in[bi] {
+                eqs_in[bi] = eqs;
+                changed = true;
+            }
+        }
+    }
+
+    // ---- Entry: inputs arrive in their original registers -----------------
+    for (o, r) in &eqs_in[0] {
+        if o != r {
+            return Err(RewriteViolation::EntryNotIdentity {
+                orig: *o,
+                rewritten: *r,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// What [`reallocate_function`] did, for the flag-gated measurement pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReallocStats {
