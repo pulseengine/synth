@@ -238,15 +238,31 @@ fn proven_slot_bound_elides_all_eight_guards_494() {
     // guarded build (232->226) and 10 B off the specialized one (104->94). The
     // guard-elision win itself is unchanged (still 8 guards x 16 B = 128 B; see
     // the UDF census 16->0 above); the elision just shaves 4 B MORE off the
-    // specialized build, so the measured delta is 128 + 4 = 132.
+    // specialized build, so the measured delta was 128 + 4 = 132.
+    //
+    // #872 RE-PIN (v0.53): 132 -> 140. The guard-elision component did NOT
+    // change (UDF census still 16 -> 0, still 8 x 16 B) and the GUARDED build
+    // is byte-for-byte the same size (226). What moved is the guard-FREE
+    // lowering: the #872 exit-holding-range rule changed `poll`'s segment
+    // colouring so the body no longer needs r7/r8, which shrinks the prologue
+    // to a 16-bit `push {r4,r5,r6,lr}` and lets several intermediates use
+    // 16-bit encodings — 8 B off. The UNGUARDED FLOOR moved identically
+    // (94 -> 86, measured), and the differential's ratchet
+    // "specialized .text == unguarded floor .text" (bounds-guard tax = 0)
+    // still holds exactly, so the delta grows by the floor's improvement:
+    // 128 + 4 + 8 = 140. Execution evidence on the new bytes:
+    // fact_spec_bounds_494_differential.py (1024-case in-bounds sweep vs
+    // wasmtime + retained-trap + decline + RED force-admit legs).
     let (b_len, s_len) = (b.func("poll").len(), s.func("poll").len());
     assert_eq!(b_len, 226, "baseline poll size drifted");
-    assert_eq!(s_len, 94, "specialized poll size drifted");
+    assert_eq!(s_len, 86, "specialized poll size drifted");
     assert_eq!(
         b_len - s_len,
-        132,
+        140,
         "128 B guard elision (8 guards x 16 B, #752 SUB.W+CMP+BHS+UDF+CMP+BLS+UDF) \
-         + 4 B shift-mask elision on the specialized poll (#846, default-on)"
+         + 4 B shift-mask elision on the specialized poll (#846, default-on) \
+         + 8 B #872 colouring improvement on the guard-free lowering (the \
+         unguarded floor moved with it)"
     );
 
     // Certificate trail: one ADMIT per access, naming the obligation.
