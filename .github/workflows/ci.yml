@@ -486,25 +486,31 @@ jobs:
         # no precondition. The harness places `.text` and `.data` on DIFFERENT
         # pages and resolves the relocations itself, so a wrong page delta or
         # lo12 lands on the wrong bytes. NON-VACUITY: assert a non-zero check
-        # count (a harness that compiled nothing would otherwise pass silently).
+        # count (a harness that compiled nothing would otherwise pass silently)
+        # AND the summary verdict. `set -euo pipefail` (not bare `pipefail`,
+        # which leaves the step's status as the LAST command's) makes the
+        # script's own non-zero exit fail the step (#890).
         run: |
-          set -o pipefail
-          out=$(SYNTH=./target/debug/synth \
-            python scripts/repro/aarch64_globals_851_differential.py | tee /dev/stderr)
-          echo "$out" | grep -Eq '^[1-9][0-9]* checks across [1-9][0-9]* exported' \
-            || { echo "VACUOUS: globals oracle reported no checks"; exit 1; }
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/repro/aarch64_globals_851_differential.py | tee globals851.txt
+          grep -Eq '^[1-9][0-9]* checks across [1-9][0-9]* exported' globals851.txt
+          grep -q '^RESULT: PASS' globals851.txt
       - name: Run #851 lane L3 CALL_INDIRECT execution oracle (§4.4.8 OOB + null + type traps)
         # A64's `blr` is TOTAL; WASM §4.4.8 is not. All three traps must fire
         # exactly where wasmtime traps — and the structurally-DUPLICATE type
         # must NOT trap (the direction an "always trap" lowering would hide).
         # NON-VACUITY: assert non-zero counts in BOTH directions, so a run that
-        # only trapped (or only returned values) fails.
+        # only trapped (or only returned values) fails, plus the summary
+        # verdict. `set -euo pipefail` makes the script's own non-zero exit fail
+        # the step (bare `pipefail` would leave the status as the last command's
+        # — the #890 class).
         run: |
-          set -o pipefail
-          out=$(SYNTH=./target/debug/synth \
-            python scripts/repro/aarch64_call_indirect_851_differential.py | tee /dev/stderr)
-          echo "$out" | grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' \
-            || { echo "VACUOUS: call_indirect oracle reported no trap/value checks"; exit 1; }
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
+          grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' ci851.txt
+          grep -q '^RESULT: PASS' ci851.txt
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
