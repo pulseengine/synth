@@ -803,7 +803,12 @@ claims:
 
   - id: SYNTH-MATRIX-AARCH64-DIVREM-POPCNT
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "`div_s/div_u/rem_s/rem_u` (with the ÷0 + INT_MIN/−1 WASM trap guards) and `popcnt` (#851)"
+    # v0.53: the op list this sentence heads grew (select/CSEL, drop/nop, wrap,
+    # extends), so the trailing " and `popcnt` (#851)" no longer reads verbatim.
+    # Re-pinned to the capability-bearing span — the trap-guard parenthetical is
+    # the load-bearing soundness claim and stays inside the pin, so a silent
+    # removal of the ÷0 / INT_MIN÷−1 guards still reddens this gate.
+    text: "`div_s/div_u/rem_s/rem_u` (with the ÷0 + INT_MIN/−1 WASM trap guards), `popcnt`"
     evidence:
       - kind: file-exists
         path: scripts/repro/aarch64_divrem_851_differential.py

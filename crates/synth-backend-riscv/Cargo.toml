@@ -19,3 +19,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# VCR-SEL-005 (#851): the cross-backend op-parity oracle probes the AArch64
+# selector as the THIRD backend (tests/cross_backend_op_parity.rs only).
+synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.52.0" }

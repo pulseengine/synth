@@ -94,6 +94,19 @@ fop2 f32.add "f32.add" 1069547520 1077936128
 fop2 f32.min "f32.min" 0 2147483648 2143289344 1065353216
 fop2 f32.max "f32.max" 0 2147483648 2143289344 1065353216
 fop2 f32.copysign "f32.copysign" 1065353216 2147483648
+# --- #851 v0.53 op-surface closes (select / extends / wrap / drop / nop) ---
+# select with a COMPUTED condition exercises both arms across the case list.
+op2 select "(select (local.get 0)(local.get 1)(i32.gt_s (local.get 0)(local.get 1)))" 3 5 5 3 -7 -9 -2147483648 2147483647
+op1 select_c "(select (i32.const 7)(i32.const 9)(local.get 0))" 0 1 -1
+op1 extend8_s "(i32.extend8_s (local.get 0))" 128 127 255 -1
+op1 extend16_s "(i32.extend16_s (local.get 0))" 32768 32767 65535 0
+op1 nop_drop "(nop)(drop (i32.const 9))(i32.add (local.get 0)(i32.const 1))" 41 -1
+lop2 select "(select (local.get 0)(local.get 1)(i64.gt_s (local.get 0)(local.get 1)))" 4000000000 5000000000 -1 1
+lop2 extend32_s "(i64.extend32_s (local.get 0))" 4294967295 0 2147483647 0
+lop2 extend8_s "(i64.extend8_s (local.get 0))" 128 0 255 0
+lop2 extend16_s "(i64.extend16_s (local.get 0))" 40000 0 32767 0
+# f32 select through the reinterpret wrapper: NaN vs 1.0 both directions.
+op2 f32.select "(i32.reinterpret_f32 (select (f32.reinterpret_i32 (local.get 0))(f32.reinterpret_i32 (local.get 1))(i32.lt_u (local.get 0)(local.get 1))))" 2143289344 1065353216 1065353216 2143289344 0 2147483648
 
 echo "aarch64: $acc ops accepted, $n native checks. Declined frontier:$dec"
 if [ -z "$bad" ]; then echo "PASS: all accepted aarch64 ops match wasmtime"; exit 0

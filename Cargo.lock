@@ -1160,6 +1160,7 @@ version = "0.52.0"
 dependencies = [
  "anyhow",
  "proptest",
+ "synth-backend-aarch64",
  "synth-core",
  "synth-synthesis",
  "thiserror",

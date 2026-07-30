@@ -282,6 +282,66 @@ pub fn cset(rd: Reg, cond: Cond) -> u32 {
     0x1A9F_07E0 | (cond.cset_field() << 12) | (rd as u32)
 }
 
+/// `csel wd, wn, wm, <cond>` — conditional select: `wd = cond ? wn : wm`.
+/// The cond field is the ARCHITECTURAL (non-inverted) encoding, same as
+/// `b.<cond>`. Clang ground truth: `csel w9, w10, w11, ne` = 0x1A8B1149.
+pub fn csel(rd: Reg, rn: Reg, rm: Reg, cond: Cond) -> u32 {
+    0x1A80_0000
+        | ((rm as u32) << 16)
+        | (cond.bcond_field() << 12)
+        | ((rn as u32) << 5)
+        | (rd as u32)
+}
+/// `csel xd, xn, xm, <cond>` — 64-bit form. Clang: `csel x9, x10, x11, ne` =
+/// 0x9A8B1149. Width-agnostic for the wasm `select` lowering: an i32 result is
+/// consumed through its low 32 bits (w-form readers), so carrying the full X
+/// register is correct for both i32 and i64 operands.
+pub fn csel64(rd: Reg, rn: Reg, rm: Reg, cond: Cond) -> u32 {
+    csel(rd, rn, rm, cond) | SF64
+}
+/// `fcsel sd, sn, sm, <cond>` — FP conditional select, single precision.
+/// Clang ground truth: `fcsel s16, s17, s18, ne` = 0x1E321E30.
+pub fn fcsel_s(rd: FReg, rn: FReg, rm: FReg, cond: Cond) -> u32 {
+    0x1E20_0C00
+        | ((rm as u32) << 16)
+        | (cond.bcond_field() << 12)
+        | ((rn as u32) << 5)
+        | (rd as u32)
+}
+/// `fcsel dd, dn, dm, <cond>` — double-precision form. Clang: `fcsel d16, d17,
+/// d18, ne` = 0x1E721E30. Used width-agnostically for the wasm `select` on FP
+/// operands (an f32 lives in the low 32 bits of the D view; consumers read the
+/// S view — the same convention as the epilogue's `fmov d0, dN`).
+pub fn fcsel_d(rd: FReg, rn: FReg, rm: FReg, cond: Cond) -> u32 {
+    fcsel_s(rd, rn, rm, cond) | 0x0040_0000
+}
+
+/// `sxtb wd, wn` — sign-extend byte to 32 bits (`SBFM` alias). Clang ground
+/// truth: `sxtb w9, w10` = 0x13001D49.
+pub fn sxtb(rd: Reg, rn: Reg) -> u32 {
+    0x1300_1C00 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sxth wd, wn` — sign-extend halfword to 32 bits. Clang: `sxth w9, w10` =
+/// 0x13003D49.
+pub fn sxth(rd: Reg, rn: Reg) -> u32 {
+    0x1300_3C00 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sxtb xd, wn` — sign-extend byte to 64 bits. Clang: `sxtb x9, w10` =
+/// 0x93401D49.
+pub fn sxtb64(rd: Reg, rn: Reg) -> u32 {
+    0x9340_1C00 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sxth xd, wn` — sign-extend halfword to 64 bits. Clang: `sxth x9, w10` =
+/// 0x93403D49.
+pub fn sxth64(rd: Reg, rn: Reg) -> u32 {
+    0x9340_3C00 | ((rn as u32) << 5) | (rd as u32)
+}
+/// `sxtw xd, wn` — sign-extend word to 64 bits (i64.extend_i32_s /
+/// i64.extend32_s). Clang: `sxtw x9, w10` = 0x93407D49.
+pub fn sxtw(rd: Reg, rn: Reg) -> u32 {
+    0x9340_7C00 | ((rn as u32) << 5) | (rd as u32)
+}
+
 /// `mov wd, wn` — architectural alias `orr wd, wzr, wn`.
 pub fn mov_reg(rd: Reg, rn: Reg) -> u32 {
     orr(rd, WZR, rn)
@@ -903,6 +963,27 @@ mod tests {
         assert_eq!(eor64(12, 13, 14), 0xCA0E_01AC);
         assert_eq!(mul64(0, 1, 2), 0x9B02_7C20);
         assert_eq!(mov_reg64(0, 9), 0xAA09_03E0);
+    }
+
+    #[test]
+    fn csel_fcsel_encodings_match_clang() {
+        // clang -arch arm64 ground truth (see doc comments).
+        assert_eq!(csel(9, 10, 11, Cond::Ne), 0x1A8B_1149);
+        assert_eq!(csel64(9, 10, 11, Cond::Ne), 0x9A8B_1149);
+        assert_eq!(csel64(0, 1, 2, Cond::Eq), 0x9A82_0020);
+        assert_eq!(fcsel_s(16, 17, 18, Cond::Ne), 0x1E32_1E30);
+        assert_eq!(fcsel_d(16, 17, 18, Cond::Ne), 0x1E72_1E30);
+        assert_eq!(fcsel_d(0, 1, 2, Cond::Eq), 0x1E62_0C20);
+    }
+
+    #[test]
+    fn sign_extend_encodings_match_clang() {
+        // clang -arch arm64 ground truth (see doc comments).
+        assert_eq!(sxtb(9, 10), 0x1300_1D49);
+        assert_eq!(sxth(9, 10), 0x1300_3D49);
+        assert_eq!(sxtb64(9, 10), 0x9340_1D49);
+        assert_eq!(sxth64(9, 10), 0x9340_3D49);
+        assert_eq!(sxtw(9, 10), 0x9340_7D49);
     }
 
     #[test]
