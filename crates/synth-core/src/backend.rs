@@ -540,6 +540,27 @@ pub enum RelocKind {
     /// word-offset immediate of the `bl` at `offset` to reach the target symbol.
     /// Emitted only by the `EM_AARCH64` backend's `.rela.text`.
     AArch64Call26,
+    /// R_AARCH64_JUMP26 (ELF type 282) — an AArch64 `B` (tail-branch) site
+    /// (#851 lane L3). Same 26-bit word-offset immediate as
+    /// [`RelocKind::AArch64Call26`], but for a branch that does NOT set `x30`:
+    /// the aarch64 `call_indirect` funcref table is a `.text`-resident array of
+    /// `b func_N` trampolines, so the dispatch's `blr` sets the return address
+    /// and the trampoline tail-branches into the callee (which returns straight
+    /// to the dispatcher).
+    AArch64Jump26,
+    /// R_AARCH64_ADR_PREL_PG_HI21 (ELF type 275) — the `adrp` half of a
+    /// PC-relative symbol address (#851 lane L3). Patches the 21-bit page delta
+    /// (`immlo`[30:29] + `immhi`[23:5]) so `adrp xd, sym` reaches the 4 KiB page
+    /// containing `sym`. Always paired with an
+    /// [`RelocKind::AArch64AddAbsLo12Nc`] on the next instruction. This pair is
+    /// how aarch64 reaches a synth-EMITTED region (the globals `.data` image,
+    /// the funcref table) with NO dedicated base register — so neither feature
+    /// adds an embedder precondition alongside `x28`.
+    AArch64AdrPrelPgHi21,
+    /// R_AARCH64_ADD_ABS_LO12_NC (ELF type 277) — the `add xd, xd, :lo12:sym`
+    /// half of a PC-relative symbol address (#851 lane L3). Patches the 12-bit
+    /// immediate field [21:10] with `(S + A) & 0xFFF`.
+    AArch64AddAbsLo12Nc,
     /// R_RISCV_CALL_PLT (ELF type 19) — a RISC-V `auipc`+`jalr` call pair
     /// (#871). The RV32 analogue of [`RelocKind::ThmCall`]: `offset` points at
     /// the `auipc` of an 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder and

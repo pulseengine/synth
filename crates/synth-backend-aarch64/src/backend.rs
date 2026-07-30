@@ -295,11 +295,11 @@ impl Backend for AArch64Backend {
             {
                 aliases.push(exp.clone());
             }
-            elf_funcs.push(ElfFunction {
-                symbols: aliases,
-                code: compiled.code.clone(),
-                relocations: compiled.relocations.clone(),
-            });
+            elf_funcs.push(ElfFunction::code(
+                aliases,
+                compiled.code.clone(),
+                compiled.relocations.clone(),
+            ));
             functions.push(compiled);
         }
 

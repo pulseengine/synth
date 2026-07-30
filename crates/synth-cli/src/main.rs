@@ -5259,13 +5259,18 @@ fn build_relocatable_elf(
                     );
                     ArmRelocationType::Abs32
                 }
-                // #851: R_AARCH64_CALL26 is emitted only by the EM_AARCH64 backend
-                // (its own `.rela.text` builder). It can never reach this ARM ELF
-                // relocation path; bail loudly if it somehow does.
-                synth_core::backend::RelocKind::AArch64Call26 => {
+                // #851: the AArch64 relocations (CALL26 / JUMP26 / the
+                // ADRP+ADD symbol-address pair) are emitted only by the
+                // EM_AARCH64 backend (its own `.rela.text` builder). None can
+                // reach this ARM ELF relocation path; bail loudly if one does.
+                synth_core::backend::RelocKind::AArch64Call26
+                | synth_core::backend::RelocKind::AArch64Jump26
+                | synth_core::backend::RelocKind::AArch64AdrPrelPgHi21
+                | synth_core::backend::RelocKind::AArch64AddAbsLo12Nc => {
                     anyhow::bail!(
-                        "internal error: AArch64 CALL26 relocation reached the ARM \
-                         ELF emitter — the aarch64 backend emits its own .rela.text (#851)"
+                        "internal error: an AArch64 relocation ({:?}) reached the ARM \
+                         ELF emitter — the aarch64 backend emits its own .rela.text (#851)",
+                        reloc.kind
                     )
                 }
                 // #871: R_RISCV_CALL_PLT is emitted only by the EM_RISCV backend
@@ -6788,11 +6793,11 @@ fn build_multi_func_riscv_elf(
 /// (EM_ARM/ELF32) container. Mirrors `build_riscv_elf` — the per-backend ELF path.
 fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
-    Ok(build_relocatable_object(&[A64ElfFunction {
-        symbols: vec![func_name.to_string()],
-        code: code.to_vec(),
-        relocations: Vec::new(),
-    }]))
+    Ok(build_relocatable_object(&[A64ElfFunction::code(
+        vec![func_name.to_string()],
+        code.to_vec(),
+        Vec::new(),
+    )]))
 }
 
 /// #546: emit a multi-function `EM_AARCH64` ELF64 (`ET_REL`) object exposing one
@@ -6811,13 +6816,9 @@ fn build_multi_func_aarch64_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
             if f.name != func_sym {
                 symbols.push(f.name.clone());
             }
-            A64ElfFunction {
-                symbols,
-                code: f.code.clone(),
-                // #851: forward the call relocations so `bl func_N` sites resolve
-                // via `.rela.text` (these were dropped pre-#851).
-                relocations: f.relocations.clone(),
-            }
+            // #851: forward the call relocations so `bl func_N` sites resolve
+            // via `.rela.text` (these were dropped pre-#851).
+            A64ElfFunction::code(symbols, f.code.clone(), f.relocations.clone())
         })
         .collect();
     Ok(build_relocatable_object(&a64_funcs))
