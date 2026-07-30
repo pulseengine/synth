@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-PERF-002 Phase 3 (#494) — in-bounds differential for the fact-spec
 branchless SELECT-collapse elision (the Phase-2 clamp oracle's sibling).
 

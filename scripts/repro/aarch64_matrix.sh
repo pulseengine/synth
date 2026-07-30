@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ci-status: wired
 # synth aarch64 execution-differential acceptance gate.
 # Compiles a broad WASM op set with `synth -b aarch64`, executes each accepted op NATIVELY on an
 # arm64 host (MAP_JIT), and diffs bit-exact vs wasmtime. Exits non-zero on any MISCOMPILE (a declined

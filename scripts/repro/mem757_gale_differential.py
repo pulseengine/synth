@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#757 — gale's exact fused os-tl node (the real miscompile, not a reconstruction).
 
 `mem757_gale/loom.wasm` (md5 18da000d9142dfa0885f57578d3af150) is the meld-fused +

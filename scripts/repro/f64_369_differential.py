@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#369 (GI-FPU-002 phases 2+3) — EXECUTION-validate scalar f64 on
 cortex-m7dp (double-precision VFP).
 

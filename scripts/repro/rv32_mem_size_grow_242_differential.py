@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#223 / #242 (VCR-SEL-005) — RV32 memory.size / memory.grow execution oracle.
 
 The v0.49 cross-backend op-parity gate ledgered `memory.size` and `memory.grow`

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#664 — null-funcref-slot call_indirect oracle: sparse tables trap, not decline.
 
 The fixture's 4-slot table has only slots 1 and 3 initialized; 0 and 2 are

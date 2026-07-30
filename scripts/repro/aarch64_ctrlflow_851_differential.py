@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#851 aarch64 FULL control-flow — if/else, loop back-edge, return EXECUTION diff.
 
 The #851 increment extends the void-block-only #538 control flow with:

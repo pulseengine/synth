@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-DEC-001 increment 2 — EXECUTION differential for the join-aware
 graph-colouring allocator (`SYNTH_GRAPH_ALLOC=1`, epic #242).
 

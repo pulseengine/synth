@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-PERF-002 Phase 3+ (#494) — redundant-mask (narrowing) elision oracle.
 
 Builds the `gust_kernel` lane-pack fixture WITH schema-v1 `wsc.facts`

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#865 — aarch64 linear-memory BOUNDS differential (gale's OOB table).
 
 gale (#865): the v0.51.0 aarch64 lowering emitted NO bounds check and

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#869 — the ARM 64-bit integer<->float conversion family EXECUTION
 differential (cortex-m7dp, Thumb-2, unicorn) vs wasmtime.
 

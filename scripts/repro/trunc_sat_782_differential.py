@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#782a — the trunc_sat (nontrapping saturating float->int) boundary
 EXECUTION differential.
 

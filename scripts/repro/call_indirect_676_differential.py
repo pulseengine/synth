@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#676 — heterogeneous-table call_indirect oracle: runtime type check.
 
 The fixture's 5-slot table interleaves TWO structural signature classes
