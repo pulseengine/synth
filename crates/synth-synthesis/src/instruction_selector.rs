@@ -7555,9 +7555,9 @@ impl InstructionSelector {
             op @ (F32Ceil | F32Floor | F32Trunc | F32Nearest) if self.fpu.is_some() => {
                 return Err(synth_core::Error::synthesis(format!(
                     "{op:?} not supported on ARM32: the available lowering is a \
-                     saturating VCVT round-trip through i32, which is not WASM- \
-                     correct for |x| >= 2^31, ±inf or NaN — declined until the \
-                     VRINT.F32 lowering lands"
+                     saturating VCVT round-trip through i32, which is not \
+                     WASM-correct for |x| >= 2^31, ±inf or NaN — declined until \
+                     the VRINT.F32 lowering lands"
                 )));
             }
             // F32 min/max — LOUD-DECLINED on ARM32 (#538 m4): the legacy

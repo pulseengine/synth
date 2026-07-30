@@ -535,18 +535,28 @@ jobs:
         # halfway table, which is what makes the "FRINTN is ties-to-EVEN"
         # claim real rather than assumed.
         #
-        # `pipefail` + a grep asserting a NON-ZERO, non-collapsed check count:
-        # an oracle that silently stops exercising anything must go red (#890).
+        # ANTI-VACUITY (#890). `set -euo pipefail`, NOT bare `pipefail`: with
+        # pipefail ALONE the step's exit status is that of the LAST command, so
+        # an oracle that printed FAIL and exited 1 still went GREEN. `-e` is
+        # what makes the failing pipeline abort the step — and it is stated
+        # explicitly here rather than left to the runner's default shell flags.
+        #
+        # The verdict is then taken from the script's OWN summary line, not
+        # from exit 0 alone, and the counts are asserted non-collapsed: an
+        # oracle that quietly stops exercising anything — or that loses the
+        # out-of-range half of the #709 boundary table, which is this gate's
+        # entire purpose — must go RED.
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/aarch64_float_completion_851_differential.py \
             | tee /tmp/a64_floatdiff.log
+          grep -q '^RESULT: PASS' /tmp/a64_floatdiff.log
           grep -Eq '^[0-9]+ wasmtime cases \([0-9]+ trap cases\)' /tmp/a64_floatdiff.log
           n=$(sed -n 's/^\([0-9]*\) wasmtime cases.*/\1/p' /tmp/a64_floatdiff.log)
           t=$(sed -n 's/^[0-9]* wasmtime cases (\([0-9]*\) trap cases).*/\1/p' /tmp/a64_floatdiff.log)
           echo "float-completion oracle ran $n checks, $t of them trap cases"
-          [ "${n:-0}" -ge 300 ] || { echo "oracle ran too few checks ($n)"; exit 1; }
-          [ "${t:-0}" -ge 40 ] || { echo "oracle ran too few TRAP cases ($t)"; exit 1; }
+          [ "$n" -ge 300 ]
+          [ "$t" -ge 40 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 

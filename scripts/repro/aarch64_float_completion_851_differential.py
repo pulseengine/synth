@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """v0.54 L2 (#851) — the aarch64 float-completion EXECUTION differential.
 
 Closes the four classes the VCR-SEL-005 third-backend op-parity oracle listed as
