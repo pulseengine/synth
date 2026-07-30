@@ -1020,6 +1020,44 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_addr_fold_riscv_differential.py
 
+  rv32-br-table-oracle:
+    name: rv32 br_table execution oracle (#882)
+    # #882: RV32 lowers `br_table` as a compare-and-branch chain (entry 0 vs
+    # x0, li+beq per further entry, jal to default) — the last op standing
+    # between gale's wdg-thin driver and a complete RV32 lowering. The
+    # differential EXECUTES gale's exact shape (targets [0,1,0] default 1) plus
+    # 3-distinct-target and default-distinct dispatches under unicorn
+    # (UC_ARCH_RISCV) vs wasmtime, with indices covering EVERY table entry AND
+    # out-of-range/unsigned-edge (0x80000000, 0xFFFFFFFF must land on default —
+    # a wrong default or a signed chain compare is loud). A missing export
+    # (the pre-fix decline) fails the vacuity guard, so this can never pass
+    # vacuously. Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run RV32 br_table execution oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/rv32_br_table_882_differential.py
+
   rv32-extern-call-reloc-oracle:
     name: rv32 external-call relocation oracle (#871)
     # #871: the gale thin-seam driver shape — exported functions calling an

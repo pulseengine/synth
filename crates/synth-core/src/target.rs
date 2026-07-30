@@ -516,10 +516,14 @@ impl TargetSpec {
             "riscv32gc" | "rv32gc" => Ok(Self::riscv32("gc")),
             // Generic RV32 default → the broadly-supported imac profile.
             "riscv32" | "rv32" => Ok(Self::riscv32("imac")),
+            // #882: name the FULL valid set — an unrecognised target is a
+            // hard error at the CLI seam and this message is the user's map.
             _ => Err(format!(
                 "unknown target triple: {triple}. Supported: \
-                 cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp; \
-                 rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3"
+                 cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, \
+                 cortex-m55, cortex-r5 (ARM); \
+                 rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32 \
+                 (RISC-V, -b riscv); cortex-a53 (-b aarch64)"
             )),
         }
     }

@@ -309,9 +309,12 @@ enum Commands {
         #[arg(long, value_name = "MODE")]
         safety_bounds: Option<String>,
 
-        /// Compilation backend (arm, w2c2, awsm, wasker)
-        #[arg(short, long, default_value = "arm")]
-        backend: String,
+        /// Compilation backend (arm, riscv, aarch64, w2c2, awsm, wasker).
+        /// Defaults to `arm`. #882: a `--target` whose ISA family does not
+        /// match the selected backend is a HARD ERROR, never a silent
+        /// wrong-ISA build.
+        #[arg(short, long)]
+        backend: Option<String>,
 
         /// Run translation validation after compilation
         #[arg(long)]
@@ -614,8 +617,15 @@ fn main() -> Result<()> {
             stack_layout,
             stack_size,
         } => {
+            // #882: track whether `-b/--backend` was given explicitly (the
+            // mismatch diagnostics differ: an explicit backend lists the
+            // targets IT accepts; the defaulted `arm` backend tells the user
+            // which `-b` their target needs).
+            let backend_explicit = backend.is_some();
+            let backend = backend.unwrap_or_else(|| "arm".to_string());
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
-            let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
+            let target_spec =
+                resolve_target_spec(target.as_deref(), cortex_m, &backend, backend_explicit)?;
 
             // #778 phase 2: parse + schema-validate the UNTRUSTED hints file up
             // front so a malformed oracle input fails loudly, not mid-compile.
@@ -1016,25 +1026,110 @@ struct ElfFunction {
     line_map: synth_core::backend::LineMap,
 }
 
+/// #882: the `--target` names each single-ISA backend accepts — used by the
+/// unknown-target and target/backend-mismatch diagnostics. Transpiler
+/// backends (w2c2/awsm/wasker) are target-agnostic and return `None`.
+fn backend_accepted_targets(backend: &str) -> Option<&'static str> {
+    match backend {
+        "arm" => {
+            Some("cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55, cortex-r5")
+        }
+        "riscv" => Some("rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32"),
+        "aarch64" => Some("cortex-a53"),
+        _ => None,
+    }
+}
+
+/// #882: human-readable ISA-family name for the mismatch diagnostics.
+fn family_name(family: &synth_core::target::ArchFamily) -> &'static str {
+    use synth_core::target::ArchFamily;
+    match family {
+        ArchFamily::ArmCortexM => "ARM Cortex-M",
+        ArchFamily::ArmCortexR => "ARM Cortex-R",
+        ArchFamily::ArmCortexA => "AArch64",
+        ArchFamily::RiscV => "RISC-V",
+    }
+}
+
 /// Resolve --target / --cortex-m into a TargetSpec
-fn resolve_target_spec(target: Option<&str>, cortex_m: bool, backend: &str) -> Result<TargetSpec> {
-    match target {
-        // from_triple already lists the supported ARM + RV32 names in its error.
-        Some(name) => TargetSpec::from_triple(name).map_err(|e| anyhow::anyhow!("{e}")),
+///
+/// #882: an unrecognised `--target` HARD-ERRORS listing the valid names
+/// (`TargetSpec::from_triple`'s error, plus the explicit backend's accepted
+/// set when `-b` was given), and a RECOGNISED target whose ISA family does
+/// not match the selected single-ISA backend (arm / riscv / aarch64) ALSO
+/// hard-errors. Pre-fix, `--target riscv32` with the defaulted `arm` backend
+/// silently printed "Using backend: arm" and built Thumb code into a RISC-V
+/// ELF container, failing only deep in the emitter ("non-CALL_PLT relocation
+/// ThmCall reached the RISC-V ELF emitter") — a plausible-looking wrong-ISA
+/// object is exactly how someone ships the wrong build.
+fn resolve_target_spec(
+    target: Option<&str>,
+    cortex_m: bool,
+    backend: &str,
+    backend_explicit: bool,
+) -> Result<TargetSpec> {
+    use synth_core::target::ArchFamily;
+    let (name, spec) = match target {
+        // from_triple lists the supported target names in its error.
+        Some(name) => {
+            let spec =
+                TargetSpec::from_triple(name).map_err(|e| {
+                    match backend_accepted_targets(backend) {
+                        Some(list) if backend_explicit => {
+                            anyhow::anyhow!("{e}\ntargets accepted by backend '{backend}': {list}")
+                        }
+                        _ => anyhow::anyhow!("{e}"),
+                    }
+                })?;
+            (name, spec)
+        }
         // No --target given: pick a backend-appropriate default so `-b riscv`
         // doesn't inherit the ARM profile and bail (#218).
-        None if backend == "riscv" => Ok(TargetSpec::riscv32("imac")),
+        None if backend == "riscv" => return Ok(TargetSpec::riscv32("imac")),
         // #538: `-b aarch64` without --target defaults to the A64 host profile.
-        None if backend == "aarch64" => Ok(TargetSpec::cortex_a53()),
-        None if cortex_m => Ok(TargetSpec::cortex_m3()),
+        None if backend == "aarch64" => return Ok(TargetSpec::cortex_a53()),
+        None if cortex_m => return Ok(TargetSpec::cortex_m3()),
         None => {
             // Default: Arm32 ISA (non-Cortex-M, no vector table)
-            Ok(TargetSpec {
+            return Ok(TargetSpec {
                 isa: synth_core::target::IsaVariant::Arm32,
                 ..TargetSpec::cortex_m4()
-            })
+            });
         }
+    };
+    // #882: cross-check the resolved target's ISA family against the
+    // single-ISA backends; unchecked combinations (w2c2/awsm/wasker) keep
+    // their previous behavior.
+    let required_backend = match spec.family {
+        ArchFamily::ArmCortexM | ArchFamily::ArmCortexR => "arm",
+        ArchFamily::ArmCortexA => "aarch64",
+        ArchFamily::RiscV => "riscv",
+    };
+    let backend_is_isa = matches!(backend, "arm" | "riscv" | "aarch64");
+    if backend_is_isa && backend != required_backend {
+        let family = family_name(&spec.family);
+        if backend_explicit {
+            let accepted = backend_accepted_targets(backend).unwrap_or("(none)");
+            anyhow::bail!(
+                "backend '{backend}' does not accept --target {name} ({family}).\n\
+                 targets accepted by backend '{backend}': {accepted}\n\
+                 for {name}, use `-b {required_backend}`"
+            );
+        }
+        // "an AArch64", "a RISC-V" — the family names are a closed set, so a
+        // lookup beats a vowel heuristic ("an ARM" is right, "an RISC-V" is not).
+        let article = match spec.family {
+            ArchFamily::ArmCortexA => "an",
+            _ => "a",
+        };
+        anyhow::bail!(
+            "--target {name} is {article} {family} target, but no backend was selected, so the \
+             default 'arm' backend would silently produce a wrong-ISA object — refusing.\n\
+             pass `-b {required_backend}` for this target, or pick an ARM target: {arm}",
+            arm = backend_accepted_targets("arm").unwrap_or("(none)"),
+        );
     }
+    Ok(spec)
 }
 
 /// Build the backend registry with all available backends
@@ -8591,37 +8686,126 @@ mod tests {
     fn test_resolve_target_spec_default_no_cortex_m() {
         // When neither --target nor --cortex-m is given, the default is an
         // Arm32-ISA cortex_m4 spec (used by the non-Cortex-M flow).
-        let spec = resolve_target_spec(None, false, "arm").unwrap();
+        let spec = resolve_target_spec(None, false, "arm", false).unwrap();
         assert_eq!(spec.isa, synth_core::target::IsaVariant::Arm32);
     }
 
     #[test]
     fn test_resolve_target_spec_cortex_m_flag() {
         // --cortex-m without --target maps to cortex-m3.
-        let spec = resolve_target_spec(None, true, "arm").unwrap();
+        let spec = resolve_target_spec(None, true, "arm", false).unwrap();
         assert_eq!(spec.triple, "thumbv7m-none-eabi");
     }
 
     #[test]
     fn test_resolve_target_spec_explicit_target_wins_over_cortex_m() {
         // --target overrides --cortex-m.
-        let spec = resolve_target_spec(Some("cortex-m7"), true, "arm").unwrap();
+        let spec = resolve_target_spec(Some("cortex-m7"), true, "arm", false).unwrap();
         assert_eq!(spec.triple, "thumbv7em-none-eabihf");
     }
 
     #[test]
     fn test_resolve_target_spec_unknown_triple_errors() {
-        let err = resolve_target_spec(Some("totally-bogus-triple"), false, "arm").unwrap_err();
+        let err =
+            resolve_target_spec(Some("totally-bogus-triple"), false, "arm", false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("totally-bogus-triple"));
         assert!(msg.contains("Supported"));
+    }
+
+    /// #882: an unknown target with an EXPLICIT backend additionally lists the
+    /// targets that backend accepts.
+    #[test]
+    fn test_resolve_target_spec_unknown_triple_lists_backend_targets_882() {
+        let err =
+            resolve_target_spec(Some("totally-bogus-triple"), false, "riscv", true).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Supported"), "{msg}");
+        assert!(
+            msg.contains("targets accepted by backend 'riscv'"),
+            "explicit -b must list its accepted targets: {msg}"
+        );
+        assert!(msg.contains("esp32c3"), "{msg}");
+    }
+
+    /// #882 (gale): `--target riscv32` with the DEFAULTED arm backend must
+    /// HARD-ERROR pointing at `-b riscv` — pre-fix it silently printed
+    /// "Using backend: arm" and built Thumb code into a RISC-V ELF container.
+    #[test]
+    fn test_resolve_target_spec_riscv_target_arm_default_backend_errors_882() {
+        for name in [
+            "riscv32",
+            "rv32imac",
+            "esp32c3",
+            "riscv32imac-unknown-none-elf",
+        ] {
+            let err = resolve_target_spec(Some(name), false, "arm", false).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("RISC-V"), "{name}: {msg}");
+            assert!(msg.contains("-b riscv"), "{name}: {msg}");
+        }
+    }
+
+    /// #882: an EXPLICIT mismatched backend errors naming the targets that
+    /// backend accepts.
+    #[test]
+    fn test_resolve_target_spec_explicit_backend_mismatch_errors_882() {
+        let err = resolve_target_spec(Some("cortex-m3"), false, "riscv", true).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not accept --target cortex-m3"), "{msg}");
+        assert!(msg.contains("rv32imac"), "{msg}");
+        assert!(msg.contains("-b arm"), "{msg}");
+
+        let err = resolve_target_spec(Some("riscv32"), false, "arm", true).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not accept --target riscv32"), "{msg}");
+        assert!(msg.contains("cortex-m3"), "{msg}");
+        assert!(msg.contains("-b riscv"), "{msg}");
+
+        let err = resolve_target_spec(Some("cortex-a53"), false, "arm", true).unwrap_err();
+        assert!(err.to_string().contains("-b aarch64"), "{err}");
+    }
+
+    /// #882: every currently-valid target/backend PAIRING keeps resolving to
+    /// the same spec as before — no behavior change for good input.
+    #[test]
+    fn test_resolve_target_spec_good_input_unchanged_882() {
+        let arm_targets = [
+            "cortex-m3",
+            "cortex-m4",
+            "cortex-m4f",
+            "cortex-m7",
+            "cortex-m7dp",
+            "cortex-m55",
+            "cortex-r5",
+        ];
+        for name in arm_targets {
+            for explicit in [false, true] {
+                let spec = resolve_target_spec(Some(name), false, "arm", explicit)
+                    .unwrap_or_else(|e| panic!("{name} must resolve on arm: {e}"));
+                assert_eq!(spec, TargetSpec::from_triple(name).unwrap(), "{name}");
+            }
+        }
+        let rv_targets = [
+            "rv32imac", "rv32imc", "rv32im", "rv32i", "rv32gc", "esp32c3", "riscv32",
+        ];
+        for name in rv_targets {
+            let spec = resolve_target_spec(Some(name), false, "riscv", true)
+                .unwrap_or_else(|e| panic!("{name} must resolve on riscv: {e}"));
+            assert_eq!(spec.family, synth_core::target::ArchFamily::RiscV, "{name}");
+        }
+        let spec = resolve_target_spec(Some("cortex-a53"), false, "aarch64", true).unwrap();
+        assert_eq!(spec.family, synth_core::target::ArchFamily::ArmCortexA);
+        // Transpiler backends stay target-unchecked (previous behavior).
+        let spec = resolve_target_spec(Some("riscv32"), false, "w2c2", true).unwrap();
+        assert_eq!(spec.family, synth_core::target::ArchFamily::RiscV);
     }
 
     /// #218: `-b riscv` with no `--target` must default to an RV32 profile, not
     /// inherit the ARM default (which makes the RISC-V backend bail).
     #[test]
     fn test_resolve_target_spec_riscv_default_218() {
-        let spec = resolve_target_spec(None, false, "riscv").unwrap();
+        let spec = resolve_target_spec(None, false, "riscv", true).unwrap();
         assert_eq!(spec.family, synth_core::target::ArchFamily::RiscV);
         assert_eq!(
             spec.isa,
