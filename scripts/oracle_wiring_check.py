@@ -65,6 +65,11 @@ import pathlib
 import re
 import sys
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - the claim-check job installs PyYAML
+    sys.exit("oracle_wiring_check: needs PyYAML  (pip install pyyaml)")
+
 # The closed set of `manual` categories. Adding one is a deliberate code change
 # (and a review conversation), not a free-text escape hatch.
 MANUAL_CATEGORIES = {
@@ -107,13 +112,45 @@ def collect(root):
     return scripts, workflows
 
 
+def executable_surface(workflows):
+    """Map workflow filename -> the text a runner would actually EXECUTE.
+
+    A raw grep of the .yml would count a mention in a COMMENT as "wired" — a
+    gate satisfied by prose, which is the failure shape this whole check exists
+    to reject. So references are derived from the PARSED workflow: each step's
+    `run:` body plus its `with:`/`env:` values. A workflow that will not parse
+    is a hard error, never a silent pass.
+    """
+    surface, raw = {}, {}
+    for w in workflows:
+        name = os.path.basename(w)
+        raw[name] = pathlib.Path(w).read_text(errors="ignore")
+        try:
+            doc = yaml.safe_load(raw[name]) or {}
+        except yaml.YAMLError as exc:
+            raise RuntimeError(f"workflow {name} does not parse: {exc}") from exc
+        chunks = []
+        for job in (doc.get("jobs") or {}).values():
+            if not isinstance(job, dict):
+                continue
+            for st in job.get("steps") or []:
+                if not isinstance(st, dict):
+                    continue
+                if isinstance(st.get("run"), str):
+                    chunks.append(st["run"])
+                for block in ("with", "env"):
+                    for v in (st.get(block) or {}).values():
+                        chunks.append(str(v))
+            for v in (job.get("env") or {}).values():
+                chunks.append(str(v))
+        surface[name] = "\n".join(chunks)
+    return surface, raw
+
+
 def classify(root, scripts, workflows):
     """Return (records, failures). One record per script; failures are strings."""
-    wf_text = {
-        os.path.basename(w): pathlib.Path(w).read_text(errors="ignore")
-        for w in workflows
-    }
-    blob = "\n".join(wf_text.values())
+    wf_text, wf_raw = executable_surface(workflows)
+    blob = "\n".join(wf_raw.values())
 
     records, fails = [], []
     for path in scripts:
@@ -151,10 +188,17 @@ def classify(root, scripts, workflows):
 
         if status == "wired":
             if not refs:
+                mentioned = [w for w, t in wf_raw.items() if name in t]
+                where = (
+                    f" It IS mentioned in {', '.join(mentioned)}, but only in a "
+                    f"COMMENT — prose does not run an oracle."
+                    if mentioned
+                    else ""
+                )
                 fails.append(
-                    f"{rel}: declares `wired` but NO workflow references it — "
-                    f"the gate is INERT. Wire it in .github/workflows/, or "
-                    f"downgrade the declaration to `unwired`/`manual`."
+                    f"{rel}: declares `wired` but NO workflow STEP runs it — "
+                    f"the gate is INERT.{where} Wire it in .github/workflows/, "
+                    f"or downgrade the declaration to `unwired`/`manual`."
                 )
             if category:
                 fails.append(f"{rel}: `wired` takes no category (got {category!r})")

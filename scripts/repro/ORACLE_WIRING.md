@@ -44,6 +44,12 @@ conventionally on the line after the shebang:
 `scripts/oracle_wiring_check.py` enforces it, and runs as a step of the
 **`claim-check`** CI job.
 
+"Referenced by a workflow" means referenced by something a runner would
+**execute** — a step's `run:` body, or a `with:`/`env:` value — derived from the
+*parsed* workflow, not from a raw grep. A mention in a comment does not count: a
+gate satisfiable by prose is the failure shape this check exists to reject. (A
+workflow that will not parse is a hard error, never a silent pass.)
+
 ### Why a header comment, not a manifest file
 
 * **Locality.** The declaration lives in the file it describes, so it appears in
@@ -130,35 +136,51 @@ no transcription drift between what was proved and what CI runs.
 ```
 ===== BASELINE =====
 STEP EXIT=0
-all repro scripts declare a CI status, and every `wired` one is wired.
 oracle-wiring gate is non-vacuous: it classified 152 scripts, 145 of them wired,
 7 manual, 0 unwired-debt, 0 inert.
 
-===== MUTATION 1: un-declare mem757_ptr_base_copy_differential.py =====
+===== M1: un-declare mem757_ptr_base_copy_differential.py =====
 STEP EXIT=1
 FAIL scripts/repro/mem757_ptr_base_copy_differential.py: UNDECLARED — add a
-`# ci-status:` header line ... An oracle nothing runs must SAY so.
+`# ci-status:` header line (wired | manual (<category>) — reason | unwired ...
 
-===== MUTATION 2: declare `wired` on wake_path (no workflow reference) =====
+===== M2: declare `wired` on wake_path (no reference at all) =====
 STEP EXIT=1
 FAIL scripts/repro/wake_path_differential.py: declares `wired` but NO workflow
-references it — the gate is INERT.
+STEP runs it — the gate is INERT. Wire it in .github/workflows/, or dow...
 
-===== MUTATION 3: delete a wired oracle's CI step (re-inert it) =====
+===== M3: delete a wired oracle's CI step =====
 STEP EXIT=1
 FAIL scripts/repro/mem757_low_const_copy_differential.py: declares `wired` but NO
-workflow references it — the gate is INERT.
+workflow STEP runs it — the gate is INERT. Wire it in .github/workfl...
 
-===== MUTATION 4: gate measures nothing (glob matches no scripts) =====
+===== M4: gate glob matches nothing =====
 STEP EXIT=1
-oracle-wiring gate VACUOUS or DRIFTED ['total<100']: {'total': 2, 'wired': 1, ...}
+oracle-wiring gate VACUOUS or DRIFTED ['total<100']: {'failures': 0, 'manual': 1,
+'manual_by_category': {'measurement': 1}, 'total': 2, 'undeclared': ...
+
+===== M5: reference demoted to a COMMENT =====
+STEP EXIT=1
+FAIL scripts/repro/mem757_memmove_param_differential.py: declares `wired` but NO
+workflow STEP runs it — the gate is INERT. It IS mentioned in ci.yml, ...
+
+===== M6: manual reason replaced with a placeholder =====
+STEP EXIT=1
+FAIL scripts/repro/run204_unicorn.py: `manual` needs a REAL reason (>= 20 chars,
+not a placeholder); got 'TODO'
 
 ===== RESTORED =====
 STEP EXIT=0
 ```
 
-Mutation 3 is the one that closes the loop the other way: deleting a CI step
-without touching the script no longer silently re-inerts the oracle.
+**M3** closes the loop the other way: deleting a CI step without touching the
+script no longer silently re-inerts the oracle. **M5** closes it a third way: a
+step demoted to a comment still *mentions* the script, and a raw grep would call
+that wired — prose does not run an oracle.
+
+`SYNTH-ORACLE-WIRING-890`'s ratchet legs are proved the same way: flipping one
+wired script to `manual` fails **both** `count-min 145` (the floor) and
+`count-max 7` (the ceiling).
 
 ## Adding a repro script
 
