@@ -41,9 +41,13 @@ Chosen over a central manifest deliberately:
 
 THREE STATUSES, on purpose
 --------------------------------------------------------------------------
-  wired    — at least one `.github/workflows/*.yml` references the file by name.
-             VERIFIED here: declaring `wired` without a workflow reference is a
-             hard failure. This is the exact "green board, inert gate" defect.
+  wired    — at least one `.github/workflows/*.yml` STEP runs the file.
+             VERIFIED here: declaring `wired` without one is a hard failure —
+             the exact "green board, inert gate" defect. "References" is derived
+             from the PARSED workflow (a step's `run:` body plus its
+             `with:`/`env:` values), never a raw grep: a mention in a COMMENT
+             would otherwise satisfy the gate, and a gate satisfiable by prose
+             is the very shape this check exists to reject.
   manual   — legitimately NOT CI-runnable. Requires a CATEGORY from the fixed
              list below plus a reason. Categories are a closed set so the manual
              surface stays groupable and arguable, not a free-text dumping
