@@ -16,28 +16,40 @@
 //! cannot handle a function within its bounded scope, it returns `None` and the
 //! caller falls back to the shipping `reallocate_function` — never a hard-fail.
 //!
-//! **Bounded scope (increment 1).** WHOLE straight-line functions only: a
-//! function whose entire body is one straight-line segment (no branches, no
-//! calls, no i64-pair / FP ops — anything [`crate::liveness::straight_line_value_ranges`]
-//! or [`crate::liveness::reg_effect`] declines). Such a function is coloured as a
-//! SINGLE whole-function interference graph over the R0-R8 pool, with segment
-//! inputs and live-outs pinned to their incoming/outgoing registers and reserved
-//! registers (R9-R12) identity-assigned. On ANY control flow, spill, or unmodeled
-//! op, it declines to the shipping path.
+//! **Increment 1 (v0.50) — whole straight-line functions.** A function whose
+//! entire body is one straight-line segment (no branches, no calls, no i64-pair /
+//! FP ops — anything [`crate::liveness::straight_line_value_ranges`] or
+//! [`crate::liveness::reg_effect`] declines) is coloured as a SINGLE
+//! whole-function interference graph over the R0-R8 pool, with segment inputs and
+//! live-outs pinned to their incoming/outgoing registers and reserved registers
+//! (R9-R12) identity-assigned. Tried FIRST and left bit-for-bit as it shipped.
 //!
-//! Increment 2 (NAMED, NOT in this spike): whole-function *webs* built from
-//! [`crate::liveness::cfg_liveness`] — colouring value ranges ACROSS control-flow
-//! joins, where "the allocator and validator share the dataflow" fully lands.
-//! That needs SSA-style web construction across joins that does not exist yet;
-//! it is honestly beyond a bounded first slice.
+//! **Increment 2 (v0.53) — colouring ACROSS if/else joins.** The `joins`
+//! submodule builds the function's label-form CFG, splits each register's def-use
+//! chains into cross-block *webs* (a reaching-def fixpoint), takes interference
+//! from CFG liveness and colours the whole branchy function at once — so two
+//! arms' values, never simultaneously live, share one register. See that module's
+//! own docs for the scope (label-form branches; no calls; no pre-resolved numeric
+//! branches) and for why each exclusion is a DECLINE rather than a guess.
 //!
-//! **The oracle IS the point (red-first).** Every rewrite this module produces is
-//! proven semantics-preserving by [`crate::liveness::validate_segment_rewrite`]
-//! (the Rideau/Leroy pairwise trace-equality validator — the SAME acceptance gate
-//! `reallocate_function` uses); a rewrite the validator rejects is dropped and the
-//! function declines. Downstream, the unconditional VCR-RA-003
-//! [`crate::liveness::validate_final_allocation`] re-checks the final stream, and
-//! the wasmtime execution differential is the runtime backstop.
+//! **The oracle IS the point (red-first).** A straight-line rewrite is proven
+//! semantics-preserving by [`crate::liveness::validate_segment_rewrite`] (the
+//! Rideau/Leroy pairwise trace-equality validator — the SAME acceptance gate
+//! `reallocate_function` uses); a branchy one by
+//! [`crate::liveness::validate_cfg_rewrite`], the same argument lifted to a
+//! backward must-fixpoint over the CFG. A rewrite either validator rejects is
+//! dropped and the function declines. Downstream, the unconditional VCR-RA-003
+//! [`crate::liveness::validate_final_allocation`] re-checks the final stream
+//! through an INDEPENDENTLY written CFG builder.
+//!
+//! **And the validators are not sufficient.** `validate_cfg_rewrite` shares the
+//! CFG shape with the pass it validates, so — #872's standing lesson — it cannot
+//! catch an error in what they share. Increment 2's divergent bytes are therefore
+//! EXECUTED against wasmtime by
+//! `scripts/repro/vcr_dec_001_join_alloc_execution_differential.py`, which is
+//! proven non-vacuous by mutation: emptying the shared exit contract emits code
+//! that leaves the return value in the wrong register, and BOTH validators accept
+//! it.
 
 use crate::instruction_selector::ArmInstruction;
 use crate::liveness::{
@@ -1586,6 +1598,26 @@ mod tests {
         assert!(
             early.succ.is_empty(),
             "a mid-stream `pop {{…, pc}}` must be a RETURN sink, not a fall-through"
+        );
+    }
+
+    /// A validator that accepts an EMPTY CFG for a non-empty stream would
+    /// certify every rewrite vacuously — the exact failure mode the v0.50 join
+    /// attempt's `entry_seed` hacks had. The structural tiling check must
+    /// reject it.
+    #[test]
+    fn cfg_validator_rejects_an_empty_cfg_for_a_nonempty_stream() {
+        let body = diamond();
+        assert!(
+            validate_cfg_rewrite(&body, &body, &[]).is_err(),
+            "an empty CFG must NOT validate a non-empty stream"
+        );
+        // ...and a CFG that does not tile the stream is equally rejected.
+        let mut partial = joins::build_cfg(&body).expect("CFG");
+        partial.pop();
+        assert!(
+            validate_cfg_rewrite(&body, &body, &partial).is_err(),
+            "a CFG that leaves instructions unwalked must NOT validate"
         );
     }
 

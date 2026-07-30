@@ -3552,9 +3552,12 @@ pub fn validate_cfg_rewrite(
             rewritten: rewritten.len(),
         });
     }
-    if orig.is_empty() || blocks.is_empty() {
+    if orig.is_empty() {
         return Ok(());
     }
+    // NOT `|| blocks.is_empty()`: an empty CFG for a NON-empty stream would
+    // then validate every rewrite vacuously. It falls through to the tiling
+    // check below, which rejects it.
 
     // ---- Structural re-check of the supplied CFG (never trusted) ----------
     // Blocks must tile the whole stream in order, so every instruction is
