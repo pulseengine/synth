@@ -91,59 +91,73 @@ pub struct Substrate {
     pub emitted: bool,
 }
 
-/// Everything [`plan`] needs, so both drivers (the `Backend::compile_module`
-/// path and the CLI's own multi-function ELF path) can call it from whatever
-/// module state they hold.
-#[derive(Debug, Clone, Copy)]
-pub struct PlanInputs<'a> {
+/// Everything [`plan`] needs, OWNED, so a driver that aggregates module state
+/// can build it once while the decoded module is still whole and carry it to
+/// wherever the ELF is assembled. Both aarch64 drivers do exactly that.
+///
+/// The two `uses_*` flags are set LAST, by the driver, from the op streams it
+/// is actually about to compile.
+#[derive(Debug, Default, Clone)]
+pub struct PlanInputs {
     /// Defined globals with their decoded constant initializers.
-    pub globals: &'a [WasmGlobal],
+    pub globals: Vec<WasmGlobal>,
     /// How many globals the module IMPORTS (their values arrive at
     /// instantiation, which this backend cannot perform).
     pub imported_globals: u32,
     /// Does any compiled function execute `global.get`/`global.set`?
     pub uses_globals: bool,
-    /// The contiguous funcref-region image (`DecodedModule::funcref_region_slots`).
-    pub funcref_slots: &'a [Option<u32>],
+    /// The contiguous funcref-region image
+    /// (`DecodedModule::funcref_region_slots`).
+    pub funcref_slots: Vec<Option<u32>>,
     /// The matching per-slot structural class ids
     /// (`DecodedModule::funcref_region_class_ids`).
-    pub funcref_class_ids: &'a [u32],
+    pub funcref_class_ids: Vec<u32>,
     /// Per-table compile-time sizes (`DecodedModule::table_sizes`).
-    pub table_sizes: &'a [Option<u32>],
+    pub table_sizes: Vec<Option<u32>>,
     /// Element segments, for the statically-verifiable-image check.
-    pub elem_segments: &'a [synth_core::wasm_decoder::ElemSegmentInfo],
+    pub elem_segments: Vec<synth_core::wasm_decoder::ElemSegmentInfo>,
     /// Number of imported functions — a table slot pointing at one has no
     /// `func_N` body in this object.
     pub num_imported_funcs: u32,
     /// Does any compiled function execute `call_indirect`?
     pub uses_call_indirect: bool,
+    /// #851 lane L3 — the STRUCTURAL class id per function type, carried here
+    /// so the driver can hand it to the selector's `ModuleCtx` without keeping
+    /// the whole decoded module alive.
+    pub type_class_ids: Vec<u32>,
+    /// Result count per function type, same rationale.
+    pub type_result_counts: Vec<u32>,
 }
 
-impl<'a> PlanInputs<'a> {
-    /// Derive the inputs from a whole decoded module plus the two usage flags
-    /// (which the driver computes from the op streams it is about to compile).
-    pub fn from_module(
-        module: &'a DecodedModule,
-        slots: &'a [Option<u32>],
-        class_ids: &'a [u32],
-        uses_globals: bool,
-        uses_call_indirect: bool,
-    ) -> Self {
+impl PlanInputs {
+    /// Snapshot everything from a whole decoded module. The `uses_*` flags stay
+    /// `false`; the driver sets them from the op streams it compiles.
+    pub fn from_module(module: &DecodedModule) -> Self {
         Self {
-            globals: &module.globals,
+            globals: module.globals.clone(),
             imported_globals: module
                 .imports
                 .iter()
                 .filter(|i| matches!(i.kind, synth_core::ImportKind::Global))
                 .count() as u32,
-            uses_globals,
-            funcref_slots: slots,
-            funcref_class_ids: class_ids,
-            table_sizes: &module.table_sizes,
-            elem_segments: &module.elem_segments,
+            uses_globals: false,
+            funcref_slots: module.funcref_region_slots(),
+            funcref_class_ids: module.funcref_region_class_ids(),
+            table_sizes: module.table_sizes.clone(),
+            elem_segments: module.elem_segments.clone(),
             num_imported_funcs: module.num_imported_funcs,
-            uses_call_indirect,
+            uses_call_indirect: false,
+            type_class_ids: module.structural_type_class_ids(),
+            type_result_counts: module.type_result_counts.clone(),
         }
+    }
+
+    /// Set the two usage flags from an op-stream scan over the functions the
+    /// driver will compile.
+    pub fn with_usage(mut self, uses_globals: bool, uses_call_indirect: bool) -> Self {
+        self.uses_globals = uses_globals;
+        self.uses_call_indirect = uses_call_indirect;
+        self
     }
 }
 
@@ -153,14 +167,14 @@ impl<'a> PlanInputs<'a> {
 /// fails rather than shipping a region whose contents synth cannot vouch for.
 /// The two features are planned INDEPENDENTLY: a module that uses only globals
 /// never touches the table checks and vice versa.
-pub fn plan(input: PlanInputs<'_>) -> Result<Substrate, String> {
+pub fn plan(input: &PlanInputs) -> Result<Substrate, String> {
     let globals = if input.uses_globals {
-        plan_globals(&input)?
+        plan_globals(input)?
     } else {
         DataBlob::default()
     };
     let table = if input.uses_call_indirect {
-        Some(plan_table(&input)?)
+        Some(plan_table(input)?)
     } else {
         None
     };
@@ -172,7 +186,7 @@ pub fn plan(input: PlanInputs<'_>) -> Result<Substrate, String> {
 }
 
 /// Build the `.data` globals image, or decline.
-fn plan_globals(input: &PlanInputs<'_>) -> Result<DataBlob, String> {
+fn plan_globals(input: &PlanInputs) -> Result<DataBlob, String> {
     // An IMPORTED global's value is supplied by the host at instantiation.
     // This backend emits no instantiation step, so its slot would ship whatever
     // synth guessed — the silent-wrong-initial-value class. Decline.
@@ -239,7 +253,7 @@ fn plan_globals(input: &PlanInputs<'_>) -> Result<DataBlob, String> {
 }
 
 /// Build the `.text` funcref-table trampoline blob, or decline.
-fn plan_table(input: &PlanInputs<'_>) -> Result<ElfFunction, String> {
+fn plan_table(input: &PlanInputs) -> Result<ElfFunction, String> {
     // 1. Every table must have a compile-time size, or its slots have no
     //    constant base offset within the region (and no sound bounds check).
     if input.table_sizes.is_empty() {
@@ -296,7 +310,7 @@ fn plan_table(input: &PlanInputs<'_>) -> Result<ElfFunction, String> {
     }
 
     // 3. Size + class-id immediates must fit the guard encodings.
-    let slots = input.funcref_slots;
+    let slots = &input.funcref_slots;
     if slots.len() > MAX_TABLE_SLOTS {
         return Err(format!(
             "funcref region holds {} slots; the out-of-range guard compares \
@@ -377,18 +391,8 @@ mod tests {
         }
     }
 
-    fn base<'a>() -> PlanInputs<'a> {
-        PlanInputs {
-            globals: &[],
-            imported_globals: 0,
-            uses_globals: false,
-            funcref_slots: &[],
-            funcref_class_ids: &[],
-            table_sizes: &[],
-            elem_segments: &[],
-            num_imported_funcs: 0,
-            uses_call_indirect: false,
-        }
+    fn base() -> PlanInputs {
+        PlanInputs::default()
     }
 
     /// A module using neither feature plans an EMPTY substrate — no `.data`, no
@@ -396,7 +400,7 @@ mod tests {
     /// existing module's bytes are untouched).
     #[test]
     fn unused_features_plan_an_empty_substrate() {
-        let s = plan(base()).unwrap();
+        let s = plan(&base()).unwrap();
         assert!(s.globals.bytes.is_empty());
         assert!(s.table.is_none());
         assert!(!s.emitted);
@@ -411,8 +415,8 @@ mod tests {
             g(1, Some(GlobalInit::I64(-2)), 8),
             g(2, Some(GlobalInit::I32(-1)), 4),
         ];
-        let s = plan(PlanInputs {
-            globals: &gs,
+        let s = plan(&PlanInputs {
+            globals: gs.to_vec(),
             uses_globals: true,
             ..base()
         })
@@ -434,8 +438,8 @@ mod tests {
     #[test]
     fn global_without_const_initializer_declines() {
         let gs = [g(0, Some(GlobalInit::I32(1)), 4), g(1, None, 4)];
-        let e = plan(PlanInputs {
-            globals: &gs,
+        let e = plan(&PlanInputs {
+            globals: gs.to_vec(),
             uses_globals: true,
             ..base()
         })
@@ -448,8 +452,8 @@ mod tests {
     #[test]
     fn imported_global_declines() {
         let gs = [g(0, Some(GlobalInit::I32(1)), 4)];
-        let e = plan(PlanInputs {
-            globals: &gs,
+        let e = plan(&PlanInputs {
+            globals: gs.to_vec(),
             imported_globals: 1,
             uses_globals: true,
             ..base()
@@ -471,11 +475,11 @@ mod tests {
             offset: Some(0),
             funcs: Some(vec![0, 9, 1]),
         }];
-        let s = plan(PlanInputs {
-            funcref_slots: &slots,
-            funcref_class_ids: &ids,
-            table_sizes: &sizes,
-            elem_segments: &segs,
+        let s = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
             uses_call_indirect: true,
             ..base()
         })
@@ -517,11 +521,11 @@ mod tests {
             offset: None,
             funcs: Some(vec![0, 1]),
         }];
-        let e = plan(PlanInputs {
-            funcref_slots: &slots,
-            funcref_class_ids: &ids,
-            table_sizes: &sizes,
-            elem_segments: &segs,
+        let e = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
             uses_call_indirect: true,
             ..base()
         })
@@ -534,8 +538,8 @@ mod tests {
     /// sound bounds check and no constant base — decline.
     #[test]
     fn unsized_table_declines() {
-        let e = plan(PlanInputs {
-            table_sizes: &[None],
+        let e = plan(&PlanInputs {
+            table_sizes: vec![None],
             uses_call_indirect: true,
             ..base()
         })
@@ -555,11 +559,11 @@ mod tests {
             offset: Some(0),
             funcs: Some(vec![0]),
         }];
-        let e = plan(PlanInputs {
-            funcref_slots: &slots,
-            funcref_class_ids: &ids,
-            table_sizes: &sizes,
-            elem_segments: &segs,
+        let e = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
             num_imported_funcs: 1,
             uses_call_indirect: true,
             ..base()
@@ -579,11 +583,11 @@ mod tests {
             offset: Some(0),
             funcs: Some(vec![0; slots.len()]),
         }];
-        let e = plan(PlanInputs {
-            funcref_slots: &slots,
-            funcref_class_ids: &ids,
-            table_sizes: &sizes,
-            elem_segments: &segs,
+        let e = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
             uses_call_indirect: true,
             ..base()
         })

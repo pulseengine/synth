@@ -401,6 +401,13 @@ pub struct CompileConfig {
     /// `call_indirect` lowering needs the 0-vs-1 result distinction for a callee
     /// it knows only by its static type.
     pub type_result_counts: Vec<u32>,
+    /// #851 lane L3: the STRUCTURAL signature class id per function type (see
+    /// [`crate::wasm_decoder::DecodedModule::structural_type_class_ids`]). The
+    /// aarch64 `call_indirect` type check compares this, not the raw type index
+    /// — WASM type equality is structural. Distinct from
+    /// `call_indirect_guards.type_class_ids`, which the ARM path populates only
+    /// when its heterogeneous-table sidecar exists.
+    pub type_class_ids: Vec<u32>,
     /// #851 lane L3, aarch64 only — the driver has EMITTED the module-level
     /// substrate the globals and `call_indirect` lowerings address: the `.data`
     /// globals image (`__synth_globals`) and the `.text` funcref table
@@ -513,6 +520,7 @@ impl Default for CompileConfig {
             // this from the decoded module.
             call_indirect_guards: crate::wasm_decoder::CallIndirectGuards::default(),
             type_result_counts: Vec::new(),
+            type_class_ids: Vec::new(),
             a64_substrate_emitted: false,
             // #778 phase 2: no --wcet-hints file ⇒ no hints. Consulted ONLY by
             // the WCET sidecar computation — never by codegen (the emitted

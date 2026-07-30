@@ -96,6 +96,7 @@
 use crate::encoder as enc;
 use crate::encoder::{Cond, FReg, Reg};
 use synth_core::WasmOp;
+use synth_core::backend::{CodeRelocation, FUNC_TABLE_SYMBOL, RelocKind};
 
 /// The GP value-stack temp registers: caller-saved `w9/x9..w15/x15` (7 slots).
 /// `w0..w7` hold incoming integer params; results funnel back through `x0`.
@@ -254,7 +255,10 @@ pub fn select_typed_cf(
     // No memory context either → bounds-unchecked, matching the pre-#865
     // behavior of these compatibility wrappers (the real driver — the Backend
     // impl — threads the resolved `MemBounds` explicitly).
-    let (words, _sites) = select_typed_cf_calls(
+    // No module context either -> `ModuleCtx::default()` has
+    // `substrate_emitted == false`, so globals and `call_indirect` LOUD-DECLINE
+    // here (this wrapper's callers place no `.data` / funcref table).
+    let (words, _sites, _relocs) = select_typed_cf_calls(
         ops,
         num_params,
         params_f32,
@@ -265,6 +269,7 @@ pub fn select_typed_cf(
         &[],
         &[],
         MemBounds::Unchecked,
+        &ModuleCtx::default(),
     )?;
     Ok(words)
 }
@@ -301,6 +306,42 @@ pub struct CallSite {
 /// and every epilogue restores them (`ldp`) before `ret`. Leaf functions stay
 /// byte-identical to the pre-#851 output (the frame is gated on "body has a
 /// lowered call").
+/// #851 lane L3 — the MODULE-LEVEL context the `global.get`/`global.set` and
+/// `call_indirect` lowerings need, threaded as one parameter rather than five.
+///
+/// [`Default`] means "the driver emitted NO substrate", which makes all three
+/// ops LOUD-DECLINE. That default is the fail-safe: a caller that has not
+/// placed `__synth_globals` / `__synth_func_table` in the object cannot get code
+/// that addresses them (see `CompileConfig::a64_substrate_emitted` and
+/// [`crate::substrate::plan`], the single producer of both regions).
+#[derive(Debug, Clone, Default)]
+pub struct ModuleCtx {
+    /// The driver has emitted the substrate regions this context describes.
+    pub substrate_emitted: bool,
+    /// Per DEFINED global index: true when the slot holds a 64-bit value
+    /// (i64/f64) and must be read/written through the `x` view.
+    pub global_is64: Vec<bool>,
+    /// Per table index: `(compile-time slot count, base SLOT index of this
+    /// table within the contiguous funcref region)`.
+    pub tables: Vec<(u32, u32)>,
+    /// Per module type index: the STRUCTURAL class id the dispatch compares
+    /// (>= 1; 0 means "no class known", which declines).
+    pub type_class_ids: Vec<u32>,
+    /// Per module type index: AAPCS64 integer-argument slot count.
+    pub type_arg_counts: Vec<u32>,
+    /// Per module type index: result count (0 = void, 1 = one value).
+    pub type_result_counts: Vec<u32>,
+    /// Per module type index: the type returns f32/f64 (in `v0`/`d0`, not `x0`)
+    /// — declined, exactly as for a direct `call`.
+    pub type_ret_float: Vec<bool>,
+}
+
+/// #851 lane L3 — what one `select_typed_cf_calls` call produces: the emitted
+/// A64 words, the direct-`call` sites (turned into `R_AARCH64_CALL26` by the
+/// driver), and the symbol relocations for the `adrp`+`add :lo12:` pairs that
+/// reach the emitted globals region / funcref table.
+pub type Selection = (Vec<u32>, Vec<CallSite>, Vec<CodeRelocation>);
+
 #[allow(clippy::too_many_arguments)]
 pub fn select_typed_cf_calls(
     ops: &[WasmOp],
@@ -313,7 +354,8 @@ pub fn select_typed_cf_calls(
     func_result_counts: &[u32],
     func_ret_float: &[bool],
     bounds: MemBounds,
-) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
+    ctx: &ModuleCtx,
+) -> Result<Selection, SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
             "{num_params} params — supports at most 8 register params"
@@ -323,23 +365,42 @@ pub fn select_typed_cf_calls(
     // #851 — is this function NON-LEAF (contains a `call` we will lower)? A `bl`
     // clobbers x30, so a non-leaf must save/restore LR. Computed up front so the
     // prologue can emit the frame; call-free functions stay byte-identical.
-    let is_non_leaf = ops.iter().any(|op| matches!(op, WasmOp::Call(_)));
+    // #851 lane L3: `call_indirect` lowers to `blr`, which also clobbers x30.
+    let is_non_leaf = ops
+        .iter()
+        .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }));
 
-    // A non-leaf function that reads a PARAMETER is loud-declined: params arrive
-    // in x0..x7 (caller-saved), a `bl` clobbers them, and this backend does not
-    // yet HOME params to callee-saved storage — reading `local.get p` after a
-    // call would be garbage. Declining here ALSO makes arg marshalling
-    // hazard-free: with no param-Vals, every value-stack entry lives in a temp
-    // (x9..x15), disjoint from the arg destinations (x0..x7), so an argument
-    // move `mov x{arg}, x{temp}` never overwrites a not-yet-read source.
-    if is_non_leaf
-        && ops.iter().any(
-            |op| matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params),
-        )
-    {
+    // #851 lane L3 — PARAM HOMING for non-leaf functions.
+    //
+    // Params arrive in x0..x7, which are caller-saved: a `bl`/`blr` clobbers
+    // them, so reading `local.get p` after a call would be garbage. Before this
+    // increment that whole shape was loud-declined — which made `call_indirect`
+    // near-useless, since the table index all but always comes from a parameter.
+    //
+    // The fix reuses the non-param-local machinery unchanged: when a non-leaf
+    // function references a param, EVERY local (params included) gets an 8-byte
+    // stack slot, the prologue STORES each param register into its slot, and
+    // `local.get` becomes a `ldr` into a fresh temp exactly like a non-param
+    // local. That restores both properties the decline was protecting:
+    //
+    //   * a post-call read hits the SLOT, which the call cannot clobber;
+    //   * every value-stack entry is a temp (x9..x15) again — nothing lives in
+    //     x0..x7 by reference — so argument marshalling stays hazard-free.
+    //
+    // A LEAF function is untouched (params stay register-resident, bytes
+    // identical), so `local.set`/`local.tee` on a param still declines there.
+    let reads_param = ops.iter().any(
+        |op| matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params),
+    );
+    let home_params = is_non_leaf && reads_param;
+    // FLOAT params live in v0..v7 and would need an FP store to home; the
+    // encoder has no `str s/d` yet, so that shape keeps the old loud decline
+    // rather than homing the wrong register file.
+    if home_params && (params_f32.iter().any(|b| *b) || params_f64.iter().any(|b| *b)) {
         return Err(SelectError(
-            "non-leaf function references a parameter — param homing across a \
-             call is not yet supported for aarch64; loud-declining (#851)"
+            "non-leaf function references a FLOAT parameter — homing a v-register \
+             param needs an FP store this encoder does not have; loud-declining \
+             (#851)"
                 .into(),
         ));
     }
@@ -372,19 +433,25 @@ pub fn select_typed_cf_calls(
             _ => None,
         })
         .max();
-    let num_non_param_locals = match max_local_idx {
-        Some(m) if m >= num_params => m - num_params + 1,
+    // #851 lane L3: when params are homed, the frame covers EVERY local
+    // (index 0..=max), so slot `idx` sits at `idx * 8`; otherwise it covers only
+    // the non-param locals and slot `idx` sits at `(idx - num_params) * 8`.
+    let slot_base = if home_params { 0 } else { num_params };
+    let num_slots = match max_local_idx {
+        Some(m) if m >= slot_base => m - slot_base + 1,
         _ => 0,
     };
-    // Frame size in bytes: one 8-byte slot per non-param local, rounded UP to a
-    // 16-byte multiple (the ABI requires 16-byte SP alignment).
-    let frame_size: u32 = if num_non_param_locals == 0 {
+    // Frame size in bytes: one 8-byte slot per local, rounded UP to a 16-byte
+    // multiple (the ABI requires 16-byte SP alignment).
+    let frame_size: u32 = if num_slots == 0 {
         0
     } else {
-        (num_non_param_locals * 8).div_ceil(16) * 16
+        (num_slots * 8).div_ceil(16) * 16
     };
-    // Byte offset of non-param local `idx`'s slot from SP.
-    let local_slot_off = |idx: u32| -> u32 { (idx - num_params) * 8 };
+    // Byte offset of local `idx`'s slot from SP.
+    let local_slot_off = |idx: u32| -> u32 { (idx - slot_base) * 8 };
+    // Is local `idx` slot-resident (vs a register-resident param in a leaf)?
+    let slot_resident = |idx: u32| -> bool { home_params || idx >= num_params };
 
     // Prologue. Order (each step lowers SP; epilogue reverses):
     //   1. #851 non-leaf: `stp x29,x30,[sp,#-16]!` saves FP/LR (a `bl` clobbers
@@ -397,14 +464,50 @@ pub fn select_typed_cf_calls(
     }
     if frame_size > 0 {
         words.push(enc::sub_imm64(enc::SP, enc::SP, frame_size));
-        for k in 0..num_non_param_locals {
-            words.push(enc::str_x_imm(enc::XZR, enc::SP, k * 8));
+        for k in 0..num_slots {
+            let local_idx = slot_base + k;
+            if home_params && local_idx < num_params {
+                // #851 lane L3: HOME the incoming param register. The full
+                // 64-bit store is right for i32 too — a `w`-form producer zeroes
+                // the upper half, and every reader takes the `w` view back.
+                words.push(enc::str_x_imm(
+                    params[local_idx as usize].reg,
+                    enc::SP,
+                    k * 8,
+                ));
+            } else {
+                // A non-param local is ZERO-INITIALIZED (WASM's default-value
+                // rule).
+                words.push(enc::str_x_imm(enc::XZR, enc::SP, k * 8));
+            }
         }
     }
 
     // #851 — direct-call sites recorded during selection (byte offset of the
     // `bl`, callee full index) for the backend's R_AARCH64_CALL26 relocations.
     let mut call_sites: Vec<CallSite> = Vec::new();
+    // #851 lane L3 — symbol relocations for the `adrp`+`add :lo12:` pairs that
+    // reach the emitted globals region / funcref table.
+    let mut sym_relocs: Vec<CodeRelocation> = Vec::new();
+
+    // #851 lane L3 — resolve a global index to "is this an 8-byte slot?", or
+    // LOUD-DECLINE. The `substrate_emitted` gate is the fail-safe: without it
+    // the driver has placed no `__synth_globals`, so addressing it would be a
+    // relocation against a symbol that does not exist.
+    let global_slot = |ctx: &ModuleCtx, idx: u32| -> Result<bool, SelectError> {
+        if !ctx.substrate_emitted {
+            return Err(SelectError(
+                "global.get/global.set needs the emitted `__synth_globals`                  region, which this compile path does not place —                  loud-declining (#851)"
+                    .into(),
+            ));
+        }
+        ctx.global_is64.get(idx as usize).copied().ok_or_else(|| {
+            SelectError(format!(
+                "global {idx} is out of range for the emitted globals region                  ({} slots) — loud-declining (#851)",
+                ctx.global_is64.len()
+            ))
+        })
+    };
 
     // Control-flow state (#538 cf increment, #851 full control flow). Each open
     // `block`/`loop`/`if` pushes a frame. The matching `End` pops it. Where a
@@ -1083,7 +1186,7 @@ pub fn select_typed_cf_calls(
     for op in ops {
         match op {
             WasmOp::LocalGet(i) => {
-                if *i >= num_params {
+                if slot_resident(*i) {
                     // Non-param local (#851): LOAD its stack slot into a FRESH GP
                     // temp — a copy, so a later `local.set` of the same index
                     // cannot alias this value. 64-bit load (both i32 and i64 read
@@ -1104,7 +1207,7 @@ pub fn select_typed_cf_calls(
             // pushed (the miscompile the slot model avoids for non-param locals);
             // homing written params is a later increment.
             WasmOp::LocalSet(i) => {
-                if *i >= num_params {
+                if slot_resident(*i) {
                     let src = pop_gp(&mut stack, "local.set")?;
                     words.push(enc::str_x_imm(src, enc::SP, local_slot_off(*i)));
                 } else {
@@ -1119,7 +1222,7 @@ pub fn select_typed_cf_calls(
             // Store the top value WITHOUT popping it (peek + `str`); a param
             // target is declined for the same reason as `local.set`.
             WasmOp::LocalTee(i) => {
-                if *i >= num_params {
+                if slot_resident(*i) {
                     let top = *stack
                         .last()
                         .ok_or_else(|| SelectError("local.tee underflow".into()))?;
@@ -1862,6 +1965,206 @@ pub fn select_typed_cf_calls(
                 words.push(enc::csel(t0, t0, t1, Cond::Eq));
                 stack.push(Val::gp(t0));
             }
+            // --- #851 lane L3: WASM globals ------------------------------
+            //
+            // `global k` lives at `__synth_globals + k*8` in the `.data` region
+            // THIS object emits ([`crate::substrate::plan`]). The address is
+            // formed PC-relatively (`adrp`+`add :lo12:`), so globals need NO
+            // base register and add NO precondition beside `x28`. An i32/f32
+            // global occupies the low word of its 8-byte slot (`w` view), an
+            // i64/f64 global the whole slot (`x` view). The load/store
+            // immediate is size-SCALED, so slot `k*8` is `k*2` for a word
+            // access and `k` for a doubleword one.
+            WasmOp::GlobalGet(idx) => {
+                let is64 = global_slot(ctx, *idx)?;
+                let dst = alloc_temp(&stack)?;
+                emit_sym_addr(
+                    &mut words,
+                    &mut sym_relocs,
+                    dst,
+                    crate::substrate::GLOBALS_SYMBOL,
+                );
+                // `dst` is read as the base and written as the destination by a
+                // SINGLE instruction (read-before-write) — reusing it is safe.
+                words.push(if is64 {
+                    enc::ldr_x(dst, dst, *idx)
+                } else {
+                    enc::ldr_w(dst, dst, *idx * 2)
+                });
+                stack.push(Val::gp(dst));
+            }
+            WasmOp::GlobalSet(idx) => {
+                let is64 = global_slot(ctx, *idx)?;
+                let val = pop_gp(&mut stack, "global.set")?;
+                // Keep `val` marked live while allocating the base temp, so the
+                // two are guaranteed distinct registers.
+                stack.push(Val::gp(val));
+                let base = alloc_temp(&stack)?;
+                stack.pop();
+                emit_sym_addr(
+                    &mut words,
+                    &mut sym_relocs,
+                    base,
+                    crate::substrate::GLOBALS_SYMBOL,
+                );
+                words.push(if is64 {
+                    enc::str_x(val, base, *idx)
+                } else {
+                    enc::str_w(val, base, *idx * 2)
+                });
+            }
+            // --- #851 lane L3: `call_indirect` ---------------------------
+            //
+            // WASM Core §4.4.8 requires THREE traps that A64's `blr` does not
+            // give for free — an out-of-range index, a null (uninitialized)
+            // slot, and a signature mismatch. All three are emitted here; the
+            // table itself is the `.text`-resident trampoline array
+            // [`crate::substrate`] describes, one 8-byte
+            // `[u32 class id][b func_N]` record per slot (`[0][brk #0]` when
+            // null).
+            //
+            //   cmp  w_idx, #size          ; OOB guard — size is compile-time
+            //   b.lo +2                    ; unsigned lower ⇒ in range
+            //   brk  #0
+            //   adrp x16, __synth_func_table
+            //   add  x16, x16, :lo12:…     ; region base (no base register!)
+            //   add  x16, x16, w_idx, uxtw #3   ; + idx*8
+            //   [add x16, x16, #base*8]    ; + this table's base slot
+            //   ldr  w17, [x16]            ; the slot's structural class id
+            //   cmp  w17, #expected        ; TYPE check — and, because a null
+            //   b.eq +2                    ; slot's id is 0 and expected is
+            //   brk  #0                    ; >= 1, the NULL check too
+            //   mov  x0..x7, args
+            //   add  x16, x16, #4          ; the slot's trampoline
+            //   blr  x16
+            //
+            // The class id is STRUCTURAL, so structurally-equal duplicate
+            // types stay interchangeable (§4.4.8) — comparing raw type indices
+            // would trap where wasmtime calls.
+            WasmOp::CallIndirect {
+                type_index,
+                table_index,
+            } => {
+                if !ctx.substrate_emitted {
+                    return Err(SelectError(
+                        "call_indirect needs the emitted `__synth_func_table` \
+                         region, which this compile path does not place — \
+                         loud-declining (#851)"
+                            .into(),
+                    ));
+                }
+                let ti = *type_index as usize;
+                let &(table_slots, base_slot) =
+                    ctx.tables.get(*table_index as usize).ok_or_else(|| {
+                        SelectError(format!(
+                            "call_indirect on table {table_index}, which has no \
+                             compile-time size/base in the emitted funcref region \
+                             — loud-declining (#851)"
+                        ))
+                    })?;
+                let expected = ctx.type_class_ids.get(ti).copied().unwrap_or(0);
+                if expected == 0 {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti} has no structural class id — the \
+                         §4.4.8 signature check cannot be encoded; loud-declining \
+                         (#851)"
+                    )));
+                }
+                let argc = *ctx.type_arg_counts.get(ti).ok_or_else(|| {
+                    SelectError(format!("call_indirect type {ti}: unknown arg count"))
+                })?;
+                if argc > 8 {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti}: {argc} args — at most 8 register \
+                         args are supported; loud-declining (#851)"
+                    )));
+                }
+                let rc = *ctx.type_result_counts.get(ti).ok_or_else(|| {
+                    SelectError(format!("call_indirect type {ti}: unknown result count"))
+                })?;
+                if rc > 1 {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti}: {rc} results — multi-result calls \
+                         are not supported for aarch64; loud-declining (#851)"
+                    )));
+                }
+                // AAPCS64 returns floats in v0/d0, not x0 — same decline as a
+                // direct `call` (pushing x0 would read a stale GP register).
+                if rc == 1 && ctx.type_ret_float.get(ti).copied().unwrap_or(false) {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti}: float result (returned in v0/d0, \
+                         not x0) — not yet supported for aarch64; loud-declining \
+                         (#851)"
+                    )));
+                }
+                // The table index is on TOP of the stack, above the arguments.
+                let idx = pop_gp(&mut stack, "call_indirect")?;
+                if stack.len() != argc as usize {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti}: value stack holds {} entries \
+                         below the index but needs exactly {argc} (the call \
+                         clobbers caller-saved temps below the args); \
+                         loud-declining (#851)",
+                        stack.len()
+                    )));
+                }
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.file != File::Gp {
+                        return Err(SelectError(format!(
+                            "call_indirect type {ti}: argument {arg_reg} is a \
+                             float — FP call args are not supported for aarch64; \
+                             loud-declining (#851)"
+                        )));
+                    }
+                }
+                // (1) OOB guard. `table_slots` and the class ids were range-
+                //     checked against the 12-bit immediate by substrate::plan.
+                words.push(enc::cmp_imm(idx, table_slots));
+                words.push(enc::bcond(Cond::Lo, 2)); // in range: hop the brk
+                words.push(enc::brk(0));
+                // (2) Slot address into IP0 (outside the temp pool and the arg
+                //     registers, so nothing live can alias it).
+                emit_sym_addr(&mut words, &mut sym_relocs, IP0, FUNC_TABLE_SYMBOL);
+                words.push(enc::add_ext_uxtw_sh(IP0, IP0, idx, 3));
+                let base_bytes = base_slot * crate::substrate::TABLE_SLOT_BYTES;
+                if base_bytes > 0 {
+                    if base_bytes < 4096 {
+                        words.push(enc::add_imm64(IP0, IP0, base_bytes));
+                    } else {
+                        // Past the imm12 range (a later table in a multi-table
+                        // module): materialize the byte offset in IP1 first.
+                        for w in enc::mov_imm32(IP1, base_bytes) {
+                            words.push(w);
+                        }
+                        words.push(enc::add64(IP0, IP0, IP1));
+                    }
+                }
+                // (3) Type check — which is the null check too (a null slot
+                //     carries class id 0, and `expected` is >= 1).
+                words.push(enc::ldr_w(IP1, IP0, 0));
+                words.push(enc::cmp_imm(IP1, expected));
+                words.push(enc::bcond(Cond::Eq, 2)); // matching type: hop the brk
+                words.push(enc::brk(0));
+                // (4) Marshal args. Sources are temps (x9..x15), destinations
+                //     x0..x7 — disjoint, so the moves need no shuffle, and IP0
+                //     (holding the verified slot) is untouched.
+                for (arg_reg, v) in stack.iter().enumerate() {
+                    if v.reg != arg_reg as u8 {
+                        words.push(enc::mov_reg64(arg_reg as u8, v.reg));
+                    }
+                }
+                stack.clear();
+                // (5) Branch into the slot's trampoline (slot+4), which tail-
+                //     branches to the callee; `blr` sets x30 so the callee
+                //     returns straight back here.
+                words.push(enc::add_imm64(IP0, IP0, 4));
+                words.push(enc::blr(IP0));
+                if rc == 1 {
+                    let dst = alloc_temp(&stack)?;
+                    words.push(enc::mov_reg64(dst, 0));
+                    stack.push(Val::gp(dst));
+                }
+            }
             other => {
                 return Err(SelectError(format!(
                     "unsupported wasm op for aarch64 subset: {other:?}"
@@ -1874,7 +2177,7 @@ pub fn select_typed_cf_calls(
     if !matches!(ops.last(), Some(WasmOp::End)) {
         epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
     }
-    Ok((words, call_sites))
+    Ok((words, call_sites, sym_relocs))
 }
 
 /// Emit the function epilogue: move the top-of-stack result into the ABI return
@@ -1889,6 +2192,40 @@ pub fn select_typed_cf_calls(
 /// is byte-identical to the pre-#851 epilogue). The result move is done BEFORE
 /// the `add sp` (the result lives in a caller-saved temp, unaffected by SP), so
 /// the sequence is: funnel result → restore SP → ret.
+/// #851 lane L3 — emit `adrp xd, sym` + `add xd, xd, :lo12:sym`, recording the
+/// two relocations, so `xd` ends up holding `sym`'s ABSOLUTE address.
+///
+/// This pair is how the aarch64 backend reaches a region it EMITTED (the
+/// globals `.data` image, the funcref table) with NO ambient base register —
+/// see [`crate::substrate`] for why that matters (it adds no precondition
+/// beside `x28`, and there is no base register to collide with the way #275/
+/// #717 collided on ARM).
+fn emit_sym_addr(words: &mut Vec<u32>, relocs: &mut Vec<CodeRelocation>, rd: Reg, symbol: &str) {
+    let off = (words.len() * 4) as u32;
+    relocs.push(CodeRelocation {
+        offset: off,
+        symbol: symbol.to_string(),
+        kind: RelocKind::AArch64AdrPrelPgHi21,
+    });
+    words.push(enc::adrp(rd, 0));
+    relocs.push(CodeRelocation {
+        offset: off + 4,
+        symbol: symbol.to_string(),
+        kind: RelocKind::AArch64AddAbsLo12Nc,
+    });
+    words.push(enc::add_imm64(rd, rd, 0));
+}
+
+/// #851 lane L3 — the AAPCS64 intra-procedure-call scratch registers. `x16`
+/// carries the `call_indirect` slot/target address and `x17` the loaded class
+/// id. Both are chosen deliberately OUTSIDE the value-stack temp pool
+/// (`x9..x15`) and the argument registers (`x0..x7`), so the dispatch's guards
+/// can run after the index is popped and before/after argument marshalling
+/// without ever aliasing a live value. They are caller-saved and dead
+/// immediately after the `blr`.
+const IP0: Reg = 16;
+const IP1: Reg = 17;
+
 /// Guard an `imm26` (unconditional `b`) displacement (words) against the A64
 /// field width (signed 26-bit → ±2^25 words = ±128 MB). Over-range would wrap
 /// silently in the encoder's mask, so we LOUD-DECLINE instead (unreachable for
@@ -1988,7 +2325,9 @@ mod tests {
             result_counts,
             &[],
             MemBounds::Unchecked,
+            &ModuleCtx::default(),
         )
+        .map(|(w, s, _)| (w, s))
     }
 
     #[test]
@@ -2047,13 +2386,60 @@ mod tests {
         assert!(sel_calls(&ops, 0, 1, &[0], &[0]).is_err());
     }
 
+    /// #851 lane L3 — a non-leaf function that reads a param now HOMES it into
+    /// a stack slot at the prologue instead of loud-declining. The homing store
+    /// is what makes a post-call read sound (x0..x7 are caller-saved), and it is
+    /// the prerequisite for a useful `call_indirect` (the table index almost
+    /// always comes from a parameter).
     #[test]
-    fn non_leaf_referencing_param_loud_declines() {
-        // A function that both reads a param AND makes a call declines (param
-        // homing across a call is unsupported — reading x0 after bl is garbage).
+    fn non_leaf_homes_its_params_to_stack_slots() {
         let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
         // func 1 takes 1 arg (the local.get 0 value).
-        assert!(sel_calls(&ops, 1, 0, &[0, 1], &[0, 1]).is_err());
+        let (w, _) = sel_calls(&ops, 1, 0, &[0, 1], &[0, 1]).unwrap();
+        // stp x29,x30,[sp,#-16]! ; sub sp,sp,#16 ; str x0,[sp] ; ldr x9,[sp] ...
+        assert_eq!(w[0], enc::stp_fp_lr_pre16());
+        assert_eq!(w[1], enc::sub_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(
+            w[2],
+            enc::str_x_imm(0, enc::SP, 0),
+            "the incoming param x0 must be STORED to its slot at the prologue"
+        );
+        // The `local.get 0` then LOADS the slot into a temp (a copy), so the
+        // value survives the call that follows.
+        assert_eq!(w[3], enc::ldr_x_imm(9, enc::SP, 0));
+    }
+
+    /// A LEAF function is untouched by homing: its params stay register-
+    /// resident, so writing one still loud-declines (that gap is a separate
+    /// increment, and its parity-gate entry stays valid).
+    #[test]
+    fn leaf_param_write_still_loud_declines() {
+        let ops = vec![WasmOp::I32Const(42), WasmOp::LocalSet(0), WasmOp::End];
+        assert!(sel_calls(&ops, 1, 0, &[0], &[0]).is_err());
+        let ops = vec![WasmOp::I32Const(42), WasmOp::LocalTee(0), WasmOp::End];
+        assert!(sel_calls(&ops, 1, 0, &[0], &[0]).is_err());
+    }
+
+    /// A FLOAT param in a non-leaf function keeps the loud decline: homing a
+    /// v-register needs an FP store the encoder does not have, and homing the
+    /// wrong register file would be a silent miscompile.
+    #[test]
+    fn non_leaf_float_param_still_loud_declines() {
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            1,
+            &[true], // param 0 is f32 → lives in s0
+            &[],
+            &[],
+            0,
+            &[0, 1],
+            &[0, 1],
+            &[false, false],
+            MemBounds::Unchecked,
+            &ModuleCtx::default(),
+        );
+        assert!(r.is_err(), "float param homing must loud-decline");
     }
 
     #[test]
@@ -2085,6 +2471,7 @@ mod tests {
             &[1],    // 1 result
             &[true], // ...which is a float
             MemBounds::Unchecked,
+            &ModuleCtx::default(),
         );
         assert!(r.is_err(), "float-returning callee must loud-decline");
     }
@@ -2092,9 +2479,20 @@ mod tests {
     // --- #865: software bounds check ---
 
     fn sel_mem(ops: &[WasmOp], num_params: u32, bounds: MemBounds) -> Vec<u32> {
-        let (w, _) =
-            select_typed_cf_calls(ops, num_params, &[], &[], &[], 0, &[], &[], &[], bounds)
-                .unwrap();
+        let (w, _, _) = select_typed_cf_calls(
+            ops,
+            num_params,
+            &[],
+            &[],
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            bounds,
+            &ModuleCtx::default(),
+        )
+        .unwrap();
         w
     }
 
@@ -3472,6 +3870,7 @@ mod tests {
             &[],
             &[],
             MemBounds::Unchecked,
+            &ModuleCtx::default(),
         );
         assert!(r.is_err());
     }

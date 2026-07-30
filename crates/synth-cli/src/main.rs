@@ -2784,6 +2784,7 @@ fn compile_all_exports(
         default_memory_nonconst_data, // #851: memory-0 segment with a non-const offset (legacy-dropped at decode)
         all_call_indirect_guards,     // #642: table size + closed-world type verdicts
         all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
+        a64_plan_inputs, // #851 lane L3: snapshot of the aarch64 substrate inputs (globals image + funcref table)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2901,6 +2902,11 @@ fn compile_all_exports(
             synth_core::CallIndirectGuards::default(),
             // #275: no guards ⇒ no dispatch ⇒ no funcref-region image.
             Vec::new(),
+            // #851 lane L3: the multi-module WAST merge has no single module to
+            // snapshot, so the aarch64 substrate inputs stay DEFAULT — which
+            // means `plan` emits nothing and the selector LOUD-DECLINES globals
+            // and call_indirect (the WAST fixture suite uses neither).
+            synth_backend_aarch64::substrate::PlanInputs::default(),
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -2964,6 +2970,10 @@ fn compile_all_exports(
         // index) — the self-contained image builder resolves these to laid-out
         // function addresses and ships the table in flash.
         let funcref_slots = module.funcref_region_slots();
+        // #851 lane L3: snapshot the aarch64 substrate inputs while the module
+        // is still whole (the `uses_*` flags are set below, from the op streams
+        // this compile will actually feed the backend).
+        let a64_inputs = synth_backend_aarch64::substrate::PlanInputs::from_module(&module);
         let func_arg_counts = module.func_arg_counts;
         let func_result_counts = module.func_result_counts; // #851
         let type_arg_counts = module.type_arg_counts;
@@ -3091,6 +3101,7 @@ fn compile_all_exports(
             module.default_memory_nonconst_data, // #851
             guards,                              // #642
             funcref_slots,                       // #275
+            a64_inputs,                          // #851 lane L3
         )
     };
 
@@ -3216,6 +3227,38 @@ fn compile_all_exports(
         info!("  '{}' (index {})", display_name, f.index);
     }
 
+    // #851 lane L3 — the aarch64 module-level substrate. Planned HERE, before
+    // any body is compiled, from the op streams this compile will actually feed
+    // the backend, so an unrepresentable shape declines the whole compile rather
+    // than being discovered after code addressing it was emitted.
+    //
+    // `plan` is the SINGLE producer of both regions (the `.data` globals image
+    // and the `.text` funcref table), and `a64_substrate_emitted` below is
+    // derived from its result — so what the code addresses and what the object
+    // ships cannot disagree. A `plan` DECLINE is deliberately not raised here:
+    // it is only an error when the aarch64 backend is the one compiling (every
+    // other backend has its own globals/table story), so the Result is carried
+    // to the aarch64 ELF branch.
+    let a64_plan_inputs = a64_plan_inputs.with_usage(
+        all_exports.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)))
+        }),
+        all_exports.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::CallIndirect { .. }))
+        }),
+    );
+    let a64_substrate = synth_backend_aarch64::substrate::plan(&a64_plan_inputs);
+    if backend.name() == "aarch64"
+        && let Err(reason) = &a64_substrate
+    {
+        anyhow::bail!("aarch64: {reason}");
+    }
+    let a64_substrate_emitted = a64_substrate.as_ref().is_ok_and(|s| s.emitted);
+
     // Build compile config from CLI flags
     let config = CompileConfig {
         no_optimize,
@@ -3289,6 +3332,13 @@ fn compile_all_exports(
         // #642: call_indirect guard inputs (compile-time table size for the
         // bounds guard + closed-world type verdicts). Default = decline.
         call_indirect_guards: all_call_indirect_guards,
+        // #851 lane L3 — aarch64 globals + call_indirect inputs. The
+        // `a64_substrate_emitted` gate is FAIL-SAFE: false unless `plan`
+        // produced a region that the aarch64 ELF branch below actually places,
+        // so the selector cannot emit code addressing a missing symbol.
+        type_result_counts: a64_plan_inputs.type_result_counts.clone(),
+        type_class_ids: a64_plan_inputs.type_class_ids.clone(),
+        a64_substrate_emitted,
         // #275: self-contained funcref-table dispatch — enabled ONLY when the
         // builder that emits and patches the flash-resident table
         // (`build_multi_func_cortex_m_elf`) will run: Cortex-M image, not
@@ -3739,7 +3789,13 @@ fn compile_all_exports(
         // object. This must precede the `has_external_relocations || relocatable`
         // arm so `-b aarch64 --relocatable` isn't stolen into the ARM builder.
         info!("Building AArch64 multi-function relocatable object (EM_AARCH64)");
-        build_multi_func_aarch64_elf(&compiled_funcs)?
+        // #851 lane L3: place the planned substrate — the `.data` globals image
+        // and the `.text` funcref table (appended LAST, so every real function
+        // keeps the `.text` offset it had before the table existed).
+        let substrate = a64_substrate
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("aarch64: {e}"))?;
+        build_multi_func_aarch64_elf(&compiled_funcs, substrate)?
     } else if is_riscv {
         // #798 (the RV32 analogue of #758; found by the VCR-VER-003 phase-2
         // probe, #777): the RV32 single-base scheme (s11 =
@@ -6803,8 +6859,13 @@ fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 /// #546: emit a multi-function `EM_AARCH64` ELF64 (`ET_REL`) object exposing one
 /// global `STT_FUNC` symbol per compiled export. Mirrors
 /// `build_multi_func_riscv_elf` — the per-backend ELF path (#538 milestone-1c).
-fn build_multi_func_aarch64_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
-    use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
+fn build_multi_func_aarch64_elf(
+    funcs: &[ElfFunction],
+    substrate: &synth_backend_aarch64::substrate::Substrate,
+) -> Result<Vec<u8>> {
+    use synth_backend_aarch64::elf::{
+        ElfFunction as A64ElfFunction, build_relocatable_object_with_data,
+    };
     let a64_funcs: Vec<A64ElfFunction> = funcs
         .iter()
         .map(|f| {
@@ -6821,7 +6882,15 @@ fn build_multi_func_aarch64_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
             A64ElfFunction::code(symbols, f.code.clone(), f.relocations.clone())
         })
         .collect();
-    Ok(build_relocatable_object(&a64_funcs))
+    let mut a64_funcs = a64_funcs;
+    // #851 lane L3: the funcref table is `.text`-resident DATA appended LAST.
+    if let Some(table) = substrate.table.clone() {
+        a64_funcs.push(table);
+    }
+    Ok(build_relocatable_object_with_data(
+        &a64_funcs,
+        &substrate.globals,
+    ))
 }
 
 /// Build a simple ELF with just the code section (for quick testing)

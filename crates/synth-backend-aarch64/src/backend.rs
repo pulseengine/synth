@@ -82,7 +82,11 @@ impl AArch64Backend {
                 )));
             }
         };
-        let (words, call_sites) = selector::select_typed_cf_calls(
+        // #851 lane L3: the module-level context for globals + call_indirect.
+        // Its `substrate_emitted` flag is FAIL-SAFE — false unless the driver
+        // has actually placed `__synth_globals` / `__synth_func_table`.
+        let ctx = module_ctx(config);
+        let (words, call_sites, sym_relocs) = selector::select_typed_cf_calls(
             ops,
             num_params,
             &config.current_func_params_f32,
@@ -93,11 +97,14 @@ impl AArch64Backend {
             func_result_counts,
             func_ret_float,
             bounds,
+            &ctx,
         )
         .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         // Each direct call site → an R_AARCH64_CALL26 against the callee's
-        // `func_N` symbol (emitted for every local function by compile_module).
+        // `func_N` symbol (emitted for every local function by compile_module);
+        // #851 lane L3 adds the `adrp`+`add :lo12:` pairs that reach the
+        // emitted globals region / funcref table.
         let relocations: Vec<CodeRelocation> = call_sites
             .iter()
             .map(|cs| CodeRelocation {
@@ -105,6 +112,7 @@ impl AArch64Backend {
                 symbol: format!("func_{}", cs.callee),
                 kind: RelocKind::AArch64Call26,
             })
+            .chain(sym_relocs)
             .collect();
         Ok(CompiledFunction {
             name: name.to_string(),
@@ -119,6 +127,48 @@ impl AArch64Backend {
             wcet: None,
             wcet_intermediate: None,
         })
+    }
+}
+
+/// #851 lane L3 — build the selector's module context from the driver-supplied
+/// [`CompileConfig`]. `substrate_emitted` is threaded verbatim: it is `false`
+/// unless the driver ran [`crate::substrate::plan`] AND placed its output, so a
+/// context built here can never authorize code that addresses a region the
+/// object lacks.
+fn module_ctx(config: &CompileConfig) -> selector::ModuleCtx {
+    let guards = &config.call_indirect_guards;
+    // Per table: (slot count, base SLOT index). `base_byte_offset` counts the
+    // 4-byte pointer slots of the ARM region contract, so /4 recovers the slot
+    // index — the aarch64 table uses the same SLOT ORDER with 8-byte records.
+    // Stop at the first table without a compile-time size/base: every later
+    // table's base is then not a constant, and an index past the end
+    // LOUD-DECLINES at the lowering (matching `funcref_region_slots`).
+    let mut tables: Vec<(u32, u32)> = Vec::new();
+    for t in &guards.tables {
+        match (t.table_size, t.base_byte_offset) {
+            (Some(size), Some(base_bytes)) => tables.push((size, base_bytes / 4)),
+            _ => break,
+        }
+    }
+    let n_types = config
+        .type_arg_counts
+        .len()
+        .max(config.type_class_ids.len())
+        .max(config.type_result_counts.len());
+    selector::ModuleCtx {
+        substrate_emitted: config.a64_substrate_emitted,
+        // #643 slot widths: 8 ⇒ an i64/f64 global (the `x` view).
+        global_is64: config.global_widths.iter().map(|w| *w == 8).collect(),
+        tables,
+        type_class_ids: config.type_class_ids.clone(),
+        type_arg_counts: config.type_arg_counts.clone(),
+        type_result_counts: config.type_result_counts.clone(),
+        type_ret_float: (0..n_types)
+            .map(|i| {
+                config.type_ret_f32.get(i).copied().unwrap_or(false)
+                    || config.type_ret_f64.get(i).copied().unwrap_or(false)
+            })
+            .collect(),
     }
 }
 
@@ -237,6 +287,28 @@ impl Backend for AArch64Backend {
             ));
         }
 
+        // #851 lane L3 — plan the MODULE-LEVEL substrate (globals `.data` image
+        // + `.text` funcref table) BEFORE compiling any body, so an
+        // unrepresentable shape declines the whole compile rather than being
+        // discovered after code that addresses it was emitted. `plan` is the
+        // single producer of both regions, so what the code addresses and what
+        // the object ships cannot disagree.
+        let uses_globals = locals.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)))
+        });
+        let uses_call_indirect = locals.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::CallIndirect { .. }))
+        });
+        let substrate = crate::substrate::plan(
+            &crate::substrate::PlanInputs::from_module(module)
+                .with_usage(uses_globals, uses_call_indirect),
+        )
+        .map_err(|e| BackendError::CompilationFailed(format!("aarch64: {e}")))?;
+
         // #851: per-function "returns a float" mask (v0/d0 result) — a
         // float-returning callee is loud-declined by the call lowering.
         let nrf = module.func_ret_f32.len().max(module.func_ret_f64.len());
@@ -277,6 +349,17 @@ impl Backend for AArch64Backend {
                 current_func_param_count: declared_params.or(config.current_func_param_count),
                 num_imports: module.num_imported_funcs,
                 func_arg_counts: module.func_arg_counts.clone(),
+                // #851 lane L3: the substrate metadata + the fail-safe gate.
+                // `emitted` is true only when `plan` produced a region that the
+                // ELF build below actually places.
+                a64_substrate_emitted: substrate.emitted,
+                call_indirect_guards: module.call_indirect_guards(),
+                type_class_ids: module.structural_type_class_ids(),
+                type_arg_counts: module.type_arg_counts.clone(),
+                type_result_counts: module.type_result_counts.clone(),
+                type_ret_f32: module.type_ret_f32.clone(),
+                type_ret_f64: module.type_ret_f64.clone(),
+                global_widths: module.globals.iter().map(|g| g.slot_bytes).collect(),
                 ..config.clone()
             };
             let compiled = self.compile_function_with_results(
@@ -303,7 +386,12 @@ impl Backend for AArch64Backend {
             functions.push(compiled);
         }
 
-        let elf = elf::build_relocatable_object(&elf_funcs);
+        // #851 lane L3: the funcref table goes LAST in `.text`, so every real
+        // function keeps the offset it had before the table existed.
+        if let Some(table) = substrate.table {
+            elf_funcs.push(table);
+        }
+        let elf = elf::build_relocatable_object_with_data(&elf_funcs, &substrate.globals);
         Ok(CompilationResult {
             functions,
             elf: Some(elf),

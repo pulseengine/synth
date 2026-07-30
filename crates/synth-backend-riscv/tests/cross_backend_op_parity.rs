@@ -112,8 +112,35 @@ fn aarch64_lowers(ops: &[WasmOp], num_params: u32) -> bool {
         &[0],
         &[false],
         synth_backend_aarch64::selector::MemBounds::Software { limit_bytes: 65536 },
+        &a64_module_ctx(),
     )
     .is_ok()
+}
+
+/// #851 lane L3 — the module context the aarch64 probes run under.
+///
+/// The globals and `call_indirect` lowerings are MODULE-LEVEL: they address
+/// regions the driver emits (`__synth_globals` in `.data`, `__synth_func_table`
+/// in `.text`), and the selector's fail-safe gate declines both unless the
+/// driver says it placed them. Probing them with a DEFAULT context would
+/// therefore measure the gate, not the lowering, and would keep reporting a
+/// "gap" that no longer exists.
+///
+/// So this mirrors the real call site for a small module that HAS both: two
+/// globals (one i32 slot, one i64 slot) and one 4-entry table with two
+/// structural signature classes. It is exactly what
+/// `synth_backend_aarch64::backend::module_ctx` builds from such a module's
+/// `CompileConfig`.
+fn a64_module_ctx() -> synth_backend_aarch64::selector::ModuleCtx {
+    synth_backend_aarch64::selector::ModuleCtx {
+        substrate_emitted: true,
+        global_is64: vec![false, true],
+        tables: vec![(4, 0)],
+        type_class_ids: vec![1, 2],
+        type_arg_counts: vec![0, 1],
+        type_result_counts: vec![0, 1],
+        type_ret_float: vec![false, false],
+    }
 }
 
 /// The parity class of a `WasmOp` — assigned by the no-wildcard [`classify`]
@@ -911,17 +938,6 @@ fn aarch64_known_divergences() -> &'static [(&'static str, &'static str)] {
              local.set) — deferred, #851",
         ),
         (
-            "global.get",
-            "aarch64 has no globals substrate (no data section / global-region \
-             addressing convention beyond the x28 linear-memory base); the \
-             RV32 ledger entry above documents the same #798-class stack needed \
-             — deferred, #851",
-        ),
-        (
-            "global.set",
-            "aarch64 has no globals substrate (see global.get) — deferred, #851",
-        ),
-        (
             "memory.copy",
             "aarch64 selector has no MemoryCopy arm (loud decline); bulk-memory \
              (#374) not yet lowered on aarch64 — deferred, #851",
@@ -1008,8 +1024,6 @@ fn a64_extended_surface(
          lane, mirroring the ARM Helium/MVE exclusion) — deferred, #851";
     const MULTI_MEM: &str = "multi-memory wrapper (#406): the aarch64 backend has no per-memory base \
          lowering (single x28 base only) — declines, #851";
-    const CALL_INDIRECT: &str = "call_indirect needs a function table + type/null/OOB trap guards \
-         (§4.4.8); no aarch64 table substrate yet — loud-declined, #851";
 
     let some =
         |label: &'static str,
@@ -1568,6 +1582,11 @@ fn a64_extended_surface(
             ],
             Err(MULTI_MEM),
         ),
+        // #851 lane L3: `call_indirect` LOWERS — a `.text`-resident funcref
+        // table (`[u32 class id][b func_N]` per slot) plus the three §4.4.8
+        // trap guards (out-of-range index, null slot, signature mismatch). The
+        // probe dispatches type 0 (void, no args) through table 0 of
+        // [`a64_module_ctx`].
         CallIndirect { .. } => some(
             "call_indirect",
             0,
@@ -1578,7 +1597,7 @@ fn a64_extended_surface(
                     table_index: 0,
                 },
             ],
-            Err(CALL_INDIRECT),
+            Ok(()),
         ),
 
         // ─── v128 / SIMD — GAP (all decline) ─────────────────────────────
