@@ -995,9 +995,6 @@ fn a64_extended_surface(
     op: &WasmOp,
 ) -> Option<(&'static str, u32, Vec<WasmOp>, Result<(), &'static str>)> {
     // Gap reasons, shared per class.
-    const TRAP_TRUNC_I64: &str = "aarch64 selector has no TRAPPING i64-target truncation arm (needs the \
-         #709-class i64 domain guard; the SATURATING i64 forms do lower) — \
-         deferred, #851";
     const SIMD: &str = "v128/SIMD is not lowered on aarch64 (Advanced-SIMD lowering is a separate \
          lane, mirroring the ARM Helium/MVE exclusion) — deferred, #851";
     const MULTI_MEM: &str = "multi-memory wrapper (#406): the aarch64 backend has no per-memory base \
@@ -1321,13 +1318,13 @@ fn a64_extended_surface(
             "i64.trunc_f32_s",
             0,
             vec![F32Const(1.5), I64TruncF32S],
-            Err(TRAP_TRUNC_I64),
+            Ok(()),
         ),
         I64TruncF32U => some(
             "i64.trunc_f32_u",
             0,
             vec![F32Const(1.5), I64TruncF32U],
-            Err(TRAP_TRUNC_I64),
+            Ok(()),
         ),
 
         // ─── f64 arithmetic / compares — lower (m3/m4, #538) ─────────────
@@ -1527,13 +1524,13 @@ fn a64_extended_surface(
             "i64.trunc_f64_s",
             0,
             vec![F64Const(1.5), I64TruncF64S],
-            Err(TRAP_TRUNC_I64),
+            Ok(()),
         ),
         I64TruncF64U => some(
             "i64.trunc_f64_u",
             0,
             vec![F64Const(1.5), I64TruncF64U],
-            Err(TRAP_TRUNC_I64),
+            Ok(()),
         ),
 
         // ─── module-context ops — declines with named reasons ────────────

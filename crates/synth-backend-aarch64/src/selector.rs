@@ -587,10 +587,39 @@ pub fn select_typed_cf_calls(
     //          -2147483648.5, which truncate to -2^31 and are IN-range; an
     //          inclusive -2^31 bound would wrongly trap them).
     //   f64→u: hi 2^32 (0x41F0...0, exclusive), lo -1.0 (0xBFF0...0, strict).
+    //
+    // v0.54 L2 (#851): `dst64` extends the SAME guard to the i64-TARGET forms.
+    // Only the two bound constants and the destination width change — the
+    // shape (ordered hi check, then lo check, then the bare convert) is
+    // identical, so the i64 forms inherit the proven NaN handling (an ordered
+    // `b.mi` is FALSE for NaN, so NaN falls into the first `brk`).
+    //
+    // i64 boundary table (WASM Core §4.3.3), each entry justified — the whole
+    // point is that A64 saturation must never be observable:
+    //   f32→s64: hi 2^63 (0x5F000000, exclusive), lo -2^63 (0xDF000000,
+    //            INCLUSIVE. -2^63 is exactly representable in f32 (exponent
+    //            63, zero mantissa) and truncates to INT64_MIN, which is
+    //            in-range; the next f32 below it is -2^63·(1+2^-23), far
+    //            outside. So `ge` is exact — a STRICT bound would wrongly trap
+    //            the legal INT64_MIN input.)
+    //   f32→u64: hi 2^64 (0x5F800000, exclusive), lo -1.0 (0xBF800000, STRICT
+    //            — trunc_u(-0.5) = 0 is legal, trunc_u(-1.0) traps).
+    //   f64→s64: hi 2^63 (0x43E0...0, exclusive), lo -2^63 (0xC3E0...0,
+    //            INCLUSIVE. NOTE this differs from the i32/f64 row above, and
+    //            the reason is the ULP: near 2^63 the f64 spacing is
+    //            2^63·2^-52 = 2048, so NO f64 exists in (-2^63-1, -2^63) —
+    //            unlike the i32 case where -2147483648.5 is representable and
+    //            forced a strict -(2^31)-1 bound. Here the next f64 below
+    //            -2^63 is -2^63-2048, which is genuinely out of range, so an
+    //            inclusive bound is both exact and necessary.)
+    //   f64→u64: hi 2^64 (0x43F0...0, exclusive), lo -1.0 (0xBFF0...0, strict).
+    // Every row is execution-checked against wasmtime over both sides of each
+    // boundary in `aarch64_float_completion_851_differential.py`.
     let trunc_guarded = |words: &mut Vec<u32>,
                          stack: &mut Vec<Val>,
                          is_f64: bool,
-                         signed: bool|
+                         signed: bool,
+                         dst64: bool|
      -> Result<(), SelectError> {
         let a = pop_fp(stack, "trunc")?;
         // Keep `a` live across temp allocation: it is read by both fcmps and
@@ -599,11 +628,15 @@ pub fn select_typed_cf_calls(
         let dst = alloc_temp(stack)?; // GP: const scratch, then the result
         let bound = alloc_ftemp(stack)?;
         stack.pop();
-        let (hi_bits, lo_bits, lo_cond): (u64, u64, Cond) = match (is_f64, signed) {
-            (false, true) => (0x4F00_0000, 0xCF00_0000, Cond::Ge),
-            (false, false) => (0x4F80_0000, 0xBF80_0000, Cond::Gt),
-            (true, true) => (0x41E0_0000_0000_0000, 0xC1E0_0000_0020_0000, Cond::Gt),
-            (true, false) => (0x41F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
+        let (hi_bits, lo_bits, lo_cond): (u64, u64, Cond) = match (is_f64, signed, dst64) {
+            (false, true, false) => (0x4F00_0000, 0xCF00_0000, Cond::Ge),
+            (false, false, false) => (0x4F80_0000, 0xBF80_0000, Cond::Gt),
+            (true, true, false) => (0x41E0_0000_0000_0000, 0xC1E0_0000_0020_0000, Cond::Gt),
+            (true, false, false) => (0x41F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
+            (false, true, true) => (0x5F00_0000, 0xDF00_0000, Cond::Ge),
+            (false, false, true) => (0x5F80_0000, 0xBF80_0000, Cond::Gt),
+            (true, true, true) => (0x43E0_0000_0000_0000, 0xC3E0_0000_0000_0000, Cond::Ge),
+            (true, false, true) => (0x43F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
         };
         let check = |words: &mut Vec<u32>, bits: u64, cond: Cond| {
             if is_f64 {
@@ -624,11 +657,15 @@ pub fn select_typed_cf_calls(
         };
         check(words, hi_bits, Cond::Mi);
         check(words, lo_bits, lo_cond);
-        words.push(match (is_f64, signed) {
-            (false, true) => enc::fcvtzs_w_from_s(dst, a),
-            (false, false) => enc::fcvtzu_w_from_s(dst, a),
-            (true, true) => enc::fcvtzs_w_from_d(dst, a),
-            (true, false) => enc::fcvtzu_w_from_d(dst, a),
+        words.push(match (is_f64, signed, dst64) {
+            (false, true, false) => enc::fcvtzs_w_from_s(dst, a),
+            (false, false, false) => enc::fcvtzu_w_from_s(dst, a),
+            (true, true, false) => enc::fcvtzs_w_from_d(dst, a),
+            (true, false, false) => enc::fcvtzu_w_from_d(dst, a),
+            (false, true, true) => enc::fcvtzs_x_from_s(dst, a),
+            (false, false, true) => enc::fcvtzu_x_from_s(dst, a),
+            (true, true, true) => enc::fcvtzs_x_from_d(dst, a),
+            (true, false, true) => enc::fcvtzu_x_from_d(dst, a),
         });
         stack.push(Val::gp(dst));
         Ok(())
@@ -1542,10 +1579,19 @@ pub fn select_typed_cf_calls(
             WasmOp::F64Nearest => funop(&mut words, &mut stack, enc::frintn_d)?,
 
             // --- trapping float→int truncations (m4): domain-guarded #709 ---
-            WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true)?,
-            WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
-            WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true)?,
-            WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false)?,
+            WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true, false)?,
+            WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false, false)?,
+            WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true, false)?,
+            WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false, false)?,
+            // v0.54 L2 (#851): the i64-TARGET trapping forms — the same #709
+            // domain guard with the 2^63 / 2^64 boundaries and an `x`
+            // destination. Without the guard these would SATURATE where WASM
+            // traps (NaN → 0, overflow → INT64_MIN/MAX): the exact silent
+            // miscompile the class is named for.
+            WasmOp::I64TruncF32S => trunc_guarded(&mut words, &mut stack, false, true, true)?,
+            WasmOp::I64TruncF32U => trunc_guarded(&mut words, &mut stack, false, false, true)?,
+            WasmOp::I64TruncF64S => trunc_guarded(&mut words, &mut stack, true, true, true)?,
+            WasmOp::I64TruncF64U => trunc_guarded(&mut words, &mut stack, true, false, true)?,
 
             // --- nontrapping saturating truncations (#782a): bare FCVTZ ---
             WasmOp::I32TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_s)?,
@@ -3116,18 +3162,101 @@ mod tests {
     }
 
     #[test]
-    fn trapping_i64_truncations_are_loud_declined() {
-        // The remaining m4 honesty frontier after v0.54 L2 closed rounding and
-        // the i64-SOURCE converts: the TRAPPING i64-TARGET truncations still
-        // decline, because A64 FCVTZ{S,U} SATURATE where WASM traps (#709) and
-        // the i64 domain guard has not landed. Never silent wrong code.
-        for op in [WasmOp::I64TruncF64S, WasmOp::I64TruncF64U] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
+    fn trapping_i64_truncations_are_domain_guarded_not_bare() {
+        // v0.54 L2 (#851) — the soundness-critical half. A64 FCVTZ{S,U} with
+        // an x destination SATURATE (NaN → 0, overflow → INT64_MIN/MAX) where
+        // WASM §4.3.3 must TRAP, so each TRAPPING i64-target form must carry
+        // the two-sided domain guard: exactly TWO `brk`s, and the convert must
+        // be the LAST instruction before the epilogue (nothing may reach it
+        // without passing both checks).
+        for (op, f64_src, cvt) in [
+            (
+                WasmOp::I64TruncF32S,
+                false,
+                enc::fcvtzs_x_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I64TruncF32U, false, enc::fcvtzu_x_from_s),
+            (WasmOp::I64TruncF64S, true, enc::fcvtzs_x_from_d),
+            (WasmOp::I64TruncF64U, true, enc::fcvtzu_x_from_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f64_src {
+                (&[], &[true])
+            } else {
+                (&[true], &[])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w.iter().filter(|&&x| x == enc::brk(0)).count(),
+                2,
+                "{op:?} needs BOTH range checks; got {w:#010X?}"
+            );
+            let cvt_at = w
+                .iter()
+                .position(|&x| x == cvt(9, 0))
+                .unwrap_or_else(|| panic!("{op:?} must end in the x-form convert; got {w:#010X?}"));
+            let last_brk = w.iter().rposition(|&x| x == enc::brk(0)).unwrap();
             assert!(
-                select_typed(&ops, 1, &[], &[true]).is_err(),
-                "trapping i64-target truncation not yet supported — must loud-decline"
+                cvt_at > last_brk,
+                "{op:?}: the convert must sit AFTER both guards"
             );
         }
+    }
+
+    #[test]
+    fn i64_trunc_signed_bounds_are_plus_2pow63_exclusive_minus_2pow63_inclusive() {
+        // The two constants that decide whether a legal INT64_MIN input traps.
+        // f32: -2^63 = 0xDF000000 is EXACTLY representable and truncates to
+        // INT64_MIN (in range) — the bound must be INCLUSIVE (`b.ge`).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF32S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        assert!(w.contains(&enc::movk(9, 0x5F00, 1)), "hi bound 2^63 (f32)");
+        assert!(w.contains(&enc::movk(9, 0xDF00, 1)), "lo bound -2^63 (f32)");
+        assert!(
+            w.contains(&enc::bcond(Cond::Ge, 2)),
+            "lo bound is INCLUSIVE"
+        );
+        assert!(
+            w.contains(&enc::bcond(Cond::Mi, 2)),
+            "hi bound is ORDERED <"
+        );
+
+        // f64: near 2^63 the ULP is 2048, so NO f64 lies in (-2^63-1, -2^63) —
+        // the bound is the INCLUSIVE -2^63 (0xC3E0...0), NOT the strict
+        // -(2^63)-1 shape the i32/f64 row needs.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF64S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[], &[true]).unwrap();
+        let hi = enc::mov_imm64(9, 0x43E0_0000_0000_0000);
+        let lo = enc::mov_imm64(9, 0xC3E0_0000_0000_0000);
+        assert!(w.windows(hi.len()).any(|s| s == hi.as_slice()), "hi 2^63");
+        assert!(w.windows(lo.len()).any(|s| s == lo.as_slice()), "lo -2^63");
+        assert!(
+            w.contains(&enc::bcond(Cond::Ge, 2)),
+            "lo bound is INCLUSIVE"
+        );
+    }
+
+    #[test]
+    fn i64_trunc_unsigned_bounds_are_2pow64_and_strict_minus_one() {
+        // trunc_u accepts (-1, 2^64): trunc_u(-0.5) = 0 is LEGAL, so the lower
+        // bound is the STRICT -1.0 (`b.gt`), and the upper is 2^64 — NOT the
+        // 2^32 the i32 forms use (which would trap every legal value above
+        // 4294967295).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF32U, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        assert!(w.contains(&enc::movk(9, 0x5F80, 1)), "hi bound 2^64 (f32)");
+        assert!(
+            !w.contains(&enc::movk(9, 0x4F80, 1)),
+            "must NOT use the 2^32 i32 bound"
+        );
+        assert!(w.contains(&enc::movk(9, 0xBF80, 1)), "lo bound -1.0 (f32)");
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)), "lo bound is STRICT");
+
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF64U, WasmOp::End];
+        let w = select_typed(&ops, 1, &[], &[true]).unwrap();
+        let hi = enc::mov_imm64(9, 0x43F0_0000_0000_0000);
+        assert!(w.windows(hi.len()).any(|s| s == hi.as_slice()), "hi 2^64");
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)), "lo bound is STRICT");
     }
 
     #[test]
