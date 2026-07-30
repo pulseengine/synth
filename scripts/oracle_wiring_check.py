@@ -154,7 +154,6 @@ def executable_surface(workflows):
 def classify(root, scripts, workflows):
     """Return (records, failures). One record per script; failures are strings."""
     wf_text, wf_raw = executable_surface(workflows)
-    blob = "\n".join(wf_raw.values())
 
     records, fails = [], []
     for path in scripts:
@@ -236,12 +235,15 @@ def classify(root, scripts, workflows):
                 f"expected wired | manual | unwired"
             )
 
-    # Reverse direction: a workflow may not reference a repro script that is
-    # gone (a rename that half-landed leaves a step that can never run).
+    # Reverse direction: a workflow STEP may not run a repro script that is gone
+    # (a rename that half-landed leaves a step that can never run). Scoped to the
+    # executable surface on purpose — a stale mention in a comment is untidy
+    # prose, not a broken gate, and calling it one would be a false red.
     on_disk = {os.path.basename(p) for p in scripts} | {
         os.path.basename(p) for p in glob.glob(str(root / "scripts/repro/*"))
     }
-    for ref in sorted(set(re.findall(r"scripts/repro/([\w.\-]+)", blob))):
+    exec_blob = "\n".join(wf_text.values())
+    for ref in sorted(set(re.findall(r"scripts/repro/([\w.\-]+)", exec_blob))):
         if ref not in on_disk:
             fails.append(
                 f".github/workflows: references scripts/repro/{ref}, which does "
