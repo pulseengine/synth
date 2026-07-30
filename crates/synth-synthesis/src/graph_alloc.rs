@@ -1900,28 +1900,44 @@ mod tests {
     /// registers. A rewrite that renames the definition feeding an argument
     /// leaves the callee reading a stale register, and must be rejected — even
     /// though the `bl` itself is byte-identical on both sides.
+    ///
+    /// The shape is chosen so the ARGUMENT USE is the ONLY thing that can
+    /// reject it: the staged register is R3 and the rewrite moves it to R2, and
+    /// BOTH are dead-out at a `pop {…, pc}` return
+    /// ([`crate::liveness::cfg_exit_observable`] exempts `{R2, R3, R12, LR}`
+    /// there). So the exit contract demands nothing about either, and the
+    /// rejection is attributable to `call_effect`'s `uses` alone — emptying them
+    /// turns this test green, which is how it is known not to be re-testing the
+    /// exit contract by accident (measured: with `uses` intact but the whole
+    /// call effect emptied, the R0-staged form this replaced still passed,
+    /// because `bx lr`'s STRICT exit seed demanded R0 all by itself).
     #[test]
     fn cfg_validator_rejects_a_renamed_call_argument() {
-        let orig = vec![
-            ins(ArmOp::Movw {
-                rd: Reg::R0,
-                imm16: 5,
-            }),
-            ins(ArmOp::Bl {
-                label: "func_1".into(),
-            }),
-            ins(ArmOp::Bx { rm: Reg::LR }),
-        ];
+        let staged = |arg: Reg| {
+            vec![
+                ins(ArmOp::Push {
+                    regs: vec![Reg::R4, Reg::LR],
+                }),
+                ins(ArmOp::Movw { rd: arg, imm16: 5 }),
+                ins(ArmOp::Bl {
+                    label: "func_1".into(),
+                }),
+                ins(ArmOp::Pop {
+                    regs: vec![Reg::R4, Reg::PC],
+                }),
+            ]
+        };
+        let orig = staged(Reg::R3);
         let blocks = joins::build_cfg(&orig).expect("CFG");
         assert_eq!(validate_cfg_rewrite(&orig, &orig, &blocks), Ok(()));
-        let mut bad = orig.clone();
-        bad[0] = ins(ArmOp::Movw {
-            rd: Reg::R3,
-            imm16: 5,
-        });
         assert!(
-            validate_cfg_rewrite(&orig, &bad, &blocks).is_err(),
-            "staging the argument in R3 while the callee reads R0 must be rejected"
+            matches!(
+                validate_cfg_rewrite(&orig, &staged(Reg::R2), &blocks),
+                Err(RewriteViolation::DefClobbersEquation { .. })
+            ),
+            "staging the argument in R2 while the callee reads R3 must be rejected, \
+             got {:?}",
+            validate_cfg_rewrite(&orig, &staged(Reg::R2), &blocks)
         );
     }
 

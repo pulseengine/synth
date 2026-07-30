@@ -3530,6 +3530,23 @@ pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
 ///   the call and blocks that colour); the alternative — guessing an arity —
 ///   would silently corrupt a call whose argument we then recoloured.
 ///
+/// **Measured overlap — read before narrowing either half.** A mutation matrix
+/// over the increment-3 unit suite found that emptying `defs` ALONE is not
+/// caught: with the conservative `uses` intact, a pool value recoloured across a
+/// call is already rejected by the ARGUMENT equation (the value must be defined
+/// ABOVE the call to be live across it, and the `(r, r)` equation the call's use
+/// generates then collides with the rewritten definition). So for the R0-R8 pool
+/// the two halves currently OVERLAP, and `defs`' independent duties are (a) the
+/// NON-pool `{R12, LR}`, and (b) keeping the PASS from proposing colourings the
+/// oracle would only reject — reach, not soundness. **That changes the moment
+/// `uses` is narrowed.** A future increment that makes the argument set precise
+/// (per-callee arity, the obvious reach win — an unused argument register
+/// currently stays live all the way back from the call and blocks that colour)
+/// makes `defs` the SOLE soundness guard for R0-R3. Narrow `uses` and widen the
+/// tests for `defs` in the same change, or the guard silently becomes the only
+/// one and nothing is testing it. Emptying BOTH — i.e. the pre-increment-3
+/// effect-free `bl`, the briefed hazard — is caught by three tests.
+///
 /// **Not `reg_effect`.** Deliberately a SEPARATE function: `reg_effect`
 /// returning `None` on a call is load-bearing for the shipping pipeline
 /// (`body_uses_callee_saved`'s fail-safe prologue, `eliminate_unread_frame_stores`,

@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **VCR-DEC-001 increment 3 (#242): the graph-colouring allocator colours ACROSS
+  CALLS.** Increment 2's second-largest decline bucket was `call` /
+  `call-indirect` — 68 of the measured corpus — because a `bl` had no modeled
+  effect and the join CFG builder refused the whole function. The AAPCS call
+  boundary is now modeled: `liveness::call_effect` states the contract ONCE
+  (`defs = {R0,R1,R2,R3,R12,LR}`, `uses = {R0..R3}` plus a `blx`'s target,
+  conservatively all four argument registers since the callee's signature is not
+  visible), and BOTH the pass (`graph_alloc::joins` — liveness, interference,
+  identity pins) and its acceptance oracle (`validate_cfg_rewrite`'s backward
+  transfer) consume that one definition. Modeling it in the pass alone would
+  have been the #872 defect verbatim: a validator that treats `bl` as
+  effect-free accepts a non-identity equation across it, i.e. it certifies its
+  own pass's *"live value parked in call-clobbered scratch"* miscompile — and
+  that is exactly what `validate_cfg_rewrite` did before this change. Calls are
+  emitted verbatim with both rename maps re-checked as the identity;
+  single-block functions containing a call are now taken too (increment 1
+  structurally cannot, since a call is not `is_straight_line`). `reg_effect` is
+  deliberately NOT widened — its `None`-on-call is load-bearing for the shipping
+  pipeline (fail-safe prologue, `shrink_callee_saved_saves`' decline, VCR-RA-003
+  invariant 1), so widening it would move shipped bytes.
+
+  **Measured** (`scripts/repro/vcr_dec_001_join_alloc_measure.py`, ARM repro
+  corpus, ELF-symtab bytes + `--emit-wcet` sound bounds):
+
+  | path | increment 2 | increment 3 |
+  |---|---|---|
+  | relocatable | −46 B (−0.11 %) / −25 cyc, 275 applied, 8 shrank / 1 grew | **−100 B (−0.24 %) / −33 cyc, 307 applied, 24 shrank / 5 grew** |
+  | self-contained | −70 B (−0.14 %) / −9 cyc, 81 applied, 10 shrank / 1 grew | **−120 B (−0.24 %) / −17 cyc, 108 applied, 27 shrank / 3 grew** |
+
+  Zero WCET-bound regressions on either path (12 functions' bounds shrank, 0
+  grew). Decline histogram: `call` 57 → **0** (taken); `call-indirect` 11 → 11
+  (renamed `call-indirect-pseudo` — the high-level `Call`/`CallIndirect`
+  pseudo-ops are expanded downstream into a bounds guard + table load + result
+  move, so the register footprint here is not the one that ships, and they stay
+  declined by name). The residual buckets are `unmodeled-op` 174, `single-block`
+  73, `identity-colouring` 31, `unreachable-block` 11, `call-indirect-pseudo` 11,
+  `numeric-branch` 10.
+
+  Still **flag-off by default** (`SYNTH_GRAPH_ALLOC`): this is a measurement
+  spike, not a behaviour change. Frozen anchors byte-identical, 10/10.
+
+  **Mutation evidence.** The AAPCS contract is shared by the pass and the
+  validator on purpose (two hand-maintained copies would be the VCR-ORACLE
+  mirror-pinning failure mode), so neither can catch an error *in* the contract —
+  only execution can. Emptying the ARGUMENT half (with the churn bias replaced by
+  a churn-maximising one, which otherwise masks it) makes the colourer re-home
+  argument staging and yields **5 wrong results** in
+  `vcr_dec_001_join_alloc_execution_differential.py` — `call6(1,2,3,4,5,6)`
+  returns `0x00651321` instead of `0x00654321` — while `validate_cfg_rewrite`
+  AND VCR-RA-003 both accept it; the churn-maximising bias *alone*, with the
+  contract intact, produces **0 wrong results**, so the failure is attributable
+  to the contract and nothing else. Emptying BOTH halves — the pre-increment-3
+  effect-free `bl`, the briefed hazard — is killed by three unit tests. Emptying
+  the CLOBBER half alone is NOT caught, and that is documented on `call_effect`
+  rather than papered over: with the conservative `uses` intact the two halves
+  overlap for the R0-R8 pool, so `defs`' independent duties today are the
+  non-pool `{R12, LR}` and keeping the pass from proposing colourings the oracle
+  would reject. A future increment that makes the argument set arity-precise
+  makes `defs` the sole soundness guard for R0-R3 — narrow one and widen the
+  tests for the other in the same change.
+
+### Changed
+
+- `vcr_dec_001_join_alloc_execution_differential.py` gains an increment-3 CALL
+  population covering both halves of the contract: the CLOBBER half
+  (`local_promote_cross_call::cross_call`, `intra_module_callee_saved::a` — both
+  written so a caller-saved home is observably wrong — and the self-recursive
+  `stack_canary_687::recurse`) and the ARGUMENT half (`call_5args::caller`,
+  `call_6_7args::call6`/`call7`, whose callees pack each argument into its own
+  nibble). The harness now passes arguments per AAPCS (0-3 in R0-R3, 4+ on an
+  8-byte-aligned stack), verifies each declared call shape really CONTAINS a
+  `bl`/`blx` in its emitted bytes, and enforces its own non-vacuity floor (≥4
+  divergent call-containing functions) which the CI wiring re-asserts from the
+  `CALLSHAPES=` summary field (#890). 56/56 checks, 19 engaged functions of which
+  6 are call shapes.
+
 ## [0.53.0] - 2026-07-30
 
 **"The last mile" — seven lanes.** falcon's VFP wall comes down, RISC-V compiles
