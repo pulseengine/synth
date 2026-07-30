@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-VER-004 — the ABI observable contract on the SHIPPING allocator (#242).
 
 The sibling script `vcr_ver_004_instrument_independence.py` proves the new
