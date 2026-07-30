@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-PERF-002 Phase 2 (#494) — in-bounds differential for the fact-spec
 clamp elision (oracle 2 of the design doc's three).
 

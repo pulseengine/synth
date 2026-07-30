@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#587 — DIRECT-PATH i64 spill-slot pool-grow differential oracle (epic #242).
 
 `i64_spill_pool_587.wat` keeps twenty i64 constants simultaneously live —

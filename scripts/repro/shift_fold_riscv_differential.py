@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA RV32 lever (#472, epic #242) — EXECUTION-validate the imm-shift-fold.
 
 The immediate-shift-fold (SYNTH_RV_SHIFT_FOLD=1) rewrites a constant shift

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """GI-FPU-002 (#619/#369) — EXECUTION-validate scalar f32 hard-float codegen.
 
 synth has a working VFP encoder + selector VFP lowering, but the decoder dropped

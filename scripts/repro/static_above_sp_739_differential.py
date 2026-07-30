@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#739 execution differential: static ABOVE sp_init under --shadow-stack-size.
 
 A meld `--memory shared` fused node places component statics ABOVE the shared

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA-003 phase 2 (#242) repro — across-CALL + across-JOIN allocation validation.
 
 The v0.48 validator (`validate_final_allocation`) was BOUNDED to straight-line

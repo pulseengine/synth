@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """synth aarch64 direct-`call` execution differential (#851, lane L3).
 
 The standing gate `aarch64_matrix.sh` is single-function (it loads only the

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#538 control-flow increment — the void-block br/br_if EXECUTION differential.
 
 The #538 aarch64 backend gains its first control-flow construct: forward

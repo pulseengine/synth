@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#212 — inlined-callee-after-opaque-call differential oracle.
 
 gale's loom-inlined `flight_algo` calls the opaque `filter_step` (which writes
