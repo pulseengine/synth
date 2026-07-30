@@ -127,7 +127,27 @@ inert-gate mutation greened the step while the gate itself printed `FAIL` and
 exited 1. `wired_unreferenced` was added to the summary in the same fix, so the
 verdict is reachable from the summary alone.
 
-### Red-first mutation evidence
+### Red-first evidence — in real CI
+
+M1 and M2 were also proved on a throwaway branch whose only content was the two
+mutations, so the failure is a genuine **`Claim Check` job** result on GitHub —
+not a local reproduction. That branch was closed unmerged
+([PR #895](https://github.com/pulseengine/synth/pull/895),
+[run](https://github.com/pulseengine/synth/actions/runs/30545009045/job/90878830002)):
+
+```
+oracle wiring: 152 repro scripts — 145 wired, 6 manual, 0 unwired(debt), 1 UNDECLARED
+FAIL scripts/repro/mem757_ptr_base_copy_differential.py: UNDECLARED — add a
+     `# ci-status:` header line ... An oracle nothing runs must SAY so.
+FAIL scripts/repro/wake_path_differential.py: declares `wired` but NO workflow
+     references it — the gate is INERT ...
+##[error]Process completed with exit code 1.
+```
+
+This matters for exactly the reason #890 exists: a gate that has never been seen
+to fire is indistinguishable from one that cannot.
+
+### Red-first mutation evidence — the full matrix
 
 Each run below executes the Oracle-wiring step **extracted verbatim from
 `ci.yml`** (`yaml.safe_load` → the step's `run:` block → `bash -e`), so there is
