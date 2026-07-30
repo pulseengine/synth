@@ -3495,6 +3495,96 @@ pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
         .collect()
 }
 
+/// VCR-DEC-001 **increment 3** — the AAPCS register contract of a CALL, as a
+/// [`RegEffect`]. `None` for every op that is not a real machine call.
+///
+/// **One definition, two consumers — deliberately.** The lane brief for this
+/// increment named its own hazard: *"a validator that treats `bl` as effect-free
+/// would accept a non-identity equation across it"*. That is not hypothetical —
+/// it is what [`validate_cfg_rewrite`] did before increment 3, because a call is
+/// not [`is_straight_line`] and non-straight-line ops were required to be
+/// identical and then given NO effect. An equation `(R4, R2)` demanded after a
+/// `bl` would sail straight through the call to the code above it, certifying a
+/// rewrite that parks a live value in a register the callee is contractually
+/// free to destroy. So the contract is stated ONCE, here, and consumed by BOTH
+/// the pass ([`crate::graph_alloc`]'s liveness/interference/pins) and the oracle
+/// ([`validate_cfg_rewrite`]'s backward transfer). Two hand-maintained copies
+/// would be the VCR-ORACLE mirror-pinning failure mode; one shared definition
+/// plus an EXECUTION differential (which is the only thing that can catch an
+/// error in what pass and validator share — the #872 lesson) is the honest
+/// layering.
+///
+/// **The contract (AAPCS, core registers).**
+/// * `defs` = `{R0, R1, R2, R3, R12, LR}` — the call-clobbered set. The callee
+///   may write all of them; R0/R1 additionally carry the return value and LR the
+///   return address. Modeling them as DEFS is what makes a web live across the
+///   call interfere with them, so the colourer can never home a live value in
+///   caller-saved scratch — and what lets the validator DISCHARGE an identity
+///   equation `(r, r)` at the call (both sides call the same callee with the
+///   same arguments, so both get the same junk) while REJECTING a non-identity
+///   one.
+/// * `uses` = `{R0, R1, R2, R3}` (plus the target register of a `Blx`) — the
+///   argument registers. CONSERVATIVE: this pass cannot see the callee's
+///   signature, so every core argument register is assumed read. The cost is
+///   reach (an unused argument register stays live from its last definition to
+///   the call and blocks that colour); the alternative — guessing an arity —
+///   would silently corrupt a call whose argument we then recoloured.
+///
+/// **Measured overlap — read before narrowing either half.** A mutation matrix
+/// over the increment-3 unit suite found that emptying `defs` ALONE is not
+/// caught: with the conservative `uses` intact, a pool value recoloured across a
+/// call is already rejected by the ARGUMENT equation (the value must be defined
+/// ABOVE the call to be live across it, and the `(r, r)` equation the call's use
+/// generates then collides with the rewritten definition). So for the R0-R8 pool
+/// the two halves currently OVERLAP, and `defs`' independent duties are (a) the
+/// NON-pool `{R12, LR}`, and (b) keeping the PASS from proposing colourings the
+/// oracle would only reject — reach, not soundness. **That changes the moment
+/// `uses` is narrowed.** A future increment that makes the argument set precise
+/// (per-callee arity, the obvious reach win — an unused argument register
+/// currently stays live all the way back from the call and blocks that colour)
+/// makes `defs` the SOLE soundness guard for R0-R3. Narrow `uses` and widen the
+/// tests for `defs` in the same change, or the guard silently becomes the only
+/// one and nothing is testing it. Emptying BOTH — i.e. the pre-increment-3
+/// effect-free `bl`, the briefed hazard — is caught by three tests.
+///
+/// **Not `reg_effect`.** Deliberately a SEPARATE function: `reg_effect`
+/// returning `None` on a call is load-bearing for the shipping pipeline
+/// (`body_uses_callee_saved`'s fail-safe prologue, `eliminate_unread_frame_stores`,
+/// `shrink_callee_saved_saves`' decline, [`validate_final_allocation`]'s
+/// invariant 1 all treat `None` as "may do anything"). Widening `reg_effect`
+/// would move the shipped bytes; this addition is inert until a caller asks for
+/// it.
+pub fn call_effect(op: &ArmOp) -> Option<RegEffect> {
+    use Reg::*;
+    /// AAPCS core call-clobbered ("caller-saved") registers.
+    const CLOBBERED: [Reg; 6] = [R0, R1, R2, R3, R12, LR];
+    /// AAPCS core argument registers — conservatively ALL read at a call.
+    const ARGS: [Reg; 4] = [R0, R1, R2, R3];
+    match op {
+        ArmOp::Bl { .. } => Some(RegEffect {
+            defs: CLOBBERED.to_vec(),
+            uses: ARGS.to_vec(),
+        }),
+        // An indirect call additionally READS its target register.
+        ArmOp::Blx { rm } => {
+            let mut uses = ARGS.to_vec();
+            if !uses.contains(rm) {
+                uses.push(*rm);
+            }
+            Some(RegEffect {
+                defs: CLOBBERED.to_vec(),
+                uses,
+            })
+        }
+        // `Call` / `CallIndirect` are HIGH-LEVEL pseudo-ops carrying a result
+        // register and (for the indirect form) a table-index register; they are
+        // EXPANDED downstream into a bounds guard + table load + `blx` + result
+        // move, so the register footprint of the final code is not this stream's.
+        // Not modeled — callers decline.
+        _ => None,
+    }
+}
+
 /// VCR-DEC-001 increment 2 — the CFG-lifted translation validator: prove a
 /// renames-only rewrite of a WHOLE branchy function preserves its dataflow
 /// **across control-flow joins**.
@@ -3587,7 +3677,21 @@ pub fn validate_cfg_rewrite(
             if o.op != r.op {
                 return Err(RewriteViolation::ShapeMismatch { index: i });
             }
-            effects.push(None);
+            // INCREMENT 3 (#242): a CALL is NOT effect-free. Both sides are the
+            // identical op here (checked just above — a register allocator never
+            // rewrites a call's architectural operands), so the pair is the same
+            // [`call_effect`] twice, and the backward transfer below then:
+            //   * DISCHARGES an identity equation `(r, r)` on a clobbered
+            //     register (both sides call the same callee with the same
+            //     arguments, so both hold the same value after it);
+            //   * REJECTS a non-identity equation touching one
+            //     (`DefClobbersEquation`) — the "a live value was recoloured into
+            //     caller-saved scratch across a call" miscompile;
+            //   * GENERATES identity equations for the argument registers, so a
+            //     rewrite that renames what feeds an argument is rejected too.
+            // Non-call control flow (`Label`/`B`/`Bcc`/`Bx`) keeps `None`: it is
+            // byte-identical on both sides and carries no register effect.
+            effects.push(call_effect(&o.op).map(|e| (e.clone(), e)));
             continue;
         }
         let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {

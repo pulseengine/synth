@@ -862,31 +862,45 @@ jobs:
       # ONLY (no unicorn/wasmtime).
       - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
         run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
-      # VCR-DEC-001 increment 2 (#242): EXECUTION-gate the DIVERGENT bytes the
-      # join-aware colouring now produces. This is NOT redundant with the byte
-      # differential above: increment 1's correctness followed transitively from
-      # byte identity, and increment 2 broke that. `validate_cfg_rewrite` — the
-      # pass's own CFG-lifted trace-equality oracle — SHARES the CFG shape with
-      # the pass it validates, and #872 is the standing lesson that a validator
-      # can share its pass's blind spot, so the new bytes get EXECUTED: unicorn
-      # runs the flag-ON image and compares return value + linear-memory window
-      # against wasmtime, over every join shape the allocator reaches (real
-      # if/else, if-without-else, desugared block+br_if, early return, counted
-      # and data-dependent loops, two-level br_if). PROVEN non-vacuous by
-      # MUTATION: emptying `cfg_exit_observable` (the exit contract the pass and
-      # its validator SHARE) while removing the churn bias that masks it emits
-      # code leaving the return value in the wrong register — validate_cfg_rewrite
-      # AND VCR-RA-003 both ACCEPT it and only this gate catches it (16 wrong
-      # results). The grep asserts the NON-ZERO check count AND a non-zero
-      # engaged-function count from the machine-readable summary: exit 0 alone is
-      # not trusted, and a run where the allocator stopped changing bytes would
-      # pass every comparison while gating nothing.
-      - name: Run VCR-DEC-001 join-allocator execution differential (#242, thumb2)
+      # VCR-DEC-001 increments 2+3 (#242): EXECUTION-gate the DIVERGENT bytes the
+      # join- and call-aware colouring now produces. This is NOT redundant with
+      # the byte differential above: increment 1's correctness followed
+      # transitively from byte identity, and increment 2 broke that.
+      # `validate_cfg_rewrite` — the pass's own CFG-lifted trace-equality oracle
+      # — SHARES the CFG shape with the pass it validates, and #872 is the
+      # standing lesson that a validator can share its pass's blind spot, so the
+      # new bytes get EXECUTED: unicorn runs the flag-ON image and compares
+      # return value + linear-memory window against wasmtime, over every join
+      # shape the allocator reaches (real if/else, if-without-else, desugared
+      # block+br_if, early return, counted and data-dependent loops, two-level
+      # br_if). PROVEN non-vacuous by MUTATION: emptying `cfg_exit_observable`
+      # (the exit contract the pass and its validator SHARE) while removing the
+      # churn bias that masks it emits code leaving the return value in the wrong
+      # register — validate_cfg_rewrite AND VCR-RA-003 both ACCEPT it and only
+      # this gate catches it (16 wrong results).
+      #
+      # Increment 3 (v0.54) adds the CALL shapes and the same argument applies
+      # with MORE force: the AAPCS contract (`liveness::call_effect`) is SHARED
+      # by the pass and the validator on purpose (two hand-maintained copies
+      # would be the VCR-ORACLE mirror-pinning failure mode), so neither can
+      # catch an error IN the contract. Both halves are executed — the CLOBBER
+      # half (a value live across a `bl`, incl. self-recursion) and the ARGUMENT
+      # half (5/6/7-argument callees that pack each argument into its own nibble,
+      # register AND stack). Likewise proven non-vacuous by MUTATION: emptying
+      # `call_effect`'s clobber set makes the colourer home a cross-call value in
+      # R0-R3; `validate_cfg_rewrite` accepts it and only this gate fails it.
+      #
+      # The grep asserts the NON-ZERO check count, a non-zero engaged-function
+      # count AND the ≥4 engaged CALL-shape floor from the machine-readable
+      # summary: exit 0 alone is not trusted, and a run where the allocator
+      # stopped reaching call-containing functions would pass every comparison
+      # while leaving the whole increment-3 class ungated.
+      - name: Run VCR-DEC-001 join+call allocator execution differential (#242, thumb2)
         run: |
           set -o pipefail
           SYNTH=./target/debug/synth python scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
           grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
-          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
+          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
       # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
       # un-wired in the same #879 audit as the gpio gate. clang+lld build a
       # bare-metal riscv32 firmware from synth's object + generated startup/

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""VCR-DEC-001 increment 2 — EXECUTION differential for the join-aware
-graph-colouring allocator (`SYNTH_GRAPH_ALLOC=1`, epic #242).
+"""VCR-DEC-001 increments 2+3 — EXECUTION differential for the join- and
+call-aware graph-colouring allocator (`SYNTH_GRAPH_ALLOC=1`, epic #242).
 
 **Why this exists.** Increment 1 (v0.50) could claim execution correctness
 TRANSITIVELY: on a whole straight-line function the spike and the shipping
@@ -13,13 +13,28 @@ byte-only gate would therefore certify nothing about the new bytes, and
 with the pass it validates (#872 is the standing lesson that a validator can
 share its pass's blind spot). So the new bytes get executed.
 
+**Increment 3 (v0.54) makes that argument SHARPER, not weaker.** Colouring
+across CALLS is driven by one shared AAPCS contract (`liveness::call_effect`),
+consumed by the pass AND by `validate_cfg_rewrite`. Sharing is deliberate — two
+hand-maintained copies would be the VCR-ORACLE mirror-pinning failure mode — but
+it means NEITHER validator can catch an error IN the contract itself. Only
+execution can. So the CALL SHAPES are gated here as their own population, with
+their own non-vacuity floor: a run in which no call-containing function diverges
+FAILS, because the increment-3 reach would then be gating nothing (#890).
+
 What is gated, per fixture function:
   (E) ENGAGEMENT — the allocator must APPLY, and the flag-on `.text` must
       actually DIFFER from flag-off. Without both, the harness would be
       re-testing the shipping compiler and would pass vacuously; it FAILS
-      instead.
+      instead. A case DECLARED to be a call shape must additionally CONTAIN a
+      Thumb `bl`/`blx` in its emitted body — self-declaration verified against
+      bytes, so a fixture that stops containing a call (inlined away, shape
+      changed) fails loudly instead of silently degrading the population.
   (1) EXECUTION — unicorn runs the flag-ON image and its return value AND the
       compared linear-memory window must equal wasmtime's on every input.
+      Arguments follow AAPCS: 0-3 in R0-R3, 4+ on the stack (8-byte aligned),
+      which is what makes the 5/6/7-argument call fixtures test the argument
+      half of the contract and not just the clobber half.
   (2) VCR-RA-003 — `validate_final_allocation` must return Consistent for every
       applied function (observed via SYNTH_RA003_VERBOSE, not inferred from the
       exit code), and no violation may be reported.
@@ -45,6 +60,7 @@ from unicorn.arm_const import (
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
     UC_ARM_REG_R2,
+    UC_ARM_REG_R3,
     UC_ARM_REG_R9,
     UC_ARM_REG_R10,
     UC_ARM_REG_R11,
@@ -59,32 +75,52 @@ LIN_SIZE = 0x1_0000
 CODE = 0x0
 SP_INIT = LIN + 0x2_0000
 MEM_WINDOW = 0x100
-ARG_REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2]
+# AAPCS core argument registers; arguments past the fourth go on the stack.
+ARG_REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3]
 
-# (fixture, function, [arg tuples]). Chosen to cover every join shape the
-# allocator now colours: real if/else, if-without-else, the desugared
+# (fixture, function, [arg tuples], is_call_shape).
+#
+# JOIN shapes (increment 2): real if/else, if-without-else, the desugared
 # block+br_if form, an early (non-tail) return, counted and data-dependent
 # loops, and the two-level `br_if` exit — with inputs that take BOTH sides of
 # every branch (a one-sided input set would never execute the arm whose
 # register the colourer moved).
+#
+# CALL shapes (increment 3, `is_call_shape=True`): the AAPCS contract has two
+# halves and both are covered. The CLOBBER half — a value live ACROSS a `bl`
+# must not be homed in caller-saved scratch — is what `local_promote_cross_call`
+# and `intra_module_callee_saved` were written for (their whole point is that a
+# caller-saved home is observably wrong), plus a self-recursive `recurse` whose
+# every activation re-enters the same allocation. The ARGUMENT half — the
+# registers a call READS must still hold what the callee expects — is covered by
+# the 5/6/7-argument fixtures, whose callees pack each argument into a distinct
+# nibble, so ANY dropped, shifted or mis-assigned argument (register OR stack)
+# changes the result.
 CASES = [
-    ("cf_shapes_500.wat", "real_ifelse", [(0,), (1,), (7,)]),
-    ("cf_shapes_500.wat", "real_if", [(0,), (1,)]),
-    ("cf_shapes_500.wat", "br_func", [(0,), (1,)]),
-    ("cf_shapes_500.wat", "early_ret", [(0,), (1,)]),
-    ("provenance_branches_396.wat", "decide", [(0, 0), (5, 3), (3, 5), (100, 1)]),
-    ("aarch64_ctrlflow_851.wat", "count_sum", [(0,), (1,), (5,), (17,)]),
-    ("aarch64_ctrlflow_851.wat", "countdown", [(0,), (1,), (9,)]),
+    ("cf_shapes_500.wat", "real_ifelse", [(0,), (1,), (7,)], False),
+    ("cf_shapes_500.wat", "real_if", [(0,), (1,)], False),
+    ("cf_shapes_500.wat", "br_func", [(0,), (1,)], False),
+    ("cf_shapes_500.wat", "early_ret", [(0,), (1,)], False),
+    ("provenance_branches_396.wat", "decide", [(0, 0), (5, 3), (3, 5), (100, 1)], False),
+    ("aarch64_ctrlflow_851.wat", "count_sum", [(0,), (1,), (5,), (17,)], False),
+    ("aarch64_ctrlflow_851.wat", "countdown", [(0,), (1,), (9,)], False),
     # do_while_count(0) is deliberately absent: `n` starts at 0, so the
     # bottom-test loop runs 2**32 times before wrapping back to the exit. It
     # terminates in wasmtime (JIT) but not within any emulator instruction
     # budget, so it measures the budget, not the compiler.
-    ("aarch64_ctrlflow_851.wat", "do_while_count", [(1,), (6,), (23,)]),
-    ("loop_param_bound_663.wat", "sum_const", [(0, 0), (3, 4)]),
-    ("loop_param_bound_663.wat", "sum_below", [(0, 0), (1, 5), (4, 4), (2, 9)]),
-    ("if_else_result_343.wat", "pick", [(0,), (1,), (0xFFFFFFFF,)]),
-    ("if_else_result_343.wat", "pick2", [(0,), (1,)]),
-    ("brif_outer_740.wat", "poll", [(7, 0), (200, 0), (200, 1), (5, 3)]),
+    ("aarch64_ctrlflow_851.wat", "do_while_count", [(1,), (6,), (23,)], False),
+    ("loop_param_bound_663.wat", "sum_const", [(0, 0), (3, 4)], False),
+    ("loop_param_bound_663.wat", "sum_below", [(0, 0), (1, 5), (4, 4), (2, 9)], False),
+    ("if_else_result_343.wat", "pick", [(0,), (1,), (0xFFFFFFFF,)], False),
+    ("if_else_result_343.wat", "pick2", [(0,), (1,)], False),
+    ("brif_outer_740.wat", "poll", [(7, 0), (200, 0), (200, 1), (5, 3)], False),
+    # ---- increment 3: CALL shapes ------------------------------------------
+    ("local_promote_cross_call.wat", "cross_call", [(0,), (5,), (100,), (0xFFFF,)], True),
+    ("intra_module_callee_saved.wat", "a", [(0,), (7,), (100,)], True),
+    ("stack_canary_687.wat", "recurse", [(0,), (1,), (5,), (12,)], True),
+    ("call_5args.wat", "caller", [(1, 2, 3, 4, 5), (0, 0, 0, 0, 9), (15, 1, 2, 4, 8)], True),
+    ("call_6_7args.wat", "call6", [(1, 2, 3, 4, 5, 6), (0, 0, 0, 0, 0, 7)], True),
+    ("call_6_7args.wat", "call7", [(1, 2, 3, 4, 5, 6, 7), (0, 0, 0, 0, 0, 0, 9)], True),
 ]
 
 CLEAR = [
@@ -145,6 +181,26 @@ def wasmtime_call(wat, func, args):
     return (None if r is None else r & 0xFFFFFFFF), window
 
 
+def contains_call(body):
+    """True if the Thumb body contains a `bl <imm>` or `blx <reg>`.
+
+    Used to VERIFY a case's `is_call_shape` declaration against the emitted
+    bytes: a fixture whose call got inlined away (or whose shape drifted) would
+    otherwise keep inflating the increment-3 population while testing nothing.
+      bl  <imm>: hw1 = 11110xxxxxxxxxxx, hw2 = 11x1xxxxxxxxxxx
+      blx <reg>: 010001111xxxx000
+    """
+    for i in range(0, len(body) - 1, 2):
+        hw = int.from_bytes(body[i:i + 2], "little")
+        if (hw & 0xFF87) == 0x4780:
+            return True
+        if (hw & 0xF800) == 0xF000 and i + 3 < len(body):
+            hw2 = int.from_bytes(body[i + 2:i + 4], "little")
+            if (hw2 & 0xD000) == 0xD000:
+                return True
+    return False
+
+
 def unicorn_call(text, lin_init, faddr, args):
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     mu.mem_map(CODE, 0x10000)
@@ -155,7 +211,15 @@ def unicorn_call(text, lin_init, faddr, args):
     mu.reg_write(UC_ARM_REG_R9, LIN + LIN_SIZE)
     mu.reg_write(UC_ARM_REG_R10, LIN_SIZE)
     mu.reg_write(UC_ARM_REG_R11, LIN)
-    mu.reg_write(UC_ARM_REG_SP, SP_INIT)
+    # AAPCS: arguments 0-3 in R0-R3, 4+ on the stack with the FIFTH at [sp,#0]
+    # at the call boundary and SP 8-byte aligned. Getting this wrong would look
+    # exactly like a miscompile on the 5/6/7-argument fixtures, so it is done
+    # here rather than by pretending those functions take three arguments.
+    stack_args = [a & 0xFFFFFFFF for a in args[len(ARG_REGS):]]
+    sp = SP_INIT - ((len(stack_args) * 4 + 7) & ~7 if stack_args else 0)
+    for i, val in enumerate(stack_args):
+        mu.mem_write(sp + 4 * i, val.to_bytes(4, "little"))
+    mu.reg_write(UC_ARM_REG_SP, sp)
     ret = CODE + 0xFF00
     mu.mem_write(ret, b"\x00\xbf\x00\xbf")
     mu.reg_write(UC_ARM_REG_LR, ret | 1)
@@ -181,9 +245,10 @@ def main():
     fails = 0
     checks = 0
     engaged_functions = 0
+    engaged_call_functions = 0
     by_fixture = {}
-    for wat, func, argsets in CASES:
-        by_fixture.setdefault(wat, []).append((func, argsets))
+    for wat, func, argsets, is_call in CASES:
+        by_fixture.setdefault(wat, []).append((func, argsets, is_call))
 
     for wat, entries in by_fixture.items():
         off_elf = f"/tmp/ga_join_{Path(wat).stem}_off.elf"
@@ -206,7 +271,7 @@ def main():
         text_off, _, syms_off, sizes_off = load(off_elf)
         text_on, lin_init, syms_on, sizes_on = load(on_elf)
 
-        for func, argsets in entries:
+        for func, argsets, is_call in entries:
             if func not in syms_on:
                 print(f"FAIL {wat}:{func} — symbol missing")
                 fails += 1
@@ -222,7 +287,18 @@ def main():
                       f"it). Re-pick the fixture or fix the regression.")
                 fails += 1
                 continue
+            # A declared CALL shape must really contain a call in the emitted
+            # body — self-declaration verified against the bytes, so an inlined
+            # -away call cannot silently inflate the increment-3 population.
+            if is_call and not contains_call(body_on):
+                print(f"FAIL {wat}:{func} — declared a CALL shape but the emitted "
+                      f"body contains no bl/blx: it gates nothing about the AAPCS "
+                      f"call contract.")
+                fails += 1
+                continue
             engaged_functions += 1
+            if is_call:
+                engaged_call_functions += 1
 
             # ---- (1) EXECUTION -------------------------------------------
             for args in argsets:
@@ -246,16 +322,27 @@ def main():
 
     # Non-vacuity: the whole harness is worthless if the allocator stopped
     # changing bytes anywhere. Require a real population.
-    print(f"\nengaged functions (flag-on bytes differ): {engaged_functions}")
+    print(f"\nengaged functions (flag-on bytes differ): {engaged_functions} "
+          f"(of which CALL shapes: {engaged_call_functions})")
     if engaged_functions < 10:
         print("VACUOUS: fewer than 10 functions have divergent flag-on bytes — "
               "the join allocator's reach regressed; this gate no longer gates.")
+        fails += 1
+    # Increment 3 gets its OWN floor. The AAPCS call contract is SHARED by the
+    # pass and `validate_cfg_rewrite`, so execution is the only thing that can
+    # catch an error in the contract itself — a run with no divergent
+    # call-containing function would leave that class entirely ungated while
+    # still reporting PASS (#890).
+    if engaged_call_functions < 4:
+        print("VACUOUS: fewer than 4 CALL-containing functions have divergent "
+              "flag-on bytes — increment 3's reach regressed and the AAPCS call "
+              "contract is no longer execution-gated.")
         fails += 1
 
     # Machine-readable summary the CI wiring greps for a NON-ZERO count:
     # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
     print(f"VCR-DEC-001-JOIN CHECKS={checks - fails}/{checks} "
-          f"ENGAGED={engaged_functions}")
+          f"ENGAGED={engaged_functions} CALLSHAPES={engaged_call_functions}")
     print("RESULT:", "PASS" if not fails else f"FAIL ({fails} problem(s))")
     return 1 if fails else 0
 
