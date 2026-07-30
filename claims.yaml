@@ -810,6 +810,48 @@ claims:
         glob: ['crates/synth-backend-aarch64/src/selector.rs']
         min: 1
 
+  # #851 lane L3 — the load-bearing HONESTY claim of this lane. v0.52's cold
+  # review caught a doc that described a shipped feature as "not yet"; v0.53
+  # made the `x28` precondition explicit so the NEXT feature could not quietly
+  # add a second one. This pin holds that line: if globals or the funcref table
+  # ever become an ambient input the embedder must supply, the sentence claiming
+  # they are EMITTED must change with it, and the gate reddens until it does.
+  - id: SYNTH-MATRIX-AARCH64-EMITTED-NOT-PRECONDITION
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "The globals region and the funcref table are explicitly **NOT** preconditions: synth EMITS both into the object with their contents"
+    evidence:
+      # The single producer of both regions — if this file goes, the claim goes.
+      - kind: file-exists
+        path: crates/synth-backend-aarch64/src/substrate.rs
+      # The regions are placed in the object, not assumed: a `.data` blob and a
+      # `.text`-resident table, reached PC-relatively (no base register).
+      - kind: count-min
+        pattern: 'DataBlob'
+        glob: ['crates/synth-backend-aarch64/src/elf.rs']
+        min: 1
+      - kind: count-min
+        pattern: 'AArch64AdrPrelPgHi21'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        min: 1
+
+  # #851 lane L3 — all THREE §4.4.8 traps are EMITTED, not inherited from `blr`
+  # (which is total). Pinned to both oracles being CI-wired, so the claim cannot
+  # outlive its evidence.
+  - id: SYNTH-MATRIX-AARCH64-CALL-INDIRECT-TRAPS
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "all THREE WASM §4.4.8 trap guards emitted inline: out-of-range index (UNSIGNED bounds compare), null slot, and signature mismatch"
+    evidence:
+      - kind: file-exists
+        path: scripts/repro/aarch64_call_indirect_851_differential.py
+      - kind: count-min
+        pattern: 'aarch64_call_indirect_851_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+      - kind: count-min
+        pattern: 'aarch64_globals_851_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        min: 1
+
   - id: SYNTH-MATRIX-AARCH64-DIVREM-POPCNT
     doc: scripts/templates/feature_matrix.md.tmpl
     # v0.53: the op list this sentence heads grew (select/CSEL, drop/nop, wrap,
