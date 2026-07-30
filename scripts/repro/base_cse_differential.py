@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA lever 3 / VCR-ORACLE-001 (#468, #242) — EXECUTION-validate base-CSE.
 
 base-CSE (DEFAULT-ON since the #468 lever flip; opt-out SYNTH_BASE_CSE=0)
@@ -26,6 +27,7 @@ Run (needs wasmtime + unicorn + pyelftools):
   python scripts/repro/base_cse_differential.py
 Exits nonzero on any mismatch or vacuity failure.
 """
+import os
 import subprocess
 import sys
 
@@ -34,7 +36,9 @@ from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_SP
 
-SYNTH = "./target/release/synth"
+# CI wires this via the SYNTH env var (#890); the literal stays the
+# local-dev default.
+SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 # The optimized path materializes this absolute linear-memory base.
 LINMEM = 0x20000100
 CODE, STK, RET = 0x200000, 0x90000, 0x300000

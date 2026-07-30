@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#778 phase 2 soundness cross-check: execute compiled loop fixtures under
 unicorn (Thumb-2), count machine instructions, and check:
 

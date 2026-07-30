@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#382 — large static load/store offset (> imm12) differential oracle.
 
 The optimized (non-relocatable) ARM path materializes the linear-memory base as
@@ -21,6 +22,7 @@ Run (rebuild synth first):
 
 Exits nonzero on mismatch so it can gate a release.
 """
+import os
 import subprocess
 import sys
 
@@ -37,7 +39,9 @@ from unicorn.arm_const import (
 WAT = "scripts/repro/load_store_big_offset_382.wat"
 WASM = "/tmp/ls382.wasm"
 ELF = "/tmp/ls382_diff.elf"
-SYNTH = "./target/debug/synth"
+# CI wires this via the SYNTH env var (#890); the literal stays the
+# local-dev default.
+SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 # Absolute linear-memory base the optimized path materializes (optimizer_bridge).
 LIN_BASE = 0x20000100

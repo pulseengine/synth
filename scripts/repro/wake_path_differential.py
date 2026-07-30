@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: manual (external-input) — needs gale's merged.both.loom.wat, fetched at run time from a GitHub gist that is not in-tree and not vendored; the WAKE path it exercises cannot be reproduced from any in-repo fixture (that is why the harness exists — the debugger perturbs the give/take race on silicon).
 """
 #204 WAKE-path differential harness (gale's binary semaphore).
 

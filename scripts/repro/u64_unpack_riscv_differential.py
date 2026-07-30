@@ -1,3 +1,4 @@
+# ci-status: wired
 import sys
 import wasmtime
 from elftools.elf.elffile import ELFFile

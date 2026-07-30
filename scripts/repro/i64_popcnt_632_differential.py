@@ -1,3 +1,4 @@
+# ci-status: wired
 # #632: i64.popcnt result clobbered by the expansion's own scratch-restore pop.
 #
 # The Thumb-2 I64Popcnt expansion saves scratch with `PUSH {R3,R4,R5}`,

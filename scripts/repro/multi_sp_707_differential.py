@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#707 multi-provider shared-memory fused node: N `__stack_pointer` globals all
 init == sp_init, co-rebased by `--shadow-stack-size`.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#343 — RV32 `if (result i32)` result-register reconciliation.
 
 The RV32 selector lowered a value-returning `if/else` without merging the two

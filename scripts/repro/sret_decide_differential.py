@@ -1,3 +1,4 @@
+# ci-status: wired
 import struct, sys
 from elftools.elf.elffile import ELFFile
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB
@@ -27,5 +28,11 @@ def run(w,u,m):
     mu.reg_write(UC_ARM_REG_R11,DATA); mu.reg_write(UC_ARM_REG_SP,STK+0x80000); mu.reg_write(UC_ARM_REG_LR,RET|1)
     mu.emu_start((CODE+(syms["shim"]&~1))|1,RET,timeout=5_000_000,count=20000)
     return struct.unpack("<i",struct.pack("<I",mu.reg_read(UC_ARM_REG_R0)&0xFFFFFFFF))[0]
+# #890: this harness printed MISMATCH and still exited 0 — wiring it as-is would
+# have added a gate that CANNOT fail. The verdict is now the exit status.
+ok = True
 for (w,u,m,exp) in [(0,0,8,0),(3,8,8,-35),(0,2,8,0)]:
-    got=run(w,u,m); print(f"shim(write_idx={w},used={u},max={m}) = {got}  (expect {exp})  {'OK' if got==exp else 'MISMATCH <-- BUG'}")
+    got=run(w,u,m); ok &= got==exp
+    print(f"shim(write_idx={w},used={u},max={m}) = {got}  (expect {exp})  {'OK' if got==exp else 'MISMATCH <-- BUG'}")
+print("ORACLE:", "PASS" if ok else "FAIL")
+sys.exit(0 if ok else 1)

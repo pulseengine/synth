@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ci-status: manual (measurement) — the VCR-PERF-001 Pass-1 spill-waste BASELINE census (#390): it compiles the frozen fixtures and reports spill-slot counts to size the allocator work. Changes zero codegen bytes and has no expected values, so there is no verdict to gate on.
 # VCR-PERF-001 Pass-1 / VCR-RA-010 — in-tree spill-elimination baseline (#390, #242).
 #
 # gale #390 measured the headline size gap on the gust scheduler hot path

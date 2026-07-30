@@ -1,3 +1,4 @@
+# ci-status: manual (scratch) — a 25-line print-only probe (does ld64 read mem[addr] or mem[0]?), hardcoded to /tmp/i64/i64_d.elf, no assertion and no exit code; superseded as a GATE by i64_large_offset_382 + load_store_big_offset_382, both wired. Kept for the #372 provenance trail.
 # Does ld64(addr) read mem[addr] (correct) or mem[0] (address dropped)?
 import subprocess
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB
