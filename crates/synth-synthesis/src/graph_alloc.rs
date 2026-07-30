@@ -29,8 +29,23 @@
 //! chains into cross-block *webs* (a reaching-def fixpoint), takes interference
 //! from CFG liveness and colours the whole branchy function at once — so two
 //! arms' values, never simultaneously live, share one register. See that module's
-//! own docs for the scope (label-form branches; no calls; no pre-resolved numeric
-//! branches) and for why each exclusion is a DECLINE rather than a guess.
+//! own docs for the scope (label-form branches; no pre-resolved numeric branches)
+//! and for why each exclusion is a DECLINE rather than a guess.
+//!
+//! **Increment 3 (v0.54) — colouring ACROSS CALLS.** Increment 2's biggest
+//! decline bucket after unmodeled ops was `call` / `call-indirect` (68 of the
+//! measured corpus): a `bl` had no modeled effect, so the CFG builder refused the
+//! whole function. Increment 3 models the AAPCS call boundary — ONE definition,
+//! [`crate::liveness::call_effect`], consumed by BOTH this pass (liveness,
+//! interference, identity pins) and its oracle
+//! ([`crate::liveness::validate_cfg_rewrite`]'s backward transfer). Modeling it
+//! in the pass alone would have been the #872 defect verbatim: a validator that
+//! treats `bl` as effect-free accepts a non-identity equation across it, i.e. it
+//! certifies its own pass's "live value parked in call-clobbered scratch"
+//! miscompile. Single-block functions containing a call are taken here too
+//! (increment 1 structurally cannot, since a call is not `is_straight_line`).
+//! Still declined, by name: the high-level `Call` / `CallIndirect` PSEUDO-ops
+//! (expanded downstream, so their final register footprint is not this stream's).
 //!
 //! **The oracle IS the point (red-first).** A straight-line rewrite is proven
 //! semantics-preserving by [`crate::liveness::validate_segment_rewrite`] (the
@@ -282,19 +297,32 @@ fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>>
 /// validator shares the CFG *shape* with the pass, so it is necessary, not
 /// sufficient — which is why RA-003 and unicorn execution both gate it.
 ///
+/// **Calls (increment 3, v0.54).** A `bl`/`blx` is an interior instruction with
+/// the AAPCS [`crate::liveness::call_effect`]: it DEFS `{R0..R3, R12, LR}` and
+/// USES the argument registers `{R0..R3}` (conservatively all four — the callee's
+/// signature is not visible here) plus a `blx`'s target register. Those defs make
+/// every web live across the call interfere with the call-clobbered set, so the
+/// colourer structurally CANNOT home a live value in caller-saved scratch; the
+/// call's own webs are identity-pinned and the op is emitted verbatim. The SAME
+/// `call_effect` drives [`validate_cfg_rewrite`]'s backward transfer, so the
+/// oracle cannot be weaker than the pass on exactly the contract that matters —
+/// the hazard this increment was briefed on ("a validator treating `bl` as
+/// effect-free would accept a non-identity equation across it").
+///
 /// **Bounded scope — declines, never hard-fails.** `None` (→ the shipping
 /// `reallocate_function`) on: numeric/pre-resolved branches (`BOffset`/
 /// `BCondOffset` — their displacements are already baked, so a rename that
 /// changes a Thumb encoding width would silently overshoot; the label form is
-/// resolved AFTER this pass), calls (`Bl`/`Blx`/`Call`/`CallIndirect` — the
-/// AAPCS argument/clobber contract is a named follow-up), `BrTable`, computed
+/// resolved AFTER this pass), the HIGH-LEVEL `Call`/`CallIndirect` pseudo-ops
+/// (expanded downstream into a bounds guard + table load + result move, so the
+/// register footprint here is not the one that ships), `BrTable`, computed
 /// `Bx`, duplicate/unknown labels, unreachable blocks, any op without a precise
 /// [`reg_effect`], any spill, and any validator rejection.
 mod joins {
     use super::*;
     use crate::liveness::{
-        BasicBlock, RegEffect, cfg_exit_observable, is_straight_line, reg_effect, rewrite_op_maps,
-        validate_cfg_rewrite,
+        BasicBlock, RegEffect, call_effect, cfg_exit_observable, is_straight_line, reg_effect,
+        rewrite_op_maps, validate_cfg_rewrite,
     };
     use crate::rules::ArmOp;
 
@@ -355,12 +383,22 @@ mod joins {
             // would silently overshoot the target (#606). Re-resolving them is
             // the named next increment.
             BOffset { .. } | BCondOffset { .. } => Term::No("numeric-branch"),
-            // A call needs the AAPCS argument + caller-saved clobber contract
-            // modeled in BOTH the pass and the validator (a validator that
-            // treats `bl` as effect-free would accept a non-identity equation
-            // across it). Named follow-up.
-            Bl { .. } | Blx { .. } | Call { .. } => Term::No("call"),
-            CallIndirect { .. } => Term::No("call-indirect"),
+            // INCREMENT 3 (#242): a real machine call is MODELED, not declined.
+            // Its AAPCS argument + call-clobber contract comes from the single
+            // shared [`call_effect`] definition, which this pass feeds into its
+            // liveness / interference / pins AND `validate_cfg_rewrite` feeds
+            // into its backward transfer — the "model it in one and not the
+            // other and you build a validator that certifies its own pass's
+            // miscompile" hazard, closed by construction. A `bl`/`blx` FALLS
+            // THROUGH: it is an interior instruction, not a terminator.
+            Bl { .. } | Blx { .. } => Term::Fall,
+            // The HIGH-LEVEL call pseudo-ops stay out of scope: `Call` carries a
+            // result register and `CallIndirect` a table-index register, and both
+            // are EXPANDED downstream (bounds guard, table load, result move), so
+            // the register footprint this pass would colour is not the one that
+            // ships. Declined, with the reason named.
+            Call { .. } => Term::No("call-pseudo"),
+            CallIndirect { .. } => Term::No("call-indirect-pseudo"),
             BrTable { .. } => Term::No("br-table"),
             Bx { .. } => Term::No("computed-bx"),
             _ => Term::Fall,
@@ -385,6 +423,10 @@ mod joins {
                     if !matches!(ins.op, ArmOp::Label { .. })
                         && !matches!(ins.op, ArmOp::Bx { .. })
                         && reg_effect(&ins.op).is_none()
+                        // INCREMENT 3: a call has no `reg_effect` (deliberately —
+                        // the shipping pipeline depends on that `None`), but it
+                        // DOES have a modeled AAPCS `call_effect`.
+                        && call_effect(&ins.op).is_none()
                     {
                         return Err("unmodeled-op");
                     }
@@ -500,7 +542,15 @@ mod joins {
         }
     }
 
-    /// Per-instruction effect (`None` for control flow / labels).
+    /// Per-instruction effect (`None` for pure control flow / labels).
+    ///
+    /// INCREMENT 3: a `bl`/`blx` is not straight-line but is NOT effect-free
+    /// either — it gets the AAPCS [`call_effect`], the SAME definition
+    /// `validate_cfg_rewrite` uses. That one line is what puts calls into this
+    /// pass's liveness, webs and interference: a web live across a call now
+    /// interferes with the call's `{R0..R3, R12, LR}` def webs (all
+    /// identity-pinned), so the colourer structurally cannot home a live value in
+    /// call-clobbered scratch.
     fn effects(instrs: &[ArmInstruction]) -> Vec<Option<RegEffect>> {
         instrs
             .iter()
@@ -508,7 +558,7 @@ mod joins {
                 if is_straight_line(&i.op) {
                     reg_effect(&i.op)
                 } else {
-                    None
+                    call_effect(&i.op)
                 }
             })
             .collect()
@@ -869,8 +919,13 @@ mod joins {
             Err(why) => return decline(why),
         };
         // A single-block function is increment 1's domain (tried first); this
-        // path exists for the branchy ones.
-        if blocks.len() < 2 {
+        // path exists for the branchy ones. EXCEPT when it contains a call:
+        // increment 1 requires every instruction to be `is_straight_line`, so it
+        // structurally declines a `bl` and would leave a straight-line CALLING
+        // function to the shipping pass forever. Increment 3 models calls, so a
+        // single-block function that has one is THIS path's job.
+        let has_call = instrs.iter().any(|i| call_effect(&i.op).is_some());
+        if blocks.len() < 2 && !has_call {
             return decline("single-block");
         }
         let eff = effects(instrs);
@@ -989,14 +1044,26 @@ mod joins {
                 }
             }
         }
-        // (c) ARCHITECTURAL REGISTER LISTS (#888): a `Push`/`Pop` register list
-        //     is a bitmask whose stack layout is register-NUMBER order, matched
-        //     pairwise between prologue and epilogue, and it carries the #490
-        //     callee-saved contract. Identity-pin every web a `Push` USES or a
-        //     `Pop` DEFINES — recolouring one restores registers from a stack
-        //     image laid out for different ones.
+        // (c) ARCHITECTURAL REGISTER OPERANDS. Two classes, one rule: these
+        //     registers are fixed by the architecture or by the ABI, not chosen
+        //     by the allocator, so every web feeding or produced by them is
+        //     IDENTITY-pinned.
+        //
+        //     * `Push`/`Pop` register lists (#888): a bitmask whose stack layout
+        //       is register-NUMBER order, matched pairwise between prologue and
+        //       epilogue, carrying the #490 callee-saved contract. Recolouring
+        //       one restores registers from a stack image laid out for different
+        //       ones — a real latent miscompile found in v0.53.
+        //     * CALL operands (increment 3): the argument registers a `bl`/`blx`
+        //       reads and the `{R0..R3, R12, LR}` it clobbers are the AAPCS
+        //       contract. The call op itself is emitted VERBATIM (the apply phase
+        //       below re-checks that), so its webs must land on their own
+        //       registers — pinning them here is what makes that true rather than
+        //       hoped for.
         for (i, ins) in instrs.iter().enumerate() {
-            if !matches!(&ins.op, ArmOp::Push { .. } | ArmOp::Pop { .. }) {
+            if !matches!(&ins.op, ArmOp::Push { .. } | ArmOp::Pop { .. })
+                && call_effect(&ins.op).is_none()
+            {
                 continue;
             }
             let Some(e) = &eff[i] else { return None };
@@ -1183,6 +1250,20 @@ mod joins {
             for d in &e.defs {
                 let w = webs.def_web[&(i, *d)];
                 def_map.insert(*d, *assignment.get(&w)?);
+            }
+            // INCREMENT 3: a CALL is emitted VERBATIM — its operands are the
+            // AAPCS contract, not a colouring choice (and `validate_cfg_rewrite`
+            // requires non-straight-line ops to be identical on both sides). Pin
+            // (c) above already forces both maps to the identity here; re-check
+            // it rather than assume it, and DECLINE on any disagreement. A silent
+            // `rewrite_op_maps` on a call would be the miscompile this increment
+            // exists to make impossible.
+            if !is_straight_line(&ins.op) {
+                if use_map.iter().any(|(a, b)| a != b) || def_map.iter().any(|(a, b)| a != b) {
+                    return decline("call-operand-recoloured");
+                }
+                out.push(ins.clone());
+                continue;
             }
             out.push(ArmInstruction {
                 op: rewrite_op_maps(&ins.op, &use_map, &def_map)?,
@@ -1625,7 +1706,7 @@ mod tests {
     /// that changes a Thumb encoding width would silently overshoot (#606).
     /// Out of scope by DECLINE, with the reason named.
     #[test]
-    fn declines_numeric_branches_and_calls() {
+    fn declines_numeric_branches() {
         let numeric = vec![
             ins(ArmOp::Cmp {
                 rn: Reg::R0,
@@ -1642,14 +1723,279 @@ mod tests {
             ins(ArmOp::Bx { rm: Reg::LR }),
         ];
         assert_eq!(joins::build_cfg(&numeric), Err("numeric-branch"));
-        let called = vec![
+        assert!(reallocate(&numeric, &POOL).is_none());
+    }
+
+    // ================================================================
+    // VCR-DEC-001 increment 3 — colouring ACROSS CALLS.
+    // ================================================================
+
+    /// A `push {r4-r8,lr}` / `pop {r4-r8,pc}`-framed body around one direct
+    /// call. The R4 value is born AFTER the call and dies before the return, so
+    /// whole-function liveness proves it never crosses the call boundary and it
+    /// may live in call-clobbered scratch — the recolouring increment 2 could
+    /// not even attempt, because the `bl` made the CFG builder decline the whole
+    /// function.
+    fn call_body() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+            }),
+            ins(ArmOp::Bl {
+                label: "func_1".into(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+            }),
+        ]
+    }
+
+    /// THE POINT OF INCREMENT 3. A function containing a call must be COLOURED,
+    /// not declined — and the value that provably never crosses the call must
+    /// leave its callee-saved register. A `None` here means the call model
+    /// regressed to increment 2's reach.
+    #[test]
+    fn colours_across_a_call() {
+        let body = call_body();
+        let out = reallocate(&body, &POOL).expect("a call-containing function must colour");
+        assert_eq!(out.len(), body.len());
+        assert_ne!(out, body, "an identity rewrite gates nothing");
+        // The post-call temporary moved OFF the callee-saved register...
+        assert!(
+            !matches!(out[2].op, ArmOp::Movw { rd: Reg::R4, .. }),
+            "the post-call temporary should have left R4: {:?}",
+            out[2].op
+        );
+        // ...and onto a register the call boundary proves is free THERE (it is
+        // defined after the call and dead before the return, so R2/R3 — dead-out
+        // at a `pop {…,pc}` — are legal; R0/R1 are not, they are live).
+        let landed = match &out[2].op {
+            ArmOp::Movw { rd, .. } => *rd,
+            other => panic!("shape changed: {other:?}"),
+        };
+        assert!(
+            matches!(landed, Reg::R2 | Reg::R3),
+            "expected the temporary in call-clobbered scratch, got {landed:?}"
+        );
+        // The CALL is emitted verbatim and the architectural register lists are
+        // identity-pinned.
+        assert_eq!(out[1].op, body[1].op, "the call was rewritten");
+        assert_eq!(out[0].op, body[0].op, "prologue push list recoloured");
+        assert_eq!(out[5].op, body[5].op, "epilogue pop list recoloured");
+        // And the rewrite is certified by the CFG-lifted oracle.
+        let blocks = joins::build_cfg(&body).expect("CFG");
+        assert_eq!(validate_cfg_rewrite(&body, &out, &blocks), Ok(()));
+    }
+
+    /// **RED-FIRST for the shared AAPCS contract — the hazard this increment was
+    /// briefed on.** A rewrite that moves a value LIVE ACROSS a call into a
+    /// call-clobbered register is a miscompile: the callee is contractually free
+    /// to destroy R0-R3/R12/LR, so the value read after the call is garbage.
+    ///
+    /// Before increment 3 `validate_cfg_rewrite` treated a `bl` as EFFECT-FREE
+    /// (a non-straight-line op was required to be identical and then given no
+    /// effect), so the equation `(R4, R2)` demanded after the call sailed
+    /// straight through it and was discharged by the `mov` above — the validator
+    /// would have ACCEPTED this exact rewrite. The MUTATION that proves the
+    /// rejection comes from the CALL MODEL and nothing else is in this same
+    /// test: the identical rename over the identical instructions with the `bl`
+    /// REMOVED is a legal re-colouring and must be ACCEPTED.
+    #[test]
+    fn cfg_validator_rejects_a_live_value_recoloured_across_a_call() {
+        // BOTH R4 and R5 are saved by the prologue, so a R4->R5 re-home is a
+        // legal choice for the allocator (an unsaved callee-saved register would
+        // be rejected for a DIFFERENT reason — clobbering the caller's value —
+        // and would muddy what this test attributes to the call).
+        let frame = |mid: Vec<ArmInstruction>| {
+            let mut v = vec![ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::LR],
+            })];
+            v.extend(mid);
+            v.push(ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::PC],
+            }));
+            v
+        };
+        // save an argument in R4 / call / consume the saved value after the call
+        let with_call = |home: Reg| {
+            frame(vec![
+                ins(ArmOp::Mov {
+                    rd: home,
+                    op2: Operand2::Reg(Reg::R0),
+                }),
+                ins(ArmOp::Bl {
+                    label: "func_1".into(),
+                }),
+                ins(ArmOp::Add {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(home),
+                }),
+            ])
+        };
+        let orig = with_call(Reg::R4);
+        let blocks = joins::build_cfg(&orig).expect("a call-containing CFG is now built");
+        // Non-vacuity: the identity rewrite is accepted.
+        assert_eq!(validate_cfg_rewrite(&orig, &orig, &blocks), Ok(()));
+        // A callee-saved -> callee-saved move across the call is legal.
+        assert_eq!(
+            validate_cfg_rewrite(&orig, &with_call(Reg::R5), &blocks),
+            Ok(()),
+            "R5 is callee-saved: the callee must preserve it, so this rename is legal"
+        );
+        // THE RED: R2 is call-clobbered. The value does not survive the call.
+        assert!(
+            matches!(
+                validate_cfg_rewrite(&orig, &with_call(Reg::R2), &blocks),
+                Err(RewriteViolation::DefClobbersEquation { .. })
+            ),
+            "a value live ACROSS a call must not be recoloured into call-clobbered \
+             scratch, got {:?}",
+            validate_cfg_rewrite(&orig, &with_call(Reg::R2), &blocks)
+        );
+
+        // ---- The mutation that proves the CALL MODEL is doing the work -------
+        // Same instructions, same rename, `bl` DELETED. Now nothing clobbers R2
+        // between the definition and the use, so the rewrite is a legal
+        // re-colouring and MUST be accepted. A validator that rejected here would
+        // be rejecting for some unrelated reason and the RED above would prove
+        // nothing about calls.
+        let no_call = |home: Reg| {
+            frame(vec![
+                ins(ArmOp::Mov {
+                    rd: home,
+                    op2: Operand2::Reg(Reg::R0),
+                }),
+                ins(ArmOp::Add {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(home),
+                }),
+            ])
+        };
+        let orig_nc = no_call(Reg::R4);
+        let blocks_nc = joins::build_cfg(&orig_nc).expect("CFG");
+        assert_eq!(
+            validate_cfg_rewrite(&orig_nc, &no_call(Reg::R2), &blocks_nc),
+            Ok(()),
+            "without the call the SAME rename is legal — so the rejection above \
+             is attributable to the call model, not to anything else"
+        );
+    }
+
+    /// The other half of the AAPCS contract: a call READS its argument
+    /// registers. A rewrite that renames the definition feeding an argument
+    /// leaves the callee reading a stale register, and must be rejected — even
+    /// though the `bl` itself is byte-identical on both sides.
+    #[test]
+    fn cfg_validator_rejects_a_renamed_call_argument() {
+        let orig = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 5,
+            }),
             ins(ArmOp::Bl {
                 label: "func_1".into(),
             }),
             ins(ArmOp::Bx { rm: Reg::LR }),
         ];
-        assert_eq!(joins::build_cfg(&called), Err("call"));
-        assert!(reallocate(&numeric, &POOL).is_none());
-        assert!(reallocate(&called, &POOL).is_none());
+        let blocks = joins::build_cfg(&orig).expect("CFG");
+        assert_eq!(validate_cfg_rewrite(&orig, &orig, &blocks), Ok(()));
+        let mut bad = orig.clone();
+        bad[0] = ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 5,
+        });
+        assert!(
+            validate_cfg_rewrite(&orig, &bad, &blocks).is_err(),
+            "staging the argument in R3 while the callee reads R0 must be rejected"
+        );
+    }
+
+    /// The pass never proposes what the previous test rejects: a value live
+    /// across the call keeps a callee-saved home, because the call's
+    /// identity-pinned `{R0..R3, R12, LR}` def webs interfere with everything
+    /// live after it.
+    #[test]
+    fn a_value_live_across_a_call_stays_callee_saved() {
+        let body = vec![
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::LR],
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Bl {
+                label: "func_1".into(),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+        ];
+        // Either the pass declines (identity colouring) or it rewrites — but in
+        // NO case may the cross-call value land in call-clobbered scratch.
+        if let Some(out) = reallocate(&body, &POOL) {
+            let home = match &out[1].op {
+                ArmOp::Mov { rd, .. } => *rd,
+                other => panic!("shape changed: {other:?}"),
+            };
+            assert!(
+                matches!(home, Reg::R4 | Reg::R5 | Reg::R6 | Reg::R7 | Reg::R8),
+                "a value live across a call must stay callee-saved, got {home:?}"
+            );
+            assert_eq!(out[2].op, body[2].op, "the call was rewritten");
+        }
+    }
+
+    /// The HIGH-LEVEL call pseudo-ops stay out of scope: they carry a result /
+    /// table-index register and are EXPANDED downstream (bounds guard, table
+    /// load, result move), so the register footprint this pass would colour is
+    /// not the one that ships. Declined, with the reason named.
+    #[test]
+    fn declines_the_high_level_call_pseudo_ops() {
+        for (op, why) in [
+            (
+                ArmOp::Call {
+                    rd: Reg::R0,
+                    func_idx: 1,
+                },
+                "call-pseudo",
+            ),
+            (
+                ArmOp::CallIndirect {
+                    rd: Reg::R0,
+                    type_idx: 0,
+                    table_index_reg: Reg::R1,
+                    table_size: 4,
+                    table_byte_offset: 0,
+                    null_check: false,
+                    type_check: None,
+                },
+                "call-indirect-pseudo",
+            ),
+        ] {
+            let body = vec![ins(op), ins(ArmOp::Bx { rm: Reg::LR })];
+            assert_eq!(joins::build_cfg(&body), Err(why));
+            assert!(reallocate(&body, &POOL).is_none());
+        }
     }
 }
