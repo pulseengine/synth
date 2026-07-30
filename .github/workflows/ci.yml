@@ -613,7 +613,7 @@ jobs:
       # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
       - name: Run gpio-thin size + mmio execution oracle (#846/#879, cortex-m3)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
           grep -q "^#846 CHECKS=75/75" gpio846.out
       # #752: the software bounds guard must trap the top-of-address-space
@@ -647,7 +647,7 @@ jobs:
       # 0 alone is not trusted (the "0 ops accepted PASS" lesson).
       - name: Run VFP spill execution oracle (#881, cortex-m7dp)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/vfp_spill_881_differential.py | tee vfp881.out
           grep -q "^PASS: all 7 exports emitted (nm -> T)" vfp881.out
           grep -qE "^PASS: [1-9][0-9]+ execution rows bit-identical to wasmtime" vfp881.out
@@ -897,7 +897,7 @@ jobs:
       # while leaving the whole increment-3 class ungated.
       - name: Run VCR-DEC-001 join+call allocator execution differential (#242, thumb2)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
           grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
           awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
