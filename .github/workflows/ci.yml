@@ -851,16 +851,42 @@ jobs:
       # APPLIES on ≥2 fixtures and the UNCONDITIONAL VCR-RA-003 validator returns
       # Consistent on every applied function (observed via SYNTH_RA003_VERBOSE —
       # the acceptance oracle validating the new allocator's REAL output), and
-      # (3) flag-ON ≡ flag-OFF corpus-wide (a DESIGNED property: on a
-      # straight-line function graph_alloc and the shipping reallocate_function
-      # share pins + chaitin_core + single-segment scope, so byte-identity is by
-      # construction; execution correctness follows transitively via the frozen
-      # wasmtime differentials above). The red-first teeth are the unit probe
-      # graph_alloc_bad_rename_rejected_by_segment_validator (validate_segment_
-      # rewrite rejects a value-flow-breaking merge-rename). Byte-only compare —
-      # needs pyelftools ONLY (no unicorn/wasmtime).
+      # (3) NO SILENT DRIFT / NO GROWTH. v0.53 widened the spike to colour
+      # ACROSS if/else joins (increment 2), so applied functions now genuinely
+      # DIVERGE from the shipping bytes and the old "flag-ON ≡ flag-OFF
+      # corpus-wide" claim — which made execution correctness TRANSITIVE — is
+      # retired. What replaces it: a fixture the allocator did NOT apply to must
+      # stay byte-identical (no drift through a decline path), an applied one
+      # must not GROW its .text, and ≥2 fixtures must actually diverge or
+      # increment 2's reach has regressed. Byte-only compare — needs pyelftools
+      # ONLY (no unicorn/wasmtime).
       - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
         run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
+      # VCR-DEC-001 increment 2 (#242): EXECUTION-gate the DIVERGENT bytes the
+      # join-aware colouring now produces. This is NOT redundant with the byte
+      # differential above: increment 1's correctness followed transitively from
+      # byte identity, and increment 2 broke that. `validate_cfg_rewrite` — the
+      # pass's own CFG-lifted trace-equality oracle — SHARES the CFG shape with
+      # the pass it validates, and #872 is the standing lesson that a validator
+      # can share its pass's blind spot, so the new bytes get EXECUTED: unicorn
+      # runs the flag-ON image and compares return value + linear-memory window
+      # against wasmtime, over every join shape the allocator reaches (real
+      # if/else, if-without-else, desugared block+br_if, early return, counted
+      # and data-dependent loops, two-level br_if). PROVEN non-vacuous by
+      # MUTATION: emptying `cfg_exit_observable` (the exit contract the pass and
+      # its validator SHARE) while removing the churn bias that masks it emits
+      # code leaving the return value in the wrong register — validate_cfg_rewrite
+      # AND VCR-RA-003 both ACCEPT it and only this gate catches it (16 wrong
+      # results). The grep asserts the NON-ZERO check count AND a non-zero
+      # engaged-function count from the machine-readable summary: exit 0 alone is
+      # not trusted, and a run where the allocator stopped changing bytes would
+      # pass every comparison while gating nothing.
+      - name: Run VCR-DEC-001 join-allocator execution differential (#242, thumb2)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
+          grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
+          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
       # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
       # un-wired in the same #879 audit as the gpio gate. clang+lld build a
       # bare-metal riscv32 firmware from synth's object + generated startup/

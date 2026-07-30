@@ -1349,4 +1349,275 @@ mod tests {
     fn declines_on_empty() {
         assert!(reallocate(&[], &POOL).is_none());
     }
+
+    // ================================================================
+    // VCR-DEC-001 increment 2 — colouring ACROSS if/else joins.
+    // ================================================================
+
+    use crate::liveness::{RewriteViolation, validate_cfg_rewrite};
+    use crate::rules::{Condition, MemAddr};
+
+    fn lbl(n: &str) -> ArmInstruction {
+        ins(ArmOp::Label { name: n.into() })
+    }
+    fn mem(base: Reg, offset: i32) -> MemAddr {
+        MemAddr {
+            base,
+            offset,
+            offset_reg: None,
+        }
+    }
+
+    /// The canonical diamond: `push` / `cmp` / `bcc else` / then-arm writes R2 /
+    /// `b end` / else-arm writes R4 / `end:` / `pop`. The two arms' values are
+    /// never simultaneously live, so a whole-function colouring may give BOTH
+    /// the same register — the recolouring the segment-based shipping pass
+    /// structurally cannot make (the else-arm's `movw` is its segment's
+    /// instruction 0, hence pinned as a segment input).
+    fn diamond() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: ".else".into(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 300,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R2,
+                addr: mem(Reg::R11, 16),
+            }),
+            ins(ArmOp::B {
+                label: ".end".into(),
+            }),
+            lbl(".else"),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 400,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R4,
+                addr: mem(Reg::R11, 16),
+            }),
+            lbl(".end"),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+            }),
+        ]
+    }
+
+    /// THE POINT OF INCREMENT 2. On the diamond the allocator must actually
+    /// recolour the else-arm off its callee-saved register — that is what lets
+    /// the downstream `shrink_callee_saved_saves` drop the prologue entry. A
+    /// `None` here means the join path regressed to increment 1's reach.
+    #[test]
+    fn colours_across_an_if_else_join() {
+        let body = diamond();
+        let out = reallocate(&body, &POOL).expect("the diamond must colour across its join");
+        assert_eq!(out.len(), body.len());
+        assert_ne!(out, body, "an identity rewrite gates nothing");
+        // The else-arm's R4 value moved OFF the callee-saved register.
+        assert!(
+            !matches!(out[7].op, ArmOp::Movw { rd: Reg::R4, .. }),
+            "the else-arm value should have left R4: {:?}",
+            out[7].op
+        );
+        // Control flow is untouched — a register allocator renames operands.
+        for i in [2usize, 5, 6, 9] {
+            assert_eq!(out[i].op, body[i].op, "control flow rewritten at {i}");
+        }
+        // The architectural register lists are identity-pinned (#888).
+        assert_eq!(out[0].op, body[0].op, "prologue push list recoloured");
+        assert_eq!(out[10].op, body[10].op, "epilogue pop list recoloured");
+    }
+
+    /// RED-FIRST for the CFG validator: a rewrite that renames a value in ONE
+    /// arm of a join while its consumer past the join still reads the ORIGINAL
+    /// register is a value-flow break on exactly one path. The straight-line
+    /// validator cannot see it (each arm validates fine in isolation); the
+    /// CFG-lifted must-fixpoint has to reject it.
+    #[test]
+    fn cfg_validator_rejects_a_one_armed_rename_across_a_join() {
+        // then: r2 = 1 ; else: r2 = 2 ; end: r0 = r2 + r2
+        let body = vec![
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: ".else".into(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+            ins(ArmOp::B {
+                label: ".end".into(),
+            }),
+            lbl(".else"),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 2,
+            }),
+            lbl(".end"),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let blocks = joins::build_cfg(&body).expect("label-form CFG");
+        assert_eq!(
+            validate_cfg_rewrite(&body, &body, &blocks),
+            Ok(()),
+            "the identity rewrite must be accepted (else the RED below is vacuous)"
+        );
+        // Rename ONLY the then-arm's definition. The join's consumer still reads
+        // R2, so the then path now adds an undefined R3.
+        let mut bad = body.clone();
+        bad[2] = ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 1,
+        });
+        assert!(
+            matches!(
+                validate_cfg_rewrite(&body, &bad, &blocks),
+                Err(RewriteViolation::DefClobbersEquation { .. })
+                    | Err(RewriteViolation::EntryNotIdentity { .. })
+            ),
+            "a one-armed rename across a join must be REJECTED, got {:?}",
+            validate_cfg_rewrite(&body, &bad, &blocks)
+        );
+    }
+
+    /// A register allocator renames operands; it never rewrites control flow.
+    /// The validator enforces that structurally, so a mutated branch target or
+    /// condition can never be smuggled through as "a rename".
+    #[test]
+    fn cfg_validator_rejects_a_rewritten_branch() {
+        let body = diamond();
+        let blocks = joins::build_cfg(&body).expect("label-form CFG");
+        let mut bad = body.clone();
+        bad[2] = ins(ArmOp::Bcc {
+            cond: Condition::NE, // inverted condition
+            label: ".else".into(),
+        });
+        assert_eq!(
+            validate_cfg_rewrite(&body, &bad, &blocks),
+            Err(RewriteViolation::ShapeMismatch { index: 2 })
+        );
+    }
+
+    /// The exit contract has teeth: clobbering a register the caller can observe
+    /// past the return must be rejected even though nothing in the function
+    /// reads it again.
+    #[test]
+    fn cfg_validator_rejects_an_exit_observable_clobber() {
+        // r0 = 7 ; bx lr   — R0 is the result register.
+        let body = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 9,
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let blocks = joins::build_cfg(&body).expect("CFG");
+        assert_eq!(validate_cfg_rewrite(&body, &body, &blocks), Ok(()));
+        let mut bad = body.clone();
+        bad[0] = ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 7,
+        });
+        assert!(
+            validate_cfg_rewrite(&body, &bad, &blocks).is_err(),
+            "moving the result off R0 must be rejected"
+        );
+    }
+
+    /// #888: a `pop {…, pc}` is a RETURN, not a register-list def that a
+    /// segment-local view may recolour. The CFG builder must make it a sink, so
+    /// a mid-stream one ends its block and the code after it is unreachable —
+    /// which this pass declines rather than colour on a guessed CFG.
+    #[test]
+    fn mid_stream_pop_pc_is_a_return_sink() {
+        let body = vec![
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::LR],
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: ".tail".into(),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+            lbl(".tail"),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 5,
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+        ];
+        let blocks = joins::build_cfg(&body).expect("CFG");
+        let early = blocks
+            .iter()
+            .find(|b| b.end == 4)
+            .expect("the mid-stream pop must END a block");
+        assert!(
+            early.succ.is_empty(),
+            "a mid-stream `pop {{…, pc}}` must be a RETURN sink, not a fall-through"
+        );
+    }
+
+    /// Pre-resolved NUMERIC branches carry a baked displacement, so a rename
+    /// that changes a Thumb encoding width would silently overshoot (#606).
+    /// Out of scope by DECLINE, with the reason named.
+    #[test]
+    fn declines_numeric_branches_and_calls() {
+        let numeric = vec![
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 2,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert_eq!(joins::build_cfg(&numeric), Err("numeric-branch"));
+        let called = vec![
+            ins(ArmOp::Bl {
+                label: "func_1".into(),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert_eq!(joins::build_cfg(&called), Err("call"));
+        assert!(reallocate(&numeric, &POOL).is_none());
+        assert!(reallocate(&called, &POOL).is_none());
+    }
 }
