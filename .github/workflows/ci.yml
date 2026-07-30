@@ -576,6 +576,12 @@ jobs:
       - name: Install emulation deps
         # capstone: the #846 gpio-thin oracle's mask census disassembles .text
         run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install arm-none-eabi-ld (#881 VFP spill oracle)
+        # binutils only (NOT the full gcc-arm-none-eabi): the #881 oracle links
+        # its ET_REL object with a REAL ld so the internal `bl` reloc is proven
+        # to resolve. Skipping the link would make that half of the gate
+        # vacuous, so install the linker rather than weaken the check.
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: Run unreachable trap oracle (#665, thumb2 + rv32)
         run: SYNTH=./target/debug/synth python scripts/repro/unreachable_665_differential.py
       - name: Run rem_s trap-table oracle (#666, rv32)
@@ -624,6 +630,21 @@ jobs:
       # exercised only lt/gt, which is how eq/ne/le/ge stayed ungated).
       - name: Run f32 arith/compare execution oracle (#619/#712, cortex-m4f)
         run: SYNTH=./target/debug/synth python scripts/repro/f32_vfp_619_differential.py
+      # #881: the VFP register-file spilling gate (GI-FPU-002 phase 1 S0..S15 +
+      # phase 2 D0..D7) — the oracle behind the "falcon reaches the M7" claim,
+      # so it must RUN, not merely exist. The lane wrote this differential and
+      # never wired it: the #879 shelfware class, recurring in the very release
+      # whose audit fixed two other instances of it. The greps assert BOTH
+      # halves of the claim from the script's own summary lines — every export
+      # actually emitted (nm -> T, so a silent decline cannot read as success)
+      # AND a non-zero count of execution rows bit-identical to wasmtime. Exit
+      # 0 alone is not trusted (the "0 ops accepted PASS" lesson).
+      - name: Run VFP spill execution oracle (#881, cortex-m7dp)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/vfp_spill_881_differential.py | tee vfp881.out
+          grep -q "^PASS: all 7 exports emitted (nm -> T)" vfp881.out
+          grep -qE "^PASS: [1-9][0-9]+ execution rows bit-identical to wasmtime" vfp881.out
       # #708/#709: f32.load/reinterpret bit-casts + i32.trunc_f32 trap table.
       - name: Run f32 load/reinterpret + trunc-trap oracle (#708/#709, m4f)
         run: SYNTH=./target/debug/synth python scripts/repro/f32_mem_trunc_708_709_differential.py
