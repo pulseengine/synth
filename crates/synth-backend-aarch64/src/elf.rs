@@ -23,6 +23,7 @@ const R_AARCH64_ADR_PREL_PG_HI21: u32 = 275;
 const R_AARCH64_ADD_ABS_LO12_NC: u32 = 277;
 
 /// A compiled function to place in `.text`.
+#[derive(Debug, Clone)]
 pub struct ElfFunction {
     /// Symbol name aliases for this function's `.text` offset. The first is the
     /// canonical `func_N`; a distinct export name (if any) follows. All are

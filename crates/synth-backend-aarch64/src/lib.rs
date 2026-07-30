@@ -46,6 +46,7 @@ pub mod backend;
 pub mod elf;
 pub mod encoder;
 pub mod selector;
+pub mod substrate;
 
 pub use backend::AArch64Backend;
 pub use selector::{SelectError, select};
