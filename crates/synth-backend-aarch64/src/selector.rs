@@ -1476,6 +1476,28 @@ pub fn select_typed_cf_calls(
             WasmOp::F32Copysign => copysign(&mut words, &mut stack, false)?,
             WasmOp::F64Copysign => copysign(&mut words, &mut stack, true)?,
 
+            // --- v0.54 L2 (#851): round-to-integral (ceil/floor/trunc/nearest).
+            //
+            // One `FRINT<mode>` each, with the rounding mode pinned in the
+            // OPCODE — the lowering never reads FPCR.RMode, so it is correct
+            // under whatever rounding mode the embedder left set. All four are
+            // TOTAL (WASM §4.3.3 `fceil`/`ffloor`/`ftrunc`/`fnearest` never
+            // trap and neither do these), so no domain guard is needed — the
+            // "more-total-than-WASM" hazard that forces the trunc guards below
+            // simply does not arise for float→float rounding.
+            //
+            // `nearest` is roundTiesToEven, which is FRINTN (NOT FRINTA, which
+            // is ties-AWAY-from-zero) — checked by execution against wasmtime
+            // over a halfway table (0.5/1.5/2.5/-0.5/…), not assumed. ---
+            WasmOp::F32Ceil => funop(&mut words, &mut stack, enc::frintp_s)?,
+            WasmOp::F32Floor => funop(&mut words, &mut stack, enc::frintm_s)?,
+            WasmOp::F32Trunc => funop(&mut words, &mut stack, enc::frintz_s)?,
+            WasmOp::F32Nearest => funop(&mut words, &mut stack, enc::frintn_s)?,
+            WasmOp::F64Ceil => funop(&mut words, &mut stack, enc::frintp_d)?,
+            WasmOp::F64Floor => funop(&mut words, &mut stack, enc::frintm_d)?,
+            WasmOp::F64Trunc => funop(&mut words, &mut stack, enc::frintz_d)?,
+            WasmOp::F64Nearest => funop(&mut words, &mut stack, enc::frintn_d)?,
+
             // --- trapping float→int truncations (m4): domain-guarded #709 ---
             WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true)?,
             WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
@@ -1501,6 +1523,18 @@ pub fn select_typed_cf_calls(
             WasmOp::F32ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_s_from_w)?,
             WasmOp::F64ConvertI32S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_d_from_w)?,
             WasmOp::F64ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_d_from_w)?,
+            // v0.54 L2 (#851): the i64-SOURCE converts — the `x`-form SCVTF/
+            // UCVTF. Also TOTAL: every i64 has a nearest f32/f64, and the
+            // rounding A64 applies when the value exceeds the destination's
+            // exact-integer range (2^24 for f32, 2^53 for f64) is
+            // round-to-nearest-EVEN, which is what WASM §4.3.2 `convert`
+            // specifies. No guard, no decline — but execution-verified over
+            // the rounding-tie table (2^53±1, 2^63-1, u64 max, …) rather than
+            // assumed, since this is the one place the two could disagree.
+            WasmOp::F32ConvertI64S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_s_from_x)?,
+            WasmOp::F32ConvertI64U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_s_from_x)?,
+            WasmOp::F64ConvertI64S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_d_from_x)?,
+            WasmOp::F64ConvertI64U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_d_from_x)?,
 
             // --- bit-cast reinterprets (pure FMOV, no numeric change) ---
             WasmOp::F32ReinterpretI32 => {
@@ -2758,6 +2792,68 @@ mod tests {
         }
     }
 
+    // --- v0.54 L2 (#851): rounding + i64-source converts ---
+
+    #[test]
+    fn rounding_ops_lower_to_the_mode_pinned_frint() {
+        // Each WASM rounding op is ONE FRINT with the mode in the opcode.
+        // FRINTN (ties-to-EVEN) is `nearest`; FRINTA (ties-away) is NOT a WASM
+        // op and must never appear.
+        for (op, f64_src, want) in [
+            (
+                WasmOp::F32Ceil,
+                false,
+                enc::frintp_s as fn(FReg, FReg) -> u32,
+            ),
+            (WasmOp::F32Floor, false, enc::frintm_s),
+            (WasmOp::F32Trunc, false, enc::frintz_s),
+            (WasmOp::F32Nearest, false, enc::frintn_s),
+            (WasmOp::F64Ceil, true, enc::frintp_d),
+            (WasmOp::F64Floor, true, enc::frintm_d),
+            (WasmOp::F64Trunc, true, enc::frintz_d),
+            (WasmOp::F64Nearest, true, enc::frintn_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f64_src {
+                (&[], &[true])
+            } else {
+                (&[true], &[])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![want(FTEMPS[0], 0), enc::fmov_d(0, FTEMPS[0]), enc::ret()],
+                "{op:?} must be one mode-pinned FRINT"
+            );
+            // TOTAL op: a guard would spuriously trap where WASM returns a value.
+            assert!(!w.contains(&enc::brk(0)), "{op:?} never traps");
+        }
+    }
+
+    #[test]
+    fn i64_source_converts_use_the_x_form_scvtf_ucvtf() {
+        for (op, want) in [
+            (
+                WasmOp::F32ConvertI64S,
+                enc::scvtf_s_from_x as fn(FReg, Reg) -> u32,
+            ),
+            (WasmOp::F32ConvertI64U, enc::ucvtf_s_from_x),
+            (WasmOp::F64ConvertI64S, enc::scvtf_d_from_x),
+            (WasmOp::F64ConvertI64U, enc::ucvtf_d_from_x),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let w = select_typed(&ops, 1, &[], &[]).unwrap();
+            assert_eq!(
+                w,
+                vec![want(FTEMPS[0], 0), enc::fmov_d(0, FTEMPS[0]), enc::ret()],
+                "{op:?} must be one x-source convert"
+            );
+        }
+        // The x-form must NOT be confusable with the (already shipped) w-form:
+        // a w-source convert of a value above 2^32 would read only the low half.
+        assert_ne!(enc::scvtf_d_from_x(16, 0), enc::scvtf_d_from_w(16, 0));
+    }
+
     #[test]
     fn f32_min_max_use_fmin_fmax() {
         // WASM min/max ≡ A64 FMIN/FMAX (IEEE 754-2019 minimum/maximum) — a
@@ -2840,37 +2936,16 @@ mod tests {
     }
 
     #[test]
-    fn rounding_and_i64_float_converts_are_loud_declined() {
-        // The m4 honesty frontier: rounding ops and i64<->float conversions
-        // stay DECLINED (never silent wrong code) until a later increment.
-        for op in [
-            WasmOp::F32Ceil,
-            WasmOp::F32Floor,
-            WasmOp::F32Trunc,
-            WasmOp::F32Nearest,
-            WasmOp::F64Ceil,
-            WasmOp::F64Floor,
-            WasmOp::F64Trunc,
-            WasmOp::F64Nearest,
-        ] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
-            assert!(
-                select_typed(&ops, 1, &[true], &[true]).is_err(),
-                "rounding ops not yet supported — must loud-decline"
-            );
-        }
+    fn trapping_i64_truncations_are_loud_declined() {
+        // The remaining m4 honesty frontier after v0.54 L2 closed rounding and
+        // the i64-SOURCE converts: the TRAPPING i64-TARGET truncations still
+        // decline, because A64 FCVTZ{S,U} SATURATE where WASM traps (#709) and
+        // the i64 domain guard has not landed. Never silent wrong code.
         for op in [WasmOp::I64TruncF64S, WasmOp::I64TruncF64U] {
             let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
             assert!(
                 select_typed(&ops, 1, &[], &[true]).is_err(),
-                "i64<->float conversions not yet supported — must loud-decline"
-            );
-        }
-        for op in [WasmOp::F64ConvertI64S, WasmOp::F32ConvertI64U] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
-            assert!(
-                select_typed(&ops, 1, &[], &[]).is_err(),
-                "i64<->float conversions not yet supported — must loud-decline"
+                "trapping i64-target truncation not yet supported — must loud-decline"
             );
         }
     }

@@ -258,21 +258,34 @@ fn test_i32_trunc_f32_u_compiles() {
 }
 
 // ============================================================================
-// F32 PSEUDO-OPS — now supported on cortex-m4f via VFP sequences
+// F32 PSEUDO-OPS
 // ============================================================================
 
 #[test]
-fn test_f32_ceil_compiles_on_m4f() {
-    let mut selector = selector_with_fpu();
-    let result = selector.select(&[WasmOp::F32Const(1.5), WasmOp::F32Ceil]);
-    assert!(result.is_ok(), "f32.ceil should compile on cortex-m4f");
-}
-
-#[test]
-fn test_f32_floor_compiles_on_m4f() {
-    let mut selector = selector_with_fpu();
-    let result = selector.select(&[WasmOp::F32Const(1.5), WasmOp::F32Floor]);
-    assert!(result.is_ok(), "f32.floor should compile on cortex-m4f");
+fn test_f32_rounding_loud_declined_on_m4f() {
+    // v0.54 L2 (#851), mirroring the F32Min/F32Max decision below: the four
+    // rounding ops are DECODED now (aarch64 lowers each as one mode-pinned
+    // FRINT), but ARM32's legacy `ArmOp::F32{Ceil,Floor,Trunc,Nearest}`
+    // pseudo-op is an FPSCR-RMode + `VCVT.S32.F32` + `VCVT.F32.S32` ROUND-TRIP
+    // THROUGH i32. VCVT SATURATES, so `ceil(1e30)` → 2147483648.0,
+    // `ceil(±inf)` → a finite bound and `ceil(NaN)` → 0.0 where WASM §4.3.3
+    // returns 1e30 / ±inf / NaN — the #709 more-total-than-WASM class. The
+    // ARM32 selector must LOUD-decline until a real `VRINT.F32` lowering
+    // lands; this replaces the old tests that pinned the wrong lowering as Ok.
+    for op in [
+        WasmOp::F32Ceil,
+        WasmOp::F32Floor,
+        WasmOp::F32Trunc,
+        WasmOp::F32Nearest,
+    ] {
+        let mut selector = selector_with_fpu();
+        let result = selector.select(&[WasmOp::F32Const(1.5), op.clone()]);
+        assert!(
+            result.is_err(),
+            "{op:?} must LOUD-decline on ARM32 (saturating VCVT round-trip is \
+             not WASM-correct), got {result:?}"
+        );
+    }
 }
 
 #[test]

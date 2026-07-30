@@ -34,7 +34,7 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
             "-b",
             "aarch64",
             "-n",
-            "f64floor",
+            "f32block",
             "-o",
             "/tmp/aarch64_f32_554.o",
         ])
@@ -42,15 +42,23 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
         .expect("run synth");
     assert!(
         !out.status.success(),
-        "expected a non-zero exit for a declined float op (f64.floor) on \
-         -b aarch64; got success (silent miscompile). stdout={} stderr={}",
+        "expected a non-zero exit for a declined float construct (f32-result \
+         block) on -b aarch64; got success (silent miscompile). stdout={} \
+         stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
     let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    // The decline must come from the SELECTOR (nothing upstream masked it) and
+    // must NAME the reason — a bare non-zero exit is not honesty.
     assert!(
-        stderr.contains("unsupported"),
-        "error must name the unsupported operator; stderr={stderr}"
+        stderr.contains("aarch64 selector"),
+        "the decline must come from the aarch64 selector, not an upstream \
+         drop; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("loud-declining") || stderr.contains("only void"),
+        "error must name why the construct is declined; stderr={stderr}"
     );
 }
 

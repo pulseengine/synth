@@ -995,12 +995,8 @@ fn a64_extended_surface(
     op: &WasmOp,
 ) -> Option<(&'static str, u32, Vec<WasmOp>, Result<(), &'static str>)> {
     // Gap reasons, shared per class.
-    const ROUNDING: &str = "aarch64 selector has no ceil/floor/trunc/nearest arm (A64 FRINTP/FRINTM/\
-         FRINTZ/FRINTN exist; encoder support not yet landed) — deferred, #851";
     const FP_MEM: &str = "aarch64 selector has no f32/f64 load/store arm (linear-memory FP access \
          needs LDR/STR (SIMD&FP) forms) — deferred, #851";
-    const I64_TO_FP: &str = "aarch64 selector has no i64→float convert arm (SCVTF/UCVTF x-forms not \
-         yet landed; only the i32-source forms are) — deferred, #851";
     const TRAP_TRUNC_I64: &str = "aarch64 selector has no TRAPPING i64-target truncation arm (needs the \
          #709-class i64 domain guard; the SATURATING i64 forms do lower) — \
          deferred, #851";
@@ -1213,16 +1209,11 @@ fn a64_extended_surface(
             Ok(()),
         ),
         F32Const(_) => some("f32.const", 0, vec![F32Const(1.0)], Ok(())),
-        // ─── f32 rounding — GAP ──────────────────────────────────────────
-        F32Ceil => some("f32.ceil", 0, vec![F32Const(1.5), F32Ceil], Err(ROUNDING)),
-        F32Floor => some("f32.floor", 0, vec![F32Const(1.5), F32Floor], Err(ROUNDING)),
-        F32Trunc => some("f32.trunc", 0, vec![F32Const(1.5), F32Trunc], Err(ROUNDING)),
-        F32Nearest => some(
-            "f32.nearest",
-            0,
-            vec![F32Const(1.5), F32Nearest],
-            Err(ROUNDING),
-        ),
+        // ─── f32 rounding — lowered (FRINTP/M/Z/N, v0.54 L2) ─────────────
+        F32Ceil => some("f32.ceil", 0, vec![F32Const(1.5), F32Ceil], Ok(())),
+        F32Floor => some("f32.floor", 0, vec![F32Const(1.5), F32Floor], Ok(())),
+        F32Trunc => some("f32.trunc", 0, vec![F32Const(1.5), F32Trunc], Ok(())),
+        F32Nearest => some("f32.nearest", 0, vec![F32Const(1.5), F32Nearest], Ok(())),
         // ─── f32 memory — GAP ────────────────────────────────────────────
         F32Load { .. } => some(
             "f32.load",
@@ -1266,13 +1257,13 @@ fn a64_extended_surface(
             "f32.convert_i64_s",
             0,
             vec![I64Const(5), F32ConvertI64S],
-            Err(I64_TO_FP),
+            Ok(()),
         ),
         F32ConvertI64U => some(
             "f32.convert_i64_u",
             0,
             vec![I64Const(5), F32ConvertI64U],
-            Err(I64_TO_FP),
+            Ok(()),
         ),
         F32DemoteF64 => some(
             "f32.demote_f64",
@@ -1424,16 +1415,11 @@ fn a64_extended_surface(
             Ok(()),
         ),
         F64Const(_) => some("f64.const", 0, vec![F64Const(1.0)], Ok(())),
-        // ─── f64 rounding — GAP ──────────────────────────────────────────
-        F64Ceil => some("f64.ceil", 0, vec![F64Const(1.5), F64Ceil], Err(ROUNDING)),
-        F64Floor => some("f64.floor", 0, vec![F64Const(1.5), F64Floor], Err(ROUNDING)),
-        F64Trunc => some("f64.trunc", 0, vec![F64Const(1.5), F64Trunc], Err(ROUNDING)),
-        F64Nearest => some(
-            "f64.nearest",
-            0,
-            vec![F64Const(1.5), F64Nearest],
-            Err(ROUNDING),
-        ),
+        // ─── f64 rounding — lowered (FRINTP/M/Z/N, v0.54 L2) ─────────────
+        F64Ceil => some("f64.ceil", 0, vec![F64Const(1.5), F64Ceil], Ok(())),
+        F64Floor => some("f64.floor", 0, vec![F64Const(1.5), F64Floor], Ok(())),
+        F64Trunc => some("f64.trunc", 0, vec![F64Const(1.5), F64Trunc], Ok(())),
+        F64Nearest => some("f64.nearest", 0, vec![F64Const(1.5), F64Nearest], Ok(())),
         // ─── f64 memory — GAP ────────────────────────────────────────────
         F64Load { .. } => some(
             "f64.load",
@@ -1477,13 +1463,13 @@ fn a64_extended_surface(
             "f64.convert_i64_s",
             0,
             vec![I64Const(5), F64ConvertI64S],
-            Err(I64_TO_FP),
+            Ok(()),
         ),
         F64ConvertI64U => some(
             "f64.convert_i64_u",
             0,
             vec![I64Const(5), F64ConvertI64U],
-            Err(I64_TO_FP),
+            Ok(()),
         ),
         F64PromoteF32 => some(
             "f64.promote_f32",
