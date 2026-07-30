@@ -36,7 +36,7 @@
 
 &nbsp;
 
-Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code, with additional backends for ARM Cortex-R5 (A32, `--target cortex-r5`), RISC-V RV32IMAC (qemu_riscv32 / ESP32-C3), and AArch64 (host-native, `-b aarch64`). It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), scalar f32/f64 via VFP on FPU targets (f32 complete v0.41, f64 complete v0.43 — #369 closed; the remaining falcon `--relocatable cortex-m7dp` tail is tracked in #881), control flow, and memory operations; any construct without a lowering declines loudly rather than miscompiling (the #369/#554 gate class). Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 and i64 instruction selection with result-correspondence (T1) proofs; float/SIMD selection has existence-only (T2) proofs.
+Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code, with additional backends for ARM Cortex-R5 (A32, `--target cortex-r5`), RISC-V RV32IMAC (qemu_riscv32 / ESP32-C3), and AArch64 (host-native, `-b aarch64`). It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), scalar f32/f64 via VFP on FPU targets (f32 complete v0.41, f64 complete v0.43 — #369 closed; the falcon `--relocatable cortex-m7dp` VFP-exhaustion tail closed in v0.53 via register-file spilling, #881; the remaining float residual is `i64.trunc_sat_f32_*` declining on single-precision FPUs, which needs the f64 promote), control flow, and memory operations; any construct without a lowering declines loudly rather than miscompiling (the #369/#554 gate class). Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 and i64 instruction selection with result-correspondence (T1) proofs; float/SIMD selection has existence-only (T2) proofs.
 
 **This is pre-release software.** Generated code is validated by unit tests, Renode/QEMU emulation, execution differentials against wasmtime, and — for specific fixtures — cycle- and correctness-gated runs on real Cortex-M silicon (NUCLEO-G474RE, STM32F100, via the gale test loop). Broad hardware validation is still missing. Use at your own risk.
 
@@ -106,7 +106,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 |----------|--------|-------|
 | i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
 | i64 (register pairs): arithmetic, shifts, rotates, div/rem, compare | **Tested** | full pair lowering — right shifts fixed v0.28.0 (#599), rot/div/rem v0.30.1 (#610), A32 completeness v0.30.2 (#615); differential vs wasmtime |
-| Scalar f32/f64 via VFP on FPU targets | **Implemented** | Complete f32 (v0.41) + f64 (v0.43, #369 closed) incl. AAPCS-VFP marshalling; execution differentials vs wasmtime; non-FPU targets loud-reject; residuals: the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail (#881; `trunc_sat` shipped v0.49, #782 closed) |
+| Scalar f32/f64 via VFP on FPU targets | **Implemented** | Complete f32 (v0.41) + f64 (v0.43, #369 closed) incl. AAPCS-VFP marshalling; execution differentials vs wasmtime; non-FPU targets loud-reject; residual: `i64.trunc_sat_f32_*` declines on single-precision FPUs (needs the f64 promote). The falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail closed in v0.53 (#881); `trunc_sat` shipped v0.49 (#782) |
 | WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
 | Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
 | Function calls (direct, indirect) | Implemented | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained `--cortex-m` dispatch via a PC-relative flash funcref table since v0.47 (#275), execution-differential-gated vs wasmtime |
@@ -122,7 +122,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 ### What doesn't work yet
 
 - **Narrow hardware coverage** — silicon validation is fixture-scoped (gale's NUCLEO-G474RE / STM32F100 cycle and correctness gates); there is no broad board matrix
-- **No multi-memory** — fused components from meld need single-memory mode
+- **Multi-memory is phase 1** — N memories lower to N distinct native base regions on ARM `--relocatable` (v0.43, #749); fused-component paths beyond that still need single-memory mode
 - **No WASI on embedded** — kiln-builtins crate doesn't exist yet
 - **No component model execution** — components compile but can't run without kiln-builtins; `cabi_realloc` binds natively (synthesized in-module arena allocator) on self-contained dissolves since v0.47 (#418 closed)
 - **Spill-on-exhaustion is opt-in** — Belady spilling is default-on (v0.24.0, VCR-RA-001), but replacing the register-exhaustion decline with allocation-time spilling (`SYNTH_SPILL_ON_EXHAUST`, #580) is held for silicon numbers
@@ -282,7 +282,7 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 | | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | phases 1-3 landed: the i32 integer fragment (19 ops) AND the i64 integer family (22 ops — arithmetic/bitwise/shifts/rotates/eqz/comparisons) transcribed from the same pinned coq9.0-wasm-2.2.0 sources with line-level provenance (`coq/Synth/WASM/WasmCertReference.v`) and proven refined by `exec_wasm_instr` (`WasmCertBridge.v`; op-level for all, executor-level for the wired ops — the 6 i64 arithmetic/bitwise ops are op-level-only, a named residual; lemma count: `artifacts/status.json`); still a hand transcription, the real external dep is nix-feasible, bazel-deferred on three named blockers (unfree CompCert 3.16 in the pin) |
 | **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | **demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md)): the v0.11.20 reciprocal-mult cost-gate deleted outright (PR #322, bit-identical); the #496 exhaustion decline revertable behind `SYNTH_SPILL_ON_EXHAUST` — red case green, anchors byte-identical, declines 14→8; flip held on a measured i32-shape cycle regression |
 
-Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); float residuals — the falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail (#881; `trunc_sat` shipped v0.49); SIMD/Helium is untested on hardware.
+Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); float residual — `i64.trunc_sat_f32_*` declines on single-precision FPUs (the falcon cortex-m7dp VFP tail closed v0.53, #881); SIMD/Helium is untested on hardware.
 
 **What it buys us:** synth stops being a real-ish compiler held together by oracle-gated patches and becomes a genuinely best-in-class *verified* compiler — and the verified selector DSL is the part that is potentially novel/publishable, not just catching up to Cranelift.
 

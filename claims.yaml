@@ -334,10 +334,19 @@ claims:
         glob: ['crates/synth-synthesis/src/instruction_selector.rs']
         expect: 1
       - kind: verbatim                       # the honest residual stays adjacent
-        # (was "#782" until the v0.53 #880 audit: #782 closed v0.49–v0.52 and
-        # the README kept citing it as open, saying trunc_sat "not decoded"
-        # two releases after it shipped — the successor residual is #881)
-        text: "#881"
+        # THIRD occupant of this pin, and the churn is the lesson. It was "#782"
+        # until the v0.53 #880 audit (that issue closed across v0.49–v0.52 while
+        # the README still called it open), then "#881" — which v0.53's OWN L1
+        # lane closed 14 h AFTER the doc-honesty lane had already landed, so the
+        # release very nearly shipped citing three issues it had just fixed.
+        #
+        # Root cause: a pin naming an ISSUE NUMBER goes stale the instant that
+        # issue is fixed, and since claim_check only asserts the phrase is
+        # PRESENT, it then GREEN-CONFIRMS a false residual — the ledger defends
+        # the defect instead of catching it. Pin the CAPABILITY GAP instead of
+        # its tracker: this phrase becomes false exactly when the gap closes,
+        # which is the property a residual pin was always supposed to have.
+        text: "single-precision FPUs"
 
   # call_indirect: self-contained dispatch shipped v0.47 (#275 closed) with a
   # red-first execution differential; the README must not regress to either the
