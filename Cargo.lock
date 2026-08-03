@@ -1217,7 +1217,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
- "wasm-encoder 0.254.0",
+ "wasm-encoder 0.255.0",
  "wasmparser 0.255.0",
  "wat",
 ]
@@ -1230,7 +1230,7 @@ dependencies = [
  "synth-core",
  "thiserror",
  "tracing",
- "wasm-encoder 0.254.0",
+ "wasm-encoder 0.255.0",
  "wasmparser 0.255.0",
  "wit-component",
  "wit-parser 0.255.0",
