@@ -955,6 +955,78 @@ jobs:
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
         run: SYNTH=./target/debug/synth python scripts/repro/rv32_data_798_boot_differential.py
 
+  instrument-independence-oracle:
+    name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
+    # THE LESSON THIS JOB PINS. v0.53 proved BY MUTATION that emptying
+    # `cfg_exit_observable` — the exit contract the join-aware graph allocator
+    # and its own CFG validator SHARE — emits code leaving the return value in
+    # the WRONG REGISTER, and that BOTH per-compilation validators accept it
+    # (`validate_cfg_rewrite` -> Ok, VCR-RA-003 -> Consistent). Only execution
+    # caught it: two independent-LOOKING instruments, one shared blind spot,
+    # and a counterexample to the claim that per-compilation validation is an
+    # independent check on the code generator.
+    #
+    # This job re-applies that EXACT mutation (the committed patch, not a
+    # reconstruction) and asserts on ONE compilation that the two dataflow
+    # validators are still GREEN while VCR-VER-004 `validate_abi_contract`
+    # REJECTS with a concrete violation naming the ABI result register — i.e.
+    # that the class is now caught STATICALLY, and by an instrument that fails
+    # DIFFERENTLY (forward value analysis, obligation = the AAPCS result
+    # registers hard-named in its own source, CFG re-derived from both streams,
+    # nothing taken from the pass).
+    #
+    # It asserts the BASELINE direction FIRST — the unmutated compiler must
+    # still apply AND must not be rejected — so a false-rejection regression
+    # (the v0.50 `JoinValueNotAvailable{R8}` class) fails this job before it
+    # ever reaches the mutation. Isolated job: the script mutates the working
+    # tree and rebuilds, then always restores it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Build synth
+        run: cargo build -p synth-cli
+      # THE DEFAULT PATH, not the spike. The gate above guards the flag-OFF
+      # graph-colouring allocator; this step asks the same ABI question of the
+      # allocator every `synth compile` actually runs, and holds the answer to a
+      # floor: ZERO violations (a violation is either a real shipping miscompile
+      # or — far likelier, since the shipping bytes are frozen-pinned and
+      # execution-differentialed — a FALSE REJECTION by the new instrument, and
+      # neither may pass silently), plus a pinned `Holds` count so a change that
+      # makes the checker SEE LESS of the shipping path is visible instead of
+      # absorbed. Red-first in both directions (injected violation; stub binary
+      # emitting no verdicts) — see the script docstring.
+      - name: Audit the SHIPPING allocator against the ABI contract (#242)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
+          grep -q "^VCR-VER-004-SHIPPING .* VIOLATED=0 " vcr_ver_004_ship.out
+          test "$(grep -c '^  Holds ' vcr_ver_004_ship.out)" -eq 1
+      # The grep asserts the machine-readable 4/4 AND a non-zero OK count (#890):
+      # exit 0 alone is not trusted, and a run that silently skipped every
+      # assertion would otherwise pass while gating nothing.
+      - name: Re-run the v0.53 mutation against all three instruments (#242)
+        run: |
+          set -o pipefail
+          python scripts/repro/vcr_ver_004_instrument_independence.py | tee vcr_ver_004.out
+          grep -q "^VCR-VER-004-INDEPENDENCE ASSERTIONS=4/4$" vcr_ver_004.out
+          test "$(grep -c '^OK   ' vcr_ver_004.out)" -eq 5
+      - name: Assert the tree was restored (the mutation must never persist)
+        run: git diff --exit-code
+
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
     # VCR-PERF-002 Phase 2 (#494): the proof-carrying-specialization lever
