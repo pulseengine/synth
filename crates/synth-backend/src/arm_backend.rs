@@ -1019,6 +1019,22 @@ fn compile_wasm_to_arm(
                 stats.needs_spill
             );
         }
+        // VCR-VER-004 AUDIT (#242) — report-only, opt-in, never gating.
+        //
+        // The ABI observable-contract validator is a GATE on the flag-off
+        // graph-colouring spike. This hook asks the same question of the
+        // SHIPPING allocator's rewrite, so the answer is a MEASUREMENT rather
+        // than a claim: how much of the shipping path can a value-level,
+        // ABI-anchored check actually see today? Report-only DELIBERATELY —
+        // making it gate here would risk a false rejection on the default
+        // path, and the honest sequence is measure first, flip on evidence.
+        // `SYNTH_ABI_CONTRACT_AUDIT=1` prints one verdict per function.
+        if std::env::var_os("SYNTH_ABI_CONTRACT_AUDIT").is_some() {
+            eprintln!(
+                "[abi-contract-audit] {:?}",
+                synth_synthesis::abi_contract::validate_abi_contract(&arm_instrs, &out)
+            );
+        }
         // VCR-RA-002 (#390, epic #242): eliminate a provably-dead stack frame
         // (`sub sp,#N`/`add sp,#N` reserved by `compute_local_layout` for locals
         // that promotion homed in registers, never accessed). Removing it saves

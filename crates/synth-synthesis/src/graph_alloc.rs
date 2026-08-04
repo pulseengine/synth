@@ -57,15 +57,24 @@
 //! [`crate::liveness::validate_final_allocation`] re-checks the final stream
 //! through an INDEPENDENTLY written CFG builder.
 //!
-//! **And the validators are not sufficient.** `validate_cfg_rewrite` shares the
-//! CFG shape with the pass it validates, so — #872's standing lesson — it cannot
-//! catch an error in what they share. Increment 2's divergent bytes are therefore
-//! EXECUTED against wasmtime by
-//! `scripts/repro/vcr_dec_001_join_alloc_execution_differential.py`, which is
-//! proven non-vacuous by mutation: emptying the shared exit contract emits code
-//! that leaves the return value in the wrong register, and BOTH validators accept
-//! it.
+//! **And the dataflow validators are not sufficient.** `validate_cfg_rewrite`
+//! shares the CFG shape AND the exit contract with the pass it validates, so —
+//! #872's standing lesson — it cannot catch an error in what they share. v0.53
+//! measured exactly what that costs: emptying [`crate::liveness::cfg_exit_observable`]
+//! emits code that leaves the return value in the wrong register, and BOTH
+//! `validate_cfg_rewrite` and VCR-RA-003 accept it. Increment 2's divergent bytes
+//! are therefore also EXECUTED against wasmtime by
+//! `scripts/repro/vcr_dec_001_join_alloc_execution_differential.py`.
+//!
+//! **VCR-VER-004 (v0.54) closes that specific hole statically.** Every rewrite
+//! this module emits must ALSO satisfy
+//! [`crate::abi_contract::validate_abi_contract`] — a forward, value-level check
+//! whose obligation is the AAPCS result registers rather than a table the pass
+//! reads, and which takes NOTHING from this pass (not the CFG, not a seed). Its
+//! `NotAttempted` is treated as a DECLINE here, not as a pass: a function this
+//! module applies to has been ABI-contract-certified, or it was not applied.
 
+use crate::abi_contract::{AbiContractVerdict, validate_abi_contract};
 use crate::instruction_selector::ArmInstruction;
 use crate::liveness::{
     apply_range_coloring, color_ranges, is_straight_line, range_interference, reg_effect,
@@ -73,6 +82,28 @@ use crate::liveness::{
 };
 use crate::rules::Reg;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The VCR-VER-004 acceptance gate, applied on top of whichever dataflow
+/// validator the caller already discharged.
+///
+/// Returns the rewrite only if the ABI observable contract is PROVEN preserved.
+/// A [`AbiContractVerdict::NotAttempted`] is a decline, deliberately: if a
+/// decline counted as acceptance, a change that made this check universally
+/// inapplicable would disable it silently — the vacuity failure this whole lane
+/// exists to prevent.
+fn abi_gate(orig: &[ArmInstruction], new: Vec<ArmInstruction>) -> Option<Vec<ArmInstruction>> {
+    match validate_abi_contract(orig, &new) {
+        AbiContractVerdict::Holds => Some(new),
+        v => {
+            if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                eprintln!(
+                    "[graph-alloc] REJECTED by the ABI observable contract (VCR-VER-004): {v:?}"
+                );
+            }
+            None
+        }
+    }
+}
 
 /// Is `SYNTH_GRAPH_ALLOC` enabled? Any value other than `0` turns the spike on;
 /// unset or `0` keeps the shipping path (byte-identical).
@@ -226,7 +257,10 @@ fn reallocate_straight_line(
     // exact Err/Ok this match discharges to decline/accept).
     let new = apply_range_coloring(instrs, &assignment)?;
     match validate_segment_rewrite(instrs, &new) {
-        Ok(()) => Some(new),
+        // TWO instruments, on different axes: the backward name-equation trace
+        // check, and the forward ABI value contract (VCR-VER-004). Both must
+        // hold.
+        Ok(()) => abi_gate(instrs, new),
         Err(_) => None,
     }
 }
@@ -1283,7 +1317,23 @@ mod joins {
                     // (it may still find a segment-local win we did not).
                     decline("identity-colouring")
                 } else {
-                    Some(out)
+                    // Announce the dataflow ACCEPT before the second gate runs.
+                    // This line is the machine-checkable half of the v0.53
+                    // finding: on the mutated compiler it is printed for the
+                    // very function VCR-VER-004 then rejects, so "the two
+                    // existing instruments are green on this input" is an
+                    // OBSERVATION, not a claim
+                    // (`scripts/repro/vcr_ver_004_instrument_independence.py`).
+                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                        eprintln!(
+                            "[graph-alloc] join colouring ACCEPTED by validate_cfg_rewrite (dataflow)"
+                        );
+                    }
+                    // VCR-VER-004: and the ABI observable contract, which shares
+                    // neither the exit contract nor the CFG with this pass. This
+                    // is the gate that catches the v0.53 mutation the two
+                    // dataflow validators both accept.
+                    abi_gate(instrs, out)
                 }
             }
             Err(v) => {
@@ -1333,6 +1383,12 @@ mod tests {
                 rd: Reg::R0,
                 rn: Reg::R2,
                 op2: Operand2::Reg(Reg::R1),
+            }),
+            // A WELL-FORMED function: it returns. VCR-VER-004 declines a stream
+            // with no return sink rather than passing it vacuously, so a fixture
+            // without an epilogue is not a function this pass may apply to.
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
             }),
         ];
         let out = reallocate(&body, &POOL).expect("straight-line function colours");
@@ -1392,6 +1448,12 @@ mod tests {
                 rd: Reg::R1,
                 rn: Reg::R0,
                 op2: Operand2::Reg(Reg::R0),
+            }),
+            // 3: the epilogue — see the note in the test above. Appending it at
+            // index 3 leaves the def indices this test reasons about (0, 1, 2)
+            // untouched.
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
             }),
         ];
         // The r1 range opened at instruction 1 is free (def index 1, overwritten
