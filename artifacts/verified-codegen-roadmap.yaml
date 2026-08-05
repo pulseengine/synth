@@ -613,6 +613,102 @@ artifacts:
         surfacing the real i32.rotl gap once its ledger entry is removed, and the
         gate is CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
 
+  - id: VCR-A64-CF-001
+    type: sw-req
+    title: AArch64 multi-way dispatch (br_table) + value-carrying structured control flow
+    description: >
+      The VCR-SEL-005 third-backend enumeration (#851) is a MECHANICALLY DERIVED
+      complement: whatever the aarch64 selector does not lower is named, by op,
+      in `aarch64_known_divergences()` and in the `a64_extended_surface` gap
+      column. After v0.53/v0.54 closed the integer core, the floats, globals and
+      `call_indirect`, the TWO LARGEST remaining entries in that complement were
+      structural, not arithmetic:
+
+        (a) `br_table` — the multi-way branch. Declined outright ("aarch64
+            selector has no BrTable arm"), so any wasm switch/jump-table shape
+            skipped the whole function on `-b aarch64`.
+        (b) VALUE-CARRYING `block`/`loop`/`if` — a typed (`(result T)`) frame.
+            Declined because the straight-line value-stack model had no
+            RESULT-REGISTER RECONCILIATION: two paths reaching one `end` leave
+            the result in path-dependent temps. This is the #509 block-arity
+            class, and it is what makes `(block (result i32) … br_if …)` — the
+            shape every non-trivial optimizing producer emits — uncompilable.
+
+      THIS REQUIREMENT closes both, with the residual named rather than widened:
+
+      br_table lowers as a COMPARE-AND-BRANCH CHAIN, deliberately the same
+      construction #882 chose for RV32 so the two backends stay reviewable
+      against each other: `cbz w_idx, L0` for entry 0, then `cmp w_idx, #i` +
+      `b.eq L_i` per further entry, then an unconditional `b L_default`. The
+      index is compared in the W view, so the i32 UNSIGNED semantics hold
+      exactly: only 0..len-1 match, and every other index — including the
+      "negative" i32s that are huge unsigned values — falls to the default
+      label, per WASM core semantics. Targets may mix FORWARD (block/if end,
+      patched at `End`) and BACKWARD (loop header, resolved eagerly to a
+      negative offset) destinations in one table, since the chain dispatches on
+      the TARGET FRAME's kind exactly like `br`/`br_if` already do.
+
+      Value-carrying frames get a RESERVED RECONCILIATION REGISTER PAIR (one GP,
+      one FP — the file is not known from the arity side-table, which carries
+      counts only) allocated at frame entry and withheld from the temp
+      allocator for the frame's whole extent. Every path that reaches the
+      frame's label MOVES its result into that register before transferring:
+      `br` and `br_if` at the branch, the then-arm at `else`, the fall-through
+      at `end`. At `end` the frame pushes the reserved register as the frame's
+      value, so the result is in ONE register on every path by construction —
+      the reconciliation the old decline said was missing.
+
+      SOUNDNESS-CRITICAL DISTINCTION (named because getting it wrong is a silent
+      miscompile, not a decline): a `br` to a `loop` targets the loop HEADER and
+      carries the loop's PARAMETER count, NOT its result count. So a
+      `loop (result i32)` — arity (0,1) — must NOT reconcile on its back-edge;
+      its reserved register is written only by the fall-through `end`. The frame
+      therefore carries `label_arity` (= params for Loop, results for Block/If)
+      SEPARATELY from `result_arity`, and branch reconciliation is driven off
+      `label_arity`. Reconciling the back-edge would deposit a garbage value
+      into the result register on every iteration.
+
+      HONEST RESIDUALS (loud declines with machine reasons, each pinned by name
+      in `br_table_subshape_asymmetry_882` so the gap claim cannot outlive the
+      gap, and each MOVED not deleted):
+        * `br_table` past BR_TABLE_MAX_TARGETS (16) — the chain is O(n); a real
+          jump table (PC-relative dispatch + bounds check) is the follow-up.
+          Same threshold and same decline as RV32 #882.
+        * `br_table` with VALUE-CARRYING targets — a per-path result move would
+          have to sit on the taken edge of each compare, which the flat chain
+          has no room for. Conservatively refused when any targeted frame
+          (default included) has non-zero label arity or was entered at a
+          different height than the post-pop height.
+        * block/loop/if with PARAMETERS, or with MORE THAN ONE result
+          (multi-value) — the reserved pair is a single slot.
+      Frozen-safe by construction: a VOID frame reserves nothing and emits no
+      reconciliation move, so all pre-existing aarch64 control-flow output is
+      byte-identical.
+    status: implemented
+    tags: [codegen, selector, aarch64, control-flow, parity, track-a, issue-851]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-SEL-005
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        (1) The aarch64 leg of the op-parity gate no longer ledgers `br_table`
+        as an ARM-lowers/aarch64-declines divergence, and the stale-entry check
+        proves it (the gate reddens if the line survives the lowering).
+        (2) `br_table_subshape_asymmetry_882` asserts the THREE aarch64
+        residuals by name in both directions: a 17-target table declines, a
+        value-carrying table declines, and the probed in-scope shape LOWERS.
+        (3) Execution-differential vs wasmtime under unicorn (and natively on an
+        arm64 host): br_table default arm, index at the table bound, index over
+        the bound, index 0xFFFFFFFF, a table mixing loop and block targets, and
+        a value-carrying loop's back-edge — plus a trap case, so the gate cannot
+        collapse to "everything returns a value".
+        (4) The pre-existing void control-flow differentials stay green with
+        UNCHANGED output (no spurious reconciliation move on a void frame).
+
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
   # ---------------------------------------------------------------------------
