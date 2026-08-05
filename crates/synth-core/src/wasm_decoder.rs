@@ -406,6 +406,13 @@ pub struct DecodedModule {
     /// check, which must compare SIGNATURES, not raw type indices (a module
     /// may carry structurally-identical duplicate types).
     pub type_signatures: Vec<String>,
+    /// #851 lane L3: result (return-value) count per FUNCTION TYPE, indexed by
+    /// type index — the `call_indirect` analogue of [`Self::func_result_counts`].
+    /// An indirect call's callee is known only by its static type, so the
+    /// 0-vs-1 result distinction (does a value get pushed back?) has to come
+    /// from here; `type_ret_i64/f32/f64` carry the result TYPE but conflate
+    /// void with i32 (both all-false).
+    pub type_result_counts: Vec<u32>,
     /// VCR-PERF-002 Phase 1 (#494): proven invariants from loom's `wsc.facts`
     /// custom section, keyed by `(function index, value id)` — see
     /// `docs/design/wsc-facts-encoding.md` (schema v1) and
@@ -418,6 +425,56 @@ pub struct DecodedModule {
 }
 
 impl DecodedModule {
+    /// #676/#851: the STRUCTURAL signature class of every function type —
+    /// structurally-equal types share one dense 1-based id (first-occurrence
+    /// order over the type section); id 0 is reserved for "null slot / not
+    /// statically classifiable" and therefore never equals a real class.
+    ///
+    /// This is the id a `call_indirect` type check must compare, NOT the raw
+    /// type index: WASM type equality is STRUCTURAL, so a module carrying two
+    /// identical `(param i32) (result i32)` entries must let `call_indirect
+    /// (type 1)` reach a function declared with type 0 (§4.4.8). Comparing
+    /// indices would trap where wasmtime calls.
+    ///
+    /// [`CallIndirectGuards::type_class_ids`] exposes this only when the ARM
+    /// heterogeneous-table sidecar exists; the aarch64 dispatch type-checks
+    /// UNCONDITIONALLY, so it reads the ids from here.
+    pub fn structural_type_class_ids(&self) -> Vec<u32> {
+        let mut class_of_sig: std::collections::HashMap<&str, u32> =
+            std::collections::HashMap::new();
+        let mut ids: Vec<u32> = Vec::with_capacity(self.type_signatures.len());
+        for sig in &self.type_signatures {
+            let next = class_of_sig.len() as u32 + 1;
+            ids.push(*class_of_sig.entry(sig.as_str()).or_insert(next));
+        }
+        ids
+    }
+
+    /// #851 lane L3: the structural class id of every funcref-region slot, in
+    /// the SAME contiguous order as [`Self::funcref_region_slots`] — 0 for a
+    /// null slot, for a slot whose function has no known type, and for a table
+    /// whose image is not statically verifiable (all of which
+    /// `funcref_region_slots` already reports as `None`).
+    ///
+    /// The aarch64 funcref table stores this id beside each slot's branch
+    /// trampoline, so the dispatch's `cmp` against the expected class id is
+    /// simultaneously the §4.4.8 TYPE check and the NULL check (id 0 matches
+    /// no expected class, which is >= 1).
+    pub fn funcref_region_class_ids(&self) -> Vec<u32> {
+        let class = self.structural_type_class_ids();
+        self.funcref_region_slots()
+            .iter()
+            .map(|slot| match slot {
+                None => 0,
+                Some(f) => self
+                    .func_type_indices
+                    .get(*f as usize)
+                    .and_then(|&t| class.get(t as usize).copied())
+                    .unwrap_or(0),
+            })
+            .collect()
+    }
+
     /// #642/#650: compute the `call_indirect` guard inputs — per table, the
     /// compile-time size for the runtime bounds check, the base byte offset
     /// within the contiguous R11 region, and the per-expected-type
@@ -442,17 +499,10 @@ impl DecodedModule {
                  entry)",
             );
 
-        // #676: structural signature classes — structurally-equal types share
-        // one dense 1-based id (first-occurrence order over the type section);
-        // id 0 is reserved for null slots. These feed the type-id sidecar and
-        // the expected-type compare immediate of the runtime type check.
-        let mut class_of_sig: std::collections::HashMap<&str, u32> =
-            std::collections::HashMap::new();
-        let mut type_class_ids: Vec<u32> = Vec::with_capacity(n_types);
-        for sig in &self.type_signatures {
-            let next = class_of_sig.len() as u32 + 1;
-            type_class_ids.push(*class_of_sig.entry(sig.as_str()).or_insert(next));
-        }
+        // #676: structural signature classes — see
+        // [`Self::structural_type_class_ids`]. These feed the type-id sidecar
+        // and the expected-type compare immediate of the runtime type check.
+        let type_class_ids = self.structural_type_class_ids();
 
         let mut tables = Vec::with_capacity(self.table_sizes.len());
         // #676: per table, the slot class ids (None = image not statically
@@ -1350,6 +1400,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
             })
             .collect(),
         func_type_indices,
+        type_result_counts: type_block_arity.iter().map(|&(_p, r)| r as u32).collect(),
         type_signatures,
         wsc_facts: wsc_facts.unwrap_or_default(),
     })

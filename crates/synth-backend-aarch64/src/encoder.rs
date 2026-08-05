@@ -440,6 +440,51 @@ pub fn b_uncond(imm26: i32) -> u32 {
     0x1400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
 }
 
+/// `blr xn` — branch-with-link to the address in `xn`, sets `x30`/LR. The
+/// indirect-call primitive: `call_indirect` funnels its verified slot address
+/// through this (#851). Clang ground truth: `blr x16` = 0xD63F_0200.
+pub fn blr(rn: Reg) -> u32 {
+    0xD63F_0000 | ((rn as u32) << 5)
+}
+
+/// `adrp xd, <sym>` — form the PC-relative address of the 4 KiB PAGE containing
+/// `sym` (the low 12 bits come from a following `add xd, xd, :lo12:sym`). The
+/// 21-bit page delta lives in `immlo` [30:29] + `immhi` [23:5]; emitting `adrp
+/// xd, #0` and recording an `R_AARCH64_ADR_PREL_PG_HI21` relocation lets the
+/// linker (or the differential harness's own resolver) fill it in.
+///
+/// This is the aarch64 answer to "how does the code reach a synth-EMITTED data
+/// region": PC-relative + a link-time relocation, with NO dedicated base
+/// register — so neither globals nor the funcref table adds a precondition
+/// alongside `x28` (see `selector::LINMEM_BASE`). Clang: `adrp x16, sym` =
+/// 0x9000_0010.
+pub fn adrp(rd: Reg, imm21_pages: i32) -> u32 {
+    let v = (imm21_pages as u32) & 0x1F_FFFF;
+    0x9000_0000 | ((v & 0x3) << 29) | (((v >> 2) & 0x7_FFFF) << 5) | (rd as u32)
+}
+
+/// `cmp wn, #imm12` — `subs wzr, wn, #imm12` (flags only). Compares against an
+/// unsigned 12-bit immediate without burning a scratch register. Clang ground
+/// truth: `cmp w17, #7` = 0x7100_1E3F.
+pub fn cmp_imm(rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000, "cmp imm12 out of range");
+    0x7100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (WZR as u32)
+}
+
+/// `cmp xn, #imm12` — 64-bit form. Clang: `cmp x17, #7` = 0xF100_1E3F.
+pub fn cmp_imm64(rn: Reg, imm12: u32) -> u32 {
+    cmp_imm(rn, imm12) | SF64
+}
+
+/// `add xd, xn, wm, uxtw #shift` — [`add_ext_uxtw`] with a left-shift applied to
+/// the zero-extended operand (extend-shift field [12:10], 0..=4). Used to scale a
+/// zero-extended i32 table index by the slot size. Clang ground truth:
+/// `add x16, x16, w9, uxtw #3` = 0x8B29_4E10.
+pub fn add_ext_uxtw_sh(rd: Reg, rn: Reg, rm: Reg, shift: u32) -> u32 {
+    debug_assert!(shift <= 4, "uxtw extend-shift out of range");
+    add_ext_uxtw(rd, rn, rm) | (shift << 10)
+}
+
 /// `bl #(imm26*4)` — branch-with-link, PC-relative in words (signed 26-bit),
 /// sets `x30`/LR to the return address. WASM direct `call` lowers to `bl func_N`
 /// (#851). When the callee's `.text` offset is not known at selection time (the
@@ -1012,6 +1057,48 @@ mod tests {
         assert_eq!(movk(9, 1, 1), 0x72A0_0029);
         assert_eq!(mov_reg(0, 9), 0x2A09_03E0);
         assert_eq!(ret(), 0xD65F_03C0);
+    }
+
+    /// #851 lane L3 — the `call_indirect` + globals addressing primitives.
+    /// Ground truth from `clang -c -target aarch64-linux-gnu` on:
+    /// ```text
+    ///   adrp x16, sym            -> 90000010
+    ///   add  x16, x16, #0        -> 91000210
+    ///   add  x16, x16, w9, uxtw #3 -> 8b294e10
+    ///   ldr  w17, [x16]          -> b9400211
+    ///   cmp  w17, #7             -> 71001e3f
+    ///   cmp  x17, #7             -> f1001e3f
+    ///   blr  x16                 -> d63f0200
+    ///   adrp x0, sym             -> 90000000
+    /// ```
+    #[test]
+    fn indirect_and_globals_encodings_match_clang() {
+        assert_eq!(adrp(16, 0), 0x9000_0010);
+        assert_eq!(adrp(0, 0), 0x9000_0000);
+        assert_eq!(add_imm64(16, 16, 0), 0x9100_0210);
+        assert_eq!(add_ext_uxtw_sh(16, 16, 9, 3), 0x8B29_4E10);
+        assert_eq!(ldr_w(17, 16, 0), 0xB940_0211);
+        assert_eq!(cmp_imm(17, 7), 0x7100_1E3F);
+        assert_eq!(cmp_imm64(17, 7), 0xF100_1E3F);
+        assert_eq!(blr(16), 0xD63F_0200);
+    }
+
+    /// The `adrp` page-delta immediate splits ACROSS two disjoint fields —
+    /// `immlo`[30:29] and `immhi`[23:5] — so a naive contiguous placement is
+    /// silently wrong for every delta ≥ 1. A relocation normally supplies the
+    /// delta, but the harness/linker patches these same fields, so the split
+    /// must be pinned. Ground truth (capstone `CS_ARCH_ARM64` decode of the
+    /// literal word):
+    /// ```text
+    ///   0xF0000000 -> adrp x0, #0x3000      (3 pages: immlo=3, immhi=0)
+    ///   0x90000020 -> adrp x0, #0x4000      (4 pages: immlo=0, immhi=1)
+    ///   0xF0FFFFE0 -> adrp x0, #-0x1000     (-1 page: all field bits set)
+    /// ```
+    #[test]
+    fn adrp_page_delta_splits_immlo_immhi() {
+        assert_eq!(adrp(0, 3), 0xF000_0000);
+        assert_eq!(adrp(0, 4), 0x9000_0020);
+        assert_eq!(adrp(0, -1), 0xF0FF_FFE0);
     }
 
     // #851 — divide / multiply-subtract / SIMD popcount building blocks.

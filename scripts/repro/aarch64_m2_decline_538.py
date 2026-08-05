@@ -35,36 +35,64 @@ SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 # What DELIBERATELY stays declined, and why:
 DECLINED = [
     # No function-table substrate + no type/null/OOB trap guards (§4.4.8).
-    ("call_indirect",
-     '(type $t (func (param i32) (result i32)))'
-     '(table 1 funcref)'
-     '(func (export "f") (param i32) (result i32) '
-     '(call_indirect (type $t) (local.get 0) (i32.const 0)))'),
-    # Jump-table dispatch is not lowered.
+    # v0.54 fan-in: `call_indirect` and `global.get`/`global.set` moved OFF
+    # this list (lane L3 landed them) and the float rounding / trapping
+    # i64-truncation entries moved off too (lane L2 landed those). Both
+    # lanes' pre-merge copies of this list were stale in OPPOSITE
+    # directions — asserting a decline for a capability that now ships is
+    # the same doc-honesty defect as claiming one that does not.
     ("br_table", '(func (export "f") (param i32) (result i32) '
                  '(block (block (br_table 0 1 (local.get 0))) '
                  '(return (i32.const 1))) (i32.const 2))'),
-    # Params live in arg registers BY REFERENCE on the value stack, so writing
-    # one could alias a stacked value; param homing is the prerequisite. The
-    # body must READ the param too — a write-only local 0 is indistinguishable
-    # from a fresh non-param local (and lowers correctly as one).
     ("local.set on a param",
      '(func (export "f") (param i32) (result i32) '
      '(local.set 0 (i32.add (local.get 0) (i32.const 1))) (local.get 0))'),
-    # No globals substrate (no data section / global-region addressing).
-    ("global.get", '(global $g (mut i32) (i32.const 5))'
-                   '(func (export "f") (result i32) (global.get $g))'),
-    # Bulk memory (#374) is not lowered on aarch64.
     ("memory.fill", '(memory 1)(func (export "f") '
                     '(memory.fill (i32.const 0) (i32.const 0) (i32.const 4)))'),
-    # A value-carrying block needs result-register reconciliation across the
-    # branch (also the #554 float-honesty fixture's construct).
     ("block (result f32)", '(func (export "f") (param f32) (result f32) '
                            '(block (result f32) (local.get 0)))'),
-    # v128/SIMD has no aarch64 lowering (Advanced-SIMD is a separate lane).
     ("f32x4.add", '(func (export "f") (param f32) (result f32) '
                   '(f32x4.extract_lane 0 (f32x4.add '
                   '(f32x4.splat (local.get 0)) (f32x4.splat (local.get 0)))))'),
+    ("imported global",
+     '(import "env" "g" (global i32)) '
+     '(func (export "f") (result i32) (global.get 0))',
+     "imports 1 global"),
+    ("float global (no decoded const init)",
+     '(global $f (mut f32) (f32.const 1.5)) '
+     '(func (export "f") (result f32) (global.get $f))',
+     "no decoded constant initializer"),
+    ("v128 global",
+     '(global $v (mut v128) (v128.const i32x4 1 2 3 4)) '
+     '(func (export "f") (result v128) (global.get $v))',
+     None),
+    ("growable imported table",
+     '(import "env" "t" (table 4 funcref)) '
+     '(type $b (func (param i32 i32) (result i32))) '
+     '(func $a (type $b) (i32.add (local.get 0) (local.get 1))) '
+     '(func (export "f") (param i32) (result i32) '
+     '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
+     "no compile-time size"),
+    ("passive element segment",
+     '(type $b (func (param i32 i32) (result i32))) '
+     '(table 2 funcref) '
+     '(elem func $a) '
+     '(func $a (type $b) (i32.add (local.get 0) (local.get 1))) '
+     '(func (export "f") (param i32) (result i32) '
+     '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
+     "not statically verifiable"),
+    ("table slot holding an IMPORTED function",
+     '(type $b (func (param i32 i32) (result i32))) '
+     '(import "env" "h" (func $h (type $b))) '
+     '(table 2 funcref) (elem (i32.const 0) $h) '
+     '(func (export "f") (param i32) (result i32) '
+     '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
+     "imported function"),
+    ("non-leaf FLOAT param (homing needs an FP store)",
+     '(func $g (result i32) (i32.const 1)) '
+     '(func (export "f") (param f32) (result f32) '
+     '(drop (call $g)) (local.get 0))',
+     "FLOAT parameter"),
 ]
 
 
@@ -86,14 +114,28 @@ def compiles_ok(body):
 
 def main():
     fails = 0
-    for label, body in DECLINED:
+    reasoned = 0
+    for entry in DECLINED:
+        label, body = entry[0], entry[1]
+        want_reason = entry[2] if len(entry) > 2 else None
         ok, stderr = compiles_ok(body)
         if ok:
             print(f"BUG {label}: compiled — expected a LOUD decline (silent miscompile risk)")
             fails += 1
+        elif want_reason is not None and want_reason not in stderr:
+            print(f"BUG {label}: declined, but WITHOUT its machine reason "
+                  f"({want_reason!r} absent) — got: {stderr.strip()[:180]}")
+            fails += 1
         else:
-            print(f"OK  {label}: loud-declined")
-    print(f"\n{len(DECLINED) - fails}/{len(DECLINED)} declined ops loud-declined")
+            if want_reason is not None:
+                reasoned += 1
+            print(f"OK  {label}: loud-declined"
+                  + (f" ({want_reason})" if want_reason else ""))
+    if reasoned == 0:
+        print("VACUOUS: no decline was checked for its machine reason")
+        fails += 1
+    print(f"\n{len(DECLINED) - fails}/{len(DECLINED)} declined ops loud-declined "
+          f"({reasoned} with their machine reason asserted)")
     print("RESULT:", "PASS — decline matrix honest"
           if not fails else f"FAIL ({fails} silent)")
     sys.exit(1 if fails else 0)

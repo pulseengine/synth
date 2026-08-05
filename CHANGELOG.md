@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **aarch64 `call_indirect` and WASM globals — the two largest remaining
+  structural declines on that backend (#851).** Both were "no substrate" gaps,
+  not missing selector arms, so the lane is mostly about *where the data lives*.
+
+  **Precondition status, stated plainly: this lane adds NONE.** synth EMITS both
+  regions into the object and reaches them with an `adrp` + `add :lo12:` pair
+  the linker resolves. Globals live in a synth-emitted `.data` section
+  (`__synth_globals`) carrying each global's decoded constant initializer; the
+  funcref table is a synth-emitted `.text`-resident array (`__synth_func_table`).
+  Neither needs a base register, a startup, a linker script or an ambient input.
+  That is deliberately *unlike* `x28` — the linear-memory base, which remains
+  the ONE aarch64 precondition the embedder must supply, exactly as v0.53
+  documented it. Using PC-relative addressing rather than a dedicated base
+  register also removes the #275/#717 collision class by construction: there is
+  no base register to collide with.
+
+  `call_indirect` emits all THREE WASM §4.4.8 trap guards inline, because A64's
+  `blr` is total and gives none of them for free (the #709
+  "more-total-than-WASM" class): an **out-of-range index** (an UNSIGNED bounds
+  compare), a **null slot**, and a **signature mismatch**. Each table slot is an
+  8-byte `[u32 structural-class-id][b func_N]` record — null slots are
+  `[0][brk #0]` — so one compare serves as both the type check and the null
+  check (id 0 matches no real class, which is ≥ 1). The compared id is
+  **structural**, so a module carrying duplicate-but-identical types keeps them
+  interchangeable; comparing raw type indices would trap where wasmtime calls.
+
+  **Param homing** landed as the prerequisite: a non-leaf function referencing a
+  parameter used to loud-decline, and a table index almost always *is* a
+  parameter, so `call_indirect` would only have dispatched on constants. Non-leaf
+  functions now give every local an 8-byte stack slot and store the incoming
+  argument registers there at the prologue. Leaf functions are byte-identical.
+
+  Execution-verified against wasmtime under unicorn, CI-wired in the
+  `aarch64-oracle` job: `aarch64_globals_851_differential.py` (17 checks —
+  initial values, i32/i64 slots, stores persisting across calls) and
+  `aarch64_call_indirect_851_differential.py` (35 checks, 23 of them traps —
+  every §4.4.8 trap, plus the duplicate type that must NOT trap). The
+  `call_indirect` fixture declares TWO tables on purpose: the first version of
+  that oracle PASSED a compiler with the bounds guard removed, because
+  past-the-end bytes read as class id 0 and the type check trapped anyway. With
+  a second table, index 4 of table 0 lands on a fully valid, type-matching slot,
+  so only the bounds guard can trap there.
+
+  Rather than guess, these shapes LOUD-DECLINE with a machine reason: an
+  imported global, a global with no decoded constant initializer (float, v128 or
+  a non-const init expr), a growable imported table, an element segment that is
+  not statically verifiable, a table slot holding an imported function, a
+  non-leaf FLOAT parameter, and anything past the 12-bit guard immediates. The
+  unverifiable-element-segment decline is the load-bearing one: the existing
+  region reconstruction degrades such a table to all-null, which would trap on
+  every dispatch — conservative-*looking*, but wrong in the other direction.
+
+  The VCR-SEL-005 third-backend parity gate flips `global.get`, `global.set` and
+  `call_indirect` from `Err(reason)` to lowering in the same commit that makes
+  them lower, and two new `claims.yaml` pins hold the precondition and trap
+  claims to their evidence.
 - **#890 — the oracle-wiring gate: fix the factory, not the bugs.**
   `scripts/repro/*.py` are synth's execution oracles, and **69 of 150 were
   referenced by no workflow** — nothing ran them. v0.53 hand-wired three and the

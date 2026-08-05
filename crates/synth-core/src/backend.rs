@@ -396,6 +396,30 @@ pub struct CompileConfig {
     /// DECLINES every `call_indirect` lowering: an unchecked indirect branch
     /// is never emitted (WASM Core §4.4.8 requires OOB/type-mismatch traps).
     pub call_indirect_guards: crate::wasm_decoder::CallIndirectGuards,
+    /// #851 lane L3: result count per FUNCTION TYPE (see
+    /// [`crate::wasm_decoder::DecodedModule::type_result_counts`]). The aarch64
+    /// `call_indirect` lowering needs the 0-vs-1 result distinction for a callee
+    /// it knows only by its static type.
+    pub type_result_counts: Vec<u32>,
+    /// #851 lane L3: the STRUCTURAL signature class id per function type (see
+    /// [`crate::wasm_decoder::DecodedModule::structural_type_class_ids`]). The
+    /// aarch64 `call_indirect` type check compares this, not the raw type index
+    /// — WASM type equality is structural. Distinct from
+    /// `call_indirect_guards.type_class_ids`, which the ARM path populates only
+    /// when its heterogeneous-table sidecar exists.
+    pub type_class_ids: Vec<u32>,
+    /// #851 lane L3, aarch64 only — the driver has EMITTED the module-level
+    /// substrate the globals and `call_indirect` lowerings address: the `.data`
+    /// globals image (`__synth_globals`) and the `.text` funcref table
+    /// (`__synth_func_table`), both produced by
+    /// `synth_backend_aarch64::substrate::plan`.
+    ///
+    /// FAIL-SAFE BY DEFAULT (`false`): the aarch64 selector LOUD-DECLINES
+    /// `global.get`/`global.set`/`call_indirect` unless this is set, so a driver
+    /// that compiles function bodies but never emits the regions cannot ship
+    /// code addressing a symbol that does not exist. Set only on the two paths
+    /// that call `plan()` and place its output in the object.
+    pub a64_substrate_emitted: bool,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -495,6 +519,9 @@ impl Default for CompileConfig {
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.
             call_indirect_guards: crate::wasm_decoder::CallIndirectGuards::default(),
+            type_result_counts: Vec::new(),
+            type_class_ids: Vec::new(),
+            a64_substrate_emitted: false,
             // #778 phase 2: no --wcet-hints file ⇒ no hints. Consulted ONLY by
             // the WCET sidecar computation — never by codegen (the emitted
             // bytes are byte-identical with or without hints).
@@ -540,6 +567,27 @@ pub enum RelocKind {
     /// word-offset immediate of the `bl` at `offset` to reach the target symbol.
     /// Emitted only by the `EM_AARCH64` backend's `.rela.text`.
     AArch64Call26,
+    /// R_AARCH64_JUMP26 (ELF type 282) — an AArch64 `B` (tail-branch) site
+    /// (#851 lane L3). Same 26-bit word-offset immediate as
+    /// [`RelocKind::AArch64Call26`], but for a branch that does NOT set `x30`:
+    /// the aarch64 `call_indirect` funcref table is a `.text`-resident array of
+    /// `b func_N` trampolines, so the dispatch's `blr` sets the return address
+    /// and the trampoline tail-branches into the callee (which returns straight
+    /// to the dispatcher).
+    AArch64Jump26,
+    /// R_AARCH64_ADR_PREL_PG_HI21 (ELF type 275) — the `adrp` half of a
+    /// PC-relative symbol address (#851 lane L3). Patches the 21-bit page delta
+    /// (`immlo`[30:29] + `immhi`[23:5]) so `adrp xd, sym` reaches the 4 KiB page
+    /// containing `sym`. Always paired with an
+    /// [`RelocKind::AArch64AddAbsLo12Nc`] on the next instruction. This pair is
+    /// how aarch64 reaches a synth-EMITTED region (the globals `.data` image,
+    /// the funcref table) with NO dedicated base register — so neither feature
+    /// adds an embedder precondition alongside `x28`.
+    AArch64AdrPrelPgHi21,
+    /// R_AARCH64_ADD_ABS_LO12_NC (ELF type 277) — the `add xd, xd, :lo12:sym`
+    /// half of a PC-relative symbol address (#851 lane L3). Patches the 12-bit
+    /// immediate field [21:10] with `(S + A) & 0xFFF`.
+    AArch64AddAbsLo12Nc,
     /// R_RISCV_CALL_PLT (ELF type 19) — a RISC-V `auipc`+`jalr` call pair
     /// (#871). The RV32 analogue of [`RelocKind::ThmCall`]: `offset` points at
     /// the `auipc` of an 8-byte `auipc ra, 0 ; jalr ra, 0(ra)` placeholder and

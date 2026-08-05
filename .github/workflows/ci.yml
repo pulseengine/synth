@@ -525,6 +525,37 @@ jobs:
         # AAPCS64 x-view hazard), drop/nop, fixed-memory size/grow parity
         # against a min=max module (growth failure is spec-forced there).
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_surface_851_differential.py
+      - name: Run #851 lane L3 GLOBALS execution oracle (emitted .data region + persistence)
+        # synth EMITS the globals region (a `.data` image carrying the decoded
+        # initializers) and reaches it `adrp`+`add :lo12:` — no base register,
+        # no precondition. The harness places `.text` and `.data` on DIFFERENT
+        # pages and resolves the relocations itself, so a wrong page delta or
+        # lo12 lands on the wrong bytes. NON-VACUITY: assert a non-zero check
+        # count (a harness that compiled nothing would otherwise pass silently)
+        # AND the summary verdict. `set -euo pipefail` (not bare `pipefail`,
+        # which leaves the step's status as the LAST command's) makes the
+        # script's own non-zero exit fail the step (#890).
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/repro/aarch64_globals_851_differential.py | tee globals851.txt
+          grep -Eq '^[1-9][0-9]* checks across [1-9][0-9]* exported' globals851.txt
+          grep -q '^RESULT: PASS' globals851.txt
+      - name: Run #851 lane L3 CALL_INDIRECT execution oracle (§4.4.8 OOB + null + type traps)
+        # A64's `blr` is TOTAL; WASM §4.4.8 is not. All three traps must fire
+        # exactly where wasmtime traps — and the structurally-DUPLICATE type
+        # must NOT trap (the direction an "always trap" lowering would hide).
+        # NON-VACUITY: assert non-zero counts in BOTH directions, so a run that
+        # only trapped (or only returned values) fails, plus the summary
+        # verdict. `set -euo pipefail` makes the script's own non-zero exit fail
+        # the step (bare `pipefail` would leave the status as the last command's
+        # — the #890 class).
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
+          grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' ci851.txt
+          grep -q '^RESULT: PASS' ci851.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
         # Err(reason). The soundness-critical one is TRAP_TRUNC_I64: A64
