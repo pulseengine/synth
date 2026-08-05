@@ -505,14 +505,18 @@ artifacts:
 
   - id: VCR-SEL-005
     type: sw-req
-    title: Cross-backend op-parity oracle
+    title: Cross-backend op-parity oracle (ARM / RISC-V / AArch64)
     description: >
-      A test-time gate (crates/synth-backend-riscv/tests/cross_backend_op_parity.rs,
-      cross_backend_integer_op_parity_242) that lowers a curated set of
-      self-contained, minimally-valid WasmOp sequences on BOTH the ARM (Thumb-2)
-      and RISC-V (RV32IMAC) selectors and asserts integer-core PARITY: an op the
-      ARM selector lowers must be lowered-or-explicitly-ledgered by the RV32
-      selector. This is the concrete near-term increment of VCR-SEL-001: the
+      A test-time gate (crates/synth-backend-riscv/tests/cross_backend_op_parity.rs)
+      that lowers self-contained, minimally-valid WasmOp sequences on ALL THREE
+      shipping selectors — ARM (Thumb-2), RISC-V (RV32IMAC) and AArch64 (A64) —
+      and asserts integer-core PARITY against ARM as the reference: an op the ARM
+      selector lowers must be lowered-or-explicitly-ledgered by the RV32 selector
+      (`cross_backend_integer_op_parity_242`) and by the aarch64 selector
+      (`aarch64_integer_op_parity_851`). NOTE the backend count: this description
+      said "BOTH the ARM and RISC-V selectors" until v0.55 (#893) — it has spanned
+      three backends since v0.53 (#883). This is the concrete near-term increment
+      of VCR-SEL-001: the
       VCR-SEL-001 pilot measurement (2026-06-20) established that "selector missed
       an op" is no longer a silent miscompile (ARM select_default is an exhaustive
       WasmOp match; RV32 ends dispatch with a typed Unsupported Err), so the
@@ -592,8 +596,40 @@ artifacts:
       also covers globals, the memory intrinsics (size/grow/copy/fill), br_table,
       and the sub-word i64 memory variants — each landing retires its ledger line
       via the stale-entry check.
+
+      THIRD BACKEND (v0.53, #883/#851): aarch64 joined the same no-wildcard
+      enumeration. Before that its only breadth check was 25 hand-written probes,
+      so "what does aarch64 not lower?" had no mechanical answer and gap-picking
+      was guesswork. The aarch64 leg (`aarch64_integer_op_parity_851`, ledger
+      `aarch64_known_divergences`) enumerated TWENTY ARM-lowers/aarch64-declines
+      integer-core gaps on first run; each decline names the missing selector arm
+      AND the A64 instruction that would implement it, so the ledger reads as a
+      work plan rather than an absence. Thirteen closed in the same release
+      (`select` via CSEL/FCSEL, `drop`/`nop`, `i32.wrap_i64`,
+      `i64.extend_i32_{s,u}`, the five `extend8/16/32_s` forms, fixed-memory
+      `memory.size`/`memory.grow` — selector 148 -> 161 ops, gale's matrix 35 ->
+      45); v0.54 closed `global.get`/`global.set`. aarch64 also gets what ARM and
+      RV32 structurally cannot have: a probed FLOAT/SIMD surface
+      (`a64_extended_surface`, floor `probed >= 100`). Float is
+      `StructurallyExcluded` from the ARM/RV32 leg because ARM float lowering is
+      TARGET-parameterized (f32.add DECLINES at fpu=None, LOWERS at
+      Single/Double) and RV32 has no FPU — but the aarch64 backend has ONE fixed
+      host profile, so both directions are assertable there, and a stale "gap"
+      claim is caught the same way a stale divergence is.
+
+      LEDGER STATE (2026-08, keep in step with the arrays — a drifting count is
+      the #893 class this oracle exists to prevent): ARM<->RV32 18 entries
+      (5 Zbb + 16 universe-completeness − `memory.size`/`memory.grow` closed
+      v0.50 − `br_table` closed v0.53 #882); ARM<->aarch64 5 entries (br_table,
+      writing a PARAM local via local.set/local.tee in a leaf function,
+      memory.copy, memory.fill). Non-vacuity floors: `at_parity >= 65` (RV32),
+      `at_parity >= 60` (aarch64), `probed >= 100` (aarch64 extended surface).
+      Both legs carry their own red-first companion
+      (`red_first_unledgered_one_sided_gap_is_caught` drops the real i32.rotl
+      entry; `red_first_unledgered_aarch64_gap_is_caught` does the same on the
+      aarch64 leg) and their own ledger-liveness test.
     status: implemented
-    tags: [codegen, selector, riscv, parity, oracle, track-a, release-v0.11.51]
+    tags: [codegen, selector, riscv, aarch64, parity, oracle, track-a, release-v0.11.51, release-v0.53, synth-883, synth-893]
     links:
       - type: derives-from
         target: VCR-001
@@ -603,15 +639,22 @@ artifacts:
       req-type: functional
       priority: should
       verification-criteria: >
-        cross_backend_integer_op_parity_242 is green: every WasmOp variant is
-        classified by a no-wildcard match (universe-complete by construction), and
-        every integer-core probe is at ARM/RV32 parity OR carries a reasoned
-        KNOWN_DIVERGENCES entry, with the at-parity floor (>=65 common-core ops)
-        guarding against a construction regression that would let "everything
-        errors" masquerade as parity. The red-first companion
-        (red_first_unledgered_one_sided_gap_is_caught) proves non-vacuity by
-        surfacing the real i32.rotl gap once its ledger entry is removed, and the
-        gate is CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
+        All EIGHT tests in cross_backend_op_parity.rs are green: every WasmOp
+        variant is classified by a no-wildcard match (universe-complete by
+        construction — a new variant fails to COMPILE until classified, the #615
+        tripwire), and every integer-core probe is at parity with ARM on BOTH the
+        RV32 and the aarch64 leg OR carries a reasoned ledger entry. The
+        at-parity floors (>=65 RV32, >=60 aarch64 common-core ops; >=100 probed
+        on the aarch64 extended float/SIMD surface) guard against a construction
+        regression that would let "everything errors" masquerade as parity. Each
+        leg carries its own red-first companion proving non-vacuity on the REAL
+        backends — red_first_unledgered_one_sided_gap_is_caught surfaces the real
+        i32.rotl gap once its ledger entry is removed, and
+        red_first_unledgered_aarch64_gap_is_caught does the same for aarch64 — and
+        a ledger-liveness test per leg guards drift. Stale entries fail too, in
+        both directions: a divergence that has CLOSED reddens the gate until its
+        line is deleted, so a parity claim cannot outlive the gap it documents.
+        CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
 
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
