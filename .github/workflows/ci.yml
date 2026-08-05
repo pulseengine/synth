@@ -276,7 +276,26 @@ jobs:
         run: cargo test -p synth-verify --test comprehensive_verification --features z3-solver,arm
 
   coverage:
-    name: Code Coverage
+    # RENAMED from "Code Coverage" (#910). The old name implied whole-system
+    # coverage; the job measures ONE population — the Rust test suite, in-process,
+    # under llvm-cov instrumentation.
+    #
+    # What it CANNOT see, structurally: the execution differentials. Those spawn
+    # `$SYNTH` as a SEPARATE, UNINSTRUMENTED process, from OTHER jobs entirely
+    # (`repro sweep-*`, `trap-semantics oracle`, the per-issue oracles). An
+    # uninstrumented subprocess emits no profile data, so none of that execution
+    # reaches this percentage. That is why backend.rs — almost pure ELF emission,
+    # exercised end-to-end on every differential — reads ~42 % here.
+    #
+    # Consequence, stated so nobody has to rediscover it: this number UNDERSTATES
+    # the testing that exists, and it is NOT a completeness measure. The
+    # differential population is reported separately and in its own unit —
+    # asserted executed checks, see scripts/oracle_run.py and the
+    # `oracle-evidence-ledger` job. Do not add them together.
+    #
+    # Not a required status check on `main` (verified before renaming: renaming a
+    # required context deadlocks every merge until protection is updated).
+    name: Rust-test Line Coverage (unit + integration only)
     needs: [test]
     runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
@@ -303,6 +322,29 @@ jobs:
           cargo llvm-cov --workspace --lcov --output-path lcov.info \
             --exclude synth-qemu \
             --exclude synth-backend-awsm --exclude synth-backend-wasker
+      - name: Say what this number does and does not measure (#910)
+        # The scope note travels WITH the number. Reading the percentage off the
+        # job summary and reading this are the same act, which is the only way a
+        # caveat survives being quoted.
+        run: |
+          set -euo pipefail
+          test -s lcov.info
+          {
+            echo "### Rust-test line coverage — SCOPE (#910)"
+            echo
+            echo "Measures: \`cargo llvm-cov --workspace\` — the **Rust test suite**, in-process."
+            echo
+            echo "Does **not** measure: the execution differentials"
+            echo "(\`scripts/repro/*.py\`). They spawn \`\$SYNTH\` as a separate,"
+            echo "UNINSTRUMENTED process, from other jobs — no profile data reaches"
+            echo "this figure. \`backend.rs\` reads ~42 % here while being exercised"
+            echo "end-to-end by nearly every differential."
+            echo
+            echo "So this number **understates** the testing that exists, and is"
+            echo "**not** a completeness measure. The differential population is"
+            echo "reported separately, in executed checks, by the"
+            echo "\`oracle evidence ledger\` job. **Do not add them together.**"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
         with:
