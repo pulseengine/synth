@@ -2080,8 +2080,49 @@ artifacts:
       named pitfall — split points landing inside hot loops — is bounded at
       this stage by synth's straight-line segment scope (no interior loops),
       and re-checked when segments widen.
-    status: proposed
-    tags: [codegen, register-allocation, parallel-move, spilling, track-a, release-v0.11.38]
+
+      DELIVERED v0.11.38 — `synth_synthesis::parallel_move` (`sequentialize`),
+      a pure module with no compiler state: destinations must be pairwise
+      distinct (anything else is a caller bug and is REJECTED, not guessed at);
+      self-moves are dropped; phase 1 emits chain moves leaf-first from a
+      worklist until what remains is exactly a set of disjoint cycles; phase 2
+      breaks each cycle through a scratch register filtered against the move set,
+      or — when no scratch survives the filter — through ONE self-bracketing
+      stack-scratch pair (`MoveStep::SpillScratch` / `ReloadScratch`, lowered by
+      the consumer to `str`/`ldr [sp, #resolver_slot]`). That stack fallback is
+      the "guaranteed-progress" clause: there is no fixpoint-and-hope loop —
+      phase 1 removes exactly one pending move per pop, the phase-2 walk removes
+      one per step against the disjoint-cycle invariant, the outer loop ASSERTS
+      the pending set strictly shrank, and the emitted sequence is asserted
+      bounded by `moves.len() + 2 * cycle_count` before returning.
+
+      CONSUMED, twice, and each time it removed a real defect rather than only
+      adding a component:
+        * v0.11.39 (#327, gale #326): `emit_arg_moves` call-marshalling. The old
+          cycle-breaker DEMANDED a callee-saved register, so the dissolved
+          k_mutex_unlock hard-failed under saturation; it also MISCOMPILED
+          genuine 2-swaps (duplicated a value). Phase 1 emits the
+          lowest-destination ready move first — exactly the order the legacy
+          `emit_parallel_move` produced for ascending-destination arg lists — so
+          wiring the resolver in was byte-invisible for everything that already
+          compiled.
+        * v0.53 (#881, GI-FPU-002): VFP register-file spilling. `VCR-RA-001`
+          gave the INTEGER file Belady spilling in v0.24 but the VFP file never
+          got it, so five falcon v1.128 entry points died on `S0..S15 all live`
+          / `caller-saved VFP D-register file exhausted`. Both files now spill
+          and reload, and the swap/cycle cases go through THIS resolver. This is
+          the delivery the v0.53 notes tagged `VCR-RA-004`; the status field is
+          what had not been flipped (#893).
+
+      STATUS IS `implemented`, NOT `verified`, deliberately. All three
+      verification-criteria clauses have evidence (below), but no `sw-verification`
+      artifact linked `verifies` to this requirement until v0.55 (#893), and the
+      second named pitfall — split points landing inside hot loops — is still
+      bounded by assumption (synth's straight-line segment scope, no interior
+      loops) rather than by a check that fails when segments widen. That
+      re-check remains open and is stated here rather than implied away.
+    status: implemented
+    tags: [codegen, register-allocation, parallel-move, spilling, track-a, release-v0.11.38, release-v0.53, synth-327, synth-881, synth-893]
     links:
       - type: derives-from
         target: VCR-001
@@ -2097,6 +2138,32 @@ artifacts:
         insertion on a synthetic over-pressure module compiles and runs
         result-identical to wasmtime; no resolver path can emit an
         unbounded-progress sequence.
+
+        MET, clause by clause — the linked verification artifact carries the run
+        recipe and the honest bound:
+        (1) `property_random_move_sets_match_parallel_semantics`
+        (crates/synth-synthesis/src/parallel_move.rs) runs 2000 deterministic
+        iterations over R0..R8 — alternating a FULL random permutation
+        (guaranteeing cycles and self-moves) with a partial move set (chains,
+        fan-out, self-moves, cycles) — and re-runs each against scratch sets of
+        size 0, 1 and 2, i.e. 6000 sequentializations, each checked against a
+        reference parallel semantics and against the size bound. Twelve directed
+        cases cover the named shapes explicitly (two_swap, three_cycle,
+        two_disjoint_cycles, chain_into_cycle, the scratch-collision filter, and
+        the no-scratch stack pair).
+        (2) `scripts/repro/high_pressure_i32.wat` + its unicorn-vs-wasmtime
+        differential: hard `Err` on v0.11.37, 6/6 on v0.11.38. v0.53 (#881) adds
+        the spilled-VFP differential — 7 shapes on `-t cortex-m7dp
+        --relocatable`, 109 rows bit-identical to wasmtime, NaN-aware per WASM
+        §4.3.3, with the internal `bl` resolved by a REAL link so an unresolved
+        relocation cannot be silently skipped.
+        (3) Unbounded progress is excluded structurally, not empirically: the
+        `moves.len() + 2 * cycle_count` bound and the strictly-shrinking pending
+        set are `assert!`s in the resolver itself, so a violating path aborts
+        rather than emitting.
+        OPEN: the "split points inside hot loops" pitfall is still bounded by
+        synth's straight-line segment scope, and the re-check owed when segments
+        widen does not exist yet.
 
   - id: VCR-DEC-001
     type: sw-req
