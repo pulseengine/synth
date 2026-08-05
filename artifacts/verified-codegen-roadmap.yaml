@@ -2272,14 +2272,20 @@ artifacts:
       AArch64 carry no `branch_map`; the eliminated-constant fixture; witness#130
       `object-disposition` end-to-end compose.
     status: implemented
-    tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration]
+    tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration, synth-396]
     links:
       - type: derives-from
         target: VCR-001
       - type: refines
         target: VCR-DBG-001
+      # synth#396 (the MC/DC source-to-object obligation this decision settles the
+      # contract for) is tracked in rivet as VCR-COV-001 — the issue body says so
+      # verbatim ("Tracked in rivet as VCR-COV-001, sibling to VCR-DBG-001") and
+      # VCR-COV-001's title carries "(synth #396)". A GitHub ISSUE NUMBER is not an
+      # artifact id; the link belongs on the artifact, and the issue number stays in
+      # the title/tags where it is a reference rather than a resolvable target.
       - type: traces-to
-        target: synth:396
+        target: VCR-COV-001
       - type: traces-to
         target: witness:130
     fields:
