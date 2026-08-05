@@ -107,6 +107,64 @@ fn shipped_expansions_certify_high_register_variants() {
                     rnhi: Reg::R1,
                 },
             ),
+            // #916 — the certifier's OWN blind spot, closed. Until this lane
+            // `covered_i64_pseudo_selections` only ever fed these five ops at
+            // R0/R1 and the high-register variant list only covered
+            // I64SetCond/I64SetCondZ/I64Mul/I64Popcnt, so the symbolic executor
+            // never saw the shape where the 16-bit `MOVS Rd,#0` zero-fill
+            // transmutes into `CMP r0,#0` and the half is left unwritten. Every
+            // one of these FAILS validation against the pre-#916 encoder and
+            // certifies against the fixed one — which is what makes the
+            // validator non-vacuous here rather than merely green.
+            (
+                synth_core::WasmOp::I64Shl,
+                ArmOp::I64Shl {
+                    rd_lo: Reg::R8,
+                    rd_hi: Reg::R7,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64ShrU,
+                ArmOp::I64ShrU {
+                    rd_lo: Reg::R7,
+                    rd_hi: Reg::R8,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64ShrS,
+                ArmOp::I64ShrS {
+                    rd_lo: Reg::R7,
+                    rd_hi: Reg::R8,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64Clz,
+                ArmOp::I64Clz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R1,
+                    rnhi: Reg::R8,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64Ctz,
+                ArmOp::I64Ctz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R1,
+                    rnhi: Reg::R8,
+                },
+            ),
         ];
         for (wasm, pseudo) in variants {
             let code = thumb_bytes(&pseudo);

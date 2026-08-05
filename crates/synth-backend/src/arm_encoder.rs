@@ -4660,8 +4660,16 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // B .done (skip large shift: +2 halfwords)
-                let b_done: u16 = 0xE002;
+                // B .done — `.done` is the END of the expansion, i.e. PAST the
+                // large-shift arm's trailing zero-fill. #916: that zero-fill is
+                // 1 halfword for a low rd_lo but 2 for R8-R12 (MOV.W), so the
+                // displacement is DERIVED from its real width instead of the
+                // hard-coded 0xE002 — widening the MOV without this would
+                // overshoot `.done` and turn a data miscompile into a
+                // control-flow one. Thumb `B` reads PC as its own address + 4
+                // (= +2 halfwords), so imm11 = (large-arm halfwords) - 1.
+                let large_arm_hw = 2 + thumb_zero_fill_halfwords(rd_lo_bits);
+                let b_done: u16 = 0xE000 | (large_arm_hw - 1);
                 bytes.extend_from_slice(&b_done.to_le_bytes());
 
                 // --- Large shift (n >= 32) ---
@@ -4671,11 +4679,13 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // MOV rd_lo, #0
-                let mov_zero: u16 = 0x2000 | ((rd_lo_bits as u16) << 8);
-                bytes.extend_from_slice(&mov_zero.to_le_bytes());
+                // MOV rd_lo, #0 (#916: MOV.W for rd_lo >= R8). NOTE the order
+                // is load-bearing — zeroing rd_lo BEFORE the LSL.W would
+                // destroy rn_lo in the in-place case rd_lo == rn_lo, so this
+                // cannot be reordered to dodge the displacement change.
+                emit_thumb_zero_fill(&mut bytes, rd_lo_bits);
 
-                Ok(bytes) // Total: 38 bytes
+                Ok(bytes) // 38 bytes (40 when rd_lo >= R8 takes MOV.W)
             }
 
             // I64ShrU: 64-bit logical shift right with branch for n<32 vs n>=32
@@ -4742,8 +4752,11 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // B .done (+2 halfwords)
-                let b_done: u16 = 0xE002;
+                // B .done — see I64Shl: `.done` is the END of the expansion,
+                // past the trailing zero-fill, so the displacement is derived
+                // from that zero-fill's real width (#916).
+                let large_arm_hw = 2 + thumb_zero_fill_halfwords(rd_hi_bits);
+                let b_done: u16 = 0xE000 | (large_arm_hw - 1);
                 bytes.extend_from_slice(&b_done.to_le_bytes());
 
                 // --- Large shift (n >= 32) ---
@@ -4753,11 +4766,12 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // MOV rd_hi, #0
-                let mov_zero: u16 = 0x2000 | ((rd_hi_bits as u16) << 8);
-                bytes.extend_from_slice(&mov_zero.to_le_bytes());
+                // MOV rd_hi, #0 (#916: MOV.W for rd_hi >= R8). Order is
+                // load-bearing: the LSR.W above reads rn_hi, which may BE
+                // rd_hi in the in-place case.
+                emit_thumb_zero_fill(&mut bytes, rd_hi_bits);
 
-                Ok(bytes) // Total: 38 bytes
+                Ok(bytes) // 38 bytes (40 when rd_hi >= R8 takes MOV.W)
             }
 
             // I64ShrS: 64-bit arithmetic shift right with branch for n<32 vs n>=32
@@ -5006,12 +5020,16 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
                 // .done: (offset 22)
-                // i64.clz returns i64, so clear high word: MOV rnhi, #0 (2 bytes)
-                // MOVS Rn, #0: 0010 0 Rn 00000000
-                let mov0: u16 = (0x2000 | (rn_hi_bits << 8)) as u16;
-                bytes.extend_from_slice(&mov0.to_le_bytes());
+                // i64.clz returns i64, so clear high word (#916: MOV.W for
+                // rnhi >= R8 — this site is UNCONDITIONALLY reached, so every
+                // i64.clz with a high `rnhi` returned garbage in its upper 32
+                // bits, not just the shift ops the issue named). No branch
+                // displacement changes: `B .done` above targets offset 22,
+                // which IS this instruction's own address, and `BEQ` targets
+                // offset 14, before it.
+                emit_thumb_zero_fill(&mut bytes, rn_hi_bits);
 
-                Ok(bytes)
+                Ok(bytes) // 24 bytes (26 when rnhi >= R8 takes MOV.W)
             }
 
             // I64Ctz: Count trailing zeros in 64-bit value
@@ -5090,11 +5108,13 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
                 // .done: (offset 30)
-                // i64.ctz returns i64, so clear high word: MOV rnhi, #0 (2 bytes)
-                let mov0: u16 = (0x2000 | (rn_hi_bits << 8)) as u16;
-                bytes.extend_from_slice(&mov0.to_le_bytes());
+                // i64.ctz returns i64, so clear high word (#916: MOV.W for
+                // rnhi >= R8). As with I64Clz this site is unconditional, and
+                // no displacement moves: `B .done` targets offset 30 = this
+                // instruction's own address, `BEQ` targets offset 18.
+                emit_thumb_zero_fill(&mut bytes, rn_hi_bits);
 
-                Ok(bytes)
+                Ok(bytes) // 32 bytes (34 when rnhi >= R8 takes MOV.W)
             }
 
             // I64Popcnt: Population count of 64-bit value
@@ -6631,10 +6651,12 @@ impl ArmEncoder {
                         op2: Operand2::Reg(*rn),
                     })?);
                 }
-                // MOV rdhi, #0 (16-bit: MOVS Rd, #0)
-                let rdhi_bits = reg_to_bits(rdhi) as u16;
-                let instr: u16 = 0x2000 | (rdhi_bits << 8);
-                bytes.extend_from_slice(&instr.to_le_bytes());
+                // MOV rdhi, #0 (#916: MOV.W for rdhi >= R8). Unconditional
+                // site with no branches in the expansion — before the fix this
+                // emitted the literal two-instruction stream [4608, 2800], half
+                // of which was `CMP r0,#0` rather than the high-word clear, so
+                // every i64.extend_i32_u into a high pair leaked stale bits.
+                emit_thumb_zero_fill(&mut bytes, reg_to_bits(rdhi));
                 Ok(bytes)
             }
 
@@ -8234,6 +8256,43 @@ fn check_ldst_imm12(offset: u32) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// #916 — emit `Rd = 0` in Thumb-2, correctly for EVERY destination register.
+///
+/// The 16-bit `MOVS Rd, #imm8` (T1) is `0010 0 Rd(3) imm8` — the Rd field is
+/// **three bits**. For R8-R12 `reg_to_bits` yields 8..12, so `rd_bits << 8`
+/// overflows into bit 11 and `0x2000 | 0x0800` is `0x2800` = `CMP r0, #0`:
+/// not a move at all. The destination is never written (it keeps stale data)
+/// and the flags are clobbered. Same class as #180 / H-CODE-9, and the same
+/// defect #311 fixed for `I64SetCond`.
+///
+/// High registers therefore take the 32-bit `MOV.W Rd, #imm8` (T2,
+/// `F04F 0000 | Rd<<8 | imm8`), whose Rd field is four bits. `MOV.W` with S=0
+/// does not set flags, which is what these zero-fill sites want anyway.
+///
+/// **Callers with branches must consult [`thumb_zero_fill_halfwords`].** This
+/// emits 1 halfword for R0-R7 and 2 for R8-R12; any branch whose target lies
+/// PAST this instruction moves when it widens and its displacement has to be
+/// derived rather than hard-coded. (A branch targeting this instruction's own
+/// address is unaffected — an instruction cannot move itself.)
+fn emit_thumb_zero_fill(bytes: &mut Vec<u8>, rd_bits: u32) {
+    if rd_bits < 8 {
+        let movs: u16 = 0x2000 | ((rd_bits as u16) << 8);
+        bytes.extend_from_slice(&movs.to_le_bytes());
+    } else {
+        bytes.extend_from_slice(&0xF04Fu16.to_le_bytes());
+        bytes.extend_from_slice(&(((rd_bits as u16) << 8) as u16).to_le_bytes());
+    }
+}
+
+/// Halfword length of the encoding [`emit_thumb_zero_fill`] picks for
+/// `rd_bits`. Branch displacements spanning the zero-fill derive from this so
+/// the encoder cannot drift from itself (#916; the byte-size estimator mirrors
+/// it in `synth_synthesis::estimate_arm_byte_size`, pinned by the #498
+/// `estimator_encoder_agreement` oracle).
+fn thumb_zero_fill_halfwords(rd_bits: u32) -> u16 {
+    if rd_bits < 8 { 1 } else { 2 }
 }
 
 fn reg_to_bits(reg: &Reg) -> u32 {

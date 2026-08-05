@@ -582,6 +582,65 @@ fn cases() -> Vec<Case> {
                 rm_hi: Reg::R5,
             },
         ),
+        // #916 — HIGH-DESTINATION shift/bit-count shapes. The zeroed half is
+        // `MOVS Rd,#0` (2 bytes) only for R0-R7; a 3-bit Rd field means R8-R12
+        // must take the 32-bit `MOV.W`, so these expansions are 2 bytes LONGER
+        // (38->40, 24->26, 32->34) and the estimator has to know it. Without
+        // these cases the oracle only ever saw the low-reg shapes and would
+        // have stayed green while the estimator under-counted every high-reg
+        // i64 shift by 2 — drifting each branch that spans one (the #483 class).
+        // The allocator pool is R0-R8, so R8 is producible today.
+        agree(
+            "I64Shl_hi_rd_lo",
+            I64Shl {
+                rd_lo: Reg::R8,
+                rd_hi: Reg::R1,
+                rn_lo: Reg::R2,
+                rn_hi: Reg::R3,
+                rm_lo: Reg::R4,
+                rm_hi: Reg::R5,
+            },
+        ),
+        agree(
+            "I64ShrU_hi_rd_hi",
+            I64ShrU {
+                rd_lo: r0,
+                rd_hi: Reg::R8,
+                rn_lo: Reg::R2,
+                rn_hi: Reg::R3,
+                rm_lo: Reg::R4,
+                rm_hi: Reg::R5,
+            },
+        ),
+        // I64ShrS sign-fills with the 32-bit ASR.W (4-bit Rd) — no 16-bit form
+        // to widen, so it must stay 40 bytes at a high destination too.
+        agree(
+            "I64ShrS_hi_rd_hi",
+            I64ShrS {
+                rd_lo: r0,
+                rd_hi: Reg::R8,
+                rn_lo: Reg::R2,
+                rn_hi: Reg::R3,
+                rm_lo: Reg::R4,
+                rm_hi: Reg::R5,
+            },
+        ),
+        agree(
+            "I64Clz_hi_rnhi",
+            I64Clz {
+                rd: r0,
+                rnlo: Reg::R1,
+                rnhi: Reg::R8,
+            },
+        ),
+        agree(
+            "I64Ctz_hi_rnhi",
+            I64Ctz {
+                rd: r0,
+                rnlo: Reg::R1,
+                rnhi: Reg::R8,
+            },
+        ),
         agree(
             "I64Rotl",
             I64Rotl {
