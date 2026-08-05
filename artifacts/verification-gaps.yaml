@@ -203,3 +203,87 @@ artifacts:
       req-type: non-functional
       priority: should
       verification-track: kani
+
+  # =========================================================================
+  # VG-009 / VG-010 — the EVIDENCE-INSTRUMENT gaps (#910, #890 F10).
+  #
+  # These two are a different species from VG-001..VG-008. Those say "a
+  # property is not yet proven". These say "an instrument REPORTS something
+  # other than what its name implies" — the measurement itself is the defect.
+  # A green-but-meaningless number is worse than a red one, because it gets
+  # quoted; that is the #890 lesson wearing new clothes.
+  # =========================================================================
+  - id: VG-009
+    type: sys-verification
+    title: "Line coverage is blind to the execution differentials (scope mislabel)"
+    description: >
+      The `Code Coverage` CI job runs `cargo llvm-cov --workspace --lcov`,
+      which instruments and executes the RUST TEST SUITE only. This project's
+      strongest evidence is the execution differentials: Python harnesses in
+      scripts/repro/ that spawn the compiler as a SEPARATE, UNINSTRUMENTED
+      process (resolved from $SYNTH), in DIFFERENT CI jobs (the repro sweeps,
+      the trap-semantics oracle, the per-issue oracles). An uninstrumented
+      subprocess emits no profile data, so every one of those executions is
+      invisible to the percentage.
+      Consequence, measured at v0.54.0: synth-backend-aarch64/src/backend.rs
+      41.6 %, synth-backend-riscv/src/backend.rs 43.7 %,
+      instruction_selector.rs 42.7 % (92 of 260 functions "never executed") —
+      while aarch64/selector.rs reads 89.4 %. backend.rs is largely ELF
+      emission, exercised end-to-end constantly through the invisible path.
+      The number therefore UNDERSTATES real testing, and for the same reason
+      cannot be read as a completeness measure: it cannot say what the
+      differentials do not reach.
+      RESOLUTION TAKEN (v0.55, #910 options 2+3): the job is renamed to state
+      its scope, the instrument's blindness is documented at the job and at
+      every place the percentage is quoted, and the differential population is
+      reported SEPARATELY as an executed-check count rather than folded into
+      one percentage. Option 1 (point the differentials at an instrumented
+      binary) was DECLINED: it changes the artifact under test — the
+      differentials exist to execute the SHIPPED bytes — and it would buy
+      precision on an axis that is still the wrong completeness instrument.
+    status: implemented
+    tags: [verification-gap, evidence-instrument, coverage, honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: measurement
+      issue: "#910"
+
+  - id: VG-010
+    type: sys-verification
+    title: "Oracle CI steps asserted exit status, not that any check ran"
+    description: >
+      #890 wired 63 forgotten execution oracles into CI. Measured on that
+      result: 152 of the 160 workflow steps that run a scripts/repro/ oracle
+      assert NOTHING BEYOND THE PROCESS EXIT CODE — not only the 63 newly
+      wired ones, the pre-existing hand-wired steps too; exactly 8 steps
+      asserted a printed verdict or count. An oracle that exits 0 having
+      executed zero comparisons is indistinguishable from one that executed
+      hundreds, which is the inert-gate failure #890 exists to reject,
+      one level down: the gate is wired, but what it attests is unstated.
+      RESOLUTION TAKEN (v0.55): oracle steps run through scripts/oracle_run.py,
+      an in-process driver that counts REAL emulator entries and wasmtime
+      invocations, asserts a declared per-script floor (`# ci-checks:` header,
+      the same locality argument as `# ci-status:`), and records the count.
+      Scripts that execute nothing emulatable declare a stdout-pattern floor
+      instead; the residue that can bind to neither is enumerated in
+      docs/development/ORACLE_WIRING.md rather than covered by a uniform claim.
+    status: implemented
+    tags: [verification-gap, evidence-instrument, oracle, honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+      - type: traces-to
+        target: H-CODE-1
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: measurement
+      issue: "#910 (F10)"
