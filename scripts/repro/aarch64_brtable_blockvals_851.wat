@@ -199,4 +199,28 @@
   (func (export "block_branch_only") (param i32) (result i32)
     (block (result i32)
       (br_if 0 (i32.const 77) (local.get 0))
-      (unreachable))))
+      (unreachable)))
+
+  ;; ---- a CALL inside a value-carrying frame ----------------------------
+  ;; The one soundness claim in `reconcile_into` that nothing else here
+  ;; executes: `bl` CLOBBERS the caller-saved x9..x15 pool the reconciliation
+  ;; slot lives in. The claim is that this is harmless, because a branch that
+  ;; deposited into the slot has ALREADY transferred control — so on any path
+  ;; that reaches the `bl`, the slot's value is dead and the fall-through
+  ;; re-writes it. Cond nonzero takes the branch (the `bl` never runs and the
+  ;; deposited 7 must survive); cond zero runs the call (the clobber must be
+  ;; invisible). These shapes also force the HOMED-PARAM path (non-leaf +
+  ;; reads a param), which no other value-carrying case here touches.
+  (func $three (result i32) (i32.const 3))
+
+  (func (export "block_over_call") (param i32) (result i32)
+    (block (result i32)
+      (br_if 0 (i32.const 7) (local.get 0))
+      (drop)
+      (call $three)))
+
+  ;; Same property across the `else` deposit rather than the `end` one.
+  (func (export "if_value_over_call") (param i32) (result i32)
+    (if (result i32) (local.get 0)
+      (then (i32.const 7))
+      (else (call $three)))))

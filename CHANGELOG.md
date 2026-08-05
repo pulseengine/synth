@@ -52,13 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
-- `scripts/repro/aarch64_brtable_blockvals_851_differential.py` (CI-wired): 84
-  checks over 17 exported functions against wasmtime, under unicorn AND
+- `scripts/repro/aarch64_brtable_blockvals_851_differential.py` (CI-wired): 88
+  checks over 19 exported functions against wasmtime, under unicorn AND
   natively on an arm64 host. Per table it walks the index lattice — every arm,
   the index exactly AT the bound, one OVER it, and `0xFFFFFFFF` (the case a
   SIGNED compare would mis-dispatch) — plus a table at exactly 16 targets, a
   `br_table` arm falling into a trap, and both join edges of every
-  value-carrying frame including a value-carrying loop's back-edge.
+  value-carrying frame including a value-carrying loop's back-edge. Two cases
+  put a `bl` INSIDE a value-carrying frame — the one soundness claim (a call
+  cannot clobber a live reconciliation slot) that nothing else executes; the
+  harness applies the `R_AARCH64_CALL26` relocations itself, so the emitted
+  relocation is part of what is checked rather than a hang.
   NON-VACUITY was demonstrated by MUTATION, not asserted: taking the join
   position before the fall-through's reconciliation move reddens 16 checks, an
   off-by-one in the chain constants reddens 22, and using `result_arity` where

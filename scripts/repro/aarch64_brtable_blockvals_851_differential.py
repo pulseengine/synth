@@ -35,6 +35,16 @@ WHAT MAKES IT NON-VACUOUS.
   * i64 / f64 / f32 results go through the same slot, proving the `mov x` /
     `fmov d` width claims (an f32 carried through the 64-bit FP move must keep
     its single-precision bit pattern).
+  * `block_over_call` / `if_value_over_call` put a `bl` INSIDE a value-carrying
+    frame. That is the one soundness claim in `reconcile_into` — a call cannot
+    clobber a live reconciliation slot — that nothing else here executes, and
+    `bl` really does clobber the caller-saved x9..x15 pool the slot lives in.
+    Cond nonzero takes the branch (the call never runs, the deposited 7 must
+    survive); cond zero runs the call (the clobber must be invisible, because
+    the deposited value is dead on that path). These shapes also force the
+    HOMED-PARAM path, which no other value-carrying case touches. The harness
+    APPLIES the `R_AARCH64_CALL26` relocations itself — see `load()` — so the
+    emitted relocation is part of what is checked rather than a hang.
 
 Two oracles: unicorn (UC_ARCH_ARM64, FPEN enabled) always, and — on an arm64
 host — NATIVE execution in a forked child, where an expected `brk #0` is
@@ -104,6 +114,8 @@ SIGS = {
     "block_f32": (["i32", "f32", "f32"], "f32"),
     "block_from_memory": (["i32"], "i32"),
     "block_branch_only": (["i32"], "i32"),
+    "block_over_call": (["i32"], "i32"),
+    "if_value_over_call": (["i32"], "i32"),
 }
 
 # Functions that read/write linear memory: unicorn only (x28 precondition).
@@ -157,6 +169,14 @@ CASES += [
     ("block_from_memory", [0]),
     ("block_branch_only", [1]),              # branch edge -> 77
     ("block_branch_only", [0]),              # fall-through is `unreachable`
+    # A `bl` inside a value-carrying frame clobbers the caller-saved temp pool
+    # the slot lives in. Cond nonzero -> the branch's 7 must survive (the call
+    # never runs); cond zero -> the call's 3 must come back (the clobber must
+    # be invisible, because the deposited value is dead on that path).
+    ("block_over_call", [1]),
+    ("block_over_call", [0]),
+    ("if_value_over_call", [1]),
+    ("if_value_over_call", [0]),
 ]
 
 
@@ -218,17 +238,51 @@ def compile_aarch64(out):
         sys.exit(f"aarch64 compile failed/skipped: {r.stderr}")
 
 
+R_AARCH64_JUMP26 = 282
+R_AARCH64_CALL26 = 283
+
+
 def load(elf):
+    """Read `.text` + the symtab, and APPLY the direct-call relocations.
+
+    `bl func_N` is emitted as a placeholder word plus an `R_AARCH64_CALL26`
+    that a linker would normally resolve. Executing the object unlinked would
+    make every call branch to ITSELF — an infinite loop, which HANGS rather
+    than fails, so the harness would report nothing at all. Resolving them here
+    also means the emitted relocation is part of what this oracle checks: a
+    wrong offset or addend lands the call somewhere else and changes the
+    result. The displacement is PC-relative, so patching against the section's
+    own addresses is load-address independent.
+    """
     f = ELFFile(open(elf, "rb"))
     text = f.get_section_by_name(".text")
-    code, base = text.data(), text["sh_addr"]
+    code, base = bytearray(text.data()), text["sh_addr"]
+    symtab = None
     syms = {}
     for sec in f.iter_sections():
         if sec.header.sh_type == "SHT_SYMTAB":
+            symtab = sec
             for sy in sec.iter_symbols():
                 if sy.name:
                     syms[sy.name] = sy["st_value"] & ~1
-    return code, base, syms
+
+    rela = f.get_section_by_name(".rela.text")
+    applied = 0
+    if rela is not None and symtab is not None:
+        for r in rela.iter_relocations():
+            rtype = r["r_info_type"]
+            if rtype not in (R_AARCH64_CALL26, R_AARCH64_JUMP26):
+                sys.exit(f"unhandled .text relocation type {rtype} — this "
+                         f"harness only knows the direct-call forms")
+            sym = symtab.get_symbol(r["r_info_sym"])
+            target = sym["st_value"] + r["r_addend"]
+            site = base + r["r_offset"]
+            i = r["r_offset"] - base
+            w = int.from_bytes(code[i:i + 4], "little")
+            w = (w & ~0x03FFFFFF) | (((target - site) // 4) & 0x03FFFFFF)
+            code[i:i + 4] = w.to_bytes(4, "little")
+            applied += 1
+    return bytes(code), base, syms, applied
 
 
 def unicorn_run(code, base, faddr, sig, args):
@@ -312,6 +366,11 @@ def native_run(code, faddr, code_base, sig, args):
     if pid == 0:
         try:
             os.close(rd)
+            # A wrong branch destination can loop forever; without this the
+            # parent's waitpid would HANG (a gate that never reports is worse
+            # than a red one). SIGALRM kills the child and surfaces as an
+            # unexpected signal.
+            signal.alarm(20)
             base_addr = native_setup(code)
             fn = ctypes.CFUNCTYPE(_CTY[ret], *[_CTY[t] for t in types])(
                 base_addr + (faddr - code_base)
@@ -337,7 +396,7 @@ def native_run(code, faddr, code_base, sig, args):
 def main():
     out = "/tmp/aarch64_brtable_blockvals_851.o"
     compile_aarch64(out)
-    code, base, syms = load(out)
+    code, base, syms, relocs_applied = load(out)
     host_native = platform.machine() in ("arm64", "aarch64")
 
     fails = 0
@@ -395,9 +454,19 @@ def main():
     if total < 60:
         print(f"VACUOUS: only {total} checks ran; the case lattice shrank")
         fails += 1
+    if relocs_applied < 2:
+        # The `bl` inside a value-carrying frame is the ONLY thing exercising
+        # `reconcile_into`'s "a call cannot clobber a live slot" claim. If its
+        # relocation vanished, the calls would be self-branches and the claim
+        # would go untested while the gate stayed green.
+        print(f"VACUOUS: only {relocs_applied} direct-call relocations applied "
+              f"— the call-inside-a-value-carrying-frame cases stopped "
+              f"exercising a real `bl`")
+        fails += 1
 
     print(f"\n{total} checks ({trap_cases} trap, {value_cases} value) across "
-          f"{len(seen_fns)} exported functions, "
+          f"{len(seen_fns)} exported functions "
+          f"[{relocs_applied} direct-call relocations applied], "
           f"{'arm64 host + unicorn' if host_native else 'unicorn-only host'}")
     print("RESULT:", "PASS — aarch64 br_table (index lattice incl. default / "
           "at-bound / over-bound / unsigned 0xFFFFFFFF, mixed loop+block "

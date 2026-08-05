@@ -597,14 +597,20 @@ jobs:
         # reads the index UNSIGNED), and puts a LOOP HEADER in the same table as
         # a forward block end so a wrong branch DIRECTION shows up as a wrong
         # trip count. The value-carrying frames are driven down BOTH edges of
-        # every join.
+        # every join, including a frame containing a `bl` — the one soundness
+        # claim (a call cannot clobber a live reconciliation slot) that nothing
+        # else executes.
         #
         # ANTI-VACUITY (#890). `set -euo pipefail`, NOT bare `pipefail`: with
         # pipefail ALONE the step's exit status is the LAST command's, so an
         # oracle that printed FAIL and exited 1 still went GREEN. The verdict is
         # then taken from the script's OWN summary line, and the counts are
         # asserted NON-ZERO in both outcome classes — an oracle that stopped
-        # trapping (or stopped returning values) must go RED.
+        # trapping (or stopped returning values) must go RED. The relocation
+        # count is asserted too: the harness APPLIES the `R_AARCH64_CALL26`
+        # relocations itself, and if they vanished the calls would become
+        # self-branches and the clobber claim would go untested while the gate
+        # stayed green.
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
@@ -612,6 +618,7 @@ jobs:
             | tee /tmp/a64_brtable.log
           grep -q '^RESULT: PASS' /tmp/a64_brtable.log
           grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\) across [1-9][0-9]* exported' /tmp/a64_brtable.log
+          grep -Eq '\[[1-9][0-9]* direct-call relocations applied\]' /tmp/a64_brtable.log
           n=$(sed -n 's/^\([0-9]*\) checks .*/\1/p' /tmp/a64_brtable.log)
           echo "br_table/value-carrying oracle ran $n checks"
           [ "$n" -ge 60 ]
