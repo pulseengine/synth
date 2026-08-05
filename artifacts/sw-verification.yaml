@@ -577,17 +577,30 @@ artifacts:
         target: VCR-DEC-001
     fields:
       method: automated-test
+      # `steps:` is a SEQUENCE here, not the mapping every other artifact in
+      # this repo uses. That is deliberate, and it is a FINDING rather than a
+      # style choice: `rivet check verification-evidence` scans
+      # `fields.steps[].run`, so the mapping shape makes it scan NOTHING — it
+      # reports `named_test_steps_checked: 0` repo-wide while 31 artifacts carry
+      # a `cargo test` step, and passes green. A gate that checks nothing is the
+      # exact class this project pins. Written in the shape the oracle actually
+      # reads, so at least THIS entry's test filter is verified to exist; the
+      # other 42 artifacts are a follow-up, because each conversion has to
+      # re-verify that its filter still matches a real test — which is the point.
       steps:
-        run: "cargo test -p synth-backend --lib i64_shift_zero_fill_mis_encodes_for_a_high_destination && cargo test -p synth-cli --test frozen_codegen_bytes"
-        differential: >
-          SYNTH=./target/debug/synth python3
-          scripts/repro/vcr_dec_001_join_alloc_execution_differential.py — CI-wired
-          (`set -euo pipefail`, awk asserts CHECKS non-zero and all-passing,
-          ENGAGED non-zero, CALLSHAPES >= 4, PAIRSHAPES >= 4, SHIFTSHAPES >= 2)
-        coverage: >
-          100/100 execution checks over 28 engaged functions (6 call shapes,
-          9 i64-pair shapes, 6 of those carrying a real i64 shift expansion);
-          frozen anchors 10/10 and all 633 pre-existing relocatable + 1059
-          self-contained corpus functions byte-identical to v0.54 with the flag
-          off; VCR-RA-003 join availability Consistent 440 -> 560 of 640 on the
-          DEFAULT build with 0 hard errors across the corpus
+        - run: "cargo test -p synth-backend --lib i64_shift_zero_fill_mis_encodes_for_a_high_destination"
+        - run: "cargo test -p synth-cli --test frozen_codegen_bytes"
+        - differential: >
+            SYNTH=./target/debug/synth python3
+            scripts/repro/vcr_dec_001_join_alloc_execution_differential.py — CI-wired
+            (`set -euo pipefail`, awk asserts CHECKS non-zero and all-passing,
+            ENGAGED non-zero, CALLSHAPES >= 4, PAIRSHAPES >= 4, SHIFTSHAPES >= 2)
+        - coverage: >
+            100/100 execution checks over 28 engaged functions (6 call shapes,
+            9 i64-pair shapes, 6 of those carrying a real i64 shift expansion);
+            frozen anchors 10/10 and all 633 pre-existing relocatable + 1059
+            self-contained corpus functions byte-identical to v0.54 with the flag
+            off; VCR-RA-003 join availability Consistent 440 -> 560 of 640 on the
+            DEFAULT build with 0 hard errors across the corpus (thumb2 AND the
+            cortex-r5 A32 path, whose expansions differ)
+

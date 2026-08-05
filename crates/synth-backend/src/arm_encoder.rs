@@ -11642,7 +11642,7 @@ mod tests {
         assert!(code.len() >= 4, "I64Xor should emit at least 4 bytes");
     }
 
-    /// VCR-REACH-001 side finding — the i64 shift expansions' zero-fill uses the
+    /// #916 (VCR-REACH-001 side finding) — the i64 shift expansions' zero-fill uses the
     /// 16-bit Thumb `MOVS` T1 form, whose `rd` field is THREE bits, so a
     /// destination in R8-R12 does not encode a `MOV` at all.
     ///

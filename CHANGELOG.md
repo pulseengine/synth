@@ -37,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converts into bytes almost entirely through `shrink_callee_saved_saves`, which
   is LEAF-ONLY. **Still flag-off, and the flip criterion is no closer on bytes.**
 
-- **Latent miscompile found and pinned (not fixed): the i64 shift zero-fill
-  mis-encodes for a high destination.** `I64Shl`/`I64ShrU`'s Thumb expansions
+- **Latent miscompile found and pinned, not fixed (#916): the i64 shift
+  zero-fill mis-encodes for a high destination.** `I64Shl`/`I64ShrU`'s Thumb expansions
   zero a half with the 16-bit `MOVS` T1 form, `0x2000 | (rd << 8)`, whose `rd`
   field is three bits — for R8 that is `0x2800`, i.e. `CMP r0, #0`, and the half
   is never zeroed. Same class as #180 / H-CODE-9, and the same one #311 already
@@ -72,19 +72,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The i64-pair model is stated ONCE (`liveness::pair_effect`) and consumed by the
   pass, `validate_cfg_rewrite`, the ABI observable contract and VCR-RA-003 — so
   no static instrument can catch an error in the model itself. The new shapes are
-  therefore EXECUTED against wasmtime, and the coverage is proven non-vacuous by
-  mutation: deleting the early-clobber interference edges lets the colourer
-  coalesce `I64Ldr`'s `rdlo` onto a base the second `LDR` re-reads —
-  `validate_cfg_rewrite`, VCR-RA-003 and the ABI contract are ALL green on all
-  seven functions, and only execution fails it. A third counterexample to the
-  idea that per-compilation validation is an independent check on codegen.
-- Honest residual, reported because a mutation matrix that lists only its
-  successes is not evidence: the coherent "model omits `rm_hi`" mutation is NOT
-  caught, even against two purpose-built register-pressure fixtures. The
-  churn-minimising colour bias fills R0–R3 first and the shift-amount pair sits
-  in callee-saved R4–R8, so no live web is ever placed on the original `rm_hi`
-  register. That half of the clobber model is sound and cheap but currently
-  belt-and-braces rather than execution-gated.
+  therefore EXECUTED against wasmtime. **Precisely which obligation that gates:**
+  the model carries three, and only ONE of them is execution-gated.
+  - The EARLY-CLOBBER edges — yes, and strongly. Deleting them lets the colourer
+    coalesce `I64Ldr`'s `rdlo` onto a base the second `LDR` re-reads;
+    `validate_cfg_rewrite`, VCR-RA-003 and the ABI contract are ALL green on all
+    seven functions and only execution fails, with 3 wrong values. A third
+    counterexample (after v0.53's and v0.54's) to the idea that per-compilation
+    validation is an independent check on codegen.
+  - The `rm_lo` RMW clobber — defended by `rewrite_op`'s RMW-agreement check,
+    NOT by execution. Dropping it makes the rewrite unrepresentable and every
+    shift function declines. Worth having, but that guard was written in this
+    same lane alongside the model it constrains, so it is the model catching its
+    own inconsistency rather than independent detection.
+  - The `rm_hi` scratch clobber — NOT caught, and this is reported because a
+    mutation matrix that lists only its successes is not evidence. The coherent
+    "model omits `rm_hi`" mutation stays green even against two purpose-built
+    register-pressure fixtures (four and eight i32 values live across the shift):
+    the churn-minimising colour bias fills R0–R3 first and the shift-amount pair
+    sits in callee-saved R4–R8, so no live web is ever placed on the original
+    `rm_hi` register. Sound and cheap, but belt-and-braces rather than gated.
+- `identity-colouring` nearly doubled, 31 → 58: about 27 newly-admitted functions
+  are fully modeled and fully validated and then colour to identity, so they are
+  handed straight back to the shipping pass. That is honest behaviour, and it is
+  also the cheapest reach left on the table — a candidate for the next increment
+  alongside the leaf-only `shrink_callee_saved_saves` lever.
+- Found while adding this lane's own verification artifact, and pre-existing:
+  `rivet check verification-evidence` was VACUOUS repo-wide. It scans
+  `fields.steps[].run` (a sequence) while every artifact here writes `steps:` as
+  a mapping, so it reported `named_test_steps_checked: 0` while 31 artifacts
+  carry a `cargo test` step — and passed green. SWVER-022 is written in the shape
+  the oracle actually reads (verified red-first: a nonexistent test name makes it
+  exit 1), which takes it from 0 checked to 1. Converting the other 42 is a
+  follow-up, because each conversion has to re-verify that its filter still
+  matches a real test — which is the entire point of the oracle. Separately, a
+  source with a YAML parse error is silently skipped and the oracle still reports
+  `ok: true`.
 - Still declined, by name, with the histogram to prove it: `single-block` 73,
   `unmodeled-op` 61 (the i64 div/rem software loops, rotates, `I64Mul`,
   popcnt/clz/ctz, the narrow sign-extends, `MemorySize`/`MemoryGrow`),

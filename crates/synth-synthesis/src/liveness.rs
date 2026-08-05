@@ -3917,8 +3917,8 @@ pub fn pair_early_clobber(op: &ArmOp) -> bool {
 /// the 32-bit `MOV.W` the way #311 fixed `I64SetCond`, because these expansions
 /// are hand-emitted halfwords with FIXED internal branch displacements
 /// (`B .done` = `0xE002`, two halfwords) that a 4-byte instruction would
-/// overshoot — so this is reported as a latent encoder defect and the allocator
-/// is kept from REACHING it, rather than papered over here.
+/// overshoot — so this is filed as a latent encoder defect (#916) and the
+/// allocator is kept from REACHING it, rather than papered over here.
 ///
 /// The pass uses this to (a) block R8 as a colour for the named operand and
 /// (b) DECLINE outright when the incoming stream already has a high register
