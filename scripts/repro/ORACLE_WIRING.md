@@ -355,6 +355,93 @@ An honest short list beats a uniform claim:
 Everything else — 133 of 150 wired oracles — asserts a real emulator-entry
 floor.
 
+## Red-first mutation evidence — the check floors
+
+Same discipline as the #890 matrix above: each leg runs the step **extracted
+verbatim from `ci.yml`** (`yaml.safe_load` → the step's `run:` block → `bash -e`),
+so there is no transcription drift between what was proved and what CI runs.
+
+```
+===== BASELINE: wiring gate + floor ratchet =====
+STEP EXIT=0
+  ci-checks compiles       9 scripts, floor total 43
+  ci-checks emulations   133 scripts, floor total 294914
+  ci-checks none           1 scripts, floor total 0
+  ci-checks stdout         7 scripts, floor total 458
+oracle-wiring gate is non-vacuous: ... 150 of them wired ... and every wired
+oracle declares a check floor (294914 emulator entries asserted across 133 of them).
+
+===== BASELINE: one oracle step through the driver =====
+STEP EXIT=0
+ORACLE-EVIDENCE script=base_cse_differential.py mode=emulations floor=2
+measured=2 emulations=2 wasmtime_calls=1 compiles=4 exit=0
+
+===== M1: harness returns BEFORE its comparison loop (still prints PASS, exits 0) =====
+STEP EXIT=1
+ORACLE: PASS
+ORACLE-EVIDENCE script=base_cse_differential.py mode=emulations floor=2
+measured=0 emulations=0 wasmtime_calls=0 compiles=0 exit=0
+FAIL scripts/repro/base_cse_differential.py: VACUOUS — declared floor
+emulations >= 2, measured 0. The oracle exited 0 having executed nothing; that
+is a gate that cannot fail, not a passing gate.
+
+===== M2: one floor lowered to 0 -> --min-emulation-floor ratchet =====
+STEP EXIT=1
+FAIL check-floor RATCHET BROKEN: summed `ci-checks: emulations` floors 294912 <
+recorded minimum 294914. An oracle lost execution, or a floor was lowered.
+
+===== M3: `# ci-checks:` header deleted -> wiring gate =====
+STEP EXIT=1
+  ci-checks UNDECLARED: 1
+FAIL scripts/repro/base_cse_differential.py: no `# ci-checks:` header. Every
+oracle must declare what it attests ...
+
+===== M4: a happy-path STRING instead of a count (no capture group) =====
+STEP EXIT=1
+oracle_run: ... `ci-checks: stdout` regex must have EXACTLY ONE capture group
+holding the count (got 0) — a pattern with no group asserts a happy-path
+STRING, not that anything ran.
+
+===== M5: a routed oracle step demoted to a COMMENT -> wiring gate =====
+STEP EXIT=1
+FAIL scripts/repro/bulk_memory_374_differential.py: declares `wired` but NO
+workflow STEP runs it — the gate is INERT. It IS mentioned in ci.yml, but only
+in a COMMENT — prose does not run an oracle.
+
+===== M6: oracle steps un-routed (exit-status-only again) -> claims ledger =====
+STEP EXIT=1
+track shrank below floor: 157 < recorded min 159
+[/oracle_run\.py scripts/repro//] — update the claim, not just the number
+
+===== M7: job ledger short (1 of 15 oracles reported, --min-oracles 15) =====
+STEP EXIT=1
+ORACLE-LEDGER job=... oracles=1 runs=1 emulations=16 ... below_floor=0
+FAIL ledger SHORT: 1 distinct oracles reported, expected >= 15. A step is
+missing, commented out, or the job exited early — its gate is inert (#890).
+
+===== RESTORED =====
+STEP EXIT=0
+```
+
+**M1 is the load-bearing one.** The mutated harness still prints its `ORACLE:
+PASS` banner and still exits 0 — a `grep -q '^ORACLE: PASS'` assertion would
+have greened it, and so would every one of the 152 exit-status-only steps this
+mechanism replaces. Only the emulator count catches it, because that count does
+not come from the harness.
+
+**M5 re-proves the v0.54 fix under this lane's edits.** YAML eats `#` only in a
+single-line plain scalar; in a `run: |` block the `#` survives into the script
+body, so commenting a step out used to leave the script "referenced" and the
+gate GREEN. 159 step bodies were rewritten here, which is exactly the surface
+that fix covers, so it is re-run rather than assumed.
+
+**M6 nuance, stated rather than rounded off:** the mutation substituted both the
+`python3` and the `python` spelling, so it un-routed two step lines, not one
+(159 → 157). The direction is what the leg proves — un-routing reddens.
+
+**M7** is the runtime counterpart of M5: even if the static gate were bypassed,
+a job whose oracle steps stopped running files a short ledger and goes red.
+
 ## Adding a repro script
 
 1. Write the harness. Give it **exit-code discipline** — `sys.exit(0 if ok else 1)`.
