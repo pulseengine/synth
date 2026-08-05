@@ -295,7 +295,7 @@ Honest open items: the RV32 local-promotion flip is held on a failed no-grow gat
 | `synth-frontend` | WASM Component Model parser and validator |
 | `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
 | `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
-| `synth-backend-aarch64` | AArch64 (A64) host-native backend — integer subset, `-b aarch64` |
+| `synth-backend-aarch64` | AArch64 (A64) host-native backend, `-b aarch64` — i32/i64 integer core, the **complete scalar f32/f64 surface** (v0.54), bounds-checked linear memory, globals, `call_indirect` with all three §4.4.8 trap guards, direct calls, and full control flow. See the [feature matrix](docs/status/FEATURE_MATRIX.md) for the exact op surface and the mechanically-enumerated declines |
 | `synth-backend-awsm` | aWsm backend integration (WASM-to-native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM-to-Rust transpiler) |
 | `synth-synthesis` | WASM-to-ARM instruction selection, peephole optimizer, pattern matcher |
