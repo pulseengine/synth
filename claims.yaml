@@ -966,6 +966,47 @@ claims:
         text: 'grep -q "^#846 CHECKS=75/75" gpio846.out'
 
   # ---------------------------------------------------------------------------
+  # VCR-MEM-004 / #901 — the SoftwareBoundsChecker cost claim.
+  #
+  # `synth-memory/src/bounds.rs` carried "~25-40% overhead" as a bare assertion
+  # for its whole life, and #901's whole premise is that verification pays for
+  # itself against exactly that number. So the doc now states a MEASURED cost,
+  # and this entry pins the doc's numbers to the constants the byte gate
+  # asserts against real compiled bytes. Change the lowering and the gate's
+  # constants move; move them without updating the doc and this reddens.
+  #
+  # What is pinned is the CAPABILITY (a measured guard tax and a measured
+  # recovery on a named fixture), never an issue number — a closed issue would
+  # let the ledger green-confirm a false residual (the v0.53 lesson).
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-PROVEN-SAFE-901-MEASURED
+    doc: crates/synth-memory/src/bounds.rs
+    text: "138 B (+147 %) and 40 instructions"
+    evidence:
+      - kind: verbatim
+        text: "recovers 80 B (58 % of the tax)"
+      - kind: file-exists
+        path: crates/synth-cli/tests/proven_safe_bounds_901.rs
+      - kind: file-exists
+        path: scripts/repro/proven_safe_bounds_901_differential.py
+      - kind: file-exists
+        path: scripts/repro/proven_safe_bounds_901.wat
+      # The doc's 138 B tax and 80 B recovery ARE the gate's constants.
+      - kind: count-eq
+        pattern: "const TAX_ALL_8: usize = 138;"
+        glob: "crates/synth-cli/tests/proven_safe_bounds_901.rs"
+        expect: 1
+      - kind: count-eq
+        pattern: "const SAVED_PROVEN_5: usize = 80;"
+        glob: "crates/synth-cli/tests/proven_safe_bounds_901.rs"
+        expect: 1
+      # Fail-closed is the deliverable: the refusal must stay in the ingestion.
+      - kind: count-eq
+        pattern: "REFUSED — module_sha256 mismatch"
+        glob: "crates/synth-core/src/proven_safe.rs"
+        expect: 1
+
+  # ---------------------------------------------------------------------------
   # #890 — the ORACLE-WIRING surface, generalized. SYNTH-GPIO-846-ORACLE-CI-WIRED
   # above pins ONE script's CI wiring by hand; that is the instance-at-a-time
   # shape this entry replaces. `scripts/repro/*.py` are synth's execution
