@@ -1008,3 +1008,101 @@ claims:
         text: "**7 manual**"
       - kind: verbatim
         text: "**0 unwired**"
+
+  # ---------------------------------------------------------------------------
+  # #910 — what a wired oracle ATTESTS. SYNTH-ORACLE-WIRING-890 above pins that
+  # a step RUNS each oracle; it says nothing about what that step checks, and
+  # measured on the #890 result, 152 of 160 oracle steps asserted only the
+  # process exit code. Exit 0 cannot tell "emulated 240 vectors" from "the loop
+  # never ran", so every `wired` oracle now declares a `# ci-checks:` floor that
+  # scripts/oracle_run.py enforces per run.
+  #
+  # The CAPABILITY pinned here (deliberately not an issue number — a ledger
+  # pinned to a closed issue green-confirms a false residual, the v0.53 burn):
+  #
+  #   * every wired oracle carries a floor      — count-min 150 declarations
+  #   * the execution population does not shrink — count-min 133 `emulations`
+  #                                                declarations, and the summed
+  #                                                floor is ratcheted in CI by
+  #                                                --min-emulation-floor
+  #   * the `none` escape hatch stays at ONE     — count-max 1. A second oracle
+  #                                                that can bind to nothing needs
+  #                                                a conversation, not a commit.
+  #
+  # Floors are `>=`, so adding a fixture cannot redden a step; the ratchet
+  # direction is UP. Lower the recorded minimum only when the evidence genuinely
+  # weakened — never to green a build.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ORACLE-CHECK-FLOORS-910
+    doc: scripts/repro/ORACLE_WIRING.md
+    text: "**294,914 emulator entries**"
+    evidence:
+      - kind: file-exists
+        path: scripts/oracle_run.py
+      - kind: file-exists
+        path: scripts/oracle_evidence.py
+      - kind: count-min                      # every wired oracle declares a floor
+        pattern: '^# ci-checks: '
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        min: 150
+      - kind: count-min                      # the EXECUTION population, per script
+        pattern: '^# ci-checks: emulations >= '
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        min: 133
+      - kind: count-max                      # the "nothing can be bound" hatch
+        pattern: '^# ci-checks: none'
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        max: 1
+      - kind: verbatim                       # the doc carries the per-mode split
+        text: "**133 oracles**"
+      - kind: verbatim
+        text: "Reported per mode and never summed across modes."
+      - kind: verbatim                       # the itemized weak-floor list stays
+        text: "## The oracles whose floor is weak, itemized"
+
+  # ---------------------------------------------------------------------------
+  # #910 — the CI side of the same claim, pinned so the doc's number and the
+  # number the gate actually enforces cannot drift apart, and so the routing
+  # cannot be quietly undone (unrouting a step would restore exit-status-only
+  # assertion while every other surface still claimed a floor).
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
+    doc: .github/workflows/ci.yml
+    text: "--min-emulation-floor 294914"
+    evidence:
+      - kind: count-min                      # oracle steps routed through the driver
+        pattern: 'oracle_run\.py scripts/repro/'
+        glob: ['.github/workflows/*.yml']
+        min: 159
+      - kind: count-min                      # per-job measured-evidence ledgers
+        pattern: 'oracle_evidence\.py'
+        glob: ['.github/workflows/*.yml']
+        min: 37
+      - kind: verbatim
+        text: "ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl"
+
+  # ---------------------------------------------------------------------------
+  # #910 — the coverage instrument says its SCOPE. The job was `Code Coverage`,
+  # a name implying whole-system coverage for a measurement of the Rust test
+  # suite alone; the differentials spawn an UNINSTRUMENTED subprocess from other
+  # jobs and are structurally invisible to it. Pinned so the scope caveat cannot
+  # be dropped while the number stays quotable — a green-but-meaningless number
+  # is worse than a red one.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-COVERAGE-SCOPE-910
+    doc: .github/workflows/ci.yml
+    text: "name: Rust-test Line Coverage (unit + integration only)"
+    evidence:
+      - kind: verbatim                       # the caveat travels WITH the number
+        text: "**Do not add them together.**"
+      - kind: verbatim
+        text: "UNINSTRUMENTED process"
+
+  - id: SYNTH-COVERAGE-SCOPE-910-README
+    doc: README.md
+    text: "<b>Rust-test line coverage only</b>"
+    evidence:
+      - kind: verbatim                       # the badge alt-text matches the scope
+        text: "[![Rust-test line coverage]"
+      - kind: verbatim
+        text: "It understates the testing that exists and is not a completeness measure"

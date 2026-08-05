@@ -136,11 +136,31 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   oracle-wiring gate now leaves 0 undeclared and 0 unwired scripts, so a
   forgotten gate is no longer indistinguishable from a deliberately manual one
   — what remains open is the 7 `manual` scripts (external fixture, measurement
-  and scratch categories) and the fact that the newly-wired sweeps assert exit
-  status rather than a per-script non-zero check count; #851: the aarch64
+  and scratch categories); #851: the aarch64
   op-surface gaps the VCR-SEL-005 third-backend oracle now enumerates
   mechanically; #846: two `gpio-thin` CRL/CRH sites still need relational
   ranges).
+- **What the oracle steps ATTEST is now stated (#910).** The exit-status-only
+  residual noted above was measured and was larger than described: **152 of the
+  160** workflow steps that run a `scripts/repro/` oracle asserted nothing
+  beyond the process exit code — the pre-#890 hand-wired steps too, not only
+  the newly wired ones; exactly 8 asserted a printed verdict or count. Every
+  `wired` oracle now declares a `# ci-checks:` floor that
+  `scripts/oracle_run.py` enforces per run by counting real emulator entries,
+  wasmtime executions and compilations: **133 oracles assert 294,914 emulator
+  entries**, 7 assert a printed count, 9 assert compilations, and 1
+  (`aarch64_matrix.sh`, a POSIX shell oracle the in-process driver cannot
+  instrument) is itemized as unbindable in `scripts/repro/ORACLE_WIRING.md`
+  alongside the five other weak floors.
+- **The `Code Coverage` percentage was renamed for what it measures (#910).**
+  It is `Rust-test Line Coverage (unit + integration only)`: `cargo llvm-cov
+  --workspace`, the Rust test suite, in process. It is structurally blind to
+  the execution differentials, which spawn the compiler as a separate
+  UNINSTRUMENTED process from other jobs — which is why
+  `synth-backend-*/src/backend.rs` reads ~42 % while being exercised
+  end-to-end by nearly every differential. The number understates the testing
+  that exists and is not a completeness measure. The two populations are
+  reported separately, in their own units, and are never added together.
 - Two residuals live in code comments rather than issues, and are restated here
   so they are not implied away: `validate_segment_rewrite` does NOT catch a
   recoloured `Pop {…, PC}` in the MIDDLE of a segment (pinned at the pass via
