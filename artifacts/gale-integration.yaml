@@ -758,6 +758,65 @@ artifacts:
         cargo test test_369 green; f32 module emits no fadd/dmul symbol;
         control_step / flight_seam / div_const differentials byte-identical.
 
+  # Right-side closure for GI-FPU-002 (#893). Flipping that requirement from
+  # `proposed` to `implemented` made rivet START checking its lifecycle coverage,
+  # which correctly reported it had NO verification artifact — a gap the wrong
+  # status had been hiding, not one the flip created. The evidence already
+  # existed and was named in the requirement's criteria; it just had no typed
+  # `verifies` link. This artifact is that link.
+  - id: GI-FPU-VER-002
+    type: sw-verification
+    title: "Hardware-FPU (VFP) lowering (#369) — execution differentials + honest-reject + spilled-VFP"
+    description: >
+      Verifies GI-FPU-002 across its whole arc, by EXECUTION rather than by
+      inspection:
+
+      (1) f32 reachability (v0.41, #619/#705) —
+      `scripts/repro/f32_vfp_619_differential.py` compiles f32 add/sub/mul/div,
+      i32.trunc_f32_s and f32.convert_i32_s/u for cortex-m4f, reads each symbol
+      from the ELF SYMTAB (#489 — never from `synth disasm` text, which is
+      host-dependent), runs it under unicorn with the FPU actually enabled
+      (CPACR CP10/CP11 + FPEXC.EN) and f32 args in S0/S1 per AAPCS-VFP, and
+      asserts bit-exactness (`to_bits`) against wasmtime on boundary values
+      including a subnormal. RED before the fix (compile REJECTS, exit 1), GREEN
+      after (48/48).
+
+      (2) The HONEST-REJECT direction, in the same harness: cortex-m3 must still
+      REFUSE f32 rather than silently emitting something. A one-directional
+      differential would pass just as well on a compiler that had quietly
+      widened the FPU gate.
+
+      (3) Unit-level pinning without an emulator —
+      `crates/synth-backend/tests/f32_hardfloat_619.rs` locks the AAPCS-VFP
+      S0/S1 homing, the honest reject, and the swapped-VCVT signedness fix.
+
+      (4) Exhaustion (v0.53, #881) — the spilled-VFP differential: 7 shapes on
+      `-t cortex-m7dp --relocatable`, 109 rows bit-identical to wasmtime,
+      NaN-aware per WASM §4.3.3, with the internal `bl` resolved by a REAL link
+      so an unresolved relocation cannot be silently skipped as a pass.
+
+      HONEST BOUND, recorded not hidden: the f32 COMPARISONS are byte-pinned in
+      `f32_vfp_encoding_test.rs` but are NOT execution-differentiated — unicorn
+      does not model the VMRS FPSCR→APSR flag transfer. That is an emulator gap,
+      and it is the one part of the surface whose evidence is encoding-level
+      only.
+    status: implemented
+    tags: [gale, fpu, vfp, verification, differential, unicorn, symtab, release-v0.41, release-v0.53, synth-893]
+    links:
+      - type: verifies
+        target: GI-FPU-002
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend --test f32_hardfloat_619 && python3 scripts/repro/f32_vfp_619_differential.py"
+        coverage: >
+          scripts/repro/f32_vfp_619_differential.py (48/48 bit-exact vs wasmtime
+          on cortex-m4f + the cortex-m3 honest-reject leg),
+          crates/synth-backend/tests/f32_hardfloat_619.rs (AAPCS-VFP homing,
+          reject, VCVT signedness), the #881 spilled-VFP differential (109 rows),
+          and crates/synth-backend/tests/f32_vfp_encoding_test.rs for the
+          comparison encodings unicorn cannot execute
+
   - id: GI-MEM-001
     type: sw-req
     title: Full-width i64.load/i64.store lower correctly (#372)
