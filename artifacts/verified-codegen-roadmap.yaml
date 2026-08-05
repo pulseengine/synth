@@ -620,9 +620,11 @@ artifacts:
       LEDGER STATE (2026-08, keep in step with the arrays — a drifting count is
       the #893 class this oracle exists to prevent): ARM<->RV32 18 entries
       (5 Zbb + 16 universe-completeness − `memory.size`/`memory.grow` closed
-      v0.50 − `br_table` closed v0.53 #882); ARM<->aarch64 5 entries (br_table,
-      writing a PARAM local via local.set/local.tee in a leaf function,
-      memory.copy, memory.fill). Non-vacuity floors: `at_parity >= 65` (RV32),
+      v0.50 − `br_table` closed v0.53 #882); ARM<->aarch64 5 entries — br_table,
+      `local.set`+get on a PARAM local, `local.tee` on a PARAM local (two
+      separate entries, both the leaf-function param-homing prerequisite),
+      memory.copy, memory.fill — after v0.54 closed `global.get`/`global.set`.
+      Non-vacuity floors: `at_parity >= 65` (RV32),
       `at_parity >= 60` (aarch64), `probed >= 100` (aarch64 extended surface).
       Both legs carry their own red-first companion
       (`red_first_unledgered_one_sided_gap_is_caught` drops the real i32.rotl
