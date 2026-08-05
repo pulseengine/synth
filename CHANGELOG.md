@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The traceability graph disagreed with itself in four places, and the gate
+  that should have said so could not see two of them (#893, #396).** No code
+  behaviour changes here; what changes is whether the project's evidence
+  artifacts can be trusted to mean one thing.
+
+  - **`VCR-DEC-003` pointed at an issue NUMBER where an artifact id belongs.**
+    `traces-to: synth:396` reads as "artifact 396 in repo synth" and no such
+    artifact exists. The link is not deleted: synth#396's own body says
+    *"Tracked in rivet as VCR-COV-001"*, and `VCR-COV-001`'s title carries
+    "(synth #396)", so the link now targets the artifact and the issue number
+    moves to the tags, where it is a reference rather than a resolvable target.
+  - **`GI-FPU-002` was declared TWICE, and the stale copy won.** The id existed
+    in `gale-integration.yaml` (`proposed`, the original #369 ask) and again in
+    `verified-codegen-roadmap.yaml` (`implemented`, PR #705's phase-1 delivery
+    record). rivet loaded the second over the first, so the graph reported the
+    requirement as NOT STARTED while README and CHANGELOG report #369 closed,
+    f32 complete v0.41, f64 complete v0.43, VFP spilling v0.53. Merged — not
+    deleted, because each copy carried edges and evidence the other lacked —
+    into the id's namespace home, and de-staled to `implemented` with the two
+    remaining float declines named rather than implied away.
+  - **`VCR-RA-004` was `proposed` for a resolver that shipped in v0.11.38.**
+    v0.53's VFP-spilling lane tagged its work with that id and the issue read it
+    as one id meaning two things. The evidence says otherwise:
+    `synth_synthesis::parallel_move` is verbatim what the artifact specifies,
+    the artifact's own tags already said `release-v0.11.38`, and v0.53 *extended*
+    it to the VFP file rather than reusing its name. Only the status field had
+    never been flipped — minting a second id would have created the collision
+    the issue was trying to remove. Now `implemented`, with `SWVER-022` closing
+    the right side of the V by a typed `verifies` link instead of a paragraph.
+    Deliberately **not** `verified`: the property test the criteria demand does
+    exist and does exactly what they specify (6000 sequentializations against a
+    reference parallel semantics), but the second pitfall the artifact names —
+    split points inside hot loops — is still bounded by assumption, and that
+    residual is now written down.
+  - **`VCR-SEL-005` said "BOTH the ARM and RISC-V selectors"** for a gate that
+    has spanned three backends since v0.53 (#883). Correcting the count exposed
+    that every ledger *size* asserted around it had also drifted — and all in the
+    flattering direction, describing gaps that have since closed: the roadmap
+    said 21 entries for an array of 18, `known_divergences`'s doc comment said
+    19, and `aarch64_known_divergences`'s said "the SEVEN below" over an array of
+    5. The stale-entry check already forces a closed gap to retire its ledger
+    line; nothing forced the prose *about* the ledger to move with it.
+
+- **The `Rivet Validation` job had two blind spots — one per defect above.**
+  Both errors sat in a green tree, which is not a coincidence: the filter
+  anchored on `^  ERROR:` and so never saw rivet's filename-prefixed diagnostics
+  (the duplicate-id class), and its cross-repo exemption waved through any target
+  containing a colon — including `synth:`, our own prefix. Fixed structurally
+  rather than by allowlist, and proven red-first by replaying the exact step
+  against both trees: exit 1 naming both errors on the pre-fix artifacts, exit 0
+  after.
+
+### Added
+
+- **`VCR-VER-004` now exists in the roadmap.** It shipped in v0.54 and appeared
+  in the CHANGELOG, the feature matrix and CI — but not in the file README calls
+  "the single source of truth for roadmap status". The entry records the four
+  axes on which it fails *differently* from the two validators that shared a
+  blind spot, and all three of its limits, including the one that bounds the
+  whole claim: **the op model is still shared.** Def/use extraction for all three
+  instruments runs through `liveness::reg_effect`, so a mismodeled op remains a
+  common blind spot; `VCR-VER-004` closes the shared-*contract* hole, not the
+  shared-*op-model* hole, and until `synth-verify`'s `ArmSemantics::encode_op` is
+  pinned against it, "three independent validators" would be an overclaim.
+
+### Documentation
+
+- README's `synth-backend-aarch64` row still said "integer subset". It has not
+  been one since v0.54 — the scalar float surface, globals, `call_indirect` and
+  bounds-checked memory all ship.
+- Filed #912: the feature loop's step 5 (witness MC/DC) has been marked N/A four
+  releases running, past the skill's own three-feature threshold. synth compiles
+  Wasm rather than emitting components, so witness may have no artifact to
+  instrument — but `VCR-COV-001` is the standing argument that the DO-178C
+  6.4.4.2 source-to-object obligation does not go away just because the
+  measurement point does. Recorded for a decision rather than re-skipped.
+
 ## [0.54.0] - 2026-08-05
 
 **"Close what we measured."** v0.53 built the instruments; this release acts on
