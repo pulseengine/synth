@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-08-05
+
+**"Close what we measured."** v0.53 built the instruments; this release acts on
+what they said. Every lane targeted a gap a v0.53 gate named *mechanically* —
+not one someone guessed at — which inverts the usual order and is only possible
+because the measurement landed first.
+
+- **aarch64 is no longer a subset with a hand-written excuse list.** The scalar
+  float surface is COMPLETE (rounding via `FRINT{P,M,Z,N}`, FP memory, i64↔float
+  converts, and domain-guarded trapping i64-target truncations), and the two
+  largest structural declines are gone: `call_indirect` with all three WASM
+  §4.4.8 trap guards emitted inline, and WASM globals. The selector goes
+  **161 → 184 ops**; gale's acceptance matrix goes **45 → 61 ops / 119 → 355
+  native checks with an empty declined frontier**. Every op closed was picked
+  off the VCR-SEL-005 third-backend oracle's own complement, and each flipped
+  its `Err(reason)` ledger entry to `Ok(())` in the same commit that made it
+  lower — a gap claim must not outlive the gap.
+- **The allocator reaches across calls (#242).** VCR-DEC-001 increment 3 takes
+  57 of the 68 `call` declines; measured delta doubles to **−100 B relocatable /
+  −120 B self-contained, 0 WCET-bound regressions**. Still flag-off: the honest
+  read is that reach improved and the flip criterion is not met.
+- **VCR-VER-004 — a validator that fails *differently*.** v0.53 found that a
+  wrong-return-register rewrite was accepted by BOTH existing per-compilation
+  validators, caught only by execution. Both are backward liveness analyses
+  whose obligation set is a variable — and ∅ is a fixpoint, so an emptied seed
+  is vacuously green. The new check is FORWARD and value-level: exactly one
+  obligation per return site, so there is no seed to shrink. The v0.53 mutation
+  is now caught **statically**, with zero false rejections on the corpus.
+
+### The pattern this release kept finding
+
+Nine of the defects fixed here were in **checkers, not in the code they check**:
+a differential that printed `MISMATCH <-- BUG` and exited 0; the oracle-wiring
+gate's own CI step passing while the gate failed; three `set -o pipefail` steps
+without `-e`, where the step's status is its *last* command's; two test files
+that located the `synth` binary by walking up from `current_exe()`, which held
+`Code Coverage` RED repo-wide while the required `Test` job — same assertions,
+different target-dir layout — stayed green; and, at fan-in, an aarch64 decline
+oracle whose two sides were stale in OPPOSITE directions, each lane correctly
+updating the honesty ledger for its own work and being wrong about the other's.
+
+That last one is worth stating plainly: the error existed in **neither parent**
+and was created by the merge. Resolving it meant re-deriving what actually ships
+rather than choosing a side — and the oracle then confirmed the result, which is
+the only reason to trust it.
+
+**#890 remains the load-bearing open item.** The oracle-wiring gate took the
+repo from **70 undeclared scripts to 0** (145 wired / 7 manual with reasons),
+and it is enforced inside an already-required check so it cannot sit red
+unnoticed. But the count it fixed had *risen* over the preceding releases while
+individual instances were being fixed — the reminder that a bug factory is not
+addressed by fixing its output.
+
 ### Added
 
 - **aarch64 `call_indirect` and WASM globals — the two largest remaining
@@ -156,9 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (renamed `call-indirect-pseudo` — the high-level `Call`/`CallIndirect`
   pseudo-ops are expanded downstream into a bounds guard + table load + result
   move, so the register footprint here is not the one that ships, and they stay
-  declined by name). The residual buckets are `unmodeled-op` 174, `single-block`
-  73, `identity-colouring` 31, `unreachable-block` 11, `call-indirect-pseudo` 11,
-  `numeric-branch` 10.
+  declined by name). Measured at the release commit, the residual buckets are
+  `unmodeled-op` 175, `single-block` 73, `identity-colouring` 31,
+  `unreachable-block` 11, `call-indirect-pseudo` 17, `numeric-branch` 10.
+  (The corpus is `scripts/repro/*.{wat,wasm}` and therefore GROWS as lanes add
+  fixtures — it went 617 → 633 functions during this release's own fan-in, which
+  moved two of these buckets after the lane measured them. The durable claims
+  are the byte/cycle deltas and `Violated 0`; the absolute bucket counts are a
+  snapshot.)
 
   Still **flag-off by default** (`SYNTH_GRAPH_ALLOC`): this is a measurement
   spike, not a behaviour change. Frozen anchors byte-identical, 10/10.
@@ -255,10 +313,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   op; declining keeps it latent rather than shipping it. A real `VRINT.F32`
   lowering (the f32 twin of the shipping f64 path) is the follow-up.
 - The aarch64 decline-matrix oracle and the #554 float-honesty fixture were
-  repointed at constructs that are still genuinely declined (structural ones:
-  `call_indirect`, `br_table`, param writes, globals, bulk memory,
-  value-carrying blocks, SIMD), and the #554 assertion was strengthened to
-  require the diagnostic to come from the aarch64 SELECTOR and name its reason.
+  repointed at constructs that are still genuinely declined: `br_table`, writing
+  a PARAM local in a leaf function, `memory.copy`/`fill`, value-carrying blocks
+  and loops, v128/SIMD, multi-memory, `>8` args, float-result callees, import
+  calls — plus the six "rather than guess" refusals (imported global, global
+  with no decoded const initializer, non-leaf float param, growable imported
+  table, non-statically-verifiable element segment, table slot holding an
+  imported function). The #554 assertion was strengthened to require the
+  diagnostic to come from the aarch64 SELECTOR and to name its reason.
+  (An earlier draft of this sentence also listed `call_indirect` and globals —
+  both of which SHIP in this release, below. That draft was written by the float
+  lane before the call_indirect/globals lane landed; it was the third copy of a
+  list this release had to reconcile at fan-in, and the one the oracle and the
+  matrix row did not cover. Caught by cold review.)
 - **VCR-VER-004 — the ABI observable-contract validator: a per-compilation check
   that fails *differently*** (#242).
 

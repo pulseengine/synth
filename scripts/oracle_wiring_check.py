@@ -141,7 +141,23 @@ def executable_surface(workflows):
                 if not isinstance(st, dict):
                     continue
                 if isinstance(st.get("run"), str):
-                    chunks.append(st["run"])
+                    # Strip SHELL comments before counting a reference.
+                    #
+                    # The gate's whole point is that a mention must be something
+                    # that RUNS. YAML eats `#` only in a single-line plain scalar;
+                    # in a `run: |` block — which is nearly every oracle step here
+                    # — the `#` survives into the script body, so commenting the
+                    # body out left the script still "referenced" and the gate
+                    # GREEN while the step executed nothing. Commenting out a
+                    # flaky step is the most common way a gate goes inert, i.e.
+                    # precisely the #890 failure this exists to reject.
+                    # Found by the v0.54 cold review; the earlier
+                    # comment-demotion mutation passed only because it happened
+                    # to target a single-line `run:`.
+                    for line in st["run"].splitlines():
+                        code = line.split("#", 1)[0]
+                        if code.strip():
+                            chunks.append(code)
                 for block in ("with", "env"):
                     for v in (st.get(block) or {}).values():
                         chunks.append(str(v))
