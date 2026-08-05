@@ -1501,6 +1501,136 @@ artifacts:
         full-boot oracle green); AArch64 is documented N/A (no linear-memory
         ops in the subset).
 
+  - id: VCR-VER-004
+    type: sys-verification
+    title: "ABI observable-contract validator: a per-compilation check that fails DIFFERENTLY from the two dataflow validators that shared a blind spot (#242)"
+    description: >
+      SHIPPED v0.54. Filed into this roadmap in v0.55 (#893) — it was absent
+      entirely, which README calls out as a real gap because this file is
+      "the single source of truth for roadmap status" and VCR-VER-004 is a
+      shipped North-Star component.
+
+      THE MEASUREMENT THAT MOTIVATES IT (v0.53). Emptying `cfg_exit_observable`
+      — the exit contract the join-aware graph allocator and its OWN CFG
+      validator SHARE — makes the compiler emit code that leaves the return
+      value in the WRONG REGISTER, and BOTH per-compilation validators accept
+      it: `validate_cfg_rewrite` returns `Ok` and VCR-RA-003's
+      `validate_final_allocation` returns `Consistent`. Only EXECUTION caught
+      it. Two independent-LOOKING instruments, one shared blind spot — #872's
+      lesson one level up, and a direct counterexample to the claim that
+      per-compilation validation is an independent check on the code generator.
+
+      THE RESPONSE IS NOT A THIRD FILE ON THE SAME AXIS. Independence is not
+      obtained by writing a second checker, only by checking a different WAY.
+      `synth_synthesis::abi_contract::validate_abi_contract` differs on four
+      axes that matter:
+        (1) ITS OBLIGATION CANNOT BE EMPTIED. The exit obligation is
+            `RETURN_CONTRACT_REGS = [R0, R1]`, a constant of the AAPCS hard-named
+            in the module's own source. Deleting `cfg_exit_observable` outright
+            would not change one line of it.
+        (2) IT IS FORWARD, and a forward value analysis is structurally
+            incapable of the fail-open mode that bit v0.53.
+            `validate_cfg_rewrite` is a BACKWARD MUST-analysis whose obligation
+            set is a VARIABLE — and the empty set is a fixpoint, so an empty
+            seed means zero obligations means vacuous green. A forward
+            evaluation always produces EXACTLY ONE value for `R0` at each
+            return. There is no seed to shrink.
+        (3) ITS EVIDENCE IS A VALUE, NOT A NAME-PAIR. Per side independently it
+            builds a value graph (`Init(r)` / `Def(i,k)` / `Phi(b,n)`) and
+            compares by GREATEST-FIXPOINT BISIMULATION; on a deterministic term
+            graph that is equality of the infinite unfoldings, so loops and back
+            edges are handled coinductively rather than by unrolling. `Init(r)`
+            is one node SHARED by both sides — the AAPCS PARAMETER half of the
+            anchor — so reading an argument out of the wrong register is a value
+            change too.
+        (4) IT TAKES NOTHING FROM THE PASS. The signature is
+            `(orig, rewritten)`; the CFG is re-derived from both streams'
+            label-form branch structure and the two must agree. The v0.50 join
+            attempt failed precisely by letting the pass hand the checker its own
+            seed.
+
+      CALLS ARE MODELLED, NOT EXEMPTED. Each clobbered register
+      `{R0-R3, R12, LR}` is rebound to a FRESH node whose operands are the
+      PRE-CALL argument values, while `R4-R11`/`SP` flow through — so a call
+      result is an opaque value equal across the sides exactly when the same
+      callee got the same arguments. The AAPCS call effect reuses
+      `liveness::call_effect`, the ONE definition the pass and
+      `validate_cfg_rewrite` already share, because two divergent call models
+      would be a fresh instance of the very blind-spot class this module
+      attacks.
+
+      HONEST LIMITS — three, stated because the point of this artifact is that a
+      validator which quietly shares its pass's blind spot is worse than no
+      validator:
+        (a) IT IS A GATE ONLY ON THE FLAG-OFF graph-colouring allocator. On the
+            DEFAULT path it is a report-only audit held to a CI floor. Making it
+            gate the default path means hard-erroring a user's compile on a
+            checker whose false-positive rate is MEASURED, not proven; that flip
+            is deliberately not taken.
+        (b) MEMORY IS NOT IN ITS OBLIGATION. A mis-renamed store address that a
+            later load reads back is a false negative for this instrument (it is
+            covered by `validate_cfg_rewrite`'s use-equations when that seed is
+            intact — the two are COMPLEMENTARY, which is what independence looks
+            like, not redundancy).
+        (c) THE OP MODEL IS STILL SHARED. Def/use extraction runs through
+            `liveness::reg_effect`, so a MISMODELED OP remains a blind spot
+            common to ALL THREE instruments. VCR-VER-004 closes the shared-
+            CONTRACT hole, not the shared-OP-MODEL hole. `synth-verify`'s
+            `ArmSemantics::encode_op` is a genuinely second model of the same
+            operations; PINNING THE TWO AGAINST EACH OTHER IS THE NEXT RUNG (the
+            VCR-ISA-001 Sail-derived semantics are the eventual anchor), and
+            until it is done "three independent validators" WOULD BE AN
+            OVERCLAIM. This is the named follow-up.
+    status: implemented
+    tags: [validation, abi, aapcs, translation-validation, independence, register-allocation, track-c, epic-242, release-v0.54, synth-893]
+    links:
+      # Same shape as its two siblings VCR-VER-003 / VCR-VER-761: a
+      # sys-verification measure must `verifies` a system requirement.
+      - type: verifies
+        target: VCR-001
+      - type: traces-to
+        target: VCR-RA-003
+      - type: traces-to
+        target: VCR-DEC-001
+      # The shared-op-model residual (c) below names VCR-ISA-001's Sail-derived
+      # semantics as the eventual anchor for pinning `liveness::reg_effect`
+      # against a genuinely second model.
+      - type: traces-to
+        target: VCR-ISA-001
+    fields:
+      method: translation-validation
+      preconditions:
+        - "v0.53 #872: the shared-blind-spot class demonstrated by mutation on validate_segment_rewrite"
+        - "VCR-DEC-001 increment 3 (#896): the graph-colouring allocator colours across calls, so the gate must model the AAPCS call effect rather than decline it"
+      steps:
+        - "synth_synthesis::abi_contract: forward value-graph construction + greatest-fixpoint bisimulation over RETURN_CONTRACT_REGS"
+        - "graph_alloc::abi_gate wires it as the accept/reject gate on the flag-off colouring allocator (NotAttempted is a DECLINE, not an accept)"
+        - "Re-run v0.53's EXACT mutation from the committed patch (scripts/repro/mutations/v053_shared_exit_contract.patch), not a reconstruction"
+        - "Report-only audit of the SHIPPING allocator over the repro corpus, held to a CI floor"
+        - "CI: instrument-independence-oracle asserts the BASELINE direction first, then the mutation, then that the tree was restored"
+      pass-criteria: >
+        On the mutated compiler and ONE compilation: `validate_cfg_rewrite`
+        returns Ok and VCR-RA-003 returns Consistent (both still green — the
+        shared blind spot is real and unpatched by this change) while
+        `validate_abi_contract` REJECTS with a concrete violation naming the ABI
+        result register — `Violated { sink: 81, reg: R0 }` on
+        `brif_outer_740::poll`, the function that returned 0x1111 instead of its
+        parameter — and the miscompile is NOT emitted. Proven RED-FIRST: make
+        `abi_gate` treat `Violated` as an accept and the mutated compiler goes
+        back to emitting the miscompile. COSTS NOTHING on the gated path —
+        composed with VCR-DEC-001 increment 3 over the ARM repro corpus, 617
+        functions, 307 applied, 40822 -> 40722 bytes (−100 B relocatable,
+        −120 B self-contained): increment 3's result TO THE BYTE, with the check
+        conservative enough to demand both R0 and R1 for every function and to
+        decline whenever it cannot analyze. On the DEFAULT (shipping) path the
+        audit measured `Holds 431 / NotAttempted 202 / Violated 0` over 633
+        corpus functions — ~68 % of the shipping path proven, `bl`/`blx` calls
+        included — with the corpus GROWING as lanes add fixtures, so the pinned
+        invariant is `Violated 0`, not the absolute counts. Both CI steps assert
+        machine-readable counts (`ASSERTIONS=4/4`, five `OK` lines,
+        `VIOLATED=0`) rather than trusting exit 0, and the job fails if the
+        mutation was left in the tree.
+
   - id: VCR-VER-761
     type: sys-verification
     title: "Self-contained --cortex-m linmem<->globals disjointness geometry gate catches the R9-overlap alias (#761)"
