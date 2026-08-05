@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 12
 """#778 phase 5 masked-ceiling loop-bound soundness cross-check: execute a
 compiled BOUNDED data-dependent loop under unicorn (Thumb-2) and confirm the
 derived masked-ceiling bound is a sound upper bound on the ACTUAL executed cost

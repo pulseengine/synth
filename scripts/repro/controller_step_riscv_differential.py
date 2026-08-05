@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 5
 """#226 — controller_step on RISC-V: the regalloc live-range clobber.
 
 In v0.11.23 the RV32 temp allocator was round-robin and blind to the operand

@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 54
 # #610: i64.rotl / i64.rotr / i64.div_u / i64.rem_u compiled to code returning
 # 0 for every input on the ARM Cortex-M path. The encoder expansions either
 # used colliding hardcoded scratch and restored it OVER the result (rot: `POP

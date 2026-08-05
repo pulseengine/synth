@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """VCR-RA-001 (#242) — allocation-time spill-on-exhaustion differential oracle.
 
 `spill_on_exhaust_242.wat` keeps 10 param-derived i32 values simultaneously

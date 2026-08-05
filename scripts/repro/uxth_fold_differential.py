@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 14
 """VCR-RA uxth/uxtb fold validation oracle (#428, epic #242).
 
 The fold rewrites `movw rM,#0xffff; and rD,rN,rM` -> `uxth rD,rN` (and the 0xff /

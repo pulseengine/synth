@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 13
 """#209 — control_step_decide reciprocal-multiply register-pressure regression.
 
 gale's `control_step_decide` (loom-lowered, 4× unsigned constant `div_u`:

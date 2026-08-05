@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 28
 """#643 — i64 global.set/global.get pair correctness on BOTH ARM selectors.
 
 Differential oracle for issue #643: on Thumb-2, an i64 global was stored/loaded

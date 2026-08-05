@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 109
 """#881 (GI-FPU-002 + RA tail / VCR-RA-004) — EXECUTION-validate VFP
 register-file spilling on cortex-m7dp under falcon's exact flags
 (`-t cortex-m7dp --relocatable`).

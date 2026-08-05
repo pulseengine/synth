@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 4
 """#761 — self-contained --cortex-m full-page linmem view OVERLAPS the R9 globals
 table at the top of SRAM (a silent global<->linmem ALIAS: the worst class).
 

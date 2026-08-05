@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 26
 """VCR-PERF-002 Phase 3+ (#494) — constant-divisor rem_u IDENTITY differential.
 
 Builds the `gust_scale` fixture (`x rem_u 1000`, a LITERAL divisor) WITH a

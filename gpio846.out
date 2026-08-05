@@ -1,0 +1,10 @@
+=== #846 SIZE ===
+  flag-OFF (SYNTH_SHIFT_MASK_ELIDE=0): .text=534 B  redundant `and r12,#0x1f` masks=10
+  flag-ON  (default v0.50.0)         : .text=502 B  redundant `and r12,#0x1f` masks=3
+  recovered: 32 B  (7 masks elided)
+=== #846 EXECUTION UNCHANGED (flag-ON bytes vs wasmtime) ===
+  75/75 match — mmio (addr,value) sequences + returns bit-identical across pins [0, 1, 5, 7, 8, 15, 16, 31, 32, 33, 47, 63, 100, 255, 2147483647] (incl. >=32 mod-32 boundary)
+=== RESULT ===
+#846 CHECKS=75/75 trace_events=105
+gpio-thin #846: PASS
+ORACLE-CALIBRATION script=gpio_thin_846_differential.py emulations=75 wasmtime_calls=75 compiles=2 exit=0 secs=0.3

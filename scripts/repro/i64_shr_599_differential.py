@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 9
 # #599: i64.shr_u / i64.shr_s register-pair right shift miscompiled on the
 # single-function CLI path (`-n <name>`): the path built its CompileConfig with
 # `..default()` and never plumbed the module's declared param widths

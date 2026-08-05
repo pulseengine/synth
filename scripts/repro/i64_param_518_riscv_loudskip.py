@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: compiles >= 1
 """#518 cross-backend contrast — RISC-V LOUD-SKIPS the i64-param class (#242, #518).
 
 Companion to `i64_param_518_differential.py` (which proves the ARM selectors

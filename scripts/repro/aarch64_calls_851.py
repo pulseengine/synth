@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: stdout /^PASS: (\d+) call runs bit-identical/ >= 5
 """synth aarch64 direct-`call` execution differential (#851, lane L3).
 
 The standing gate `aarch64_matrix.sh` is single-function (it loads only the

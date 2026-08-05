@@ -1,0 +1,12 @@
+functions audited (--relocatable) : 633
+  Holds                           : 431
+  NotAttempted                    : 202
+  Violated                        : 0
+decline reasons:
+    unmodeled-op                 175
+    indirect-call-pseudo-op      17
+    numeric-offset-branch        10
+
+VCR-VER-004-SHIPPING HOLDS=431 VIOLATED=0 TOTAL=633 FLOOR=400
+RESULT: PASS
+ORACLE-CALIBRATION script=vcr_ver_004_shipping_path_audit.py emulations=0 wasmtime_calls=0 compiles=161 exit=0 secs=1.6

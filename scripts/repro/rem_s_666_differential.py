@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#666 — rv32 i32.rem_s(INT_MIN,-1) must return 0, not trap (WASM §4.3.2).
 
 The rv32 selector shared div_s's INT_MIN/-1 overflow `ebreak` guard with

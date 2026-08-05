@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 22
 """VCR-SEL-004 / VCR-ORACLE-001 (#428, #242) — EXECUTION-validate the two-move arm.
 
 gale's gust_codegen_bench follow-up (#428) proved that no real fixture — gust_mix

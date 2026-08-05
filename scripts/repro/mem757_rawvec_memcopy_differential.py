@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 11
 """#757 RED-FIRST differential — memmove (`memory.copy`) from a STATIC pointer.
 
 gale's real mechanism: a RawVec-grow `call` followed by a `memory.copy` whose

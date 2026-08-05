@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 4
 """VCR-MEM-001 layer-2 (#678) execution differential: inline linmem statics
 down-shifted into `.data`/`.bss` under `--native-pointer-abi --shadow-stack-size`.
 

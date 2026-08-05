@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 15
 """#275 — self-contained `--cortex-m` call_indirect EXECUTION differential.
 
 The finale of #275: the falcon shape — a SELF-CONTAINED Cortex-M image whose

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 167
 """#538 milestone-4 — the #709 boundary-table EXECUTION differential.
 
 m4 converts the aarch64 backend's #709-class declines into capabilities:

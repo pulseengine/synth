@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ci-status: wired
+# ci-checks: none — a POSIX shell oracle — oracle_run.py drives Python in-process and cannot instrument it. Its step carries its own count assertion (>= 32 accepted ops), written before this mechanism existed.
 # synth aarch64 execution-differential acceptance gate.
 # Compiles a broad WASM op set with `synth -b aarch64`, executes each accepted op NATIVELY on an
 # arm64 host (MAP_JIT), and diffs bit-exact vs wasmtime. Exits non-zero on any MISCOMPILE (a declined

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 10
 """#837 — frame-backing i64/f64-param lowering (the last #518 i64-param sub-case).
 
 gale's `gust:os/timer` provider hit a LOUD DECLINE (not a miscompile — the object
