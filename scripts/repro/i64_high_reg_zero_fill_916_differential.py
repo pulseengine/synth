@@ -67,6 +67,44 @@ text = elf.get_section_by_name(".text").data()
 symtab = [s for s in elf.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
 syms = {s.name: s["st_value"] for s in symtab.iter_symbols() if s.name}
 
+# --------------------------------------------------------------------------
+# REACHABILITY WITNESS — this oracle's teeth.
+#
+# Everything below only tests #916 if the allocator actually puts a zero-fill
+# destination in R8-R12 somewhere in this image. If it stops doing so, every
+# assertion still passes and the oracle silently degrades into a no-op that
+# prints "48/48 OK" while testing nothing about the high-register path — the
+# #890 "gate that cannot fail" shape.
+#
+# So assert the witness directly: scan .text for the 32-bit `MOV.W Rd,#0` (T2,
+# F04F 0000 | Rd<<8) with Rd >= 8. That encoding EXISTS ONLY BECAUSE of the
+# #916 fix; before it the same site emitted the 16-bit 0x2800.
+#
+# This is expected to go RED, not silently green, if the allocator changes —
+# e.g. VCR-DEC-001 / #917's interference edge keeps R8 out of the candidate
+# colours. That is correct behavior: it says the module lost its reachability
+# witness and needs a different pressure shape, rather than pretending to
+# still cover the class.
+_hw = [
+    int.from_bytes(text[i : i + 2], "little") for i in range(0, len(text) - 1, 2)
+]
+_high_zero_fills = [
+    (i * 2, (_hw[i + 1] >> 8) & 0xF)
+    for i in range(len(_hw) - 1)
+    if _hw[i] == 0xF04F and (_hw[i + 1] & 0x00FF) == 0 and ((_hw[i + 1] >> 8) & 0xF) >= 8
+]
+assert _high_zero_fills, (
+    "REACHABILITY LOST: no `MOV.W Rd,#0` with Rd >= R8 in .text, so this module "
+    "no longer exercises the #916 high-register zero-fill and the differential "
+    "below proves nothing. The allocator stopped choosing a high register for "
+    "these destinations (an allocator change, or VCR-DEC-001/#917 keeping R8 "
+    "out of the candidate colours). Restore the witness by raising register "
+    "pressure in i64_high_reg_zero_fill_916.wat — do NOT delete this assertion."
+)
+print(
+    "reachability witness: "
+    + ", ".join(f"MOV.W R{rd},#0 @ {off:#x}" for off, rd in _high_zero_fills)
+)
 CODE, STK = 0x10000, 0x90000
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 mu.mem_map(CODE, 0x10000)
