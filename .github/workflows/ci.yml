@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # #910: where scripts/oracle_run.py appends one JSON record per oracle it
+  # drives. Workflow-level so no oracle job can forget it; jobs that run no
+  # oracle simply never create the file.
+  ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl
 
 jobs:
   test:
@@ -201,10 +205,19 @@ jobs:
       #   * The verdict is re-derived from the summary the gate WROTE, not from
       #     exit 0: a non-empty script set, a non-zero wired count, zero
       #     undeclared, zero wired-but-unreferenced, and zero failures.
+      # #910 adds `--min-emulation-floor`: the summed `# ci-checks: emulations`
+      # floors, i.e. the emulator entries the wired oracle surface ASSERTS on
+      # every CI run. It is a RATCHET (direction: up) and a separate population
+      # from the `Rust-test Line Coverage` percentage — which cannot see any of
+      # it, because the oracles run the compiler as an uninstrumented
+      # subprocess from other jobs. The literal below is pinned in claims.yaml
+      # against the same number in scripts/repro/ORACLE_WIRING.md, so the gate
+      # and the doc cannot drift apart.
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
+            --min-emulation-floor 294914 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -213,12 +226,18 @@ jobs:
                                 ("wired==0", s["wired"] < 1),
                                 ("undeclared", s["undeclared"]),
                                 ("wired_unreferenced", s["wired_unreferenced"]),
+                                ("checks_undeclared", s["checks_undeclared"]),
+                                ("emulation_floor<100000",
+                                 s["emulation_floor"] < 100000),
                                 ("failures", s["failures"])) if v]
           if bad:
               sys.exit(f"oracle-wiring gate VACUOUS or DRIFTED {bad}: {s}")
           print(f"oracle-wiring gate is non-vacuous: it classified {s['total']} "
                 f"scripts, {s['wired']} of them wired, {s['manual']} manual, "
-                f"{s['unwired']} unwired-debt, 0 inert.")
+                f"{s['unwired']} unwired-debt, 0 inert, and every wired oracle "
+                f"declares a check floor ({s['emulation_floor']} emulator "
+                f"entries asserted across "
+                f"{s['checks_by_mode']['emulations']['scripts']} of them).")
           PY
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
@@ -472,6 +491,17 @@ jobs:
         run: pip install wasmtime unicorn pyelftools
       - name: Run two-move execution oracle
         run: python scripts/oracle_run.py scripts/repro/cmp_select_two_move_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   provenance-gate:
     name: synth-provenance-v1 reconciliation gate (#396)
@@ -632,6 +662,17 @@ jobs:
           [ "$t" -ge 40 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_decline_538.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 15
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)
@@ -699,6 +740,17 @@ jobs:
           SYNTH=./target/debug/synth \
             WASMTOOLS=wasm-tools WASMTIME=wasmtime \
             python scripts/oracle_run.py scripts/repro/aarch64_calls_851.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
@@ -1063,6 +1115,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rv32_data_798_boot_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 30
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
@@ -1135,6 +1198,17 @@ jobs:
           test "$(grep -c '^OK   ' vcr_ver_004.out)" -eq 5
       - name: Assert the tree was restored (the mutation must never persist)
         run: git diff --exit-code
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
@@ -1248,6 +1322,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/fact_spec_rem_494_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
@@ -1283,6 +1368,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/shift_fold_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-const-addr-fold-oracle:
     name: rv32 const-address-fold execution oracle
@@ -1317,6 +1413,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/const_addr_fold_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-br-table-oracle:
     name: rv32 br_table execution oracle (#882)
@@ -1355,6 +1462,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/rv32_br_table_882_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-extern-call-reloc-oracle:
     name: rv32 external-call relocation oracle (#871)
@@ -1395,6 +1513,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/riscv_extern_call_871_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-label-return-oracle:
     name: rv32 label/return dead-code oracle (#882)
@@ -1439,6 +1568,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/rv32_label_882_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-mem-size-grow-oracle:
     name: rv32 memory.size / memory.grow execution oracle
@@ -1473,6 +1613,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/rv32_mem_size_grow_242_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   callee-saved-490-oracle:
     name: optimized-path callee-saved preservation oracle
@@ -1510,6 +1661,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/callee_saved_490_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-642-oracle:
     name: call_indirect bounds-guard oracle (Thumb-2 + A32)
@@ -1549,6 +1711,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_642_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-650-multitable-oracle:
     name: multi-table call_indirect oracle (Thumb-2 + A32)
@@ -1589,6 +1762,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_650_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-664-nullslot-oracle:
     name: null-funcref-slot call_indirect oracle (Thumb-2 + A32)
@@ -1634,6 +1818,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_664_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
@@ -1683,6 +1878,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_676_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-275-selfcontained-oracle:
     name: self-contained call_indirect oracle (execution + residual declines)
@@ -1732,6 +1938,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_275_selfcontained_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
@@ -1770,6 +1987,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/block_brif_483_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   spill-frame-499-oracle:
     name: optimized-path spill-frame teardown oracle
@@ -1808,6 +2036,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/spill_frame_499_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   r12-spill-496-oracle:
     name: optimized-path register-exhaustion oracle
@@ -1848,6 +2087,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/r12_spill_496_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   flight-seam-570-oracle:
     name: flight-seam relocatable-path execution oracle
@@ -1891,6 +2141,17 @@ jobs:
             -o /tmp/fsf.elf --target cortex-m4 --all-exports --relocatable
           python scripts/oracle_run.py scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
             scripts/repro/flight_seam_flat.wasm
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   control-step-584-oracle:
     name: control-step relocatable-path execution oracle
@@ -1931,6 +2192,17 @@ jobs:
           ./target/debug/synth compile scripts/repro/control_step.wasm \
             -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable
           python scripts/oracle_run.py scripts/repro/control_step_differential.py /tmp/cs.elf
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   stack-args-503-oracle:
     name: AAPCS stack-argument path oracle
@@ -1970,6 +2242,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/stack_args_503_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   i64-completeness-503-587-oracle:
     name: i64 stack-param + spill-pool-grow oracle
@@ -2022,6 +2305,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/framebacking_i64param_837_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
 
   i64-rot-div-610-oracle:
     name: i64 rotl/rotr/div/rem expansion oracle
@@ -2058,6 +2352,17 @@ jobs:
         run: pip install wasmtime unicorn pyelftools
       - name: Run i64 rot/div/rem expansion oracle (#610)
         run: python scripts/oracle_run.py scripts/repro/i64_rot_div_610_differential.py target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   br-table-507-oracle:
     name: optimized-path br_table oracle
@@ -2097,6 +2402,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/br_table_507_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   const-cse-242-oracle:
     name: const-CSE flag-on execution oracle
@@ -2135,6 +2451,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/const_cse_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   frame-slot-dce-242-oracle:
     name: frame-slot DCE default+optout execution oracle
@@ -2173,6 +2500,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/frame_slot_dce_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   stack-layout-687-oracle:
     name: stack-layout=low overflow BusFault oracle
@@ -2226,6 +2564,18 @@ jobs:
   # (pointer-independent observables; exhaustion traps on both sides). The
   # `--relocatable` undefined-symbol seam (#420) is asserted untouched by
   # cabi_arena_realloc_linkability_418.rs in the `test` job.
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
   arena-bind-418-oracle:
     name: "#418 arena-bind self-contained execution oracle"
     runs-on: ubuntu-latest
@@ -2253,6 +2603,17 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/cabi_arena_bind_418_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-ra-003-alloc-validator-gate:
     name: "VCR-RA-003 register-allocation validator (red-first + frozen)"
@@ -2305,6 +2666,17 @@ jobs:
         run: |
           cargo build -p synth-cli
           python3 scripts/oracle_run.py scripts/repro/vcr_ra_003_phase2_join_call.py ./target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-ra-003-rv32-alloc-validator-gate:
     name: "VCR-RA-003 RV32 register-allocation validator (red-first + frozen)"
@@ -2361,6 +2733,17 @@ jobs:
         run: |
           cargo build -p synth-cli
           python3 scripts/oracle_run.py scripts/repro/vcr_ra_003_rv32_alloc_validator.py ./target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-sel-005-cross-backend-op-parity-gate:
     name: "VCR-SEL-005 cross-backend op-parity (universe-complete + red-first)"
@@ -2538,6 +2921,17 @@ jobs:
           python scripts/oracle_run.py scripts/repro/u64_unpack_if_differential.py
       - name: uxth/uxtb fold differential (#428, both flag states)
         run: python scripts/oracle_run.py scripts/repro/uxth_fold_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 32
 
   repro-sweep-memory-oracle:
     name: repro sweep — linear memory / static data / native-pointer differentials
@@ -2615,6 +3009,17 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: post-link static-data placement oracle (#359)
         run: PATH=$PWD/target/debug:$PATH python scripts/oracle_run.py scripts/repro/postlink_359_oracle.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 15
 
   repro-sweep-rv32-oracle:
     name: repro sweep — RISC-V RV32 execution differentials
@@ -2691,6 +3096,17 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/u64_unpack_inlined.wat -b riscv -t rv32imac --all-exports --relocatable -o /tmp/u64_rv32.elf
           python scripts/oracle_run.py scripts/repro/u64_unpack_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 11
 
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-5)
@@ -2737,3 +3153,14 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/wcet_phase4_49_recursion_soundness.py
       - name: WCET phase-5 masked-ceiling loop soundness (#778)
         run: python scripts/oracle_run.py scripts/repro/wcet_phase5_778_masked_loop_soundness.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4

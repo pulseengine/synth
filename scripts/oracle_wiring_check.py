@@ -88,6 +88,27 @@ MANUAL_CATEGORIES = {
     "slow": "runtime is prohibitive for per-PR CI",
 }
 
+def _load_oracle_run():
+    """Import the `# ci-checks:` parser from its owner, by path.
+
+    Deliberately NOT a re-implementation: two hand-maintained copies of a
+    declaration grammar are the mirror-drift shape this repo keeps paying for.
+    The driver that ENFORCES the floor and the gate that SUMS the floors must
+    read the header the same way, so they share one parser.
+    """
+    import importlib.util
+
+    p = pathlib.Path(__file__).resolve().parent / "oracle_run.py"
+    spec = importlib.util.spec_from_file_location("oracle_run", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_ORACLE_RUN = _load_oracle_run()
+parse_checks_decl = _ORACLE_RUN.parse_decl
+
+
 DECL_RE = re.compile(
     r"^#\s*ci-status:\s*(?P<status>[A-Za-z-]+)"
     r"(?:\s*\((?P<category>[a-z-]+)\))?"
@@ -205,6 +226,23 @@ def classify(root, scripts, workflows):
         }
         records.append(rec)
 
+        # ------------------------------------------------------------------
+        # #910 F10 — the SECOND declaration. `ci-status` says a step runs the
+        # oracle; it says NOTHING about what that step attests. 152 of 160
+        # oracle steps asserted only the process exit code, and exit 0 does not
+        # distinguish "emulated 240 vectors" from "the loop never ran". So a
+        # `wired` oracle must also declare a FLOOR that scripts/oracle_run.py
+        # enforces at run time. Only `wired` scripts: a manual/unwired oracle
+        # has no run to measure.
+        # ------------------------------------------------------------------
+        if status == "wired":
+            decl, err = parse_checks_decl(text, rel)
+            if err:
+                fails.append(err)
+            else:
+                rec["checks_mode"] = decl.mode
+                rec["checks_floor"] = decl.minimum
+
         if status == "wired":
             if not refs:
                 mentioned = [w for w, t in wf_raw.items() if name in t]
@@ -285,6 +323,30 @@ def summarize(records):
     out["wired_unreferenced"] = sum(
         1 for r in records if r["status"] == "wired" and not r["workflows"]
     )
+
+    # ------------------------------------------------------------------
+    # #910 — the CHECK-FLOOR ledger, reported PER MODE and never summed
+    # across modes. Emulator entries, compilations and printed counts are
+    # three different units; adding them would produce one impressive number
+    # that means nothing, which is the defect this lane exists to fix (the
+    # coverage percentage that silently spanned two populations). The
+    # emulations floor is the one that ratchets.
+    # ------------------------------------------------------------------
+    modes = {}
+    for r in records:
+        if r["status"] != "wired":
+            continue
+        m = r.get("checks_mode")
+        if not m:
+            continue
+        e = modes.setdefault(m, {"scripts": 0, "floor": 0})
+        e["scripts"] += 1
+        e["floor"] += r.get("checks_floor", 0)
+    out["checks_by_mode"] = dict(sorted(modes.items()))
+    out["checks_undeclared"] = sum(
+        1 for r in records if r["status"] == "wired" and not r.get("checks_mode")
+    )
+    out["emulation_floor"] = modes.get("emulations", {}).get("floor", 0)
     return out
 
 
@@ -292,6 +354,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", metavar="PATH", help="write the summary as JSON")
     ap.add_argument("--list", action="store_true", help="print every script + status")
+    ap.add_argument(
+        "--min-emulation-floor",
+        type=int,
+        metavar="N",
+        help="fail if the summed `ci-checks: emulations` floors drop below N "
+        "(the #910 ratchet; direction is UP)",
+    )
     args = ap.parse_args()
 
     root = repo_root()
@@ -317,6 +386,24 @@ def main():
             "derivation is broken (did the workflow layout move?)"
         )
 
+    # #910: the check-floor ledger, and its own anti-vacuity. A run in which
+    # NOTHING declares an emulation floor has not measured the population it
+    # claims to; that is a broken derivation, not a clean sheet.
+    if summary["emulation_floor"] == 0:
+        fails.append(
+            "VACUOUS — no `wired` oracle declares `ci-checks: emulations`; the "
+            "execution population is unmeasured."
+        )
+    if args.min_emulation_floor is not None:
+        if summary["emulation_floor"] < args.min_emulation_floor:
+            fails.append(
+                f"check-floor RATCHET BROKEN: summed `ci-checks: emulations` "
+                f"floors {summary['emulation_floor']} < recorded minimum "
+                f"{args.min_emulation_floor}. An oracle lost execution, or a "
+                f"floor was lowered. Lower the ledger only when the evidence "
+                f"genuinely weakened — never to green a build."
+            )
+
     if args.list:
         for r in sorted(records, key=lambda r: (r["status"], r["script"])):
             tag = r["status"] + (f"({r['category']})" if r.get("category") else "")
@@ -334,6 +421,14 @@ def main():
             "  manual by category: "
             + ", ".join(f"{k}={v}" for k, v in summary["manual_by_category"].items())
         )
+    # Per mode, never summed across modes — three different units.
+    for mode, e in summary["checks_by_mode"].items():
+        print(
+            f"  ci-checks {mode:<11} {e['scripts']:>4} scripts, "
+            f"floor total {e['floor']}"
+        )
+    if summary["checks_undeclared"]:
+        print(f"  ci-checks UNDECLARED: {summary['checks_undeclared']}")
 
     summary["failures"] = len(fails)
 
@@ -363,6 +458,23 @@ def main():
                 for r in sorted(debt, key=lambda r: r["script"]):
                     fh.write(f"- `{os.path.basename(r['script'])}` — {r['reason']}\n")
                 fh.write("\n")
+
+            fh.write("### Oracle check floors (#910)\n\n")
+            fh.write(
+                "What each wired oracle ASSERTS beyond exit 0, enforced per run "
+                "by `scripts/oracle_run.py`. Reported per mode and **not summed "
+                "across modes** — emulator entries, compilations and printed "
+                "counts are three different units.\n\n"
+            )
+            fh.write("| mode | oracles | floor total |\n|---|---|---|\n")
+            for mode, e in summary["checks_by_mode"].items():
+                fh.write(f"| `{mode}` | {e['scripts']} | {e['floor']} |\n")
+            fh.write(
+                "\nThis is a separate population from the "
+                "`Rust-test Line Coverage` percentage, which cannot see any of "
+                "it (the oracles run the compiler as an uninstrumented "
+                "subprocess, from other jobs). Do not add them together.\n\n"
+            )
 
     if fails:
         print()
