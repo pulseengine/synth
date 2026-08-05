@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     5. The stale-entry check already forces a closed gap to retire its ledger
     line; nothing forced the prose *about* the ledger to move with it.
 
+- **Two verification artifacts were added to close gaps the status fixes
+  revealed** (`SWVER-022` for VCR-RA-004, `GI-FPU-VER-002` for GI-FPU-002).
+  Neither gap was created by this work — a `proposed` artifact is not
+  lifecycle-checked, so the wrong statuses had been *hiding* them. The evidence
+  existed and was already named in both requirements' criteria; it just had no
+  typed `verifies` link. Measured on `rivet coverage` (the job's second step):
+  sw-req V-closure **31/60 → 33/60**, weighted overall **90.3 % → 90.7 %**.
+
 - **The `Rivet Validation` job had two blind spots — one per defect above.**
   Both errors sat in a green tree, which is not a coincidence: the filter
   anchored on `^  ERROR:` and so never saw rivet's filename-prefixed diagnostics
