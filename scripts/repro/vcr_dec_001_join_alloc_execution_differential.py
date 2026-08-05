@@ -40,6 +40,47 @@ What is gated, per fixture function:
       applied function (observed via SYNTH_RA003_VERBOSE, not inferred from the
       exit code), and no violation may be reported.
 
+**Increment 4 (v0.55, VCR-REACH-001) makes it a third time.** The i64
+register-PAIR model (`liveness::pair_effect`) is consumed by the pass,
+`validate_cfg_rewrite` AND the ABI observable contract, so no static instrument
+here can catch an error IN the model. The i64-pair shapes get their own
+population, their own >=4 floor, and a SECOND floor of >=2 functions containing a
+real i64 SHIFT expansion — verified in the EMITTED BYTES (`contains_i64_shift`),
+because the shift family is the only member whose model claims an operand is
+CLOBBERED and whose distinctness constraints are path-dependent.
+
+MUTATION MATRIX for increment 4, run against this harness. Reported in full,
+including the one that does NOT go red, because a mutation matrix that only
+lists its successes is not evidence:
+
+  A. `pair_effect` drops BOTH `rm_lo` and `rm_hi` from the shift clobber set.
+     -> RED. `rewrite_op`'s RMW-agreement check on `rm_lo` can no longer be
+     satisfied, so every shift function DECLINES and the engagement floor fires
+     (PAIRSHAPES 9 -> 3, SHIFTSHAPES 6 -> 0). Caught, but by refusal-to-emit
+     rather than by a wrong value.
+
+  B. `pair_effect` drops ONLY `rm_hi`, coherently (absent from defs AND uses, so
+     pass and both validators agree the shift leaves it alone).
+     -> GREEN. NOT CAUGHT, and this is an honest residual, not an oversight:
+     tried against four shift fixtures including two built specifically for
+     register pressure (`shl_pressure`, `shl_pressure8`, eight i32 values live
+     across the shift). The churn-minimising colour bias fills R0-R3 first and
+     the shift-amount pair sits in callee-saved R4-R8, so no live web is ever
+     placed on the ORIGINAL `rm_hi` register and the clobber is unobservable on
+     this corpus. The `rm_hi` half of the model is therefore BELT-AND-BRACES
+     (sound, and cheap) rather than execution-gated. Closing it needs a fixture
+     that forces a live value onto the shift amount's high-half register — a
+     named follow-up, not a claim made here.
+
+  C. The EARLY-CLOBBER interference edges are deleted (`pair_early_clobber`, the
+     obligation a defs/uses pair structurally cannot express).
+     -> RED, and this is the sharp one. The colourer coalesces `I64Ldr`'s `rdlo`
+     onto a `base` the second `LDR` still re-reads. `validate_cfg_rewrite`
+     ACCEPTS all 7 functions, VCR-RA-003 reports Consistent on all 7, and the
+     ABI observable contract passes all 7 — three static instruments green — and
+     only this gate fails, with 3 WRONG VALUES. A third counterexample to the
+     idea that per-compilation validation is an independent check on codegen.
+
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 \\
       scripts/repro/vcr_dec_001_join_alloc_execution_differential.py
@@ -144,6 +185,10 @@ CASES = [
     # `I64Ldr` early-clobber: the address is DEAD after the load, so only the
     # interference edge stops `rdlo` being coalesced onto `base`. The HIGH-word
     # variant is the one the SECOND load produces.
+    ("vcr_reach_001_i64_pair.wat", "shl_pressure",
+     [(1, 0), (1, 5), (1, 32), (3, 45), (0x1234, 100)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "shl_pressure8",
+     [(1, 0), (1, 5), (1, 32), (3, 45), (0x1234, 100)], "pair"),
     ("vcr_reach_001_i64_pair.wat", "ld_dead_base",
      [(0, 0x11223344, 0x55667788), (8, 0xFFFFFFFF, 0x0F0F0F0F),
       (0x40, 0, 0xDEADBEEF), (0xFF, 0xCAFEBABE, 0)], "pair"),

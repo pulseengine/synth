@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **VCR-DEC-001 increment 4 (VCR-REACH-001, #242) — the graph-colouring
+  allocator models the i64 register-PAIR ops.** Increments 2 (joins) and 3
+  (calls) both returned *do not flip*, and both for the same reason: the
+  limiting factor is REACH, not soundness. Every function the colourer emits is
+  clean under all three instruments; it simply declines too often. A per-function
+  census of WHICH ops force the biggest decline bucket — `unmodeled-op`, 175 of
+  the corpus's declines, 47 % of the total — attributes **167 of the 175 to one
+  family**, the i64 register-pair pseudo-ops. This increment models the verified
+  subset of that family (`I64Const`, `I32WrapI64`, `I64Ldr`, `I64Str`,
+  `I64SetCond`/`SetCondZ`, `I64ExtendI32S`, `I64Shl`/`ShrU`/`ShrS`).
+
+  Measured on the 633-function v0.54 ARM repro corpus (ELF symtab bytes,
+  `--emit-wcet` sound bounds), so the comparison is apples-to-apples with
+  increment 3 despite this lane adding its own fixture:
+
+  | | greedy | inc 3 | inc 4 |
+  |---|---|---|---|
+  | applied (relocatable) | — | 316 | **411** |
+  | applied (self-contained) | — | 113 | **204** |
+  | bytes, relocatable | 41438 | −100 | **−110** |
+  | bytes, self-contained | 49930 | −120 | **−132** |
+  | WCET bound, relocatable | 14009 | −33 | **−33**, 0 regressions |
+
+  `unmodeled-op` **175 → 61**. Reach is up 30 % / 81 %; bytes moved 10 / 12 more.
+  That gap IS the finding, and it confirms increment 3's diagnosis: reach
+  converts into bytes almost entirely through `shrink_callee_saved_saves`, which
+  is LEAF-ONLY. **Still flag-off, and the flip criterion is no closer on bytes.**
+
+- **Latent miscompile found and pinned (not fixed): the i64 shift zero-fill
+  mis-encodes for a high destination.** `I64Shl`/`I64ShrU`'s Thumb expansions
+  zero a half with the 16-bit `MOVS` T1 form, `0x2000 | (rd << 8)`, whose `rd`
+  field is three bits — for R8 that is `0x2800`, i.e. `CMP r0, #0`, and the half
+  is never zeroed. Same class as #180 / H-CODE-9, and the same one #311 already
+  fixed for `I64SetCond`. It is REACHABLE in shipped code today
+  (`rv32_cmp_select_472.wat` on cortex-m4 emits `I64ShrU { rd_hi: R8, … }`); it
+  is unobservable *there* only because an `I32WrapI64` discards the high half
+  immediately, which is luck. Not fixed here — unlike `I64SetCond`, these
+  expansions are hand-emitted halfwords with fixed internal branch
+  displacements, so widening the `MOV` overshoots the target, and the fix needs
+  its own lane and its own execution gate. Pinned by
+  `i64_shift_zero_fill_mis_encodes_for_a_high_destination` so it cannot be fixed
+  unnoticed, and the colourer refuses such a stream (`i64-16bit-form-high-reg`)
+  rather than put its name to it.
+
+### Changed
+
+- **VCR-RA-003's join-availability half now covers the i64-pair family — on the
+  DEFAULT build.** It built its CFG from `reg_effect` alone, so every
+  i64-containing function returned `NotAttempted`: the interesting half of the
+  validator never ran. Measured over 640 functions with the allocator flag OFF:
+  **Consistent 440 → 560, NotAttempted 200 → 80** — a 60 % cut in the declining
+  half, unconditional and not gated behind `SYNTH_GRAPH_ALLOC`. Verified as a
+  shipping-path change: 0 hard errors across the corpus on both the relocatable
+  and self-contained paths, and all 633 pre-existing relocatable functions plus
+  all 1059 self-contained ones byte-identical to v0.54.
+
+### Notes
+
+- `SYNTH_GRAPH_ALLOC` remains **off by default**; flag-off output is
+  byte-identical and the frozen anchors stay 10/10.
+- The i64-pair model is stated ONCE (`liveness::pair_effect`) and consumed by the
+  pass, `validate_cfg_rewrite`, the ABI observable contract and VCR-RA-003 — so
+  no static instrument can catch an error in the model itself. The new shapes are
+  therefore EXECUTED against wasmtime, and the coverage is proven non-vacuous by
+  mutation: deleting the early-clobber interference edges lets the colourer
+  coalesce `I64Ldr`'s `rdlo` onto a base the second `LDR` re-reads —
+  `validate_cfg_rewrite`, VCR-RA-003 and the ABI contract are ALL green on all
+  seven functions, and only execution fails it. A third counterexample to the
+  idea that per-compilation validation is an independent check on codegen.
+- Honest residual, reported because a mutation matrix that lists only its
+  successes is not evidence: the coherent "model omits `rm_hi`" mutation is NOT
+  caught, even against two purpose-built register-pressure fixtures. The
+  churn-minimising colour bias fills R0–R3 first and the shift-amount pair sits
+  in callee-saved R4–R8, so no live web is ever placed on the original `rm_hi`
+  register. That half of the clobber model is sound and cheap but currently
+  belt-and-braces rather than execution-gated.
+- Still declined, by name, with the histogram to prove it: `single-block` 73,
+  `unmodeled-op` 61 (the i64 div/rem software loops, rotates, `I64Mul`,
+  popcnt/clz/ctz, the narrow sign-extends, `MemorySize`/`MemoryGrow`),
+  `identity-colouring` 58, `call-indirect-pseudo` 17, `unreachable-block` 11,
+  `numeric-branch` 10, `i64-16bit-form-high-reg` 1.
+
 ## [0.54.0] - 2026-08-05
 
 **"Close what we measured."** v0.53 built the instruments; this release acts on

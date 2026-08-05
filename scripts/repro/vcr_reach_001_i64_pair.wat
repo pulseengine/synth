@@ -73,6 +73,51 @@
         (i64.shr_u (i64.extend_i32_s (local.get $x)) (local.get $k))
         (local.get $k))))
 
+  ;; REGISTER PRESSURE around the shift. The three fixtures above spill `$k` to
+  ;; the frame and reload it after the shift, so NOTHING is register-resident
+  ;; across the shift and the `rm_hi` scratch clobber is unobservable in them
+  ;; (measured: the coherent "model does not mention rm_hi" mutation passes on
+  ;; them). Four extra i32 locals, all defined before the shift and all read
+  ;; after it, force the colourer to keep live values in R4-R8 across it — which
+  ;; is where the shift-amount pair lives.
+  (func (export "shl_pressure") (param $x i32) (param $s i32) (result i32)
+    (local $a i32) (local $b i32) (local $c i32) (local $d i32) (local $k i64)
+    (local.set $a (i32.add (local.get $x) (i32.const 11)))
+    (local.set $b (i32.add (local.get $x) (i32.const 22)))
+    (local.set $c (i32.add (local.get $x) (i32.const 33)))
+    (local.set $d (i32.add (local.get $x) (i32.const 44)))
+    (local.set $k (i64.extend_i32_s (local.get $s)))
+    (i32.xor
+      (i32.xor
+        (i32.wrap_i64 (i64.shl (i64.extend_i32_s (local.get $x)) (local.get $k)))
+        (i32.xor (local.get $a) (local.get $b)))
+      (i32.xor (local.get $c) (local.get $d))))
+
+  ;; Heavier pressure still: EIGHT i32 values live across the shift, so the
+  ;; four caller-saved colours cannot hold them all and the colourer must place
+  ;; live webs on callee-saved registers — the half of the file where the shift
+  ;; amount pair actually lives.
+  (func (export "shl_pressure8") (param $x i32) (param $s i32) (result i32)
+    (local $a i32) (local $b i32) (local $c i32) (local $d i32)
+    (local $e i32) (local $f i32) (local $g i32) (local $h i32) (local $k i64)
+    (local.set $a (i32.add (local.get $x) (i32.const 11)))
+    (local.set $b (i32.add (local.get $x) (i32.const 22)))
+    (local.set $c (i32.add (local.get $x) (i32.const 33)))
+    (local.set $d (i32.add (local.get $x) (i32.const 44)))
+    (local.set $e (i32.add (local.get $x) (i32.const 55)))
+    (local.set $f (i32.add (local.get $x) (i32.const 66)))
+    (local.set $g (i32.add (local.get $x) (i32.const 77)))
+    (local.set $h (i32.add (local.get $x) (i32.const 88)))
+    (local.set $k (i64.extend_i32_s (local.get $s)))
+    (i32.xor
+      (i32.xor
+        (i32.xor
+          (i32.wrap_i64 (i64.shl (i64.extend_i32_s (local.get $x)) (local.get $k)))
+          (i32.xor (local.get $a) (local.get $b)))
+        (i32.xor (i32.xor (local.get $c) (local.get $d))
+                 (i32.xor (local.get $e) (local.get $f))))
+      (i32.xor (local.get $g) (local.get $h))))
+
   ;; ---- (B) the I64Ldr EARLY-CLOBBER --------------------------------------
   ;;
   ;; `I64Ldr` expands to `LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]`. The
