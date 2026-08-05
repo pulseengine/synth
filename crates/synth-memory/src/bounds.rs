@@ -30,10 +30,31 @@ pub enum BoundsCheckOverhead {
     High,
 }
 
-/// Software bounds checking (portable, ~25-40% overhead)
+/// Software bounds checking (portable).
 ///
 /// Performs an explicit comparison before each memory access.
 /// This is the safest portable option.
+///
+/// # Cost — MEASURED, not asserted (VCR-MEM-004 / #901)
+///
+/// This doc used to say "~25-40% overhead" with nothing behind it. On
+/// `scripts/repro/proven_safe_bounds_901.wat` (Cortex-M4, `--safety-bounds
+/// software`, 8 guarded i32 accesses), gated by
+/// `crates/synth-cli/tests/proven_safe_bounds_901.rs` and
+/// `scripts/repro/proven_safe_bounds_901_differential.py`:
+///
+/// | build                        | `probe` bytes | executed insns |
+/// |------------------------------|---------------|----------------|
+/// | no bounds checking (floor)   |  94 B         | 30             |
+/// | software bounds (all 8 sites)| 232 B         | 70             |
+/// | 5 of 8 sites proven in-bounds| 152 B         | 45             |
+///
+/// So the guard tax on this fixture is **138 B (+147 %) and 40 instructions
+/// (+133 %)** — well above the old "~25-40%" guess, because that guess was
+/// about a whole workload while this is one access-dense kernel. Proving 5 of
+/// the 8 sites via [`ProvenSafeBoundsChecker`] recovers 80 B (58 % of the tax)
+/// and 25 instructions (36 % of the guarded total). One fixture on one target
+/// — a real number with a small denominator, not a headline.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SoftwareBoundsChecker;
 

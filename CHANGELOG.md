@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--proven-safe`: bounds-check elision on scry's proof, fail-closed and
+  attested (VCR-MEM-004, #901).** `synth compile --proven-safe
+  safe-accesses.json` consumes scry's `scry/safe-accesses/v1` verdict list
+  (producer: pulseengine/scry#114) and drops the `--safety-bounds software`
+  inline guard at exactly the access sites scry's sound abstract
+  interpretation proved in-bounds against the memory's **guaranteed minimum**
+  size — a floor wasm memory can only grow away from, so the verdict survives
+  `memory.grow`. New `synth_memory::ProvenSafeBoundsChecker` (the fifth
+  `BoundsChecker` strategy, and the first proof-informed one) and
+  `synth_core::proven_safe` (ingestion + attestation).
+
+  **The deliverable is the refusal logic, not the speedup.** Every question the
+  ingestion can ask is answered fail-closed, and fail-closed always means the
+  same thing — elide NOTHING, warn, exit 0:
+
+  - a `module_sha256` that does not match **the exact bytes handed to the
+    decoder** (after `.wat` parsing, after loom, after the #418 arena-bind
+    rewrite). Binding the hash there is deliberate: a pre-compile rewrite that
+    shifts function/operator indices also breaks the hash, so index skew and
+    byte skew are ONE gate. Eliding on a stale analysis is a memory-safety
+    hole, not a stale optimization;
+  - a `memory_min_bytes` that disagrees with this module's declared floor (a
+    matching hash implies they are equal, so a disagreement means the producer
+    is broken — and a broken prover is not trusted);
+  - a malformed, missing, or wrong-schema file — the `wsc.facts` fail-safe skew
+    rule applied to a JSON carrier. No input can turn a good compile into a
+    failed one;
+  - a `(func, pc)` key that does not validate against the DECODED operator
+    (must exist, must be a linear-memory access, must have the declared access
+    width). scry#114's `pc` is the 0-based **wasmparser operator index**; if a
+    producer ever emitted wasm byte offsets instead, nearly every entry fails
+    this check and the build elides nothing **loudly** rather than stripping
+    the guard off the wrong access;
+  - a function that `SYNTH_FACT_SPEC` specialized, which renumbers the index
+    space the verdicts are keyed in — refused per function, never silently
+    remapped.
+
+  **Absence from the list means "not proven", never "unsafe":** an unlisted
+  site keeps its guard, so a partial verdict list yields a partially-guarded
+  binary. "Flag given, file accepted, nothing elided" is diagnosed by name
+  rather than reported as success.
+
+  **Attestation (sigil):** every `--proven-safe` compile writes
+  `<output>.proven-safe-elisions.json` (`synth-proven-safe-elisions-v1`) with
+  the elision set, each site's authority, the scry version, both module hashes
+  and both memory floors — **emitted on refusal too**, so sigil can tell
+  "nothing to elide" from "file rejected".
+
+  **Measured** on `scripts/repro/proven_safe_bounds_901.wat` (Cortex-M4, 8
+  guarded accesses, 5 proven): `probe` **232 → 152 B** (80 B, 58 % of the
+  138 B guard tax, 34.5 % of the function) and **70 → 45 executed
+  instructions** (36 %). Proving all 8 lands byte-identical to the
+  `--safety-bounds`-off floor. The per-site win is the same magnitude #494
+  publishes because it is the same guard strip — what is new is the authority
+  and the fail-closed binding, not the byte. This also converts
+  `SoftwareBoundsChecker`'s long-standing "~25-40 % overhead" doc comment from
+  an assertion into a measurement (the real tax on this access-dense kernel is
+  +147 % bytes / +133 % instructions), pinned in `claims.yaml`.
+
+  Gated by `crates/synth-cli/tests/proven_safe_bounds_901.rs` (11 byte gates)
+  and `scripts/repro/proven_safe_bounds_901_differential.py` (207 checks,
+  unicorn vs wasmtime, CI-wired in the new `proven-safe-oracle` job): an
+  in-bounds sweep where elided ≡ guarded ≡ wasmtime on return value AND the
+  full 64 KiB memory image, out-of-bounds accesses at NOT-PROVEN sites that
+  still trap, and a fail-closed leg that applies one module's verdicts to a
+  mutated module whose keys all still validate — deleting the hash comparison
+  turns it RED with a real `UC_ERR_READ_UNMAPPED`. Opt-in; frozen anchors
+  10/10 (the mark vector defaults empty).
+
 ## [0.54.0] - 2026-08-05
 
 **"Close what we measured."** v0.53 built the instruments; this release acts on

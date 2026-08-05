@@ -3194,7 +3194,7 @@ artifacts:
       is impossible without changing the published surface; the two halves are
       joined by this documented contract, not a compile-time link. Named
       residual, not hidden.
-    status: proposed
+    status: implemented
     tags: [codegen, memory, bounds-elision, scry, proof-carrying, attestation, sigil, track-c, synth-901, scry-114]
     links:
       - type: derives-from
