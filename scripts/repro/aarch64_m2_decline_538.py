@@ -41,16 +41,39 @@ DECLINED = [
     # lanes' pre-merge copies of this list were stale in OPPOSITE
     # directions — asserting a decline for a capability that now ships is
     # the same doc-honesty defect as claiming one that does not.
-    ("br_table", '(func (export "f") (param i32) (result i32) '
-                 '(block (block (br_table 0 1 (local.get 0))) '
-                 '(return (i32.const 1))) (i32.const 2))'),
+    #
+    # v0.55 L6 (VCR-A64-CF-001) moved `br_table` and the VALUE-CARRYING
+    # `block (result f32)` off this list. Note what REPLACED them: not
+    # nothing, but the NARROWER residuals below. A partial lowering that
+    # deleted its entry outright would be claiming more than it ships.
+    # v0.55 L6 (VCR-A64-CF-001): `br_table` and the VALUE-CARRYING
+    # `block`/`loop`/`if` moved OFF this list — both now lower and are
+    # execution-verified in aarch64_brtable_blockvals_851_differential.py. What
+    # is LEFT of each is a narrower, named residual, and it stays here:
+    ("br_table past the compare-chain threshold (>16 targets)",
+     '(func (export "f") (param i32) (result i32) '
+     # 17 TARGETS (+ a trailing default label) — one past BR_TABLE_MAX_TARGETS.
+     '(block (block (br_table 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 (local.get 0))) '
+     '(return (i32.const 1))) (i32.const 2))',
+     "exceeds the aarch64 compare-chain threshold"),
+    ("br_table with VALUE-CARRYING targets",
+     '(func (export "f") (param i32) (result i32) '
+     '(block (result i32) (i32.const 7) (local.get 0) '
+     '(br_table 0 0 (local.get 0))))',
+     "VALUE-CARRYING targets"),
+    ("block with PARAMETERS (multi-value)",
+     '(func (export "f") (param i32) (result i32) '
+     '(local.get 0) (block (param i32) (result i32) (i32.const 1) (i32.add)))',
+     "PARAMETER-taking block type"),
+    ("block with MULTI-VALUE results",
+     '(func (export "f") (param i32) (result i32) '
+     '(block (result i32 i32) (i32.const 1) (i32.const 2)) (i32.add))',
+     "MULTI-VALUE result block type"),
     ("local.set on a param",
      '(func (export "f") (param i32) (result i32) '
      '(local.set 0 (i32.add (local.get 0) (i32.const 1))) (local.get 0))'),
     ("memory.fill", '(memory 1)(func (export "f") '
                     '(memory.fill (i32.const 0) (i32.const 0) (i32.const 4)))'),
-    ("block (result f32)", '(func (export "f") (param f32) (result f32) '
-                           '(block (result f32) (local.get 0)))'),
     ("f32x4.add", '(func (export "f") (param f32) (result f32) '
                   '(f32x4.extract_lane 0 (f32x4.add '
                   '(f32x4.splat (local.get 0)) (f32x4.splat (local.get 0)))))'),

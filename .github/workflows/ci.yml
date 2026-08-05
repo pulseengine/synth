@@ -588,6 +588,33 @@ jobs:
           echo "float-completion oracle ran $n checks, $t of them trap cases"
           [ "$n" -ge 300 ]
           [ "$t" -ge 40 ]
+      - name: Run v0.55 L6 br_table + VALUE-CARRYING block/loop/if oracle (VCR-A64-CF-001)
+        # The two largest entries in the mechanically-derived aarch64 decline
+        # complement, now lowered. `br_table` is a compare-and-branch CHAIN, so
+        # a wrong destination is a wrong RESULT: the harness walks the index
+        # lattice per table (every arm, the index AT the bound, one OVER it, and
+        # 0xFFFFFFFF — which a SIGNED compare would mis-dispatch, since WASM
+        # reads the index UNSIGNED), and puts a LOOP HEADER in the same table as
+        # a forward block end so a wrong branch DIRECTION shows up as a wrong
+        # trip count. The value-carrying frames are driven down BOTH edges of
+        # every join.
+        #
+        # ANTI-VACUITY (#890). `set -euo pipefail`, NOT bare `pipefail`: with
+        # pipefail ALONE the step's exit status is the LAST command's, so an
+        # oracle that printed FAIL and exited 1 still went GREEN. The verdict is
+        # then taken from the script's OWN summary line, and the counts are
+        # asserted NON-ZERO in both outcome classes — an oracle that stopped
+        # trapping (or stopped returning values) must go RED.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/repro/aarch64_brtable_blockvals_851_differential.py \
+            | tee /tmp/a64_brtable.log
+          grep -q '^RESULT: PASS' /tmp/a64_brtable.log
+          grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\) across [1-9][0-9]* exported' /tmp/a64_brtable.log
+          n=$(sed -n 's/^\([0-9]*\) checks .*/\1/p' /tmp/a64_brtable.log)
+          echo "br_table/value-carrying oracle ran $n checks"
+          [ "$n" -ge 60 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 

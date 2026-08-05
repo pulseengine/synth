@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **aarch64 `br_table` + value-carrying `block`/`loop`/`if` (VCR-A64-CF-001,
+  #851).** The two largest entries left in the VCR-SEL-005 third-backend
+  complement were structural, not arithmetic — and both made whole functions
+  skip on `-b aarch64`. `br_table` now lowers as a compare-and-branch chain
+  (`cbz` for entry 0, `cmp`+`b.eq` per further entry, then the default `b`),
+  deliberately the same construction #882 chose for RV32 so the two backends
+  stay reviewable against each other; the index is compared in the W view, so
+  the UNSIGNED index rule holds exactly and every out-of-range index —
+  including the "negative" i32s that denote huge unsigned values — reaches the
+  DEFAULT. One table may MIX a backward loop header with forward block ends.
+  A value-carrying frame reserves a reconciliation register that every incoming
+  edge deposits into (`br`/`br_if` at the branch, the then-arm at `else`, the
+  fall-through at `end`), so the frame's result sits in ONE register on every
+  path — i32/i64 through `mov x`, f32/f64 through `fmov d`. The aarch64
+  selector goes **184 → 185 ops**.
+- **The soundness-critical asymmetry is by construction, not by test.** A `br`
+  to a LOOP label targets the header and carries the loop's PARAMETERS, not its
+  results, so a `loop (result T)` back-edge must reconcile NOTHING — the frame
+  carries `label_arity` separately from `result_arity` and branch
+  reconciliation is driven off the former. The natural wrong implementation
+  (reconcile whenever the frame has a result) stamps a garbage value into the
+  result register on every iteration.
+
+### Changed
+
+- **Three named residuals replace two blanket declines.** `br_table` past 16
+  targets (`BR_TABLE_MAX_TARGETS`, the same threshold RV32 uses — the chain is
+  O(n) and PC-relative jump-table dispatch is a follow-up), a `br_table` whose
+  targets are value-carrying (the flat chain has no per-path edge to deposit a
+  result on), and a block type with PARAMETERS or MULTI-VALUE results (the slot
+  is one register). Each loud-declines with a machine reason and is pinned BY
+  NAME in `br_table_subshape_asymmetry_882`, which fails in both directions —
+  partial coverage with named gaps rather than a claim that cannot be backed.
+  The `br_table` whole-op entry is deleted from `aarch64_known_divergences()`;
+  the parity gate's stale-entry check is what forced the deletion.
+- **The #554 float-honesty fixture moves again.** It targeted a value-carrying
+  f32-result `block`; that shape now lowers, so the fixture re-points at a
+  float construct that genuinely still declines — a NON-LEAF function reading
+  an f32 parameter (float params live in `v0..v7`, which a `bl` clobbers, and
+  the encoder has no FP store to home them with).
+
+### Verified
+
+- `scripts/repro/aarch64_brtable_blockvals_851_differential.py` (CI-wired): 84
+  checks over 17 exported functions against wasmtime, under unicorn AND
+  natively on an arm64 host. Per table it walks the index lattice — every arm,
+  the index exactly AT the bound, one OVER it, and `0xFFFFFFFF` (the case a
+  SIGNED compare would mis-dispatch) — plus a table at exactly 16 targets, a
+  `br_table` arm falling into a trap, and both join edges of every
+  value-carrying frame including a value-carrying loop's back-edge.
+  NON-VACUITY was demonstrated by MUTATION, not asserted: taking the join
+  position before the fall-through's reconciliation move reddens 16 checks, an
+  off-by-one in the chain constants reddens 22, and using `result_arity` where
+  `label_arity` belongs (the loop back-edge bug) makes two functions fail to
+  compile at all.
+- Void control flow is **byte-identical**: 13 of the 14 aarch64 repro fixtures
+  compile to the same object as v0.54.0, and the one that differs
+  (`aarch64_f32_unsupported_554`) differs exactly because its declined function
+  now lowers. A void frame reserves no register and emits no reconciliation
+  move, so the property holds by construction.
+
 ## [0.54.0] - 2026-08-05
 
 **"Close what we measured."** v0.53 built the instruments; this release acts on
