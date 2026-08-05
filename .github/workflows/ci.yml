@@ -475,9 +475,15 @@ jobs:
     # CNT/ADDV), and f64<->i64 reinterpret. v0.54 L2 completes the SCALAR float
     # surface — rounding (FRINT), f32/f64 load/store (bounds-checked), i64->
     # float converts, and the DOMAIN-GUARDED trapping i64-target truncations —
-    # so the decline-matrix probe now asserts the STRUCTURAL declines
-    # (call_indirect, br_table, param writes, globals, bulk memory,
-    # value-carrying blocks, SIMD) still LOUD-decline.
+    # so the decline-matrix probe moved on to the STRUCTURAL declines. v0.54 L3
+    # then landed call_indirect + globals and v0.55 L6 (VCR-A64-CF-001)
+    # `br_table` + value-carrying block/loop/if, so what the probe asserts today
+    # is the NARROWER residue: param writes in a LEAF function, bulk memory,
+    # SIMD, a `br_table` past 16 targets or with value-carrying targets, a block
+    # type with params / multi-value results, and a non-leaf FLOAT param. Each
+    # entry LEAVES this list the day its lowering lands — asserting a decline
+    # for a capability that now ships is the same doc-honesty defect as claiming
+    # one that does not.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
