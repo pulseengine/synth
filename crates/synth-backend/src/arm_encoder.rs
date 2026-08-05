@@ -8282,7 +8282,7 @@ fn emit_thumb_zero_fill(bytes: &mut Vec<u8>, rd_bits: u32) {
         bytes.extend_from_slice(&movs.to_le_bytes());
     } else {
         bytes.extend_from_slice(&0xF04Fu16.to_le_bytes());
-        bytes.extend_from_slice(&(((rd_bits as u16) << 8) as u16).to_le_bytes());
+        bytes.extend_from_slice(&((rd_bits as u16) << 8).to_le_bytes());
     }
 }
 

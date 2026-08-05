@@ -276,7 +276,11 @@ fn i64_clz_ctz_branches_target_the_final_mov_itself() {
             rnhi,
         });
         // BEQ@2 → hw 7 (byte 14); B@5 → hw 11 (byte 22) = the MOV.
-        assert_branches_still_land(&format!("I64Clz{{rnhi={rnhi:?}}}"), &clz, &[(2, 7), (5, 11)]);
+        assert_branches_still_land(
+            &format!("I64Clz{{rnhi={rnhi:?}}}"),
+            &clz,
+            &[(2, 7), (5, 11)],
+        );
 
         let ctz = thumb(&ArmOp::I64Ctz {
             rd: Reg::R0,
@@ -284,7 +288,11 @@ fn i64_clz_ctz_branches_target_the_final_mov_itself() {
             rnhi,
         });
         // BEQ@2 → hw 9 (byte 18); B@7 → hw 15 (byte 30) = the MOV.
-        assert_branches_still_land(&format!("I64Ctz{{rnhi={rnhi:?}}}"), &ctz, &[(2, 9), (7, 15)]);
+        assert_branches_still_land(
+            &format!("I64Ctz{{rnhi={rnhi:?}}}"),
+            &ctz,
+            &[(2, 9), (7, 15)],
+        );
     }
 }
 

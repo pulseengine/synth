@@ -497,7 +497,11 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // `CMP r0,#0` and never write the half), so the expansion is 40 bytes
         // there and the encoder widens its internal `B .done` to match.
         ArmOp::I64Shl { rd_lo: rd, .. } | ArmOp::I64ShrU { rd_hi: rd, .. } => {
-            if reg_num(rd) < 8 { 38 } else { 40 }
+            if reg_num(rd) < 8 {
+                38
+            } else {
+                40
+            }
         }
         // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
         ArmOp::I64ShrS { .. } => 40,
@@ -510,11 +514,19 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // R0-R7; R8-R12 take `MOV.W` (4), so 26. Unlike the shifts, no branch
         // moves — `B .done` targets the clear's OWN address.
         ArmOp::I64Clz { rnhi, .. } => {
-            if reg_num(rnhi) < 8 { 24 } else { 26 }
+            if reg_num(rnhi) < 8 {
+                24
+            } else {
+                26
+            }
         }
         // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
         ArmOp::I64Ctz { rnhi, .. } => {
-            if reg_num(rnhi) < 8 { 32 } else { 34 }
+            if reg_num(rnhi) < 8 {
+                32
+            } else {
+                34
+            }
         }
         // I64Popcnt: PUSH/POP + duplicate popcount for lo and hi word (#498:
         // measured 172; #632 result-carry through R12 across the restore pop
