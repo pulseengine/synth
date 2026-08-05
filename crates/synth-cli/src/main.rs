@@ -187,6 +187,14 @@ struct Cli {
     verbose: bool,
 }
 
+/// `Compile` carries every CLI flag as an inline field, so it is far larger
+/// than the other variants — and it crossed clippy's `large_enum_variant`
+/// threshold when `--proven-safe` was added (VCR-MEM-004 / #901). Boxing is
+/// the lint's suggested cure but clap's derive expects the fields inline, and
+/// this enum is constructed EXACTLY ONCE per process (argument parsing), so
+/// the size difference costs nothing measurable. Allowed deliberately rather
+/// than contorting the argument surface.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Parse and analyze a WebAssembly component
@@ -484,6 +492,25 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = StackLayoutArg::High)]
         stack_layout: StackLayoutArg,
 
+        /// VCR-MEM-004 (#901): path to scry's `safe-accesses.json` (schema
+        /// `scry/safe-accesses/v1`). Every listed `(func, pc)` access whose
+        /// key VALIDATES against the decoded operator has its
+        /// `--safety-bounds software` inline guard elided; every other access
+        /// keeps it (absence means "not proven", NEVER "unsafe").
+        ///
+        /// FAIL CLOSED: a `module_sha256` that does not match the module being
+        /// compiled, a `memory_min_bytes` that disagrees with this module's
+        /// declared floor, a wrong schema, or an unreadable/malformed file
+        /// elides NOTHING and warns — eliding on a stale analysis is a
+        /// memory-safety hole, not a stale optimization. Never an error.
+        ///
+        /// Writes a `<output>.proven-safe-elisions.json` attestation (schema
+        /// `synth-proven-safe-elisions-v1`) recording the elision set, the
+        /// scry version and the module hash — emitted on refusal too, so
+        /// sigil can tell "nothing to elide" from "file rejected".
+        #[arg(long, value_name = "PATH")]
+        proven_safe: Option<PathBuf>,
+
         /// #687: size in BYTES of the reserved stack region under
         /// `--stack-layout=low` (default 4096). Must be a multiple of 8
         /// (AAPCS SP alignment) and at least 256. Ignored (with a warning)
@@ -616,6 +643,7 @@ fn main() -> Result<()> {
             volatile_segment,
             stack_layout,
             stack_size,
+            proven_safe,
         } => {
             // #882: track whether `-b/--backend` was given explicitly (the
             // mismatch diagnostics differ: an explicit backend lists the
@@ -702,6 +730,7 @@ fn main() -> Result<()> {
                 wcet_hints,
                 volatile_segments,
                 stack_layout,
+                proven_safe,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -1554,6 +1583,9 @@ fn compile_command(
     // #687: resolved --stack-layout (self-contained Cortex-M images only;
     // already validated against --relocatable / non-Cortex-M in main).
     stack_layout: StackLayout,
+    // VCR-MEM-004 (#901): path to scry's safe-accesses.json. Consumed only on
+    // the --all-exports module path; `None` (the default) is byte-identical.
+    proven_safe: Option<PathBuf>,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -1608,6 +1640,7 @@ fn compile_command(
             wcet_hints,
             volatile_segments,
             stack_layout,
+            proven_safe,
         );
     }
 
@@ -2724,6 +2757,8 @@ fn compile_all_exports(
     // #687: resolved --stack-layout. `Low` moves the self-contained image's
     // SP init / linmem / R9 table (and is refused on any ET_REL output).
     stack_layout: StackLayout,
+    // VCR-MEM-004 (#901): scry's safe-accesses.json, or None (byte-identical).
+    proven_safe: Option<PathBuf>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -3259,6 +3294,53 @@ fn compile_all_exports(
     }
     let a64_substrate_emitted = a64_substrate.as_ref().is_ok_and(|s| s.emitted);
 
+    // VCR-MEM-004 (#901): ingest scry's `safe-accesses.json`. TOTAL — every
+    // refusal path (unreadable, malformed, wrong schema, `module_sha256`
+    // mismatch, `memory_min_bytes` disagreement) yields "elide nothing" with a
+    // loud diagnostic and lets the compile proceed, because eliding a bounds
+    // check on a stale analysis is a memory-safety hole, not a stale
+    // optimization. The hash is taken over the bytes handed to the DECODER
+    // (post-`.wat`-parse, post-loom, post-#418 arena-bind), so a pre-compile
+    // rewrite that shifts operator indices also breaks the hash — index skew
+    // and byte skew are one gate.
+    let proven_safe_module_min_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
+    let proven_safe_ingest: Option<synth_core::proven_safe::ProvenSafeIngest> =
+        proven_safe.as_ref().map(|path| {
+            let module_bytes: &[u8] = sbom_wasm_bytes.as_deref().unwrap_or(&[]);
+            if module_bytes.is_empty() {
+                eprintln!(
+                    "warning: --proven-safe {}: this input has no single module to hash                      (a multi-module .wast merge); NO bounds guard is elided (fail closed)",
+                    path.display()
+                );
+            }
+            let r =
+                synth_core::proven_safe::ingest(path, module_bytes, proven_safe_module_min_bytes);
+            for d in &r.diagnostics {
+                eprintln!("warning: proven-safe: {d}");
+            }
+            if r.accepted {
+                eprintln!(
+                    "proven-safe: ACCEPTED {} — scry {} proved {} access site(s) in-bounds                      against the {} B floor; module_sha256 {} verified",
+                    path.display(),
+                    if r.scry_version.is_empty() {
+                        "<unversioned>"
+                    } else {
+                        &r.scry_version
+                    },
+                    r.offered.len(),
+                    r.declared_memory_min_bytes,
+                    &r.actual_module_sha256[..16.min(r.actual_module_sha256.len())],
+                );
+            }
+            r
+        });
+    // Accumulated across the function loop, for the sigil attestation.
+    let mut proven_safe_elisions: Vec<synth_core::proven_safe::AttestedElision> = Vec::new();
+    let mut proven_safe_diagnostics: Vec<String> = proven_safe_ingest
+        .as_ref()
+        .map(|r| r.diagnostics.clone())
+        .unwrap_or_default();
+
     // Build compile config from CLI flags
     let config = CompileConfig {
         no_optimize,
@@ -3478,6 +3560,58 @@ fn compile_all_exports(
             // bounds every reachable runtime extent (R10 ≥ declared min).
             func_config.linear_memory_bytes,
         );
+        // VCR-MEM-004 (#901): scry's externally-proven bounds-guard marks for
+        // THIS function. `pc` is an operator index into the ORIGINAL stream, so
+        // the marks are only sound when that stream is what the backend
+        // compiles — see the fact-spec refusal below.
+        if let Some(ing) = &proven_safe_ingest
+            && ing.accepted
+        {
+            let mut notes = Vec::new();
+            let marks = ing.validate_function(func.index, &func.ops, &mut notes);
+            for n in &notes {
+                eprintln!("proven-safe: DROP {n}");
+            }
+            proven_safe_diagnostics.extend(notes);
+            if spec.is_some() {
+                // SYNTH_FACT_SPEC rewrote this function's op stream, which
+                // RENUMBERS the index space `pc` is stated in. Remapping
+                // through `SpecializedFn::kept` is a future increment that
+                // needs its own differential; until then the combination is
+                // REFUSED per function rather than assumed. The guards stay.
+                if !marks.is_empty() {
+                    let msg = format!(
+                        "func {} ('{name}') — REFUSED: SYNTH_FACT_SPEC specialized this                          function, renumbering the operator index space the scry verdicts                          are keyed in. {} externally-proven mark(s) dropped; every guard is                          retained (VCR-MEM-004, #901)",
+                        func.index,
+                        marks.len()
+                    );
+                    eprintln!("proven-safe: {msg}");
+                    proven_safe_diagnostics.push(msg);
+                }
+            } else if !marks.is_empty() {
+                for &pc in &marks {
+                    if let Some(site) = ing
+                        .offered_for_func(func.index)
+                        .into_iter()
+                        .find(|s| s.pc as usize == pc)
+                    {
+                        proven_safe_elisions.push(synth_core::proven_safe::AttestedElision {
+                            func: func.index,
+                            pc: site.pc,
+                            op: site.op.clone(),
+                            width: site.width,
+                            authority: synth_core::proven_safe::SAFE_ACCESSES_SCHEMA.to_string(),
+                        });
+                    }
+                }
+                eprintln!(
+                    "proven-safe: ELIDE func {} ('{name}') — {} bounds guard(s) elided on                      scry's proof (op indices {marks:?})",
+                    func.index,
+                    marks.len()
+                );
+                func_config.proven_safe_mem_elide = marks;
+            }
+        }
         let (ops_for_compile, op_offsets_for_elf): (&[WasmOp], Vec<u32>) = match &spec {
             Some(s) => {
                 func_config.current_func_block_arity = s.block_arity.clone();
@@ -4046,6 +4180,72 @@ fn compile_all_exports(
         output.display(),
         output.display()
     );
+
+    // VCR-MEM-004 (#901): write the `synth-proven-safe-elisions-v1`
+    // attestation next to the output. Emitted whenever --proven-safe was
+    // given — INCLUDING on refusal — so sigil can attest what was elided and
+    // on whose authority, and can tell "nothing to elide" from "file
+    // rejected". Additive; the ELF is unchanged.
+    if let Some(ing) = &proven_safe_ingest {
+        // LOUD ZERO-ELISION. "Flag given, file accepted, nothing stripped" is
+        // the failure mode that looks like success — name the reason.
+        if ing.accepted && proven_safe_elisions.is_empty() {
+            let why = if ing.offered.is_empty() {
+                "the document proves zero access sites".to_string()
+            } else if safety_bounds != SafetyBounds::Software {
+                format!(
+                    "--safety-bounds is `{}`, not `software` — there is no inline guard to                      elide (the verdicts are mode-independent, the strip is not)",
+                    safety_bounds.as_str()
+                )
+            } else {
+                format!(
+                    "none of the {} offered site(s) survived key validation — see the DROP                      lines above; if the producer emitted wasm BYTE OFFSETS instead of                      0-based OPERATOR indices, that is the cause",
+                    ing.offered.len()
+                )
+            };
+            let msg = format!(
+                "--proven-safe was given and the document was ACCEPTED, but NOTHING was                  elided: {why}"
+            );
+            eprintln!("warning: proven-safe: {msg}");
+            proven_safe_diagnostics.push(msg);
+        }
+        let attestation = synth_core::proven_safe::ElisionAttestation {
+            schema: synth_core::proven_safe::ELISION_ATTESTATION_SCHEMA.to_string(),
+            synth_version: env!("CARGO_PKG_VERSION").to_string(),
+            scry_version: ing.scry_version.clone(),
+            module_sha256: ing.actual_module_sha256.clone(),
+            declared_module_sha256: ing.declared_module_sha256.clone(),
+            memory_min_bytes: proven_safe_module_min_bytes,
+            declared_memory_min_bytes: ing.declared_memory_min_bytes,
+            safety_bounds: safety_bounds.as_str().to_string(),
+            accepted: ing.accepted,
+            refusal: ing.refusal.clone(),
+            sites_offered: ing.offered.len(),
+            sites_elided: proven_safe_elisions.len(),
+            sites_not_elided: ing.offered.len().saturating_sub(proven_safe_elisions.len()),
+            elisions: proven_safe_elisions.clone(),
+            diagnostics: proven_safe_diagnostics.clone(),
+        };
+        let sidecar = synth_core::proven_safe::ElisionAttestation::sidecar_path(&output);
+        std::fs::write(&sidecar, attestation.to_json()).with_context(|| {
+            format!(
+                "Failed to write proven-safe attestation: {}",
+                sidecar.display()
+            )
+        })?;
+        println!(
+            "  Proven-safe: wrote {} ({}, {} of {} site(s) elided) — {}",
+            sidecar.display(),
+            if attestation.accepted {
+                "accepted"
+            } else {
+                "REFUSED — no guard elided"
+            },
+            attestation.sites_elided,
+            attestation.sites_offered,
+            synth_core::proven_safe::ELISION_ATTESTATION_SCHEMA,
+        );
+    }
 
     // VCR-DEC-003 (#396): write the synth-provenance-v1 sidecar next to the
     // output (`<output>.provenance.json`). Additive; the ELF is unchanged.
