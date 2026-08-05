@@ -312,3 +312,66 @@ fn div_family_is_held_out_loudly() {
         }
     });
 }
+
+/// RED — the literal #916 bug shape, reconstructed byte-for-byte from the
+/// pre-fix encoder. This is what makes the high-register variants above
+/// non-vacuous: without it, "they certify" would be indistinguishable from
+/// "the validator cannot see this class at all".
+///
+/// The pre-fix `I64ShrU { rd_hi: R8, .. }` large-shift arm ended:
+///
+/// ```text
+/// B     .done          ; 0xE002 -> halfword 19, the end of a 38-byte expansion
+/// LSR.W rd_lo, rn_hi, rm_hi
+/// 0x2800                ; MOVS R8,#0 INTENDED — assembles as CMP r0,#0
+/// ```
+///
+/// so for any shift amount >= 32 the high half was never zeroed and kept
+/// whatever R8 held on entry. Splicing that tail back on MUST produce a
+/// counterexample.
+#[test]
+fn red_916_transmuted_zero_fill_fails() {
+    with_verification_context(|| {
+        let pseudo = ArmOp::I64ShrU {
+            rd_lo: Reg::R7,
+            rd_hi: Reg::R8,
+            rn_lo: Reg::R0,
+            rn_hi: Reg::R1,
+            rm_lo: Reg::R2,
+            rm_hi: Reg::R3,
+        };
+        let code = thumb_bytes(&pseudo);
+
+        // The FIXED tail (10 bytes): B .done (0xE003, widened); LSR.W R7,R1,R3;
+        // MOV.W R8,#0. Pinned so this test screams if the encoder changes.
+        let fixed: Vec<u8> = [0xE003u16, 0xFA21, 0xF703, 0xF04F, 0x0800]
+            .iter()
+            .flat_map(|hw| hw.to_le_bytes())
+            .collect();
+        assert_eq!(
+            &code[code.len() - 10..],
+            &fixed[..],
+            "shipped I64ShrU tail changed — update the #916 red-shape splice"
+        );
+
+        // The #916 shape: the narrow B (0xE002) and the transmuted 0x2800.
+        let mut buggy = code[..code.len() - 10].to_vec();
+        for hw in [0xE002u16, 0xFA21, 0xF703, 0x2800] {
+            buggy.extend_from_slice(&hw.to_le_bytes());
+        }
+        assert_eq!(buggy.len(), 38, "pre-#916 expansion was 38 bytes");
+
+        match validate_expansion(&synth_core::WasmOp::I64ShrU, &pseudo, &buggy) {
+            Err(ExpansionError::Counterexample {
+                wasm_op_label,
+                description,
+            }) => {
+                println!("✗ #916 shape rejected as required: {wasm_op_label}: {description}");
+            }
+            other => panic!(
+                "#916 bug shape (transmuted MOVS zero-fill leaves the high half \
+                 unwritten) must FAIL validation, got {other:?}"
+            ),
+        }
+    });
+}
