@@ -588,7 +588,7 @@ artifacts:
       # other 42 artifacts are a follow-up, because each conversion has to
       # re-verify that its filter still matches a real test — which is the point.
       steps:
-        - run: "cargo test -p synth-backend --lib i64_shift_zero_fill_mis_encodes_for_a_high_destination"
+        - run: "cargo test -p synth-backend --test i64_high_reg_zero_fill_916"
         - run: "cargo test -p synth-cli --test frozen_codegen_bytes"
         - differential: >
             SYNTH=./target/debug/synth python3
