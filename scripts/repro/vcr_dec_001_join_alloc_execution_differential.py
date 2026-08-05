@@ -79,7 +79,7 @@ MEM_WINDOW = 0x100
 # AAPCS core argument registers; arguments past the fourth go on the stack.
 ARG_REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3]
 
-# (fixture, function, [arg tuples], is_call_shape).
+# (fixture, function, [arg tuples], kind) where kind is "join" | "call" | "pair".
 #
 # JOIN shapes (increment 2): real if/else, if-without-else, the desugared
 # block+br_if form, an early (non-tail) return, counted and data-dependent
@@ -98,30 +98,61 @@ ARG_REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3]
 # nibble, so ANY dropped, shifted or mis-assigned argument (register OR stack)
 # changes the result.
 CASES = [
-    ("cf_shapes_500.wat", "real_ifelse", [(0,), (1,), (7,)], False),
-    ("cf_shapes_500.wat", "real_if", [(0,), (1,)], False),
-    ("cf_shapes_500.wat", "br_func", [(0,), (1,)], False),
-    ("cf_shapes_500.wat", "early_ret", [(0,), (1,)], False),
-    ("provenance_branches_396.wat", "decide", [(0, 0), (5, 3), (3, 5), (100, 1)], False),
-    ("aarch64_ctrlflow_851.wat", "count_sum", [(0,), (1,), (5,), (17,)], False),
-    ("aarch64_ctrlflow_851.wat", "countdown", [(0,), (1,), (9,)], False),
+    ("cf_shapes_500.wat", "real_ifelse", [(0,), (1,), (7,)], "join"),
+    ("cf_shapes_500.wat", "real_if", [(0,), (1,)], "join"),
+    ("cf_shapes_500.wat", "br_func", [(0,), (1,)], "join"),
+    ("cf_shapes_500.wat", "early_ret", [(0,), (1,)], "join"),
+    ("provenance_branches_396.wat", "decide", [(0, 0), (5, 3), (3, 5), (100, 1)], "join"),
+    ("aarch64_ctrlflow_851.wat", "count_sum", [(0,), (1,), (5,), (17,)], "join"),
+    ("aarch64_ctrlflow_851.wat", "countdown", [(0,), (1,), (9,)], "join"),
     # do_while_count(0) is deliberately absent: `n` starts at 0, so the
     # bottom-test loop runs 2**32 times before wrapping back to the exit. It
     # terminates in wasmtime (JIT) but not within any emulator instruction
     # budget, so it measures the budget, not the compiler.
-    ("aarch64_ctrlflow_851.wat", "do_while_count", [(1,), (6,), (23,)], False),
-    ("loop_param_bound_663.wat", "sum_const", [(0, 0), (3, 4)], False),
-    ("loop_param_bound_663.wat", "sum_below", [(0, 0), (1, 5), (4, 4), (2, 9)], False),
-    ("if_else_result_343.wat", "pick", [(0,), (1,), (0xFFFFFFFF,)], False),
-    ("if_else_result_343.wat", "pick2", [(0,), (1,)], False),
-    ("brif_outer_740.wat", "poll", [(7, 0), (200, 0), (200, 1), (5, 3)], False),
+    ("aarch64_ctrlflow_851.wat", "do_while_count", [(1,), (6,), (23,)], "join"),
+    ("loop_param_bound_663.wat", "sum_const", [(0, 0), (3, 4)], "join"),
+    ("loop_param_bound_663.wat", "sum_below", [(0, 0), (1, 5), (4, 4), (2, 9)], "join"),
+    ("if_else_result_343.wat", "pick", [(0,), (1,), (0xFFFFFFFF,)], "join"),
+    ("if_else_result_343.wat", "pick2", [(0,), (1,)], "join"),
+    ("brif_outer_740.wat", "poll", [(7, 0), (200, 0), (200, 1), (5, 3)], "join"),
     # ---- increment 3: CALL shapes ------------------------------------------
-    ("local_promote_cross_call.wat", "cross_call", [(0,), (5,), (100,), (0xFFFF,)], True),
-    ("intra_module_callee_saved.wat", "a", [(0,), (7,), (100,)], True),
-    ("stack_canary_687.wat", "recurse", [(0,), (1,), (5,), (12,)], True),
-    ("call_5args.wat", "caller", [(1, 2, 3, 4, 5), (0, 0, 0, 0, 9), (15, 1, 2, 4, 8)], True),
-    ("call_6_7args.wat", "call6", [(1, 2, 3, 4, 5, 6), (0, 0, 0, 0, 0, 7)], True),
-    ("call_6_7args.wat", "call7", [(1, 2, 3, 4, 5, 6, 7), (0, 0, 0, 0, 0, 0, 9)], True),
+    ("local_promote_cross_call.wat", "cross_call", [(0,), (5,), (100,), (0xFFFF,)], "call"),
+    ("intra_module_callee_saved.wat", "a", [(0,), (7,), (100,)], "call"),
+    ("stack_canary_687.wat", "recurse", [(0,), (1,), (5,), (12,)], "call"),
+    ("call_5args.wat", "caller", [(1, 2, 3, 4, 5), (0, 0, 0, 0, 9), (15, 1, 2, 4, 8)], "call"),
+    ("call_6_7args.wat", "call6", [(1, 2, 3, 4, 5, 6), (0, 0, 0, 0, 0, 7)], "call"),
+    ("call_6_7args.wat", "call7", [(1, 2, 3, 4, 5, 6, 7), (0, 0, 0, 0, 0, 0, 9)], "call"),
+    # ---- increment 4 (VCR-REACH-001): i64 register-PAIR shapes --------------
+    # `liveness::pair_effect` is consumed by the pass AND by both dataflow
+    # validators, so — exactly as for increment 3's AAPCS contract — NEITHER of
+    # them can catch an error IN the model. Only execution can, so these get
+    # their own population and their own non-vacuity floor.
+    #
+    # Shift-amount inputs straddle the expansion's internal `BPL`: `s < 32`
+    # takes the small-shift arm and `s >= 32` the large one, and the
+    # distinctness constraints differ between the two. 100 additionally exceeds
+    # 63, so the `AND rm_lo, rm_lo, #63` in-place mask is OBSERVABLE — that is
+    # what makes the "rm_lo/rm_hi are not really clobbered" mutation go red
+    # instead of passing vacuously.
+    ("vcr_reach_001_i64_pair.wat", "shl_amt_live",
+     [(1, 0), (1, 5), (1, 31), (1, 32), (1, 45), (0x1234, 100), (0xFFFFFFFF, 63)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "shl_amt_live_hi",
+     [(1, 0), (1, 5), (1, 31), (1, 32), (1, 45), (0x1234, 100)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "shru_amt_live",
+     [(0x7FFFFFFF, 0), (0x7FFFFFFF, 5), (0x7FFFFFFF, 32), (0xFFFFFFFF, 40),
+      (0x1234, 100)], "pair"),
+    # `I64Ldr` early-clobber: the address is DEAD after the load, so only the
+    # interference edge stops `rdlo` being coalesced onto `base`. The HIGH-word
+    # variant is the one the SECOND load produces.
+    ("vcr_reach_001_i64_pair.wat", "ld_dead_base",
+     [(0, 0x11223344, 0x55667788), (8, 0xFFFFFFFF, 0x0F0F0F0F),
+      (0x40, 0, 0xDEADBEEF), (0xFF, 0xCAFEBABE, 0)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "ld_dead_base_lo",
+     [(0, 0x11223344), (8, 0xFFFFFFFF), (0x40, 0x5A5A5A5A), (0xFF, 1)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "st_then_ld",
+     [(0, 1), (0x10, 0x5A5A), (0x40, 0xFFFFFFFF)], "pair"),
+    ("vcr_reach_001_i64_pair.wat", "cmp64",
+     [(0, 0), (1, 2), (2, 1), (0xFFFFFFFF, 1), (1, 0xFFFFFFFF)], "pair"),
 ]
 
 CLEAR = [
@@ -202,6 +233,30 @@ def contains_call(body):
     return False
 
 
+def contains_i64_shift(body):
+    """True if the Thumb body contains an i64 shift expansion.
+
+    Detected by its opening `AND.W Rd, Rn, #63` — the mask-the-shift-amount-to-6-
+    bits step, which no other lowering in the backend emits:
+      hw1 = 1111 0000 0000 nnnn   (0xF000 | rn, T2 AND immediate, no S bit)
+      hw2 = 0000 dddd 0011 1111   (rd << 8 | 0x3F, i8:imm3 = 0)
+
+    Used to verify the SHIFT half of the increment-4 population against the
+    EMITTED BYTES rather than against the case table's own say-so. The shift
+    family is where the model is load-bearing (`rm_lo`/`rm_hi` are clobbers, and
+    the distinctness constraints are path-dependent), so a fixture that stopped
+    emitting a shift — folded to a constant, or lowered some other way — must
+    fail loudly instead of quietly leaving that class ungated. Independent of
+    the pass: it reads the compiler's output, not its stats.
+    """
+    for i in range(0, len(body) - 3, 2):
+        hw1 = int.from_bytes(body[i:i + 2], "little")
+        hw2 = int.from_bytes(body[i + 2:i + 4], "little")
+        if (hw1 & 0xFFF0) == 0xF000 and (hw2 & 0x80FF) == 0x003F:
+            return True
+    return False
+
+
 def unicorn_call(text, lin_init, faddr, args):
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     mu.mem_map(CODE, 0x10000)
@@ -247,9 +302,11 @@ def main():
     checks = 0
     engaged_functions = 0
     engaged_call_functions = 0
+    engaged_pair_functions = 0
+    engaged_shift_functions = 0
     by_fixture = {}
-    for wat, func, argsets, is_call in CASES:
-        by_fixture.setdefault(wat, []).append((func, argsets, is_call))
+    for wat, func, argsets, kind in CASES:
+        by_fixture.setdefault(wat, []).append((func, argsets, kind))
 
     for wat, entries in by_fixture.items():
         off_elf = f"/tmp/ga_join_{Path(wat).stem}_off.elf"
@@ -272,7 +329,7 @@ def main():
         text_off, _, syms_off, sizes_off = load(off_elf)
         text_on, lin_init, syms_on, sizes_on = load(on_elf)
 
-        for func, argsets, is_call in entries:
+        for func, argsets, kind in entries:
             if func not in syms_on:
                 print(f"FAIL {wat}:{func} — symbol missing")
                 fails += 1
@@ -291,15 +348,19 @@ def main():
             # A declared CALL shape must really contain a call in the emitted
             # body — self-declaration verified against the bytes, so an inlined
             # -away call cannot silently inflate the increment-3 population.
-            if is_call and not contains_call(body_on):
+            if kind == "call" and not contains_call(body_on):
                 print(f"FAIL {wat}:{func} — declared a CALL shape but the emitted "
                       f"body contains no bl/blx: it gates nothing about the AAPCS "
                       f"call contract.")
                 fails += 1
                 continue
             engaged_functions += 1
-            if is_call:
+            if kind == "call":
                 engaged_call_functions += 1
+            if kind == "pair":
+                engaged_pair_functions += 1
+                if contains_i64_shift(body_on):
+                    engaged_shift_functions += 1
 
             # ---- (1) EXECUTION -------------------------------------------
             for args in argsets:
@@ -339,11 +400,33 @@ def main():
               "flag-on bytes — increment 3's reach regressed and the AAPCS call "
               "contract is no longer execution-gated.")
         fails += 1
+    # Increment 4 (VCR-REACH-001) gets its own floor for the same reason: the
+    # i64 register-pair model is SHARED by the pass, `validate_cfg_rewrite` and
+    # the ABI observable contract, so execution is the only instrument that can
+    # catch an error in the model itself.
+    print(f"engaged i64-PAIR functions: {engaged_pair_functions} "
+          f"(of which contain a real i64 SHIFT expansion: {engaged_shift_functions})")
+    if engaged_pair_functions < 4:
+        print("VACUOUS: fewer than 4 i64 register-PAIR functions have divergent "
+              "flag-on bytes — increment 4's reach regressed and `pair_effect` is "
+              "no longer execution-gated.")
+        fails += 1
+    # And the SHIFT half specifically. The shift family is the only member whose
+    # model claims an operand is CLOBBERED (`rm_lo` in place, `rm_hi` as a temp)
+    # and whose distinctness constraints are PATH-dependent; a population of
+    # loads and compares alone would leave exactly the dangerous part ungated
+    # while still reporting PASS.
+    if engaged_shift_functions < 2:
+        print("VACUOUS: fewer than 2 divergent functions contain an i64 SHIFT "
+              "expansion (verified in the emitted bytes, not declared) — the "
+              "`rm_lo`/`rm_hi` clobber model is no longer execution-gated.")
+        fails += 1
 
     # Machine-readable summary the CI wiring greps for a NON-ZERO count:
     # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
     print(f"VCR-DEC-001-JOIN CHECKS={checks - fails}/{checks} "
-          f"ENGAGED={engaged_functions} CALLSHAPES={engaged_call_functions}")
+          f"ENGAGED={engaged_functions} CALLSHAPES={engaged_call_functions} "
+          f"PAIRSHAPES={engaged_pair_functions} SHIFTSHAPES={engaged_shift_functions}")
     print("RESULT:", "PASS" if not fails else f"FAIL ({fails} problem(s))")
     return 1 if fails else 0
 

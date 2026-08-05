@@ -5791,7 +5791,15 @@ fn build_join_cfg_label(
                 // A call is admitted (its def-set is synthesized below); any
                 // other Fall op must be a Label or have a precise reg_effect.
                 let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-                if !is_call && !matches!(ins.op, Label { .. }) && reg_effect(&ins.op).is_none() {
+                // VCR-REACH-001: an i64 register-PAIR op has no `reg_effect` by
+                // design but a modeled `pair_effect`; admitting it here is what
+                // gives the increment-4 functions a real `Consistent` verdict
+                // instead of a `NotAttempted` that gates nothing.
+                if !is_call
+                    && !matches!(ins.op, Label { .. })
+                    && reg_effect(&ins.op).is_none()
+                    && pair_effect(&ins.op).is_none()
+                {
                     return None;
                 }
             }
@@ -5937,7 +5945,7 @@ fn build_join_cfg_numeric(
             NTerm::Uncond | NTerm::Cond | NTerm::Return => {}
             NTerm::Fall => {
                 let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-                if !is_call && reg_effect(&ins.op).is_none() {
+                if !is_call && reg_effect(&ins.op).is_none() && pair_effect(&ins.op).is_none() {
                     return None;
                 }
             }
@@ -6078,7 +6086,16 @@ fn join_cfg_livein_defb(
         let mut defined = BTreeSet::new();
         for ins in &instrs[b.start..b.end] {
             let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-            let eff = reg_effect(&ins.op).unwrap_or_default();
+            // VCR-REACH-001: `unwrap_or_default` means an unmodeled op
+            // contributes NOTHING to `def_b`. For an i64 register-pair op that
+            // would UNDER-state its definitions and could make a value it
+            // actually produces look unavailable at a join — a FALSE POSITIVE,
+            // the one direction a hard-erroring validator must never take. So
+            // this moves in lockstep with the admission checks above: the same
+            // `pair_effect` that lets the op into the CFG also supplies its defs.
+            let eff = reg_effect(&ins.op)
+                .or_else(|| pair_effect(&ins.op))
+                .unwrap_or_default();
             for u in &eff.uses {
                 if !defined.contains(u) {
                     used.insert(*u);
