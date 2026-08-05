@@ -86,7 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - README's `synth-backend-aarch64` row still said "integer subset". It has not
   been one since v0.54 — the scalar float surface, globals, `call_indirect` and
-  bounds-checked memory all ship.
+  bounds-checked memory all ship. `CLAUDE.md` carried a byte-identical copy plus
+  a **third** instance worth naming on its own: its Track-C note said aarch64 is
+  N/A for VCR-VER-003 *"(no linear-memory ops in the integer subset)"*. The
+  **verdict is still correct and the reason is false** — aarch64 has had
+  bounds-checked linear-memory load/store since v0.52 (#865); it is N/A because it
+  emits no data section and refuses data-carrying modules loudly (v0.53), so there
+  is no served-vs-runtime image to compare. A right conclusion resting on a rotted
+  premise is the harder version of this defect: the sentence still reads fine, so
+  nothing prompts a re-check. That was the **fourth** copy of a list this project
+  keeps duplicating (parity oracle, matrix row, CHANGELOG, CLAUDE.md); generating
+  the prose from the executable decline list is the standing fix (#911).
 - Filed #912: the feature loop's step 5 (witness MC/DC) has been marked N/A four
   releases running, past the skill's own three-feature threshold. synth compiles
   Wasm rather than emitting components, so witness may have no artifact to
