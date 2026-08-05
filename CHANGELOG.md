@@ -141,6 +141,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   divergent call-containing functions) which the CI wiring re-asserts from the
   `CALLSHAPES=` summary field (#890). 56/56 checks, 19 engaged functions of which
   6 are call shapes.
+- **aarch64: the scalar float surface is complete (#851).** v0.53's VCR-SEL-005
+  cross-backend op-parity oracle was extended to aarch64 as a third backend and
+  made universe-complete over the `WasmOp` universe with no wildcard arm; its 31
+  `Err(reason)` entries were a mechanically-derived work list. This closes four
+  of those classes, each with the gate entry flipped `Err`→`Ok(())` **in the same
+  commit** and the now-unused reason constant deleted — a gap claim must not
+  outlive the gap:
+  - **Rounding** — `f{32,64}.{ceil,floor,trunc,nearest}` lower to one
+    `FRINT{P,M,Z,N}` each, with the rounding mode pinned in the OPCODE rather
+    than read from `FPCR.RMode`, so the result cannot depend on ambient
+    embedder state. `nearest` is `FRINTN` = round-to-nearest-**ties-to-even**
+    (WASM §4.3.3), **checked** against a halfway table (0.5→0, 1.5→2, 2.5→2,
+    3.5→4 and negatives) that a ties-away `FRINTA` lowering fails.
+  - **f32/f64 linear memory** — the SIMD&FP `LDR`/`STR` `s`/`d` forms, routed
+    through the SAME address path as the integer accesses, so an FP access is
+    **bounds-checked by default** (#865) and traps exactly where wasmtime
+    traps. The access width is folded into the compile-time bound, so address
+    65532 is in-bounds for `f32.load` and out-of-bounds for `f64.load` on a
+    one-page memory.
+  - **i64→float converts** — `f{32,64}.convert_i64_{s,u}` via the `x`-form
+    `SCVTF`/`UCVTF`, with the round-to-nearest-even behaviour past 2^24 / 2^53
+    pinned by execution.
+  - **Trapping i64-target truncations** — `i64.trunc_f{32,64}_{s,u}` behind the
+    #709 domain guard. This is the soundness-critical one: A64 `FCVTZ{S,U}` are
+    **more total than WASM** — NaN yields 0 and out-of-range SATURATES to
+    `INT64_MIN`/`MAX` where §4.3.3 requires a TRAP. Verified against a full
+    boundary table rather than spot checks: both sides of ±2^63 and 2^64, the
+    nearest representable float strictly inside and strictly outside each
+    bound, ±0, ±inf and NaN. The signed lower bound is the INCLUSIVE −2^63
+    (exactly representable, and truncating to a legal `INT64_MIN`); note this
+    differs from the i32/f64 row's strict −(2^31)−1 for a concrete reason — the
+    f64 ULP at 2^63 is 2048, so no f64 exists between −2^63−1 and −2^63.
+  - Evidence: `scripts/repro/aarch64_float_completion_851_differential.py`,
+    662 checks (142 of them trap cases) bit-exact vs wasmtime under unicorn
+    **and** natively on arm64 (every native call in a forked child so an
+    expected `SIGTRAP` is observed). CI-wired in the same commit with
+    `set -o pipefail` and an assertion that the check and trap counts are
+    non-zero, so an oracle that stops exercising anything goes red (#890).
+    Proven non-vacuous by mutation: dropping the guard (18 failures) and
+    making the signed lower bound off-by-one strict (4 failures) both go red.
+  - gale's acceptance matrix (`scripts/repro/aarch64_matrix.sh`) grew 16 ops
+    (45→61 accepted, 355 native checks) including on-silicon trap agreement for
+    the guarded truncations; its **declined frontier is now empty**.
+
+### Changed
+
+- **`f32.{ceil,floor,trunc,nearest}` are decoded** instead of dropped at
+  `_ => None`, so a module using them no longer loud-SKIPS the whole function
+  before any backend sees it.
+- **ARM32 now LOUD-DECLINES the four f32 rounding ops.** Its legacy
+  `ArmOp::F32{Ceil,Floor,Trunc,Nearest}` pseudo-op is an FPSCR-RMode +
+  `VCVT.S32.F32` + `VCVT.F32.S32` round-trip **through a 32-bit integer**, and
+  VCVT saturates: `ceil(1e30)` would return 2147483648.0, `ceil(±inf)` a finite
+  bound and `ceil(NaN)` 0.0, where WASM returns 1e30 / ±inf / NaN. That
+  #709-class miscompile was unreachable only because the decoder dropped the
+  op; declining keeps it latent rather than shipping it. A real `VRINT.F32`
+  lowering (the f32 twin of the shipping f64 path) is the follow-up.
+- The aarch64 decline-matrix oracle and the #554 float-honesty fixture were
+  repointed at constructs that are still genuinely declined (structural ones:
+  `call_indirect`, `br_table`, param writes, globals, bulk memory,
+  value-carrying blocks, SIMD), and the #554 assertion was strengthened to
+  require the diagnostic to come from the aarch64 SELECTOR and name its reason.
 - **VCR-VER-004 — the ABI observable-contract validator: a per-compilation check
   that fails *differently*** (#242).
 

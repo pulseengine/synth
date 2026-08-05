@@ -878,6 +878,118 @@ pub fn ucvtf_d_from_w(rd: FReg, rn: Reg) -> u32 {
     fp2(0x1E63_0000, rd, rn)
 }
 
+// ---------------------------------------------------------------------------
+// v0.54 L2 (#851) — the 64-bit-SOURCE integer→float converts (`sf` = 1). Same
+// opcodes as the `w`-source forms above with bit 31 set, exactly as the
+// `sdiv`/`sdiv64` pair. All four are TOTAL (every i64 has a nearest f32/f64;
+// f32 rounds, f64 rounds above 2^53 — both round-to-nearest-even, which is
+// WASM §4.3.2 `convert` semantics). Ground truth from
+// `clang -target aarch64-linux-gnu` (see `fp_convert_i64_encodings_match_clang`).
+// ---------------------------------------------------------------------------
+
+/// `scvtf sd, xn` — signed i64 → f32 (`f32.convert_i64_s`). Total.
+pub fn scvtf_s_from_x(rd: FReg, rn: Reg) -> u32 {
+    scvtf_s_from_w(rd, rn) | SF64
+}
+/// `ucvtf sd, xn` — unsigned i64 → f32 (`f32.convert_i64_u`). Total.
+pub fn ucvtf_s_from_x(rd: FReg, rn: Reg) -> u32 {
+    ucvtf_s_from_w(rd, rn) | SF64
+}
+/// `scvtf dd, xn` — signed i64 → f64 (`f64.convert_i64_s`). Total.
+pub fn scvtf_d_from_x(rd: FReg, rn: Reg) -> u32 {
+    scvtf_d_from_w(rd, rn) | SF64
+}
+/// `ucvtf dd, xn` — unsigned i64 → f64 (`f64.convert_i64_u`). Total.
+pub fn ucvtf_d_from_x(rd: FReg, rn: Reg) -> u32 {
+    ucvtf_d_from_w(rd, rn) | SF64
+}
+
+// ---------------------------------------------------------------------------
+// v0.54 L2 (#851) — `FRINT<mode>`, the float→float round-to-integral family
+// that implements WASM `ceil`/`floor`/`trunc`/`nearest`.
+//
+// SEMANTICS (why these four and not the FPCR-rounding `FRINTI`/`FRINTX`): each
+// FRINT variant pins its rounding mode in the OPCODE, so the lowering does not
+// depend on the ambient FPCR.RMode the embedder happens to have set.
+//   * `FRINTP` = round toward +inf   = WASM `ceil`
+//   * `FRINTM` = round toward -inf   = WASM `floor`
+//   * `FRINTZ` = round toward zero   = WASM `trunc`
+//   * `FRINTN` = round to nearest, TIES TO EVEN = WASM `nearest` (§4.3.3
+//     `fnearest` is roundTiesToEven — NOT ties-away, which would be `FRINTA`).
+// All four are TOTAL (no WASM trap, no A64 exception): ±inf and NaN pass
+// through (NaN quieted), and -0.5 <= x < 0 yields -0.0 for `nearest`/`ceil`
+// exactly as WASM requires. Execution-verified against wasmtime over a
+// halfway/tie + ±0 + ±inf + NaN table in
+// `scripts/repro/aarch64_float_completion_851_differential.py` — the
+// ties-to-even claim is CHECKED, not assumed.
+// ---------------------------------------------------------------------------
+
+/// `frintp sd, sn` — round toward +inf (WASM `f32.ceil`).
+pub fn frintp_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E24_C000, rd, rn)
+}
+/// `frintm sd, sn` — round toward -inf (WASM `f32.floor`).
+pub fn frintm_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E25_4000, rd, rn)
+}
+/// `frintz sd, sn` — round toward zero (WASM `f32.trunc`).
+pub fn frintz_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E25_C000, rd, rn)
+}
+/// `frintn sd, sn` — round to nearest, ties to EVEN (WASM `f32.nearest`).
+pub fn frintn_s(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E24_4000, rd, rn)
+}
+/// `frintp dd, dn` — WASM `f64.ceil`.
+pub fn frintp_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E64_C000, rd, rn)
+}
+/// `frintm dd, dn` — WASM `f64.floor`.
+pub fn frintm_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E65_4000, rd, rn)
+}
+/// `frintz dd, dn` — WASM `f64.trunc`.
+pub fn frintz_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E65_C000, rd, rn)
+}
+/// `frintn dd, dn` — WASM `f64.nearest` (ties to even).
+pub fn frintn_d(rd: FReg, rn: FReg) -> u32 {
+    fp2(0x1E64_4000, rd, rn)
+}
+
+// ---------------------------------------------------------------------------
+// v0.54 L2 (#851) — `LDR/STR (SIMD&FP, immediate, unsigned offset)`: the
+// linear-memory access forms for f32/f64. Same shape as the GP
+// [`ldst_uimm`] family (size[31:30] + opc[23:22] + scaled imm12), with the
+// V-register bit 26 set, so an `s`/`d` register is the data operand.
+//
+// WIDTH: `ldr s` / `str s` move exactly 4 bytes (imm12 scaled by 4); `ldr d` /
+// `str d` exactly 8 (scaled by 8). `ldr s` ZEROES the rest of the V register,
+// so a subsequently-read `d` view is clean — but the selector never relies on
+// that: widths are carried by the op, as everywhere else in this backend.
+//
+// SOUNDNESS: like the GP forms these are emitted only AFTER the #865 bounds
+// check has proven `uxtw(addr) + offset + size <= limit` (or trapped) — an FP
+// access is bounds-checked by exactly the same `form_ea` path.
+// ---------------------------------------------------------------------------
+
+/// `ldr st, [xn, #imm12*4]` — load 32 bits into the `s` view of `V<t>`.
+pub fn ldr_s(rt: FReg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xBD40_0000, imm12, rn, rt)
+}
+/// `str st, [xn, #imm12*4]` — store the low 32 bits of `V<t>`.
+pub fn str_s(rt: FReg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xBD00_0000, imm12, rn, rt)
+}
+/// `ldr dt, [xn, #imm12*8]` — load 64 bits into the `d` view of `V<t>`.
+pub fn ldr_d(rt: FReg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xFD40_0000, imm12, rn, rt)
+}
+/// `str dt, [xn, #imm12*8]` — store the low 64 bits of `V<t>`.
+pub fn str_d(rt: FReg, rn: Reg, imm12: u32) -> u32 {
+    ldst_uimm(0xFD00_0000, imm12, rn, rt)
+}
+
 /// Append a 32-bit instruction word to a little-endian byte buffer.
 pub fn emit(buf: &mut Vec<u8>, word: u32) {
     buf.extend_from_slice(&word.to_le_bytes());
@@ -1098,6 +1210,57 @@ mod tests {
         assert_eq!(ucvtf_s_from_w(0, 1), 0x1E23_0020);
         assert_eq!(scvtf_d_from_w(0, 1), 0x1E62_0020);
         assert_eq!(ucvtf_d_from_w(0, 1), 0x1E63_0020);
+    }
+
+    // v0.54 L2 (#851) — the i64-SOURCE converts. Ground truth from
+    // `clang -target aarch64-linux-gnu` (assemble, objdump, read the word):
+    //   scvtf s0, x1 = 9e220020   ucvtf s2, x3 = 9e230062
+    //   scvtf d4, x5 = 9e6200a4   ucvtf d6, x7 = 9e6300e6
+    #[test]
+    fn fp_convert_i64_encodings_match_clang() {
+        assert_eq!(scvtf_s_from_x(0, 1), 0x9E22_0020);
+        assert_eq!(ucvtf_s_from_x(2, 3), 0x9E23_0062);
+        assert_eq!(scvtf_d_from_x(4, 5), 0x9E62_00A4);
+        assert_eq!(ucvtf_d_from_x(6, 7), 0x9E63_00E6);
+        // The x-forms are EXACTLY the w-forms with sf (bit 31) set.
+        assert_eq!(scvtf_s_from_x(0, 1), scvtf_s_from_w(0, 1) | SF64);
+        assert_eq!(ucvtf_d_from_x(6, 7), ucvtf_d_from_w(6, 7) | SF64);
+    }
+
+    // v0.54 L2 (#851) — FRINT round-to-integral. Ground truth from
+    // `clang -target aarch64-linux-gnu`:
+    //   frintn s0,s1 = 1e244020   frintp s2,s3 = 1e24c062
+    //   frintm s4,s5 = 1e2540a4   frintz s6,s7 = 1e25c0e6
+    //   frintn d0,d1 = 1e644020   frintp d2,d3 = 1e64c062
+    //   frintm d4,d5 = 1e6540a4   frintz d6,d7 = 1e65c0e6
+    #[test]
+    fn frint_encodings_match_clang() {
+        assert_eq!(frintn_s(0, 1), 0x1E24_4020);
+        assert_eq!(frintp_s(2, 3), 0x1E24_C062);
+        assert_eq!(frintm_s(4, 5), 0x1E25_40A4);
+        assert_eq!(frintz_s(6, 7), 0x1E25_C0E6);
+        assert_eq!(frintn_d(0, 1), 0x1E64_4020);
+        assert_eq!(frintp_d(2, 3), 0x1E64_C062);
+        assert_eq!(frintm_d(4, 5), 0x1E65_40A4);
+        assert_eq!(frintz_d(6, 7), 0x1E65_C0E6);
+        // The double forms are the single forms with ftype bit 22 set.
+        assert_eq!(frintn_d(0, 1), frintn_s(0, 1) | 0x0040_0000);
+        assert_eq!(frintz_d(6, 7), frintz_s(6, 7) | 0x0040_0000);
+    }
+
+    // v0.54 L2 (#851) — FP linear-memory load/store. Ground truth from
+    // `clang -target aarch64-linux-gnu`:
+    //   ldr s9,[x10,#16] = bd401149   str s9,[x10,#16] = bd001149
+    //   ldr d9,[x10,#32] = fd401149   str d9,[x10,#32] = fd001149
+    //   ldr s0,[x1]      = bd400020   str d0,[x1]      = fd000020
+    #[test]
+    fn fp_mem_encodings_match_clang() {
+        assert_eq!(ldr_s(9, 10, 16 / 4), 0xBD40_1149);
+        assert_eq!(str_s(9, 10, 16 / 4), 0xBD00_1149);
+        assert_eq!(ldr_d(9, 10, 32 / 8), 0xFD40_1149);
+        assert_eq!(str_d(9, 10, 32 / 8), 0xFD00_1149);
+        assert_eq!(ldr_s(0, 1, 0), 0xBD40_0020);
+        assert_eq!(str_d(0, 1, 0), 0xFD00_0020);
     }
 
     #[test]

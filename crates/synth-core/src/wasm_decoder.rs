@@ -2259,11 +2259,30 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // = IEEE 754-2019 minimum/maximum ≡ WASM NaN-propagation + -0<+0);
         // ARM32 LOUD-declines them (its legacy compare-select pseudo-op is
         // NaN/±0-wrong — see the selector's F32Min/F32Max reject arm) and
-        // RV32 loud-declines all floats. The f32 rounding ops stay at
-        // `_ => None` until a later increment.
+        // RV32 loud-declines all floats.
         F32Sqrt => Some(WasmOp::F32Sqrt),
         F32Min => Some(WasmOp::F32Min),
         F32Max => Some(WasmOp::F32Max),
+        // v0.54 L2 (#851): the f32 rounding family un-dropped, exactly like
+        // min/max above and for the same reason — aarch64 lowers each as ONE
+        // mode-pinned `FRINT{P,M,Z,N}` (`nearest` = FRINTN = ties-to-EVEN, WASM
+        // §4.3.3), so keeping them at `_ => None` would loud-SKIP whole
+        // functions the A64 backend compiles correctly.
+        //
+        // ARM32 LOUD-DECLINES all four: its legacy `ArmOp::F32{Ceil,Floor,
+        // Trunc,Nearest}` pseudo-op is an FPSCR-RMode + `VCVT.S32.F32` +
+        // `VCVT.F32.S32` ROUND-TRIP THROUGH A 32-BIT INTEGER, which is not
+        // WASM-correct outside i32 range: VCVT saturates, so `ceil(1e30)` would
+        // yield 2147483648.0, `ceil(±inf)` a finite bound and `ceil(NaN)` 0.0,
+        // where WASM returns 1e30 / ±inf / NaN. That is the #709
+        // "more-total-than-WASM" class, latent only because the op was
+        // undecodable — the selector reject arm keeps it latent (a real
+        // `VRINT{P,M,Z,N}.F32` twin of the shipping F64 path is a later
+        // increment). RV32 has no floats and declines everything.
+        F32Ceil => Some(WasmOp::F32Ceil),
+        F32Floor => Some(WasmOp::F32Floor),
+        F32Trunc => Some(WasmOp::F32Trunc),
+        F32Nearest => Some(WasmOp::F32Nearest),
         // #708 (phase 1b): the f32<->i32 bit-casts. Pure `VMOV` between a core
         // register and a single-precision S-register — no numeric conversion.
         F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),
