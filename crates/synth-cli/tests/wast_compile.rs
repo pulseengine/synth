@@ -6,17 +6,19 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Locate the `synth` binary. See the identical note in
+/// `async_intrinsics_gate.rs`: walking up from `current_exe()` only works for
+/// the plain `target/debug/deps/<test>` layout, and silently produces a
+/// nonexistent path under `cargo llvm-cov` (where the test binary lives at
+/// `target/llvm-cov-target/debug/build/synth-cli/<hash>/out/<test>`). Every
+/// test in this file then failed on a MISSING BINARY rather than on what it
+/// asserts, which is why `Code Coverage` was red repo-wide while the required
+/// `Test` job — same assertions, plain layout — stayed green.
+///
+/// `CARGO_BIN_EXE_<name>` is the thing Cargo actually sets for integration
+/// tests, and it is layout-independent by construction.
 fn synth_binary() -> PathBuf {
-    // cargo sets this for integration tests
-    let mut path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    path.push("synth");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_synth"))
 }
 
 fn workspace_root() -> PathBuf {

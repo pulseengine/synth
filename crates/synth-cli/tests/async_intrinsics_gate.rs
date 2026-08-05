@@ -16,16 +16,22 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Locate the `synth` binary the way every other CLI test does.
+///
+/// This used to walk two parents up from `current_exe()` and append `synth`,
+/// which happens to be right for the plain `target/debug/deps/<test>` layout and
+/// WRONG for any other. Under `cargo llvm-cov` the test binary lives at
+/// `target/llvm-cov-target/debug/build/synth-cli/<hash>/out/<test>`, so the walk
+/// produced `…/<hash>/synth` — a path that does not exist — and BOTH tests in
+/// this file failed for a missing binary rather than for anything they assert.
+/// That kept `Code Coverage` red repo-wide while the required `Test` job (plain
+/// layout) stayed green: a real gate, failing for a reason unrelated to the code.
+///
+/// `CARGO_BIN_EXE_<name>` is set by Cargo at compile time to the actual path of
+/// the built binary, so it is correct under every target-dir layout. Same
+/// mechanism as the other CLI integration tests in this directory.
 fn synth_binary() -> PathBuf {
-    let mut path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    path.push("synth");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_synth"))
 }
 
 fn workspace_root() -> PathBuf {
