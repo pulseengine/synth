@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#538 milestone-1b — validate the aarch64 backend's codegen end-to-end.
 
 Compiles a small integer module with `synth compile -b aarch64`, then executes

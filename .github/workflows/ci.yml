@@ -179,6 +179,47 @@ jobs:
       # claims.yaml, so this step is what keeps those numbers honest.
       - name: Model-coverage artifact freshness + uncovered-complement report (867)
         run: python3 scripts/model_coverage_audit.py --check
+      # #890: the ORACLE-WIRING gate. scripts/repro/*.py are the execution
+      # oracles; 69 of 150 were referenced by no workflow at all and nothing
+      # distinguished "manual by design" from "forgotten". Every script now
+      # declares `# ci-status: wired|manual|unwired`, a `wired` declaration is
+      # VERIFIED against this file (the "green board, inert gate" defect), and
+      # an undeclared script is a hard failure so new oracles must CHOOSE.
+      #
+      # This gate lives in the already-REQUIRED claim-check job on purpose: a
+      # brand-new job is not a required context on main, so it could be red for
+      # weeks without blocking anything — which is the same failure mode the
+      # gate exists to kill.
+      #
+      # ANTI-VACUITY: it must not become the thing it polices.
+      #   * `set -euo pipefail` EXPLICITLY. A bare `| tee` reports tee's status
+      #     (always 0), and — found by mutating this very step — `pipefail`
+      #     WITHOUT `-e` is not enough either: the script's status is its LAST
+      #     command's, so the inert-gate mutation greened the step while the
+      #     gate itself printed FAIL and exited 1. Actions' default shell is
+      #     `bash -e`, but this step does not lean on that default.
+      #   * The verdict is re-derived from the summary the gate WROTE, not from
+      #     exit 0: a non-empty script set, a non-zero wired count, zero
+      #     undeclared, zero wired-but-unreferenced, and zero failures.
+      - name: Oracle wiring gate — every repro script declares a CI status (890)
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
+            | tee /tmp/oracle-wiring.log
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("/tmp/oracle-wiring.json"))["summary"]
+          bad = [k for k, v in (("total<100", s["total"] < 100),
+                                ("wired==0", s["wired"] < 1),
+                                ("undeclared", s["undeclared"]),
+                                ("wired_unreferenced", s["wired_unreferenced"]),
+                                ("failures", s["failures"])) if v]
+          if bad:
+              sys.exit(f"oracle-wiring gate VACUOUS or DRIFTED {bad}: {s}")
+          print(f"oracle-wiring gate is non-vacuous: it classified {s['total']} "
+                f"scripts, {s['wired']} of them wired, {s['manual']} manual, "
+                f"{s['unwired']} unwired-debt, 0 inert.")
+          PY
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
       # (exit 0) so a flake can't block merges; a real mismatch = red.
@@ -252,7 +293,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-coverage-
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage (LCOV)
@@ -431,8 +472,12 @@ jobs:
     # WASM traps must TRAP under emulation, in-range must match bit-exactly)
     # + min/max NaN/±0 matrix + copysign. #851 added div/rem (SDIV/UDIV+MSUB
     # with WASM ÷0 + INT_MIN/-1 trap guards, execution-verified), popcnt (SIMD
-    # CNT/ADDV), and f64<->i64 reinterpret; the decline-matrix probe now
-    # asserts only rounding + i64<->float conversions still LOUD-decline.
+    # CNT/ADDV), and f64<->i64 reinterpret. v0.54 L2 completes the SCALAR float
+    # surface — rounding (FRINT), f32/f64 load/store (bounds-checked), i64->
+    # float converts, and the DOMAIN-GUARDED trapping i64-target truncations —
+    # so the decline-matrix probe now asserts the STRUCTURAL declines
+    # (call_indirect, br_table, param writes, globals, bulk memory,
+    # value-carrying blocks, SIMD) still LOUD-decline.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -511,6 +556,38 @@ jobs:
             python scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
           grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' ci851.txt
           grep -q '^RESULT: PASS' ci851.txt
+      - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
+        # The four classes the VCR-SEL-005 third-backend parity gate listed as
+        # Err(reason). The soundness-critical one is TRAP_TRUNC_I64: A64
+        # FCVTZ{S,U} SATURATE where WASM §4.3.3 TRAPS, so the harness runs a
+        # FULL boundary table (both sides of ±2^63 / 2^64, the nearest float
+        # inside/outside each bound, ±0, ±inf, NaN) and requires every trap
+        # case to ACTUALLY TRAP. Rounding is compared bit-exactly over a
+        # halfway table, which is what makes the "FRINTN is ties-to-EVEN"
+        # claim real rather than assumed.
+        #
+        # ANTI-VACUITY (#890). `set -euo pipefail`, NOT bare `pipefail`: with
+        # pipefail ALONE the step's exit status is that of the LAST command, so
+        # an oracle that printed FAIL and exited 1 still went GREEN. `-e` is
+        # what makes the failing pipeline abort the step — and it is stated
+        # explicitly here rather than left to the runner's default shell flags.
+        #
+        # The verdict is then taken from the script's OWN summary line, not
+        # from exit 0 alone, and the counts are asserted non-collapsed: an
+        # oracle that quietly stops exercising anything — or that loses the
+        # out-of-range half of the #709 boundary table, which is this gate's
+        # entire purpose — must go RED.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth python scripts/repro/aarch64_float_completion_851_differential.py \
+            | tee /tmp/a64_floatdiff.log
+          grep -q '^RESULT: PASS' /tmp/a64_floatdiff.log
+          grep -Eq '^[0-9]+ wasmtime cases \([0-9]+ trap cases\)' /tmp/a64_floatdiff.log
+          n=$(sed -n 's/^\([0-9]*\) wasmtime cases.*/\1/p' /tmp/a64_floatdiff.log)
+          t=$(sed -n 's/^[0-9]* wasmtime cases (\([0-9]*\) trap cases).*/\1/p' /tmp/a64_floatdiff.log)
+          echo "float-completion oracle ran $n checks, $t of them trap cases"
+          [ "$n" -ge 300 ]
+          [ "$t" -ge 40 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 
@@ -644,7 +721,7 @@ jobs:
       # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
       - name: Run gpio-thin size + mmio execution oracle (#846/#879, cortex-m3)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
           grep -q "^#846 CHECKS=75/75" gpio846.out
       # #752: the software bounds guard must trap the top-of-address-space
@@ -678,7 +755,7 @@ jobs:
       # 0 alone is not trusted (the "0 ops accepted PASS" lesson).
       - name: Run VFP spill execution oracle (#881, cortex-m7dp)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/vfp_spill_881_differential.py | tee vfp881.out
           grep -q "^PASS: all 7 exports emitted (nm -> T)" vfp881.out
           grep -qE "^PASS: [1-9][0-9]+ execution rows bit-identical to wasmtime" vfp881.out
@@ -893,31 +970,45 @@ jobs:
       # ONLY (no unicorn/wasmtime).
       - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
         run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
-      # VCR-DEC-001 increment 2 (#242): EXECUTION-gate the DIVERGENT bytes the
-      # join-aware colouring now produces. This is NOT redundant with the byte
-      # differential above: increment 1's correctness followed transitively from
-      # byte identity, and increment 2 broke that. `validate_cfg_rewrite` — the
-      # pass's own CFG-lifted trace-equality oracle — SHARES the CFG shape with
-      # the pass it validates, and #872 is the standing lesson that a validator
-      # can share its pass's blind spot, so the new bytes get EXECUTED: unicorn
-      # runs the flag-ON image and compares return value + linear-memory window
-      # against wasmtime, over every join shape the allocator reaches (real
-      # if/else, if-without-else, desugared block+br_if, early return, counted
-      # and data-dependent loops, two-level br_if). PROVEN non-vacuous by
-      # MUTATION: emptying `cfg_exit_observable` (the exit contract the pass and
-      # its validator SHARE) while removing the churn bias that masks it emits
-      # code leaving the return value in the wrong register — validate_cfg_rewrite
-      # AND VCR-RA-003 both ACCEPT it and only this gate catches it (16 wrong
-      # results). The grep asserts the NON-ZERO check count AND a non-zero
-      # engaged-function count from the machine-readable summary: exit 0 alone is
-      # not trusted, and a run where the allocator stopped changing bytes would
-      # pass every comparison while gating nothing.
-      - name: Run VCR-DEC-001 join-allocator execution differential (#242, thumb2)
+      # VCR-DEC-001 increments 2+3 (#242): EXECUTION-gate the DIVERGENT bytes the
+      # join- and call-aware colouring now produces. This is NOT redundant with
+      # the byte differential above: increment 1's correctness followed
+      # transitively from byte identity, and increment 2 broke that.
+      # `validate_cfg_rewrite` — the pass's own CFG-lifted trace-equality oracle
+      # — SHARES the CFG shape with the pass it validates, and #872 is the
+      # standing lesson that a validator can share its pass's blind spot, so the
+      # new bytes get EXECUTED: unicorn runs the flag-ON image and compares
+      # return value + linear-memory window against wasmtime, over every join
+      # shape the allocator reaches (real if/else, if-without-else, desugared
+      # block+br_if, early return, counted and data-dependent loops, two-level
+      # br_if). PROVEN non-vacuous by MUTATION: emptying `cfg_exit_observable`
+      # (the exit contract the pass and its validator SHARE) while removing the
+      # churn bias that masks it emits code leaving the return value in the wrong
+      # register — validate_cfg_rewrite AND VCR-RA-003 both ACCEPT it and only
+      # this gate catches it (16 wrong results).
+      #
+      # Increment 3 (v0.54) adds the CALL shapes and the same argument applies
+      # with MORE force: the AAPCS contract (`liveness::call_effect`) is SHARED
+      # by the pass and the validator on purpose (two hand-maintained copies
+      # would be the VCR-ORACLE mirror-pinning failure mode), so neither can
+      # catch an error IN the contract. Both halves are executed — the CLOBBER
+      # half (a value live across a `bl`, incl. self-recursion) and the ARGUMENT
+      # half (5/6/7-argument callees that pack each argument into its own nibble,
+      # register AND stack). Likewise proven non-vacuous by MUTATION: emptying
+      # `call_effect`'s clobber set makes the colourer home a cross-call value in
+      # R0-R3; `validate_cfg_rewrite` accepts it and only this gate fails it.
+      #
+      # The grep asserts the NON-ZERO check count, a non-zero engaged-function
+      # count AND the ≥4 engaged CALL-shape floor from the machine-readable
+      # summary: exit 0 alone is not trusted, and a run where the allocator
+      # stopped reaching call-containing functions would pass every comparison
+      # while leaving the whole increment-3 class ungated.
+      - name: Run VCR-DEC-001 join+call allocator execution differential (#242, thumb2)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
           grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
-          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
+          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
       # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
       # un-wired in the same #879 audit as the gpio gate. clang+lld build a
       # bare-metal riscv32 firmware from synth's object + generated startup/
@@ -930,6 +1021,78 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
         run: SYNTH=./target/debug/synth python scripts/repro/rv32_data_798_boot_differential.py
+
+  instrument-independence-oracle:
+    name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
+    # THE LESSON THIS JOB PINS. v0.53 proved BY MUTATION that emptying
+    # `cfg_exit_observable` — the exit contract the join-aware graph allocator
+    # and its own CFG validator SHARE — emits code leaving the return value in
+    # the WRONG REGISTER, and that BOTH per-compilation validators accept it
+    # (`validate_cfg_rewrite` -> Ok, VCR-RA-003 -> Consistent). Only execution
+    # caught it: two independent-LOOKING instruments, one shared blind spot,
+    # and a counterexample to the claim that per-compilation validation is an
+    # independent check on the code generator.
+    #
+    # This job re-applies that EXACT mutation (the committed patch, not a
+    # reconstruction) and asserts on ONE compilation that the two dataflow
+    # validators are still GREEN while VCR-VER-004 `validate_abi_contract`
+    # REJECTS with a concrete violation naming the ABI result register — i.e.
+    # that the class is now caught STATICALLY, and by an instrument that fails
+    # DIFFERENTLY (forward value analysis, obligation = the AAPCS result
+    # registers hard-named in its own source, CFG re-derived from both streams,
+    # nothing taken from the pass).
+    #
+    # It asserts the BASELINE direction FIRST — the unmutated compiler must
+    # still apply AND must not be rejected — so a false-rejection regression
+    # (the v0.50 `JoinValueNotAvailable{R8}` class) fails this job before it
+    # ever reaches the mutation. Isolated job: the script mutates the working
+    # tree and rebuilds, then always restores it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Build synth
+        run: cargo build -p synth-cli
+      # THE DEFAULT PATH, not the spike. The gate above guards the flag-OFF
+      # graph-colouring allocator; this step asks the same ABI question of the
+      # allocator every `synth compile` actually runs, and holds the answer to a
+      # floor: ZERO violations (a violation is either a real shipping miscompile
+      # or — far likelier, since the shipping bytes are frozen-pinned and
+      # execution-differentialed — a FALSE REJECTION by the new instrument, and
+      # neither may pass silently), plus a pinned `Holds` count so a change that
+      # makes the checker SEE LESS of the shipping path is visible instead of
+      # absorbed. Red-first in both directions (injected violation; stub binary
+      # emitting no verdicts) — see the script docstring.
+      - name: Audit the SHIPPING allocator against the ABI contract (#242)
+        run: |
+          set -o pipefail
+          SYNTH=./target/debug/synth python scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
+          grep -q "^VCR-VER-004-SHIPPING .* VIOLATED=0 " vcr_ver_004_ship.out
+          test "$(grep -c '^  Holds ' vcr_ver_004_ship.out)" -eq 1
+      # The grep asserts the machine-readable 4/4 AND a non-zero OK count (#890):
+      # exit 0 alone is not trusted, and a run that silently skipped every
+      # assertion would otherwise pass while gating nothing.
+      - name: Re-run the v0.53 mutation against all three instruments (#242)
+        run: |
+          set -o pipefail
+          python scripts/repro/vcr_ver_004_instrument_independence.py | tee vcr_ver_004.out
+          grep -q "^VCR-VER-004-INDEPENDENCE ASSERTIONS=4/4$" vcr_ver_004.out
+          test "$(grep -c '^OK   ' vcr_ver_004.out)" -eq 5
+      - name: Assert the tree was restored (the mutation must never persist)
+        run: git diff --exit-code
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
@@ -1034,6 +1197,15 @@ jobs:
         run: python scripts/repro/fact_spec_bounds_494_differential.py --expect-decline
       - name: Run RED bounds force-admit divergence demonstration
         run: python scripts/repro/fact_spec_bounds_494_differential.py --force-admit
+      # #890: the phase-3+ rem_u IDENTITY differential lived in scripts/repro/
+      # unwired, so the headline "with the fact, synth deletes the whole rem_u
+      # (2 B) where clang -Os needs a 24 B reciprocal multiply-subtract" claim
+      # had no standing execution gate — the specialized build's equality with
+      # BOTH wasmtime and the unspecialized build was hand-checked only.
+      - name: Run constant-divisor rem_u identity differential (#494 phase 3+)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/fact_spec_rem_494_differential.py
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
@@ -2183,3 +2355,343 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Universe-complete parity + red-first + ledger-liveness
         run: cargo test -p synth-backend-riscv --test cross_backend_op_parity
+
+  repro-sweep-selector-oracle:
+    name: repro sweep — selector / control-flow / call / i64 differentials
+    # #890: these differentials existed in scripts/repro/ and NOTHING RAN THEM.
+    # Each was written as the execution oracle for a specific miscompile (the
+    # issue number is in the step name) and then left unwired, so every one of
+    # those regressions was un-gated. They are batched here rather than given a
+    # job each because they share one build and one pip install; the step name
+    # identifies which oracle failed. The `# ci-status: wired` header in each
+    # script is CHECKED against this file by scripts/oracle_wiring_check.py, so
+    # deleting a step below turns the claim red instead of silently re-inerting
+    # the gate.
+    runs-on: ubuntu-latest
+    env:
+      SYNTH: ./target/debug/synth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
+      - name: a32 i64 execution differential (#615, cortex-r5)
+        run: |
+          ./target/debug/synth compile scripts/repro/a32_i64_615.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/a615.o
+          python scripts/repro/a32_i64_615_differential.py /tmp/a615.o scripts/repro/a32_i64_615.wat
+      - name: out-of-range ADD immediate differential (#350)
+        run: |
+          ./target/debug/synth compile scripts/repro/add_imm_large.wat -o /tmp/ail.elf --target cortex-m4f --all-exports --relocatable
+          python scripts/repro/add_imm_large_differential.py /tmp/ail.elf
+      - name: base-CSE execution differential (#468, default + opt-out)
+        run: python scripts/repro/base_cse_differential.py
+      - name: value-returning-branch differential (#509, both paths)
+        run: python scripts/repro/br_table_value_509_differential.py
+      - name: optimized-path forward-branch shapes (#500)
+        run: python scripts/repro/cf_shapes_500_differential.py
+      - name: const-only-body return differential (#791)
+        run: python scripts/repro/const_body_791_differential.py
+      - name: 5-argument call differential (#359)
+        run: |
+          ./target/debug/synth compile scripts/repro/call_5args.wat -o /tmp/c5.o --target cortex-m4f --native-pointer-abi --all-exports --relocatable
+          python scripts/repro/call_5args_differential.py /tmp/c5.o
+      - name: 6/7-argument stack-slot call differential (#359)
+        run: |
+          ./target/debug/synth compile scripts/repro/call_6_7args.wat -o /tmp/cm.o --target cortex-m4 --all-exports --relocatable
+          python scripts/repro/call_6_7args_differential.py /tmp/cm.o
+      - name: call_indirect A32 differential (#594, cortex-r5)
+        run: |
+          ./target/debug/synth compile scripts/repro/call_indirect_594.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/ci594.o
+          python scripts/repro/call_indirect_594_differential.py /tmp/ci594.o
+      - name: call_indirect thumb differential (#597, cortex-m3)
+        run: |
+          ./target/debug/synth compile scripts/repro/call_indirect_597.wat --target cortex-m3 --all-exports --relocatable --no-optimize -o /tmp/ci597.o
+          python scripts/repro/call_indirect_597_differential.py /tmp/ci597.o
+      - name: constant-divisor strength-reduction differential (#209)
+        run: |
+          ./target/debug/synth compile scripts/repro/div_const.wat -o /tmp/dc.elf --target cortex-m4 --relocatable
+          python scripts/repro/div_const_differential.py /tmp/dc.elf
+      - name: dynamic-table lookup differential (#359)
+        run: |
+          ./target/debug/synth compile scripts/repro/dyn_table_359.wat -o /tmp/dt.o --target cortex-m4 --native-pointer-abi --all-exports --relocatable
+          python scripts/repro/dyn_table_359_differential.py /tmp/dt.o
+      - name: branch-transparent reload forwarding on gust (#390)
+        run: python scripts/repro/gust_spill_fwd_390_differential.py
+      - name: i32 register-exhaustion spill differential (#242)
+        run: |
+          ./target/debug/synth compile scripts/repro/high_pressure_i32.wat -o /tmp/hp.elf --target cortex-m4 --relocatable
+          python scripts/repro/high_pressure_i32_differential.py /tmp/hp.elf
+      - name: i64 pair-spill differential (#242)
+        run: |
+          ./target/debug/synth compile scripts/repro/high_pressure_i64.wat -o /tmp/hp64.elf --target cortex-m4 --relocatable
+          python scripts/repro/high_pressure_i64_differential.py /tmp/hp64.elf
+      - name: i64.div_s(INT64_MIN,-1) overflow-trap differential (#633)
+        run: python scripts/repro/i64_divs_overflow_633_differential.py
+      - name: i64 global.get/set pair differential (#643, both selectors)
+        run: python scripts/repro/i64_globals_643_differential.py
+      - name: i64 pair-exhaustion spill differential (#587)
+        run: |
+          SYNTH_SPILL_ON_EXHAUST=1 ./target/debug/synth compile scripts/repro/i64_pair_exhaust_587.wat -o /tmp/pe587.elf --target cortex-m4
+          python scripts/repro/i64_pair_exhaust_587_differential.py /tmp/pe587.elf
+      - name: i64.popcnt scratch-restore clobber differential (#632)
+        run: python scripts/repro/i64_popcnt_632_differential.py
+      - name: i64 shr_u/shr_s single-function path differential (#599)
+        run: python scripts/repro/i64_shr_599_differential.py
+      - name: dead-frame elision differential (#390, both flag states)
+        run: python scripts/repro/leaf_dead_frame_differential.py
+      - name: i32 local-promotion differential (#390, clean + dirty)
+        run: |
+          ./target/debug/synth compile scripts/repro/local_promote_i32.wat -o /tmp/lp.elf --target cortex-m4 --relocatable
+          python scripts/repro/local_promote_i32_differential.py /tmp/lp.elf
+      - name: param-bounded loop back-edge differential (#663)
+        run: python scripts/repro/loop_param_bound_663_differential.py
+      - name: arg-move-cycle-under-pressure differential (#326)
+        run: |
+          ./target/debug/synth compile scripts/repro/mutex_pressure.wat -o /tmp/mp.elf --target cortex-m4 --all-exports --relocatable
+          python scripts/repro/mutex_pressure_differential.py /tmp/mp.elf
+      - name: post-exhaustion cycle proxy, execution-matched (#242)
+        run: python scripts/repro/postex_cycle_proxy.py
+      - name: read-before-write local zero-init differential (#457)
+        run: |
+          ./target/debug/synth compile scripts/repro/read_before_write_local_zeroinit.wat -o /tmp/rbw.elf --target cortex-m4 --relocatable
+          python scripts/repro/read_before_write_local_zeroinit_differential.py /tmp/rbw.elf
+      - name: allocation-time Belady spill differential (#242)
+        run: |
+          SYNTH_SPILL_ON_EXHAUST=1 ./target/debug/synth compile scripts/repro/spill_on_exhaust_242.wat -o /tmp/soe.elf --target cortex-m4
+          python scripts/repro/spill_on_exhaust_242_differential.py /tmp/soe.elf
+      - name: direct-selector spill-rung differential (#581)
+        run: python scripts/repro/spill_rung_581_differential.py
+      - name: sret shim differential (#359)
+        run: |
+          ./target/debug/synth compile scripts/repro/sret_decide.wasm -o /tmp/sret.o --target cortex-m4 --native-pointer-abi --all-exports --relocatable
+          python scripts/repro/sret_decide_differential.py /tmp/sret.o
+      - name: u64-unpack differential (#313)
+        run: |
+          cp scripts/repro/u64_unpack.wat /tmp/u64repro.wat
+          ./target/debug/synth compile --target cortex-m4 --all-exports --relocatable scripts/repro/u64_unpack.wat -o /tmp/u64.elf
+          python scripts/repro/u64_unpack_differential.py
+      - name: u64-unpack if-with-result differential (#313)
+        run: |
+          ./target/debug/synth compile --target cortex-m4 --all-exports --relocatable scripts/repro/u64_unpack_if.wat -o /tmp/u64if.elf
+          python scripts/repro/u64_unpack_if_differential.py
+      - name: uxth/uxtb fold differential (#428, both flag states)
+        run: python scripts/repro/uxth_fold_differential.py
+
+  repro-sweep-memory-oracle:
+    name: repro sweep — linear memory / static data / native-pointer differentials
+    # #890 companion to the selector sweep: the memory-side oracles that were
+    # written and never wired. The six mem757_* harnesses are the RED-FIRST
+    # reconstructions of gale's wrong-segment miscompile — the class that
+    # produced #757 — and none of them was running. postlink_359_oracle links a
+    # REAL image with arm-none-eabi-ld (the #368 lesson: a unicorn-on-.o oracle
+    # cannot see link-time retargeting), so binutils is installed for it here.
+    runs-on: ubuntu-latest
+    env:
+      SYNTH: ./target/debug/synth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
+      - name: bulk-memory copy/fill numeric differential (#374)
+        run: |
+          ./target/debug/synth compile scripts/repro/bulk_memory_374_diff.wat -o /tmp/bmd.elf --target cortex-m7dp --all-exports --safety-bounds software
+          python scripts/repro/bulk_memory_374_differential.py /tmp/bmd.elf
+      - name: i64 large static offset differential (#382, direct path)
+        run: python scripts/repro/i64_large_offset_382_differential.py
+      - name: large static load/store offset differential (#382, optimized)
+        run: python scripts/repro/load_store_big_offset_382_differential.py
+      - name: memory.grow(0) differential (#539, both ARM paths)
+        run: python scripts/repro/mem_grow_539_differential.py
+      - name: static-src memmove differential (#757, inlined)
+        run: python scripts/repro/mem757_inlined_memmove_differential.py
+      - name: low-const-below-string chunked copy differential (#757)
+        run: python scripts/repro/mem757_low_const_copy_differential.py
+      - name: memory.copy from a static pointer differential (#757)
+        run: python scripts/repro/mem757_memcopy_static_src_differential.py
+      - name: memmove-with-param differential (#757)
+        run: python scripts/repro/mem757_memmove_param_differential.py
+      - name: chunked copy under register pressure differential (#757)
+        run: python scripts/repro/mem757_pressure_chunks_differential.py
+      - name: pointer-base copy differential (#757)
+        run: python scripts/repro/mem757_ptr_base_copy_differential.py
+      - name: multi-provider shared __stack_pointer co-rebase (#707)
+        run: |
+          ./target/debug/synth compile scripts/repro/mem707_multi_sp.wat -o /tmp/mem707.o --target cortex-m3 --native-pointer-abi --all-exports --relocatable --shadow-stack-size 512
+          python scripts/repro/multi_sp_707_differential.py /tmp/mem707.o
+      - name: native-pointer shadow-stack frame differential (#237)
+        run: |
+          ./target/debug/synth compile scripts/repro/native_pointer_shadow_stack.wat -o /tmp/np_ss.elf --target cortex-m4 --native-pointer-abi --all-exports --relocatable
+          python scripts/repro/native_pointer_shadow_stack_differential.py /tmp/np_ss.elf
+      - name: inline-statics down-shift differential (#678)
+        run: |
+          ./target/debug/synth compile scripts/repro/mem678_full.wat -o /tmp/mem678.o --target cortex-m3 --native-pointer-abi --all-exports --relocatable --shadow-stack-size 512
+          python scripts/repro/native_pointer_static_downshift_678.py /tmp/mem678.o
+      - name: volatile DMA-window back-off differential (#543, four builds)
+        run: python scripts/repro/volatile_segment_543_differential.py
+      - name: Install binutils-arm-none-eabi (#359 post-link oracle)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
+      - name: post-link static-data placement oracle (#359)
+        run: PATH=$PWD/target/debug:$PATH python scripts/repro/postlink_359_oracle.py
+
+  repro-sweep-rv32-oracle:
+    name: repro sweep — RISC-V RV32 execution differentials
+    # #890: every RV32 oracle below pins a regression gale found on real
+    # qemu_riscv32 silicon (#220 callee-saved, #226 live-range clobber, #232
+    # overflow-guard clobber, #317 i64 sign, #343 if-join) — and none of them
+    # was wired, so the backend those findings hardened had no standing
+    # execution gate for them.
+    runs-on: ubuntu-latest
+    env:
+      SYNTH: ./target/debug/synth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
+      - name: control_step RV32 correctness + ABI + shipped data (#223/#798)
+        run: |
+          ./target/debug/synth compile scripts/repro/control_step.wasm -b riscv -t rv32imac --all-exports --relocatable -o /tmp/cs_rv.o
+          python scripts/repro/control_step_riscv_differential.py /tmp/cs_rv.o
+      - name: controller_step RV32 live-range clobber differential (#226)
+        run: |
+          ./target/debug/synth compile scripts/repro/controller_step.wat -b riscv -t rv32imac --all-exports --relocatable -o /tmp/ctrl_rv.o
+          python scripts/repro/controller_step_riscv_differential.py /tmp/ctrl_rv.o
+      - name: RV32 callee-saved preservation differential (#220)
+        run: |
+          ./target/debug/synth compile scripts/repro/filter_axis.wasm -b riscv -t rv32imac --relocatable -o /tmp/fa.o
+          python scripts/repro/filter_axis_riscv_differential.py /tmp/fa.o
+      - name: RV32 i64 div_s/rem_s sign differential (#317)
+        run: |
+          ./target/debug/synth compile scripts/repro/i64_divs_317.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/i317.o
+          python scripts/repro/i64_divs_317_riscv_differential.py /tmp/i317.o
+      - name: RV32 i64-param LOUD-SKIP contrast oracle (#518)
+        run: python scripts/repro/i64_param_518_riscv_loudskip.py
+      - name: RV32 if-with-result join reconciliation (#343)
+        run: |
+          ./target/debug/synth compile scripts/repro/if_else_result_343.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/if343.o
+          python scripts/repro/if_else_result_343_riscv_differential.py /tmp/if343.o
+      - name: RV32 mask/software bounds effective-address oracle (#655)
+        run: python scripts/repro/mask_bounds_655_riscv_differential.py
+      - name: RV32 cmp->select fusion differential (#472)
+        run: |
+          ./target/debug/synth compile scripts/repro/rv32_cmp_select_472.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/cmpsel.o
+          python scripts/repro/rv32_cmp_select_472_riscv_differential.py /tmp/cmpsel.o
+      - name: RV32 i32 local-promotion differential (#472)
+        run: |
+          ./target/debug/synth compile scripts/repro/rv32_local_promotion_472.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/promo.o
+          python scripts/repro/rv32_local_promotion_472_riscv_differential.py /tmp/promo.o
+      - name: RV32 signed-div-const overflow-guard clobber (#232)
+        run: |
+          ./target/debug/synth compile scripts/repro/signed_div_const.wasm -b riscv -t rv32imac --all-exports --relocatable -o /tmp/sdiv.o
+          python scripts/repro/signed_div_const_riscv_differential.py /tmp/sdiv.o
+      - name: RV32 u64-unpack differential (#313)
+        run: |
+          ./target/debug/synth compile scripts/repro/u64_unpack_inlined.wat -b riscv -t rv32imac --all-exports --relocatable -o /tmp/u64_rv32.elf
+          python scripts/repro/u64_unpack_riscv_differential.py
+
+  repro-sweep-wcet-oracle:
+    name: repro sweep — WCET bound soundness cross-checks (phases 2-5)
+    # #890: the SOUNDNESS evidence for --emit-wcet. The cargo gate
+    # (wcet_bound_gate.rs) pins the bounds analytically; these four harnesses
+    # are the only thing that EXECUTES the fixtures under unicorn and checks
+    # `bound_cycles >= executed_instructions`, i.e. that the bound synth
+    # publishes is actually an upper bound. They were unwired — the soundness
+    # claim in CLAUDE.md rested on a hand-run script.
+    # SYNTH must be ABSOLUTE here: these harnesses chdir into a temp dir.
+    runs-on: ubuntu-latest
+    env:
+      SYNTH: ${{ github.workspace }}/target/debug/synth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Install wabt (wat2wasm — required by the newly-wired oracles)
+        # #890: these oracles were never CI-run, so their host deps were never
+        # discovered. wat2wasm is absent on the runner and several fixtures
+        # build their .wasm from .wat at test time (the #850/#881 class).
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
+      - name: WCET phase-2 const-loop bound soundness (#778)
+        run: python scripts/repro/wcet_phase2_778_unicorn_soundness.py
+      - name: WCET phase-3 inter-procedural composition soundness (#778)
+        run: python scripts/repro/wcet_phase3_778_compose_soundness.py
+      - name: WCET phase-4 bounded-recursion soundness (#49)
+        run: python scripts/repro/wcet_phase4_49_recursion_soundness.py
+      - name: WCET phase-5 masked-ceiling loop soundness (#778)
+        run: python scripts/repro/wcet_phase5_778_masked_loop_soundness.py

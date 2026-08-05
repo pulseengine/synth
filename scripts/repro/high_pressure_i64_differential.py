@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA-001 acceptance increment (#242) — i64 pair-spill differential oracle.
 
 `high_pressure_i64.wat` keeps 4 i64 constants simultaneously live (4 register

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#496 (epic #242) — EXECUTION-validate the DEFAULT optimized-path register-
 exhaustion fix.
 

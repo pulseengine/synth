@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""VCR-DEC-001 increment 2 — MEASURE the join-aware graph-colouring allocator
-against the shipping greedy/segment allocator (epic #242, the North Star).
+# ci-status: manual (measurement) — the #242 join-allocator COMPARISON deliverable (bytes and --emit-wcet bounds, graph-alloc ON vs OFF) whose whole point is a number to judge a flip by; it deliberately has no verdict. The allocator's correctness is gated by the wired VCR-DEC-001 differential jobs.
+"""VCR-DEC-001 increments 2+3 — MEASURE the join- and call-aware graph-colouring
+allocator against the shipping greedy/segment allocator (epic #242, the North
+Star).
 
 This is the lane's DELIVERABLE, not a gate: a widened allocator with no
 comparative numbers says nothing about whether to flip it. For every function
@@ -16,11 +18,19 @@ in the ARM repro corpus it reports, per function and in total:
     assumptions, not a hardware measurement. Functions whose bound DECLINES on
     either side are excluded from the cycle total and counted separately.
 
-Both `--relocatable` (label-form branches — increment 2's scope) and the
-default self-contained path (pre-resolved NUMERIC branches — out of scope, so
-the allocator declines and the numbers must be flat) are measured, because the
-flat half is itself evidence: it bounds how much of the corpus the increment
-can reach today.
+Both paths are measured, because the DIFFERENCE between them bounds how much of
+the corpus each increment reaches:
+  * `--relocatable` — label-form branches, fully in scope;
+  * the default self-contained path — branches are PRE-RESOLVED to numeric
+    offsets, which the allocator still declines (`numeric-branch`), so only its
+    call-form and branch-free functions are reachable there. Increment 3 moved
+    this half from "mostly flat" to real: calls stay label-form on BOTH paths,
+    so modeling them reaches functions the numeric-branch decline had hidden.
+
+The per-run DECLINE HISTOGRAM is the actionable half of the output: each reason
+names a construct the allocator refuses, and the largest bucket is the next
+increment's target (that is how increment 3 was chosen — `call` + `call-indirect`
+were 68 of increment 2's declines).
 
 Usage:  python3 vcr_dec_001_join_alloc_measure.py <synth-binary> [--json OUT]
 Exit 0 always unless a compile fails — this MEASURES, it does not judge.
@@ -214,8 +224,9 @@ def main():
         out_json = sys.argv[sys.argv.index("--json") + 1]
 
     summary = {}
-    for tag, reloc in (("relocatable / label-form branches (increment-2 scope)", True),
-                       ("self-contained / pre-resolved numeric branches (out of scope)", False)):
+    for tag, reloc in (("relocatable / label-form branches (fully in scope)", True),
+                       ("self-contained / pre-resolved numeric branches "
+                        "(branches out of scope; calls in scope)", False)):
         rows, applied, declines, errors = measure(synth, reloc)
         summary["relocatable" if reloc else "self_contained"] = report(
             tag, rows, applied, declines, errors)

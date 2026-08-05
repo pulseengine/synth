@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#209 Opt 1 — constant-divisor strength-reduction differential oracle.
 
 wasmtime runs div_const.wat as ground truth; unicorn runs synth's ARM (the

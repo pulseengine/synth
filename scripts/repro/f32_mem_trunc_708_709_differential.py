@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#708/#709 — EXECUTION-validate the phase-1b thumb-2 f32 increment.
 
 Two capabilities land on the v0.39.0 hard-float path:

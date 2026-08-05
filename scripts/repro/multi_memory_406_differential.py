@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#406 (VCR-MEM-002 phase 1) execution differential: two wasm linear
 memories must be two DISTINCT native regions.
 

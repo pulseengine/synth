@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: manual (measurement) — a #390 scoping SPIKE that prints a per-function sp-traffic/pressure table to cost the local-promotion lever. It has no expected values and no verdict, so there is nothing for CI to fail on; the lever it sized is gated by local_promote_i32_differential.py (wired).
 """VCR-RA local-promotion scoping spike (#390, #209, epic #242).
 
 The structural gap to native parity is that synth's instruction selector lowers

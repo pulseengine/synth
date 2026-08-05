@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#538 milestone-3 — validate the aarch64 SCALAR-FLOAT backend codegen.
 
 Compiles the m3 float acceptance module with `synth compile -b aarch64`, then

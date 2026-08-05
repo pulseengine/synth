@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#655 — RV32 mask/software bounds: EXECUTION-validate the effective-address fix.
 
 The #651 class, RISC-V twin of ARM PR #654: `emit_bounds_check`'s Mask arm

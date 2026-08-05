@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#390 (VCR-RA) — EXECUTION-validate conditional-branch-transparent stack-reload
 forwarding on the gust hot path, and own the SYNTH_NO_STACK_FWD flip-engagement
 check.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#649 — nonzero i64.const GLOBAL INITIALIZERS silently zeroed.
 
 The decoder's `init_i32` captured only a leading `i32.const`; an i64 global's

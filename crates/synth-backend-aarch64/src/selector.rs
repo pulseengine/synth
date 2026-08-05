@@ -690,10 +690,39 @@ pub fn select_typed_cf_calls(
     //          -2147483648.5, which truncate to -2^31 and are IN-range; an
     //          inclusive -2^31 bound would wrongly trap them).
     //   f64→u: hi 2^32 (0x41F0...0, exclusive), lo -1.0 (0xBFF0...0, strict).
+    //
+    // v0.54 L2 (#851): `dst64` extends the SAME guard to the i64-TARGET forms.
+    // Only the two bound constants and the destination width change — the
+    // shape (ordered hi check, then lo check, then the bare convert) is
+    // identical, so the i64 forms inherit the proven NaN handling (an ordered
+    // `b.mi` is FALSE for NaN, so NaN falls into the first `brk`).
+    //
+    // i64 boundary table (WASM Core §4.3.3), each entry justified — the whole
+    // point is that A64 saturation must never be observable:
+    //   f32→s64: hi 2^63 (0x5F000000, exclusive), lo -2^63 (0xDF000000,
+    //            INCLUSIVE. -2^63 is exactly representable in f32 (exponent
+    //            63, zero mantissa) and truncates to INT64_MIN, which is
+    //            in-range; the next f32 below it is -2^63·(1+2^-23), far
+    //            outside. So `ge` is exact — a STRICT bound would wrongly trap
+    //            the legal INT64_MIN input.)
+    //   f32→u64: hi 2^64 (0x5F800000, exclusive), lo -1.0 (0xBF800000, STRICT
+    //            — trunc_u(-0.5) = 0 is legal, trunc_u(-1.0) traps).
+    //   f64→s64: hi 2^63 (0x43E0...0, exclusive), lo -2^63 (0xC3E0...0,
+    //            INCLUSIVE. NOTE this differs from the i32/f64 row above, and
+    //            the reason is the ULP: near 2^63 the f64 spacing is
+    //            2^63·2^-52 = 2048, so NO f64 exists in (-2^63-1, -2^63) —
+    //            unlike the i32 case where -2147483648.5 is representable and
+    //            forced a strict -(2^31)-1 bound. Here the next f64 below
+    //            -2^63 is -2^63-2048, which is genuinely out of range, so an
+    //            inclusive bound is both exact and necessary.)
+    //   f64→u64: hi 2^64 (0x43F0...0, exclusive), lo -1.0 (0xBFF0...0, strict).
+    // Every row is execution-checked against wasmtime over both sides of each
+    // boundary in `aarch64_float_completion_851_differential.py`.
     let trunc_guarded = |words: &mut Vec<u32>,
                          stack: &mut Vec<Val>,
                          is_f64: bool,
-                         signed: bool|
+                         signed: bool,
+                         dst64: bool|
      -> Result<(), SelectError> {
         let a = pop_fp(stack, "trunc")?;
         // Keep `a` live across temp allocation: it is read by both fcmps and
@@ -702,11 +731,15 @@ pub fn select_typed_cf_calls(
         let dst = alloc_temp(stack)?; // GP: const scratch, then the result
         let bound = alloc_ftemp(stack)?;
         stack.pop();
-        let (hi_bits, lo_bits, lo_cond): (u64, u64, Cond) = match (is_f64, signed) {
-            (false, true) => (0x4F00_0000, 0xCF00_0000, Cond::Ge),
-            (false, false) => (0x4F80_0000, 0xBF80_0000, Cond::Gt),
-            (true, true) => (0x41E0_0000_0000_0000, 0xC1E0_0000_0020_0000, Cond::Gt),
-            (true, false) => (0x41F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
+        let (hi_bits, lo_bits, lo_cond): (u64, u64, Cond) = match (is_f64, signed, dst64) {
+            (false, true, false) => (0x4F00_0000, 0xCF00_0000, Cond::Ge),
+            (false, false, false) => (0x4F80_0000, 0xBF80_0000, Cond::Gt),
+            (true, true, false) => (0x41E0_0000_0000_0000, 0xC1E0_0000_0020_0000, Cond::Gt),
+            (true, false, false) => (0x41F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
+            (false, true, true) => (0x5F00_0000, 0xDF00_0000, Cond::Ge),
+            (false, false, true) => (0x5F80_0000, 0xBF80_0000, Cond::Gt),
+            (true, true, true) => (0x43E0_0000_0000_0000, 0xC3E0_0000_0000_0000, Cond::Ge),
+            (true, false, true) => (0x43F0_0000_0000_0000, 0xBFF0_0000_0000_0000, Cond::Gt),
         };
         let check = |words: &mut Vec<u32>, bits: u64, cond: Cond| {
             if is_f64 {
@@ -727,11 +760,15 @@ pub fn select_typed_cf_calls(
         };
         check(words, hi_bits, Cond::Mi);
         check(words, lo_bits, lo_cond);
-        words.push(match (is_f64, signed) {
-            (false, true) => enc::fcvtzs_w_from_s(dst, a),
-            (false, false) => enc::fcvtzu_w_from_s(dst, a),
-            (true, true) => enc::fcvtzs_w_from_d(dst, a),
-            (true, false) => enc::fcvtzu_w_from_d(dst, a),
+        words.push(match (is_f64, signed, dst64) {
+            (false, true, false) => enc::fcvtzs_w_from_s(dst, a),
+            (false, false, false) => enc::fcvtzu_w_from_s(dst, a),
+            (true, true, false) => enc::fcvtzs_w_from_d(dst, a),
+            (true, false, false) => enc::fcvtzu_w_from_d(dst, a),
+            (false, true, true) => enc::fcvtzs_x_from_s(dst, a),
+            (false, false, true) => enc::fcvtzu_x_from_s(dst, a),
+            (true, true, true) => enc::fcvtzs_x_from_d(dst, a),
+            (true, false, true) => enc::fcvtzu_x_from_d(dst, a),
         });
         stack.push(Val::gp(dst));
         Ok(())
@@ -1183,6 +1220,49 @@ pub fn select_typed_cf_calls(
         Ok(())
     };
 
+    // v0.54 L2 (#851) — an FP load: pop the i32 address, dereference
+    // `[x28 + uxtw(addr) + offset]` with the SIMD&FP `ldr s/d`, push the value
+    // into the FP file.
+    //
+    // The address arithmetic and the #865 SOFTWARE BOUNDS CHECK are the SAME
+    // `form_ea` the integer loads use — an FP access is bounds-checked by
+    // default exactly like an i32 one, and traps (`brk`) where wasmtime traps.
+    // Only the data register file differs: the destination is a fresh FP temp,
+    // so the GP `ea` temp is free again the instant the load retires.
+    let fload = |words: &mut Vec<u32>,
+                 stack: &mut Vec<Val>,
+                 offset: u32,
+                 size_log2: u32,
+                 ldr_op: fn(FReg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let addr = pop_gp(stack, "fload")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        // The FP destination lives in a DIFFERENT file than `ea`, so it cannot
+        // alias it — no read-before-write reuse trick is needed (or possible).
+        let dst = alloc_ftemp(stack)?;
+        words.push(ldr_op(dst, ea, imm.unwrap_or(0)));
+        stack.push(Val::fp(dst));
+        Ok(())
+    };
+
+    // v0.54 L2 (#851) — an FP store: pop the FP value, then the i32 address,
+    // and write `size` bytes to `[x28 + uxtw(addr) + offset]`. Bounds-checked
+    // by the shared `form_ea` (#865). Unlike the GP store there is no need to
+    // keep the value artificially live across the EA allocation: `form_ea`
+    // hands out GP temps only, and the value lives in the FP file.
+    let fstore = |words: &mut Vec<u32>,
+                  stack: &mut Vec<Val>,
+                  offset: u32,
+                  size_log2: u32,
+                  str_op: fn(FReg, Reg, u32) -> u32|
+     -> Result<(), SelectError> {
+        let val = pop_fp(stack, "fstore")?;
+        let addr = pop_gp(stack, "fstore")?;
+        let (ea, imm) = form_ea(words, stack, addr, offset, size_log2)?;
+        words.push(str_op(val, ea, imm.unwrap_or(0)));
+        Ok(())
+    };
+
     for op in ops {
         match op {
             WasmOp::LocalGet(i) => {
@@ -1579,11 +1659,42 @@ pub fn select_typed_cf_calls(
             WasmOp::F32Copysign => copysign(&mut words, &mut stack, false)?,
             WasmOp::F64Copysign => copysign(&mut words, &mut stack, true)?,
 
+            // --- v0.54 L2 (#851): round-to-integral (ceil/floor/trunc/nearest).
+            //
+            // One `FRINT<mode>` each, with the rounding mode pinned in the
+            // OPCODE — the lowering never reads FPCR.RMode, so it is correct
+            // under whatever rounding mode the embedder left set. All four are
+            // TOTAL (WASM §4.3.3 `fceil`/`ffloor`/`ftrunc`/`fnearest` never
+            // trap and neither do these), so no domain guard is needed — the
+            // "more-total-than-WASM" hazard that forces the trunc guards below
+            // simply does not arise for float→float rounding.
+            //
+            // `nearest` is roundTiesToEven, which is FRINTN (NOT FRINTA, which
+            // is ties-AWAY-from-zero) — checked by execution against wasmtime
+            // over a halfway table (0.5/1.5/2.5/-0.5/…), not assumed. ---
+            WasmOp::F32Ceil => funop(&mut words, &mut stack, enc::frintp_s)?,
+            WasmOp::F32Floor => funop(&mut words, &mut stack, enc::frintm_s)?,
+            WasmOp::F32Trunc => funop(&mut words, &mut stack, enc::frintz_s)?,
+            WasmOp::F32Nearest => funop(&mut words, &mut stack, enc::frintn_s)?,
+            WasmOp::F64Ceil => funop(&mut words, &mut stack, enc::frintp_d)?,
+            WasmOp::F64Floor => funop(&mut words, &mut stack, enc::frintm_d)?,
+            WasmOp::F64Trunc => funop(&mut words, &mut stack, enc::frintz_d)?,
+            WasmOp::F64Nearest => funop(&mut words, &mut stack, enc::frintn_d)?,
+
             // --- trapping float→int truncations (m4): domain-guarded #709 ---
-            WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true)?,
-            WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false)?,
-            WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true)?,
-            WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false)?,
+            WasmOp::I32TruncF32S => trunc_guarded(&mut words, &mut stack, false, true, false)?,
+            WasmOp::I32TruncF32U => trunc_guarded(&mut words, &mut stack, false, false, false)?,
+            WasmOp::I32TruncF64S => trunc_guarded(&mut words, &mut stack, true, true, false)?,
+            WasmOp::I32TruncF64U => trunc_guarded(&mut words, &mut stack, true, false, false)?,
+            // v0.54 L2 (#851): the i64-TARGET trapping forms — the same #709
+            // domain guard with the 2^63 / 2^64 boundaries and an `x`
+            // destination. Without the guard these would SATURATE where WASM
+            // traps (NaN → 0, overflow → INT64_MIN/MAX): the exact silent
+            // miscompile the class is named for.
+            WasmOp::I64TruncF32S => trunc_guarded(&mut words, &mut stack, false, true, true)?,
+            WasmOp::I64TruncF32U => trunc_guarded(&mut words, &mut stack, false, false, true)?,
+            WasmOp::I64TruncF64S => trunc_guarded(&mut words, &mut stack, true, true, true)?,
+            WasmOp::I64TruncF64U => trunc_guarded(&mut words, &mut stack, true, false, true)?,
 
             // --- nontrapping saturating truncations (#782a): bare FCVTZ ---
             WasmOp::I32TruncSatF32S => trunc_sat(&mut words, &mut stack, enc::fcvtzs_w_from_s)?,
@@ -1604,6 +1715,18 @@ pub fn select_typed_cf_calls(
             WasmOp::F32ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_s_from_w)?,
             WasmOp::F64ConvertI32S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_d_from_w)?,
             WasmOp::F64ConvertI32U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_d_from_w)?,
+            // v0.54 L2 (#851): the i64-SOURCE converts — the `x`-form SCVTF/
+            // UCVTF. Also TOTAL: every i64 has a nearest f32/f64, and the
+            // rounding A64 applies when the value exceeds the destination's
+            // exact-integer range (2^24 for f32, 2^53 for f64) is
+            // round-to-nearest-EVEN, which is what WASM §4.3.2 `convert`
+            // specifies. No guard, no decline — but execution-verified over
+            // the rounding-tie table (2^53±1, 2^63-1, u64 max, …) rather than
+            // assumed, since this is the one place the two could disagree.
+            WasmOp::F32ConvertI64S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_s_from_x)?,
+            WasmOp::F32ConvertI64U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_s_from_x)?,
+            WasmOp::F64ConvertI64S => cvt_gp_to_fp(&mut words, &mut stack, enc::scvtf_d_from_x)?,
+            WasmOp::F64ConvertI64U => cvt_gp_to_fp(&mut words, &mut stack, enc::ucvtf_d_from_x)?,
 
             // --- bit-cast reinterprets (pure FMOV, no numeric change) ---
             WasmOp::F32ReinterpretI32 => {
@@ -1726,6 +1849,23 @@ pub fn select_typed_cf_calls(
             }
             WasmOp::I64Store32 { offset, .. } => {
                 store(&mut words, &mut stack, *offset, 2, enc::str_w)?
+            }
+            // v0.54 L2 (#851) — f32/f64 linear-memory access. Same address
+            // path and same #865 bounds check as the integer forms; only the
+            // data register file differs (`ldr/str s` = 4 bytes, `d` = 8).
+            // WASM float load/store move BIT PATTERNS, so a NaN payload and
+            // the sign of ±0 survive a round-trip intact.
+            WasmOp::F32Load { offset, .. } => {
+                fload(&mut words, &mut stack, *offset, 2, enc::ldr_s)?
+            }
+            WasmOp::F32Store { offset, .. } => {
+                fstore(&mut words, &mut stack, *offset, 2, enc::str_s)?
+            }
+            WasmOp::F64Load { offset, .. } => {
+                fload(&mut words, &mut stack, *offset, 3, enc::ldr_d)?
+            }
+            WasmOp::F64Store { offset, .. } => {
+                fstore(&mut words, &mut stack, *offset, 3, enc::str_d)?
             }
             // --- #851 direct `call` ---
             //
@@ -2727,6 +2867,141 @@ mod tests {
         assert_eq!(w[0], enc::brk(0));
     }
 
+    // --- v0.54 L2 (#851): f32/f64 linear-memory access ---
+
+    fn sel_mem_typed(
+        ops: &[WasmOp],
+        num_params: u32,
+        f32s: &[bool],
+        f64s: &[bool],
+        bounds: MemBounds,
+    ) -> Vec<u32> {
+        // v0.54 fan-in: lane L3 gave `select_typed_cf_calls` an 11th parameter
+        // (`&ModuleCtx`, for globals + the funcref table) and a third return
+        // (relocs). This L2 helper needs neither — FP-memory selection carries no
+        // module context — so it passes the default and drops both extra values.
+        let (w, _sites, _relocs) = select_typed_cf_calls(
+            ops,
+            num_params,
+            f32s,
+            f64s,
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            bounds,
+            &ModuleCtx::default(),
+        )
+        .unwrap();
+        w
+    }
+
+    #[test]
+    fn f32_load_is_bounds_checked_then_ldr_s() {
+        // (param i32) f32.load — the FP load must go through the SAME #865
+        // check as i32.load: K = 65536 - 0 - 4 = 65532, compare BEFORE the
+        // dereference, `brk` on OOB. Then `ldr s16, [x9]` (FP destination, so
+        // the GP `ea` temp is not reused as the data register).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(
+            &ops,
+            1,
+            &[],
+            &[],
+            MemBounds::Software { limit_bytes: 65536 },
+        );
+        assert_eq!(
+            w,
+            vec![
+                0x529F_FF89, // mov w9, #65532
+                enc::cmp(0, 9),
+                enc::bcond(Cond::Ls, 2),
+                enc::brk(0),
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                enc::ldr_s(FTEMPS[0], 9, 0),
+                enc::fmov_d(0, FTEMPS[0]),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn f64_store_is_bounds_checked_with_dword_width() {
+        // f64.store must account for the 8-byte access width in the bound:
+        // K = 65536 - 0 - 8 = 65528 (NOT 65532) — an 8-byte store at 65532
+        // would run 4 bytes past the limit.
+        let ops = vec![
+            WasmOp::LocalGet(0), // i32 address
+            WasmOp::LocalGet(1), // f64 value
+            WasmOp::F64Store {
+                offset: 0,
+                align: 3,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(
+            &ops,
+            2,
+            &[],
+            &[false, true],
+            MemBounds::Software { limit_bytes: 65536 },
+        );
+        assert_eq!(w[0], enc::mov_imm32(9, 65528)[0], "K must be limit - 8");
+        assert!(w.contains(&enc::brk(0)), "OOB must trap");
+        assert!(
+            w.contains(&enc::str_d(0, 9, 0)),
+            "must store the d view of the value register; got {w:#010X?}"
+        );
+    }
+
+    #[test]
+    fn fp_mem_offset_folds_into_the_scaled_immediate() {
+        // A size-aligned offset within imm12 range folds into the load: for
+        // `ldr s` the encoded imm12 is offset/4, for `ldr d` offset/8.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F32Load {
+                offset: 16,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let w = sel_mem_typed(&ops, 1, &[], &[], MemBounds::Unchecked);
+        assert_eq!(
+            w,
+            vec![
+                enc::add_ext_uxtw(9, LINMEM_BASE, 0),
+                enc::ldr_s(FTEMPS[0], 9, 4), // imm12 = 16/4
+                enc::fmov_d(0, FTEMPS[0]),
+                enc::ret(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fp_store_rejects_a_gp_value_operand() {
+        // Type confusion guard: an i32 on the stack fed to f32.store must ERROR
+        // rather than store the wrong register file.
+        let ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::I32Const(42),
+            WasmOp::F32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        assert!(select_typed(&ops, 0, &[], &[]).is_err());
+    }
+
     #[test]
     fn unchecked_mode_emits_no_trap_check() {
         // The explicit opt-out stays byte-identical to the pre-#865 lowering.
@@ -3323,6 +3598,68 @@ mod tests {
         }
     }
 
+    // --- v0.54 L2 (#851): rounding + i64-source converts ---
+
+    #[test]
+    fn rounding_ops_lower_to_the_mode_pinned_frint() {
+        // Each WASM rounding op is ONE FRINT with the mode in the opcode.
+        // FRINTN (ties-to-EVEN) is `nearest`; FRINTA (ties-away) is NOT a WASM
+        // op and must never appear.
+        for (op, f64_src, want) in [
+            (
+                WasmOp::F32Ceil,
+                false,
+                enc::frintp_s as fn(FReg, FReg) -> u32,
+            ),
+            (WasmOp::F32Floor, false, enc::frintm_s),
+            (WasmOp::F32Trunc, false, enc::frintz_s),
+            (WasmOp::F32Nearest, false, enc::frintn_s),
+            (WasmOp::F64Ceil, true, enc::frintp_d),
+            (WasmOp::F64Floor, true, enc::frintm_d),
+            (WasmOp::F64Trunc, true, enc::frintz_d),
+            (WasmOp::F64Nearest, true, enc::frintn_d),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f64_src {
+                (&[], &[true])
+            } else {
+                (&[true], &[])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w,
+                vec![want(FTEMPS[0], 0), enc::fmov_d(0, FTEMPS[0]), enc::ret()],
+                "{op:?} must be one mode-pinned FRINT"
+            );
+            // TOTAL op: a guard would spuriously trap where WASM returns a value.
+            assert!(!w.contains(&enc::brk(0)), "{op:?} never traps");
+        }
+    }
+
+    #[test]
+    fn i64_source_converts_use_the_x_form_scvtf_ucvtf() {
+        for (op, want) in [
+            (
+                WasmOp::F32ConvertI64S,
+                enc::scvtf_s_from_x as fn(FReg, Reg) -> u32,
+            ),
+            (WasmOp::F32ConvertI64U, enc::ucvtf_s_from_x),
+            (WasmOp::F64ConvertI64S, enc::scvtf_d_from_x),
+            (WasmOp::F64ConvertI64U, enc::ucvtf_d_from_x),
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let w = select_typed(&ops, 1, &[], &[]).unwrap();
+            assert_eq!(
+                w,
+                vec![want(FTEMPS[0], 0), enc::fmov_d(0, FTEMPS[0]), enc::ret()],
+                "{op:?} must be one x-source convert"
+            );
+        }
+        // The x-form must NOT be confusable with the (already shipped) w-form:
+        // a w-source convert of a value above 2^32 would read only the low half.
+        assert_ne!(enc::scvtf_d_from_x(16, 0), enc::scvtf_d_from_w(16, 0));
+    }
+
     #[test]
     fn f32_min_max_use_fmin_fmax() {
         // WASM min/max ≡ A64 FMIN/FMAX (IEEE 754-2019 minimum/maximum) — a
@@ -3405,39 +3742,101 @@ mod tests {
     }
 
     #[test]
-    fn rounding_and_i64_float_converts_are_loud_declined() {
-        // The m4 honesty frontier: rounding ops and i64<->float conversions
-        // stay DECLINED (never silent wrong code) until a later increment.
-        for op in [
-            WasmOp::F32Ceil,
-            WasmOp::F32Floor,
-            WasmOp::F32Trunc,
-            WasmOp::F32Nearest,
-            WasmOp::F64Ceil,
-            WasmOp::F64Floor,
-            WasmOp::F64Trunc,
-            WasmOp::F64Nearest,
+    fn trapping_i64_truncations_are_domain_guarded_not_bare() {
+        // v0.54 L2 (#851) — the soundness-critical half. A64 FCVTZ{S,U} with
+        // an x destination SATURATE (NaN → 0, overflow → INT64_MIN/MAX) where
+        // WASM §4.3.3 must TRAP, so each TRAPPING i64-target form must carry
+        // the two-sided domain guard: exactly TWO `brk`s, and the convert must
+        // be the LAST instruction before the epilogue (nothing may reach it
+        // without passing both checks).
+        for (op, f64_src, cvt) in [
+            (
+                WasmOp::I64TruncF32S,
+                false,
+                enc::fcvtzs_x_from_s as fn(Reg, FReg) -> u32,
+            ),
+            (WasmOp::I64TruncF32U, false, enc::fcvtzu_x_from_s),
+            (WasmOp::I64TruncF64S, true, enc::fcvtzs_x_from_d),
+            (WasmOp::I64TruncF64U, true, enc::fcvtzu_x_from_d),
         ] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let (f32s, f64s): (&[bool], &[bool]) = if f64_src {
+                (&[], &[true])
+            } else {
+                (&[true], &[])
+            };
+            let w = select_typed(&ops, 1, f32s, f64s).unwrap();
+            assert_eq!(
+                w.iter().filter(|&&x| x == enc::brk(0)).count(),
+                2,
+                "{op:?} needs BOTH range checks; got {w:#010X?}"
+            );
+            let cvt_at = w
+                .iter()
+                .position(|&x| x == cvt(9, 0))
+                .unwrap_or_else(|| panic!("{op:?} must end in the x-form convert; got {w:#010X?}"));
+            let last_brk = w.iter().rposition(|&x| x == enc::brk(0)).unwrap();
             assert!(
-                select_typed(&ops, 1, &[true], &[true]).is_err(),
-                "rounding ops not yet supported — must loud-decline"
+                cvt_at > last_brk,
+                "{op:?}: the convert must sit AFTER both guards"
             );
         }
-        for op in [WasmOp::I64TruncF64S, WasmOp::I64TruncF64U] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
-            assert!(
-                select_typed(&ops, 1, &[], &[true]).is_err(),
-                "i64<->float conversions not yet supported — must loud-decline"
-            );
-        }
-        for op in [WasmOp::F64ConvertI64S, WasmOp::F32ConvertI64U] {
-            let ops = vec![WasmOp::LocalGet(0), op, WasmOp::End];
-            assert!(
-                select_typed(&ops, 1, &[], &[]).is_err(),
-                "i64<->float conversions not yet supported — must loud-decline"
-            );
-        }
+    }
+
+    #[test]
+    fn i64_trunc_signed_bounds_are_plus_2pow63_exclusive_minus_2pow63_inclusive() {
+        // The two constants that decide whether a legal INT64_MIN input traps.
+        // f32: -2^63 = 0xDF000000 is EXACTLY representable and truncates to
+        // INT64_MIN (in range) — the bound must be INCLUSIVE (`b.ge`).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF32S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        assert!(w.contains(&enc::movk(9, 0x5F00, 1)), "hi bound 2^63 (f32)");
+        assert!(w.contains(&enc::movk(9, 0xDF00, 1)), "lo bound -2^63 (f32)");
+        assert!(
+            w.contains(&enc::bcond(Cond::Ge, 2)),
+            "lo bound is INCLUSIVE"
+        );
+        assert!(
+            w.contains(&enc::bcond(Cond::Mi, 2)),
+            "hi bound is ORDERED <"
+        );
+
+        // f64: near 2^63 the ULP is 2048, so NO f64 lies in (-2^63-1, -2^63) —
+        // the bound is the INCLUSIVE -2^63 (0xC3E0...0), NOT the strict
+        // -(2^63)-1 shape the i32/f64 row needs.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF64S, WasmOp::End];
+        let w = select_typed(&ops, 1, &[], &[true]).unwrap();
+        let hi = enc::mov_imm64(9, 0x43E0_0000_0000_0000);
+        let lo = enc::mov_imm64(9, 0xC3E0_0000_0000_0000);
+        assert!(w.windows(hi.len()).any(|s| s == hi.as_slice()), "hi 2^63");
+        assert!(w.windows(lo.len()).any(|s| s == lo.as_slice()), "lo -2^63");
+        assert!(
+            w.contains(&enc::bcond(Cond::Ge, 2)),
+            "lo bound is INCLUSIVE"
+        );
+    }
+
+    #[test]
+    fn i64_trunc_unsigned_bounds_are_2pow64_and_strict_minus_one() {
+        // trunc_u accepts (-1, 2^64): trunc_u(-0.5) = 0 is LEGAL, so the lower
+        // bound is the STRICT -1.0 (`b.gt`), and the upper is 2^64 — NOT the
+        // 2^32 the i32 forms use (which would trap every legal value above
+        // 4294967295).
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF32U, WasmOp::End];
+        let w = select_typed(&ops, 1, &[true], &[]).unwrap();
+        assert!(w.contains(&enc::movk(9, 0x5F80, 1)), "hi bound 2^64 (f32)");
+        assert!(
+            !w.contains(&enc::movk(9, 0x4F80, 1)),
+            "must NOT use the 2^32 i32 bound"
+        );
+        assert!(w.contains(&enc::movk(9, 0xBF80, 1)), "lo bound -1.0 (f32)");
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)), "lo bound is STRICT");
+
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::I64TruncF64U, WasmOp::End];
+        let w = select_typed(&ops, 1, &[], &[true]).unwrap();
+        let hi = enc::mov_imm64(9, 0x43F0_0000_0000_0000);
+        assert!(w.windows(hi.len()).any(|s| s == hi.as_slice()), "hi 2^64");
+        assert!(w.contains(&enc::bcond(Cond::Gt, 2)), "lo bound is STRICT");
     }
 
     #[test]

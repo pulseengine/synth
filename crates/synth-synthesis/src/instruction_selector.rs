@@ -7538,27 +7538,27 @@ impl InstructionSelector {
                 )));
             }
 
-            // F32 rounding pseudo-ops — emit ArmOp variants, encoder expands to
-            // multi-instruction sequences using FPSCR rounding-mode manipulation
-            F32Ceil if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Ceil { sd, sm }]
-            }
-            F32Floor if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Floor { sd, sm }]
-            }
-            F32Trunc if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Trunc { sd, sm }]
-            }
-            F32Nearest if self.fpu.is_some() => {
-                let sd = self.alloc_vfp_reg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F32Nearest { sd, sm }]
+            // F32 rounding — LOUD-DECLINED on ARM32 (v0.54 L2, #851; the same
+            // move #538 m4 made for F32Min/F32Max). The legacy `ArmOp::F32
+            // {Ceil,Floor,Trunc,Nearest}` pseudo-op expands to an FPSCR-RMode
+            // set + `VCVT.S32.F32` + `VCVT.F32.S32` ROUND-TRIP THROUGH A
+            // 32-BIT INTEGER (see `encode_thumb_f32_rounding` /
+            // `encode_arm_f32_rounding`). VCVT SATURATES, so outside i32 range
+            // the result is wrong, not merely imprecise: `ceil(1e30)` would
+            // give 2147483648.0, `ceil(±inf)` a finite bound and `ceil(NaN)`
+            // 0.0, where WASM §4.3.3 returns 1e30 / ±inf / NaN. Those inputs
+            // were unreachable while the decoder dropped the op; now that it
+            // delivers them (so aarch64 can lower its one-instruction FRINT),
+            // ARM32 must honest-reject rather than expose the latent #709-class
+            // miscompile. The fix is the f32 twin of the shipping F64 rounding
+            // path (`VRINT{P,M,Z,N}.F32`, FPv5) — a later increment.
+            op @ (F32Ceil | F32Floor | F32Trunc | F32Nearest) if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported on ARM32: the available lowering is a \
+                     saturating VCVT round-trip through i32, which is not \
+                     WASM-correct for |x| >= 2^31, ±inf or NaN — declined until \
+                     the VRINT.F32 lowering lands"
+                )));
             }
             // F32 min/max — LOUD-DECLINED on ARM32 (#538 m4): the legacy
             // `ArmOp::F32Min/F32Max` pseudo-op encodes a naive VCMP +

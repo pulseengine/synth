@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#317 — RV32 i64.div_s / i64.rem_s sign clobbered by the udiv core.
 
 The signed 64-bit div/rem lowering allocated its `nsign`/`dsign` sign masks

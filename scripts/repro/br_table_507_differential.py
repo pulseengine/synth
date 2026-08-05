@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#507 (epic #242) — EXECUTION-validate the optimized-path br_table fix.
 
 On the optimized (non-`--relocatable`) path, `synth compile` silently

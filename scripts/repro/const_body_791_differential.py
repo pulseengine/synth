@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#791 — EXECUTION-validate const-only-body returns on the optimized path.
 
 On the OPTIMIZED (default self-contained) ARM path, a function whose result is

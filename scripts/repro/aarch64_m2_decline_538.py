@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
-The broadening in m2 covers the full i32/i64 integer ALU, but four classes are
-DELIBERATELY still declined, and the contract is that they LOUD-decline (a
-non-zero exit / "skipping" / compile error) — never silently emit wrong code:
+Some WASM constructs are DELIBERATELY not lowered on aarch64, and the contract
+is that each LOUD-declines (a non-zero exit / "skipping" / compile error) —
+never silently emits wrong code.
 
-  - div/rem (i32+i64): A64 SDIV/UDIV do not trap on /0 or INT_MIN/-1; WASM must
-    trap. Naive lowering = the "more-total-than-WASM" silent-miscompile class.
-  - popcnt: no scalar A64 popcount pre-SVE.
-  - f32/f64 scalar ops: dropped at the decoder (`_ => None`) → the backend
-    refuses to emit a partial body (#369/#554).
-
-This harness compiles a module per declined op and asserts the compile FAILS
-(loud), so a future accidental silent-lowering of any of them is caught.
+This harness compiles a module per declined construct and asserts the compile
+FAILS, so a future accidental silent-lowering of any of them is caught. The
+list SHRINKS as capability lands: an entry whose gap has closed is a stale
+claim and must be deleted in the same commit that closes it (this file is the
+end-to-end companion of the VCR-SEL-005 `a64_extended_surface` gate, which
+enforces the same both-directions contract at the selector level).
 
 Run:  SYNTH=<target>/debug/synth python scripts/repro/aarch64_m2_decline_538.py
 """
@@ -23,34 +22,38 @@ import tempfile
 
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
-# Each entry: (label, wat body) or (label, wat body, reason_substring). All must
-# FAIL to compile with -b aarch64; when a reason substring is given, the
-# diagnostic must CONTAIN it — a decline with the wrong reason is a different
-# bug than a decline, and "it failed somehow" is not evidence.
+# Each entry: (label, wat body). All must FAIL to compile with -b aarch64.
+# #851 landed div/rem (SDIV/UDIV+MSUB with the WASM ÷0 + INT_MIN/-1 trap
+# guards), popcnt (SIMD CNT/ADDV) and f64<->i64 reinterpret; m3 (#787) the
+# non-trapping scalar floats; m4 the #709-class trapping i32 truncations +
+# FMIN/FMAX + copysign; and v0.54 L2 the last four scalar-float classes —
+# rounding (FRINT{P,M,Z,N}), f32/f64 load/store (bounds-checked LDR/STR s|d),
+# i64->float converts (x-form SCVTF/UCVTF) and the DOMAIN-GUARDED trapping
+# i64-target truncations. Each moved off this list the day it landed; they are
+# now execution-verified in aarch64_float_completion_851_differential.py.
+#
+# What DELIBERATELY stays declined, and why:
 DECLINED = [
-    # #851 landed div/rem (SDIV/UDIV+MSUB with WASM ÷0 + INT_MIN/-1 trap
-    # guards), popcnt (SIMD CNT/ADDV), and f64<->i64 reinterpret — those are
-    # now SUPPORTED and execution-verified (aarch64_divrem_851_differential.py
-    # + the native matrix), so they moved off this honesty list. m3 (#787)
-    # landed non-trapping scalar floats; m4 landed the #709-class conversions
-    # (domain-guarded i32.trunc_f32/f64_s/u, FMIN/FMAX, copysign). The honesty
-    # gate now covers what DELIBERATELY stays declined:
-    #   - rounding (ceil/floor/trunc/nearest): f64.floor is DECODED and must
-    #     loud-decline at the aarch64 SELECTOR; f32.floor is dropped at decode
-    #     (both paths must stay loud, never silent).
-    #   - i64<->float conversions: need i64-width FCVTZS/SCVTF forms + the
-    #     64-bit boundary guards (a later increment).
-    ("f64.floor", '(func (export "f") (param f64) (result f64) '
-                  '(f64.floor (local.get 0)))'),
-    ("f32.floor", '(func (export "f") (param f32) (result f32) '
-                  '(f32.floor (local.get 0)))'),
-    ("i64.trunc_f64_s", '(func (export "f") (param f64) (result i64) '
-                        '(i64.trunc_f64_s (local.get 0)))'),
-
-    # ---- #851 lane L3: globals + call_indirect LOWER, but these shapes
-    #      deliberately do NOT. Each must decline with its own machine reason —
-    #      the lane's rule is that an unrepresentable construct fails the
-    #      compile naming what is missing, never ships a guessed region.
+    # No function-table substrate + no type/null/OOB trap guards (§4.4.8).
+    # v0.54 fan-in: `call_indirect` and `global.get`/`global.set` moved OFF
+    # this list (lane L3 landed them) and the float rounding / trapping
+    # i64-truncation entries moved off too (lane L2 landed those). Both
+    # lanes' pre-merge copies of this list were stale in OPPOSITE
+    # directions — asserting a decline for a capability that now ships is
+    # the same doc-honesty defect as claiming one that does not.
+    ("br_table", '(func (export "f") (param i32) (result i32) '
+                 '(block (block (br_table 0 1 (local.get 0))) '
+                 '(return (i32.const 1))) (i32.const 2))'),
+    ("local.set on a param",
+     '(func (export "f") (param i32) (result i32) '
+     '(local.set 0 (i32.add (local.get 0) (i32.const 1))) (local.get 0))'),
+    ("memory.fill", '(memory 1)(func (export "f") '
+                    '(memory.fill (i32.const 0) (i32.const 0) (i32.const 4)))'),
+    ("block (result f32)", '(func (export "f") (param f32) (result f32) '
+                           '(block (result f32) (local.get 0)))'),
+    ("f32x4.add", '(func (export "f") (param f32) (result f32) '
+                  '(f32x4.extract_lane 0 (f32x4.add '
+                  '(f32x4.splat (local.get 0)) (f32x4.splat (local.get 0)))))'),
     ("imported global",
      '(import "env" "g" (global i32)) '
      '(func (export "f") (result i32) (global.get 0))',

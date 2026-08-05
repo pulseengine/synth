@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-RA frame-slot DCE (#242) — EXECUTION-validate stack-reload forwarding +
 dead-frame-store elimination on the optimized path.
 

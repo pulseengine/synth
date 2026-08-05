@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#746 execution differential: i64/wide static ABOVE sp_init under
 --shadow-stack-size (the #739 residual — sub-word arms were fixed in #744).
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """#518 — CHARACTERIZE the i64-param binop miscompile on BOTH selectors.
 
 This is the *oracle-first* artifact for issue #518 (epic #242, VCR-RA/VCR-SEL):

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 """VCR-PERF-002 Phase 2b (#494) — in-bounds differential for the
 divisor-nonzero trap-guard elision (oracle 3), plus the red force-admit
 divergence demonstration (oracle 4).

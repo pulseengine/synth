@@ -964,3 +964,47 @@ claims:
         text: "pip install wasmtime unicorn pyelftools capstone"
       - kind: verbatim
         text: 'grep -q "^#846 CHECKS=75/75" gpio846.out'
+
+  # ---------------------------------------------------------------------------
+  # #890 — the ORACLE-WIRING surface, generalized. SYNTH-GPIO-846-ORACLE-CI-WIRED
+  # above pins ONE script's CI wiring by hand; that is the instance-at-a-time
+  # shape this entry replaces. `scripts/repro/*.py` are synth's execution
+  # oracles, and 69 of 150 were referenced by NO workflow while nothing in the
+  # tree told a forgotten gate from an intentionally-manual one. Every script now
+  # carries a `# ci-status:` declaration and `scripts/oracle_wiring_check.py`
+  # (claim-check CI job) PROVES every `wired` one is actually wired — that check
+  # is mechanical and needs no ledger. What a header CANNOT express is the
+  # ratchet on the totals, which is what this entry is:
+  #
+  #   * wired   >= 145 — a FLOOR. The oracle surface must not be emptied by
+  #                      deleting harnesses instead of fixing them.
+  #   * manual  <=   7 — a CEILING on the legitimate escape hatch (4 measurement,
+  #                      2 scratch, 1 external-input; itemized in the doc). An
+  #                      eighth needs a conversation, not a commit.
+  #   * unwired <=   0 — a CEILING OF ZERO on known debt. A new oracle that is
+  #                      not wired is a RED BUILD, not a backlog entry.
+  #
+  # Lower the manual ceiling when one is wired; never raise it to green a build.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ORACLE-WIRING-890
+    doc: scripts/repro/ORACLE_WIRING.md
+    text: "**145 wired**"
+    evidence:
+      - kind: file-exists
+        path: scripts/oracle_wiring_check.py
+      - kind: count-min                      # the surface must not be emptied
+        pattern: '^# ci-status: wired'
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        min: 145
+      - kind: count-max                      # the legitimate escape hatch
+        pattern: '^# ci-status: manual'
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        max: 7
+      - kind: count-max                      # known debt: zero, and it stays zero
+        pattern: '^# ci-status: unwired'
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        max: 0
+      - kind: verbatim                       # the doc must carry the manual budget
+        text: "**7 manual**"
+      - kind: verbatim
+        text: "**0 unwired**"

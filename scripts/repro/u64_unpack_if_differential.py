@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: wired
 # #313 differential: wasmtime ground truth vs unicorn running synth's ARM for
 # the if-with-result variant of u64_unpack. The then-path must return its OWN
 # result (r>>32), not the else-arm's register. check_call(3,4) must be 8.
