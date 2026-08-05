@@ -3320,7 +3320,7 @@ fn compile_all_exports(
             }
             if r.accepted {
                 eprintln!(
-                    "proven-safe: ACCEPTED {} — scry {} proved {} access site(s) in-bounds                      against the {} B floor; module_sha256 {} verified",
+                    "proven-safe: ACCEPTED {} — scry {} proved {} access site(s) in-bounds against the {} B floor; module_sha256 {} verified",
                     path.display(),
                     if r.scry_version.is_empty() {
                         "<unversioned>"
@@ -3564,8 +3564,13 @@ fn compile_all_exports(
         // THIS function. `pc` is an operator index into the ORIGINAL stream, so
         // the marks are only sound when that stream is what the backend
         // compiles — see the fact-spec refusal below.
+        // Gated on `Software`: that is the ONLY mode that emits an inline
+        // guard, so it is the only mode where a mark changes a byte. Without
+        // this gate the attestation would record elisions that never happened
+        // — a false attestation is worse than no attestation.
         if let Some(ing) = &proven_safe_ingest
             && ing.accepted
+            && safety_bounds == SafetyBounds::Software
         {
             let mut notes = Vec::new();
             let marks = ing.validate_function(func.index, &func.ops, &mut notes);
@@ -3581,7 +3586,7 @@ fn compile_all_exports(
                 // REFUSED per function rather than assumed. The guards stay.
                 if !marks.is_empty() {
                     let msg = format!(
-                        "func {} ('{name}') — REFUSED: SYNTH_FACT_SPEC specialized this                          function, renumbering the operator index space the scry verdicts                          are keyed in. {} externally-proven mark(s) dropped; every guard is                          retained (VCR-MEM-004, #901)",
+                        "func {} ('{name}') — REFUSED: SYNTH_FACT_SPEC specialized this function, renumbering the operator index space the scry verdicts are keyed in. {} externally-proven mark(s) dropped; every guard is retained (VCR-MEM-004, #901)",
                         func.index,
                         marks.len()
                     );
@@ -3605,7 +3610,7 @@ fn compile_all_exports(
                     }
                 }
                 eprintln!(
-                    "proven-safe: ELIDE func {} ('{name}') — {} bounds guard(s) elided on                      scry's proof (op indices {marks:?})",
+                    "proven-safe: ELIDE func {} ('{name}') — {} bounds guard(s) elided on scry's proof (op indices {marks:?})",
                     func.index,
                     marks.len()
                 );
@@ -4194,7 +4199,7 @@ fn compile_all_exports(
                 "the document proves zero access sites".to_string()
             } else if safety_bounds != SafetyBounds::Software {
                 format!(
-                    "--safety-bounds is `{}`, not `software` — there is no inline guard to                      elide (the verdicts are mode-independent, the strip is not)",
+                    "--safety-bounds is `{}`, not `software` — there is no inline guard to elide (the verdicts are mode-independent, the strip is not)",
                     safety_bounds.as_str()
                 )
             } else {
@@ -4204,7 +4209,7 @@ fn compile_all_exports(
                 )
             };
             let msg = format!(
-                "--proven-safe was given and the document was ACCEPTED, but NOTHING was                  elided: {why}"
+                "--proven-safe was given and the document was ACCEPTED, but NOTHING was elided: {why}"
             );
             eprintln!("warning: proven-safe: {msg}");
             proven_safe_diagnostics.push(msg);
