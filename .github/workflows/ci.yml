@@ -1078,7 +1078,7 @@ jobs:
       # emitting no verdicts) — see the script docstring.
       - name: Audit the SHIPPING allocator against the ABI contract (#242)
         run: |
-          set -o pipefail
+          set -euo pipefail
           SYNTH=./target/debug/synth python scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
           grep -q "^VCR-VER-004-SHIPPING .* VIOLATED=0 " vcr_ver_004_ship.out
           test "$(grep -c '^  Holds ' vcr_ver_004_ship.out)" -eq 1
@@ -1087,7 +1087,7 @@ jobs:
       # assertion would otherwise pass while gating nothing.
       - name: Re-run the v0.53 mutation against all three instruments (#242)
         run: |
-          set -o pipefail
+          set -euo pipefail
           python scripts/repro/vcr_ver_004_instrument_independence.py | tee vcr_ver_004.out
           grep -q "^VCR-VER-004-INDEPENDENCE ASSERTIONS=4/4$" vcr_ver_004.out
           test "$(grep -c '^OK   ' vcr_ver_004.out)" -eq 5

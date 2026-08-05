@@ -43,7 +43,7 @@ soundness feature, not an absence.
 |----------|--------|-------|
 | i32 arithmetic / bitwise / comparison / shift / rotate | Y | Full Rocq T1 proofs; Renode + silicon (gale) execution evidence |
 | i64 (register pairs) — arithmetic, shifts, rotates, div/rem, compare | Y | Pair lowering complete (#599, #610, #615); execution differentials vs wasmtime |
-| f32 scalar via VFP | Y (FPU targets) | Complete op set incl. all six comparisons, NaN-aware (v0.41); requires an FPU target (e.g. `cortex-m4f`) |
+| f32 scalar via VFP | P (FPU targets) | Arithmetic, all six comparisons, min/max/abs/neg/copysign, load/store and conversions — NaN-aware (v0.41); requires an FPU target (e.g. `cortex-m4f`). **Residual: `f32.{ceil,floor,trunc,nearest}` LOUD-DECLINE on every ARM target** (v0.54): the legacy pseudo-op round-tripped through a saturating `VCVT`, so `ceil(1e30)`, `ceil(±inf)` and `ceil(NaN)` were all wrong — the #709 more-total-than-WASM class. Declining keeps it latent rather than shipping it; a real `VRINT.F32` lowering (the f32 twin of the shipping f64 path) is the follow-up. The f64 rounding ops lower on a double-FPU target (`cortex-m7dp`). |
 | f64 scalar via VFP | Y (FPU targets) | Complete (v0.43, #369 closed); marshalling + AAPCS-VFP mixed params |
 | Trapping float→int truncations | Y | Domain-guarded (trap, not saturate) — the #709 soundness class |
 | Non-trapping `trunc_sat` (0xFC prefix) | Y (FPU targets) | Decoded and lowered as bare saturating VCVT (§4.3.2: NaN→0, out-of-range saturates, never traps). i32-target forms on any FPU target; i64-target forms on a double-FPU target (`cortex-m7dp`) via a branch-free FP word-decompose (v0.49, #782); aarch64 lowers all eight. Residual: i64-from-f32 declines on single-precision FPUs (needs the f64 promote). The falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail closed in v0.53 via VFP register-file spilling (#881); #782 closed v0.49 |
@@ -124,19 +124,23 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 
 ## Honest Summary
 
-- The primary ARM Thumb-2 path is a complete i32/i64/f32/f64 compiler with
+- The primary ARM Thumb-2 path is a complete i32/i64/f64 compiler — and f32
+  complete except the four rounding ops, which loud-decline (see the f32 row) — with
   mechanized proofs on the integer selection and per-compilation validators
   (translation, trap-preservation, static-data addressing) on every build.
 - The other three backends are honest subsets: their gaps decline loudly and
   their coverage is listed above, not implied.
 - Broad hardware validation is still missing: silicon evidence is
   fixture-scoped (gale), emulation is Renode/QEMU/unicorn.
-- Known open soundness/coverage residuals are tracked as issues (e.g. #890:
-  57 of 130 differential oracles are not CI-wired and nothing distinguishes
-  "manual by design" from "forgotten" — an absent gate is invisible to a green
-  board; #851: the aarch64 op-surface gaps the VCR-SEL-005 third-backend oracle
-  now enumerates mechanically; #846: two `gpio-thin` CRL/CRH sites still need
-  relational ranges).
+- Known open soundness/coverage residuals are tracked as issues (e.g. #890: the
+  oracle-wiring gate now leaves 0 undeclared and 0 unwired scripts, so a
+  forgotten gate is no longer indistinguishable from a deliberately manual one
+  — what remains open is the 7 `manual` scripts (external fixture, measurement
+  and scratch categories) and the fact that the newly-wired sweeps assert exit
+  status rather than a per-script non-zero check count; #851: the aarch64
+  op-surface gaps the VCR-SEL-005 third-backend oracle now enumerates
+  mechanically; #846: two `gpio-thin` CRL/CRH sites still need relational
+  ranges).
 - Two residuals live in code comments rather than issues, and are restated here
   so they are not implied away: `validate_segment_rewrite` does NOT catch a
   recoloured `Pop {…, PC}` in the MIDDLE of a segment (pinned at the pass via
@@ -156,7 +160,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 - What VCR-VER-004 does **not** close, stated plainly:
   - It is a **gate only on the flag-off** graph-colouring allocator. On the
     DEFAULT path it is a report-only audit held to a CI floor — measured
-    `Holds 422 / NotAttempted 195 / Violated 0` over 617 corpus functions, so it
+    `Holds 431 / NotAttempted 202 / Violated 0` over 633 corpus functions (the corpus is `scripts/repro/*.{wat,wasm}`, so it GROWS as lanes add fixtures — the invariant is `Violated 0`, not the absolute counts), so it
     proves the observable return contract on ~68 % of the shipping path —
     `bl`/`blx` calls included, via the shared AAPCS `liveness::call_effect` — and
     declines (never guesses) on the rest. Making it gate the default path means

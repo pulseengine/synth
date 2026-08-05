@@ -209,9 +209,14 @@ addressed by fixing its output.
   (renamed `call-indirect-pseudo` — the high-level `Call`/`CallIndirect`
   pseudo-ops are expanded downstream into a bounds guard + table load + result
   move, so the register footprint here is not the one that ships, and they stay
-  declined by name). The residual buckets are `unmodeled-op` 174, `single-block`
-  73, `identity-colouring` 31, `unreachable-block` 11, `call-indirect-pseudo` 11,
-  `numeric-branch` 10.
+  declined by name). Measured at the release commit, the residual buckets are
+  `unmodeled-op` 175, `single-block` 73, `identity-colouring` 31,
+  `unreachable-block` 11, `call-indirect-pseudo` 17, `numeric-branch` 10.
+  (The corpus is `scripts/repro/*.{wat,wasm}` and therefore GROWS as lanes add
+  fixtures — it went 617 → 633 functions during this release's own fan-in, which
+  moved two of these buckets after the lane measured them. The durable claims
+  are the byte/cycle deltas and `Violated 0`; the absolute bucket counts are a
+  snapshot.)
 
   Still **flag-off by default** (`SYNTH_GRAPH_ALLOC`): this is a measurement
   spike, not a behaviour change. Frozen anchors byte-identical, 10/10.
@@ -308,10 +313,19 @@ addressed by fixing its output.
   op; declining keeps it latent rather than shipping it. A real `VRINT.F32`
   lowering (the f32 twin of the shipping f64 path) is the follow-up.
 - The aarch64 decline-matrix oracle and the #554 float-honesty fixture were
-  repointed at constructs that are still genuinely declined (structural ones:
-  `call_indirect`, `br_table`, param writes, globals, bulk memory,
-  value-carrying blocks, SIMD), and the #554 assertion was strengthened to
-  require the diagnostic to come from the aarch64 SELECTOR and name its reason.
+  repointed at constructs that are still genuinely declined: `br_table`, writing
+  a PARAM local in a leaf function, `memory.copy`/`fill`, value-carrying blocks
+  and loops, v128/SIMD, multi-memory, `>8` args, float-result callees, import
+  calls — plus the six "rather than guess" refusals (imported global, global
+  with no decoded const initializer, non-leaf float param, growable imported
+  table, non-statically-verifiable element segment, table slot holding an
+  imported function). The #554 assertion was strengthened to require the
+  diagnostic to come from the aarch64 SELECTOR and to name its reason.
+  (An earlier draft of this sentence also listed `call_indirect` and globals —
+  both of which SHIP in this release, below. That draft was written by the float
+  lane before the call_indirect/globals lane landed; it was the third copy of a
+  list this release had to reconcile at fan-in, and the one the oracle and the
+  matrix row did not cover. Caught by cold review.)
 - **VCR-VER-004 — the ABI observable-contract validator: a per-compilation check
   that fails *differently*** (#242).
 
