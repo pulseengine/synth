@@ -504,6 +504,131 @@ fn flag_absent_writes_no_attestation_and_no_marks_901() {
 }
 
 // =============================================================================
+// Never silently do nothing — the #865 shape
+// =============================================================================
+
+/// Only the ARM direct selector consumes the marks. RISC-V and aarch64 accept
+/// `--safety-bounds software` but emit their own guards from their own
+/// selectors, so nothing is stripped there. The attestation must record ZERO
+/// elisions and NAME the backend — a sidecar claiming elisions the backend
+/// never performed is worse than no sidecar at all.
+///
+/// (This is exactly what shipped before the gate: `-b riscv` and
+/// `-b aarch64` both wrote `sites_elided: 5` while the ELF was byte-identical
+/// to the guarded baseline.)
+#[test]
+fn non_arm_backends_attest_zero_elisions_901() {
+    let d = dir();
+    let input = d.join("xback.wasm");
+    std::fs::write(&input, fixture_wasm()).expect("write wasm");
+    let json = d.join("xback.safe-accesses.json");
+    std::fs::write(&json, safe_accesses(&module_hash(), 65536, PROVEN)).expect("write");
+
+    for (backend, target) in [("riscv", "rv32imac"), ("aarch64", "cortex-a53")] {
+        let run = |with_verdicts: bool, tag: &str| -> (Vec<u8>, String) {
+            let elf = d.join(format!("xback_{backend}_{tag}.elf"));
+            let mut cmd = Command::new(synth());
+            cmd.args([
+                "compile",
+                input.to_str().unwrap(),
+                "-o",
+                elf.to_str().unwrap(),
+                "-b",
+                backend,
+                "--target",
+                target,
+                "--all-exports",
+                "--safety-bounds",
+                "software",
+            ]);
+            if with_verdicts {
+                cmd.args(["--proven-safe", json.to_str().unwrap()]);
+            }
+            let out = cmd.output().expect("run synth");
+            assert!(
+                out.status.success(),
+                "{backend} compile failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (
+                std::fs::read(&elf).expect("read elf"),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        };
+        let (base, _) = run(false, "base");
+        let (with, stderr) = run(true, "with");
+
+        assert_eq!(
+            base, with,
+            "{backend}: --proven-safe must not move a byte on a backend that does \
+             not consume the marks"
+        );
+        assert!(
+            stderr.contains(&format!("`{backend}` backend does not consume")),
+            "{backend}: the zero-elision reason must name the backend: {stderr}"
+        );
+        let att: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(synth_core::proven_safe::ElisionAttestation::sidecar_path(
+                &d.join(format!("xback_{backend}_with.elf")),
+            ))
+            .expect("attestation written"),
+        )
+        .expect("valid JSON");
+        assert_eq!(
+            att["sites_elided"],
+            serde_json::json!(0),
+            "{backend}: the attestation must NOT claim elisions the backend never made"
+        );
+        assert_eq!(att["sites_offered"], serde_json::json!(5), "{backend}");
+    }
+}
+
+/// The single-function path (`--func-index` / `--func-name`) builds no marks
+/// and writes no attestation, so accepting `--proven-safe` there would be a
+/// SILENT NO-OP on a safety-relevant flag — the #865 defect. Refuse loudly.
+#[test]
+fn single_function_path_refuses_the_flag_rather_than_ignoring_it_901() {
+    let d = dir();
+    let input = d.join("singlefn.wasm");
+    std::fs::write(&input, fixture_wasm()).expect("write wasm");
+    let json = d.join("singlefn.safe-accesses.json");
+    std::fs::write(&json, safe_accesses(&module_hash(), 65536, PROVEN)).expect("write");
+    let elf = d.join("singlefn.elf");
+
+    let out = Command::new(synth())
+        .args([
+            "compile",
+            input.to_str().unwrap(),
+            "-o",
+            elf.to_str().unwrap(),
+            "-b",
+            "arm",
+            "--target",
+            "cortex-m4",
+            "--func-index",
+            "0",
+            "--safety-bounds",
+            "software",
+            "--proven-safe",
+            json.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run synth");
+
+    assert!(
+        !out.status.success(),
+        "a flag that cannot be honoured must FAIL, not silently do nothing"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not consumed on the single-function path"),
+        "{stderr}"
+    );
+    // ...and it names the invocation that DOES work.
+    assert!(stderr.contains("--all-exports"), "{stderr}");
+}
+
+// =============================================================================
 // Attestation — what sigil reads
 // =============================================================================
 
@@ -633,13 +758,33 @@ fn fact_spec_specialization_refuses_the_scry_marks_901() {
         .expect("run synth");
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Either the pass specialized this function (⇒ our marks are refused) or
-    // it declined outright (⇒ the stream is unchanged and the marks apply).
-    // Only the first case is a skew risk, and only it must produce a refusal.
-    if stderr.contains("specialized") {
-        assert!(
-            stderr.contains("REFUSED: SYNTH_FACT_SPEC specialized this function"),
-            "a renumbered op stream must refuse the scry marks: {stderr}"
-        );
-    }
+    // NON-VACUITY FIRST: the pass must actually specialize this function,
+    // otherwise the refusal below is never exercised and this test asserts
+    // nothing. It admits the redundant-mask elision on `slot & 63` under the
+    // premise, which DELETES two operators (38 -> 36) and renumbers every
+    // index after them — exactly the skew the refusal exists for.
+    assert!(
+        stderr.contains("'probe' specialized"),
+        "the fact-spec pass must specialize this fixture or this gate is \
+         vacuous — the refusal path would never run: {stderr}"
+    );
+    assert!(
+        stderr.contains("38 → 36 ops"),
+        "the specialization must RENUMBER the operator index space (that is \
+         what makes the scry keys stale): {stderr}"
+    );
+    assert!(
+        stderr.contains("REFUSED: SYNTH_FACT_SPEC specialized this function"),
+        "a renumbered op stream must refuse the scry marks: {stderr}"
+    );
+    // And the refusal must be total: nothing elided, attested as such.
+    let att: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(synth_core::proven_safe::ElisionAttestation::sidecar_path(
+            &elf,
+        ))
+        .expect("attestation written"),
+    )
+    .expect("valid JSON");
+    assert_eq!(att["sites_elided"], serde_json::json!(0));
+    assert_eq!(att["sites_offered"], serde_json::json!(5));
 }

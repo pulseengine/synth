@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary. "Flag given, file accepted, nothing elided" is diagnosed by name
   rather than reported as success.
 
+  **The flag never silently does nothing.** Guards are stripped on the ARM
+  backend under `--safety-bounds software`; under any other backend or bounds
+  mode the verdicts are still ingested and verified, but the attestation
+  records ZERO elisions and names the reason, so it can never claim an elision
+  that did not happen. On the single-function path (`--func-index` /
+  `--func-name`), which builds no marks and has no attestation surface, the
+  flag is REFUSED loudly rather than ignored (the #865 silent-no-op shape).
+
   **Attestation (sigil):** every `--proven-safe` compile writes
   `<output>.proven-safe-elisions.json` (`synth-proven-safe-elisions-v1`) with
   the elision set, each site's authority, the scry version, both module hashes

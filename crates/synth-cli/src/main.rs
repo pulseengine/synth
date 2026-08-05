@@ -508,6 +508,14 @@ enum Commands {
         /// `synth-proven-safe-elisions-v1`) recording the elision set, the
         /// scry version and the module hash — emitted on refusal too, so
         /// sigil can tell "nothing to elide" from "file rejected".
+        ///
+        /// SCOPE: guards are stripped on the ARM backend under
+        /// `--safety-bounds software`. Under any other backend or bounds mode
+        /// the verdicts are ingested and verified but nothing is elided; the
+        /// attestation says so and records ZERO elisions, so it never claims
+        /// an elision that did not happen. NOT accepted on the
+        /// single-function path (`--func-index` / `--func-name`), which
+        /// refuses loudly rather than ignoring the flag.
         #[arg(long, value_name = "PATH")]
         proven_safe: Option<PathBuf>,
 
@@ -1615,6 +1623,23 @@ fn compile_command(
     // but doesn't specify --func-index or --func-name.
     let use_all_exports =
         all_exports || (input.is_some() && func_index.is_none() && func_name_arg.is_none());
+
+    // VCR-MEM-004 (#901): the single-function path (`--func-index` /
+    // `--func-name`) has no verdict ingestion, no elision marks and no
+    // attestation surface. Accepting `--proven-safe` there would be a SILENT
+    // NO-OP on a safety-relevant flag — the #865 defect shape, where
+    // `--safety-bounds` on aarch64 quietly did nothing. Refuse loudly and name
+    // the path that works. (A stale or malformed verdict FILE never fails a
+    // compile; an invocation synth cannot honour is a different thing.)
+    if !use_all_exports && proven_safe.is_some() {
+        anyhow::bail!(
+            "--proven-safe is not consumed on the single-function path \
+             (--func-index / --func-name): that path builds no elision marks and \
+             writes no attestation, so the flag would silently do nothing. Compile \
+             the whole module instead (drop --func-index/--func-name, or pass \
+             --all-exports)."
+        );
+    }
 
     if use_all_exports {
         return compile_all_exports(
@@ -3334,6 +3359,11 @@ fn compile_all_exports(
             }
             r
         });
+    // Only the ARM direct selector consumes the marks
+    // (`apply_mem_bounds_elision`); RISC-V and aarch64 emit their own bounds
+    // guards from their own selectors and read no mark table. Recorded here so
+    // the attestation cannot claim an elision the backend never performed.
+    let proven_safe_backend_supported = backend.name() == "arm";
     // Accumulated across the function loop, for the sigil attestation.
     let mut proven_safe_elisions: Vec<synth_core::proven_safe::AttestedElision> = Vec::new();
     let mut proven_safe_diagnostics: Vec<String> = proven_safe_ingest
@@ -3564,13 +3594,20 @@ fn compile_all_exports(
         // THIS function. `pc` is an operator index into the ORIGINAL stream, so
         // the marks are only sound when that stream is what the backend
         // compiles — see the fact-spec refusal below.
-        // Gated on `Software`: that is the ONLY mode that emits an inline
-        // guard, so it is the only mode where a mark changes a byte. Without
-        // this gate the attestation would record elisions that never happened
-        // — a false attestation is worse than no attestation.
+        // Gated on `Software` AND on the ARM backend: `Software` is the only
+        // mode that emits an inline guard, and the ARM direct selector
+        // (`apply_mem_bounds_elision`) is the only consumer of the marks —
+        // RISC-V and aarch64 emit their own guards and read no mark table, so
+        // a mark there would change nothing. Without BOTH gates the
+        // attestation records elisions that never happened, and a false
+        // attestation is worse than no attestation. (Found on `-b riscv` /
+        // `-b aarch64`, which do accept `--safety-bounds software`: the
+        // sidecar claimed 5 elisions while the ELF was byte-identical to the
+        // guarded baseline.)
         if let Some(ing) = &proven_safe_ingest
             && ing.accepted
             && safety_bounds == SafetyBounds::Software
+            && proven_safe_backend_supported
         {
             let mut notes = Vec::new();
             let marks = ing.validate_function(func.index, &func.ops, &mut notes);
@@ -4197,6 +4234,14 @@ fn compile_all_exports(
         if ing.accepted && proven_safe_elisions.is_empty() {
             let why = if ing.offered.is_empty() {
                 "the document proves zero access sites".to_string()
+            } else if !proven_safe_backend_supported {
+                format!(
+                    "the `{}` backend does not consume proven-safe marks — only the ARM \
+                     direct selector strips the inline guard today. Every guard is \
+                     retained (sound), and this attestation records ZERO elisions rather \
+                     than claiming an elision that never happened",
+                    backend.name()
+                )
             } else if safety_bounds != SafetyBounds::Software {
                 format!(
                     "--safety-bounds is `{}`, not `software` — there is no inline guard to elide (the verdicts are mode-independent, the strip is not)",
@@ -4204,7 +4249,10 @@ fn compile_all_exports(
                 )
             } else {
                 format!(
-                    "none of the {} offered site(s) survived key validation — see the DROP                      lines above; if the producer emitted wasm BYTE OFFSETS instead of                      0-based OPERATOR indices, that is the cause",
+                    "none of the {} offered site(s) reached the selector — see the \
+                     REFUSED/DROP lines above. If they were DROPPED on key validation \
+                     and the producer emitted wasm BYTE OFFSETS instead of 0-based \
+                     OPERATOR indices, that is the cause",
                     ing.offered.len()
                 )
             };
