@@ -55,12 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not "checks", because naming a measurement after something it does not measure
   is the defect this lane exists to remove.
 
-- **The differential population is reported, and ratcheted.** **133 oracles
-  assert 294,914 emulator entries per CI run**; 7 assert a printed count, 9
+- **The differential population is reported, and ratcheted.** **135 oracles
+  assert 295,333 emulator entries per CI run**; 7 assert a printed count, 9
   assert compilations, 1 can bind to nothing. Reported **per mode and never
   summed across modes** — three different units, and one impressive combined
   figure is exactly the instrument defect being fixed.
-  `oracle_wiring_check.py --min-emulation-floor 294914` enforces the total in
+  `oracle_wiring_check.py --min-emulation-floor 295333` enforces the total in
   the already-required `Claim Check` job (a brand-new job is not a required
   context on `main` and could sit red for weeks — the #890 failure), sharing the
   driver's header parser by import rather than re-implementing the grammar.

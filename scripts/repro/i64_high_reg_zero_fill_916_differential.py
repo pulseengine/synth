@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 48
 """#916 — i64 zero-fill mis-encodes for a HIGH destination (R8-R12).
 
 The 16-bit `MOVS Rd,#imm8` (T1) has a **three-bit** Rd field. `reg_to_bits(R8)`

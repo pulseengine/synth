@@ -1076,7 +1076,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910
     doc: scripts/repro/ORACLE_WIRING.md
-    text: "**294,914 emulator entries**"
+    text: "**295,333 emulator entries**"
     evidence:
       - kind: file-exists
         path: scripts/oracle_run.py
@@ -1089,17 +1089,41 @@ claims:
       - kind: count-min                      # the EXECUTION population, per script
         pattern: '^# ci-checks: emulations >= '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 133
+        min: 135
       - kind: count-max                      # the "nothing can be bound" hatch
         pattern: '^# ci-checks: none'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
         max: 1
       - kind: verbatim                       # the doc carries the per-mode split
-        text: "**133 oracles**"
+        text: "**135 oracles**"
       - kind: verbatim
         text: "Reported per mode and never summed across modes."
       - kind: verbatim                       # the itemized weak-floor list stays
         text: "## The oracles whose floor is weak, itemized"
+
+  # ---------------------------------------------------------------------------
+  # #910 — the THIRD surface carrying this number: the FEATURE_MATRIX template.
+  #
+  # Found while adding the #916 and #901 oracles: ORACLE_WIRING.md and ci.yml
+  # were pinned, the generated matrix was NOT, so the ledger reported 42/42 HOLD
+  # while the matrix still read "133 oracles assert 294,914". A number quotable
+  # in a shipped doc and bound to no gate is the #880 defect exactly — the gate
+  # checked the matrix against its RENDER, never its CONTENT.
+  #
+  # Pinned on the TEMPLATE, not the rendered file: the render is generated
+  # (`--emit-status`), so pinning the output would be satisfiable by a
+  # regeneration that faithfully reproduces wrong prose.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-ORACLE-CHECK-FLOORS-910-MATRIX
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "**135 oracles assert 295,333 emulator"
+    evidence:
+      - kind: file-exists
+        path: scripts/oracle_run.py
+      - kind: count-min                      # same population the other two pin
+        pattern: '^# ci-checks: emulations >= '
+        glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
+        min: 135
 
   # ---------------------------------------------------------------------------
   # #910 — the CI side of the same claim, pinned so the doc's number and the
@@ -1109,7 +1133,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
     doc: .github/workflows/ci.yml
-    text: "--min-emulation-floor 294914"
+    text: "--min-emulation-floor 295333"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

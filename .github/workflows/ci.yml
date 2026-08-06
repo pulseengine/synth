@@ -217,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 294914 \
+            --min-emulation-floor 295333 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1388,7 +1388,8 @@ jobs:
           SYNTH: ./target/debug/synth
         run: |
           set -euo pipefail
-          python scripts/repro/proven_safe_bounds_901_differential.py \
+          python scripts/oracle_run.py \
+            scripts/repro/proven_safe_bounds_901_differential.py \
             | tee /tmp/proven_safe_901.log
           grep -q '^RESULT: PASS' /tmp/proven_safe_901.log
           # Non-vacuity: a differential that checked nothing must not pass.
@@ -2944,17 +2945,13 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/i64_popcnt_632_differential.py
       - name: i64 shr_u/shr_s single-function path differential (#599)
         run: python scripts/oracle_run.py scripts/repro/i64_shr_599_differential.py
-      # Kept as main wrote it — raw `python`, NOT routed through oracle_run.py.
-      # The #916 harness carries no `# ci-checks:` declaration, and the driver
-      # hard-errors on a script it cannot bind a floor to. Wiring it is a
-      # follow-up on the harness, not a rename here; it is listed with the rest
-      # of the unbound residue in scripts/repro/ORACLE_WIRING.md.
       - name: i64 high-register zero-fill differential (#916)
         run: |
           set -euo pipefail
           ./target/debug/synth compile scripts/repro/i64_high_reg_zero_fill_916.wat \
             -o /tmp/zf916.elf --target cortex-m4 --relocatable --all-exports
-          python scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
+          python scripts/oracle_run.py \
+            scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
       - name: dead-frame elision differential (#390, both flag states)
         run: python scripts/oracle_run.py scripts/repro/leaf_dead_frame_differential.py
       - name: i32 local-promotion differential (#390, clean + dirty)
