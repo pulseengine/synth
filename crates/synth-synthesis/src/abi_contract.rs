@@ -154,7 +154,7 @@
 //!   not a claim about the callee's effects.
 
 use crate::instruction_selector::ArmInstruction;
-use crate::liveness::{call_effect, is_straight_line, reg_effect};
+use crate::liveness::{call_effect, is_straight_line, pair_effect, reg_effect};
 use crate::rules::{ArmOp, Reg};
 use std::collections::BTreeMap;
 
@@ -313,6 +313,7 @@ fn effect_of(op: &ArmOp) -> Result<Effect, &'static str> {
     match classify(op) {
         Cf::Reject(why) => Err(why),
         Cf::Straight => reg_effect(op)
+            .or_else(|| pair_effect(op))
             .map(|e| Some((e.defs, e.uses)))
             .ok_or("unmodeled-op"),
         Cf::CallOp => call_effect(op)
@@ -492,7 +493,19 @@ pub fn validate_abi_contract(
             eff_r.push(e);
             continue;
         }
-        let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {
+        // VCR-REACH-001 (increment 4, #242): an i64 register-PAIR pseudo-op is
+        // straight-line with no `reg_effect` (deliberately — the shipping
+        // pipeline depends on that `None`) but a modeled [`pair_effect`]. This
+        // validator must see it, and must see it through the SAME definition:
+        // its `NotAttempted` counts as a DECLINE at the `abi_gate`, so leaving
+        // it out here would not be "safe", it would silently switch the
+        // instrument OFF for the whole family this increment exists to reach —
+        // and a check that declines everything is the vacuity failure this
+        // module was written to prevent.
+        let (Some(eo), Some(er)) = (
+            reg_effect(&o.op).or_else(|| pair_effect(&o.op)),
+            reg_effect(&r.op).or_else(|| pair_effect(&r.op)),
+        ) else {
             return NotAttempted {
                 reason: "unmodeled-op",
             };

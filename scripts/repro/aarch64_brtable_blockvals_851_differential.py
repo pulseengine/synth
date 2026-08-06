@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 88
 """VCR-A64-CF-001 (#851) — aarch64 `br_table` + VALUE-CARRYING block/loop/if.
 
 Both constructs used to compile to NOTHING on `-b aarch64`: `br_table` had no

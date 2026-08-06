@@ -2887,6 +2887,15 @@ fn rewrite_op(
     use ArmOp::*;
     let u = |r: &Reg| map_reg(use_map, *r);
     let d = |r: &Reg| map_reg(def_map, *r);
+    // A read-modify-write FIELD: one operand slot that the op both reads and
+    // writes, so the use-side and def-side maps must AGREE on it. `None` (a
+    // decline) when they do not — splitting an RMW field across two registers
+    // is a miscompile, never a rename. The `Movt` arms below inline the same
+    // check; this is the named form for the multi-RMW i64 shift arms.
+    let rmw = |r: &Reg| -> Option<Reg> {
+        let (ru, rd) = (u(r), d(r));
+        if ru == rd { Some(rd) } else { None }
+    };
     Some(match op {
         Add { rd, rn, op2 } => Add {
             rd: d(rd),
@@ -3156,6 +3165,114 @@ fn rewrite_op(
         },
         Nop => Nop,
         Udf { imm } => Udf { imm: *imm },
+
+        // ---- VCR-REACH-001: the i64 register-PAIR pseudo-ops --------------
+        // Renameable exactly like the 32-bit forms, and inert for the SHIPPING
+        // passes: every caller that reaches these arms (`apply_range_coloring`,
+        // `dissolve_spill_pair`, `op_shape`) first requires `reg_effect` to be
+        // `Some` for every instruction in the region, and `reg_effect` still
+        // returns `None` here. Only the graph-colouring pass, which asks
+        // [`pair_effect`], can get an i64 op this far.
+        I64Const { rdlo, rdhi, value } => I64Const {
+            rdlo: d(rdlo),
+            rdhi: d(rdhi),
+            value: *value,
+        },
+        I64Ldr { rdlo, rdhi, addr } => I64Ldr {
+            rdlo: d(rdlo),
+            rdhi: d(rdhi),
+            addr: addr_map(addr, use_map),
+        },
+        // Both halves are STORE SOURCES — they map through `use_map`, the
+        // `Str`/`Strb`/`Strh` rule. Mapping them through `def_map` would be the
+        // #180-class silent inversion this whole module exists to make
+        // impossible to write by accident.
+        I64Str { rdlo, rdhi, addr } => I64Str {
+            rdlo: u(rdlo),
+            rdhi: u(rdhi),
+            addr: addr_map(addr, use_map),
+        },
+        I32WrapI64 { rd, rnlo } => I32WrapI64 {
+            rd: d(rd),
+            rnlo: u(rnlo),
+        },
+        I64SetCond {
+            rd,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+            cond,
+        } => I64SetCond {
+            rd: d(rd),
+            rn_lo: u(rn_lo),
+            rn_hi: u(rn_hi),
+            rm_lo: u(rm_lo),
+            rm_hi: u(rm_hi),
+            cond: *cond,
+        },
+        I64SetCondZ { rd, rn_lo, rn_hi } => I64SetCondZ {
+            rd: d(rd),
+            rn_lo: u(rn_lo),
+            rn_hi: u(rn_hi),
+        },
+        I64ExtendI32S { rdlo, rdhi, rn } => I64ExtendI32S {
+            rdlo: d(rdlo),
+            rdhi: d(rdhi),
+            rn: u(rn),
+        },
+        // `rm_lo` is a read-modify-write (`AND rm_lo, rm_lo, #63`) and `rm_hi` a
+        // pure temp clobber; both appear in `pair_effect`'s `defs`, so both are
+        // mapped through `def_map`. The RMW agreement check below is what makes
+        // that safe for `rm_lo`: if the use-side and def-side maps disagree on
+        // it the rewrite is REFUSED rather than silently split across two
+        // registers.
+        I64Shl {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => I64Shl {
+            rd_lo: d(rd_lo),
+            rd_hi: d(rd_hi),
+            rn_lo: u(rn_lo),
+            rn_hi: u(rn_hi),
+            rm_lo: rmw(rm_lo)?,
+            rm_hi: d(rm_hi),
+        },
+        I64ShrU {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => I64ShrU {
+            rd_lo: d(rd_lo),
+            rd_hi: d(rd_hi),
+            rn_lo: u(rn_lo),
+            rn_hi: u(rn_hi),
+            rm_lo: rmw(rm_lo)?,
+            rm_hi: d(rm_hi),
+        },
+        I64ShrS {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => I64ShrS {
+            rd_lo: d(rd_lo),
+            rd_hi: d(rd_hi),
+            rn_lo: u(rn_lo),
+            rn_hi: u(rn_hi),
+            rm_lo: rmw(rm_lo)?,
+            rm_hi: d(rm_hi),
+        },
+
         _ => return None,
     })
 }
@@ -3585,6 +3702,237 @@ pub fn call_effect(op: &ArmOp) -> Option<RegEffect> {
     }
 }
 
+/// VCR-DEC-001 increment 4 (VCR-REACH-001) — the register effect of an **i64
+/// register-PAIR pseudo-op**, or `None` when the op is not one / is not modeled.
+///
+/// **Why a third effect function.** Increment 4's target is the biggest decline
+/// bucket the colourer has: `unmodeled-op`, 175 of the 633-function ARM repro
+/// corpus's declines, of which a per-function census attributes 167 to ONE
+/// family — the i64 register-pair pseudo-ops. They are exactly the shape
+/// [`call_effect`] was introduced for: [`reg_effect`] returns `None` on them
+/// DELIBERATELY, and the SHIPPING pipeline depends on that `None`
+/// (`local_dead_defs`, `reallocate_function`, `straight_line_value_ranges`,
+/// `fuse_cmp_select`'s dead-by-redef scan and [`validate_final_allocation`]'s
+/// fail-safe invariant 1 all treat `None` as "may do anything"). Widening
+/// `reg_effect` would hand the greedy/segment allocator streams it has always
+/// refused and MOVE THE SHIPPED BYTES. This is a separate function, inert until
+/// a caller asks for it, consumed by the graph-colouring pass AND by its oracle
+/// [`validate_cfg_rewrite`] — one definition, two instruments, so a mismodelled
+/// op cannot become a blind spot the validator shares with the pass unnoticed
+/// (#872's standing lesson).
+///
+/// **The model is read off the ENCODER, not the IR declaration.** These are
+/// pseudo-ops EXPANDED downstream into multi-instruction sequences, the exact
+/// class increment 3 declined `Call`/`CallIndirect` for. The naive
+/// `defs = {rdlo, rdhi}` is WRONG for the shift family: `arm_encoder.rs`'s
+/// `I64Shl` expansion opens with `AND.W rm_lo, rm_lo, #63` (an RMW of the shift
+/// amount) and uses `rm_hi` as a pure scratch temporary — the IR field is even
+/// commented `rm_hi: Reg, // used as temp`. Both are therefore DEFS. Miss them
+/// and a value the colourer parked in the shift amount's register is silently
+/// destroyed, with every dataflow instrument agreeing it is fine.
+///
+/// **What this function cannot express, and where that is handled.** A
+/// `defs`/`uses` [`RegEffect`] is a set pair; it cannot say "these two operands
+/// must be DIFFERENT registers". The expansions need exactly that — `I64Ldr`
+/// emits `LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]`, so an allocator that
+/// coalesces `rdlo` onto `base` (which a plain interference graph will do the
+/// moment `base` is dead after the load) makes the SECOND load read a base the
+/// FIRST one just clobbered. That obligation is carried separately by
+/// [`pair_early_clobber`], and the register-range obligation by
+/// [`pair_low_reg_only`].
+pub fn pair_effect(op: &ArmOp) -> Option<RegEffect> {
+    use ArmOp::*;
+    let de = |defs: Vec<Reg>, uses: Vec<Reg>| Some(RegEffect { defs, uses });
+    match op {
+        // MOVW/MOVT per half into rdlo and rdhi — pure defs, no register read.
+        I64Const { rdlo, rdhi, .. } => de(vec![*rdlo, *rdhi], vec![]),
+
+        // LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]. When the address carries
+        // an INDEX register both encoders first materialize `base + offset_reg`
+        // into `ip` (`ADD ip, base, rm` on A32, `i64_effective_base` on Thumb),
+        // so R12 is a real — if conditional — DEFINITION. R12 is outside the
+        // R0-R8 pool and identity-assigned, so this cannot change a colour; it is
+        // modeled anyway because an effect function that is accurate only where
+        // inaccuracy happens not to bite is the kind that stops being true.
+        I64Ldr { rdlo, rdhi, addr } => {
+            let mut defs = vec![*rdlo, *rdhi];
+            if addr.offset_reg.is_some() {
+                defs.push(Reg::R12);
+            }
+            de(defs, addr_uses(addr))
+        }
+
+        // STR rdlo,[…]; STR rdhi,[…] — both halves are SOURCES, like `Str`;
+        // only the index-materialization writes anything (R12, as above).
+        I64Str { rdlo, rdhi, addr } => {
+            let mut uses = vec![*rdlo, *rdhi];
+            uses.extend(addr_uses(addr));
+            let defs = if addr.offset_reg.is_some() {
+                vec![Reg::R12]
+            } else {
+                vec![]
+            };
+            de(defs, uses)
+        }
+
+        // `MOV rd, rnlo` (or a `NOP` when rd == rnlo) — the high half is simply
+        // dropped, and the op does not even carry it.
+        I32WrapI64 { rd, rnlo } => de(vec![*rd], vec![*rnlo]),
+
+        // A compare chain over both halves materializing a 0/1 boolean in rd.
+        I64SetCond {
+            rd,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+            ..
+        } => de(vec![*rd], vec![*rn_lo, *rn_hi, *rm_lo, *rm_hi]),
+        I64SetCondZ { rd, rn_lo, rn_hi } => de(vec![*rd], vec![*rn_lo, *rn_hi]),
+
+        // MOV rdlo, rn; ASR rdhi, rdlo, #31.
+        I64ExtendI32S { rdlo, rdhi, rn } => de(vec![*rdlo, *rdhi], vec![*rn]),
+
+        // THE CLOBBER FAMILY. `rm_lo` is read AND written (`AND.W rm_lo,rm_lo,#63`
+        // masks the shift amount in place) and `rm_hi` is a pure scratch temp
+        // (`SUBS.W rm_hi, rm_lo, #32`, written before it is ever read). Both are
+        // listed as DEFS — that is what makes a web live across the shift
+        // interfere with them, so the colourer structurally cannot home a live
+        // value in a register the expansion destroys. `rm_hi` is ALSO listed as a
+        // use: it is written before read, so the incoming value is genuinely
+        // dead, but listing it keeps that value live INTO the op, which is
+        // strictly more interference and strictly more equations — conservative
+        // in the safe direction on both instruments.
+        I64Shl {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        }
+        | I64ShrU {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        }
+        | I64ShrS {
+            rd_lo,
+            rd_hi,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+        } => de(
+            vec![*rd_lo, *rd_hi, *rm_lo, *rm_hi],
+            vec![*rn_lo, *rn_hi, *rm_lo, *rm_hi],
+        ),
+
+        // Everything else — the i64 div/rem software loops, the rotates,
+        // `I64Mul`, `I64Popcnt`/`Clz`/`Ctz`, the narrow sign-extends, the FP
+        // family, `MemorySize`/`MemoryGrow` and every high-level pseudo-op —
+        // stays unmodeled. Each is a NAMED next increment, not a silent gap:
+        // the decline histogram keeps counting them.
+        _ => None,
+    }
+}
+
+/// Are `op`'s definitions **early-clobber** — written by the downstream
+/// expansion at a point where a SOURCE operand is still read afterwards?
+///
+/// This is the obligation a [`RegEffect`] structurally cannot carry. `I64Ldr`
+/// expands to `LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]`: `base` is read
+/// again AFTER `rdlo` has been written, so `rdlo` and `base` must be different
+/// registers even though ordinary liveness says `base` is dead at the load. The
+/// same holds for every multi-instruction pair expansion here, so the rule is
+/// stated ONCE and positively: a modeled pair op is early-clobber unless it is
+/// listed below as a single-instruction expansion.
+///
+/// The pass discharges this with interference EDGES (def-web vs every web
+/// reaching a use at the same instruction), never by widening `defs` — widening
+/// `defs` would also generate spurious `DefClobbersEquation` rejections in the
+/// validator and lose reach for no soundness gain.
+///
+/// **This ONE rule is provably sufficient** for the modeled family. Reading off
+/// both encoders (Thumb-2 `encode_thumb` and A32 `encode_arm_expanded`), the
+/// complete set of required distinctness pairs is:
+///
+/// ```text
+///   I64Const        rdlo != rdhi
+///   I64Ldr          rdlo != base, rdlo != offset_reg, rdlo != rdhi
+///   I64Str          rdlo != R12, rdhi != R12          (index form only)
+///   I64ExtendI32S   rdlo != rdhi
+///   I64Shl          rd_hi ∉ {rn_lo, rm_lo, rm_hi};  rm_lo ∉ {rn_lo, rn_hi, rm_hi};
+///                   rm_hi ∉ {rn_lo, rn_hi};          rd_lo != rd_hi
+///   I64ShrU/ShrS    rd_lo ∉ {rn_hi, rm_lo, rm_hi};  (rm_* as above); rd_lo != rd_hi
+///   I64SetCond(Z)   — none, on any of the ten condition arms
+/// ```
+///
+/// Every pair above is either (a) two DEFS of the same instruction, which the
+/// interference builder already separates with its co-def clique (the `Umull`
+/// rule), or (b) a def against a USE of the same instruction, which is exactly
+/// what early-clobber adds. So the blanket rule dominates the hand-derived
+/// table — and it is one line to state, one line to mutate, and cannot rot the
+/// way a 20-entry pair table would.
+///
+/// The shift constraints are worth naming explicitly because they are
+/// PATH-DEPENDENT: the offending re-read sits on one side of a runtime `BPL` on
+/// the dynamic shift amount, so violating `rd_hi != rn_lo` in `I64Shl` yields
+/// correct code for `n >= 32` and wrong code for `n < 32`. Any execution oracle
+/// for this family must drive BOTH sides of that branch or it proves nothing.
+///
+/// Returns `false` for an op with no [`pair_effect`]; callers should not be
+/// asking in that case.
+pub fn pair_early_clobber(op: &ArmOp) -> bool {
+    use ArmOp::*;
+    match op {
+        // `MOV rd, rnlo` — ONE instruction, and it is elided entirely to a `NOP`
+        // (Thumb) / emitted as `MOV rd, rd` (A32) when `rd == rnlo`. No source is
+        // re-read afterwards, so `rd` may legitimately share a register with
+        // `rnlo`. The single exception, and it earns its place: this is the
+        // second most common op in the whole bucket (61 functions) and it is
+        // overwhelmingly emitted in place.
+        I32WrapI64 { .. } => false,
+        // Everything else modeled here expands to a multi-instruction sequence.
+        // Conservative by DEFAULT: an op added to `pair_effect` without a
+        // deliberate entry above gets the RESTRICTIVE answer, so the failure
+        // mode of forgetting to think about a new op is lost reach, not a
+        // miscompile.
+        _ => pair_effect(op).is_some(),
+    }
+}
+
+/// Operand registers of `op` that the downstream expansion encodes with a
+/// **16-bit Thumb register form**, and which therefore MUST stay in R0-R7.
+///
+/// The #180 / #311 / H-CODE-9 class. `arm_encoder.rs`'s `I64Shl` expansion ends
+/// its large-shift arm with `let mov_zero: u16 = 0x2000 | ((rd_lo_bits as u16) << 8);`
+/// — the 16-bit `MOVS` T1 form, whose `rd` field is 3 bits. For `rd_lo = R8`
+/// that is `0x2000 | 0x0800 = 0x2800`, which is not a `MOV` at all but
+/// `CMP r0, #0`: the zero is never written and the low half keeps a stale value.
+/// `I64ShrU` has the identical site on `rd_hi`. Neither can simply be widened to
+/// the 32-bit `MOV.W` the way #311 fixed `I64SetCond`, because these expansions
+/// are hand-emitted halfwords with FIXED internal branch displacements
+/// (`B .done` = `0xE002`, two halfwords) that a 4-byte instruction would
+/// overshoot — so this is filed as a latent encoder defect (#916) and the
+/// allocator is kept from REACHING it, rather than papered over here.
+///
+/// The pass uses this to (a) block R8 as a colour for the named operand and
+/// (b) DECLINE outright when the incoming stream already has a high register
+/// there — a stream that is already mis-encoded is not one this pass will
+/// certify.
+pub fn pair_low_reg_only(op: &ArmOp) -> Vec<Reg> {
+    use ArmOp::*;
+    match op {
+        I64Shl { rd_lo, .. } => vec![*rd_lo],
+        I64ShrU { rd_hi, .. } => vec![*rd_hi],
+        _ => Vec::new(),
+    }
+}
+
 /// VCR-DEC-001 increment 2 — the CFG-lifted translation validator: prove a
 /// renames-only rewrite of a WHOLE branchy function preserves its dataflow
 /// **across control-flow joins**.
@@ -3694,7 +4042,22 @@ pub fn validate_cfg_rewrite(
             effects.push(call_effect(&o.op).map(|e| (e.clone(), e)));
             continue;
         }
-        let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {
+        // INCREMENT 4 (VCR-REACH-001, #242): an i64 register-PAIR pseudo-op is
+        // straight-line but has no `reg_effect` — deliberately, the shipping
+        // pipeline depends on that `None`. It DOES have a modeled
+        // [`pair_effect`], and this validator consumes the SAME definition the
+        // pass does. Falling through to `reg_effect`'s `None` here (the
+        // pre-increment-4 behaviour) is the FAIL-SAFE direction: it rejects the
+        // whole function as `Unmodeled`. The hazard is the opposite one —
+        // modeling the op in the PASS but not here would leave this validator
+        // walking a shift as if it were effect-free, i.e. certifying its own
+        // pass's "a live value was parked in the shift amount's register"
+        // miscompile. That is #872 verbatim, and one shared definition is what
+        // makes it unrepresentable.
+        let (Some(eo), Some(er)) = (
+            reg_effect(&o.op).or_else(|| pair_effect(&o.op)),
+            reg_effect(&r.op).or_else(|| pair_effect(&r.op)),
+        ) else {
             return Err(RewriteViolation::Unmodeled { index: i });
         };
         let (Some(so), Some(sr)) = (op_shape(&o.op), op_shape(&r.op)) else {
@@ -5428,7 +5791,15 @@ fn build_join_cfg_label(
                 // A call is admitted (its def-set is synthesized below); any
                 // other Fall op must be a Label or have a precise reg_effect.
                 let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-                if !is_call && !matches!(ins.op, Label { .. }) && reg_effect(&ins.op).is_none() {
+                // VCR-REACH-001: an i64 register-PAIR op has no `reg_effect` by
+                // design but a modeled `pair_effect`; admitting it here is what
+                // gives the increment-4 functions a real `Consistent` verdict
+                // instead of a `NotAttempted` that gates nothing.
+                if !is_call
+                    && !matches!(ins.op, Label { .. })
+                    && reg_effect(&ins.op).is_none()
+                    && pair_effect(&ins.op).is_none()
+                {
                     return None;
                 }
             }
@@ -5574,7 +5945,7 @@ fn build_join_cfg_numeric(
             NTerm::Uncond | NTerm::Cond | NTerm::Return => {}
             NTerm::Fall => {
                 let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-                if !is_call && reg_effect(&ins.op).is_none() {
+                if !is_call && reg_effect(&ins.op).is_none() && pair_effect(&ins.op).is_none() {
                     return None;
                 }
             }
@@ -5715,7 +6086,16 @@ fn join_cfg_livein_defb(
         let mut defined = BTreeSet::new();
         for ins in &instrs[b.start..b.end] {
             let is_call = matches!(ins.op, Bl { .. } | Blx { .. } | Call { .. });
-            let eff = reg_effect(&ins.op).unwrap_or_default();
+            // VCR-REACH-001: `unwrap_or_default` means an unmodeled op
+            // contributes NOTHING to `def_b`. For an i64 register-pair op that
+            // would UNDER-state its definitions and could make a value it
+            // actually produces look unavailable at a join — a FALSE POSITIVE,
+            // the one direction a hard-erroring validator must never take. So
+            // this moves in lockstep with the admission checks above: the same
+            // `pair_effect` that lets the op into the CFG also supplies its defs.
+            let eff = reg_effect(&ins.op)
+                .or_else(|| pair_effect(&ins.op))
+                .unwrap_or_default();
             for u in &eff.uses {
                 if !defined.contains(u) {
                     used.insert(*u);

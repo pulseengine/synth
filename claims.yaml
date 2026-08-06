@@ -1076,7 +1076,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910
     doc: scripts/repro/ORACLE_WIRING.md
-    text: "**295,333 emulator entries**"
+    text: "**295,421 emulator entries**"
     evidence:
       - kind: file-exists
         path: scripts/oracle_run.py
@@ -1089,13 +1089,13 @@ claims:
       - kind: count-min                      # the EXECUTION population, per script
         pattern: '^# ci-checks: emulations >= '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 135
+        min: 136
       - kind: count-max                      # the "nothing can be bound" hatch
         pattern: '^# ci-checks: none'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
         max: 1
       - kind: verbatim                       # the doc carries the per-mode split
-        text: "**135 oracles**"
+        text: "**136 oracles**"
       - kind: verbatim
         text: "Reported per mode and never summed across modes."
       - kind: verbatim                       # the itemized weak-floor list stays
@@ -1116,14 +1116,14 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "**135 oracles assert 295,333 emulator"
+    text: "**136 oracles assert 295,421 emulator"
     evidence:
       - kind: file-exists
         path: scripts/oracle_run.py
       - kind: count-min                      # same population the other two pin
         pattern: '^# ci-checks: emulations >= '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 135
+        min: 136
 
   # ---------------------------------------------------------------------------
   # #910 — the CI side of the same claim, pinned so the doc's number and the
@@ -1133,7 +1133,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
     doc: .github/workflows/ci.yml
-    text: "--min-emulation-floor 295333"
+    text: "--min-emulation-floor 295421"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

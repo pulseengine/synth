@@ -355,8 +355,9 @@ fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>>
 mod joins {
     use super::*;
     use crate::liveness::{
-        BasicBlock, RegEffect, call_effect, cfg_exit_observable, is_straight_line, reg_effect,
-        rewrite_op_maps, validate_cfg_rewrite,
+        BasicBlock, RegEffect, call_effect, cfg_exit_observable, is_straight_line,
+        pair_early_clobber, pair_effect, pair_low_reg_only, reg_effect, rewrite_op_maps,
+        validate_cfg_rewrite,
     };
     use crate::rules::ArmOp;
 
@@ -378,6 +379,20 @@ mod joins {
         Reg::SP,
         Reg::LR,
         Reg::PC,
+    ];
+
+    /// The registers a 16-bit Thumb `rd`/`rn` field can actually name. An
+    /// operand [`pair_low_reg_only`] lists must be one of these in the FINAL
+    /// stream; anything else is the #180/#311 silent-transmute class.
+    const LOW_REGS: [Reg; 8] = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
     ];
 
     /// Decline diagnostics: `SYNTH_GRAPH_ALLOC_STATS=1` names WHY a branchy
@@ -461,6 +476,10 @@ mod joins {
                         // the shipping pipeline depends on that `None`), but it
                         // DOES have a modeled AAPCS `call_effect`.
                         && call_effect(&ins.op).is_none()
+                        // INCREMENT 4 (VCR-REACH-001): likewise for the i64
+                        // register-PAIR pseudo-ops — no `reg_effect` by design,
+                        // a modeled `pair_effect` read off the two encoders.
+                        && pair_effect(&ins.op).is_none()
                     {
                         return Err("unmodeled-op");
                     }
@@ -590,7 +609,11 @@ mod joins {
             .iter()
             .map(|i| {
                 if is_straight_line(&i.op) {
-                    reg_effect(&i.op)
+                    // INCREMENT 4: `pair_effect` is the fallback, never an
+                    // override — an op with BOTH would be a contradiction in the
+                    // model, and `reg_effect` is the one the shipping pipeline
+                    // already agrees with.
+                    reg_effect(&i.op).or_else(|| pair_effect(&i.op))
                 } else {
                     call_effect(&i.op)
                 }
@@ -958,8 +981,16 @@ mod joins {
         // structurally declines a `bl` and would leave a straight-line CALLING
         // function to the shipping pass forever. Increment 3 models calls, so a
         // single-block function that has one is THIS path's job.
+        // Increment 1 requires EVERY instruction to have a `reg_effect`, so it
+        // structurally declines a function containing a call (increment 3) or an
+        // i64 register-pair op (increment 4) — and a SINGLE-BLOCK such function
+        // would then be reachable by neither path and sit in the shipping
+        // allocator forever. Measured, not hypothetical: increment 4's model
+        // moved 114 relocatable functions out of `unmodeled-op`, and 96 of them
+        // landed straight in `single-block` until this condition was widened.
         let has_call = instrs.iter().any(|i| call_effect(&i.op).is_some());
-        if blocks.len() < 2 && !has_call {
+        let has_pair = instrs.iter().any(|i| pair_effect(&i.op).is_some());
+        if blocks.len() < 2 && !has_call && !has_pair {
             return decline("single-block");
         }
         let eff = effects(instrs);
@@ -968,6 +999,17 @@ mod joins {
         for (i, ins) in instrs.iter().enumerate() {
             if eff[i].is_none() && is_straight_line(&ins.op) {
                 return decline("unmodeled-op");
+            }
+            // INCREMENT 4: an operand whose downstream expansion uses a 16-bit
+            // Thumb register form must be in R0-R7 (see `pair_low_reg_only`). If
+            // the INCOMING stream already has a high register there, the stream
+            // is already mis-encoded — the allocator will not put its name to it.
+            // Loud decline, not a silent recolour that would hide the defect.
+            if pair_low_reg_only(&ins.op)
+                .iter()
+                .any(|r| !LOW_REGS.contains(r))
+            {
+                return decline("i64-16bit-form-high-reg");
             }
         }
         let Some(webs) = build_webs(instrs, &eff, &blocks) else {
@@ -1028,6 +1070,42 @@ mod joins {
                         for d2 in &e.defs {
                             edge(dw, webs.def_web[&(i, *d2)], &mut adj);
                         }
+                        // INCREMENT 4 — EARLY-CLOBBER (`pair_early_clobber`).
+                        // An i64 pair op EXPANDS downstream into a
+                        // multi-instruction sequence that re-reads its sources
+                        // AFTER writing a destination: `I64Ldr` is
+                        // `LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]`, so
+                        // `rdlo` sharing a register with `base` makes the SECOND
+                        // load read a base the FIRST one clobbered. Ordinary
+                        // liveness says `base` is dead at the load and would
+                        // happily coalesce them; this edge is what forbids it.
+                        // Stated as an interference EDGE rather than by widening
+                        // `defs`, so it costs no spurious validator rejections.
+                        if pair_early_clobber(&instrs[i].op) {
+                            for u in &e.uses {
+                                for uw in webs.reach_before[i].get(u).into_iter().flatten() {
+                                    edge(dw, *uw, &mut adj);
+                                }
+                            }
+                        }
+                    }
+                    // INCREMENT 4 — the 16-bit-form REGISTER RANGE constraint.
+                    // `pair_low_reg_only` names the operands whose downstream
+                    // expansion encodes them with a 3-bit `rd` field, so R8
+                    // TRANSMUTES the instruction (`MOVS r8,#0` -> `CMP r0,#0`,
+                    // the #180/#311 class). Expressed with the machinery already
+                    // here: R8's ENTRY web is identity-pinned to R8 by pin (a),
+                    // so an edge to it removes R8 from the operand web's
+                    // candidate colours — no new colourer concept, and it is
+                    // impossible to satisfy the edge and still emit R8.
+                    for r in pair_low_reg_only(&instrs[i].op) {
+                        let Some(&dw) = webs.def_web.get(&(i, r)) else {
+                            return decline("low-reg-operand-not-a-def");
+                        };
+                        let Some(&r8w) = webs.entry_web.get(&Reg::R8) else {
+                            return decline("no-r8-web");
+                        };
+                        edge(dw, r8w, &mut adj);
                     }
                     for d in &e.defs {
                         live_regs.remove(d);

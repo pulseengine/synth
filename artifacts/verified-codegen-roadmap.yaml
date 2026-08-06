@@ -2474,6 +2474,107 @@ artifacts:
         gate): an explicit measured statement "allocation-attributable gap
         <10% or regalloc3 evaluation filed" appears in the release notes.
 
+  - id: VCR-REACH-001
+    type: sw-req
+    title: "VCR-DEC-001 increment 4: REACH — widen the shared op model to the i64 register-pair pseudo-ops (`pair_effect`)"
+    description: >
+      Increments 2 (joins, v0.53) and 3 (calls, v0.54) both returned the same
+      verdict — DO NOT FLIP — and for the same reason: the limiting factor is
+      REACH, not soundness. Every function the colourer emits is VCR-RA-003-
+      clean, `validate_cfg_rewrite`-clean and (since v0.54) clean under the ABI
+      observable contract;
+      it simply DECLINES too often to dominate the greedy allocator. The v0.54
+      decline histogram over the 633-function ARM repro corpus (relocatable
+      path) is `unmodeled-op` 175, `single-block` 73, `identity-colouring` 31,
+      `call-indirect-pseudo` 17, `unreachable-block` 11, `numeric-branch` 10 —
+      so `unmodeled-op` is 47 % of all declines and the single biggest bucket.
+      A per-function census of WHICH ops force that decline (the complete set,
+      not just the first blocker) attributes 167 of the 175 to ONE coherent
+      family: the i64 register-pair pseudo-ops (`I64Const` 96 functions,
+      `I32WrapI64` 61, `I64Shl` 51, `I64Ldr` 36, `I64ShrU` 28, `I64Str` 28,
+      `I64SetCond` 22, then a long tail); the residual 8 are `MemorySize` /
+      `MemoryGrow`. This increment models that family.
+
+      METHOD — a NEW shared definition, never a widened `reg_effect`.
+      `liveness::reg_effect` returns `None` for these ops DELIBERATELY, and the
+      SHIPPING pipeline depends on that `None`: `local_dead_defs`,
+      `reallocate_function` (`SYNTH_SPILL_REALLOC`, default-on since v0.24.0),
+      the range-realloc pass and `fuse_cmp_select`'s dead-by-redef check all
+      bail on it. Turning it into `Some` would silently hand the greedy/segment
+      allocator streams it has always refused and break the frozen anchors. So
+      increment 4 follows increment 3's `call_effect` pattern exactly: ONE new
+      definition, `liveness::pair_effect`, consumed by BOTH the pass
+      (`graph_alloc::joins` liveness / interference / pins) AND its oracles
+      (`validate_cfg_rewrite`'s backward transfer, VCR-RA-003's independently
+      written CFG builder). `reg_effect` is untouched, so flag-off output is
+      byte-identical BY CONSTRUCTION.
+
+      METHOD — the model is verified against the ENCODER, not the IR
+      declaration. These are pseudo-ops EXPANDED downstream, the exact class
+      increment 3 declined `Call`/`CallIndirect` for ("the register footprint
+      this pass would colour is not the one that ships"). A naive
+      `defs = {rd_lo, rd_hi}` model is WRONG for several of them and would be a
+      blind spot COMMON TO ALL THREE INSTRUMENTS — #872's standing lesson. Each
+      admitted op must therefore pass three checks against the real expansions
+      in `arm_encoder.rs` (BOTH the Thumb-2 and the A32 path):
+        1. FOOTPRINT — does the expansion write a register outside the naive
+           def set? (`I64Shl`/`I64ShrU`/`I64ShrS` overwrite `rm_lo` via
+           `AND rm_lo,rm_lo,#63` and use `rm_hi` as a pure temporary clobber.)
+        2. IMPLICIT DISTINCTNESS — a `defs`/`uses` `RegEffect` structurally
+           cannot express "these two operands must differ", so it is checked
+           separately and discharged with PRE-COLOURED INTERFERENCE EDGES, not
+           with a wider effect set. (`I64Ldr` emits
+           `LDR rdlo,[base,#off]; LDR rdhi,[base,#off+4]`, so coalescing `rdlo`
+           onto `base` — which a plain interference graph will do whenever
+           `base` is dead after — makes the SECOND load read a clobbered base.
+           `I64Const` needs `rdlo != rdhi`.)
+        3. RENAME-INVARIANCE — the expansions are hand-emitted raw halfwords
+           with FIXED internal branch offsets, so any 16-bit register form
+           inside makes a rename unsafe (the #180 / #311 / H-CODE-9 class). An
+           op carrying one is DECLINED by name, not guessed at.
+      An op that fails a check keeps its decline and the decline is RENAMED so
+      the residual stays actionable — the decline MOVES, it is never deleted.
+    status: proposed
+    tags: [codegen, register-allocation, graph-colouring, reach, i64, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-DEC-001
+      - type: refines
+        target: VCR-RA-001
+      - type: traces-to
+        target: VCR-RA-003
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        (1) `SYNTH_GRAPH_ALLOC` stays OFF by default and flag-off output is
+        byte-identical — the frozen anchors stay 10/10 and the corpus byte
+        totals with the flag off are unchanged from v0.54.
+        (2) EVERY function the pass emits is clean under all three instruments
+        — `validate_cfg_rewrite`, VCR-RA-003 `validate_final_allocation`, and
+        the v0.54 ABI observable contract `abi_contract::validate_abi_contract` (`NotAttempted` counts as a
+        DECLINE, never as a pass).
+        (3) Necessary but NOT sufficient: increments 2 and 3 EACH found a real
+        miscompile that both liveness-equation validators accepted and only
+        EXECUTION caught. The new i64-pair shapes are therefore also executed
+        against wasmtime by
+        `scripts/repro/vcr_dec_001_join_alloc_execution_differential.py`, and
+        the new coverage is proven NON-VACUOUS BY MUTATION: removing the
+        `rm_lo`/`rm_hi` clobbers from a shift op's `pair_effect`, or dropping
+        the `rdlo`—`base` interference edge, must turn the differential RED.
+        A mutation that stays green means the fixture does not keep the
+        clobbered value live across the op and the coverage is vacuous.
+        (4) The DELIVERABLE is the measurement: applied-function count, the
+        updated decline histogram WITH the corpus size (the corpus grows as
+        lanes add fixtures — 617 at v0.53, 633 at v0.54), and the byte delta
+        (ELF symtab) plus cycle delta (`--emit-wcet` sound bounds) against BOTH
+        the greedy allocator and increment 3. That measurement is the v0.56
+        flip-criterion input. Reach converts to BYTES only through
+        `shrink_callee_saved_saves`, which is LEAF-ONLY, so a modest byte delta
+        with a large reach delta is the EXPECTED result, not a failure.
+
   - id: VCR-DEC-002
     type: sw-req
     title: "Decision: spill-reduction leapfrogs greedy heuristics — optimal-because-tiny + SSA-chordal + proof-carrying facts (gale #209)"

@@ -55,12 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not "checks", because naming a measurement after something it does not measure
   is the defect this lane exists to remove.
 
-- **The differential population is reported, and ratcheted.** **135 oracles
-  assert 295,333 emulator entries per CI run**; 7 assert a printed count, 9
+- **The differential population is reported, and ratcheted.** **136 oracles
+  assert 295,421 emulator entries per CI run**; 7 assert a printed count, 9
   assert compilations, 1 can bind to nothing. Reported **per mode and never
   summed across modes** — three different units, and one impressive combined
   figure is exactly the instrument defect being fixed.
-  `oracle_wiring_check.py --min-emulation-floor 295333` enforces the total in
+  `oracle_wiring_check.py --min-emulation-floor 295421` enforces the total in
   the already-required `Claim Check` job (a brand-new job is not a required
   context on `main` and could sit red for weeks — the #890 failure), sharing the
   driver's header parser by import rather than re-implementing the grammar.
@@ -180,6 +180,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (reconcile whenever the frame has a result) stamps a garbage value into the
   result register on every iteration.
 
+- **VCR-DEC-001 increment 4 (VCR-REACH-001, #242) — the graph-colouring
+  allocator models the i64 register-PAIR ops.** Increments 2 (joins) and 3
+  (calls) both returned *do not flip*, and both for the same reason: the
+  limiting factor is REACH, not soundness. Every function the colourer emits is
+  clean under all three instruments; it simply declines too often. A per-function
+  census of WHICH ops force the biggest decline bucket — `unmodeled-op`, 175 of
+  the corpus's declines, 47 % of the total — attributes **167 of the 175 to one
+  family**, the i64 register-pair pseudo-ops. This increment models the verified
+  subset of that family (`I64Const`, `I32WrapI64`, `I64Ldr`, `I64Str`,
+  `I64SetCond`/`SetCondZ`, `I64ExtendI32S`, `I64Shl`/`ShrU`/`ShrS`).
+
+  Measured on the 633-function v0.54 ARM repro corpus (ELF symtab bytes,
+  `--emit-wcet` sound bounds), so the comparison is apples-to-apples with
+  increment 3 despite this lane adding its own fixture:
+
+  | | greedy | inc 3 | inc 4 |
+  |---|---|---|---|
+  | applied (relocatable) | — | 316 | **411** |
+  | applied (self-contained) | — | 113 | **204** |
+  | bytes, relocatable | 41438 | −100 | **−110** |
+  | bytes, self-contained | 49930 | −120 | **−132** |
+  | WCET bound, relocatable | 14009 | −33 | **−33**, 0 regressions |
+
+  `unmodeled-op` **175 → 61**. Reach is up 30 % / 81 %; bytes moved 10 / 12 more.
+  That gap IS the finding, and it confirms increment 3's diagnosis: reach
+  converts into bytes almost entirely through `shrink_callee_saved_saves`, which
+  is LEAF-ONLY. **Still flag-off, and the flip criterion is no closer on bytes.**
+
+- **Latent miscompile FOUND here, fixed in #919 (#916): the i64 zero-fill
+  mis-encodes for a high destination.** The Thumb expansions zero a half with
+  the 16-bit `MOVS` T1 form, `0x2000 | (rd << 8)`, whose `rd` field is three
+  bits — for R8 that is `0x2800`, i.e. `CMP r0, #0`, and the half is never
+  zeroed. Same class as #180 / H-CODE-9, and the same one #311 already fixed for
+  `I64SetCond`. REACHABLE in shipped code (`rv32_cmp_select_472.wat` on
+  cortex-m4 emits `I64ShrU { rd_hi: R8, … }`), unobservable *there* only because
+  an `I32WrapI64` discards the high half immediately — which is luck, not a
+  guarantee.
+
+  This lane found it and declined to fix it, on the reasoning that the
+  hand-emitted halfwords carry fixed internal branch displacements. #919 fixed
+  it and the scope was **five sites, not the two named here** — `I64Clz`,
+  `I64Ctz` and `I64ExtendI32U` zero a half with the same form under **no
+  precondition at all**, where the shift pair at least needed a `≥ 32` count.
+  Three validators were blind to all five: the estimator tested only low
+  registers, the certifier was fed R0/R1, and nothing executed a shift that kept
+  the high half. What surfaced it was the colourer refusing to put its name to
+  such a stream (`i64-16bit-form-high-reg`) — a decline that was right about a
+  defect none of the checkers could see.
+
 - **`VCR-VER-004` now exists in the roadmap.** It shipped in v0.54 and appeared
   in the CHANGELOG, the feature matrix and CI — but not in the file README calls
   "the single source of truth for roadmap status". The entry records the four
@@ -285,6 +334,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an f32 parameter (float params live in `v0..v7`, which a `bl` clobbers, and
   the encoder has no FP store to home them with).
 
+- **VCR-RA-003's join-availability half now covers the i64-pair family — on the
+  DEFAULT build.** It built its CFG from `reg_effect` alone, so every
+  i64-containing function returned `NotAttempted`: the interesting half of the
+  validator never ran. Measured over 640 functions with the allocator flag OFF:
+  **Consistent 440 → 560, NotAttempted 200 → 80** — a 60 % cut in the declining
+  half, unconditional and not gated behind `SYNTH_GRAPH_ALLOC`. Verified as a
+  shipping-path change: 0 hard errors across the corpus on both the relocatable
+  and self-contained paths, and all 633 pre-existing relocatable functions plus
+  all 1059 self-contained ones byte-identical to v0.54.
+
 ### Verified
 
 - `scripts/repro/aarch64_brtable_blockvals_851_differential.py` (CI-wired): 88
@@ -308,6 +367,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`aarch64_f32_unsupported_554`) differs exactly because its declined function
   now lowers. A void frame reserves no register and emits no reconciliation
   move, so the property holds by construction.
+
+### Notes
+
+- `SYNTH_GRAPH_ALLOC` remains **off by default**; flag-off output is
+  byte-identical and the frozen anchors stay 10/10.
+- The i64-pair model is stated ONCE (`liveness::pair_effect`) and consumed by the
+  pass, `validate_cfg_rewrite`, the ABI observable contract and VCR-RA-003 — so
+  no static instrument can catch an error in the model itself. The new shapes are
+  therefore EXECUTED against wasmtime. **Precisely which obligation that gates:**
+  the model carries three, and only ONE of them is execution-gated.
+  - The EARLY-CLOBBER edges — yes, and strongly. Deleting them lets the colourer
+    coalesce `I64Ldr`'s `rdlo` onto a base the second `LDR` re-reads;
+    `validate_cfg_rewrite`, VCR-RA-003 and the ABI contract are ALL green on all
+    seven functions and only execution fails, with 3 wrong values. A third
+    counterexample (after v0.53's and v0.54's) to the idea that per-compilation
+    validation is an independent check on codegen.
+  - The `rm_lo` RMW clobber — defended by `rewrite_op`'s RMW-agreement check,
+    NOT by execution. Dropping it makes the rewrite unrepresentable and every
+    shift function declines. Worth having, but that guard was written in this
+    same lane alongside the model it constrains, so it is the model catching its
+    own inconsistency rather than independent detection.
+  - The `rm_hi` scratch clobber — NOT caught, and this is reported because a
+    mutation matrix that lists only its successes is not evidence. The coherent
+    "model omits `rm_hi`" mutation stays green even against two purpose-built
+    register-pressure fixtures (four and eight i32 values live across the shift):
+    the churn-minimising colour bias fills R0–R3 first and the shift-amount pair
+    sits in callee-saved R4–R8, so no live web is ever placed on the original
+    `rm_hi` register. Sound and cheap, but belt-and-braces rather than gated.
+- `identity-colouring` nearly doubled, 31 → 58: about 27 newly-admitted functions
+  are fully modeled and fully validated and then colour to identity, so they are
+  handed straight back to the shipping pass. That is honest behaviour, and it is
+  also the cheapest reach left on the table — a candidate for the next increment
+  alongside the leaf-only `shrink_callee_saved_saves` lever.
+- Found while adding this lane's own verification artifact, and pre-existing:
+  `rivet check verification-evidence` was VACUOUS repo-wide. It scans
+  `fields.steps[].run` (a sequence) while every artifact here writes `steps:` as
+  a mapping, so it reported `named_test_steps_checked: 0` while 31 artifacts
+  carry a `cargo test` step — and passed green. SWVER-022 is written in the shape
+  the oracle actually reads (verified red-first: a nonexistent test name makes it
+  exit 1), which takes it from 0 checked to 1. Converting the other 42 is a
+  follow-up, because each conversion has to re-verify that its filter still
+  matches a real test — which is the entire point of the oracle. Separately, a
+  source with a YAML parse error is silently skipped and the oracle still reports
+  `ok: true`.
+- Still declined, by name, with the histogram to prove it: `single-block` 73,
+  `unmodeled-op` 61 (the i64 div/rem software loops, rotates, `I64Mul`,
+  popcnt/clz/ctz, the narrow sign-extends, `MemorySize`/`MemoryGrow`),
+  `identity-colouring` 58, `call-indirect-pseudo` 17, `unreachable-block` 11,
+  `numeric-branch` 10, `i64-16bit-form-high-reg` 1.
 
 ### Documentation
 
