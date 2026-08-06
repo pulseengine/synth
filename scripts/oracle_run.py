@@ -106,6 +106,19 @@ NUM_RE = re.compile(r"^>=\s*(?P<min>\d+)\s*$")
 
 MIN_REASON_CHARS = 20
 
+# Resolved at IMPORT, before any oracle has had the chance to chdir.
+# `ORACLE_EVIDENCE_JSONL` is set to a *relative* path by the workflow, and
+# oracles run in-process (`runpy`), so a harness that chdir's into a scratch
+# directory silently redirects the append into that directory — which is then
+# deleted. The record vanishes, the ledger comes up short, and the job reads as
+# "an oracle is missing" when in fact it ran and passed. Exactly one of the four
+# WCET phase scripts chdir's, and exactly that one went missing.
+_LEDGER_PATH = (
+    os.path.abspath(os.environ["ORACLE_EVIDENCE_JSONL"])
+    if os.environ.get("ORACLE_EVIDENCE_JSONL")
+    else None
+)
+
 
 class Decl:
     """A parsed `# ci-checks:` declaration."""
@@ -291,7 +304,7 @@ def run_oracle(script, argv):
 
     real_out = sys.stdout
     tee = Tee(real_out)
-    saved_argv, saved_path = sys.argv[:], sys.path[:]
+    saved_argv, saved_path, saved_cwd = sys.argv[:], sys.path[:], os.getcwd()
 
     # `python script.py` puts the script's OWN directory at sys.path[0];
     # runpy.run_path does not, and several repro harnesses import sibling
@@ -309,6 +322,10 @@ def run_oracle(script, argv):
     finally:
         sys.stdout = real_out
         sys.argv, sys.path = saved_argv, saved_path
+        # The third piece of interpreter state an in-process oracle can move.
+        # Restoring argv and sys.path but not cwd is what let a chdir'ing
+        # harness redirect everything written afterwards on a relative path.
+        os.chdir(saved_cwd)
     return code, counters, tee.buf.getvalue()
 
 
@@ -395,7 +412,7 @@ def main():
 
     # Append to the per-job ledger, if the job asked for one. Written even on
     # failure: a run that fell BELOW its floor is exactly the datum worth having.
-    ledger = os.environ.get("ORACLE_EVIDENCE_JSONL")
+    ledger = _LEDGER_PATH
     if ledger:
         import json
 

@@ -214,7 +214,12 @@ artifacts:
   # quoted; that is the #890 lesson wearing new clothes.
   # =========================================================================
   - id: VG-009
-    type: sys-verification
+    # `system-req`, as VG-001..VG-008 — NOT `sys-verification`. A
+    # sys-verification artifact is a verification MEASURE, which rivet requires
+    # to `verifies` a system requirement; these two are recorded GAPS, which
+    # verify nothing. The species distinction noted above is real but it lives
+    # in the prose, not in the schema type.
+    type: system-req
     title: "Line coverage is blind to the execution differentials (scope mislabel)"
     description: >
       The `Code Coverage` CI job runs `cargo llvm-cov --workspace --lcov`,
@@ -255,7 +260,7 @@ artifacts:
       issue: "#910"
 
   - id: VG-010
-    type: sys-verification
+    type: system-req                     # see VG-009 — a gap, not a measure
     title: "Oracle CI steps asserted exit status, not that any check ran"
     description: >
       #890 wired 63 forgotten execution oracles into CI. Measured on that
