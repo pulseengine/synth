@@ -37,21 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converts into bytes almost entirely through `shrink_callee_saved_saves`, which
   is LEAF-ONLY. **Still flag-off, and the flip criterion is no closer on bytes.**
 
-- **Latent miscompile found and pinned, not fixed (#916): the i64 shift
-  zero-fill mis-encodes for a high destination.** `I64Shl`/`I64ShrU`'s Thumb expansions
-  zero a half with the 16-bit `MOVS` T1 form, `0x2000 | (rd << 8)`, whose `rd`
-  field is three bits — for R8 that is `0x2800`, i.e. `CMP r0, #0`, and the half
-  is never zeroed. Same class as #180 / H-CODE-9, and the same one #311 already
-  fixed for `I64SetCond`. It is REACHABLE in shipped code today
-  (`rv32_cmp_select_472.wat` on cortex-m4 emits `I64ShrU { rd_hi: R8, … }`); it
-  is unobservable *there* only because an `I32WrapI64` discards the high half
-  immediately, which is luck. Not fixed here — unlike `I64SetCond`, these
-  expansions are hand-emitted halfwords with fixed internal branch
-  displacements, so widening the `MOV` overshoots the target, and the fix needs
-  its own lane and its own execution gate. Pinned by
-  `i64_shift_zero_fill_mis_encodes_for_a_high_destination` so it cannot be fixed
-  unnoticed, and the colourer refuses such a stream (`i64-16bit-form-high-reg`)
-  rather than put its name to it.
+- **Latent miscompile FOUND here, fixed in #919 (#916): the i64 zero-fill
+  mis-encodes for a high destination.** The Thumb expansions zero a half with
+  the 16-bit `MOVS` T1 form, `0x2000 | (rd << 8)`, whose `rd` field is three
+  bits — for R8 that is `0x2800`, i.e. `CMP r0, #0`, and the half is never
+  zeroed. Same class as #180 / H-CODE-9, and the same one #311 already fixed for
+  `I64SetCond`. REACHABLE in shipped code (`rv32_cmp_select_472.wat` on
+  cortex-m4 emits `I64ShrU { rd_hi: R8, … }`), unobservable *there* only because
+  an `I32WrapI64` discards the high half immediately — which is luck, not a
+  guarantee.
+
+  This lane found it and declined to fix it, on the reasoning that the
+  hand-emitted halfwords carry fixed internal branch displacements. #919 fixed
+  it and the scope was **five sites, not the two named here** — `I64Clz`,
+  `I64Ctz` and `I64ExtendI32U` zero a half with the same form under **no
+  precondition at all**, where the shift pair at least needed a `≥ 32` count.
+  Three validators were blind to all five: the estimator tested only low
+  registers, the certifier was fed R0/R1, and nothing executed a shift that kept
+  the high half. What surfaced it was the colourer refusing to put its name to
+  such a stream (`i64-16bit-form-high-reg`) — a decline that was right about a
+  defect none of the checkers could see.
 
 - **`--proven-safe`: bounds-check elision on scry's proof, fail-closed and
   attested (VCR-MEM-004, #901).** `synth compile --proven-safe
