@@ -19,7 +19,10 @@ pub mod platform;
 #[cfg(feature = "std")]
 pub mod space;
 
-pub use bounds::{BoundsChecker, MaskingBoundsChecker, SoftwareBoundsChecker};
+pub use bounds::{
+    BoundsChecker, MaskingBoundsChecker, ProvenSafeBoundsChecker, ProvenSafeSites,
+    SoftwareBoundsChecker,
+};
 pub use descriptor::{MemoryDescriptor, MemoryFlags, ProtectionStrategy};
 pub use table::{MAX_MEMORIES, MemoryTable};
 

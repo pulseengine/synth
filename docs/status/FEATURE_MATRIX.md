@@ -81,6 +81,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | Trap-preservation VC (VCR-VER-002) | Y (live classes) | Dropped WASM traps: i32 + i64 div/rem, memory OOB (all widths), `call_indirect`, `unreachable`, float→int trunc |
 | Static-data addressing VC (VCR-VER-003) | Y | Byte-equality of served vs runtime-image static data (the #757 wrong-segment class); spanned accesses, self-contained ROM image; RV32 ships active data segments as `.wasm_data` records — the emitted blob is read back and any served/runtime disagreement hard-errors the compile (#798, v0.48) |
 | Proof-carrying specialization (`SYNTH_FACT_SPEC`) | Y (opt-in) | ordeal-certified elisions from loom `wsc.facts` invariants (#494) |
+| Proven-safe bounds elision (`--proven-safe`, VCR-MEM-004) | Y (opt-in) | Consumes scry's `safe-accesses.json` (`scry/safe-accesses/v1`, scry#114) and elides the `--safety-bounds software` inline guard at the access sites scry PROVED in-bounds against the memory's guaranteed minimum. FAIL CLOSED on a `module_sha256` mismatch (verified against the exact bytes handed to the decoder, so a pre-compile rewrite that shifts operator indices refuses too), on a `memory_min_bytes` disagreement, and on a malformed/missing/wrong-schema file — each elides NOTHING, warns, and exits 0. Absence from the list means "not proven", NEVER "unsafe": an unlisted site keeps its guard. Each `(func, pc)` key is re-validated against the decoded operator (existence + access kind + width), so a wrong key space elides nothing LOUDLY instead of stripping the wrong guard. Writes a `synth-proven-safe-elisions-v1` attestation for sigil — on refusal too. MEASURED on `proven_safe_bounds_901.wat` (Cortex-M4): 5 of 8 sites proven ⇒ 232 → 152 B (80 B, 58 % of the guard tax) and 70 → 45 executed instructions (#901) |
 
 ### WCET (Track D, #778)
 
@@ -99,7 +100,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 
 | Command | Notes |
 |---------|-------|
-| `synth compile <in> -o <out>` | WAT/WASM → ELF; `--cortex-m`, `--target <profile>`, `-b <backend>`, `--all-exports`, `--relocatable`, `--verify`, `--emit-wcet`, `--wcet-hints` |
+| `synth compile <in> -o <out>` | WAT/WASM → ELF; `--cortex-m`, `--target <profile>`, `-b <backend>`, `--all-exports`, `--relocatable`, `--verify`, `--emit-wcet`, `--wcet-hints`, `--proven-safe` |
 | `synth verify <wat> <elf>` | Standalone translation validation (feature-gated build) |
 | `synth disasm <elf>` | Disassemble generated ELF |
 | `synth parse <wasm>` | Parse and analyze WASM components |

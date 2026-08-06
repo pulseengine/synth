@@ -340,16 +340,23 @@ fn compile_wasm_to_arm(
     // walk never crosses (it stops at the first untracked op, so no mark can
     // follow one). Defense in depth: if the fold fired at all, drop the marks
     // loudly rather than risk keying a guard elision to the wrong op.
-    let (fact_div_zero_elide, fact_div_ovf_elide, fact_mem_bounds_elide): (
+    //
+    // VCR-MEM-004 (#901): scry's externally-proven bounds-guard marks ride the
+    // SAME defensive gate for the SAME reason — they are op-index keyed, so an
+    // index shift would strip the guard off the wrong access. They are unioned
+    // with #494's certificate-discharged marks here (one consumption point,
+    // two authorities; `CompileConfig` keeps them separate so the attestation
+    // can say which one covered each site).
+    let (fact_div_zero_elide, fact_div_ovf_elide, mem_bounds_elide): (
         &[usize],
         &[usize],
-        &[usize],
+        Vec<usize>,
     ) = if rewritten.len() == wasm_ops.len() {
-        (
-            &config.fact_div_zero_elide,
-            &config.fact_div_ovf_elide,
-            &config.fact_mem_bounds_elide,
-        )
+        let mut mem = config.fact_mem_bounds_elide.clone();
+        mem.extend_from_slice(&config.proven_safe_mem_elide);
+        mem.sort_unstable();
+        mem.dedup();
+        (&config.fact_div_zero_elide, &config.fact_div_ovf_elide, mem)
     } else {
         if !config.fact_div_zero_elide.is_empty()
             || !config.fact_div_ovf_elide.is_empty()
@@ -359,7 +366,16 @@ fn compile_wasm_to_arm(
                 "fact-spec: DECLINE guard elision marks dropped — the                      memory.grow(0) fold shifted op indices (#494 defensive gate);                      general lowering emitted"
             );
         }
-        (&[], &[], &[])
+        if !config.proven_safe_mem_elide.is_empty() {
+            eprintln!(
+                "proven-safe: DECLINE {} bounds-guard elision mark(s) dropped — the \
+                 memory.grow(0) fold shifted op indices, so the (func, pc) keys no longer \
+                 name the accesses scry proved (VCR-MEM-004 defensive gate, #901); every \
+                 guard is retained",
+                config.proven_safe_mem_elide.len()
+            );
+        }
+        (&[], &[], Vec::new())
     };
     let wasm_ops: &[WasmOp] = &rewritten;
 
@@ -543,9 +559,10 @@ fn compile_wasm_to_arm(
         // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
         selector
             .set_fact_div_guard_elisions(fact_div_zero_elide.to_vec(), fact_div_ovf_elide.to_vec());
-        // #494 bounds-elision: certificate-discharged memory bounds-guard
-        // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
-        selector.set_fact_mem_bounds_elisions(fact_mem_bounds_elide.to_vec());
+        // #494 bounds-elision + VCR-MEM-004 (#901): per-site memory
+        // bounds-guard marks, unioned above. Empty in every compile without
+        // SYNTH_FACT_SPEC + facts or --proven-safe.
+        selector.set_fact_mem_bounds_elisions(mem_bounds_elide.clone());
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
@@ -797,9 +814,12 @@ fn compile_wasm_to_arm(
     // obligation, so every existing compile keeps its path byte-identical.
     let has_fact_div_elide = !fact_div_zero_elide.is_empty()
         || !fact_div_ovf_elide.is_empty()
-        // #494 bounds-elision: memory bounds-guard marks are direct-selector
-        // keyed for the same reason (IR passes renumber instructions).
-        || !fact_mem_bounds_elide.is_empty();
+        // #494 bounds-elision + VCR-MEM-004 (#901): memory bounds-guard marks
+        // are direct-selector keyed for the same reason (IR passes renumber
+        // instructions). This is ALSO why the optimized path's
+        // `push_software_bounds_guard` sites never need mark plumbing: a
+        // marked function is routed away from that path entirely.
+        || !mem_bounds_elide.is_empty();
     // #643: the optimized path's global lowering is width-naive — `GlobalGet`/
     // `GlobalSet` are single-word `[R9, idx*4]` accesses, which (a) silently
     // dropped the high word of every i64 global and (b) mis-address every
