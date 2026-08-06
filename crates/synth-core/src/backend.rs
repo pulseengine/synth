@@ -388,6 +388,23 @@ pub struct CompileConfig {
     /// stay — sound). Empty (the default) ⇒ every guard is emitted,
     /// byte-identical to today.
     pub fact_mem_bounds_elide: Vec<usize>,
+    /// VCR-MEM-004 (#901): op indices of linear-memory accesses whose
+    /// `--safety-bounds software` inline guard is elided on an EXTERNAL proof
+    /// — scry's sound abstract interpretation proved the access in-bounds
+    /// against the memory's guaranteed minimum size, and the verdict file
+    /// cleared every fail-closed gate ([`crate::proven_safe::ingest`]:
+    /// `module_sha256` bound to the exact bytes being compiled,
+    /// `memory_min_bytes` equal to this module's declared floor, and each
+    /// entry's `(func, pc)` key validated against the decoded operator at
+    /// that index).
+    ///
+    /// Kept SEPARATE from [`CompileConfig::fact_mem_bounds_elide`] on purpose:
+    /// the two strip the same guard at the same consumption point, but on
+    /// different AUTHORITIES (a per-site ordeal certificate vs a whole-module
+    /// external AI), and the `synth-proven-safe-elisions-v1` attestation
+    /// records which one covered each site. The ARM backend unions them.
+    /// Empty (the default) ⇒ every guard is emitted, byte-identical to today.
+    pub proven_safe_mem_elide: Vec<usize>,
     /// #642: `call_indirect` guard inputs — the compile-time table size for
     /// the runtime bounds check and the per-expected-type closed-world type
     /// verdicts — computed from the decoded module by
@@ -515,6 +532,7 @@ impl Default for CompileConfig {
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
             fact_mem_bounds_elide: Vec::new(),
+            proven_safe_mem_elide: Vec::new(),
             // #642: no guard inputs ⇒ every call_indirect lowering declines
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.
