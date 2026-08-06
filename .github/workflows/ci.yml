@@ -1247,6 +1247,68 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/fact_spec_rem_494_differential.py
 
+  proven-safe-oracle:
+    name: proven-safe bounds-elision oracle (VCR-MEM-004, #901)
+    # VCR-MEM-004 (#901): `--proven-safe` consumes scry's safe-accesses.json
+    # (schema scry/safe-accesses/v1, scry#114) and elides the
+    # `--safety-bounds software` inline guard at the access sites scry PROVED
+    # in-bounds. This job gates the three safety properties, not the speedup:
+    #   (1) FAIL CLOSED on module_sha256 / memory_min_bytes / malformed input;
+    #   (2) ABSENCE MEANS "NOT PROVEN" — a partial verdict list leaves exactly
+    #       the unproven guards standing, and their out-of-bounds accesses
+    #       still TRAP under execution;
+    #   (3) a genuine elision that is result-identical to wasmtime.
+    # The differential's fail-closed leg is a permanent regression gate: it
+    # applies one module's verdicts to a MUTATED module whose keys all still
+    # validate, so deleting the hash comparison turns it RED with a real
+    # UC_ERR_READ_UNMAPPED (verified by mutation when #901 landed).
+    # Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      # Unit level: the fail-closed ingestion gates (synth-core) and the
+      # dep-free ProvenSafeBoundsChecker trait semantics (synth-memory).
+      - name: Run ingestion + BoundsChecker unit gates
+        run: cargo test -p synth-core --lib proven_safe && cargo test -p synth-memory --lib
+      # Byte evidence: the partial-list partition, the refusals, the key-space
+      # canary, and the attestation contents.
+      - name: Run --proven-safe byte gates (#901)
+        run: cargo test -p synth-cli --test proven_safe_bounds_901
+      # The fact-spec combination refusal needs the solver-carrying build (the
+      # pass is inert without it), so it is a separate feature-gated run.
+      - name: Run the fact-spec-combination refusal gate (verify feature)
+        run: cargo test -p synth-cli --features verify --test proven_safe_bounds_901
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run --proven-safe execution differential (#901)
+        env:
+          SYNTH: ./target/debug/synth
+        run: |
+          set -euo pipefail
+          python scripts/repro/proven_safe_bounds_901_differential.py \
+            | tee /tmp/proven_safe_901.log
+          grep -q '^RESULT: PASS' /tmp/proven_safe_901.log
+          # Non-vacuity: a differential that checked nothing must not pass.
+          grep -qE '^#901 CHECKS=[1-9][0-9]*/[1-9][0-9]*$' /tmp/proven_safe_901.log
+          grep -q 'absence-is-not-safety: [1-9]' /tmp/proven_safe_901.log
+          grep -q 'fail-closed: stale verdicts REFUSED' /tmp/proven_safe_901.log
+
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
     # VCR-ORACLE-001 (#242, #472): EXECUTE the RV32 immediate-shift-fold lever
@@ -2497,6 +2559,12 @@ jobs:
         run: python scripts/repro/i64_popcnt_632_differential.py
       - name: i64 shr_u/shr_s single-function path differential (#599)
         run: python scripts/repro/i64_shr_599_differential.py
+      - name: i64 high-register zero-fill differential (#916)
+        run: |
+          set -euo pipefail
+          ./target/debug/synth compile scripts/repro/i64_high_reg_zero_fill_916.wat \
+            -o /tmp/zf916.elf --target cortex-m4 --relocatable --all-exports
+          python scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
       - name: dead-frame elision differential (#390, both flag states)
         run: python scripts/repro/leaf_dead_frame_differential.py
       - name: i32 local-promotion differential (#390, clean + dirty)
