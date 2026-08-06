@@ -632,29 +632,77 @@ artifacts:
         native_pointer_bss) stay byte-identical. A unit test asserts the FP
         op yields Err, not a stub.
 
+  # SINGLE DEFINITION of GI-FPU-002. Until v0.55 this id was declared TWICE — here
+  # (status: proposed, the original requirement) and again in
+  # artifacts/verified-codegen-roadmap.yaml (status: implemented, the phase-1
+  # delivery record added by PR #705). rivet loaded the second over the first, so
+  # the graph reported GI-FPU-002 as `proposed` while README/CHANGELOG reported
+  # #369 CLOSED — one id meaning two things depending on which file you read.
+  # Resolved by merging the delivery record INTO the requirement's namespace home
+  # (GI-002 → GI-FPU-001 → GI-FPU-002 → GI-FPU-VER-001 all live in this file; the
+  # roadmap carries VCR-* program items) and leaving a pointer where the duplicate
+  # was.
   - id: GI-FPU-002
     type: sw-req
     title: Hardware-FPU (VFP) lowering for f32/f64 on Cortex-M FPU targets (#369, REQ-PIX-001)
     description: >
-      The VFP lowering that exists (`F32Add if self.fpu.is_some() =>
-      ArmOp::F32Add{sd,sn,sm}`, instruction_selector.rs:2769) lives in the
-      LEGACY `select()` function (line 1726) which NO production compile path
-      calls — a dead prototype. synth shall implement real hardware-FPU
-      lowering wired into the production `select_with_stack`: `vmov`/`vldr`/
-      `vstr` to move floats between GPR/memory and VFP s/d registers, the VFP
-      arithmetic/compare/convert ops (`vadd/vsub/vmul/vdiv/vcvt/vcmp/vabs/
-      vneg/vsqrt/...`) on s registers (f32) and d registers (f64), full op
-      coverage for gale's falcon mix (2044 f32 + 480 f64), correct value
-      semantics, and the EABI build attributes (`Tag_FP_arch`,
-      `Tag_ABI_VFP_args`) so the FP mode is verifiable from the artifact.
-      Target FPU mapping: cortex-m4f → fpv4-sp, cortex-m7 → fpv5-sp,
-      cortex-m7dp → fpv5-d16; soft path retained for no-FPU targets
-      (cortex-m3, rv32i). Multi-pass feature; behavior frozen and oracle-gated
-      every increment. Blocks jess REQ-PIX-001 / AFD-024 (Pixhawk 6X-RT M7
-      hard-float). Supersedes the GI-FPU-001 loud-skip degradation per op as
-      coverage lands.
-    status: proposed
-    tags: [gale, fpu, vfp, hard-float, float, performance, pixhawk, feature, multi-pass]
+      ORIGINAL GAP (2026, #369): the VFP lowering that existed (`F32Add if
+      self.fpu.is_some() => ArmOp::F32Add{sd,sn,sm}`) lived in the LEGACY
+      `select()` function which NO production compile path calls — a dead
+      prototype. synth shall implement real hardware-FPU lowering wired into the
+      production `select_with_stack`: `vmov`/`vldr`/`vstr` to move floats between
+      GPR/memory and VFP s/d registers, the VFP arithmetic/compare/convert ops
+      (`vadd/vsub/vmul/vdiv/vcvt/vcmp/vabs/vneg/vsqrt/...`) on s registers (f32)
+      and d registers (f64), full op coverage for gale's falcon mix (2044 f32 +
+      480 f64), correct value semantics, and the EABI build attributes
+      (`Tag_FP_arch`, `Tag_ABI_VFP_args`) so the FP mode is verifiable from the
+      artifact. Target FPU mapping: cortex-m4f → fpv4-sp, cortex-m7 → fpv5-sp,
+      cortex-m7dp → fpv5-d16; soft path retained for no-FPU targets (cortex-m3,
+      rv32i). Multi-pass feature; behavior frozen and oracle-gated every
+      increment. Blocks jess REQ-PIX-001 / AFD-024 (Pixhawk 6X-RT M7 hard-float).
+      Supersedes the GI-FPU-001 loud-skip degradation per op as coverage lands.
+
+      DELIVERED — phase 1, f32 on thumb-2 (v0.41, synth #619, PR #705):
+        (1) Decoder un-drops the in-scope scalar f32 ops (add/sub/mul/div, the six
+            comparisons, i32.trunc_f32_s/u, f32.convert_i32_s/u, f32.const).
+        (2) A real VFP value stack in `select_with_stack`: `StackVal::Float`, an
+            S0..S15 allocator, and f32 arms that pop/push S-register operands.
+            Integer modules never construct a Float entry, so the frozen integer
+            path is byte-identical.
+        (3) AAPCS-VFP calling convention: f32 params homed in S0..S15 (threaded
+            `params_f32`, decoder → CompileConfig → selector), f32 result in S0.
+        (4) FPU gate: only FPU targets (cortex-m4f/m7/m7dp) lower f32; m0/m3/r5
+            keep the honest reject with a clear GI-FPU-002 message.
+        (5) `.ARM.attributes`: Tag_FP_arch=VFPv4-D16 + Tag_ABI_VFP_args=VFP on FPU
+            targets (non-FPU byte-identical), and the reset handler enables
+            CP10/CP11 in SCB->CPACR (the M4F FPU is off at reset).
+        (6) Encoder bugs fixed: the signed/unsigned VCVT constants in
+            encode_{arm,thumb}_f32_convert_i32 were SWAPPED (0xEEB80A40 is U32),
+            silently making convert_i32_s unsigned; and the CPACR ORR mask
+            encoded #0x07800000 instead of #0x00F00000.
+
+      DELIVERED SINCE — the requirement is now MET, not merely started:
+        * f32 complete v0.41, **f64 complete v0.43 — #369 CLOSED** (the D-register
+          arithmetic/compare/convert surface plus f32 load/store, local.set/tee,
+          and non-param float locals; the phase-1 "HELD" list below is history).
+        * v0.52 (#869): the eight ARM i64↔float conversions lower INLINE rather
+          than calling `__aeabi_*`, execution-verified over 96k checks.
+        * v0.53 (#881, VCR-RA-004): **VFP register-file spilling** — the falcon
+          v1.128 `--relocatable cortex-m7dp` exhaustion wall (`S0..S15 all live` /
+          `caller-saved VFP D-register file exhausted`) is gone; both files spill
+          and reload through the cycle-safe parallel-move resolver, and VCR-RA-003
+          was extended to SEE the VFP file. 7 spilled-VFP shapes, 109 rows
+          bit-identical to wasmtime, NaN-aware per WASM §4.3.3.
+
+      RESIDUALS (loud declines, never silent): `f32.{ceil,floor,trunc,nearest}`
+      decline on every ARM target pending a real `VRINT.F32` lowering — the legacy
+      pseudo-op was removed in v0.54 as unsound (it rounded via a saturating
+      `VCVT`); and `i64.trunc_sat_f32_*` declines on single-precision FPUs, which
+      needs the f64 promote. Float/SIMD cross-backend parity is separately tracked
+      (VCR-SEL-005 classifies it StructurallyExcluded with a written reason,
+      because ARM float lowering is TARGET-parameterized).
+    status: implemented
+    tags: [gale, fpu, vfp, hard-float, float, performance, pixhawk, feature, multi-pass, synth-369, synth-619, synth-881, release-v0.43, release-v0.53]
     links:
       - type: derives-from
         target: GI-002
@@ -664,13 +712,27 @@ artifacts:
       req-type: functional
       priority: must
       verification-criteria: >
-        falcon-v1.56.fused.wasm compiled for cortex-m7dp emits VFP
-        instructions (vadd/vmul/vcvt on d registers) and the ELF carries
-        Tag_FP_arch=fpv5-d16 / Tag_ABI_VFP_args; a numeric differential of FP
-        results against wasmtime matches bit-for-bit on gale's G474RE/RT1176
-        re-test; cortex-m7 (sp) and cortex-m7dp (dp) outputs DIFFER (FPU mode
-        consulted); all frozen fixtures stay byte-identical (no float content,
-        unaffected); soft-float retained and unchanged for cortex-m3.
+        MET. Execution differential `scripts/repro/f32_vfp_619_differential.py`:
+        compiles f32.add/sub/mul/div + i32.trunc_f32_s + f32.convert_i32_s/u for
+        cortex-m4f, reads each symbol from the ELF SYMTAB (#489), runs it under
+        unicorn (ARM/Thumb, FPU enabled via CPACR CP10/CP11 + FPEXC.EN) with f32
+        args in S0/S1 (hard-float), and asserts the result is bit-exact
+        (`to_bits`) vs wasmtime on boundary values (0.0, 1.5, -2.25, large,
+        subnormal) — RED on the pre-#705 tree (compile REJECTS → exit 1), GREEN
+        after (48/48 → exit 0). The same harness asserts cortex-m3 REJECTS f32
+        (honest-reject direction). `crates/synth-backend/tests/f32_hardfloat_619.rs`
+        locks the AAPCS-VFP S0/S1 homing, the honest reject, and the
+        convert-signedness fix without unicorn. The ELF carries
+        Tag_FP_arch/Tag_ABI_VFP_args, and cortex-m7 (sp) vs cortex-m7dp (dp)
+        outputs DIFFER (FPU mode consulted). v0.53's spilled-VFP differential
+        (7 shapes, 109 rows bit-identical to wasmtime on `-t cortex-m7dp
+        --relocatable`, internal `bl` resolved by a REAL link so an unresolved
+        relocation cannot be silently skipped) closes the falcon exhaustion
+        criterion. Frozen anchors 10/10 and the #511 estimator oracle pass
+        untouched; soft-float retained and unchanged for cortex-m3. NOT
+        execution-differentiated: the f32 comparisons are byte-pinned in
+        f32_vfp_encoding_test.rs but unicorn does not model the VMRS FPSCR→APSR
+        flag transfer (an emulator gap, recorded not hidden).
 
   - id: GI-FPU-VER-001
     type: sw-verification
@@ -695,6 +757,65 @@ artifacts:
       pass-criteria: >
         cargo test test_369 green; f32 module emits no fadd/dmul symbol;
         control_step / flight_seam / div_const differentials byte-identical.
+
+  # Right-side closure for GI-FPU-002 (#893). Flipping that requirement from
+  # `proposed` to `implemented` made rivet START checking its lifecycle coverage,
+  # which correctly reported it had NO verification artifact — a gap the wrong
+  # status had been hiding, not one the flip created. The evidence already
+  # existed and was named in the requirement's criteria; it just had no typed
+  # `verifies` link. This artifact is that link.
+  - id: GI-FPU-VER-002
+    type: sw-verification
+    title: "Hardware-FPU (VFP) lowering (#369) — execution differentials + honest-reject + spilled-VFP"
+    description: >
+      Verifies GI-FPU-002 across its whole arc, by EXECUTION rather than by
+      inspection:
+
+      (1) f32 reachability (v0.41, #619/#705) —
+      `scripts/repro/f32_vfp_619_differential.py` compiles f32 add/sub/mul/div,
+      i32.trunc_f32_s and f32.convert_i32_s/u for cortex-m4f, reads each symbol
+      from the ELF SYMTAB (#489 — never from `synth disasm` text, which is
+      host-dependent), runs it under unicorn with the FPU actually enabled
+      (CPACR CP10/CP11 + FPEXC.EN) and f32 args in S0/S1 per AAPCS-VFP, and
+      asserts bit-exactness (`to_bits`) against wasmtime on boundary values
+      including a subnormal. RED before the fix (compile REJECTS, exit 1), GREEN
+      after (48/48).
+
+      (2) The HONEST-REJECT direction, in the same harness: cortex-m3 must still
+      REFUSE f32 rather than silently emitting something. A one-directional
+      differential would pass just as well on a compiler that had quietly
+      widened the FPU gate.
+
+      (3) Unit-level pinning without an emulator —
+      `crates/synth-backend/tests/f32_hardfloat_619.rs` locks the AAPCS-VFP
+      S0/S1 homing, the honest reject, and the swapped-VCVT signedness fix.
+
+      (4) Exhaustion (v0.53, #881) — the spilled-VFP differential: 7 shapes on
+      `-t cortex-m7dp --relocatable`, 109 rows bit-identical to wasmtime,
+      NaN-aware per WASM §4.3.3, with the internal `bl` resolved by a REAL link
+      so an unresolved relocation cannot be silently skipped as a pass.
+
+      HONEST BOUND, recorded not hidden: the f32 COMPARISONS are byte-pinned in
+      `f32_vfp_encoding_test.rs` but are NOT execution-differentiated — unicorn
+      does not model the VMRS FPSCR→APSR flag transfer. That is an emulator gap,
+      and it is the one part of the surface whose evidence is encoding-level
+      only.
+    status: implemented
+    tags: [gale, fpu, vfp, verification, differential, unicorn, symtab, release-v0.41, release-v0.53, synth-893]
+    links:
+      - type: verifies
+        target: GI-FPU-002
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend --test f32_hardfloat_619 && python3 scripts/repro/f32_vfp_619_differential.py"
+        coverage: >
+          scripts/repro/f32_vfp_619_differential.py (48/48 bit-exact vs wasmtime
+          on cortex-m4f + the cortex-m3 honest-reject leg),
+          crates/synth-backend/tests/f32_hardfloat_619.rs (AAPCS-VFP homing,
+          reject, VCVT signedness), the #881 spilled-VFP differential (109 rows),
+          and crates/synth-backend/tests/f32_vfp_encoding_test.rs for the
+          comparison encodings unicorn cannot execute
 
   - id: GI-MEM-001
     type: sw-req
