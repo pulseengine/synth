@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 15
 """#490 (epic #242) — EXECUTION-validate optimized-path callee-saved preservation.
 
 The optimized ARM path (the default, non-`--relocatable` self-contained image)

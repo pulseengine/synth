@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 4
 """#483 (epic #242) — EXECUTION-validate optimized-path block/br_if lowering.
 
 On the OPTIMIZED (non-`--relocatable`) ARM path, a forward `block` + `br_if`

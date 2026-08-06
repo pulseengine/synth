@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: compiles >= 4
 """#275 — self-contained call_indirect: emission + residual-decline oracle.
 
 The v0.42 #717 interim (loud-decline on the whole self-contained path) was

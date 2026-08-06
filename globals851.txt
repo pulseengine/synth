@@ -1,0 +1,4 @@
+
+17 checks across 6 exported functions (11 ADRP + 11 ADD lo12 relocations applied)
+RESULT: PASS — aarch64 global.get/global.set match wasmtime (initial values, i32+i64 slots, stores persisting across calls)
+ORACLE-CALIBRATION script=aarch64_globals_851_differential.py emulations=17 wasmtime_calls=17 compiles=1 exit=0 secs=0.1

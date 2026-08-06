@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 56
 """VCR-DEC-001 increments 2+3 — EXECUTION differential for the join- and
 call-aware graph-colouring allocator (`SYNTH_GRAPH_ALLOC=1`, epic #242).
 

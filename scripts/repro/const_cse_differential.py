@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 54
 """VCR-RA const-CSE (#242) — EXECUTION-validate the optimized-path const cache.
 
 The ARM path re-materializes a constant at every use: the same `i32.const N`

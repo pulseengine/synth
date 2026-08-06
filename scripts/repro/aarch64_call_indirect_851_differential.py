@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 35
 """#851 lane L3 — aarch64 `call_indirect` execution differential vs wasmtime.
 
 A64's `blr` is TOTAL: it branches wherever the register points. WASM §4.4.8 is

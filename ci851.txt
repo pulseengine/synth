@@ -1,0 +1,4 @@
+
+35 checks (23 trap, 12 value) across 6 exported functions; 5 table trampolines relocated
+RESULT: PASS — aarch64 call_indirect matches wasmtime, including the three §4.4.8 traps (out-of-range, null slot, signature mismatch) and the structurally-duplicate type that must NOT trap
+ORACLE-CALIBRATION script=aarch64_call_indirect_851_differential.py emulations=35 wasmtime_calls=35 compiles=1 exit=0 secs=0.1

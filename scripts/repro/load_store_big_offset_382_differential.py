@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#382 — large static load/store offset (> imm12) differential oracle.
 
 The optimized (non-relocatable) ARM path materializes the linear-memory base as

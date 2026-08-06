@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 20
 """VCR-RA-002 / VCR-ORACLE-001 (#390, #242) — EXECUTION-validate dead-frame elision.
 
 `compute_local_layout` reserves a frame slot (`sub sp,#N` / `add sp,#N`) for every

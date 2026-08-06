@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 371
 """VCR-MEM-004 / #901 — execution differential for `--proven-safe`.
 
 Compiles `scripts/repro/proven_safe_bounds_901.wat` (one function, EIGHT

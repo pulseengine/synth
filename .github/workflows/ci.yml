@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # #910: where scripts/oracle_run.py appends one JSON record per oracle it
+  # drives. Workflow-level so no oracle job can forget it; jobs that run no
+  # oracle simply never create the file.
+  ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl
 
 jobs:
   test:
@@ -201,10 +205,19 @@ jobs:
       #   * The verdict is re-derived from the summary the gate WROTE, not from
       #     exit 0: a non-empty script set, a non-zero wired count, zero
       #     undeclared, zero wired-but-unreferenced, and zero failures.
+      # #910 adds `--min-emulation-floor`: the summed `# ci-checks: emulations`
+      # floors, i.e. the emulator entries the wired oracle surface ASSERTS on
+      # every CI run. It is a RATCHET (direction: up) and a separate population
+      # from the `Rust-test Line Coverage` percentage — which cannot see any of
+      # it, because the oracles run the compiler as an uninstrumented
+      # subprocess from other jobs. The literal below is pinned in claims.yaml
+      # against the same number in scripts/repro/ORACLE_WIRING.md, so the gate
+      # and the doc cannot drift apart.
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
+            --min-emulation-floor 295333 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -213,12 +226,18 @@ jobs:
                                 ("wired==0", s["wired"] < 1),
                                 ("undeclared", s["undeclared"]),
                                 ("wired_unreferenced", s["wired_unreferenced"]),
+                                ("checks_undeclared", s["checks_undeclared"]),
+                                ("emulation_floor<100000",
+                                 s["emulation_floor"] < 100000),
                                 ("failures", s["failures"])) if v]
           if bad:
               sys.exit(f"oracle-wiring gate VACUOUS or DRIFTED {bad}: {s}")
           print(f"oracle-wiring gate is non-vacuous: it classified {s['total']} "
                 f"scripts, {s['wired']} of them wired, {s['manual']} manual, "
-                f"{s['unwired']} unwired-debt, 0 inert.")
+                f"{s['unwired']} unwired-debt, 0 inert, and every wired oracle "
+                f"declares a check floor ({s['emulation_floor']} emulator "
+                f"entries asserted across "
+                f"{s['checks_by_mode']['emulations']['scripts']} of them).")
           PY
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
@@ -276,7 +295,26 @@ jobs:
         run: cargo test -p synth-verify --test comprehensive_verification --features z3-solver,arm
 
   coverage:
-    name: Code Coverage
+    # RENAMED from "Code Coverage" (#910). The old name implied whole-system
+    # coverage; the job measures ONE population — the Rust test suite, in-process,
+    # under llvm-cov instrumentation.
+    #
+    # What it CANNOT see, structurally: the execution differentials. Those spawn
+    # `$SYNTH` as a SEPARATE, UNINSTRUMENTED process, from OTHER jobs entirely
+    # (`repro sweep-*`, `trap-semantics oracle`, the per-issue oracles). An
+    # uninstrumented subprocess emits no profile data, so none of that execution
+    # reaches this percentage. That is why backend.rs — almost pure ELF emission,
+    # exercised end-to-end on every differential — reads ~42 % here.
+    #
+    # Consequence, stated so nobody has to rediscover it: this number UNDERSTATES
+    # the testing that exists, and it is NOT a completeness measure. The
+    # differential population is reported separately and in its own unit —
+    # asserted executed checks, see scripts/oracle_run.py and the
+    # `oracle-evidence-ledger` job. Do not add them together.
+    #
+    # Not a required status check on `main` (verified before renaming: renaming a
+    # required context deadlocks every merge until protection is updated).
+    name: Rust-test Line Coverage (unit + integration only)
     needs: [test]
     runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
@@ -303,6 +341,29 @@ jobs:
           cargo llvm-cov --workspace --lcov --output-path lcov.info \
             --exclude synth-qemu \
             --exclude synth-backend-awsm --exclude synth-backend-wasker
+      - name: Say what this number does and does not measure (#910)
+        # The scope note travels WITH the number. Reading the percentage off the
+        # job summary and reading this are the same act, which is the only way a
+        # caveat survives being quoted.
+        run: |
+          set -euo pipefail
+          test -s lcov.info
+          {
+            echo "### Rust-test line coverage — SCOPE (#910)"
+            echo
+            echo "Measures: \`cargo llvm-cov --workspace\` — the **Rust test suite**, in-process."
+            echo
+            echo "Does **not** measure: the execution differentials"
+            echo "(\`scripts/repro/*.py\`). They spawn \`\$SYNTH\` as a separate,"
+            echo "UNINSTRUMENTED process, from other jobs — no profile data reaches"
+            echo "this figure. \`backend.rs\` reads ~42 % here while being exercised"
+            echo "end-to-end by nearly every differential."
+            echo
+            echo "So this number **understates** the testing that exists, and is"
+            echo "**not** a completeness measure. The differential population is"
+            echo "reported separately, in executed checks, by the"
+            echo "\`oracle evidence ledger\` job. **Do not add them together.**"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
         with:
@@ -458,7 +519,18 @@ jobs:
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools
       - name: Run two-move execution oracle
-        run: python scripts/repro/cmp_select_two_move_differential.py
+        run: python scripts/oracle_run.py scripts/repro/cmp_select_two_move_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   provenance-gate:
     name: synth-provenance-v1 reconciliation gate (#396)
@@ -529,31 +601,31 @@ jobs:
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools
       - name: Run m1 integer-core execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_add_538_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_add_538_differential.py
       - name: Run m2 broadened i32+i64 ALU execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_538_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_538_differential.py
       - name: Run m3 scalar-float execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m3_floats_538_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m3_floats_538_differential.py
       - name: Run m4 trunc boundary-table + min/max NaN/±0 execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m4_trunc_minmax_538_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m4_trunc_minmax_538_differential.py
       - name: Run cf void-block br/br_if execution oracle (both branch edges)
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_cf_538_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_cf_538_differential.py
       - name: Run #851 linear-memory load/store execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_mem_851_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_mem_851_differential.py
       - name: Run #851 div/rem trap + popcnt + reinterpret execution oracle (÷0 + INT_MIN/-1)
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_divrem_851_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_divrem_851_differential.py
       - name: Run #851 non-param locals execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_locals_851_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_locals_851_differential.py
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_ctrlflow_851_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_bounds_865_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_bounds_865_differential.py
       - name: Run #851 v0.53 op-surface oracle (select x4 types + wrap/extends + drop/nop + memory.size/grow)
         # The VCR-SEL-005 third-backend closes: select (CSEL/FCSEL) incl.
         # NaN/-0 carry, wrap/extends with POISONED upper argument bits (the
         # AAPCS64 x-view hazard), drop/nop, fixed-memory size/grow parity
         # against a min=max module (growth failure is spec-forced there).
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_surface_851_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_surface_851_differential.py
       - name: Run #851 lane L3 GLOBALS execution oracle (emitted .data region + persistence)
         # synth EMITS the globals region (a `.data` image carrying the decoded
         # initializers) and reaches it `adrp`+`add :lo12:` — no base register,
@@ -567,7 +639,7 @@ jobs:
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
-            python scripts/repro/aarch64_globals_851_differential.py | tee globals851.txt
+            python scripts/oracle_run.py scripts/repro/aarch64_globals_851_differential.py | tee globals851.txt
           grep -Eq '^[1-9][0-9]* checks across [1-9][0-9]* exported' globals851.txt
           grep -q '^RESULT: PASS' globals851.txt
       - name: Run #851 lane L3 CALL_INDIRECT execution oracle (§4.4.8 OOB + null + type traps)
@@ -582,7 +654,7 @@ jobs:
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
-            python scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
+            python scripts/oracle_run.py scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
           grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' ci851.txt
           grep -q '^RESULT: PASS' ci851.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
@@ -608,7 +680,7 @@ jobs:
         # entire purpose — must go RED.
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth python scripts/repro/aarch64_float_completion_851_differential.py \
+          SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_float_completion_851_differential.py \
             | tee /tmp/a64_floatdiff.log
           grep -q '^RESULT: PASS' /tmp/a64_floatdiff.log
           grep -Eq '^[0-9]+ wasmtime cases \([0-9]+ trap cases\)' /tmp/a64_floatdiff.log
@@ -618,7 +690,18 @@ jobs:
           [ "$n" -ge 300 ]
           [ "$t" -ge 40 ]
       - name: Run decline-matrix honesty oracle
-        run: SYNTH=./target/debug/synth python scripts/repro/aarch64_m2_decline_538.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_decline_538.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 15
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)
@@ -685,7 +768,18 @@ jobs:
         run: |
           SYNTH=./target/debug/synth \
             WASMTOOLS=wasm-tools WASMTIME=wasmtime \
-            python scripts/repro/aarch64_calls_851.py
+            python scripts/oracle_run.py scripts/repro/aarch64_calls_851.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   trap-semantics-oracle:
     name: trap-semantics oracle (#665 unreachable + #666 rem_s)
@@ -726,19 +820,19 @@ jobs:
         # vacuous, so install the linker rather than weaken the check.
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: Run unreachable trap oracle (#665, thumb2 + rv32)
-        run: SYNTH=./target/debug/synth python scripts/repro/unreachable_665_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/unreachable_665_differential.py
       - name: Run rem_s trap-table oracle (#666, rv32)
-        run: SYNTH=./target/debug/synth python scripts/repro/rem_s_666_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rem_s_666_differential.py
       - name: Run i32 shift-mask oracle (#682)
-        run: SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/i32_shift_mask_682_differential.py
       - name: Run ADDW static-offset oracle (#681, incl. software-bounds bypass)
-        run: SYNTH=./target/debug/synth python scripts/repro/addw_offset_681_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/addw_offset_681_differential.py
       # #686: the same oracle under the mask-elision lever (opt-in,
       # SYNTH_SHIFT_MASK_ELIDE=1) — const amounts fold to the immediate form
       # mod 32, unproven amounts keep the mask; the >= 32 rows pin that the
       # elision never fires unsoundly (red-tested at land time).
       - name: Run i32 shift-mask oracle with mask elision ON (#686)
-        run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+        run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/i32_shift_mask_682_differential.py
       # #846/#879: gale's REAL gpio-thin driver (pinned loom.wasm, never a
       # synthetic) under the default-ON mask elision — BOTH halves of the
       # v0.50.1 headline claim: (a) .text shrinks and the redundant mod-32
@@ -751,7 +845,7 @@ jobs:
       - name: Run gpio-thin size + mmio execution oracle (#846/#879, cortex-m3)
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth python scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
+          SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
           grep -q "^#846 CHECKS=75/75" gpio846.out
       # #752: the software bounds guard must trap the top-of-address-space
       # wraparound class — the retired shape ADD-computed the end address
@@ -760,11 +854,11 @@ jobs:
       # 19 vectors (in-bounds, exact-boundary, first-OOB, far-OOB, and six
       # #752 top-of-space rows) x BOTH codegen paths, wasmtime ground truth.
       - name: Run software-bounds wraparound oracle (#752/#377, thumb2 both paths)
-        run: SYNTH=./target/debug/synth python scripts/repro/safety_bounds_377_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/safety_bounds_377_differential.py
       - name: Run bulk-memory operand-clobber oracle (#677, thumb2)
-        run: SYNTH=./target/debug/synth python scripts/repro/bulk_local_clobber_677_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/bulk_local_clobber_677_differential.py
       - name: Run bulk-memory mask-coverage oracle (#679, thumb2)
-        run: SYNTH=./target/debug/synth python scripts/repro/bulk_mask_679_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/bulk_mask_679_differential.py
       # f32 hard-float SOUNDNESS oracles (GI-FPU-002). Dev-only before v0.40.0 —
       # the exact gap that let TWO silent miscompiles ship in v0.39.0 (trunc
       # saturation #709, and every compare returning 0 via a flag-clobber #712).
@@ -772,7 +866,7 @@ jobs:
       # covers ALL SIX comparisons (#712: eq/ne/lt/gt/le/ge — the old harness
       # exercised only lt/gt, which is how eq/ne/le/ge stayed ungated).
       - name: Run f32 arith/compare execution oracle (#619/#712, cortex-m4f)
-        run: SYNTH=./target/debug/synth python scripts/repro/f32_vfp_619_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/f32_vfp_619_differential.py
       # #881: the VFP register-file spilling gate (GI-FPU-002 phase 1 S0..S15 +
       # phase 2 D0..D7) — the oracle behind the "falcon reaches the M7" claim,
       # so it must RUN, not merely exist. The lane wrote this differential and
@@ -785,12 +879,12 @@ jobs:
       - name: Run VFP spill execution oracle (#881, cortex-m7dp)
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth python scripts/repro/vfp_spill_881_differential.py | tee vfp881.out
+          SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_spill_881_differential.py | tee vfp881.out
           grep -q "^PASS: all 7 exports emitted (nm -> T)" vfp881.out
           grep -qE "^PASS: [1-9][0-9]+ execution rows bit-identical to wasmtime" vfp881.out
       # #708/#709: f32.load/reinterpret bit-casts + i32.trunc_f32 trap table.
       - name: Run f32 load/reinterpret + trunc-trap oracle (#708/#709, m4f)
-        run: SYNTH=./target/debug/synth python scripts/repro/f32_mem_trunc_708_709_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/f32_mem_trunc_708_709_differential.py
       # #719: the falcon f32 residual — f32.store, abs/neg/copysign, local.set/
       # tee, and mixed f32/int AAPCS-VFP params — bit-exact vs wasmtime on m4f,
       # including the copysign ±0/NaN-sign/±inf sign edges. m3 honest-reject.
@@ -798,7 +892,7 @@ jobs:
       # (spill/reload around the bl, non-vacuous — the callee clobbers S0/S1)
       # + float-signature-callee loud-decline pinned via symtab absence.
       - name: Run f32 store/abs/neg/copysign/local + mixed-param oracle (#719, m4f)
-        run: SYNTH=./target/debug/synth python scripts/repro/f32_ops_719_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/f32_ops_719_differential.py
       # #369 (GI-FPU-002 phase 2): the scalar f64 subset on cortex-m7dp —
       # const/promote_f32/arith/compare/load/store + f64-across-call, bit-exact
       # (NaN==NaN per Core §4.3.3) vs wasmtime under unicorn. Pins the
@@ -807,7 +901,7 @@ jobs:
       # FPU), and the f64-ABI-boundary loud-declines (f64 params, f64-returning
       # calls).
       - name: Run f64 const/promote/arith/compare/mem + across-call oracle (#369, m7dp)
-        run: SYNTH=./target/debug/synth python scripts/repro/f64_369_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/f64_369_differential.py
       # #782a: the NONTRAPPING trunc_sat family (§4.3.2 — NaN→0, out-of-range
       # saturates, NEVER traps). Full boundary table (NaN/±inf/exact
       # INT_MIN-INT_MAX bounds/±0.5) vs wasmtime on BOTH prioritized backends:
@@ -817,7 +911,7 @@ jobs:
       # forms must NOT skip, the ARM32 i64 forms MUST decline loudly by name.
       # This gate caught the optimized-path silent-NOP drop at land time.
       - name: Run trunc_sat boundary oracle (#782a, m7dp+m4f+aarch64)
-        run: SYNTH=./target/debug/synth python scripts/repro/trunc_sat_782_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/trunc_sat_782_differential.py
       # #869: the 64-bit integer<->float conversion family (gale's six +
       # the #756 i64.trunc_f64 pair) on cortex-m7dp — converts bit-exact
       # (incl. the round-to-odd double-rounding killers), the TRAPPING trunc
@@ -827,7 +921,7 @@ jobs:
       # presence, and >=10k fixed-seed fuzz per direction. This gate caught
       # the range-realloc cross-barrier live-in miscompile at land time.
       - name: Run i64<->float conversion family oracle (#869, m7dp+m4f)
-        run: SYNTH=./target/debug/synth python scripts/repro/i64_float_conv_869_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/i64_float_conv_869_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -840,7 +934,7 @@ jobs:
       # with no float op stayed on the float-naive optimized path: callers
       # marshal S0/S1, the body read R0/R1).
       - name: Run float select + explicit float return oracle (#782b, m7dp+m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/float_select_return_782_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/float_select_return_782_differential.py
       # #739: static ABOVE sp_init under --shadow-stack-size — the sub-word
       # load/store arms previously BAKED the linmem offset as an un-relocated
       # MOVW/MOVT immediate (invisible to the #678 reloc-walking rebase AND to
@@ -849,7 +943,7 @@ jobs:
       # static after the shrink must match wasmtime, with .bss/.data mapped at
       # SEPARATE bases so a baked absolute offset cannot accidentally resolve.
       - name: Run above-SP static shadow-stack-shrink oracle (#739, cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/static_above_sp_739_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/static_above_sp_739_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud
@@ -859,7 +953,7 @@ jobs:
       # (unicorn, .bss/.data at SEPARATE bases). RED on v0.42.0 (compile
       # declines, nothing to emit) -> GREEN with the relocated arms.
       - name: Run i64/wide above-SP static shrink oracle (#746, cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/wide_static_746_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/wide_static_746_differential.py
       # #757: the multi-chunk static-copy CONTROL (gale's gust:os v0.4.0
       # static-string copy shape). The triage claimed the #746 fix miscompiles
       # the head chunk's source ADDRESS relocation; six faithful shapes — incl.
@@ -870,7 +964,7 @@ jobs:
       # the call relocation is a vacuous gate (the self-call masqueraded as a
       # miscompile). Guards that the call-crossing static copy stays correct.
       - name: Run multi-chunk static-copy control oracle (#757, cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/wide_static_copy_757_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/wide_static_copy_757_differential.py
       # #757 v0.45 investigation: a RawVec-grow + memmove reconstruction of gale's
       # exact characterization (a >=9-byte static above wasm_data_base copied via a
       # bump-allocator memmove reached through a grow-call spill/reload). Seven such
@@ -878,7 +972,7 @@ jobs:
       # NOT reproduce from the issue text; it needs gale's exact loom.wasm/os-tl-cm3.o.
       # Kept as a regression guard that the RawVec-grow copy path stays correct.
       - name: Run #757 RawVec-grow memmove reconstruction (cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/mem757_rawvec_memcopy_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem757_rawvec_memcopy_differential.py
       # #740: the Thumb-2 B<cond>.W (T3) arm packed `halfword_offset >> 1`,
       # HALVING every conditional branch spanning > 254 bytes — gust_poll's
       # loop-head `br_if` to an outer block end landed mid-shape (spurious
@@ -888,7 +982,7 @@ jobs:
       # must match wasmtime. Anti-vacuous: FAILS if `poll` stops containing a
       # 32-bit T3 conditional branch. RED on v0.42.0 (5/6 cases) -> GREEN.
       - name: Run wide-B<cond>.W branch-target oracle (#740, cortex-m4)
-        run: SYNTH=./target/debug/synth python scripts/repro/brif_outer_740_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/brif_outer_740_differential.py
       # #406 (VCR-MEM-002 phase 1): N wasm memories = N DISTINCT native base
       # regions. Memory 0 keeps the runtime R11 base; memory k > 0 is
       # addressed via its own __synth_wasm_data_<k> symbol at the base of the
@@ -904,7 +998,7 @@ jobs:
       # wide accesses, non-const segment offsets) is the cargo test
       # crates/synth-cli/tests/multi_memory_406.rs.
       - name: Run multi-memory distinct-regions oracle (#406, cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/multi_memory_406_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_memory_406_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
@@ -917,7 +1011,7 @@ jobs:
       # offsets, a byte load mid-segment, an unaligned segment, and a zero-init
       # region (must stay 0). RED on v0.43.0 (4/5 read 0) -> GREEN.
       - name: Run self-contained data-segment oracle (#758, cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/self_contained_data_758_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/self_contained_data_758_differential.py
       # #275: the DIRECT reachable call graph must EXECUTE on the self-contained
       # --cortex-m image (no --relocatable, no loader). Only `entry` is exported;
       # it calls two non-exported helpers, one of which calls a third — result
@@ -928,7 +1022,7 @@ jobs:
       # emit-all). The reachability walk is #235 (v0.11.28) — this is the missing
       # EXECUTION gate.
       - name: Run self-contained reachable-callgraph oracle (#275, cortex-m3, GREEN)
-        run: SYNTH=./target/debug/synth python scripts/repro/reachable_callgraph_275_selfcontained_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/reachable_callgraph_275_selfcontained_differential.py
       # Non-vacuity: a SEPARATE probe binary (feature `exports_only_275_probe`,
       # NEVER in the default/release build) exposes an `EXPORTS_ONLY_275=1` env
       # hatch that reverts to the pre-#235 exports-only drop (non-exported
@@ -957,7 +1051,7 @@ jobs:
       # truth is wasmtime. WIDENS coverage only — #757 stays OPEN (blocked on
       # the reporter's reduced module); a divergence here is a real find.
       - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
-        run: SYNTH=./target/debug/synth python scripts/repro/multi_segment_static_data_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py
       # #757: gale's EXACT fused os-tl node (loom.wasm) — the real miscompile that
       # 7 synthetic reconstructions could not reproduce (PR #772). Three active data
       # segments overlap at linmem 0x100000; the #354 reloc retargeting bound the
@@ -967,7 +1061,7 @@ jobs:
       # pre-fix binary (seg_0+8 reads 0x02, runtime owns 'g'); the permanent
       # regression fixture the synthetic shapes provably don't cover.
       - name: Run #757 gale fused-node static-data oracle (cortex-m3)
-        run: SYNTH=./target/debug/synth python scripts/repro/mem757_gale_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem757_gale_differential.py
       # VCR-VER-761: the self-contained --cortex-m full-page linmem view could
       # OVERLAP the R9 globals table at the top of SRAM — a store to the top of
       # the first page silently ALIASED a global slot (the R9 base was placed at
@@ -978,9 +1072,9 @@ jobs:
       # (R9 based at func_visible + memory_size, above the page ceiling). Runs
       # BOTH stack layouts (--stack-layout=low does NOT sidestep the overlap).
       - name: Run #761 linmem<->globals overlap oracle (cortex-m4, high layout)
-        run: SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem761_linmem_r9_overlap_differential.py
       - name: Run #761 linmem<->globals overlap oracle (cortex-m4, low layout)
-        run: EXTRA_SYNTH_FLAGS="--stack-layout low" SYNTH=./target/debug/synth python scripts/repro/mem761_linmem_r9_overlap_differential.py
+        run: EXTRA_SYNTH_FLAGS="--stack-layout low" SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem761_linmem_r9_overlap_differential.py
       # VCR-DEC-001 (epic #242, the North Star's first foothold): the
       # SYNTH_GRAPH_ALLOC whole-function graph-colouring allocator SPIKE. Gates
       # three properties on the ARM corpus: (1) flag-OFF ≡ the frozen goldens
@@ -998,7 +1092,7 @@ jobs:
       # increment 2's reach has regressed. Byte-only compare — needs pyelftools
       # ONLY (no unicorn/wasmtime).
       - name: Run VCR-DEC-001 graph-alloc spike differential (#242, thumb2)
-        run: python scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/vcr_dec_001_graph_alloc_differential.py ./target/debug/synth
       # VCR-DEC-001 increments 2+3 (#242): EXECUTION-gate the DIVERGENT bytes the
       # join- and call-aware colouring now produces. This is NOT redundant with
       # the byte differential above: increment 1's correctness followed
@@ -1035,7 +1129,7 @@ jobs:
       - name: Run VCR-DEC-001 join+call allocator execution differential (#242, thumb2)
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth python scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
+          SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
           grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
           awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
       # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
@@ -1049,7 +1143,18 @@ jobs:
       - name: Install clang + lld (riscv32 bare-metal, #798 boot oracle)
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
-        run: SYNTH=./target/debug/synth python scripts/repro/rv32_data_798_boot_differential.py
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rv32_data_798_boot_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 30
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
@@ -1108,7 +1213,7 @@ jobs:
       - name: Audit the SHIPPING allocator against the ABI contract (#242)
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth python scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
+          SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vcr_ver_004_shipping_path_audit.py | tee vcr_ver_004_ship.out
           grep -q "^VCR-VER-004-SHIPPING .* VIOLATED=0 " vcr_ver_004_ship.out
           test "$(grep -c '^  Holds ' vcr_ver_004_ship.out)" -eq 1
       # The grep asserts the machine-readable 4/4 AND a non-zero OK count (#890):
@@ -1117,11 +1222,22 @@ jobs:
       - name: Re-run the v0.53 mutation against all three instruments (#242)
         run: |
           set -euo pipefail
-          python scripts/repro/vcr_ver_004_instrument_independence.py | tee vcr_ver_004.out
+          python scripts/oracle_run.py scripts/repro/vcr_ver_004_instrument_independence.py | tee vcr_ver_004.out
           grep -q "^VCR-VER-004-INDEPENDENCE ASSERTIONS=4/4$" vcr_ver_004.out
           test "$(grep -c '^OK   ' vcr_ver_004.out)" -eq 5
       - name: Assert the tree was restored (the mutation must never persist)
         run: git diff --exit-code
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
@@ -1166,10 +1282,10 @@ jobs:
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools
       - name: Run in-bounds differential (proven bound)
-        run: python scripts/repro/fact_spec_clamp_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_clamp_494_differential.py
       - name: Run wrong-bound loud-decline path
         run: >
-          python scripts/repro/fact_spec_clamp_494_differential.py
+          python scripts/oracle_run.py scripts/repro/fact_spec_clamp_494_differential.py
           --fact-lo 0 --fact-hi 4000 --expect-decline
       # #494 phase 2b — divisor-nonzero: in-bounds div/rem differential
       # (specialized ≡ wasmtime ≡ unspecialized over the proven divisor bound,
@@ -1178,21 +1294,21 @@ jobs:
       # demonstration (the lever exists in debug builds only — CI's synth is
       # a debug build).
       - name: Run divisor-nonzero in-bounds differential (green)
-        run: python scripts/repro/fact_spec_div_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_div_494_differential.py
       - name: Run divisor-including-zero loud-decline path
-        run: python scripts/repro/fact_spec_div_494_differential.py --expect-decline
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_div_494_differential.py --expect-decline
       - name: Run RED force-admit divergence demonstration
-        run: python scripts/repro/fact_spec_div_494_differential.py --force-admit
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_div_494_differential.py --force-admit
       # #494 phase 3 — branchless select-collapse: the sibling of the Phase-2
       # if-elision on the shape LLVM actually emits (min/max clamp via select).
       # In-bounds differential (specialized ≡ wasmtime ≡ unspecialized over the
       # proven bound; 2 collapses + gust_mix 50 B -> 14 B shrink required) and
       # the wrong-bound loud-decline byte-identity leg.
       - name: Run select-collapse in-bounds differential (proven bound)
-        run: python scripts/repro/fact_spec_select_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_select_494_differential.py
       - name: Run select-collapse wrong-bound loud-decline path
         run: >
-          python scripts/repro/fact_spec_select_494_differential.py
+          python scripts/oracle_run.py scripts/repro/fact_spec_select_494_differential.py
           --fact-lo 0 --fact-hi 4000 --expect-decline
       # #494 phase 3+ — redundant-mask (narrowing) elision: a proven-narrow
       # value makes an `i32.and` mask the identity, so it is deleted. On the
@@ -1203,10 +1319,10 @@ jobs:
       # 2 elisions + a required shrink) and the wrong-bound loud-decline
       # byte-identity leg (bound [0,4095] makes `x & 0x7FF != x` Sat).
       - name: Run mask-elision in-bounds differential (proven bound)
-        run: python scripts/repro/fact_spec_mask_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_mask_494_differential.py
       - name: Run mask-elision wrong-bound loud-decline path
         run: >
-          python scripts/repro/fact_spec_mask_494_differential.py
+          python scripts/oracle_run.py scripts/repro/fact_spec_mask_494_differential.py
           --fact-lo 0 --fact-hi 4095 --expect-decline
       # #494 bounds-elision × #390 guard_bool — the `--safety-bounds software`
       # memory bounds guard falls to a per-site certificate:
@@ -1221,11 +1337,11 @@ jobs:
       - name: Run bounds-elision gates (#494 bounds byte evidence)
         run: cargo test -p synth-cli --features verify --test fact_spec_bounds_494
       - name: Run bounds-elision in-bounds differential (green)
-        run: python scripts/repro/fact_spec_bounds_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_bounds_494_differential.py
       - name: Run bounds-including-OOB loud-decline path
-        run: python scripts/repro/fact_spec_bounds_494_differential.py --expect-decline
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_bounds_494_differential.py --expect-decline
       - name: Run RED bounds force-admit divergence demonstration
-        run: python scripts/repro/fact_spec_bounds_494_differential.py --force-admit
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_bounds_494_differential.py --force-admit
       # #890: the phase-3+ rem_u IDENTITY differential lived in scripts/repro/
       # unwired, so the headline "with the fact, synth deletes the whole rem_u
       # (2 B) where clang -Os needs a 24 B reciprocal multiply-subtract" claim
@@ -1234,7 +1350,18 @@ jobs:
       - name: Run constant-divisor rem_u identity differential (#494 phase 3+)
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/fact_spec_rem_494_differential.py
+        run: python scripts/oracle_run.py scripts/repro/fact_spec_rem_494_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
 
   proven-safe-oracle:
     name: proven-safe bounds-elision oracle (VCR-MEM-004, #901)
@@ -1290,7 +1417,8 @@ jobs:
           SYNTH: ./target/debug/synth
         run: |
           set -euo pipefail
-          python scripts/repro/proven_safe_bounds_901_differential.py \
+          python scripts/oracle_run.py \
+            scripts/repro/proven_safe_bounds_901_differential.py \
             | tee /tmp/proven_safe_901.log
           grep -q '^RESULT: PASS' /tmp/proven_safe_901.log
           # Non-vacuity: a differential that checked nothing must not pass.
@@ -1331,7 +1459,18 @@ jobs:
       - name: Run RV32 shift-fold execution oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/shift_fold_riscv_differential.py
+        run: python scripts/oracle_run.py scripts/repro/shift_fold_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-const-addr-fold-oracle:
     name: rv32 const-address-fold execution oracle
@@ -1365,7 +1504,18 @@ jobs:
       - name: Run RV32 const-address-fold execution oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/const_addr_fold_riscv_differential.py
+        run: python scripts/oracle_run.py scripts/repro/const_addr_fold_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-br-table-oracle:
     name: rv32 br_table execution oracle (#882)
@@ -1403,7 +1553,18 @@ jobs:
       - name: Run RV32 br_table execution oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/rv32_br_table_882_differential.py
+        run: python scripts/oracle_run.py scripts/repro/rv32_br_table_882_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-extern-call-reloc-oracle:
     name: rv32 external-call relocation oracle (#871)
@@ -1443,7 +1604,18 @@ jobs:
       - name: Run RV32 external-call relocation oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/riscv_extern_call_871_differential.py
+        run: python scripts/oracle_run.py scripts/repro/riscv_extern_call_871_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-label-return-oracle:
     name: rv32 label/return dead-code oracle (#882)
@@ -1487,7 +1659,18 @@ jobs:
       - name: Run RV32 label/return dead-code oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/rv32_label_882_differential.py
+        run: python scripts/oracle_run.py scripts/repro/rv32_label_882_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   rv32-mem-size-grow-oracle:
     name: rv32 memory.size / memory.grow execution oracle
@@ -1521,7 +1704,18 @@ jobs:
       - name: Run RV32 memory.size / memory.grow execution oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/rv32_mem_size_grow_242_differential.py
+        run: python scripts/oracle_run.py scripts/repro/rv32_mem_size_grow_242_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   callee-saved-490-oracle:
     name: optimized-path callee-saved preservation oracle
@@ -1558,7 +1752,18 @@ jobs:
       - name: Run callee-saved preservation oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/callee_saved_490_differential.py
+        run: python scripts/oracle_run.py scripts/repro/callee_saved_490_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-642-oracle:
     name: call_indirect bounds-guard oracle (Thumb-2 + A32)
@@ -1597,7 +1802,18 @@ jobs:
       - name: Run call_indirect bounds-guard oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_642_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_642_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-650-multitable-oracle:
     name: multi-table call_indirect oracle (Thumb-2 + A32)
@@ -1637,7 +1853,18 @@ jobs:
       - name: Run multi-table call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_650_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_650_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-664-nullslot-oracle:
     name: null-funcref-slot call_indirect oracle (Thumb-2 + A32)
@@ -1682,7 +1909,18 @@ jobs:
       - name: Run null-funcref-slot call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_664_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_664_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
@@ -1731,7 +1969,18 @@ jobs:
       - name: Run heterogeneous-table call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_676_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_676_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-275-selfcontained-oracle:
     name: self-contained call_indirect oracle (execution + residual declines)
@@ -1776,11 +2025,22 @@ jobs:
       - name: Run self-contained call_indirect EXECUTION differential
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_275_selfcontained_execution_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_275_selfcontained_execution_differential.py
       - name: Run emission + residual-decline oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/call_indirect_275_selfcontained_differential.py
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_275_selfcontained_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
@@ -1818,7 +2078,18 @@ jobs:
       - name: Run block/br_if lowering oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/block_brif_483_differential.py
+        run: python scripts/oracle_run.py scripts/repro/block_brif_483_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   spill-frame-499-oracle:
     name: optimized-path spill-frame teardown oracle
@@ -1856,7 +2127,18 @@ jobs:
       - name: Run spill-frame teardown oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/spill_frame_499_differential.py
+        run: python scripts/oracle_run.py scripts/repro/spill_frame_499_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   r12-spill-496-oracle:
     name: optimized-path register-exhaustion oracle
@@ -1896,7 +2178,18 @@ jobs:
       - name: Run register-exhaustion oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/r12_spill_496_differential.py
+        run: python scripts/oracle_run.py scripts/repro/r12_spill_496_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   flight-seam-570-oracle:
     name: flight-seam relocatable-path execution oracle
@@ -1935,11 +2228,22 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/flight_seam.wasm \
             -o /tmp/fs.elf --target cortex-m4 --all-exports --relocatable
-          python scripts/repro/flight_seam_differential.py /tmp/fs.elf
+          python scripts/oracle_run.py scripts/repro/flight_seam_differential.py /tmp/fs.elf
           ./target/debug/synth compile scripts/repro/flight_seam_flat.wasm \
             -o /tmp/fsf.elf --target cortex-m4 --all-exports --relocatable
-          python scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
+          python scripts/oracle_run.py scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
             scripts/repro/flight_seam_flat.wasm
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   control-step-584-oracle:
     name: control-step relocatable-path execution oracle
@@ -1979,7 +2283,18 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/control_step.wasm \
             -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable
-          python scripts/repro/control_step_differential.py /tmp/cs.elf
+          python scripts/oracle_run.py scripts/repro/control_step_differential.py /tmp/cs.elf
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   stack-args-503-oracle:
     name: AAPCS stack-argument path oracle
@@ -2018,7 +2333,18 @@ jobs:
       - name: Run AAPCS stack-argument oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/stack_args_503_differential.py
+        run: python scripts/oracle_run.py scripts/repro/stack_args_503_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   i64-completeness-503-587-oracle:
     name: i64 stack-param + spill-pool-grow oracle
@@ -2058,19 +2384,30 @@ jobs:
       - name: Run i64 stack-param oracle (#503-i64)
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/i64_stack_param_503_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_stack_param_503_differential.py
       - name: Run i64 spill-pool-grow oracle (#587)
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/i64_spill_pool_587_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_spill_pool_587_differential.py
       - name: Run i64-param correctness + decline oracle (#518, d_call now emits #837)
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/i64_param_518_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_param_518_differential.py
       - name: Run frame-backing i64-param-with-call oracle (#837 gale gust:os/timer)
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/framebacking_i64param_837_differential.py
+        run: python scripts/oracle_run.py scripts/repro/framebacking_i64param_837_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
 
   i64-rot-div-610-oracle:
     name: i64 rotl/rotr/div/rem expansion oracle
@@ -2106,7 +2443,18 @@ jobs:
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools
       - name: Run i64 rot/div/rem expansion oracle (#610)
-        run: python scripts/repro/i64_rot_div_610_differential.py target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/i64_rot_div_610_differential.py target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   br-table-507-oracle:
     name: optimized-path br_table oracle
@@ -2145,7 +2493,18 @@ jobs:
       - name: Run br_table oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/br_table_507_differential.py
+        run: python scripts/oracle_run.py scripts/repro/br_table_507_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   const-cse-242-oracle:
     name: const-CSE flag-on execution oracle
@@ -2183,7 +2542,18 @@ jobs:
       - name: Run const-CSE flag-on oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/const_cse_differential.py
+        run: python scripts/oracle_run.py scripts/repro/const_cse_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   frame-slot-dce-242-oracle:
     name: frame-slot DCE default+optout execution oracle
@@ -2221,7 +2591,18 @@ jobs:
       - name: Run frame-slot DCE flag-on oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/frame_slot_dce_differential.py
+        run: python scripts/oracle_run.py scripts/repro/frame_slot_dce_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   stack-layout-687-oracle:
     name: stack-layout=low overflow BusFault oracle
@@ -2261,12 +2642,12 @@ jobs:
       - name: Run stack-layout red/green/transparent oracle
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/stack_layout_687_differential.py
+        run: python scripts/oracle_run.py scripts/repro/stack_layout_687_differential.py
       - name: Run the #649 global-init differential under --stack-layout=low
         env:
           SYNTH: ./target/debug/synth
           EXTRA_SYNTH_FLAGS: "--stack-layout low"
-        run: python scripts/repro/i64_global_init_649_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_global_init_649_differential.py
 
   # #418: self-contained binding of the meld-dissolve embedder import
   # `env::__cabi_arena_realloc` — the compile must yield an ET_EXEC image
@@ -2275,6 +2656,18 @@ jobs:
   # (pointer-independent observables; exhaustion traps on both sides). The
   # `--relocatable` undefined-symbol seam (#420) is asserted untouched by
   # cabi_arena_realloc_linkability_418.rs in the `test` job.
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
   arena-bind-418-oracle:
     name: "#418 arena-bind self-contained execution oracle"
     runs-on: ubuntu-latest
@@ -2301,7 +2694,18 @@ jobs:
       - name: Run the #418 arena-bind execution differential
         env:
           SYNTH: ./target/debug/synth
-        run: python scripts/repro/cabi_arena_bind_418_differential.py
+        run: python scripts/oracle_run.py scripts/repro/cabi_arena_bind_418_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-ra-003-alloc-validator-gate:
     name: "VCR-RA-003 register-allocation validator (red-first + frozen)"
@@ -2353,7 +2757,18 @@ jobs:
       - name: PHASE-2 silent-on-real-branchy-codegen (across-CALL + across-JOIN)
         run: |
           cargo build -p synth-cli
-          python3 scripts/repro/vcr_ra_003_phase2_join_call.py ./target/debug/synth
+          python3 scripts/oracle_run.py scripts/repro/vcr_ra_003_phase2_join_call.py ./target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-ra-003-rv32-alloc-validator-gate:
     name: "VCR-RA-003 RV32 register-allocation validator (red-first + frozen)"
@@ -2409,7 +2824,18 @@ jobs:
       - name: Silent-on-real-codegen (RV32 fixture sweep, both paths)
         run: |
           cargo build -p synth-cli
-          python3 scripts/repro/vcr_ra_003_rv32_alloc_validator.py ./target/debug/synth
+          python3 scripts/oracle_run.py scripts/repro/vcr_ra_003_rv32_alloc_validator.py ./target/debug/synth
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   vcr-sel-005-cross-backend-op-parity-gate:
     name: "VCR-SEL-005 cross-backend op-parity (universe-complete + red-first)"
@@ -2489,110 +2915,122 @@ jobs:
       - name: a32 i64 execution differential (#615, cortex-r5)
         run: |
           ./target/debug/synth compile scripts/repro/a32_i64_615.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/a615.o
-          python scripts/repro/a32_i64_615_differential.py /tmp/a615.o scripts/repro/a32_i64_615.wat
+          python scripts/oracle_run.py scripts/repro/a32_i64_615_differential.py /tmp/a615.o scripts/repro/a32_i64_615.wat
       - name: out-of-range ADD immediate differential (#350)
         run: |
           ./target/debug/synth compile scripts/repro/add_imm_large.wat -o /tmp/ail.elf --target cortex-m4f --all-exports --relocatable
-          python scripts/repro/add_imm_large_differential.py /tmp/ail.elf
+          python scripts/oracle_run.py scripts/repro/add_imm_large_differential.py /tmp/ail.elf
       - name: base-CSE execution differential (#468, default + opt-out)
-        run: python scripts/repro/base_cse_differential.py
+        run: python scripts/oracle_run.py scripts/repro/base_cse_differential.py
       - name: value-returning-branch differential (#509, both paths)
-        run: python scripts/repro/br_table_value_509_differential.py
+        run: python scripts/oracle_run.py scripts/repro/br_table_value_509_differential.py
       - name: optimized-path forward-branch shapes (#500)
-        run: python scripts/repro/cf_shapes_500_differential.py
+        run: python scripts/oracle_run.py scripts/repro/cf_shapes_500_differential.py
       - name: const-only-body return differential (#791)
-        run: python scripts/repro/const_body_791_differential.py
+        run: python scripts/oracle_run.py scripts/repro/const_body_791_differential.py
       - name: 5-argument call differential (#359)
         run: |
           ./target/debug/synth compile scripts/repro/call_5args.wat -o /tmp/c5.o --target cortex-m4f --native-pointer-abi --all-exports --relocatable
-          python scripts/repro/call_5args_differential.py /tmp/c5.o
+          python scripts/oracle_run.py scripts/repro/call_5args_differential.py /tmp/c5.o
       - name: 6/7-argument stack-slot call differential (#359)
         run: |
           ./target/debug/synth compile scripts/repro/call_6_7args.wat -o /tmp/cm.o --target cortex-m4 --all-exports --relocatable
-          python scripts/repro/call_6_7args_differential.py /tmp/cm.o
+          python scripts/oracle_run.py scripts/repro/call_6_7args_differential.py /tmp/cm.o
       - name: call_indirect A32 differential (#594, cortex-r5)
         run: |
           ./target/debug/synth compile scripts/repro/call_indirect_594.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/ci594.o
-          python scripts/repro/call_indirect_594_differential.py /tmp/ci594.o
+          python scripts/oracle_run.py scripts/repro/call_indirect_594_differential.py /tmp/ci594.o
       - name: call_indirect thumb differential (#597, cortex-m3)
         run: |
           ./target/debug/synth compile scripts/repro/call_indirect_597.wat --target cortex-m3 --all-exports --relocatable --no-optimize -o /tmp/ci597.o
-          python scripts/repro/call_indirect_597_differential.py /tmp/ci597.o
+          python scripts/oracle_run.py scripts/repro/call_indirect_597_differential.py /tmp/ci597.o
       - name: constant-divisor strength-reduction differential (#209)
         run: |
           ./target/debug/synth compile scripts/repro/div_const.wat -o /tmp/dc.elf --target cortex-m4 --relocatable
-          python scripts/repro/div_const_differential.py /tmp/dc.elf
+          python scripts/oracle_run.py scripts/repro/div_const_differential.py /tmp/dc.elf
       - name: dynamic-table lookup differential (#359)
         run: |
           ./target/debug/synth compile scripts/repro/dyn_table_359.wat -o /tmp/dt.o --target cortex-m4 --native-pointer-abi --all-exports --relocatable
-          python scripts/repro/dyn_table_359_differential.py /tmp/dt.o
+          python scripts/oracle_run.py scripts/repro/dyn_table_359_differential.py /tmp/dt.o
       - name: branch-transparent reload forwarding on gust (#390)
-        run: python scripts/repro/gust_spill_fwd_390_differential.py
+        run: python scripts/oracle_run.py scripts/repro/gust_spill_fwd_390_differential.py
       - name: i32 register-exhaustion spill differential (#242)
         run: |
           ./target/debug/synth compile scripts/repro/high_pressure_i32.wat -o /tmp/hp.elf --target cortex-m4 --relocatable
-          python scripts/repro/high_pressure_i32_differential.py /tmp/hp.elf
+          python scripts/oracle_run.py scripts/repro/high_pressure_i32_differential.py /tmp/hp.elf
       - name: i64 pair-spill differential (#242)
         run: |
           ./target/debug/synth compile scripts/repro/high_pressure_i64.wat -o /tmp/hp64.elf --target cortex-m4 --relocatable
-          python scripts/repro/high_pressure_i64_differential.py /tmp/hp64.elf
+          python scripts/oracle_run.py scripts/repro/high_pressure_i64_differential.py /tmp/hp64.elf
       - name: i64.div_s(INT64_MIN,-1) overflow-trap differential (#633)
-        run: python scripts/repro/i64_divs_overflow_633_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_divs_overflow_633_differential.py
       - name: i64 global.get/set pair differential (#643, both selectors)
-        run: python scripts/repro/i64_globals_643_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_globals_643_differential.py
       - name: i64 pair-exhaustion spill differential (#587)
         run: |
           SYNTH_SPILL_ON_EXHAUST=1 ./target/debug/synth compile scripts/repro/i64_pair_exhaust_587.wat -o /tmp/pe587.elf --target cortex-m4
-          python scripts/repro/i64_pair_exhaust_587_differential.py /tmp/pe587.elf
+          python scripts/oracle_run.py scripts/repro/i64_pair_exhaust_587_differential.py /tmp/pe587.elf
       - name: i64.popcnt scratch-restore clobber differential (#632)
-        run: python scripts/repro/i64_popcnt_632_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_popcnt_632_differential.py
       - name: i64 shr_u/shr_s single-function path differential (#599)
-        run: python scripts/repro/i64_shr_599_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_shr_599_differential.py
       - name: i64 high-register zero-fill differential (#916)
         run: |
           set -euo pipefail
           ./target/debug/synth compile scripts/repro/i64_high_reg_zero_fill_916.wat \
             -o /tmp/zf916.elf --target cortex-m4 --relocatable --all-exports
-          python scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
+          python scripts/oracle_run.py \
+            scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
       - name: dead-frame elision differential (#390, both flag states)
-        run: python scripts/repro/leaf_dead_frame_differential.py
+        run: python scripts/oracle_run.py scripts/repro/leaf_dead_frame_differential.py
       - name: i32 local-promotion differential (#390, clean + dirty)
         run: |
           ./target/debug/synth compile scripts/repro/local_promote_i32.wat -o /tmp/lp.elf --target cortex-m4 --relocatable
-          python scripts/repro/local_promote_i32_differential.py /tmp/lp.elf
+          python scripts/oracle_run.py scripts/repro/local_promote_i32_differential.py /tmp/lp.elf
       - name: param-bounded loop back-edge differential (#663)
-        run: python scripts/repro/loop_param_bound_663_differential.py
+        run: python scripts/oracle_run.py scripts/repro/loop_param_bound_663_differential.py
       - name: arg-move-cycle-under-pressure differential (#326)
         run: |
           ./target/debug/synth compile scripts/repro/mutex_pressure.wat -o /tmp/mp.elf --target cortex-m4 --all-exports --relocatable
-          python scripts/repro/mutex_pressure_differential.py /tmp/mp.elf
+          python scripts/oracle_run.py scripts/repro/mutex_pressure_differential.py /tmp/mp.elf
       - name: post-exhaustion cycle proxy, execution-matched (#242)
-        run: python scripts/repro/postex_cycle_proxy.py
+        run: python scripts/oracle_run.py scripts/repro/postex_cycle_proxy.py
       - name: read-before-write local zero-init differential (#457)
         run: |
           ./target/debug/synth compile scripts/repro/read_before_write_local_zeroinit.wat -o /tmp/rbw.elf --target cortex-m4 --relocatable
-          python scripts/repro/read_before_write_local_zeroinit_differential.py /tmp/rbw.elf
+          python scripts/oracle_run.py scripts/repro/read_before_write_local_zeroinit_differential.py /tmp/rbw.elf
       - name: allocation-time Belady spill differential (#242)
         run: |
           SYNTH_SPILL_ON_EXHAUST=1 ./target/debug/synth compile scripts/repro/spill_on_exhaust_242.wat -o /tmp/soe.elf --target cortex-m4
-          python scripts/repro/spill_on_exhaust_242_differential.py /tmp/soe.elf
+          python scripts/oracle_run.py scripts/repro/spill_on_exhaust_242_differential.py /tmp/soe.elf
       - name: direct-selector spill-rung differential (#581)
-        run: python scripts/repro/spill_rung_581_differential.py
+        run: python scripts/oracle_run.py scripts/repro/spill_rung_581_differential.py
       - name: sret shim differential (#359)
         run: |
           ./target/debug/synth compile scripts/repro/sret_decide.wasm -o /tmp/sret.o --target cortex-m4 --native-pointer-abi --all-exports --relocatable
-          python scripts/repro/sret_decide_differential.py /tmp/sret.o
+          python scripts/oracle_run.py scripts/repro/sret_decide_differential.py /tmp/sret.o
       - name: u64-unpack differential (#313)
         run: |
           cp scripts/repro/u64_unpack.wat /tmp/u64repro.wat
           ./target/debug/synth compile --target cortex-m4 --all-exports --relocatable scripts/repro/u64_unpack.wat -o /tmp/u64.elf
-          python scripts/repro/u64_unpack_differential.py
+          python scripts/oracle_run.py scripts/repro/u64_unpack_differential.py
       - name: u64-unpack if-with-result differential (#313)
         run: |
           ./target/debug/synth compile --target cortex-m4 --all-exports --relocatable scripts/repro/u64_unpack_if.wat -o /tmp/u64if.elf
-          python scripts/repro/u64_unpack_if_differential.py
+          python scripts/oracle_run.py scripts/repro/u64_unpack_if_differential.py
       - name: uxth/uxtb fold differential (#428, both flag states)
-        run: python scripts/repro/uxth_fold_differential.py
+        run: python scripts/oracle_run.py scripts/repro/uxth_fold_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 32
 
   repro-sweep-memory-oracle:
     name: repro sweep — linear memory / static data / native-pointer differentials
@@ -2633,43 +3071,54 @@ jobs:
       - name: bulk-memory copy/fill numeric differential (#374)
         run: |
           ./target/debug/synth compile scripts/repro/bulk_memory_374_diff.wat -o /tmp/bmd.elf --target cortex-m7dp --all-exports --safety-bounds software
-          python scripts/repro/bulk_memory_374_differential.py /tmp/bmd.elf
+          python scripts/oracle_run.py scripts/repro/bulk_memory_374_differential.py /tmp/bmd.elf
       - name: i64 large static offset differential (#382, direct path)
-        run: python scripts/repro/i64_large_offset_382_differential.py
+        run: python scripts/oracle_run.py scripts/repro/i64_large_offset_382_differential.py
       - name: large static load/store offset differential (#382, optimized)
-        run: python scripts/repro/load_store_big_offset_382_differential.py
+        run: python scripts/oracle_run.py scripts/repro/load_store_big_offset_382_differential.py
       - name: memory.grow(0) differential (#539, both ARM paths)
-        run: python scripts/repro/mem_grow_539_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem_grow_539_differential.py
       - name: static-src memmove differential (#757, inlined)
-        run: python scripts/repro/mem757_inlined_memmove_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_inlined_memmove_differential.py
       - name: low-const-below-string chunked copy differential (#757)
-        run: python scripts/repro/mem757_low_const_copy_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_low_const_copy_differential.py
       - name: memory.copy from a static pointer differential (#757)
-        run: python scripts/repro/mem757_memcopy_static_src_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_memcopy_static_src_differential.py
       - name: memmove-with-param differential (#757)
-        run: python scripts/repro/mem757_memmove_param_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_memmove_param_differential.py
       - name: chunked copy under register pressure differential (#757)
-        run: python scripts/repro/mem757_pressure_chunks_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_pressure_chunks_differential.py
       - name: pointer-base copy differential (#757)
-        run: python scripts/repro/mem757_ptr_base_copy_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mem757_ptr_base_copy_differential.py
       - name: multi-provider shared __stack_pointer co-rebase (#707)
         run: |
           ./target/debug/synth compile scripts/repro/mem707_multi_sp.wat -o /tmp/mem707.o --target cortex-m3 --native-pointer-abi --all-exports --relocatable --shadow-stack-size 512
-          python scripts/repro/multi_sp_707_differential.py /tmp/mem707.o
+          python scripts/oracle_run.py scripts/repro/multi_sp_707_differential.py /tmp/mem707.o
       - name: native-pointer shadow-stack frame differential (#237)
         run: |
           ./target/debug/synth compile scripts/repro/native_pointer_shadow_stack.wat -o /tmp/np_ss.elf --target cortex-m4 --native-pointer-abi --all-exports --relocatable
-          python scripts/repro/native_pointer_shadow_stack_differential.py /tmp/np_ss.elf
+          python scripts/oracle_run.py scripts/repro/native_pointer_shadow_stack_differential.py /tmp/np_ss.elf
       - name: inline-statics down-shift differential (#678)
         run: |
           ./target/debug/synth compile scripts/repro/mem678_full.wat -o /tmp/mem678.o --target cortex-m3 --native-pointer-abi --all-exports --relocatable --shadow-stack-size 512
-          python scripts/repro/native_pointer_static_downshift_678.py /tmp/mem678.o
+          python scripts/oracle_run.py scripts/repro/native_pointer_static_downshift_678.py /tmp/mem678.o
       - name: volatile DMA-window back-off differential (#543, four builds)
-        run: python scripts/repro/volatile_segment_543_differential.py
+        run: python scripts/oracle_run.py scripts/repro/volatile_segment_543_differential.py
       - name: Install binutils-arm-none-eabi (#359 post-link oracle)
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: post-link static-data placement oracle (#359)
-        run: PATH=$PWD/target/debug:$PATH python scripts/repro/postlink_359_oracle.py
+        run: PATH=$PWD/target/debug:$PATH python scripts/oracle_run.py scripts/repro/postlink_359_oracle.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 15
 
   repro-sweep-rv32-oracle:
     name: repro sweep — RISC-V RV32 execution differentials
@@ -2709,43 +3158,54 @@ jobs:
       - name: control_step RV32 correctness + ABI + shipped data (#223/#798)
         run: |
           ./target/debug/synth compile scripts/repro/control_step.wasm -b riscv -t rv32imac --all-exports --relocatable -o /tmp/cs_rv.o
-          python scripts/repro/control_step_riscv_differential.py /tmp/cs_rv.o
+          python scripts/oracle_run.py scripts/repro/control_step_riscv_differential.py /tmp/cs_rv.o
       - name: controller_step RV32 live-range clobber differential (#226)
         run: |
           ./target/debug/synth compile scripts/repro/controller_step.wat -b riscv -t rv32imac --all-exports --relocatable -o /tmp/ctrl_rv.o
-          python scripts/repro/controller_step_riscv_differential.py /tmp/ctrl_rv.o
+          python scripts/oracle_run.py scripts/repro/controller_step_riscv_differential.py /tmp/ctrl_rv.o
       - name: RV32 callee-saved preservation differential (#220)
         run: |
           ./target/debug/synth compile scripts/repro/filter_axis.wasm -b riscv -t rv32imac --relocatable -o /tmp/fa.o
-          python scripts/repro/filter_axis_riscv_differential.py /tmp/fa.o
+          python scripts/oracle_run.py scripts/repro/filter_axis_riscv_differential.py /tmp/fa.o
       - name: RV32 i64 div_s/rem_s sign differential (#317)
         run: |
           ./target/debug/synth compile scripts/repro/i64_divs_317.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/i317.o
-          python scripts/repro/i64_divs_317_riscv_differential.py /tmp/i317.o
+          python scripts/oracle_run.py scripts/repro/i64_divs_317_riscv_differential.py /tmp/i317.o
       - name: RV32 i64-param LOUD-SKIP contrast oracle (#518)
-        run: python scripts/repro/i64_param_518_riscv_loudskip.py
+        run: python scripts/oracle_run.py scripts/repro/i64_param_518_riscv_loudskip.py
       - name: RV32 if-with-result join reconciliation (#343)
         run: |
           ./target/debug/synth compile scripts/repro/if_else_result_343.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/if343.o
-          python scripts/repro/if_else_result_343_riscv_differential.py /tmp/if343.o
+          python scripts/oracle_run.py scripts/repro/if_else_result_343_riscv_differential.py /tmp/if343.o
       - name: RV32 mask/software bounds effective-address oracle (#655)
-        run: python scripts/repro/mask_bounds_655_riscv_differential.py
+        run: python scripts/oracle_run.py scripts/repro/mask_bounds_655_riscv_differential.py
       - name: RV32 cmp->select fusion differential (#472)
         run: |
           ./target/debug/synth compile scripts/repro/rv32_cmp_select_472.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/cmpsel.o
-          python scripts/repro/rv32_cmp_select_472_riscv_differential.py /tmp/cmpsel.o
+          python scripts/oracle_run.py scripts/repro/rv32_cmp_select_472_riscv_differential.py /tmp/cmpsel.o
       - name: RV32 i32 local-promotion differential (#472)
         run: |
           ./target/debug/synth compile scripts/repro/rv32_local_promotion_472.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/promo.o
-          python scripts/repro/rv32_local_promotion_472_riscv_differential.py /tmp/promo.o
+          python scripts/oracle_run.py scripts/repro/rv32_local_promotion_472_riscv_differential.py /tmp/promo.o
       - name: RV32 signed-div-const overflow-guard clobber (#232)
         run: |
           ./target/debug/synth compile scripts/repro/signed_div_const.wasm -b riscv -t rv32imac --all-exports --relocatable -o /tmp/sdiv.o
-          python scripts/repro/signed_div_const_riscv_differential.py /tmp/sdiv.o
+          python scripts/oracle_run.py scripts/repro/signed_div_const_riscv_differential.py /tmp/sdiv.o
       - name: RV32 u64-unpack differential (#313)
         run: |
           ./target/debug/synth compile scripts/repro/u64_unpack_inlined.wat -b riscv -t rv32imac --all-exports --relocatable -o /tmp/u64_rv32.elf
-          python scripts/repro/u64_unpack_riscv_differential.py
+          python scripts/oracle_run.py scripts/repro/u64_unpack_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 11
 
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-5)
@@ -2785,10 +3245,21 @@ jobs:
         # build their .wasm from .wat at test time (the #850/#881 class).
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: WCET phase-2 const-loop bound soundness (#778)
-        run: python scripts/repro/wcet_phase2_778_unicorn_soundness.py
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase2_778_unicorn_soundness.py
       - name: WCET phase-3 inter-procedural composition soundness (#778)
-        run: python scripts/repro/wcet_phase3_778_compose_soundness.py
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase3_778_compose_soundness.py
       - name: WCET phase-4 bounded-recursion soundness (#49)
-        run: python scripts/repro/wcet_phase4_49_recursion_soundness.py
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase4_49_recursion_soundness.py
       - name: WCET phase-5 masked-ceiling loop soundness (#778)
-        run: python scripts/repro/wcet_phase5_778_masked_loop_soundness.py
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase5_778_masked_loop_soundness.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4

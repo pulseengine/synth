@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 15
 """#882 — RV32 `return`-inside-a-frame: label definition + reachable-join oracle.
 
 gale's i2c-thin driver (v0.52.0, `-b riscv --target esp32c3 --all-exports

@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 16
 # #633: i64.div_s(INT64_MIN, -1) must trap (WASM Core 4.3.2 idiv_s — the
 # quotient +2^63 is unrepresentable). The Thumb-2 I64DivS expansion emitted
 # only the divide-by-zero guard: it negated the dividend (INT64_MIN wraps to

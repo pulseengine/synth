@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The evidence now says what it measures (#910).** `Code Coverage` was red
+  repo-wide until v0.54 fixed a test binary-path bug. Green and quotable, it was
+  structurally misleading: it runs `cargo llvm-cov --workspace`, i.e. the Rust
+  test suite in process, while this project's strongest evidence — the execution
+  differentials — spawns the compiler as a separate, **uninstrumented** process
+  from **other CI jobs**, emitting no profile data at all. So
+  `synth-backend-aarch64/src/backend.rs` reads 41.6 % and
+  `instruction_selector.rs` 42.7 % while both are exercised end-to-end
+  constantly. The number understates real testing *and* cannot be read as
+  completeness. Renamed to **`Rust-test Line Coverage (unit + integration
+  only)`**, with the scope caveat carried in three places that travel with the
+  number (the job body, `$GITHUB_STEP_SUMMARY`, the README badge) and pinned in
+  `claims.yaml` so it cannot be dropped while the percentage stays quotable.
+  #910 option 1 — instrumenting the binary the differentials run — was
+  **declined**: it changes the artifact under test (these oracles exist to
+  execute the *shipped* bytes) and buys precision on an axis that is still the
+  wrong completeness instrument.
+
+### Added
+
+- **Oracle steps assert EXECUTION, not exit status (#910 F10).** Measured first,
+  and the premise was understated: not the 63 oracles #890 wired, but **152 of
+  the 160** workflow steps that run a `scripts/repro/` oracle asserted nothing
+  beyond the process exit code — the pre-#890 hand-wired steps included; exactly
+  8 asserted a printed verdict or count. Exit 0 cannot tell *"emulated 240
+  vectors, all bit-identical to wasmtime"* from *"the fixture list came back
+  empty, printed PASS"* — #890's inert gate one level down.
+
+  `scripts/oracle_run.py` is an in-process driver (`runpy`) that wraps
+  `unicorn.Uc.emu_start`, `wasmtime.Func.__call__` and `subprocess` `synth …
+  compile …`, so the count comes from the emulator rather than the harness's own
+  bookkeeping — a comparison loop that never runs cannot fake it. 159 CI step
+  lines now route through it, and **no harness was edited**. Chosen over 152
+  bespoke greps (152 patterns to keep in sync with 150 harnesses' output strings
+  is the mirror-drift shape this repo keeps paying for).
+
+  Each `wired` oracle declares a `# ci-checks:` floor next to its `# ci-status:`
+  line — same locality argument, enforced per run, `>=` never equality so
+  adding a fixture cannot redden a step. **Every floor is measured**, obtained
+  by executing each CI step *verbatim* out of `ci.yml`. The four oracles that
+  self-report a check count agree with the driver **1:1** (`#846 CHECKS=75/75`
+  → 75; `35 checks (23 trap, 12 value)` → 35; `17 checks` → 17; the 662
+  float-boundary checks → 662) — and the counter is still called `emulations`,
+  not "checks", because naming a measurement after something it does not measure
+  is the defect this lane exists to remove.
+
+- **The differential population is reported, and ratcheted.** **135 oracles
+  assert 295,333 emulator entries per CI run**; 7 assert a printed count, 9
+  assert compilations, 1 can bind to nothing. Reported **per mode and never
+  summed across modes** — three different units, and one impressive combined
+  figure is exactly the instrument defect being fixed.
+  `oracle_wiring_check.py --min-emulation-floor 295333` enforces the total in
+  the already-required `Claim Check` job (a brand-new job is not a required
+  context on `main` and could sit red for weeks — the #890 failure), sharing the
+  driver's header parser by import rather than re-implementing the grammar.
+  `scripts/oracle_evidence.py` closes each of 37 oracle jobs with what it
+  *measured*, asserting every record met its floor and that the expected number
+  of oracles reported at all — a step deleted, commented out or skipped by an
+  early exit leaves the ledger short and reddens the job instead of quietly
+  shrinking the number.
+
+- **The weak floors are itemized, not averaged away**
+  (`scripts/repro/ORACLE_WIRING.md`): `aarch64_matrix.sh` (a POSIX shell oracle
+  the in-process driver cannot instrument — its step already carries its own
+  `>= 32 accepted ops` assertion), `i64_param_518_riscv_loudskip.py` and
+  `postlink_359_oracle.py` (`compiles >= 1`; a loud-skip contract and a
+  link-layout assertion, neither of which executes by design), the five
+  `fact_spec_*` differentials (`compiles >= 2`; each has a `--expect-decline`
+  leg that emulates nothing, and a floor that only holds for the good leg is not
+  a floor), `call_indirect_275_selfcontained_differential.py` (`compiles >= 4`),
+  and the #275 RED non-vacuity step, deliberately not routed because it inverts
+  its verdict.
+
+- **`VCR-VER-004` now exists in the roadmap.** It shipped in v0.54 and appeared
+  in the CHANGELOG, the feature matrix and CI — but not in the file README calls
+  "the single source of truth for roadmap status". The entry records the four
+  axes on which it fails *differently* from the two validators that shared a
+  blind spot, and all three of its limits, including the one that bounds the
+  whole claim: **the op model is still shared.** Def/use extraction for all three
+  instruments runs through `liveness::reg_effect`, so a mismodeled op remains a
+  common blind spot; `VCR-VER-004` closes the shared-*contract* hole, not the
+  shared-*op-model* hole, and until `synth-verify`'s `ArmSemantics::encode_op` is
+  pinned against it, "three independent validators" would be an overclaim.
+
 ### Fixed
 
 - **The traceability graph disagreed with itself in four places, and the gate
@@ -68,19 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than by allowlist, and proven red-first by replaying the exact step
   against both trees: exit 1 naming both errors on the pre-fix artifacts, exit 0
   after.
-
-### Added
-
-- **`VCR-VER-004` now exists in the roadmap.** It shipped in v0.54 and appeared
-  in the CHANGELOG, the feature matrix and CI — but not in the file README calls
-  "the single source of truth for roadmap status". The entry records the four
-  axes on which it fails *differently* from the two validators that shared a
-  blind spot, and all three of its limits, including the one that bounds the
-  whole claim: **the op model is still shared.** Def/use extraction for all three
-  instruments runs through `liveness::reg_effect`, so a mismodeled op remains a
-  common blind spot; `VCR-VER-004` closes the shared-*contract* hole, not the
-  shared-*op-model* hole, and until `synth-verify`'s `ArmSemantics::encode_op` is
-  pinned against it, "three independent validators" would be an overclaim.
 
 - **`--proven-safe`: bounds-check elision on scry's proof, fail-closed and
   attested (VCR-MEM-004, #901).** `synth compile --proven-safe

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 75
 """#846 gpio-thin size-regression gate — SIZE drop + execution-UNCHANGED.
 
 gale's `gpio-thin` gust driver regressed +44 B / +9% (490→534 `.text`) on synth

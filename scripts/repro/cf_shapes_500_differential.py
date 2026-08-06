@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 14
 """#500 (epic #242) — EXECUTION-validate optimized-path forward-branch shapes.
 
 #483 fixed the single `block`+`br_if` forward-exit; #500 shows the class is

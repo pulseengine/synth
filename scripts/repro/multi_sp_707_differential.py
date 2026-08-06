@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 13
 """#707 multi-provider shared-memory fused node: N `__stack_pointer` globals all
 init == sp_init, co-rebased by `--shadow-stack-size`.
 

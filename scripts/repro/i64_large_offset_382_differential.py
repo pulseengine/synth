@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#382 (direct/relocatable path) — i64 large static load/store offset oracle.
 
 The direct selector (`--relocatable`, R11/fp = linear-memory base) lowers a

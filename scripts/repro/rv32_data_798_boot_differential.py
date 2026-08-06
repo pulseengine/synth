@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 1
 """#798 — RV32 active-data-segment shipping: FULL-BOOT differential.
 
 End-to-end over the REAL artifacts, not a model of them: synth compiles a

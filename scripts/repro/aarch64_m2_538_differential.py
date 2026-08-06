@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 182
 """#538 milestone-2 — validate the BROADENED aarch64 backend codegen end-to-end.
 
 Compiles the m2 acceptance module with `synth compile -b aarch64`, then executes

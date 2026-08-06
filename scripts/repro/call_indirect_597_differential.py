@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 3
 # #597: the Thumb-2 CallIndirect expansion put its `LSL #2` shift amount in
 # the mov.w TYPE field (bits 5:4 → ASR #32) instead of imm2 (bits 7:6), so the
 # table index was destroyed and EVERY call_indirect dispatched entry 0. A probe
