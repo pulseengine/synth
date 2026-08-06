@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 28
 """#650 — multi-table call_indirect oracle: the contiguous R11 region.
 
 Layout contract (#650): the runtime/harness links every funcref table as ONE

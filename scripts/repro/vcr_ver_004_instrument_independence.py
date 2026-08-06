@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: stdout /^VCR-VER-004-INDEPENDENCE ASSERTIONS=(\d+)/4$/ >= 4
 """VCR-VER-004 — INSTRUMENT INDEPENDENCE, proven by re-running v0.53's mutation.
 
 **The finding this responds to.** v0.53's VCR-DEC-001 lane proved BY MUTATION

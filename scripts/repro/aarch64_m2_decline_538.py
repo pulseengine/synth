@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 12
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
 Some WASM constructs are DELIBERATELY not lowered on aarch64, and the contract

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#679 — `--safety-bounds mask` bulk-memory coverage oracle (thumb-2).
 
 Pre-fix, `memory.copy`/`memory.fill` under `--safety-bounds mask` were emitted

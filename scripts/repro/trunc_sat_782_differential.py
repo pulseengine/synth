@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 192672
 """#782a — the trunc_sat (nontrapping saturating float->int) boundary
 EXECUTION differential.
 

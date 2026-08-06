@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 3
 """#237 shadow-stack differential: the gmutex frame shape under --native-pointer-abi.
 
 Compile:

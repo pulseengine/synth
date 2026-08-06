@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 49
 """#681 — T3 ADD.W raw-immediate packing: dynamic base + static offset 0x100..0xFFF.
 
 `encode_thumb32_add_imm` packed the raw offset into the T3 ADD.W ThumbExpandImm

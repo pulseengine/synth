@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 5
 """#220 — RISC-V callee-saved register preservation differential.
 
 gale's first on-target RISC-V finding: the backend used callee-saved s-registers

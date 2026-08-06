@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 1
 # #594: call_indirect on the A32 path (--target cortex-r5) compiled to a NOP —
 # no call, wrong result (leftover table index instead of the callee's return).
 #

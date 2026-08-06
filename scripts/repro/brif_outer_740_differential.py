@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 6
 """#740 — EXECUTION-validate the direct path's wide conditional branches on the
 loop-inside-block shape: a `br_if` at a loop head exiting an OUTER block.
 
