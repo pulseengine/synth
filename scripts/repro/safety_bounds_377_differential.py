@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 38
 """#377 — `--safety-bounds software` optimized-path enforcement differential.
 
 Pre-fix, `--safety-bounds software` emitted NO bounds check on the optimized

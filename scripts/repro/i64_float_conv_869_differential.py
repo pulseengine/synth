@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 96276
 """#869 — the ARM 64-bit integer<->float conversion family EXECUTION
 differential (cortex-m7dp, Thumb-2, unicorn) vs wasmtime.
 

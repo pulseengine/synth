@@ -7,7 +7,7 @@
 &nbsp;
 
 [![CI](https://github.com/pulseengine/synth/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/synth/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/pulseengine/synth/graph/badge.svg)](https://codecov.io/gh/pulseengine/synth)
+[![Rust-test line coverage](https://codecov.io/gh/pulseengine/synth/graph/badge.svg)](https://codecov.io/gh/pulseengine/synth)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
@@ -17,6 +17,8 @@
 [![Verified selector rules](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fpulseengine%2Fsynth%2Fmain%2Fartifacts%2Fstatus.json&query=%24.sel_dsl_rules&label=verified%20selector%20rules&color=blue&style=flat-square&labelColor=1a1b27)](artifacts/status.json)
 
 <sub>Badge numbers are machine-derived into [`artifacts/status.json`](artifacts/status.json) and CI-staleness-gated — never hand-typed.</sub>
+
+<sub>The coverage badge is <b>Rust-test line coverage only</b> — it cannot see the execution differentials, which run the compiler as a separate uninstrumented process from other CI jobs. It understates the testing that exists and is not a completeness measure; the differential population is counted separately in <a href="scripts/repro/ORACLE_WIRING.md">executed checks</a> (#910).</sub>
 
 &nbsp;
 

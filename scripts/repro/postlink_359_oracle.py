@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: compiles >= 1
 """
 #359 POST-LINK ORACLE — the structural fix to the #368 mistake (a unicorn-on-.o
 oracle could not see the #354 link-time retargeting, so #368 passed locally and

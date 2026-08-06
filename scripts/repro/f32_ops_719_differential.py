@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 238
 """#719 — EXECUTION-validate the phase-1b thumb-2 f32 residual increment.
 
 After #708 (f32.load + reinterpret) landed, falcon's float functions skip on the

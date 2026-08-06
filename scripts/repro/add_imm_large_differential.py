@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#350 — out-of-range `ADD #imm` lowering (MOVW/MOVT + ADD instead of erroring).
 
 A static store with `offset=70000` (> 0xFFF) forces the indexed-address path

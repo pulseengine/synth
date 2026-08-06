@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#587 (VCR-RA, #242) — i64 pair-exhaustion spill differential oracle.
 
 `i64_pair_exhaust_587.wat` keeps five i64 values simultaneously live, one more

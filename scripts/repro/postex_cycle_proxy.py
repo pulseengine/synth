@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 78
 """VCR-VER-001 post-exhaustion cycle proxy (#242) — the PR #659 gate table,
 reproducible.
 

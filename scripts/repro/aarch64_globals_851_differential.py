@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 17
 """#851 lane L3 — aarch64 WASM GLOBALS execution differential vs wasmtime.
 
 synth emits the globals region ITSELF: a `.data` section carrying each global's

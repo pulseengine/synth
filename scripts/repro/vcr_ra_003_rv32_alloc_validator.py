@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: stdout /^checked (\d+) \(fixture, path\) pairs/ >= 18
 """VCR-RA-003 for RISC-V (#815, epic #242) — RV32 register-allocation validator.
 
 The RV32 analogue of the ARM `validate_final_allocation` gate. The RV32 checker

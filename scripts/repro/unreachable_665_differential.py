@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#665 — `unreachable` must TRAP (WASM Core §4.4.5), on BOTH ISAs.
 
 synth compiled wasm `unreachable` to a NO-OP: the decoder dropped it as

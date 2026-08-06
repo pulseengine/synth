@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 2
 """#778 phase 3 soundness cross-check: execute compiled DIRECT-CALL fixtures under
 unicorn (Thumb-2) and confirm the COMPOSED inter-procedural bound is a sound upper
 bound on the ACTUAL executed cost.

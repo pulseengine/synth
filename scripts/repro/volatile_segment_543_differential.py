@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 24
 """#543 Phase 2 / VCR-DMA-001 — EXECUTION-validate the volatile DMA-window back-off.
 
 `--volatile-segment <base>:<len>` must change ACCESS PATTERNS, never RESULTS:

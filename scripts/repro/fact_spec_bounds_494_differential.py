@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: compiles >= 2
 """#494 bounds-elision × #390 guard_bool — four-way execution differential
 for the ordeal-certified memory bounds-guard elision.
 

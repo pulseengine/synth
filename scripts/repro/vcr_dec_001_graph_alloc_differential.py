@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: compiles >= 27
 """VCR-DEC-001 graph-colouring allocator SPIKE differential (SYNTH_GRAPH_ALLOC).
 
 The North Star's first foothold: a whole-function Chaitin/Briggs graph-colouring

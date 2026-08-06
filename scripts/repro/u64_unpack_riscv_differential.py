@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 4
 import sys
 import wasmtime
 from elftools.elf.elffile import ELFFile

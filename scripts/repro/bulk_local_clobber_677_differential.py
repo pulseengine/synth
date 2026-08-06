@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 8
 """#677 — bulk-memory operand-register clobber differential (thumb-2).
 
 The #374 memory.copy/memory.fill lowering mutated its popped operand registers

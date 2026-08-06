@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 352
 # #615: A32/ARM-mode encoder silently NOP'd every i64 op (--target cortex-r5)
 # — mul/shift/rotate/compare/eqz/clz/ctz/popcnt/div/rem/const/extend/wrap all
 # encoded as 0xE1A00000, so the operation vanished and functions returned

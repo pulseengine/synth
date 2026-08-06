@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 5
 """#359 differential: a 5-argument call must pass ALL five args (caller/callee agree).
 
 The callee packs each arg into a distinct nibble (a | b<<4 | c<<8 | d<<12 | e<<16),

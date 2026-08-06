@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 41
 """#851 — execution-differential for aarch64 linear-memory load/store.
 
 Compiles a `(memory 1)` module of store/load round-trips with

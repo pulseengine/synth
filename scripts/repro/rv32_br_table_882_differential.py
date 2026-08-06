@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 27
 """#882 — RV32 br_table compare-chain execution oracle.
 
 RV32 lowers `br_table` as a compare-and-branch chain (`beq idx, x0` for entry

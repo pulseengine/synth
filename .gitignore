@@ -73,3 +73,10 @@ result-*
 /*.elf
 output.elf
 __pycache__/
+oracle-evidence.jsonl
+
+# Oracle run outputs — PRODUCED by CI steps and CONSUMED by the assert
+# steps that follow them. Never tracked: the mutation-restoration gate is
+# `git diff --exit-code`, so a committed copy makes every fresh run dirty the
+# tree and fail a soundness assert that has nothing to do with the mutation.
+*.out

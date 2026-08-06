@@ -1,4 +1,5 @@
 # ci-status: wired
+# ci-checks: emulations >= 4
 import struct, sys
 from elftools.elf.elffile import ELFFile
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB

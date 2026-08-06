@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 32
 """#509 (epic #242) — CHARACTERIZE the value-returning-branch miscompile.
 
 The oracle-first artifact for #509: the DIRECT selector (so the SHIPPED

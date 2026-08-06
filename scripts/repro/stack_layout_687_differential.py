@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 26
 """#687 — `--stack-layout=low`: stack at the SRAM bottom, overflow BusFaults.
 
 Today's self-contained Cortex-M image puts the initial SP at the TOP of SRAM,

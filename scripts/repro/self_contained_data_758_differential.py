@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 7
 """#758 — the DEFAULT self-contained `--cortex-m` image silently DROPS active
 `(data …)` segments.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 2
 """VCR-RA lever 3 / VCR-ORACLE-001 (#468, #242) — EXECUTION-validate base-CSE.
 
 base-CSE (DEFAULT-ON since the #468 lever flip; opt-out SYNTH_BASE_CSE=0)

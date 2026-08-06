@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 20
 """#871 — RV32 external-call relocations: read-back + link + execution oracle.
 
 gale's thin-seam drivers import a two-function mmio seam (env::mmio_read32 /

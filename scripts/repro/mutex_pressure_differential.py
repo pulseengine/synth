@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 7
 """#326 — arg-move-cycle-under-pressure differential oracle.
 
 `mutex_pressure.wat` reproduces the shape that stopped gale's dissolved

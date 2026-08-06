@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
+# ci-checks: emulations >= 27
 """#406 / #739-cluster COVERAGE WIDENER — multi-chunk / multi-segment static
 data across BOTH the self-contained (`--cortex-m`, no --relocatable) and the
 `--relocatable` object paths, with segments at varied offsets: a low segment, an
