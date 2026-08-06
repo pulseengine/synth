@@ -599,3 +599,73 @@ artifacts:
           spill/reload insertion (#881); execution evidence via
           scripts/repro/high_pressure_i32.wat and the #881 spilled-VFP
           differential
+  - id: SWVER-023
+    type: sw-verification
+    title: i64 register-pair op model — execution differential + mutation matrix (VCR-REACH-001, #242)
+    description: >
+      Verifies VCR-REACH-001 (VCR-DEC-001 increment 4). The i64 register-PAIR
+      model `liveness::pair_effect` is stated ONCE and consumed by FOUR
+      instruments — the graph-colouring pass, `validate_cfg_rewrite`, the ABI
+      observable contract, and VCR-RA-003's join-availability CFG — so none of
+      the static instruments can catch an error IN the model itself. The gate is
+      therefore EXECUTION: unicorn runs the flag-ON image and compares the return
+      value and the linear-memory window against wasmtime, over an i64-pair
+      population with its own two non-vacuity floors (>= 4 divergent pair
+      functions, >= 2 of them containing a real i64 SHIFT expansion detected in
+      the EMITTED BYTES rather than declared).
+      PROVEN NON-VACUOUS BY MUTATION, and the matrix is reported in full
+      including the mutation that does NOT go red. Deleting the EARLY-CLOBBER
+      interference edges (`pair_early_clobber` — the distinctness obligation a
+      defs/uses pair structurally cannot express) lets the colourer coalesce
+      `I64Ldr`'s `rdlo` onto a `base` the second `LDR` re-reads:
+      `validate_cfg_rewrite` ACCEPTS all seven functions, VCR-RA-003 reports
+      Consistent on all seven, the ABI observable contract passes all seven, and
+      ONLY execution fails it — a third counterexample to the claim that
+      per-compilation validation is an independent check on the code generator.
+      HONEST RESIDUAL (named): the coherent "model omits `rm_hi`" mutation is NOT
+      caught, even against two purpose-built register-pressure fixtures, because
+      the churn-minimising colour bias never places a live web on the shift
+      amount's high-half register on this corpus. That half of the clobber model
+      is sound but belt-and-braces rather than execution-gated.
+      A SEPARATE unit gate pins the latent Thumb encoder defect this increment
+      found — the i64 shift zero-fill uses the 16-bit `MOVS` T1 form, so an R8
+      destination emits `0x2800` (`CMP r0,#0`) and the half is never zeroed.
+      Reachable in shipped code; not fixed here (the expansions carry fixed
+      internal branch displacements), so the test asserts the defective byte and
+      the allocator declines such streams by name.
+    status: implemented
+    tags: [vcr-dec, vcr-reach, register-allocation, execution-differential, mutation, epic-242]
+    links:
+      - type: verifies
+        target: VCR-REACH-001
+      - type: verifies
+        target: VCR-DEC-001
+    fields:
+      method: automated-test
+      # `steps:` is a SEQUENCE here, not the mapping every other artifact in
+      # this repo uses. That is deliberate, and it is a FINDING rather than a
+      # style choice: `rivet check verification-evidence` scans
+      # `fields.steps[].run`, so the mapping shape makes it scan NOTHING — it
+      # reports `named_test_steps_checked: 0` repo-wide while 31 artifacts carry
+      # a `cargo test` step, and passes green. A gate that checks nothing is the
+      # exact class this project pins. Written in the shape the oracle actually
+      # reads, so at least THIS entry's test filter is verified to exist; the
+      # other 42 artifacts are a follow-up, because each conversion has to
+      # re-verify that its filter still matches a real test — which is the point.
+      steps:
+        - run: "cargo test -p synth-backend --test i64_high_reg_zero_fill_916"
+        - run: "cargo test -p synth-cli --test frozen_codegen_bytes"
+        - differential: >
+            SYNTH=./target/debug/synth python3
+            scripts/repro/vcr_dec_001_join_alloc_execution_differential.py — CI-wired
+            (`set -euo pipefail`, awk asserts CHECKS non-zero and all-passing,
+            ENGAGED non-zero, CALLSHAPES >= 4, PAIRSHAPES >= 4, SHIFTSHAPES >= 2)
+        - coverage: >
+            100/100 execution checks over 28 engaged functions (6 call shapes,
+            9 i64-pair shapes, 6 of those carrying a real i64 shift expansion);
+            frozen anchors 10/10 and all 633 pre-existing relocatable + 1059
+            self-contained corpus functions byte-identical to v0.54 with the flag
+            off; VCR-RA-003 join availability Consistent 440 -> 560 of 640 on the
+            DEFAULT build with 0 hard errors across the corpus (thumb2 AND the
+            cortex-r5 A32 path, whose expansions differ)
+

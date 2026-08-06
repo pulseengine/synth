@@ -1121,17 +1121,33 @@ jobs:
       # `call_effect`'s clobber set makes the colourer home a cross-call value in
       # R0-R3; `validate_cfg_rewrite` accepts it and only this gate fails it.
       #
-      # The grep asserts the NON-ZERO check count, a non-zero engaged-function
-      # count AND the ≥4 engaged CALL-shape floor from the machine-readable
-      # summary: exit 0 alone is not trusted, and a run where the allocator
-      # stopped reaching call-containing functions would pass every comparison
-      # while leaving the whole increment-3 class ungated.
-      - name: Run VCR-DEC-001 join+call allocator execution differential (#242, thumb2)
+      # Increment 4 (VCR-REACH-001, v0.55) adds the i64 register-PAIR shapes and
+      # the argument is the same a third time: `liveness::pair_effect` is SHARED
+      # by the pass, `validate_cfg_rewrite` and the ABI observable contract, so
+      # none of them can catch an error IN the model. Proven non-vacuous by
+      # MUTATION, and this one is the sharpest of the three: deleting the
+      # EARLY-CLOBBER interference edges (`pair_early_clobber`, the obligation a
+      # defs/uses pair structurally cannot express) lets the colourer coalesce
+      # `I64Ldr`'s `rdlo` onto a `base` the second `LDR` still re-reads —
+      # `validate_cfg_rewrite` ACCEPTS all 7 functions, VCR-RA-003 reports
+      # Consistent on all 7, the ABI observable contract passes all 7, and ONLY
+      # this gate fails (3 wrong values). Three static instruments green, one
+      # execution instrument red.
+      #
+      # The awk asserts the NON-ZERO check count, a non-zero engaged-function
+      # count, the ≥4 engaged CALL-shape floor AND increment 4's two floors —
+      # ≥4 engaged i64-PAIR functions and ≥2 of them containing a REAL i64 shift
+      # expansion (detected in the emitted bytes). Exit 0 alone is not trusted,
+      # and a run where the allocator stopped reaching one of these classes
+      # would pass every comparison while leaving that whole class ungated.
+      # Field positions under -F'[=/ ]':
+      #   $3/$4 CHECKS, $6 ENGAGED, $8 CALLSHAPES, $10 PAIRSHAPES, $12 SHIFTSHAPES
+      - name: Run VCR-DEC-001 join+call+i64-pair allocator execution differential (#242, thumb2)
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vcr_dec_001_join_alloc_execution_differential.py | tee ga_join.out
           grep -q "^VCR-DEC-001-JOIN CHECKS=" ga_join.out
-          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
+          awk -F'[=/ ]' '/^VCR-DEC-001-JOIN/ { if ($3+0 > 0 && $3 == $4 && $6+0 > 0 && $8+0 >= 4 && $10+0 >= 4 && $12+0 >= 2) ok = 1 } END { exit ok ? 0 : 1 }' ga_join.out
       # #798/#879: the RV32 active-data-segment FULL-BOOT oracle — found
       # un-wired in the same #879 audit as the gpio gate. clang+lld build a
       # bare-metal riscv32 firmware from synth's object + generated startup/
