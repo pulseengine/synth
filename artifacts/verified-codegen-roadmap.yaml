@@ -505,14 +505,18 @@ artifacts:
 
   - id: VCR-SEL-005
     type: sw-req
-    title: Cross-backend op-parity oracle
+    title: Cross-backend op-parity oracle (ARM / RISC-V / AArch64)
     description: >
-      A test-time gate (crates/synth-backend-riscv/tests/cross_backend_op_parity.rs,
-      cross_backend_integer_op_parity_242) that lowers a curated set of
-      self-contained, minimally-valid WasmOp sequences on BOTH the ARM (Thumb-2)
-      and RISC-V (RV32IMAC) selectors and asserts integer-core PARITY: an op the
-      ARM selector lowers must be lowered-or-explicitly-ledgered by the RV32
-      selector. This is the concrete near-term increment of VCR-SEL-001: the
+      A test-time gate (crates/synth-backend-riscv/tests/cross_backend_op_parity.rs)
+      that lowers self-contained, minimally-valid WasmOp sequences on ALL THREE
+      shipping selectors — ARM (Thumb-2), RISC-V (RV32IMAC) and AArch64 (A64) —
+      and asserts integer-core PARITY against ARM as the reference: an op the ARM
+      selector lowers must be lowered-or-explicitly-ledgered by the RV32 selector
+      (`cross_backend_integer_op_parity_242`) and by the aarch64 selector
+      (`aarch64_integer_op_parity_851`). NOTE the backend count: this description
+      said "BOTH the ARM and RISC-V selectors" until v0.55 (#893) — it has spanned
+      three backends since v0.53 (#883). This is the concrete near-term increment
+      of VCR-SEL-001: the
       VCR-SEL-001 pilot measurement (2026-06-20) established that "selector missed
       an op" is no longer a silent miscompile (ARM select_default is an exhaustive
       WasmOp match; RV32 ends dispatch with a typed Unsupported Err), so the
@@ -592,8 +596,42 @@ artifacts:
       also covers globals, the memory intrinsics (size/grow/copy/fill), br_table,
       and the sub-word i64 memory variants — each landing retires its ledger line
       via the stale-entry check.
+
+      THIRD BACKEND (v0.53, #883/#851): aarch64 joined the same no-wildcard
+      enumeration. Before that its only breadth check was 25 hand-written probes,
+      so "what does aarch64 not lower?" had no mechanical answer and gap-picking
+      was guesswork. The aarch64 leg (`aarch64_integer_op_parity_851`, ledger
+      `aarch64_known_divergences`) enumerated TWENTY ARM-lowers/aarch64-declines
+      integer-core gaps on first run; each decline names the missing selector arm
+      AND the A64 instruction that would implement it, so the ledger reads as a
+      work plan rather than an absence. Thirteen closed in the same release
+      (`select` via CSEL/FCSEL, `drop`/`nop`, `i32.wrap_i64`,
+      `i64.extend_i32_{s,u}`, the five `extend8/16/32_s` forms, fixed-memory
+      `memory.size`/`memory.grow` — selector 148 -> 161 ops, gale's matrix 35 ->
+      45); v0.54 closed `global.get`/`global.set`. aarch64 also gets what ARM and
+      RV32 structurally cannot have: a probed FLOAT/SIMD surface
+      (`a64_extended_surface`, floor `probed >= 100`). Float is
+      `StructurallyExcluded` from the ARM/RV32 leg because ARM float lowering is
+      TARGET-parameterized (f32.add DECLINES at fpu=None, LOWERS at
+      Single/Double) and RV32 has no FPU — but the aarch64 backend has ONE fixed
+      host profile, so both directions are assertable there, and a stale "gap"
+      claim is caught the same way a stale divergence is.
+
+      LEDGER STATE (2026-08, keep in step with the arrays — a drifting count is
+      the #893 class this oracle exists to prevent): ARM<->RV32 18 entries
+      (5 Zbb + 16 universe-completeness − `memory.size`/`memory.grow` closed
+      v0.50 − `br_table` closed v0.53 #882); ARM<->aarch64 5 entries — br_table,
+      `local.set`+get on a PARAM local, `local.tee` on a PARAM local (two
+      separate entries, both the leaf-function param-homing prerequisite),
+      memory.copy, memory.fill — after v0.54 closed `global.get`/`global.set`.
+      Non-vacuity floors: `at_parity >= 65` (RV32),
+      `at_parity >= 60` (aarch64), `probed >= 100` (aarch64 extended surface).
+      Both legs carry their own red-first companion
+      (`red_first_unledgered_one_sided_gap_is_caught` drops the real i32.rotl
+      entry; `red_first_unledgered_aarch64_gap_is_caught` does the same on the
+      aarch64 leg) and their own ledger-liveness test.
     status: implemented
-    tags: [codegen, selector, riscv, parity, oracle, track-a, release-v0.11.51]
+    tags: [codegen, selector, riscv, aarch64, parity, oracle, track-a, release-v0.11.51, release-v0.53, synth-883, synth-893]
     links:
       - type: derives-from
         target: VCR-001
@@ -603,15 +641,22 @@ artifacts:
       req-type: functional
       priority: should
       verification-criteria: >
-        cross_backend_integer_op_parity_242 is green: every WasmOp variant is
-        classified by a no-wildcard match (universe-complete by construction), and
-        every integer-core probe is at ARM/RV32 parity OR carries a reasoned
-        KNOWN_DIVERGENCES entry, with the at-parity floor (>=65 common-core ops)
-        guarding against a construction regression that would let "everything
-        errors" masquerade as parity. The red-first companion
-        (red_first_unledgered_one_sided_gap_is_caught) proves non-vacuity by
-        surfacing the real i32.rotl gap once its ledger entry is removed, and the
-        gate is CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
+        All EIGHT tests in cross_backend_op_parity.rs are green: every WasmOp
+        variant is classified by a no-wildcard match (universe-complete by
+        construction — a new variant fails to COMPILE until classified, the #615
+        tripwire), and every integer-core probe is at parity with ARM on BOTH the
+        RV32 and the aarch64 leg OR carries a reasoned ledger entry. The
+        at-parity floors (>=65 RV32, >=60 aarch64 common-core ops; >=100 probed
+        on the aarch64 extended float/SIMD surface) guard against a construction
+        regression that would let "everything errors" masquerade as parity. Each
+        leg carries its own red-first companion proving non-vacuity on the REAL
+        backends — red_first_unledgered_one_sided_gap_is_caught surfaces the real
+        i32.rotl gap once its ledger entry is removed, and
+        red_first_unledgered_aarch64_gap_is_caught does the same for aarch64 — and
+        a ledger-liveness test per leg guards drift. Stale entries fail too, in
+        both directions: a divergence that has CLOSED reddens the gate until its
+        line is deleted, so a parity claim cannot outlive the gap it documents.
+        CI-wired as vcr-sel-005-cross-backend-op-parity-gate.
 
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
@@ -1458,6 +1503,136 @@ artifacts:
         full-boot oracle green); AArch64 is documented N/A (no linear-memory
         ops in the subset).
 
+  - id: VCR-VER-004
+    type: sys-verification
+    title: "ABI observable-contract validator: a per-compilation check that fails DIFFERENTLY from the two dataflow validators that shared a blind spot (#242)"
+    description: >
+      SHIPPED v0.54. Filed into this roadmap in v0.55 (#893) — it was absent
+      entirely, which README calls out as a real gap because this file is
+      "the single source of truth for roadmap status" and VCR-VER-004 is a
+      shipped North-Star component.
+
+      THE MEASUREMENT THAT MOTIVATES IT (v0.53). Emptying `cfg_exit_observable`
+      — the exit contract the join-aware graph allocator and its OWN CFG
+      validator SHARE — makes the compiler emit code that leaves the return
+      value in the WRONG REGISTER, and BOTH per-compilation validators accept
+      it: `validate_cfg_rewrite` returns `Ok` and VCR-RA-003's
+      `validate_final_allocation` returns `Consistent`. Only EXECUTION caught
+      it. Two independent-LOOKING instruments, one shared blind spot — #872's
+      lesson one level up, and a direct counterexample to the claim that
+      per-compilation validation is an independent check on the code generator.
+
+      THE RESPONSE IS NOT A THIRD FILE ON THE SAME AXIS. Independence is not
+      obtained by writing a second checker, only by checking a different WAY.
+      `synth_synthesis::abi_contract::validate_abi_contract` differs on four
+      axes that matter:
+        (1) ITS OBLIGATION CANNOT BE EMPTIED. The exit obligation is
+            `RETURN_CONTRACT_REGS = [R0, R1]`, a constant of the AAPCS hard-named
+            in the module's own source. Deleting `cfg_exit_observable` outright
+            would not change one line of it.
+        (2) IT IS FORWARD, and a forward value analysis is structurally
+            incapable of the fail-open mode that bit v0.53.
+            `validate_cfg_rewrite` is a BACKWARD MUST-analysis whose obligation
+            set is a VARIABLE — and the empty set is a fixpoint, so an empty
+            seed means zero obligations means vacuous green. A forward
+            evaluation always produces EXACTLY ONE value for `R0` at each
+            return. There is no seed to shrink.
+        (3) ITS EVIDENCE IS A VALUE, NOT A NAME-PAIR. Per side independently it
+            builds a value graph (`Init(r)` / `Def(i,k)` / `Phi(b,n)`) and
+            compares by GREATEST-FIXPOINT BISIMULATION; on a deterministic term
+            graph that is equality of the infinite unfoldings, so loops and back
+            edges are handled coinductively rather than by unrolling. `Init(r)`
+            is one node SHARED by both sides — the AAPCS PARAMETER half of the
+            anchor — so reading an argument out of the wrong register is a value
+            change too.
+        (4) IT TAKES NOTHING FROM THE PASS. The signature is
+            `(orig, rewritten)`; the CFG is re-derived from both streams'
+            label-form branch structure and the two must agree. The v0.50 join
+            attempt failed precisely by letting the pass hand the checker its own
+            seed.
+
+      CALLS ARE MODELLED, NOT EXEMPTED. Each clobbered register
+      `{R0-R3, R12, LR}` is rebound to a FRESH node whose operands are the
+      PRE-CALL argument values, while `R4-R11`/`SP` flow through — so a call
+      result is an opaque value equal across the sides exactly when the same
+      callee got the same arguments. The AAPCS call effect reuses
+      `liveness::call_effect`, the ONE definition the pass and
+      `validate_cfg_rewrite` already share, because two divergent call models
+      would be a fresh instance of the very blind-spot class this module
+      attacks.
+
+      HONEST LIMITS — three, stated because the point of this artifact is that a
+      validator which quietly shares its pass's blind spot is worse than no
+      validator:
+        (a) IT IS A GATE ONLY ON THE FLAG-OFF graph-colouring allocator. On the
+            DEFAULT path it is a report-only audit held to a CI floor. Making it
+            gate the default path means hard-erroring a user's compile on a
+            checker whose false-positive rate is MEASURED, not proven; that flip
+            is deliberately not taken.
+        (b) MEMORY IS NOT IN ITS OBLIGATION. A mis-renamed store address that a
+            later load reads back is a false negative for this instrument (it is
+            covered by `validate_cfg_rewrite`'s use-equations when that seed is
+            intact — the two are COMPLEMENTARY, which is what independence looks
+            like, not redundancy).
+        (c) THE OP MODEL IS STILL SHARED. Def/use extraction runs through
+            `liveness::reg_effect`, so a MISMODELED OP remains a blind spot
+            common to ALL THREE instruments. VCR-VER-004 closes the shared-
+            CONTRACT hole, not the shared-OP-MODEL hole. `synth-verify`'s
+            `ArmSemantics::encode_op` is a genuinely second model of the same
+            operations; PINNING THE TWO AGAINST EACH OTHER IS THE NEXT RUNG (the
+            VCR-ISA-001 Sail-derived semantics are the eventual anchor), and
+            until it is done "three independent validators" WOULD BE AN
+            OVERCLAIM. This is the named follow-up.
+    status: implemented
+    tags: [validation, abi, aapcs, translation-validation, independence, register-allocation, track-c, epic-242, release-v0.54, synth-893]
+    links:
+      # Same shape as its two siblings VCR-VER-003 / VCR-VER-761: a
+      # sys-verification measure must `verifies` a system requirement.
+      - type: verifies
+        target: VCR-001
+      - type: traces-to
+        target: VCR-RA-003
+      - type: traces-to
+        target: VCR-DEC-001
+      # The shared-op-model residual (c) below names VCR-ISA-001's Sail-derived
+      # semantics as the eventual anchor for pinning `liveness::reg_effect`
+      # against a genuinely second model.
+      - type: traces-to
+        target: VCR-ISA-001
+    fields:
+      method: translation-validation
+      preconditions:
+        - "v0.53 #872: the shared-blind-spot class demonstrated by mutation on validate_segment_rewrite"
+        - "VCR-DEC-001 increment 3 (#896): the graph-colouring allocator colours across calls, so the gate must model the AAPCS call effect rather than decline it"
+      steps:
+        - "synth_synthesis::abi_contract: forward value-graph construction + greatest-fixpoint bisimulation over RETURN_CONTRACT_REGS"
+        - "graph_alloc::abi_gate wires it as the accept/reject gate on the flag-off colouring allocator (NotAttempted is a DECLINE, not an accept)"
+        - "Re-run v0.53's EXACT mutation from the committed patch (scripts/repro/mutations/v053_shared_exit_contract.patch), not a reconstruction"
+        - "Report-only audit of the SHIPPING allocator over the repro corpus, held to a CI floor"
+        - "CI: instrument-independence-oracle asserts the BASELINE direction first, then the mutation, then that the tree was restored"
+      pass-criteria: >
+        On the mutated compiler and ONE compilation: `validate_cfg_rewrite`
+        returns Ok and VCR-RA-003 returns Consistent (both still green — the
+        shared blind spot is real and unpatched by this change) while
+        `validate_abi_contract` REJECTS with a concrete violation naming the ABI
+        result register — `Violated { sink: 81, reg: R0 }` on
+        `brif_outer_740::poll`, the function that returned 0x1111 instead of its
+        parameter — and the miscompile is NOT emitted. Proven RED-FIRST: make
+        `abi_gate` treat `Violated` as an accept and the mutated compiler goes
+        back to emitting the miscompile. COSTS NOTHING on the gated path —
+        composed with VCR-DEC-001 increment 3 over the ARM repro corpus, 617
+        functions, 307 applied, 40822 -> 40722 bytes (−100 B relocatable,
+        −120 B self-contained): increment 3's result TO THE BYTE, with the check
+        conservative enough to demand both R0 and R1 for every function and to
+        decline whenever it cannot analyze. On the DEFAULT (shipping) path the
+        audit measured `Holds 431 / NotAttempted 202 / Violated 0` over 633
+        corpus functions — ~68 % of the shipping path proven, `bl`/`blx` calls
+        included — with the corpus GROWING as lanes add fixtures, so the pinned
+        invariant is `Violated 0`, not the absolute counts. Both CI steps assert
+        machine-readable counts (`ASSERTIONS=4/4`, five `OK` lines,
+        `VIOLATED=0`) rather than trusting exit 0, and the job fails if the
+        mutation was left in the tree.
+
   - id: VCR-VER-761
     type: sys-verification
     title: "Self-contained --cortex-m linmem<->globals disjointness geometry gate catches the R9-overlap alias (#761)"
@@ -2080,8 +2255,49 @@ artifacts:
       named pitfall — split points landing inside hot loops — is bounded at
       this stage by synth's straight-line segment scope (no interior loops),
       and re-checked when segments widen.
-    status: proposed
-    tags: [codegen, register-allocation, parallel-move, spilling, track-a, release-v0.11.38]
+
+      DELIVERED v0.11.38 — `synth_synthesis::parallel_move` (`sequentialize`),
+      a pure module with no compiler state: destinations must be pairwise
+      distinct (anything else is a caller bug and is REJECTED, not guessed at);
+      self-moves are dropped; phase 1 emits chain moves leaf-first from a
+      worklist until what remains is exactly a set of disjoint cycles; phase 2
+      breaks each cycle through a scratch register filtered against the move set,
+      or — when no scratch survives the filter — through ONE self-bracketing
+      stack-scratch pair (`MoveStep::SpillScratch` / `ReloadScratch`, lowered by
+      the consumer to `str`/`ldr [sp, #resolver_slot]`). That stack fallback is
+      the "guaranteed-progress" clause: there is no fixpoint-and-hope loop —
+      phase 1 removes exactly one pending move per pop, the phase-2 walk removes
+      one per step against the disjoint-cycle invariant, the outer loop ASSERTS
+      the pending set strictly shrank, and the emitted sequence is asserted
+      bounded by `moves.len() + 2 * cycle_count` before returning.
+
+      CONSUMED, twice, and each time it removed a real defect rather than only
+      adding a component:
+        * v0.11.39 (#327, gale #326): `emit_arg_moves` call-marshalling. The old
+          cycle-breaker DEMANDED a callee-saved register, so the dissolved
+          k_mutex_unlock hard-failed under saturation; it also MISCOMPILED
+          genuine 2-swaps (duplicated a value). Phase 1 emits the
+          lowest-destination ready move first — exactly the order the legacy
+          `emit_parallel_move` produced for ascending-destination arg lists — so
+          wiring the resolver in was byte-invisible for everything that already
+          compiled.
+        * v0.53 (#881, GI-FPU-002): VFP register-file spilling. `VCR-RA-001`
+          gave the INTEGER file Belady spilling in v0.24 but the VFP file never
+          got it, so five falcon v1.128 entry points died on `S0..S15 all live`
+          / `caller-saved VFP D-register file exhausted`. Both files now spill
+          and reload, and the swap/cycle cases go through THIS resolver. This is
+          the delivery the v0.53 notes tagged `VCR-RA-004`; the status field is
+          what had not been flipped (#893).
+
+      STATUS IS `implemented`, NOT `verified`, deliberately. All three
+      verification-criteria clauses have evidence (below), but no `sw-verification`
+      artifact linked `verifies` to this requirement until v0.55 (#893), and the
+      second named pitfall — split points landing inside hot loops — is still
+      bounded by assumption (synth's straight-line segment scope, no interior
+      loops) rather than by a check that fails when segments widen. That
+      re-check remains open and is stated here rather than implied away.
+    status: implemented
+    tags: [codegen, register-allocation, parallel-move, spilling, track-a, release-v0.11.38, release-v0.53, synth-327, synth-881, synth-893]
     links:
       - type: derives-from
         target: VCR-001
@@ -2097,6 +2313,32 @@ artifacts:
         insertion on a synthetic over-pressure module compiles and runs
         result-identical to wasmtime; no resolver path can emit an
         unbounded-progress sequence.
+
+        MET, clause by clause — the linked verification artifact carries the run
+        recipe and the honest bound:
+        (1) `property_random_move_sets_match_parallel_semantics`
+        (crates/synth-synthesis/src/parallel_move.rs) runs 2000 deterministic
+        iterations over R0..R8 — alternating a FULL random permutation
+        (guaranteeing cycles and self-moves) with a partial move set (chains,
+        fan-out, self-moves, cycles) — and re-runs each against scratch sets of
+        size 0, 1 and 2, i.e. 6000 sequentializations, each checked against a
+        reference parallel semantics and against the size bound. Twelve directed
+        cases cover the named shapes explicitly (two_swap, three_cycle,
+        two_disjoint_cycles, chain_into_cycle, the scratch-collision filter, and
+        the no-scratch stack pair).
+        (2) `scripts/repro/high_pressure_i32.wat` + its unicorn-vs-wasmtime
+        differential: hard `Err` on v0.11.37, 6/6 on v0.11.38. v0.53 (#881) adds
+        the spilled-VFP differential — 7 shapes on `-t cortex-m7dp
+        --relocatable`, 109 rows bit-identical to wasmtime, NaN-aware per WASM
+        §4.3.3, with the internal `bl` resolved by a REAL link so an unresolved
+        relocation cannot be silently skipped.
+        (3) Unbounded progress is excluded structurally, not empirically: the
+        `moves.len() + 2 * cycle_count` bound and the strictly-shrinking pending
+        set are `assert!`s in the resolver itself, so a violating path aborts
+        rather than emitting.
+        OPEN: the "split points inside hot loops" pitfall is still bounded by
+        synth's straight-line segment scope, and the re-check owed when segments
+        widen does not exist yet.
 
   - id: VCR-DEC-001
     type: sw-req
@@ -2373,14 +2615,20 @@ artifacts:
       AArch64 carry no `branch_map`; the eliminated-constant fixture; witness#130
       `object-disposition` end-to-end compose.
     status: implemented
-    tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration]
+    tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration, synth-396]
     links:
       - type: derives-from
         target: VCR-001
       - type: refines
         target: VCR-DBG-001
+      # synth#396 (the MC/DC source-to-object obligation this decision settles the
+      # contract for) is tracked in rivet as VCR-COV-001 — the issue body says so
+      # verbatim ("Tracked in rivet as VCR-COV-001, sibling to VCR-DBG-001") and
+      # VCR-COV-001's title carries "(synth #396)". A GitHub ISSUE NUMBER is not an
+      # artifact id; the link belongs on the artifact, and the issue number stays in
+      # the title/tags where it is a reference rather than a resolvable target.
       - type: traces-to
-        target: synth:396
+        target: VCR-COV-001
       - type: traces-to
         target: witness:130
     fields:
@@ -3699,75 +3947,20 @@ artifacts:
         (frozen anchors pass untouched).
 
   # ---------------------------------------------------------------------------
-  # Scalar f32 hard-float reachability (GI-FPU-002, #619/#369)
+  # Scalar f32 hard-float (GI-FPU-002) — NOT DEFINED HERE.
+  #
+  # PR #705 recorded the phase-1 f32 delivery by declaring a SECOND `GI-FPU-002`
+  # artifact at this point in the file. The id was already defined in
+  # artifacts/gale-integration.yaml (its namespace home — GI-002 -> GI-FPU-001 ->
+  # GI-FPU-002 -> GI-FPU-VER-001 form one chain there), so rivet loaded one over
+  # the other and reported `status: proposed` for a requirement the README and
+  # CHANGELOG both report as met (#369 closed, f32 v0.41 / f64 v0.43, VFP
+  # spilling v0.53). This file is the single source of truth for the VCR-*
+  # program's roadmap status, not for the GI-* gale-integration requirements.
+  #
+  # The delivery evidence was merged into the single GI-FPU-002 in
+  # artifacts/gale-integration.yaml, which now carries `status: implemented`.
   # ---------------------------------------------------------------------------
-
-  - id: GI-FPU-002
-    type: sw-req
-    title: "Scalar f32 hard-float (VFP) reachable on the thumb-2 CLI path — phase 1 (synth #619/#369)"
-    description: >
-      synth had a working VFP encoder (f32_vfp_encoding_test.rs) and selector
-      VFP arms, but the decoder DROPPED every scalar float op
-      (wasm_decoder.rs `_ => None`), so `synth compile -t cortex-m4f`
-      HONEST-REJECTED f32 on every CLI path (GI-FPU-001 loud-skip). Worse, the
-      "existing" selector VFP lowering was a NON-FUNCTIONAL prototype: the
-      direct `select_with_stack` fell through to `select_default`, whose
-      `alloc_vfp_reg` is a blind `%16` round-robin with no operand-stack
-      integration, so `f32.const;f32.const;f32.add` emitted `VADD S2,S3,S4` over
-      garbage. Phase 1 builds the real bridge.
-
-      DELIVERED (phase 1, implemented):
-        (1) Decoder un-drops the in-scope scalar f32 ops (add/sub/mul/div, the
-            six comparisons, i32.trunc_f32_s/u, f32.convert_i32_s/u, f32.const);
-            f64 and the rest of the f32 surface (abs/neg/sqrt/min/max, load/store,
-            local.set/tee) stay dropped → phase 1b/2.
-        (2) A real VFP value stack in `select_with_stack`: `StackVal::Float`,
-            an S0..S15 allocator (no VFP spilling — loud-bail on exhaustion),
-            and f32 arms that pop/push S-register operands. Integer modules never
-            construct a Float entry, so the frozen integer path is byte-identical.
-        (3) AAPCS-VFP calling convention: f32 params homed in S0..S15 (threaded
-            `params_f32`, decoder → CompileConfig → selector), f32 result in S0.
-        (4) FPU gate: only FPU targets (cortex-m4f/m7/m7dp) lower f32; m0/m3/r5
-            keep the honest reject with a clear GI-FPU-002 message.
-        (5) `.ARM.attributes`: Tag_FP_arch=VFPv4-D16 + Tag_ABI_VFP_args=VFP
-            registers on FPU targets (non-FPU byte-identical), and the reset
-            handler enables CP10/CP11 in SCB->CPACR (the M4F FPU is off at reset).
-        (6) Encoder bug fixed: the signed/unsigned VCVT constants in
-            encode_{arm,thumb}_f32_convert_i32 were SWAPPED (0xEEB80A40 is U32),
-            silently making convert_i32_s an unsigned conversion; and the CPACR
-            ORR mask (main.rs / cortex_m.rs) encoded #0x07800000 instead of
-            #0x00F00000. Both corrected.
-
-      HELD (honest-subset boundary, chosen not missed): f64 (phase 2 — M7DP
-      D-registers), f32 load/store (VLDR/VSTR address materialization — 1b),
-      f32 local.set/tee and non-param f32 locals (VFP home write-back — 1b),
-      mixed f32/integer parameter lists and f32-in-functions-with-calls (both
-      loud-decline: AAPCS-VFP independent register pools / S0..S15 caller-saved).
-    status: implemented
-    tags: [codegen, f32, vfp, hard-float, aapcs-vfp, cortex-m4f, decoder, selector, synth-619, synth-369, gi-fpu-002]
-    links:
-      - type: derives-from
-        target: VCR-001
-    fields:
-      req-type: functional
-      priority: should
-      verification-criteria: >
-        Tracks GitHub issues #619 / #369. RED→GREEN execution differential
-        (scripts/repro/f32_vfp_619_differential.py): compiles f32.add/sub/mul/div
-        + i32.trunc_f32_s + f32.convert_i32_s/u for cortex-m4f, reads each symbol
-        from the ELF SYMTAB (#489), runs it under unicorn (ARM/Thumb, FPU enabled
-        via CPACR CP10/CP11 + FPEXC.EN) with f32 args in S0/S1 (hard-float), and
-        asserts the result is bit-exact (`to_bits`) vs wasmtime on boundary
-        values (0.0, 1.5, -2.25, large, subnormal). RED on origin/main (compile
-        REJECTS → exit 1); GREEN after (48/48 bit-exact → exit 0). Honest-reject:
-        the same harness asserts cortex-m3 REJECTS f32. CI-gateable Rust test
-        crates/synth-backend/tests/f32_hardfloat_619.rs locks the AAPCS-VFP S0/S1
-        homing, the honest reject, and the convert-signedness fix without
-        unicorn. Frozen anchors 10/10 and the #511 estimator oracle pass
-        untouched (float declines the optimized path → the estimator never sees
-        VFP ops). The f32 comparisons compile + are byte-pinned in
-        f32_vfp_encoding_test.rs but are not execution-differentiated (unicorn
-        does not model the VMRS FPSCR→APSR flag transfer — an emulator gap).
 
   # ---------------------------------------------------------------------------
   # Track D — schedulability: sound static WCET bound (#778)

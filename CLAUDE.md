@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Synth is a WebAssembly-to-ARM Cortex-M (Thumb-2), Cortex-R5 (A32), RISC-V (RV32IMAC), and AArch64 (host-native, integer subset) compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
+Synth is a WebAssembly-to-ARM Cortex-M (Thumb-2), Cortex-R5 (A32), RISC-V (RV32IMAC), and AArch64 (host-native) compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
 
 Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom](https://github.com/pulseengine/loom) (WASM optimizer) + [meld](https://github.com/pulseengine/meld) (platform).
 
@@ -29,7 +29,7 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-frontend` | WASM Component Model parser and validator |
 | `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
 | `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
-| `synth-backend-aarch64` | AArch64 (A64) host-native backend — integer subset, `-b aarch64` |
+| `synth-backend-aarch64` | AArch64 (A64) host-native backend — i32/i64 core, complete scalar f32/f64, globals, `call_indirect`, bounds-checked linear memory; `-b aarch64` |
 | `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
@@ -172,8 +172,11 @@ frozen and oracle-gated every step:
   generated startup at reset — the emitted blob is READ BACK and
   validate_served_image hard-errors the compile on any served/runtime
   disagreement (the v0.47 warning is gone; the de-vacuated control_step
-  differential + a full-boot unicorn oracle gate it); AArch64 is N/A (no
-  linear-memory ops in the integer subset).
+  differential + a full-boot unicorn oracle gate it); AArch64 is N/A, but for a
+  DIFFERENT reason than when this was written — it HAS bounds-checked
+  linear-memory load/store (v0.52 #865), and is N/A because it emits no data
+  section at all and REFUSES a module carrying active data segments loudly
+  (v0.53), so there is no served-vs-runtime image to compare.
 - **Track D (schedulability, #778):** `--emit-wcet` emits a SOUND static
   per-function worst-case cycle bound (`synth-wcet-v1` sidecar) as gale spar's
   T3/T4 `C_i` input — a bound, not a DWT observation. Loop-free functions get an

@@ -777,8 +777,16 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
 /// CLOSED v0.50 (#242): `memory.size` + `memory.grow` now lower on RV32
 /// (fixed-memory page-count constant + fixed-memory `-1` grow, shared
 /// `rewrite_memory_grow_zero` fold; execution differential
-/// `rv32_mem_size_grow_242_differential.py`). Ledger total: 5 Zbb + 16 −
-/// 2 closed = 19 entries.
+/// `rv32_mem_size_grow_242_differential.py`).
+///
+/// CLOSED v0.53 (#882): `br_table` now lowers on RV32 (comparison ladder,
+/// execution-verified under unicorn vs wasmtime across every table entry and
+/// the out-of-range / unsigned-edge indices; oversized and value-carrying
+/// tables LOUD-DECLINE by name rather than miscompiling).
+///
+/// Ledger total: 5 Zbb + 16 − 3 closed = **18 entries** — the number below.
+/// Keep this line in step with the array: a count that drifts from the array is
+/// exactly the stale-claim class this ledger exists to prevent (#893).
 fn known_divergences() -> &'static [(&'static str, &'static str)] {
     &[
         // ---- Zbb bit-manipulation class (measured 2026-06-20) ----
@@ -915,9 +923,11 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
 /// Thirteen were closed in the same change (v0.53 #851: `select` via
 /// CSEL/FCSEL, `drop`, `nop`, `i32.wrap_i64`, `i64.extend_i32_{s,u}`, the five
 /// `extend8/16/32_s` forms, fixed-memory `memory.size`/`memory.grow`), leaving
-/// the SEVEN below. This ledger — the COMPLEMENT of what aarch64 lowers — is
-/// the mechanically-derived answer to "what is missing on armv8?" (#851); the
-/// float-surface complement lives in [`a64_extended_surface`].
+/// seven. v0.54 (#851 lane L3) closed two more — `global.get`/`global.set` —
+/// leaving the **FIVE** below. This ledger — the COMPLEMENT of what aarch64
+/// lowers — is the mechanically-derived answer to "what is missing on armv8?"
+/// (#851); the float-surface complement lives in [`a64_extended_surface`].
+/// Keep this count in step with the array (#893).
 fn aarch64_known_divergences() -> &'static [(&'static str, &'static str)] {
     &[
         (

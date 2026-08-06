@@ -387,15 +387,29 @@ artifacts:
 
   - id: SWVER-017
     type: sw-verification
-    title: Cross-backend op-parity oracle (ARM vs RISC-V)
+    title: Cross-backend op-parity oracle (ARM vs RISC-V vs AArch64)
     description: >
       Verifies the VCR-SEL-005 op-parity oracle: the ledger of which WasmOps
-      each selector (ARM select_default, RISC-V selector) lowers, asserting the
-      tracked parity so a "selector missed an op" regression (the #223/#232
-      class) is caught mechanically rather than on silicon. Both selectors fail
-      honestly on an unlowered op; this oracle tracks the gap explicitly.
+      each selector lowers, asserting the tracked parity so a "selector missed
+      an op" regression (the #223/#232 class) is caught mechanically rather than
+      on silicon. Every selector fails honestly on an unlowered op; this oracle
+      tracks the gap explicitly, in both directions (a NEW unledgered gap
+      reddens, and so does a ledgered gap that has CLOSED).
+
+      THREE selectors, not two — the title said "ARM vs RISC-V" until v0.55
+      (#893), but aarch64 joined the same no-wildcard universe enumeration in
+      v0.53 (#883). The gate is now eight tests: the RV32 parity leg
+      (cross_backend_integer_op_parity_242), the aarch64 parity leg
+      (aarch64_integer_op_parity_851), the aarch64 float/SIMD extended surface
+      (aarch64_extended_surface_851 — probe-able there because the backend has
+      one fixed host profile, whereas ARM float lowering is TARGET-parameterized
+      and RV32 has no FPU), the #882 br_table sub-shape asymmetry check, a
+      ledger-liveness test per leg, and a red-first non-vacuity companion per leg
+      that removes a REAL ledger entry (i32.rotl / an aarch64 gap) and asserts
+      the gate goes red on the real backends — no synthetic op, no shipping-code
+      change.
     status: implemented
-    tags: [instruction-selection, cross-backend, vcr-sel, op-parity]
+    tags: [instruction-selection, cross-backend, aarch64, vcr-sel, op-parity, synth-883, synth-893]
     links:
       - type: verifies
         target: VCR-SEL-005
@@ -405,7 +419,11 @@ artifacts:
         run: "cargo test -p synth-backend-riscv --test cross_backend_op_parity"
         coverage: >
           crates/synth-backend-riscv/tests/cross_backend_op_parity.rs — the
-          ARM/RISC-V op-lowering parity ledger
+          ARM/RISC-V and ARM/AArch64 op-lowering parity ledgers (18 and 5 entries
+          respectively as of 2026-08) plus the aarch64 extended float/SIMD
+          surface; non-vacuity floors at_parity >= 65 (RV32), >= 60 (aarch64),
+          probed >= 100 (aarch64 extended). CI job
+          vcr-sel-005-cross-backend-op-parity-gate
 
   # Native-pointer ABI verification cluster (#237/#354/#359/#383): completes the
   # right side of the V for the native-pointer linear-memory family alongside
@@ -534,7 +552,54 @@ artifacts:
           i64_*_exec_refines_wasmcert theorems, +6 Qed → 591 total); frozen
           10/10 confirms the semantics-model change does not alter compiled bytes
 
+  # ---------------------------------------------------------------------------
+  # Track A right-side closure (#893): VCR-RA-004 shipped in v0.11.38 and was
+  # extended to the VFP file in v0.53, but nothing linked `verifies` to it, so
+  # the requirement's evidence lived only in changelog prose.
+  # ---------------------------------------------------------------------------
+
   - id: SWVER-022
+    type: sw-verification
+    title: Cycle-safe parallel-move resolver — property test + over-pressure differentials (VCR-RA-004)
+    description: >
+      Verifies VCR-RA-004's three criteria clauses. (1) PROPERTY:
+      `property_random_move_sets_match_parallel_semantics` sequentializes 2000
+      deterministic move sets over R0..R8 — alternating full random permutations
+      (guaranteeing cycles and self-moves) with partial sets (chains, fan-out,
+      self-moves, cycles) — each re-checked with scratch sets of size 0, 1 and 2,
+      i.e. 6000 sequentializations, every one compared against a reference
+      PARALLEL semantics (all sources read in the old state) and against the
+      `moves.len() + 2 * cycle_count` size bound. Twelve directed tests pin the
+      named shapes (two_swap, three_cycle, two_disjoint_cycles, chain_into_cycle,
+      scratch-collision filtering, the no-scratch stack-scratch pair, and the
+      rejected duplicate-destination caller bug). (2) EXECUTION: the resolver's
+      two consumers are differentiated against wasmtime — `high_pressure_i32.wat`
+      (hard `Err` before v0.11.38, 6/6 after) for the integer arg-move path, and
+      the v0.53 #881 spilled-VFP differential (7 shapes on `-t cortex-m7dp
+      --relocatable`, 109 rows bit-identical, NaN-aware per WASM §4.3.3, internal
+      `bl` resolved by a real link) for the VFP file. (3) PROGRESS: the size bound
+      and the strictly-shrinking pending set are `assert!`s inside
+      `sequentialize`, so an unbounded path aborts rather than emitting — checked
+      by construction, not by sampling. HONEST BOUND: the "split points inside hot
+      loops" pitfall named in VCR-RA-004 is bounded by synth's straight-line
+      segment scope and has NO check of its own; widening segments must add one.
+    status: implemented
+    tags: [register-allocation, parallel-move, spilling, property-test, differential, vcr-ra, epic-242, synth-893]
+    links:
+      - type: verifies
+        target: VCR-RA-004
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-synthesis parallel_move"
+        coverage: >
+          crates/synth-synthesis/src/parallel_move.rs (the property test + 12
+          directed cases) and its consumers
+          `InstructionSelector::emit_arg_moves` (#327) and the v0.53 VFP
+          spill/reload insertion (#881); execution evidence via
+          scripts/repro/high_pressure_i32.wat and the #881 spilled-VFP
+          differential
+  - id: SWVER-023
     type: sw-verification
     title: i64 register-pair op model — execution differential + mutation matrix (VCR-REACH-001, #242)
     description: >
