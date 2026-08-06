@@ -107,6 +107,64 @@ fn shipped_expansions_certify_high_register_variants() {
                     rnhi: Reg::R1,
                 },
             ),
+            // #916 — the certifier's OWN blind spot, closed. Until this lane
+            // `covered_i64_pseudo_selections` only ever fed these five ops at
+            // R0/R1 and the high-register variant list only covered
+            // I64SetCond/I64SetCondZ/I64Mul/I64Popcnt, so the symbolic executor
+            // never saw the shape where the 16-bit `MOVS Rd,#0` zero-fill
+            // transmutes into `CMP r0,#0` and the half is left unwritten. Every
+            // one of these FAILS validation against the pre-#916 encoder and
+            // certifies against the fixed one — which is what makes the
+            // validator non-vacuous here rather than merely green.
+            (
+                synth_core::WasmOp::I64Shl,
+                ArmOp::I64Shl {
+                    rd_lo: Reg::R8,
+                    rd_hi: Reg::R7,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64ShrU,
+                ArmOp::I64ShrU {
+                    rd_lo: Reg::R7,
+                    rd_hi: Reg::R8,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64ShrS,
+                ArmOp::I64ShrS {
+                    rd_lo: Reg::R7,
+                    rd_hi: Reg::R8,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64Clz,
+                ArmOp::I64Clz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R1,
+                    rnhi: Reg::R8,
+                },
+            ),
+            (
+                synth_core::WasmOp::I64Ctz,
+                ArmOp::I64Ctz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R1,
+                    rnhi: Reg::R8,
+                },
+            ),
         ];
         for (wasm, pseudo) in variants {
             let code = thumb_bytes(&pseudo);
@@ -251,6 +309,69 @@ fn div_family_is_held_out_loudly() {
         match validate_expansion(&synth_core::WasmOp::I64DivU, &pseudo, &code) {
             Err(ExpansionError::Unsupported(_)) | Err(ExpansionError::Decode { .. }) => {}
             other => panic!("i64.div_u must be held out loudly, got {other:?}"),
+        }
+    });
+}
+
+/// RED — the literal #916 bug shape, reconstructed byte-for-byte from the
+/// pre-fix encoder. This is what makes the high-register variants above
+/// non-vacuous: without it, "they certify" would be indistinguishable from
+/// "the validator cannot see this class at all".
+///
+/// The pre-fix `I64ShrU { rd_hi: R8, .. }` large-shift arm ended:
+///
+/// ```text
+/// B     .done          ; 0xE002 -> halfword 19, the end of a 38-byte expansion
+/// LSR.W rd_lo, rn_hi, rm_hi
+/// 0x2800                ; MOVS R8,#0 INTENDED — assembles as CMP r0,#0
+/// ```
+///
+/// so for any shift amount >= 32 the high half was never zeroed and kept
+/// whatever R8 held on entry. Splicing that tail back on MUST produce a
+/// counterexample.
+#[test]
+fn red_916_transmuted_zero_fill_fails() {
+    with_verification_context(|| {
+        let pseudo = ArmOp::I64ShrU {
+            rd_lo: Reg::R7,
+            rd_hi: Reg::R8,
+            rn_lo: Reg::R0,
+            rn_hi: Reg::R1,
+            rm_lo: Reg::R2,
+            rm_hi: Reg::R3,
+        };
+        let code = thumb_bytes(&pseudo);
+
+        // The FIXED tail (10 bytes): B .done (0xE003, widened); LSR.W R7,R1,R3;
+        // MOV.W R8,#0. Pinned so this test screams if the encoder changes.
+        let fixed: Vec<u8> = [0xE003u16, 0xFA21, 0xF703, 0xF04F, 0x0800]
+            .iter()
+            .flat_map(|hw| hw.to_le_bytes())
+            .collect();
+        assert_eq!(
+            &code[code.len() - 10..],
+            &fixed[..],
+            "shipped I64ShrU tail changed — update the #916 red-shape splice"
+        );
+
+        // The #916 shape: the narrow B (0xE002) and the transmuted 0x2800.
+        let mut buggy = code[..code.len() - 10].to_vec();
+        for hw in [0xE002u16, 0xFA21, 0xF703, 0x2800] {
+            buggy.extend_from_slice(&hw.to_le_bytes());
+        }
+        assert_eq!(buggy.len(), 38, "pre-#916 expansion was 38 bytes");
+
+        match validate_expansion(&synth_core::WasmOp::I64ShrU, &pseudo, &buggy) {
+            Err(ExpansionError::Counterexample {
+                wasm_op_label,
+                description,
+            }) => {
+                println!("✗ #916 shape rejected as required: {wasm_op_label}: {description}");
+            }
+            other => panic!(
+                "#916 bug shape (transmuted MOVS zero-fill leaves the high half \
+                 unwritten) must FAIL validation, got {other:?}"
+            ),
         }
     });
 }

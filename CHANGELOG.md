@@ -237,6 +237,72 @@ addressed by fixing its output.
 
 ### Fixed
 
+- **#916 — i64 zero-fill mis-encoded for a high destination (R8-R12): `MOVS`
+  transmuted into `CMP`, and the half that had to be zeroed was never
+  written.** The 16-bit `MOVS Rd, #imm8` (T1) has a **three-bit** Rd field.
+  `reg_to_bits(R8)` is 8, so `8 << 8 = 0x0800` overflowed into bit 11 and
+  `0x2000 | 0x0800 = 0x2800` — the emitted halfword was `CMP r0, #0`, not a
+  move at all. The destination kept whatever it held on entry and the flags
+  were clobbered. Same class as #180 / H-CODE-9, and the same defect #311
+  already fixed for `I64SetCond`; the fix here follows that shape (32-bit
+  `MOV.W`, T2 `F04F 0000 | Rd<<8 | imm8`, for `rd >= R8`) behind one shared
+  helper so a sixth site cannot reintroduce it silently.
+
+  **The issue named two sites; a sweep of every 16-bit imm8 T1 emission in the
+  Thumb-2 encoder found five**, and the three extra ones are worse than the
+  two filed:
+
+  | expansion | register left unwritten | precondition |
+  |---|---|---|
+  | `I64Shl` | `rd_lo` (large-shift arm) | shift `>= 32` |
+  | `I64ShrU` | `rd_hi` (large-shift arm) | shift `>= 32` |
+  | `I64Clz` | `rnhi` (high-word clear) | **none** |
+  | `I64Ctz` | `rnhi` (high-word clear) | **none** |
+  | `I64ExtendI32U` | `rdhi` (high-word clear) | **none** |
+
+  The bottom three have no `>= 32` guard, so *every* `i64.clz` / `i64.ctz` /
+  `i64.extend_i32_u` whose high half landed in R8 returned garbage in its
+  upper 32 bits. `I64ExtendI32U { rdhi: R8 }` emitted the literal two-halfword
+  stream `[4608, 2800]` — half of a two-instruction expansion was the wrong
+  instruction.
+
+  **Not a one-liner, because the fix changes instruction size.** `MOV.W` is 4
+  bytes where `MOVS` was 2, and whether that moves a branch target was settled
+  per site by decoding the emitted `imm` fields rather than by reading the
+  comments. In `I64Shl`/`I64ShrU` the internal `B .done` targets the **end** of
+  the expansion — past the zero-fill — so its displacement is now *derived*
+  from the zero-fill's real width (`0xE002` low / `0xE003` high) instead of
+  hard-coded; leaving it would have traded a data miscompile for a
+  control-flow one, which is strictly worse. In `I64Clz`/`I64Ctz` the `B .done`
+  targets the zero-fill's **own address**, which cannot move, so those need no
+  displacement change. Reordering the large-shift arm to dodge the size change
+  was rejected, not overlooked: zeroing `rd_lo` before the `LSL.W` destroys
+  `rn_lo` in the in-place case `rd_lo == rn_lo`.
+
+  `estimate_arm_byte_size` — the hand-maintained estimator that feeds
+  optimized-path branch resolution — is mirrored to match (38/40, 24/26,
+  32/34), following the existing register-shape-sensitive pattern for
+  `Cmn`/`Sxtb`/`Uxth`/`Mov`. The direct selector needs no change: it resolves
+  branches from real `code.len()`.
+
+  **Scope of the byte change is confined to `rd >= R8`** — low-register
+  expansions are byte-identical, so no frozen fixture moved. A32 (cortex-r5)
+  never shared the defect (`MOV Rd,#0` is `0xE3A00000 | Rd<<12`, a four-bit
+  field) and `I64ShrS` never did either (its large arm sign-fills with the
+  32-bit `ASR.W`); both are now pinned as such so the sweep is recorded rather
+  than asserted in prose.
+
+  **Three validators were blind to this.** `estimator_encoder_agreement` (#498)
+  only ever tested these ops at low registers; the i64 expansion certifier fed
+  them only at R0/R1 and listed high-register variants for just
+  `I64SetCond`/`SetCondZ`/`Mul`/`Popcnt`; and nothing executed a `>= 32` shift
+  that *kept* the affected half. All three are closed in the same change, each
+  proven non-vacuous against the pre-fix bytes — the new
+  `i64_high_reg_zero_fill_916_differential.py` (48 executions vs wasmtime,
+  R8 poisoned with `0xDEADBEEF` so a stale-but-zero register cannot produce a
+  false green) fails on exactly the shift amounts `>= 32` before the fix and
+  passes after.
+
 - **#890 — `sret_decide_differential.py` was a gate that could not fail.** It
   printed `MISMATCH <-- BUG` and still exited 0. The verdict is now the exit
   status (proved by mutation: flipping the `-35` expectation gives `rc=1`).
