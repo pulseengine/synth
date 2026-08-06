@@ -3203,6 +3203,131 @@ artifacts:
         on stack_canary_687 / i64_global_init_649 / control_step self-contained
         images.
 
+  - id: VCR-MEM-004
+    type: sw-req
+    title: "ProvenSafeBoundsChecker: fail-closed elision of software bounds guards from scry's proven-safe verdicts (synth #901, scry #114)"
+    description: >
+      WasmBounds (Sudo & Winstein, Stanford CS191 Spring 2026) shows the payoff
+      end to end: abstract interpretation identifies provably in-bounds wasm
+      memory accesses, their bounds checks are elided, and they measure 1.21x.
+      Their motivation IS synth's target — hardware guard pages need virtual
+      memory, so on no-MMU embedded (and under Memory64 / Custom Page Sizes)
+      every access falls back to a SOFTWARE bounds check. synth's own
+      `synth_memory::SoftwareBoundsChecker` documents that cost as
+      "~25-40% overhead", and `--safety-bounds software` emits the #752
+      wraparound-safe SUB/CMP/BHS/UDF/CMP/BLS/UDF guard (16 B) at every i32
+      access site.
+
+      Difference from WasmBounds: we own BOTH halves. scry proves the access
+      in-bounds (sound AI, admit-free Rocq) and synth proves the codegen
+      correct (Rocq), so the elision is PROOF-CARRYING and ATTESTED rather than
+      a trusted optimizer flag. This artifact is the CONSUMER side; the producer
+      is scry #114 (`safe-accesses.json`, schema `scry/safe-accesses/v1`,
+      FEAT-046 OOB verdicts). Relation to VCR-PERF-002 (#494): #494 already
+      strips this exact guard, but its authority is a PER-SITE ordeal obligation
+      discharged inside synth from loom's `wsc.facts` premises. VCR-MEM-004
+      reuses the SAME per-site strip mechanism
+      (`InstructionSelector::apply_mem_bounds_elision`) under a DIFFERENT
+      authority: a whole-module external abstract interpretation, hash-bound to
+      one exact module. The two are independent evidence channels for one
+      mechanism, and the sidecar records WHICH one authorized each site.
+
+      SAFETY PROPERTIES — these are the deliverable, not the speedup:
+        (1) FAIL CLOSED on `module_sha256` mismatch. The hash is verified
+            against the EXACT bytes handed to the decoder (post-WAT-parse,
+            post-loom, post-#418 arena-bind), so any pre-compile module rewrite
+            that shifts function/op indices ALSO breaks the hash and refuses —
+            index skew and byte skew collapse into one gate. Eliding on a stale
+            analysis is a memory-safety hole, not a stale optimization.
+        (2) ABSENCE MEANS "NOT PROVEN", NEVER "UNSAFE". A site not listed in
+            `proven_safe` delegates to `SoftwareBoundsChecker` unchanged. The
+            verdict list is non-exhaustive by contract (WasmBounds' own output
+            contract), so a partial list must yield a partially-guarded binary.
+        (3) FAIL CLOSED on `memory_min_bytes` disagreement. Verdicts are proven
+            against scry's declared floor; if it differs from synth's declared
+            minimum for this module, every verdict is unsound HERE — refuse and
+            name both values. (A matching hash implies they agree, so a
+            mismatch means the producer is broken, and trusting a broken prover
+            is the hole this artifact closes.)
+        (4) SELF-CHECKING KEY. `(func, pc)` is the wasmparser operator index
+            space — `pc` is the 0-based op index within the function body (the
+            space scry's own guard refinement walks as `ops[pc..pc+4]`, and the
+            space synth's `op_offsets` side-table and #494's elision marks are
+            indexed by). Ingestion VALIDATES each entry against the decoded
+            stream: `func` must exist, `pc` must be in range, and the op at
+            `pc` must be a memory access whose access width matches the
+            declared `width`. A mismatch DROPS that entry with a counted
+            diagnostic — so if the producer ever emits byte offsets instead of
+            op indices, essentially every entry fails validation and the build
+            elides NOTHING loudly, instead of stripping the guard off the wrong
+            access silently.
+        (5) MALFORMED / MISSING / UNPARSEABLE ⇒ no elisions WITH a diagnostic,
+            never an error and never partial trust — the `wsc.facts` fail-safe
+            skew rule (`synth_core::wsc_facts`, loom#231 Q4) applied to a JSON
+            carrier.
+        (6) FACT-SPEC COMBINATION REFUSED. `SYNTH_FACT_SPEC` may REWRITE the op
+            stream before selection (`SpecializedFn::kept`), which renumbers the
+            index space `pc` is stated in. When a function was specialized, its
+            scry marks are DROPPED with a loud per-function diagnostic rather
+            than remapped — a remap is a future increment that must be gated on
+            its own differential, not assumed.
+        (7) ZERO-ELISION IS LOUD. `--proven-safe` accepted but nothing stripped
+            is the failure mode that looks like success. Every reason is named:
+            file refused, no site validated, `--safety-bounds` not `software`,
+            or the function took the optimized path (`optimizer_bridge`'s
+            `push_software_bounds_guard` sites are NOT mark-driven — the same
+            boundary #494 has).
+
+      ATTESTATION (loop step 6, sigil): every `--proven-safe` compile writes
+      `<out>.proven-safe-elisions.json` (schema
+      `synth-proven-safe-elisions-v1`) carrying the accepted/refused verdict
+      and its reason, `scry_version`, `module_sha256`, `memory_min_bytes`, the
+      `--safety-bounds` mode, and the per-site elision set (func, pc, op,
+      width) — emitted ON REFUSAL TOO, so sigil can distinguish "nothing to
+      elide" from "file rejected" instead of reading a brag sheet.
+
+      CRATE GRAPH (the `shadow_budget.rs` shape, deliberately): ingestion, hash
+      verification and attestation live in `synth-core` (which already carries
+      `sha2`/`serde_json`); the named `ProvenSafeBoundsChecker` lives in
+      `synth-memory/src/bounds.rs` beside the `BoundsChecker` trait and is
+      DEP-FREE (its whole dep list is `bitflags` and it supports no_std). synth-
+      memory is `publish = false` and nothing depends on it, so a CLI path dep
+      is impossible without changing the published surface; the two halves are
+      joined by this documented contract, not a compile-time link. Named
+      residual, not hidden.
+    status: implemented
+    tags: [codegen, memory, bounds-elision, scry, proof-carrying, attestation, sigil, track-c, synth-901, scry-114]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-MEM-001
+      - type: traces-to
+        target: VCR-PERF-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        RED-FIRST, one per safety property, all three failing before the change
+        (crates/synth-cli/tests/proven_safe_bounds_901.rs, plus dep-free trait
+        unit tests in synth-memory): (1) a `safe-accesses.json` whose
+        `module_sha256` is one nibble off elides NOTHING and warns — and the
+        MUTATION that inverts the hash comparison turns the differential's
+        out-of-bounds leg RED (a silent OOB access), which is the evidence the
+        gate is load-bearing rather than decorative; (2) a list covering 5 of
+        the fixture's 8 access sites leaves EXACTLY 3 guards standing (byte
+        delta = 5 x 16 B) and an unlisted site still TRAPS under execution;
+        (3) a full list strips all 8 and the compile stays result-identical to
+        wasmtime across an in-bounds sweep. Malformed/missing/wrong-schema/
+        wrong-`memory_min_bytes` files each elide nothing with a NAMED
+        diagnostic and exit 0. Execution differential
+        (scripts/repro/proven_safe_bounds_901_differential.py, unicorn +
+        wasmtime, CI-wired in the same commit): elided ≡ checked ≡ wasmtime on
+        every in-bounds case (return value AND full final memory image), and
+        the not-proven OOB case still traps. Flag-off is byte-identical by
+        construction (the mark vector defaults empty) and locked by the frozen
+        anchors 10/10.
+
   # ---------------------------------------------------------------------------
   # Toolchain completeness — debuggability (not a VCR correctness item, but
   # Tier-2 depends on the VCR-RA value→location mapping)

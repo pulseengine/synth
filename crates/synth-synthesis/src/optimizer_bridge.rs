@@ -491,7 +491,18 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // I64Mul: MUL(4) + MLA(4) + UMULL(4) + ADD(2) = 14 bytes
         ArmOp::I64Mul { .. } => 14,
         // I64Shl/ShrU: AND.W(4) + SUBS.W(4) + BPL(2) + small_block(22) + B(2) + large_block(6) - but byte_size = total = 38
-        ArmOp::I64Shl { .. } | ArmOp::I64ShrU { .. } => 38,
+        // #916: the large block's trailing zero-fill of the OTHER half is the
+        // 16-bit `MOVS Rd,#0` only for R0-R7 — a 3-bit Rd field. R8-R12 take
+        // the 32-bit `MOV.W` (the encoder used to transmute them into
+        // `CMP r0,#0` and never write the half), so the expansion is 40 bytes
+        // there and the encoder widens its internal `B .done` to match.
+        ArmOp::I64Shl { rd_lo: rd, .. } | ArmOp::I64ShrU { rd_hi: rd, .. } => {
+            if reg_num(rd) < 8 {
+                38
+            } else {
+                40
+            }
+        }
         // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
         ArmOp::I64ShrS { .. } => 40,
         // I64Rotl/Rotr (#610): fixed-ABI wrapper (PUSH r0-r3(2) + 3×STR(12) +
@@ -499,9 +510,24 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // BPL(2) + small(30) + B(2) + large(30) = 70) = 102 bytes.
         ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 102,
         // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) + ADD.W(4) + MOV(2) = 24 bytes
-        ArmOp::I64Clz { .. } => 24,
+        // #916: the trailing high-word clear is `MOVS rnhi,#0` (2) only for
+        // R0-R7; R8-R12 take `MOV.W` (4), so 26. Unlike the shifts, no branch
+        // moves — `B .done` targets the clear's OWN address.
+        ArmOp::I64Clz { rnhi, .. } => {
+            if reg_num(rnhi) < 8 {
+                24
+            } else {
+                26
+            }
+        }
         // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
-        ArmOp::I64Ctz { .. } => 32,
+        ArmOp::I64Ctz { rnhi, .. } => {
+            if reg_num(rnhi) < 8 {
+                32
+            } else {
+                34
+            }
+        }
         // I64Popcnt: PUSH/POP + duplicate popcount for lo and hi word (#498:
         // measured 172; #632 result-carry through R12 across the restore pop
         // + R12-routed marshal + MOV.W hi-clear = +8).
