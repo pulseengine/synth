@@ -351,6 +351,7 @@ An honest short list beats a uniform claim:
 | `fact_spec_*_494_differential.py` (5) | `compiles >= 2` | each runs twice — once executing thousands of vectors, once on a `--expect-decline` byte-identity leg that emulates nothing. The floor is the weaker leg's guarantee; the executing leg's real counts (2 002 / 2 052 / 3 167 / 288) still reach the ledger |
 | `call_indirect_275_selfcontained_differential.py` | `compiles >= 4` | a decline/emission-shape oracle across four target configurations; no execution by design |
 | `reachable_callgraph_275_selfcontained_differential.py` (RED step only) | not routed | that step inverts its verdict (`! python …`) because RED is the expected result. Routing it would file a below-floor record for a run that is *supposed* to fail. Its GREEN step is routed and carries `emulations >= 8` |
+| `i64_high_reg_zero_fill_916_differential.py` | not routed | arrived from main (#919, the five-site zero-fill fix) after this table was measured, and carries no `# ci-checks:` header — the driver hard-errors rather than bind a floor it cannot derive. Its step asserts `set -euo pipefail` and the harness's own exit only. Declaring a floor on it is a follow-up on the harness, not a rename at the call site |
 
 Everything else — 133 of 150 wired oracles — asserts a real emulator-entry
 floor.

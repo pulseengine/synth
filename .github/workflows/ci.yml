@@ -2943,17 +2943,18 @@ jobs:
       - name: i64.popcnt scratch-restore clobber differential (#632)
         run: python scripts/oracle_run.py scripts/repro/i64_popcnt_632_differential.py
       - name: i64 shr_u/shr_s single-function path differential (#599)
-<<<<<<< HEAD
         run: python scripts/oracle_run.py scripts/repro/i64_shr_599_differential.py
-=======
-        run: python scripts/repro/i64_shr_599_differential.py
+      # Kept as main wrote it — raw `python`, NOT routed through oracle_run.py.
+      # The #916 harness carries no `# ci-checks:` declaration, and the driver
+      # hard-errors on a script it cannot bind a floor to. Wiring it is a
+      # follow-up on the harness, not a rename here; it is listed with the rest
+      # of the unbound residue in scripts/repro/ORACLE_WIRING.md.
       - name: i64 high-register zero-fill differential (#916)
         run: |
           set -euo pipefail
           ./target/debug/synth compile scripts/repro/i64_high_reg_zero_fill_916.wat \
             -o /tmp/zf916.elf --target cortex-m4 --relocatable --all-exports
           python scripts/repro/i64_high_reg_zero_fill_916_differential.py /tmp/zf916.elf
->>>>>>> origin/main
       - name: dead-frame elision differential (#390, both flag states)
         run: python scripts/oracle_run.py scripts/repro/leaf_dead_frame_differential.py
       - name: i32 local-promotion differential (#390, clean + dirty)

@@ -277,7 +277,7 @@ artifacts:
       the same locality argument as `# ci-status:`), and records the count.
       Scripts that execute nothing emulatable declare a stdout-pattern floor
       instead; the residue that can bind to neither is enumerated in
-      docs/development/ORACLE_WIRING.md rather than covered by a uniform claim.
+      scripts/repro/ORACLE_WIRING.md rather than covered by a uniform claim.
     status: implemented
     tags: [verification-gap, evidence-instrument, oracle, honesty]
     links:
