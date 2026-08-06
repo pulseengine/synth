@@ -416,18 +416,47 @@ jobs:
             cargo install --force --git https://github.com/pulseengine/rivet --tag v0.23.0 rivet-cli
           fi
       - name: Validate artifacts
+        # THIS GATE HAD TWO HOLES, and v0.55 (#893) found them by finding two
+        # OURS-not-theirs errors sitting in a green tree. Both are fixed below;
+        # both fixes are red-first — replay this step's logic against the
+        # pre-fix artifacts and it reports 2, against the fixed ones 0.
+        #
+        #  (1) `^  ERROR:` anchored on two-space-indented lines. rivet prefixes
+        #      SOME diagnostics with the source file instead
+        #      (`gale-integration.yaml: ERROR: …`), so that whole class was
+        #      invisible here — including "artifact id X is declared more than
+        #      once … the second definition silently overwrites the first",
+        #      which is how GI-FPU-002 could be `implemented` in one file and
+        #      `proposed` in another with this job green. Now every line
+        #      containing `ERROR:` is considered.
+        #  (2) The exemption `targets '.*:.*' which does not exist` exempted ANY
+        #      target containing a colon — including `synth:396`, i.e. OUR OWN
+        #      repo prefix. A `synth:`-prefixed target that does not resolve is
+        #      not a cross-repo link into an un-rivet'd sibling; it is a broken
+        #      link in our own graph (there, an issue NUMBER written where an
+        #      artifact id belongs). Exemption is now "any prefix EXCEPT ours".
+        #
+        # Deliberately still exempt: kiln/gale/sigil/scry/jess/witness/loom/meld
+        # targets, because those repos have no rivet project at the configured
+        # path and the errors are unresolvable from this repo. Not an allowlist —
+        # the rule is structural ("a foreign prefix"), so a new sibling repo does
+        # not need this file edited, and our own prefix can never slip back in.
         run: |
           sed -i '/^externals:/,$d' rivet.yaml
-          # Allow cross-repo link errors (kiln/gale/sigil haven't set up rivet yet)
-          # but fail on any non-cross-repo errors (schema, missing fields, broken local refs)
           rivet validate 2>&1 | tee /tmp/rivet-output.txt
-          # Check if all errors are cross-repo links (contain ':' in target)
-          if grep -q "^  ERROR:" /tmp/rivet-output.txt; then
-            NON_XREF=$(grep "^  ERROR:" /tmp/rivet-output.txt | grep -v "targets '.*:.*' which does not exist" | grep -cv "missing '.*' link to" || true)
-            if [ "$NON_XREF" -gt 0 ]; then
-              echo "::error::Found $NON_XREF non-cross-repo validation errors"
-              exit 1
-            fi
+          grep -E "ERROR:" /tmp/rivet-output.txt > /tmp/rivet-errors.txt || true
+          # Everything that is NOT a foreign-prefix broken link, ...
+          grep -vE "targets '[A-Za-z0-9_.-]+:[^']*' which does not exist" /tmp/rivet-errors.txt \
+            | grep -v "missing '.*' link to" > /tmp/rivet-ours.txt || true
+          # ... plus foreign-looking links that actually carry OUR prefix.
+          grep -E "targets 'synth:[^']*' which does not exist" /tmp/rivet-errors.txt >> /tmp/rivet-ours.txt || true
+          NON_XREF=$(grep -c . /tmp/rivet-ours.txt || true)
+          if [ "${NON_XREF:-0}" -gt 0 ]; then
+            echo "::error::Found $NON_XREF rivet validation errors that are OURS (not cross-repo):"
+            cat /tmp/rivet-ours.txt
+            exit 1
+          fi
+          if [ -s /tmp/rivet-errors.txt ]; then
             echo "::warning::Cross-repo link errors present (expected — external projects need rivet init)"
           fi
       - name: Check coverage
