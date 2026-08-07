@@ -1405,6 +1405,12 @@ impl ArmSemantics {
                 state.set_vfp_reg(sd, result);
             }
 
+            // #881: pure S-register move (the parallel-move resolver's step).
+            ArmOp::F32MovReg { sd, sm } => {
+                let val = state.get_vfp_reg(sm).clone();
+                state.set_vfp_reg(sd, val);
+            }
+
             // f32 Simple Math
             ArmOp::F32Abs { sd, sm } => {
                 // f32 absolute value: sd = |sm|

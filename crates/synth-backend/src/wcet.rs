@@ -280,6 +280,7 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | F32Mul { .. }
         | F32Div { .. }
         | F32Abs { .. }
+        | F32MovReg { .. }
         | F32Neg { .. }
         | F32Sqrt { .. }
         | F32Ceil { .. }

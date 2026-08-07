@@ -883,6 +883,12 @@ pub enum ArmOp {
         sd: VfpReg,
         sm: VfpReg,
     }, // VSQRT.F32 Sd, Sm
+    // #881 (VCR-RA-004): plain S-register move — the parallel-move resolver's
+    // Move step for the VFP file (call-arg marshalling / cycle rotation).
+    F32MovReg {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // VMOV.F32 Sd, Sm
     F32Ceil {
         sd: VfpReg,
         sm: VfpReg,

@@ -4360,7 +4360,10 @@ fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
         | F64Mul { dd, dn, dm }
         | F64Div { dd, dn, dm } => some2(w(dd)?, [w(dn)?, w(dm)?].concat()),
         // Two-operand: d <- op m (single-instruction forms only).
-        F32Abs { sd, sm } | F32Neg { sd, sm } | F32Sqrt { sd, sm } => some2(w(sd)?, w(sm)?),
+        F32Abs { sd, sm }
+        | F32Neg { sd, sm }
+        | F32Sqrt { sd, sm }
+        | F32MovReg { sd, sm } => some2(w(sd)?, w(sm)?),
         F64Abs { dd, dm } | F64Neg { dd, dm } | F64Sqrt { dd, dm } => some2(w(dd)?, w(dm)?),
         // Compares read both VFP operands, write a core register.
         F32Eq { sn, sm, .. }
@@ -10265,6 +10268,7 @@ mod tests {
             | F32Mul { .. }
             | F32Div { .. }
             | F32Abs { .. }
+            | F32MovReg { .. }
             | F32Neg { .. }
             | F32Sqrt { .. }
             | F32Ceil { .. }

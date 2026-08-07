@@ -9815,30 +9815,35 @@ impl InstructionSelector {
         Ok((int_srcs, float_args))
     }
 
-    /// GI-FPU-002 phase 3 (#369): move the popped float call arguments into
-    /// their AAPCS-VFP argument registers (S0../D0..), overlap-safe. Sources
-    /// and destinations may alias arbitrarily (an argument may already sit in
-    /// another argument's destination), so the move is two-phase through the
-    /// VFP call-spill area: every source is VSTR'd to the frame slot indexed
-    /// by its OWN S-register number first, then every destination VLDRs from
-    /// its argument's source slot — all reads come from memory written before
-    /// any destination register was touched. A double moves as its two
-    /// aliased S-words (bit-exact by the VFP register-file aliasing rule).
+    /// GI-FPU-002 phase 3 (#369) / #881 (VCR-RA-004): move the popped float
+    /// call arguments into their AAPCS-VFP argument registers (S0../D0..),
+    /// overlap- and CYCLE-safe via the parallel-move resolver
+    /// ([`crate::parallel_move::sequentialize`]) instantiated over S-WORD
+    /// indices — each `D(i)` decomposes into its aliased words `2i`/`2i+1`
+    /// (bit-exact by the VFP register-file aliasing rule), so mixed f32/f64
+    /// argument permutations are one uniform word-level move set.
     ///
-    /// Source-indexed slots cannot collide with the caller-saved preservation
-    /// stores that precede this (`preserve_vfp_caller_saved` uses the LIVE
-    /// values' own S-indices): when an argument source IS a live home
-    /// register (an f32/f64 param passed straight through), both stores write
-    /// the register's current — identical — value.
+    /// Chains lower to single `VMOV.F32` register moves (previously every
+    /// moving word round-tripped through the frame: one VSTR + one VLDR); a
+    /// true cycle (the gale `call_swap` cross-swap shape) is broken through a
+    /// FREE S-word when one exists (the resolver filters candidates against
+    /// the move set itself; `vfp_used` still pins the un-freed arg sources,
+    /// live stack values, and homes, so a "free" word is genuinely dead) or
+    /// through ONE shared-pool stack slot otherwise — mirroring the #326 core
+    /// resolver's SpillScratch/ReloadScratch fallback, including the
+    /// ladder-recoverable exhaustion `Err` when the pool area is not
+    /// reserved.
     ///
     /// Arguments already in place (`src == dst`) move nothing; an all-in-place
-    /// call emits zero instructions.
+    /// call emits zero instructions, byte-identical to before.
     fn emit_vfp_arg_moves(
         instructions: &mut Vec<ArmInstruction>,
         float_args: &[(VfpReg, VfpReg)],
-        layout: &LocalLayout,
+        vfp_used: &[bool; 16],
+        spill: &mut SpillState,
         idx: usize,
     ) -> Result<()> {
+        use crate::parallel_move::{MoveStep, sequentialize};
         // The S-register word indices of a float argument register.
         fn words(r: VfpReg) -> Vec<usize> {
             if let Some(d) = vfp_d_index(r) {
@@ -9847,51 +9852,86 @@ impl InstructionSelector {
                 vec![vfp_s_index(r).expect("float arg reg is S or D")]
             }
         }
-        let moved: Vec<&(VfpReg, VfpReg)> =
-            float_args.iter().filter(|(src, dst)| src != dst).collect();
-        if moved.is_empty() {
+        let mut moves: Vec<(u8, u8)> = Vec::new();
+        for (src, dst) in float_args {
+            if src == dst {
+                continue;
+            }
+            for (sw, dw) in words(*src).into_iter().zip(words(*dst)) {
+                moves.push((dw as u8, sw as u8));
+            }
+        }
+        if moves.is_empty() {
             return Ok(());
         }
-        let base = layout.vfp_spill_base.ok_or_else(|| {
-            synth_core::Error::synthesis(
-                "GI-FPU-002 phase 3: VFP call-spill area not reserved despite a \
-                 float-argument call (compiler bug: layout gating)"
-                    .to_string(),
-            )
+        // Scratch candidates: every currently-free S-word. The resolver only
+        // uses one to break a genuine cycle, and filters against the move set.
+        let scratch: Vec<u8> = (0..16u8).filter(|&k| !vfp_used[k as usize]).collect();
+        let steps = sequentialize(&moves, &scratch).map_err(|e| {
+            synth_core::Error::synthesis(format!(
+                "GI-FPU-002 phase 3: VFP call-arg marshalling produced an \
+                 invalid parallel move set: {e} (compiler bug: AAPCS-VFP \
+                 destinations are distinct by construction)"
+            ))
         })?;
-        let slot = |w: usize| -> Result<i32> {
-            let off = base + (w as i32) * 4;
-            if off > 1020 {
-                return Err(synth_core::Error::synthesis(format!(
-                    "GI-FPU-002 phase 3: VFP arg-staging slot offset {off} \
-                     exceeds the VLDR/VSTR [sp,#imm] range — frame too large"
-                )));
+
+        // A stack-slot scratch is needed only when a cycle exists AND no free
+        // S-word survived the filter. Reserve one resolver slot from the
+        // shared spill pool for the duration of the sequence (#326 twin).
+        let needs_slot = steps
+            .iter()
+            .any(|s| matches!(s, MoveStep::SpillScratch { .. }));
+        let slot = if needs_slot {
+            if !spill.area_reserved {
+                return Err(synth_core::Error::synthesis(
+                    "register exhaustion: all allocatable registers are live on the stack — \
+                     VFP arg-move cycle needs a resolver spill slot but no spill area is reserved"
+                        .to_string(),
+                ));
             }
-            Ok(off)
+            let off = spill.alloc().ok_or_else(|| {
+                synth_core::Error::synthesis(
+                    "register exhaustion: i64 spill-slot pool exhausted while \
+                     breaking a VFP call-arg move cycle — function too complex"
+                        .to_string(),
+                )
+            })?;
+            vfp_check_slot_range(off, false)?;
+            Some(off)
+        } else {
+            None
         };
-        // Phase A: park every moving source in its own S-indexed slot.
-        for (src, _) in &moved {
-            for w in words(*src) {
-                instructions.push(ArmInstruction {
-                    op: ArmOp::F32Store {
-                        sd: index_to_vfp_reg(w as u8),
-                        addr: MemAddr::imm(Reg::SP, slot(w)?),
-                    },
-                    source_line: Some(idx),
-                });
-            }
+
+        for step in &steps {
+            let op = match *step {
+                MoveStep::Move { dst, src } => ArmOp::F32MovReg {
+                    sd: index_to_vfp_reg(dst),
+                    sm: index_to_vfp_reg(src),
+                },
+                MoveStep::SpillScratch { slot_store } => ArmOp::F32Store {
+                    sd: index_to_vfp_reg(slot_store),
+                    addr: MemAddr::imm(
+                        Reg::SP,
+                        slot.expect("SpillScratch implies a reserved resolver slot"),
+                    ),
+                },
+                MoveStep::ReloadScratch { slot_load_into } => ArmOp::F32Load {
+                    sd: index_to_vfp_reg(slot_load_into),
+                    addr: MemAddr::imm(
+                        Reg::SP,
+                        slot.expect("ReloadScratch implies a reserved resolver slot"),
+                    ),
+                },
+            };
+            instructions.push(ArmInstruction {
+                op,
+                source_line: Some(idx),
+            });
         }
-        // Phase B: load every destination from its argument's source slot.
-        for (src, dst) in &moved {
-            for (sw, dw) in words(*src).into_iter().zip(words(*dst)) {
-                instructions.push(ArmInstruction {
-                    op: ArmOp::F32Load {
-                        sd: index_to_vfp_reg(dw as u8),
-                        addr: MemAddr::imm(Reg::SP, slot(sw)?),
-                    },
-                    source_line: Some(idx),
-                });
-            }
+        // The marshal sequence is self-contained: the slot is dead once the
+        // last reload ran, so release it for reuse by later spills.
+        if let Some(off) = slot {
+            spill.free(off);
         }
         Ok(())
     }
@@ -14575,15 +14615,22 @@ impl InstructionSelector {
                         &layout,
                         idx,
                     )?;
-                    // GI-FPU-002 phase 3 (#369): marshal the float arguments
-                    // into their AAPCS-VFP registers — AFTER preservation (so a
-                    // live value about to be overwritten in S0../D0.. is already
-                    // parked in the frame) and overlap-safe via the two-phase
-                    // source-slot staging. The consumed source registers are
+                    // GI-FPU-002 phase 3 (#369) / #881: marshal the float
+                    // arguments into their AAPCS-VFP registers — AFTER
+                    // preservation (so a live value about to be overwritten in
+                    // S0../D0.. is already parked in the frame), overlap- AND
+                    // cycle-safe via the word-level parallel-move resolver
+                    // (VCR-RA-004). The consumed source registers are
                     // freed afterwards (a float RESULT below can then reuse
                     // them); a home register stays pinned by `free_vfp_temp`'s
                     // home guard.
-                    Self::emit_vfp_arg_moves(&mut instructions, &float_args, &layout, idx)?;
+                    Self::emit_vfp_arg_moves(
+                        &mut instructions,
+                        &float_args,
+                        &vfp_used,
+                        &mut spill,
+                        idx,
+                    )?;
                     for &(src, _) in &float_args {
                         if vfp_d_index(src).is_some() {
                             free_vfp_dtemp(&mut vfp_used, &vfp_home, src);

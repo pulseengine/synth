@@ -1931,6 +1931,8 @@ impl ArmEncoder {
             ArmOp::F32Mul { sd, sn, sm } => encode_vfp_3reg(0xEE200A00, sd, sn, sm)?,
             ArmOp::F32Div { sd, sn, sm } => encode_vfp_3reg(0xEE800A00, sd, sn, sm)?,
             ArmOp::F32Abs { sd, sm } => encode_vfp_2reg(0xEEB00AC0, sd, sm)?,
+            // #881: VMOV.F32 Sd, Sm (register move; clang-verified pattern).
+            ArmOp::F32MovReg { sd, sm } => encode_vfp_2reg(0xEEB00A40, sd, sm)?,
             ArmOp::F32Neg { sd, sm } => encode_vfp_2reg(0xEEB10A40, sd, sm)?,
             ArmOp::F32Sqrt { sd, sm } => encode_vfp_2reg(0xEEB10AC0, sd, sm)?,
 
@@ -6136,6 +6138,11 @@ impl ArmEncoder {
             }
             ArmOp::F32Abs { sd, sm } => {
                 Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB00AC0, sd, sm)?))
+            }
+            // #881: VMOV.F32 Sd, Sm — the parallel-move resolver's Move step
+            // (clang-verified: `vmov.f32 s3, s7` == eef0 1a63).
+            ArmOp::F32MovReg { sd, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB00A40, sd, sm)?))
             }
             ArmOp::F32Neg { sd, sm } => {
                 Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10A40, sd, sm)?))

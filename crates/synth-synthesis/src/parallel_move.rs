@@ -45,29 +45,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// One sequential step realizing part of a parallel move set.
+///
+/// Generic over the register kind `R` (default: the core [`Reg`] file) so the
+/// SAME proven resolver serves both consumers: core call-arg marshalling
+/// (#326, `R = Reg`) and the #881 VFP file (`R = u8` S-word indices, each
+/// `D(i)` decomposed into its aliased words `2i`/`2i+1` — word-level moves
+/// are bit-exact by the VFP register-file aliasing rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MoveStep {
+pub enum MoveStep<R = Reg> {
     /// Plain register-to-register move: `dst <- src`.
-    Move { dst: Reg, src: Reg },
+    Move { dst: R, src: R },
     /// Store `slot_store` to the (single) resolver stack slot. Always paired
     /// with a later [`MoveStep::ReloadScratch`] in the same cycle; the
     /// consumer lowers it to `str slot_store, [sp, #resolver_slot]`.
-    SpillScratch { slot_store: Reg },
+    SpillScratch { slot_store: R },
     /// Load the resolver stack slot into `slot_load_into`, closing the cycle
     /// opened by the matching [`MoveStep::SpillScratch`].
-    ReloadScratch { slot_load_into: Reg },
+    ReloadScratch { slot_load_into: R },
 }
 
 /// Rejected inputs. These are caller bugs, not recoverable conditions: a
 /// parallel move set with two writes to the same destination has no defined
 /// final state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParallelMoveError {
+pub enum ParallelMoveError<R = Reg> {
     /// The same destination register appears in more than one move.
-    DuplicateDst(Reg),
+    DuplicateDst(R),
 }
 
-impl fmt::Display for ParallelMoveError {
+impl<R: fmt::Debug> fmt::Display for ParallelMoveError<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParallelMoveError::DuplicateDst(r) => {
@@ -77,7 +83,7 @@ impl fmt::Display for ParallelMoveError {
     }
 }
 
-impl std::error::Error for ParallelMoveError {}
+impl<R: fmt::Debug> std::error::Error for ParallelMoveError<R> {}
 
 /// Sequentialize the parallel move set `moves` (`(dst, src)` pairs) into
 /// steps that, executed in order, give every destination its source's
@@ -92,10 +98,10 @@ impl std::error::Error for ParallelMoveError {}
 ///   appear anywhere in the move set; if none qualifies, with one stack-slot
 ///   spill/reload pair around the cycle.
 /// - The result has at most `moves.len() + 2 * cycle_count` steps.
-pub fn sequentialize(
-    moves: &[(Reg, Reg)],
-    scratch: &[Reg],
-) -> Result<Vec<MoveStep>, ParallelMoveError> {
+pub fn sequentialize<R: Copy + Ord + fmt::Debug>(
+    moves: &[(R, R)],
+    scratch: &[R],
+) -> Result<Vec<MoveStep<R>>, ParallelMoveError<R>> {
     // Reject duplicate destinations up front — that is a caller bug.
     let mut seen_dsts = BTreeSet::new();
     for &(dst, _) in moves {
@@ -106,7 +112,7 @@ pub fn sequentialize(
 
     // Pending moves keyed by destination (distinct, so this loses nothing),
     // with self-moves dropped: they are already satisfied.
-    let mut pending: BTreeMap<Reg, Reg> = moves
+    let mut pending: BTreeMap<R, R> = moves
         .iter()
         .copied()
         .filter(|(dst, src)| dst != src)
@@ -114,12 +120,12 @@ pub fn sequentialize(
 
     // How many pending moves still need to *read* each register. A move is
     // safe to emit once nothing pending reads its destination.
-    let mut src_reads: BTreeMap<Reg, usize> = BTreeMap::new();
+    let mut src_reads: BTreeMap<R, usize> = BTreeMap::new();
     for &src in pending.values() {
         *src_reads.entry(src).or_insert(0) += 1;
     }
 
-    let mut steps: Vec<MoveStep> = Vec::new();
+    let mut steps: Vec<MoveStep<R>> = Vec::new();
 
     // Phase 1 — chains, leaf-first. Worklist of destinations whose pending
     // move is ready (destination read by nothing pending). Each pop removes
@@ -131,7 +137,7 @@ pub fn sequentialize(
     // ascending-destination move list (the arg-marshal shape) this selects
     // exactly the move the legacy `emit_parallel_move` scan picked, keeping
     // the emitted `MOV` order — and therefore bytes — identical (#326).
-    let mut ready: BTreeSet<Reg> = pending
+    let mut ready: BTreeSet<R> = pending
         .keys()
         .filter(|dst| src_reads.get(dst).copied().unwrap_or(0) == 0)
         .copied()
@@ -157,8 +163,8 @@ pub fn sequentialize(
     // one remaining move. A scratch register must not hold any value the
     // remaining work still needs, so filter against the *entire* move set —
     // conservative, and exactly the "unused by the move set" contract.
-    let move_set_regs: BTreeSet<Reg> = moves.iter().flat_map(|&(dst, src)| [dst, src]).collect();
-    let scratch_reg: Option<Reg> = scratch.iter().copied().find(|r| !move_set_regs.contains(r));
+    let move_set_regs: BTreeSet<R> = moves.iter().flat_map(|&(dst, src)| [dst, src]).collect();
+    let scratch_reg: Option<R> = scratch.iter().copied().find(|r| !move_set_regs.contains(r));
 
     let mut cycle_count: usize = 0;
     while let Some((&first_dst, &first_src)) = pending.iter().next() {
@@ -168,7 +174,7 @@ pub fn sequentialize(
         // destination is `cur`. Each step removes one pending move, so the
         // walk is bounded; the `expect` fires (rather than looping) if the
         // disjoint-cycle invariant were ever violated.
-        let mut cycle: Vec<(Reg, Reg)> = vec![(first_dst, first_src)];
+        let mut cycle: Vec<(R, R)> = vec![(first_dst, first_src)];
         pending.remove(&first_dst);
         let mut cur = first_src;
         while cur != first_dst {
@@ -353,7 +359,7 @@ mod tests {
     #[test]
     fn empty_move_set() {
         check_directed(&[], 0);
-        assert!(sequentialize(&[], &[]).unwrap().is_empty());
+        assert!(sequentialize::<Reg>(&[], &[]).unwrap().is_empty());
     }
 
     #[test]
@@ -565,6 +571,93 @@ mod tests {
                     "size bound violated at iteration {iter} (moves: {moves:?})"
                 );
             }
+        }
+    }
+
+    // =====================================================================
+    // #881 (VCR-RA-004): the VFP instantiation — the SAME generic resolver
+    // over S-word indices (u8). Pins the cycle cases the VFP call-arg
+    // marshal can produce (the gale `call_swap` cross-swap shape).
+    // =====================================================================
+
+    /// A 2-cycle (swap) with a free S-word scratch: broken by three moves
+    /// through the scratch word — never a clobbering sequential pair.
+    #[test]
+    fn vfp_swap_cycle_breaks_via_scratch_word_881() {
+        // f(a, b) called as f(b, a): S0 <- S1, S1 <- S0.
+        let moves: [(u8, u8); 2] = [(0, 1), (1, 0)];
+        let steps = sequentialize(&moves, &[7u8]).expect("valid move set");
+        assert_eq!(
+            steps,
+            vec![
+                MoveStep::Move { dst: 7, src: 0 },
+                MoveStep::Move { dst: 0, src: 1 },
+                MoveStep::Move { dst: 1, src: 7 },
+            ],
+            "a VFP swap must rotate through the scratch word"
+        );
+    }
+
+    /// The same swap with NO free word: broken through the stack-slot
+    /// scratch pair (the consumer lowers these to VSTR/VLDR of one shared-
+    /// pool slot).
+    #[test]
+    fn vfp_swap_cycle_breaks_via_stack_slot_881() {
+        let moves: [(u8, u8); 2] = [(0, 1), (1, 0)];
+        let steps = sequentialize(&moves, &[]).expect("valid move set");
+        assert_eq!(
+            steps,
+            vec![
+                MoveStep::SpillScratch { slot_store: 0 },
+                MoveStep::Move { dst: 0, src: 1 },
+                MoveStep::ReloadScratch { slot_load_into: 1 },
+            ],
+            "with no scratch word the cycle must break through the stack slot"
+        );
+    }
+
+    /// A mixed f32/f64 permutation at word level: D0(=w0,w1) <- D1(=w2,w3)
+    /// while S4 <- S0 chains off the cycle-free part, and a 3-cycle among
+    /// w5/w6/w7 breaks with one scratch. Executes the reference permutation
+    /// semantics over a simulated 16-word file.
+    #[test]
+    fn vfp_mixed_word_permutation_matches_reference_881() {
+        let moves: [(u8, u8); 6] = [
+            (0, 2),
+            (1, 3), // D0 <- D1 (two word moves)
+            (4, 0), // S4 <- S0 (reads the OLD w0, before D0 is written)
+            (5, 6),
+            (6, 7),
+            (7, 5), // 3-cycle
+        ];
+        // Wait — dsts must be pairwise distinct and (4,0) reads w0 which is
+        // also a destination: the resolver must order the chain move first.
+        let steps = sequentialize(&moves, &[15u8]).expect("valid move set");
+        // Simulate over a 16-word register file.
+        let mut file: Vec<i32> = (0..16).collect();
+        let mut slot: Option<i32> = None;
+        for step in &steps {
+            match *step {
+                MoveStep::Move { dst, src } => file[dst as usize] = file[src as usize],
+                MoveStep::SpillScratch { slot_store } => {
+                    slot = Some(file[slot_store as usize])
+                }
+                MoveStep::ReloadScratch { slot_load_into } => {
+                    file[slot_load_into as usize] = slot.expect("paired spill")
+                }
+            }
+        }
+        // Reference: every destination gets its source's ORIGINAL value.
+        let orig: Vec<i32> = (0..16).collect();
+        for &(dst, src) in &moves {
+            assert_eq!(
+                file[dst as usize], orig[src as usize],
+                "word {dst} must hold the original value of word {src}"
+            );
+        }
+        // Untouched words (outside dsts and the declared scratch) unchanged.
+        for w in [8u8, 9, 10, 11, 12, 13, 14] {
+            assert_eq!(file[w as usize], orig[w as usize]);
         }
     }
 }
