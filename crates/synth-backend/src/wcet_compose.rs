@@ -291,11 +291,24 @@ pub fn compose(
                         hint_rejections, ..
                     } => hint_rejections.clone(),
                 };
-                WcetFunction::declined_with_rejections(
-                    inter.name(),
-                    reason.clone(),
-                    hint_rejections,
-                )
+                // #921: the composer is the path the CLI actually takes, so the
+                // decline site must survive HERE too. Threading it only through
+                // `function_wcet` left `op`/`offset` null in every real sidecar
+                // — the end-to-end run is what caught that, not the unit path.
+                let site = match inter {
+                    WcetIntermediate::Declined { site, .. } => site.clone(),
+                    WcetIntermediate::Composable { .. } => None,
+                };
+                match site {
+                    Some(s) if hint_rejections.is_empty() => {
+                        WcetFunction::declined_at(inter.name(), reason.clone(), s.op, s.offset)
+                    }
+                    _ => WcetFunction::declined_with_rejections(
+                        inter.name(),
+                        reason.clone(),
+                        hint_rejections,
+                    ),
+                }
             }
             // Every node is resolved to Bounded/Declined by the loop above.
             State::Pending | State::OnStack => {
@@ -368,6 +381,9 @@ mod tests {
         WcetIntermediate::Declined {
             name: name.to_string(),
             reason,
+            // These composition tests are about call-graph propagation, not
+            // about which op declined, so they carry no site (#921).
+            site: None,
             hint_rejections: Vec::new(),
         }
     }

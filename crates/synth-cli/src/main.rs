@@ -3763,6 +3763,9 @@ fn compile_all_exports(
                 synth_core::wcet::WcetIntermediate::Declined {
                     name: name.clone(),
                     reason: synth_core::wcet::WcetDecline::UnsupportedCore,
+                    // No site: `unsupported-core` is a property of the TARGET,
+                    // not of any one instruction (#921).
+                    site: None,
                     hint_rejections: Vec::new(),
                 }
             });
