@@ -66,6 +66,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   will be the i64 family" was a guess not worth shipping; the new field answers
   it on gale's object instead of by inference from ours.
 
+- **VCR-RA-010: the const-remat seam is DERIVED, not believed.** scry's interval
+  domain identifies locals with a singleton interval `[c, c]` — provably
+  constant values a register allocator can REMATERIALIZE at the use instead of
+  spilling and reloading. Until now that signal was a dev-dependency test
+  (`scry_const_remat_signal.rs`); it is now an allocator input, and the whole
+  design question is what "input" is allowed to mean.
+
+  A wrong `--proven-safe` verdict (#901) elides a bounds guard — a memory-safety
+  hole. A wrong const-remat verdict would re-emit the wrong VALUE — a
+  miscompile. So the seam is built like `--wcet-hints`, not like a trusted fact:
+  **eligibility is derived from the emitted ARM stream; the hint only GATES
+  consumption and can never create an eligible site.** `plan_const_remat` walks
+  the final stream and admits a reload only where it can itself see the constant
+  definition reaching the spill with no intervening write. `MOVT` over an
+  unknown low half stays unknown; a non-constant store retires the slot; a
+  branch, call or label closes the window.
+
+  The conservatism is large and REPORTED rather than hidden: any op the walk
+  cannot classify clears all state, and `reloads_seen` / `windows_closed` are
+  emitted alongside the site count so a small number reads as "narrow window",
+  never as "small opportunity". Widening that set op-by-op is the named
+  follow-up. Flag-off (`HintGate::closed()`), so bytes are unchanged.
+
+  MUTATION-CHECKED, and the mutation earned its keep: it found the red-first
+  test `lying_hint_yields_no_candidates` passing for the WRONG REASON. It
+  offered the hint value `999` while a broken stream walk invents `0`, so the
+  gate's value comparison did the rejecting and the test stayed green with the
+  property it names broken. Fixed to run the gate OPEN, so only the stream check
+  can reject; it now goes red under that mutation, as do 2 other tests.
+
 - **Oracle steps assert EXECUTION, not exit status (#910 F10).** Measured first,
   and the premise was understated: not the 63 oracles #890 wired, but **152 of
   the 160** workflow steps that run a `scripts/repro/` oracle asserted nothing
@@ -92,12 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not "checks", because naming a measurement after something it does not measure
   is the defect this lane exists to remove.
 
-- **The differential population is reported, and ratcheted.** **135 oracles
-  assert 295,333 emulator entries per CI run**; 7 assert a printed count, 9
+- **The differential population is reported, and ratcheted.** **136 oracles
+  assert 295,421 emulator entries per CI run**; 7 assert a printed count, 9
   assert compilations, 1 can bind to nothing. Reported **per mode and never
   summed across modes** — three different units, and one impressive combined
   figure is exactly the instrument defect being fixed.
-  `oracle_wiring_check.py --min-emulation-floor 295333` enforces the total in
+  `oracle_wiring_check.py --min-emulation-floor 295421` enforces the total in
   the already-required `Claim Check` job (a brand-new job is not a required
   context on `main` and could sit red for weeks — the #890 failure), sharing the
   driver's header parser by import rather than re-implementing the grammar.
@@ -193,6 +223,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after.
 
 ### Added
+
+- **aarch64 `br_table` + value-carrying `block`/`loop`/`if` (VCR-A64-CF-001,
+  #851).** The two largest entries left in the VCR-SEL-005 third-backend
+  complement were structural, not arithmetic — and both made whole functions
+  skip on `-b aarch64`. `br_table` now lowers as a compare-and-branch chain
+  (`cbz` for entry 0, `cmp`+`b.eq` per further entry, then the default `b`),
+  deliberately the same construction #882 chose for RV32 so the two backends
+  stay reviewable against each other; the index is compared in the W view, so
+  the UNSIGNED index rule holds exactly and every out-of-range index —
+  including the "negative" i32s that denote huge unsigned values — reaches the
+  DEFAULT. One table may MIX a backward loop header with forward block ends.
+  A value-carrying frame reserves a reconciliation register that every incoming
+  edge deposits into (`br`/`br_if` at the branch, the then-arm at `else`, the
+  fall-through at `end`), so the frame's result sits in ONE register on every
+  path — i32/i64 through `mov x`, f32/f64 through `fmov d`. The aarch64
+  selector goes **184 → 185 ops**.
+- **The soundness-critical asymmetry is by construction, not by test.** A `br`
+  to a LOOP label targets the header and carries the loop's PARAMETERS, not its
+  results, so a `loop (result T)` back-edge must reconcile NOTHING — the frame
+  carries `label_arity` separately from `result_arity` and branch
+  reconciliation is driven off the former. The natural wrong implementation
+  (reconcile whenever the frame has a result) stamps a garbage value into the
+  result register on every iteration.
 
 - **VCR-DEC-001 increment 4 (VCR-REACH-001, #242) — the graph-colouring
   allocator models the i64 register-PAIR ops.** Increments 2 (joins) and 3
@@ -332,6 +385,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Three named residuals replace two blanket declines.** `br_table` past 16
+  targets (`BR_TABLE_MAX_TARGETS`, the same threshold RV32 uses — the chain is
+  O(n) and PC-relative jump-table dispatch is a follow-up), a `br_table` whose
+  targets are value-carrying (the flat chain has no per-path edge to deposit a
+  result on), and a block type with PARAMETERS or MULTI-VALUE results (the slot
+  is one register). Each loud-declines with a machine reason and is pinned BY
+  NAME in `br_table_subshape_asymmetry_882`, which fails in both directions —
+  partial coverage with named gaps rather than a claim that cannot be backed.
+  The `br_table` whole-op entry is deleted from `aarch64_known_divergences()`;
+  the parity gate's stale-entry check is what forced the deletion.
+- **The #554 float-honesty fixture moves again.** It targeted a value-carrying
+  f32-result `block`; that shape now lowers, so the fixture re-points at a
+  float construct that genuinely still declines — a NON-LEAF function reading
+  an f32 parameter (float params live in `v0..v7`, which a `bl` clobbers, and
+  the encoder has no FP store to home them with).
+
 - **VCR-RA-003's join-availability half now covers the i64-pair family — on the
   DEFAULT build.** It built its CFG from `reg_effect` alone, so every
   i64-containing function returned `NotAttempted`: the interesting half of the
@@ -341,6 +410,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipping-path change: 0 hard errors across the corpus on both the relocatable
   and self-contained paths, and all 633 pre-existing relocatable functions plus
   all 1059 self-contained ones byte-identical to v0.54.
+
+### Verified
+
+- `scripts/repro/aarch64_brtable_blockvals_851_differential.py` (CI-wired): 88
+  checks over 19 exported functions against wasmtime, under unicorn AND
+  natively on an arm64 host. Per table it walks the index lattice — every arm,
+  the index exactly AT the bound, one OVER it, and `0xFFFFFFFF` (the case a
+  SIGNED compare would mis-dispatch) — plus a table at exactly 16 targets, a
+  `br_table` arm falling into a trap, and both join edges of every
+  value-carrying frame including a value-carrying loop's back-edge. Two cases
+  put a `bl` INSIDE a value-carrying frame — the one soundness claim (a call
+  cannot clobber a live reconciliation slot) that nothing else executes; the
+  harness applies the `R_AARCH64_CALL26` relocations itself, so the emitted
+  relocation is part of what is checked rather than a hang.
+  NON-VACUITY was demonstrated by MUTATION, not asserted: taking the join
+  position before the fall-through's reconciliation move reddens 16 checks, an
+  off-by-one in the chain constants reddens 22, and using `result_arity` where
+  `label_arity` belongs (the loop back-edge bug) makes two functions fail to
+  compile at all.
+- Void control flow is **byte-identical**: 13 of the 14 aarch64 repro fixtures
+  compile to the same object as v0.54.0, and the one that differs
+  (`aarch64_f32_unsupported_554`) differs exactly because its declined function
+  now lowers. A void frame reserves no register and emits no reconciliation
+  move, so the property holds by construction.
 
 ### Notes
 

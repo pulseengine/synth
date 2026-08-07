@@ -90,6 +90,29 @@ fn riscv_lowers(ops: &[WasmOp], num_params: u32) -> bool {
     riscv_select(ops, num_params).is_ok()
 }
 
+/// The AArch64 selector's DECLINE REASON for a sequence, or `Ok(())` when it
+/// lowers. `aarch64_lowers` collapses the reason away, which makes a
+/// sub-shape claim vacuous (a bare `is_err()` is also satisfied by an unrelated
+/// artifact in the probe). VCR-A64-CF-001's residual assertions match on the
+/// message text, the aarch64 analogue of RV32's typed `SelectorError` variants.
+fn aarch64_decline_reason(ops: &[WasmOp], num_params: u32) -> Result<(), String> {
+    synth_backend_aarch64::selector::select_typed_cf_calls(
+        ops,
+        num_params,
+        &[],
+        &[],
+        &[],
+        0,
+        &[0],
+        &[0],
+        &[false],
+        synth_backend_aarch64::selector::MemBounds::Software { limit_bytes: 65536 },
+        &a64_module_ctx(),
+    )
+    .map(|_| ())
+    .map_err(|e| e.0)
+}
+
 /// Does the AArch64 (A64 host-native) selector lower this sequence? (#851 —
 /// the THIRD backend in the VCR-SEL-005 enumeration.)
 ///
@@ -922,19 +945,26 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
 /// the initial enumeration surfaced TWENTY ARM-lowers/aarch64-declines gaps.
 /// Thirteen were closed in the same change (v0.53 #851: `select` via
 /// CSEL/FCSEL, `drop`, `nop`, `i32.wrap_i64`, `i64.extend_i32_{s,u}`, the five
-/// `extend8/16/32_s` forms, fixed-memory `memory.size`/`memory.grow`), leaving
-/// seven. v0.54 (#851 lane L3) closed two more — `global.get`/`global.set` —
-/// leaving the **FIVE** below. This ledger — the COMPLEMENT of what aarch64
-/// lowers — is the mechanically-derived answer to "what is missing on armv8?"
-/// (#851); the float-surface complement lives in [`a64_extended_surface`].
+/// `extend8/16/32_s` forms, fixed-memory `memory.size`/`memory.grow`). Later
+/// lanes closed `global.get`/`global.set` and `call_indirect` (v0.54) and
+/// `br_table` (v0.55, VCR-A64-CF-001), leaving the FOUR below. This ledger —
+/// the COMPLEMENT of what aarch64 lowers — is the mechanically-derived answer
+/// to "what is missing on armv8?" (#851); the float-surface complement lives in
+/// [`a64_extended_surface`].
 /// Keep this count in step with the array (#893).
 fn aarch64_known_divergences() -> &'static [(&'static str, &'static str)] {
     &[
-        (
-            "br_table",
-            "aarch64 selector has no BrTable arm (loud decline); the jump-table \
-             dispatch is not yet lowered — deferred, VCR-SEL-005/#851",
-        ),
+        // (br_table CLOSED v0.55, VCR-A64-CF-001 — the aarch64 selector now
+        //  lowers it as a compare-and-branch chain (`cbz`/`cmp`+`b.eq`, then a
+        //  default `b`), so the whole-op divergence is gone and the ledger
+        //  entry was deleted; the stale-entry check is what forced the
+        //  deletion. The THREE remaining sub-shape asymmetries (>16 targets,
+        //  value-carrying targets, and — shared with the `block`/`loop`/`if`
+        //  lowering — block params / multi-value) are NOT hidden by that
+        //  deletion: they are asserted BY NAME in
+        //  `br_table_subshape_asymmetry_882` below, which goes red in both
+        //  directions exactly like this ledger does. Execution differential:
+        //  scripts/repro/aarch64_brtable_blockvals_851_differential.py.)
         (
             "local.set+get(param)",
             "aarch64 declines WRITING a parameter: params live in arg registers \
@@ -1957,6 +1987,15 @@ fn ledger_labels_are_live_integer_core_ops() {
 /// shapes (jump table / #509 arity threading), this test goes red and whoever
 /// closed the gap must delete the corresponding claim — a documented gap must
 /// not outlive the gap it documents.
+///
+/// AARCH64 LEG (VCR-A64-CF-001, v0.55). The aarch64 `br_table` lowering landed
+/// with the same deliberately-partial shape, so its whole-op ledger entry was
+/// deleted and THREE residuals are pinned here by name: `>16 targets`,
+/// `value-carrying targets`, and — the residue of the old blanket
+/// "value-carrying blocks decline" — block PARAMETERS / MULTI-VALUE results.
+/// The complement of that third one is asserted positively in the same loop: a
+/// `(0,1)` value-carrying block must now LOWER, so the claim cannot quietly
+/// widen back into "typed blocks decline".
 #[test]
 fn br_table_subshape_asymmetry_882() {
     // The shape the op-level ledger probes: <=16 targets, non-value-carrying,
@@ -2042,4 +2081,81 @@ fn br_table_subshape_asymmetry_882() {
          claim; if it errors differently, the probe stopped measuring the gap.",
         riscv_select(&value_carrying, 1).map(|_| "Ok")
     );
+
+    // ---- AArch64 leg (VCR-A64-CF-001, v0.55) -------------------------------
+    //
+    // The aarch64 `br_table` lowering landed with the SAME deliberate partial
+    // shape as RV32's, and its whole-op ledger entry was deleted for the same
+    // reason. Its residuals are pinned here rather than left to the deleted
+    // entry — same both-directions contract: if aarch64 later grows a jump
+    // table or per-path arity threading, these go red and whoever closed the
+    // gap must delete the claim.
+    assert!(
+        aarch64_lowers(&at_parity, 1),
+        "the br_table shape the op-parity ledger probes must lower on aarch64 \
+         (VCR-A64-CF-001); if it stopped, re-add the known-divergence entry"
+    );
+
+    // Residual A1: past BR_TABLE_MAX_TARGETS (16) the aarch64 chain refuses,
+    // exactly as RV32's does — the two backends share the threshold on purpose.
+    assert_eq!(
+        synth_backend_aarch64::selector::BR_TABLE_MAX_TARGETS,
+        16,
+        "the aarch64 br_table threshold moved; this claim probes 17 targets"
+    );
+    let a64_too_large = aarch64_decline_reason(&too_large, 1);
+    assert!(
+        a64_too_large
+            .as_ref()
+            .err()
+            .is_some_and(|m| m.contains("exceeds the aarch64 compare-chain threshold")),
+        "aarch64 must decline a 17-target br_table by NAME (compare-chain \
+         threshold); got {a64_too_large:?}. If it now lowers, the jump-table \
+         upgrade landed — delete this claim."
+    );
+
+    // Residual A2: value-carrying targets (the #509 class). The flat compare
+    // chain has no per-path edge to deposit a result on.
+    let a64_value_carrying = aarch64_decline_reason(&value_carrying, 1);
+    assert!(
+        a64_value_carrying
+            .as_ref()
+            .err()
+            .is_some_and(|m| m.contains("VALUE-CARRYING targets")),
+        "aarch64 must decline a value-carrying br_table by NAME; got \
+         {a64_value_carrying:?}. If it now lowers, per-path arity threading \
+         landed — delete this claim."
+    );
+
+    // Residual A3: block PARAMETERS / MULTI-VALUE results. VCR-A64-CF-001
+    // lowers the `(0,1)` value-carrying frame (one reserved reconciliation
+    // register), so these two are what is LEFT of the old blanket
+    // "value-carrying blocks decline". Probed through the arity side-table,
+    // which is the only channel that carries a block type.
+    // `(block (result i32) (i32.const 1))` — a MINIMALLY-VALID value-carrying
+    // frame (a bare `[Block, End]` at arity (0,1) is invalid wasm: the block
+    // produces nothing, and the selector rejects it for that unrelated reason,
+    // which would make the positive claim below vacuous).
+    let plain_block = [Block, I32Const(1), End, End];
+    assert!(
+        synth_backend_aarch64::selector::select_typed_cf(&plain_block, 0, &[], &[], &[(0, 1)])
+            .is_ok(),
+        "a (0,1) VALUE-CARRYING block must now LOWER on aarch64 \
+         (VCR-A64-CF-001); if it declines, the capability regressed"
+    );
+    for (arity, needle) in [
+        ((1u8, 1u8), "PARAMETER-taking block type"),
+        ((0, 2), "MULTI-VALUE result block type"),
+    ] {
+        let got =
+            synth_backend_aarch64::selector::select_typed_cf(&plain_block, 0, &[], &[], &[arity])
+                .map(|_| ())
+                .map_err(|e| e.0);
+        assert!(
+            got.as_ref().err().is_some_and(|m| m.contains(needle)),
+            "aarch64 must decline a {arity:?} block type by NAME ({needle}); \
+             got {got:?}. If it now lowers, multi-value support landed — delete \
+             this claim."
+        );
+    }
 }

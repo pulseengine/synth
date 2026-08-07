@@ -669,3 +669,49 @@ artifacts:
             DEFAULT build with 0 hard errors across the corpus (thumb2 AND the
             cortex-r5 A32 path, whose expansions differ)
 
+  - id: SWVER-024
+    type: sw-verification
+    title: AArch64 br_table + value-carrying block/loop/if (#851 — VCR-A64-CF-001)
+    description: >
+      Verifies VCR-A64-CF-001 in both directions. CAPABILITY: an execution
+      differential compiles a WAT carrying the new shapes with `-b aarch64`,
+      reads the emitted `.text` out of the object's symtab, and runs every
+      exported function under unicorn (UC_ARCH_ARM64) — and NATIVELY in a forked
+      child on an arm64 host — against wasmtime as the reference. The cases are
+      chosen so a wrong branch destination changes the RESULT rather than
+      merely the schedule: br_table default arm, index exactly AT the table
+      bound, index OVER the bound, index 0xFFFFFFFF (the unsigned-index rule), a
+      table whose targets mix a backward loop header with forward block ends,
+      and a value-carrying `loop` back-edge (the case where reconciling on the
+      back-edge — the natural wrong implementation — silently returns a garbage
+      result). A guarded `unreachable` gives a TRAP case so the harness cannot
+      collapse to "every case returns a value", and non-vacuity is asserted on
+      both the trap and the value counts.
+      DECLINE-HONESTY: the residuals (>16 targets, value-carrying br_table
+      targets, block/loop params, multi-value results) are asserted by name at
+      selector level in `br_table_subshape_asymmetry_882`, which fails in BOTH
+      directions — a residual that closes must delete its assertion, and a
+      capability that regresses reddens the same test. The whole-op ledger entry
+      for `br_table` is deleted from `aarch64_known_divergences()`; the parity
+      gate's stale-entry check is what forces that deletion.
+      FROZEN-SAFETY: a void frame reserves no register and emits no
+      reconciliation move, so the pre-existing aarch64 control-flow oracles must
+      stay green with unchanged output, and the ARM/RV32 frozen goldens (10/10)
+      are untouched.
+    status: implemented
+    tags: [aarch64, control-flow, br-table, differential, vcr-sel, issue-851]
+    links:
+      - type: verifies
+        target: VCR-A64-CF-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend-aarch64 && cargo test -p synth-backend-riscv --test cross_backend_op_parity"
+        coverage: >
+          scripts/repro/aarch64_brtable_blockvals_851_differential.py (wasmtime
+          vs unicorn/native execution over the br_table index lattice + the
+          value-carrying block/loop/if shapes, CI-wired) +
+          crates/synth-backend-riscv/tests/cross_backend_op_parity.rs
+          (br_table_subshape_asymmetry_882 — the three aarch64 residuals pinned
+          by name) + crates/synth-backend-aarch64/src/selector.rs unit tests +
+          scripts/repro/aarch64_m2_decline_538.py (decline-matrix honesty)

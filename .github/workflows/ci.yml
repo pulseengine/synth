@@ -217,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295333 \
+            --min-emulation-floor 295421 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -576,9 +576,15 @@ jobs:
     # CNT/ADDV), and f64<->i64 reinterpret. v0.54 L2 completes the SCALAR float
     # surface — rounding (FRINT), f32/f64 load/store (bounds-checked), i64->
     # float converts, and the DOMAIN-GUARDED trapping i64-target truncations —
-    # so the decline-matrix probe now asserts the STRUCTURAL declines
-    # (call_indirect, br_table, param writes, globals, bulk memory,
-    # value-carrying blocks, SIMD) still LOUD-decline.
+    # so the decline-matrix probe moved on to the STRUCTURAL declines. v0.54 L3
+    # then landed call_indirect + globals and v0.55 L6 (VCR-A64-CF-001)
+    # `br_table` + value-carrying block/loop/if, so what the probe asserts today
+    # is the NARROWER residue: param writes in a LEAF function, bulk memory,
+    # SIMD, a `br_table` past 16 targets or with value-carrying targets, a block
+    # type with params / multi-value results, and a non-leaf FLOAT param. Each
+    # entry LEAVES this list the day its lowering lands — asserting a decline
+    # for a capability that now ships is the same doc-honesty defect as claiming
+    # one that does not.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -689,6 +695,41 @@ jobs:
           echo "float-completion oracle ran $n checks, $t of them trap cases"
           [ "$n" -ge 300 ]
           [ "$t" -ge 40 ]
+      - name: Run v0.55 L6 br_table + VALUE-CARRYING block/loop/if oracle (VCR-A64-CF-001)
+        # The two largest entries in the mechanically-derived aarch64 decline
+        # complement, now lowered. `br_table` is a compare-and-branch CHAIN, so
+        # a wrong destination is a wrong RESULT: the harness walks the index
+        # lattice per table (every arm, the index AT the bound, one OVER it, and
+        # 0xFFFFFFFF — which a SIGNED compare would mis-dispatch, since WASM
+        # reads the index UNSIGNED), and puts a LOOP HEADER in the same table as
+        # a forward block end so a wrong branch DIRECTION shows up as a wrong
+        # trip count. The value-carrying frames are driven down BOTH edges of
+        # every join, including a frame containing a `bl` — the one soundness
+        # claim (a call cannot clobber a live reconciliation slot) that nothing
+        # else executes.
+        #
+        # ANTI-VACUITY (#890). `set -euo pipefail`, NOT bare `pipefail`: with
+        # pipefail ALONE the step's exit status is the LAST command's, so an
+        # oracle that printed FAIL and exited 1 still went GREEN. The verdict is
+        # then taken from the script's OWN summary line, and the counts are
+        # asserted NON-ZERO in both outcome classes — an oracle that stopped
+        # trapping (or stopped returning values) must go RED. The relocation
+        # count is asserted too: the harness APPLIES the `R_AARCH64_CALL26`
+        # relocations itself, and if they vanished the calls would become
+        # self-branches and the clobber claim would go untested while the gate
+        # stayed green.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py \
+              scripts/repro/aarch64_brtable_blockvals_851_differential.py \
+            | tee /tmp/a64_brtable.log
+          grep -q '^RESULT: PASS' /tmp/a64_brtable.log
+          grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\) across [1-9][0-9]* exported' /tmp/a64_brtable.log
+          grep -Eq '\[[1-9][0-9]* direct-call relocations applied\]' /tmp/a64_brtable.log
+          n=$(sed -n 's/^\([0-9]*\) checks .*/\1/p' /tmp/a64_brtable.log)
+          echo "br_table/value-carrying oracle ran $n checks"
+          [ "$n" -ge 60 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_decline_538.py
       # #910: close the job with what it EXECUTED. Asserts every oracle

@@ -40,9 +40,7 @@
 //!   float-result callees (returned in v0/d0, not x0), a caller reading its own
 //!   params across a call (param-homing is a later increment), and WRITING a
 //!   parameter (`local.set`/`tee` on a param index).
-//! - `br_table`, value-carrying `block`/`loop`/`if`, register spilling,
-//!   `global.get`/`global.set` (no globals substrate), and bulk memory
-//!   (`memory.copy`/`memory.fill`).
+//! - register spilling and bulk memory (`memory.copy`/`memory.fill`).
 //! - Float rounding (`ceil`/`floor`/`trunc`/`nearest`), f32/f64 linear-memory
 //!   load/store, i64→float converts, and the TRAPPING i64-target truncations
 //!   (the saturating forms do lower).
@@ -70,6 +68,30 @@
 //! The value stack now tags each entry with its register FILE (GP vs FP) so an
 //! f32 param (delivered in `s0..` under AAPCS64, a counter INDEPENDENT of the
 //! GP arg registers) is never confused with a GP operand.
+//!
+//! **VCR-A64-CF-001 (v0.55) — `br_table` + VALUE-CARRYING control flow.** The
+//! two largest entries in the mechanically-derived decline complement:
+//!
+//! - `br_table` lowers as a COMPARE-AND-BRANCH CHAIN (`cbz` for entry 0, then
+//!   `cmp`+`b.eq` per further entry, then an unconditional `b` to the default),
+//!   deliberately the same construction #882 chose for RV32. The index is
+//!   compared in the W view, so the UNSIGNED index semantics hold exactly:
+//!   only `0..len-1` match and every other index — including the "negative"
+//!   i32s that denote huge unsigned values — reaches the DEFAULT. One table may
+//!   MIX a backward loop header with forward block ends.
+//! - A VALUE-CARRYING `block`/`loop`/`if` reserves a reconciliation register
+//!   pair (one GP, one FP — the arity side-table carries counts only, so the
+//!   result's register FILE is not known at frame entry) that is withheld from
+//!   the temp allocator for the frame's whole extent. Every edge into the
+//!   frame's join deposits there, so the result is in ONE register on every
+//!   path. See [`reconcile_into`] for why no clobber window exists.
+//!
+//! SOUNDNESS-CRITICAL: a `br` to a LOOP label targets the loop HEADER and
+//! carries the loop's PARAMETERS, not its results, so a `loop (result T)`
+//! back-edge reconciles NOTHING (`Frame::label_arity` vs `Frame::result_arity`).
+//! Still declined by name: a `br_table` past [`BR_TABLE_MAX_TARGETS`], a
+//! `br_table` with value-carrying targets, and a block type with PARAMETERS or
+//! MULTI-VALUE results.
 //!
 //! **Milestone 4 converts the #709-class declines into SOUND capabilities:**
 //!
@@ -105,6 +127,14 @@ const TEMPS: [Reg; 7] = [9, 10, 11, 12, 13, 14, 15];
 /// The FP value-stack temp registers: caller-saved `v16..v23` (the low `v0..v7`
 /// carry incoming float params, `v8..v15` are callee-saved). 8 scratch slots.
 const FTEMPS: [FReg; 8] = [16, 17, 18, 19, 20, 21, 22, 23];
+
+/// VCR-A64-CF-001 — the largest `br_table` the compare-and-branch-chain
+/// lowering accepts. Each entry past the first costs 2 instructions
+/// (`cmp` + `b.eq`), so 16 targets is a ≤32-instruction dispatch; past that a
+/// real PC-relative jump table wins and the selector LOUD-DECLINES instead of
+/// emitting an unbounded chain. Same threshold as the RV32 lowering (#882),
+/// deliberately — the two backends' `br_table` frontiers stay comparable.
+pub const BR_TABLE_MAX_TARGETS: usize = 16;
 
 /// #851 — the WASM linear-memory base register. A memory-using function expects
 /// `x28 = __linear_memory_base` on entry — the same dedicated-base convention
@@ -532,6 +562,15 @@ pub fn select_typed_cf_calls(
         /// at `else` (to the else arm) or at `end` (past the then arm).
         If { else_fixup: Option<usize> },
     }
+    /// VCR-A64-CF-001 — the reconciliation registers a VALUE-CARRYING frame
+    /// reserves. Both files are reserved because the blocktype-arity side-table
+    /// carries counts only; `file` records which one the first reconciliation
+    /// actually used, so `End` pushes the right one.
+    struct Slot {
+        gp: Reg,
+        fp: FReg,
+        file: Option<File>,
+    }
     struct Frame {
         kind: Kind,
         /// Word positions in `words` of FORWARD branches targeting this frame's
@@ -540,6 +579,20 @@ pub fn select_typed_cf_calls(
         pending: Vec<usize>,
         /// Value-stack height on entry — a void frame must restore it at `End`.
         stack_entry: usize,
+        /// How many values a `br`/`br_if`/`br_table` to THIS frame's LABEL
+        /// carries. For a Block/If the label is its END, so this is the frame's
+        /// RESULT count; for a Loop the label is its HEADER, so this is the
+        /// frame's PARAMETER count. Getting that distinction wrong is a SILENT
+        /// MISCOMPILE, not a decline: reconciling on a `loop (result i32)`
+        /// back-edge would overwrite the result register with a garbage value
+        /// on every iteration. Only 0 or 1 (params and multi-value decline).
+        label_arity: u8,
+        /// How many values the frame's FALL-THROUGH `End` leaves on the stack
+        /// (the frame's result count). Only 0 or 1.
+        result_arity: u8,
+        /// Reserved reconciliation registers — `Some` iff the frame is
+        /// value-carrying (`result_arity == 1`).
+        slot: Option<Slot>,
     }
     let mut ctrl: Vec<Frame> = Vec::new();
     // Ordinal counter over Block/Loop/If in op order — the key into
@@ -555,22 +608,176 @@ pub fn select_typed_cf_calls(
     // fall-through). `br_if` is conditional, so its fall-through stays reachable.
     let mut reachable = true;
 
-    // Pick a GP temp not holding a live GP value-stack entry.
+    // VCR-A64-CF-001 (#851/#509) — RESERVED reconciliation registers.
+    //
+    // A value-carrying frame (`block (result T)`, `if (result T)`,
+    // `loop (result T)`) needs ONE register that holds the frame's value on
+    // EVERY path reaching its `end`. That register must be withheld from the
+    // temp allocator for the frame's whole extent, otherwise code between a
+    // `br` that deposited into it and the `end` that reads it could allocate
+    // the same temp and clobber a live result.
+    //
+    // The reservation is a BITMASK (bit r = register r reserved), not a value-
+    // stack entry: the value stack is consumed WHOLESALE by the `call` /
+    // `call_indirect` argument marshalling (`stack.iter().enumerate()` +
+    // `stack.clear()`), so a placeholder pushed there would be marshalled as an
+    // argument and then erased. A separate mask cannot be reached by any of
+    // those whole-stack consumers, and `epilogue(stack.last())` can never
+    // return a reservation.
+    //
+    // Both files are reserved per frame, because the blocktype arity side-table
+    // carries COUNTS ONLY — whether the result is i32/i64 (GP) or f32/f64 (FP)
+    // is not known until the first value is reconciled.
+    let reserved_gp = std::cell::Cell::<u32>::new(0);
+    let reserved_fp = std::cell::Cell::<u32>::new(0);
+    let gp_free = |t: Reg, stack: &[Val]| {
+        reserved_gp.get() & (1u32 << t) == 0
+            && !stack.iter().any(|v| v.file == File::Gp && v.reg == t)
+    };
+    let fp_free = |t: FReg, stack: &[Val]| {
+        reserved_fp.get() & (1u32 << t) == 0
+            && !stack.iter().any(|v| v.file == File::Fp && v.reg == t)
+    };
+
+    // Pick a GP temp holding neither a live GP value-stack entry nor an open
+    // frame's reserved result register.
     let alloc_temp = |stack: &[Val]| -> Result<Reg, SelectError> {
         TEMPS
             .iter()
             .copied()
-            .find(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t))
+            .find(|t| gp_free(*t, stack))
             .ok_or_else(|| SelectError("value-stack too deep (GP temp regs exhausted)".into()))
     };
-    // Pick an FP temp not holding a live FP value-stack entry.
+    // Pick an FP temp holding neither a live FP value-stack entry nor an open
+    // frame's reserved result register.
     let alloc_ftemp = |stack: &[Val]| -> Result<FReg, SelectError> {
         FTEMPS
             .iter()
             .copied()
-            .find(|t| !stack.iter().any(|v| v.file == File::Fp && v.reg == *t))
+            .find(|t| fp_free(*t, stack))
             .ok_or_else(|| SelectError("value-stack too deep (FP temp regs exhausted)".into()))
     };
+
+    // VCR-A64-CF-001 — validate a `block`/`loop`/`if` blocktype arity and, when
+    // it is VALUE-CARRYING, reserve its reconciliation register pair.
+    //
+    // Returns `(label_arity, result_arity, slot)`. `is_loop` picks the LABEL
+    // arity: a `br` to a Loop targets its HEADER and carries the loop's
+    // PARAMETERS, while a `br` to a Block/If targets its END and carries the
+    // frame's RESULTS. A `loop (result i32)` therefore has label arity 0 —
+    // its back-edge must reconcile NOTHING, or every iteration would stamp a
+    // garbage value into the result register.
+    let open_slot = |what: &str,
+                     ord: usize,
+                     arity: (u8, u8),
+                     is_loop: bool,
+                     stack: &[Val]|
+     -> Result<(u8, u8, Option<Slot>), SelectError> {
+        let (params, results) = arity;
+        if params != 0 {
+            return Err(SelectError(format!(
+                "{what} #{ord} has type {arity:?} — a PARAMETER-taking block \
+                 type (multi-value) is not lowered on aarch64: the \
+                 reconciliation slot is ONE register, so block params would \
+                 need a per-path multi-register shuffle; loud-declining \
+                 (VCR-A64-CF-001)"
+            )));
+        }
+        if results > 1 {
+            return Err(SelectError(format!(
+                "{what} #{ord} has type {arity:?} — a MULTI-VALUE result block \
+                 type is not lowered on aarch64 (the reconciliation slot is ONE \
+                 register); loud-declining (VCR-A64-CF-001)"
+            )));
+        }
+        let slot = if results == 1 {
+            let gp = alloc_temp(stack)?;
+            reserved_gp.set(reserved_gp.get() | 1u32 << gp);
+            let fp = match alloc_ftemp(stack) {
+                Ok(f) => f,
+                Err(e) => {
+                    // Roll the GP reservation back so a decline leaves no
+                    // stranded register behind.
+                    reserved_gp.set(reserved_gp.get() & !(1u32 << gp));
+                    return Err(e);
+                }
+            };
+            reserved_fp.set(reserved_fp.get() | 1u32 << fp);
+            Some(Slot { gp, fp, file: None })
+        } else {
+            None
+        };
+        Ok((if is_loop { params } else { results }, results, slot))
+    };
+
+    /// VCR-A64-CF-001 — move `v` into a value-carrying frame's reconciliation
+    /// register, recording which register FILE the frame's result lives in.
+    ///
+    /// The 64-bit forms are deliberate and match [`epilogue`]: `mov x` carries
+    /// an i32 intact (w-form producers zero the upper half) and `fmov d`
+    /// carries an f32's low 32 bits intact.
+    ///
+    /// SOUNDNESS NOTE — why no clobber window exists. `v.reg` can never BE the
+    /// slot register (the slot is reserved, so the temp allocator cannot have
+    /// handed it out to a live value), so this move never destroys a live
+    /// operand. And every call site writes the slot IMMEDIATELY before a
+    /// transfer to the frame's join point: `br`/`br_if` before the branch,
+    /// `else` before the `b end`, `end` before the push. So on the path that
+    /// WRITES the slot, the very next thing executed is the join — nothing
+    /// (not even a `bl`, which clobbers the caller-saved x9..x15 temp pool)
+    /// runs in between. On any other path the written value is dead and is
+    /// re-written before that path reaches the join.
+    fn reconcile_into(words: &mut Vec<u32>, slot: &mut Slot, v: Val) {
+        match v.file {
+            File::Gp => {
+                if v.reg != slot.gp {
+                    words.push(enc::mov_reg64(slot.gp, v.reg));
+                }
+            }
+            File::Fp => {
+                if v.reg != slot.fp {
+                    words.push(enc::fmov_d(slot.fp, v.reg));
+                }
+            }
+        }
+        slot.file = Some(v.file);
+    }
+
+    /// VCR-A64-CF-001 — reconcile a `br`/`br_if` that targets `ctrl[target]`.
+    ///
+    /// A no-op unless the target's LABEL arity is 1 (results for a Block/If,
+    /// PARAMS for a Loop — see [`Frame::label_arity`]). The value is PEEKED,
+    /// never popped: `br_if`'s not-taken path keeps it on the operand stack,
+    /// and `br`'s fall-through is unreachable so the stale entry is truncated
+    /// away at the frame's `End`.
+    fn reconcile_branch(
+        words: &mut Vec<u32>,
+        ctrl: &mut [Frame],
+        stack: &[Val],
+        target: usize,
+        ctx: &str,
+    ) -> Result<(), SelectError> {
+        if ctrl[target].label_arity == 0 {
+            return Ok(());
+        }
+        if stack.len() <= ctrl[target].stack_entry {
+            return Err(SelectError(format!(
+                "{ctx}: branch to a value-carrying label with no result on the \
+                 value stack (height {}, target frame entry height {})",
+                stack.len(),
+                ctrl[target].stack_entry
+            )));
+        }
+        let v = stack[stack.len() - 1];
+        let slot = ctrl[target].slot.as_mut().ok_or_else(|| {
+            SelectError(format!(
+                "{ctx}: value-carrying label has no reconciliation slot \
+                 (internal invariant)"
+            ))
+        })?;
+        reconcile_into(words, slot, v);
+        Ok(())
+    }
 
     // Pop a GP operand, erroring if the top value is actually an FP value (a
     // type confusion that would otherwise silently read the wrong file).
@@ -805,10 +1012,7 @@ pub fn select_typed_cf_calls(
             let b = pop_fp(stack, "copysign")?; // z2: sign source
             let a = pop_fp(stack, "copysign")?; // z1: magnitude
             // Three DISTINCT free GP temps (a-bits, b-bits, mask).
-            let mut free = TEMPS
-                .iter()
-                .copied()
-                .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+            let mut free = TEMPS.iter().copied().filter(|t| gp_free(*t, stack));
             let (Some(ta), Some(tb), Some(tm)) = (free.next(), free.next(), free.next()) else {
                 return Err(SelectError(
                     "value-stack too deep (copysign needs 3 GP temps)".into(),
@@ -893,10 +1097,7 @@ pub fn select_typed_cf_calls(
         stack.push(Val::gp(b));
         // Need up to three DISTINCT scratch regs beyond a/b: quotient, and (for
         // the signed-div overflow guard) two const-materialization temps.
-        let mut free = TEMPS
-            .iter()
-            .copied()
-            .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+        let mut free = TEMPS.iter().copied().filter(|t| gp_free(*t, stack));
         let (Some(q), Some(s0), Some(s1)) = (free.next(), free.next(), free.next()) else {
             stack.pop();
             stack.pop();
@@ -1008,7 +1209,7 @@ pub fn select_typed_cf_calls(
         let vtmp = FTEMPS
             .iter()
             .copied()
-            .find(|t| !stack.iter().any(|v| v.file == File::Fp && v.reg == *t))
+            .find(|t| fp_free(*t, stack))
             .ok_or_else(|| SelectError("value-stack too deep (popcnt needs an FP temp)".into()))?;
         if is64 {
             words.push(enc::fmov_d_from_x(vtmp, a));
@@ -1360,29 +1561,29 @@ pub fn select_typed_cf_calls(
                 reachable = false;
             }
 
-            // --- control flow (#538 cf increment): VOID-result forward blocks ---
+            // --- control flow (#538 cf increment; VCR-A64-CF-001 value-carrying) ---
             //
-            // `block` opens a new control frame. Only a `(0,0)` (void, no params,
-            // no result) block is accepted — a typed block would leave a value on
-            // the stack whose result register the branch would have to reconcile,
-            // which this straight-line model does not do. The arity comes from the
-            // decoder's ordinal side-table (`unreachable`-polymorphic fall-through
-            // makes a stack-height proxy UNSOUND — the arity table is the signal).
+            // `block` opens a new control frame. Since VCR-A64-CF-001 a
+            // VALUE-CARRYING `(0,1)` block is accepted as well as the void
+            // `(0,0)` one: it reserves a reconciliation register that every
+            // path deposits its result into (see [`reconcile_into`]). Block
+            // PARAMETERS and MULTI-VALUE results still loud-decline by name.
+            // The arity comes from the decoder's ordinal side-table
+            // (`unreachable`-polymorphic fall-through makes a stack-height
+            // proxy UNSOUND — the arity table is the signal).
             WasmOp::Block => {
                 let ord = ctrl_ord;
                 ctrl_ord += 1;
                 let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
-                if arity != (0, 0) {
-                    return Err(SelectError(format!(
-                        "block #{ord} has type {arity:?} — only void (0,0) blocks \
-                         are supported (value-carrying blocks need result-register \
-                         reconciliation across the branch); loud-declining"
-                    )));
-                }
+                let (label_arity, result_arity, slot) =
+                    open_slot("block", ord, arity, false, &stack)?;
                 ctrl.push(Frame {
                     kind: Kind::Block,
                     pending: Vec::new(),
                     stack_entry: stack.len(),
+                    label_arity,
+                    result_arity,
+                    slot,
                 });
             }
             // `br N` — unconditional branch to the END of the block N levels out.
@@ -1401,6 +1602,11 @@ pub fn select_typed_cf_calls(
                     )));
                 }
                 let target = ctrl.len() - 1 - d;
+                // VCR-A64-CF-001 — a branch to a VALUE-CARRYING label hands the
+                // label its result: move the top-of-stack into the target
+                // frame's reserved register FIRST, so the join reads one
+                // register on every incoming edge.
+                reconcile_branch(&mut words, &mut ctrl, &stack, target, "br")?;
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD branch to the loop header — resolve immediately.
@@ -1427,6 +1633,10 @@ pub fn select_typed_cf_calls(
                 }
                 let cond = pop_gp(&mut stack, "br_if")?;
                 let target = ctrl.len() - 1 - d;
+                // VCR-A64-CF-001 — the condition sat ABOVE the branch's result,
+                // so reconcile only after popping it. PEEK, don't pop: the
+                // not-taken path still owns the value.
+                reconcile_branch(&mut words, &mut ctrl, &stack, target, "br_if")?;
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD conditional branch to the loop header.
@@ -1438,51 +1648,165 @@ pub fn select_typed_cf_calls(
                     ctrl[target].pending.push(pos);
                 }
             }
+            // `br_table` (VCR-A64-CF-001) — WASM's multi-way branch: pop the
+            // i32 index; index `i` branches to `targets[i]`, and ANY index
+            // `>= targets.len()` goes to `default`. The index is UNSIGNED, so
+            // the "negative" i32s are huge unsigned values and also land on
+            // the default label.
+            //
+            // Lowering: a COMPARE-AND-BRANCH CHAIN, deliberately the same
+            // construction #882 chose for RV32 so the two backends stay
+            // reviewable against each other. Entry 0 is `cbz w_idx, L0` (one
+            // instruction, no constant to materialize); every further entry is
+            // `cmp w_idx, #i` + `b.eq L_i`; the chain ends in an unconditional
+            // `b L_default`, which is exactly where every non-matching index —
+            // in-range-of-i32 or not — lands. The compares are the W view, so
+            // a dirty upper half (an i64 producer feeding the index) cannot
+            // affect the dispatch, and equality against the constants
+            // `0..len-1` is exact for the unsigned-index semantics.
+            //
+            // Targets may MIX destinations: a `loop` target is the loop HEADER
+            // (backward, resolved eagerly to a negative offset) while a
+            // block/if target is its END (forward, patched at that `End`) —
+            // the same dispatch-on-the-TARGET-frame's-kind rule `br`/`br_if`
+            // already use.
+            //
+            // No jump table, no data section, no PC-relative table: for the
+            // small tables real drivers carry, the chain is smaller and simpler
+            // to verify than an indirect dispatch. Past
+            // [`BR_TABLE_MAX_TARGETS`] it LOUD-DECLINES rather than emit an
+            // unbounded chain — the jump-table upgrade is a named follow-up.
+            WasmOp::BrTable { targets, default } => {
+                if targets.len() > BR_TABLE_MAX_TARGETS {
+                    return Err(SelectError(format!(
+                        "br_table with {} targets exceeds the aarch64 \
+                         compare-chain threshold ({BR_TABLE_MAX_TARGETS}); \
+                         PC-relative jump-table dispatch is not implemented for \
+                         aarch64 — loud-declining (VCR-A64-CF-001)",
+                        targets.len()
+                    )));
+                }
+                let idx = pop_gp(&mut stack, "br_table")?;
+                // Conservative VALUE-CARRYING guard (#509 class, mirroring the
+                // RV32 #882 rule). A flat compare chain has no room for a
+                // per-path result move: the deposit would have to sit on the
+                // TAKEN edge of each individual compare. So every targeted
+                // frame (the default included) must have a VOID label and must
+                // have been entered at exactly the current post-pop height —
+                // then a taken branch moves no values and the plain-jump
+                // lowering is sound.
+                let height = stack.len();
+                for &depth in targets.iter().chain(std::iter::once(default)) {
+                    let d = depth as usize;
+                    if d >= ctrl.len() {
+                        return Err(SelectError(format!(
+                            "br_table target depth {depth} exceeds open block \
+                             nesting ({} open)",
+                            ctrl.len()
+                        )));
+                    }
+                    let frame = &ctrl[ctrl.len() - 1 - d];
+                    if frame.label_arity != 0 || frame.stack_entry != height {
+                        return Err(SelectError(format!(
+                            "br_table with VALUE-CARRYING targets (target depth \
+                             {depth}: label arity {}, frame entry height {} vs \
+                             post-pop height {height}) — the flat compare chain \
+                             has no per-path edge to deposit a result on; \
+                             loud-declining (VCR-A64-CF-001, the #509 class)",
+                            frame.label_arity, frame.stack_entry
+                        )));
+                    }
+                }
+                // The chain. `idx` was popped, so no value-stack entry holds it
+                // and nothing below can be disturbed.
+                for (i, &depth) in targets.iter().enumerate() {
+                    let target = ctrl.len() - 1 - depth as usize;
+                    if i > 0 {
+                        // i <= BR_TABLE_MAX_TARGETS - 1 always fits imm12.
+                        words.push(enc::cmp_imm(idx, i as u32));
+                    }
+                    let pos = words.len();
+                    if let Kind::Loop { entry } = ctrl[target].kind {
+                        let off = check_imm19((entry as i64 - pos as i64) as i32)?;
+                        words.push(if i == 0 {
+                            enc::cbz(idx, off)
+                        } else {
+                            enc::bcond(Cond::Eq, off)
+                        });
+                    } else {
+                        words.push(if i == 0 {
+                            enc::cbz(idx, 0) // placeholder; patched at End
+                        } else {
+                            enc::bcond(Cond::Eq, 0) // placeholder; patched at End
+                        });
+                        ctrl[target].pending.push(pos);
+                    }
+                }
+                // No entry matched → default. Also where every out-of-range
+                // (unsigned) index lands.
+                let dflt = ctrl.len() - 1 - *default as usize;
+                let pos = words.len();
+                if let Kind::Loop { entry } = ctrl[dflt].kind {
+                    let off = check_imm26((entry as i64 - pos as i64) as i32)?;
+                    words.push(enc::b_uncond(off));
+                } else {
+                    words.push(enc::b_uncond(0)); // placeholder
+                    ctrl[dflt].pending.push(pos);
+                }
+                // Every index transfers control: the fall-through is dead.
+                reachable = false;
+            }
             // `loop` (#851): opens a control frame whose branch target is the
             // loop HEADER (the current position), so a `br`/`br_if` to it is a
-            // BACKWARD branch. Only a VOID `(0,0)` loop is accepted: a
-            // value/param loop would need the value stack non-empty across the
-            // back-edge, and the deterministic temp-restart (`alloc_temp` picks
-            // the same register when the stack is empty) would no longer hold.
-            // The `(0,0)` gate enforces exactly the sound shape — loop-carried
-            // state must live in non-param LOCAL SLOTS (memory), reloaded each
-            // iteration. `br_table` still declines (catch-all).
+            // BACKWARD branch.
+            //
+            // VCR-A64-CF-001 — a `loop (result T)` is now accepted, and the
+            // asymmetry with `block` is SOUNDNESS-CRITICAL rather than
+            // cosmetic: a branch to a LOOP label targets the header and carries
+            // the loop's PARAMETERS, not its results. `open_slot(is_loop=true)`
+            // therefore sets `label_arity = params` (0 here), so the back-edge
+            // reconciles NOTHING and the reserved register is written by the
+            // fall-through `End` alone. Reconciling on the back-edge — the
+            // natural wrong implementation, and what treating `label_arity` as
+            // "the frame is value-carrying" would do — would stamp a garbage
+            // value into the result register on every iteration.
+            //
+            // Loop PARAMETERS still loud-decline: they would need the value
+            // stack live across the back-edge, and the deterministic
+            // temp-restart (`alloc_temp` picks the same register at the same
+            // height) would no longer hold. Loop-carried state must live in
+            // non-param LOCAL SLOTS (memory), reloaded each iteration.
             WasmOp::Loop => {
                 let ord = ctrl_ord;
                 ctrl_ord += 1;
                 let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
-                if arity != (0, 0) {
-                    return Err(SelectError(format!(
-                        "loop #{ord} has type {arity:?} — only void (0,0) loops \
-                         are supported (a value/param loop needs the value stack \
-                         live across the back-edge); loud-declining"
-                    )));
-                }
+                let (label_arity, result_arity, slot) =
+                    open_slot("loop", ord, arity, true, &stack)?;
                 ctrl.push(Frame {
                     kind: Kind::Loop { entry: words.len() },
                     pending: Vec::new(),
                     stack_entry: stack.len(),
+                    label_arity,
+                    result_arity,
+                    slot,
                 });
             }
             // `if` (#851): pop the i32 condition; emit `cbz cond, <else/end>` to
             // SKIP the then-arm when the condition is false. The skip target is
             // patched at the matching `else` (to the else-arm entry) or, if
-            // there is no `else`, at `end` (past the then-arm). Only VOID `(0,0)`
-            // `if` is accepted — a value-producing `if` would need both arms to
-            // leave the result in the same register, which this straight-line
-            // model does not guarantee, so it LOUD-DECLINES.
+            // there is no `else`, at `end` (past the then-arm). VCR-A64-CF-001:
+            // a value-producing `(0,1)` `if` is now accepted — "both arms must
+            // land the result in one register" is exactly what the reserved
+            // reconciliation slot guarantees (the then-arm deposits at `else`,
+            // the else-arm at `end`).
             WasmOp::If => {
                 let ord = ctrl_ord;
                 ctrl_ord += 1;
                 let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
-                if arity != (0, 0) {
-                    return Err(SelectError(format!(
-                        "if #{ord} has type {arity:?} — only void (0,0) if/else \
-                         is supported (a value-producing if needs both arms to \
-                         land the result in one register); loud-declining"
-                    )));
-                }
                 let cond = pop_gp(&mut stack, "if")?;
+                // Reserve AFTER popping the condition so the condition's temp
+                // is a candidate for the slot (it is dead from here on).
+                let (label_arity, result_arity, slot) = open_slot("if", ord, arity, false, &stack)?;
                 let else_pos = words.len();
                 // cbz: fall THROUGH into the then-arm when cond != 0; branch to
                 // the else/end when cond == 0. Offset patched at else/end.
@@ -1493,6 +1817,9 @@ pub fn select_typed_cf_calls(
                     },
                     pending: Vec::new(),
                     stack_entry: stack.len(),
+                    label_arity,
+                    result_arity,
+                    slot,
                 });
             }
             // `else` (#851): closes the then-arm of the innermost `if`. Emit an
@@ -1512,6 +1839,27 @@ pub fn select_typed_cf_calls(
                         return Err(SelectError("else does not close an if block".into()));
                     }
                 };
+                // VCR-A64-CF-001 — a value-producing then-arm hands the join
+                // its result here, immediately before the `b end` below (the
+                // no-clobber-window property [`reconcile_into`] documents).
+                if frame.result_arity == 1 && reachable {
+                    let v = *stack.last().ok_or_else(|| {
+                        SelectError(
+                            "else: value-producing then-arm left no result on \
+                             the value stack"
+                                .into(),
+                        )
+                    })?;
+                    let slot = frame.slot.as_mut().ok_or_else(|| {
+                        SelectError(
+                            "else: value-carrying if has no reconciliation slot \
+                             (internal invariant)"
+                                .into(),
+                        )
+                    })?;
+                    reconcile_into(&mut words, slot, v);
+                    stack.pop();
+                }
                 // A void then-arm leaves the stack at its entry height — but
                 // only on a REACHABLE fall-through (a then-arm ending in
                 // `return`/`br` is polymorphic). Truncate unconditionally (fixes
@@ -1748,7 +2096,30 @@ pub fn select_typed_cf_calls(
             // when no block is open — ends the FUNCTION body (funnel the result
             // into x0/d0 and return).
             WasmOp::End => {
-                if let Some(frame) = ctrl.pop() {
+                if let Some(mut frame) = ctrl.pop() {
+                    // VCR-A64-CF-001 — the FALL-THROUGH edge of a
+                    // value-carrying frame deposits its result. This MUST be
+                    // emitted before `here` is taken: the forward branches
+                    // reconciled at their own sites, so they have to land PAST
+                    // this move, not on it.
+                    if frame.result_arity == 1 && reachable {
+                        let v = *stack.last().ok_or_else(|| {
+                            SelectError(
+                                "end: value-carrying block left no result on the \
+                                 value stack"
+                                    .into(),
+                            )
+                        })?;
+                        let slot = frame.slot.as_mut().ok_or_else(|| {
+                            SelectError(
+                                "end: value-carrying frame has no reconciliation \
+                                 slot (internal invariant)"
+                                    .into(),
+                            )
+                        })?;
+                        reconcile_into(&mut words, slot, v);
+                        stack.pop();
+                    }
                     // Frame close. Every recorded FORWARD branch (block/if exit,
                     // else-arm skip) targets HERE (fall-through). A Loop's
                     // branches were backward and already resolved. Patch each
@@ -1776,6 +2147,21 @@ pub fn select_typed_cf_calls(
                         stack.len()
                     );
                     stack.truncate(frame.stack_entry);
+                    // VCR-A64-CF-001 — release the frame's reservations and
+                    // push its value. Every edge into this join has deposited
+                    // into the same register, so the frame's result IS that
+                    // register. `file` is `None` only when NO edge ever
+                    // reconciled (an unreachable-only frame such as
+                    // `block (result i32) unreachable end`); the pushed value
+                    // is then dead by construction, so the GP default is safe.
+                    if let Some(slot) = frame.slot {
+                        reserved_gp.set(reserved_gp.get() & !(1u32 << slot.gp));
+                        reserved_fp.set(reserved_fp.get() & !(1u32 << slot.fp));
+                        stack.push(match slot.file.unwrap_or(File::Gp) {
+                            File::Gp => Val::gp(slot.gp),
+                            File::Fp => Val::fp(slot.fp),
+                        });
+                    }
                     // After closing a frame the position is reachable again: a
                     // forward branch could target this fall-through, and a loop's
                     // continuation follows. (A dead nested block would want the
@@ -2084,10 +2470,7 @@ pub fn select_typed_cf_calls(
                 let delta = pop_gp(&mut stack, "memory.grow")?;
                 // Reserve `delta` so the two scratch temps are distinct from it.
                 stack.push(Val::gp(delta));
-                let mut free = TEMPS
-                    .iter()
-                    .copied()
-                    .filter(|t| !stack.iter().any(|v| v.file == File::Gp && v.reg == *t));
+                let mut free = TEMPS.iter().copied().filter(|t| gp_free(*t, &stack));
                 let (Some(t0), Some(t1)) = (free.next(), free.next()) else {
                     stack.pop();
                     return Err(SelectError(
@@ -2393,12 +2776,17 @@ fn check_imm19(off: i32) -> Result<i32, SelectError> {
 }
 
 /// Re-encode a placeholder FORWARD branch at `words[pos]` to land at `target`
-/// (a word index in `words`), preserving its kind. The three kinds we emit as
-/// forward placeholders are `b` (0x14…, imm26), `cbnz` (0x35…, imm19+Rt), and
-/// `cbz` (0x34…, imm19+Rt); the opcode's high bits discriminate them so the Rt
-/// field and op class survive the patch. Centralizing this prevents a `cbz`
-/// (added in #851) from being mis-patched as a `cbnz`. Over-range displacements
-/// LOUD-DECLINE (no silent field wrap).
+/// (a word index in `words`), preserving its kind. The FOUR kinds we emit as
+/// forward placeholders are `b` (0x14…, imm26), `cbnz` (0x35…, imm19+Rt), `cbz`
+/// (0x34…, imm19+Rt), and — since VCR-A64-CF-001's `br_table` chain — `b.<cond>`
+/// (0x54…, imm19 + a 4-bit condition); the opcode's high bits discriminate them
+/// so the Rt field, the condition field and the op class survive the patch.
+/// Centralizing this prevents a `cbz` (added in #851) from being mis-patched as
+/// a `cbnz`. Over-range displacements LOUD-DECLINE (no silent field wrap).
+///
+/// The `b.<cond>` case rebuilds the word directly instead of round-tripping
+/// through [`enc::bcond`]: that keeps whatever condition the emitter chose
+/// without needing to invert the private `Cond` mapping back out of the word.
 fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), SelectError> {
     let off = (target as i64 - pos as i64) as i32;
     let w = words[pos];
@@ -2406,6 +2794,7 @@ fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), Sele
         0x1400_0000 => enc::b_uncond(check_imm26(off)?),
         0x3500_0000 => enc::cbnz((w & 0x1F) as u8, check_imm19(off)?),
         0x3400_0000 => enc::cbz((w & 0x1F) as u8, check_imm19(off)?),
+        0x5400_0000 => 0x5400_0000 | (((check_imm19(off)? as u32) & 0x7FFFF) << 5) | (w & 0xF),
         _ => unreachable!("patch_branch: not a placeholder branch: {w:#010x}"),
     };
     Ok(())
@@ -3946,29 +4335,273 @@ mod tests {
         assert_eq!(w.len(), 4);
     }
 
+    // ---- VCR-A64-CF-001 — value-carrying frames + br_table -----------------
+
     #[test]
-    fn typed_block_is_loud_declined() {
-        // A value-carrying block (result i32) must decline — the straight-line
-        // model can't reconcile the result register across the branch.
+    fn typed_block_reconciles_its_result_into_one_register() {
+        // `(func (param i32) (result i32) (block (result i32) (local.get 0)))`
+        // — the shape that used to loud-decline. The fall-through `end`
+        // deposits into the frame's reserved register; the function epilogue
+        // then funnels THAT register into x0.
         let ops = vec![
-            WasmOp::Block, // arity (0,1) → declined
+            WasmOp::Block, // arity (0,1)
             WasmOp::LocalGet(0),
             WasmOp::End,
             WasmOp::End,
         ];
-        assert!(
-            select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).is_err(),
-            "typed (0,1) block must loud-decline"
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).unwrap();
+        // The block reserves x9 (first free temp); `local.get 0` is a leaf
+        // param read, so the value is w0 by reference. end: mov x9, x0 ;
+        // fn-end: mov x0, x9 ; ret.
+        assert_eq!(
+            w,
+            vec![enc::mov_reg64(9, 0), enc::mov_reg64(0, 9), enc::ret()]
         );
     }
 
     #[test]
-    fn br_table_and_typed_loop_if_are_loud_declined() {
-        // #851: `loop`, `if`/`else` are now LOWERED for the void (0,0) shape.
-        // What still declines: `br_table` (jump table, catch-all) and any
-        // VALUE-carrying loop/if (arity != (0,0)).
-        let brtable = vec![
+    fn value_carrying_br_if_deposits_into_the_same_register_as_the_fallthrough() {
+        // `(block (result i32) (br_if 0 (i32.const 7) (local.get 0))
+        //                      (drop) (i32.const 9))` — the two edges into the
+        // join must land the result in ONE register. The whole point of the
+        // reconciliation slot.
+        let ops = vec![
+            WasmOp::Block, // (0,1)
+            WasmOp::I32Const(7),
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0),
+            WasmOp::Drop,
+            WasmOp::I32Const(9),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).unwrap();
+        // Slot = x9. const 7 -> x10 (x9 reserved). br_if: mov x9, x10 ;
+        // cbnz w0, <end>. drop pops x10. const 9 -> x10. end: mov x9, x10.
+        // Both edges write x9 — that is the assertion.
+        let movs: Vec<usize> = w
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| **x == enc::mov_reg64(9, 10))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            movs.len(),
+            2,
+            "both the br_if edge and the fall-through must deposit into the \
+             slot register: {w:#010x?}"
+        );
+        // The cbnz must target the word AFTER the fall-through's deposit.
+        let cbnz_at = w
+            .iter()
+            .position(|x| x & 0xFF00_0000 == 0x3500_0000)
+            .expect("br_if emits a cbnz");
+        let off = ((w[cbnz_at] >> 5) & 0x7FFFF) as usize;
+        assert_eq!(
+            cbnz_at + off,
+            movs[1] + 1,
+            "the taken edge must land PAST the fall-through's reconciliation \
+             move, not on it (or it would re-run with a dead operand)"
+        );
+    }
+
+    #[test]
+    fn value_carrying_loop_does_not_reconcile_on_the_back_edge() {
+        // SOUNDNESS-CRITICAL asymmetry. A `br` to a LOOP label carries the
+        // loop's PARAMETERS (0 here), NOT its results — so a `loop (result
+        // i32)` back-edge must emit NO reconciliation move. If it did, every
+        // iteration would stamp a garbage value into the result register.
+        //
+        // `(block (loop (result i32) ... ) )` is awkward to write with raw
+        // ops; use the direct shape: loop (0,1) whose body branches back on a
+        // condition, then falls through with the result.
+        let ops = vec![
+            WasmOp::Loop, // (0,1)
+            WasmOp::LocalGet(0),
+            WasmOp::BrIf(0), // back-edge: label arity 0 → NO deposit
+            WasmOp::I32Const(5),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).unwrap();
+        // Words: cbnz w0, -0 (back to header) ; mov x10, #5 ; mov x9, x10 ;
+        // mov x0, x9 ; ret. Exactly ONE mov into the slot (the fall-through).
+        let deposits = w.iter().filter(|x| **x == enc::mov_reg64(9, 10)).count();
+        assert_eq!(
+            deposits, 1,
+            "a loop's back-edge must NOT reconcile (label arity = PARAMS): \
+             {w:#010x?}"
+        );
+        // And the back-edge is a real backward branch (negative imm19).
+        let cbnz = w[0];
+        assert_eq!(cbnz & 0xFF00_0000, 0x3500_0000, "back-edge is a cbnz");
+        assert_eq!(
+            (cbnz >> 5) & 0x7FFFF,
+            0,
+            "the back-edge targets the loop header at offset 0"
+        );
+    }
+
+    #[test]
+    fn value_producing_if_else_lands_both_arms_in_one_register() {
+        // `(if (result i32) (then (i32.const 1)) (else (i32.const 2)))`.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If, // (0,1)
+            WasmOp::I32Const(1),
+            WasmOp::Else,
+            WasmOp::I32Const(2),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 1)]).unwrap();
+        let deposits = w.iter().filter(|x| **x == enc::mov_reg64(9, 10)).count();
+        assert_eq!(
+            deposits, 2,
+            "then-arm (at `else`) and else-arm (at `end`) must BOTH deposit \
+             into the slot: {w:#010x?}"
+        );
+    }
+
+    #[test]
+    fn block_params_and_multi_value_results_still_loud_decline() {
+        // The residuals, named. The slot is ONE register: block PARAMS would
+        // need a per-path multi-register shuffle, multi-value more than one
+        // slot. Both must decline rather than silently drop a value.
+        let block = vec![WasmOp::Block, WasmOp::End, WasmOp::End];
+        let e = select_typed_cf(&block, 0, &[], &[], &[(1, 1)]).unwrap_err();
+        assert!(
+            e.0.contains("PARAMETER-taking block type"),
+            "block params must decline by name, got: {}",
+            e.0
+        );
+        let e = select_typed_cf(&block, 0, &[], &[], &[(0, 2)]).unwrap_err();
+        assert!(
+            e.0.contains("MULTI-VALUE result block type"),
+            "multi-value must decline by name, got: {}",
+            e.0
+        );
+        // Same for `loop`: a PARAM loop is the shape whose back-edge would need
+        // the value stack live across the header.
+        let lp = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert!(
+            select_typed_cf(&lp, 0, &[], &[], &[(1, 0)])
+                .unwrap_err()
+                .0
+                .contains("PARAMETER-taking block type")
+        );
+    }
+
+    #[test]
+    fn br_table_emits_a_compare_chain_with_a_default_fallthrough() {
+        // `(block (block (block (br_table 0 1 2 (local.get 0)))))` — three
+        // targets at depths 0/1/2, default = 2.
+        let ops = vec![
             WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0, 1],
+                default: 2,
+            },
+            WasmOp::End,
+            WasmOp::End,
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 3, &[], &[], &[(0, 0), (0, 0), (0, 0)]).unwrap();
+        // idx = w0 (leaf param, by reference). Chain:
+        //   [0] cbz  w0, <innermost end>      (entry 0)
+        //   [1] cmp  w0, #1
+        //   [2] b.eq <middle end>             (entry 1)
+        //   [3] b    <outer end>              (default)
+        //   [4] ret
+        assert_eq!(w.len(), 5, "{w:#010x?}");
+        assert_eq!(
+            w[0],
+            enc::cbz(0, 4),
+            "entry 0 is a bare cbz to the innermost end"
+        );
+        assert_eq!(w[1], enc::cmp_imm(0, 1));
+        assert_eq!(w[2], enc::bcond(Cond::Eq, 2), "entry 1 -> middle end");
+        assert_eq!(w[3], enc::b_uncond(1), "default -> outer end");
+        assert_eq!(w[4], enc::ret());
+    }
+
+    #[test]
+    fn br_table_can_target_a_loop_header_backward_and_a_block_end_forward() {
+        // One table, MIXED destinations: depth 0 = the enclosing loop (its
+        // HEADER, backward, eagerly resolved) and depth 1 = a block END
+        // (forward, patched). A lowering that assumed one direction would
+        // emit a wrong offset for the other.
+        let ops = vec![
+            WasmOp::Block, // depth 1 from inside the loop
+            WasmOp::Loop,  // depth 0
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0],
+                default: 1,
+            },
+            WasmOp::End, // loop end
+            WasmOp::End, // block end
+            WasmOp::End, // fn end
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
+        // [0] cbz w0, 0   (loop header is word 0 → offset 0-0 = 0, BACKWARD/self)
+        // [1] b   +1      (default → block end at word 2)
+        // [2] ret
+        assert_eq!(w.len(), 3, "{w:#010x?}");
+        assert_eq!(
+            w[0],
+            enc::cbz(0, 0),
+            "loop target resolves eagerly to the header"
+        );
+        assert_eq!(
+            w[1],
+            enc::b_uncond(1),
+            "default is a patched forward branch"
+        );
+        assert_eq!(w[2], enc::ret());
+    }
+
+    #[test]
+    fn br_table_residuals_loud_decline_by_name() {
+        // (1) Past the compare-chain threshold.
+        let big = vec![
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0; BR_TABLE_MAX_TARGETS + 1],
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let e = select_typed_cf(&big, 1, &[], &[], &[(0, 0)]).unwrap_err();
+        assert!(
+            e.0.contains("exceeds the aarch64 compare-chain threshold"),
+            "oversized br_table must decline by name, got: {}",
+            e.0
+        );
+        // Exactly at the threshold still lowers (the boundary is not off-by-one).
+        let at = vec![
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0; BR_TABLE_MAX_TARGETS],
+                default: 0,
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(select_typed_cf(&at, 1, &[], &[], &[(0, 0)]).is_ok());
+
+        // (2) A VALUE-CARRYING target. The flat chain has no per-path edge to
+        //     deposit a result on, so it refuses rather than miscompile.
+        let vc = vec![
+            WasmOp::Block, // (0,1) — value-carrying label
+            WasmOp::I32Const(1),
             WasmOp::LocalGet(0),
             WasmOp::BrTable {
                 targets: vec![0],
@@ -3977,15 +4610,12 @@ mod tests {
             WasmOp::End,
             WasmOp::End,
         ];
-        assert!(select_typed_cf(&brtable, 1, &[], &[], &[(0, 0)]).is_err());
-
-        // A VALUE-producing if (result i32 → arity (0,1)) loud-declines.
-        let typed_if = vec![WasmOp::LocalGet(0), WasmOp::If, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&typed_if, 1, &[], &[], &[(0, 1)]).is_err());
-
-        // A VALUE-producing loop (arity (0,1)) loud-declines.
-        let typed_loop = vec![WasmOp::Loop, WasmOp::End, WasmOp::End];
-        assert!(select_typed_cf(&typed_loop, 0, &[], &[], &[(0, 1)]).is_err());
+        let e = select_typed_cf(&vc, 1, &[], &[], &[(0, 1)]).unwrap_err();
+        assert!(
+            e.0.contains("VALUE-CARRYING targets"),
+            "value-carrying br_table must decline by name, got: {}",
+            e.0
+        );
     }
 
     #[test]
