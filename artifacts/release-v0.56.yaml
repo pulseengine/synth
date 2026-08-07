@@ -1,0 +1,227 @@
+# Release scope — v0.56
+#
+# WHY THIS FILE EXISTS
+#
+# The release-planning method says rivet's `release:` field is the source of
+# truth for scope, and that readiness is a QUERY (how many artifacts in
+# `release: vX.Y` are still not verified) rather than an opinion.
+#
+# Measured 2026-08-07, before writing this: **1 of 264 artifacts carried a
+# `release:` assignment**, and the actual v0.50–v0.55 plans lived in session
+# scratchpad markdown under /private/tmp — i.e. they did not survive the
+# session that wrote them. So the roadmap could not be driven by, or gated on,
+# verification state; it was driven by prose that evaporated.
+#
+# That is the same defect class this project has been finding all release: a
+# documented process that is not actually in force. This file is the first
+# increment of putting it in force — v0.56's scope, in rivet, durable, with the
+# readiness query answerable by `rivet` rather than by re-reading a plan.
+#
+# Scope moves are DELIBERATE: bumping an item's `release:` is a logged decision,
+# never a silent drop.
+
+artifacts:
+  # ===========================================================================
+  # THEME — the factory, not the instances.
+  #
+  # v0.53 → v0.55 each fixed real defects, and across all three the dominant
+  # finding was the same: most defects were in the CHECKERS, not the code they
+  # check. v0.55 alone found a ledger whose own harness lost records, a
+  # soundness assert broken by committed output files, a load-bearing number on
+  # three surfaces with two pinned, and a red-first test that passed for the
+  # wrong reason.
+  #
+  # Every one was fixed as an INSTANCE. The shelfware count still grew
+  # (57/130 → 69/150 across v0.53). Instances are not the unit of progress here;
+  # the unit is whether the CLASS can still be expressed.
+  # ===========================================================================
+
+  - id: RQ-56-CITE
+    type: system-req
+    title: "A verification artifact cannot cite a test that does not exist"
+    description: >
+      #911, spar#388 replicated. `artifacts/e2e-verification.yaml:363,387` cite
+      `cargo test -p synth-backend -- test_meld_import_table` and
+      `-- test_startup_memory_base`. Neither name is defined anywhere under
+      `crates/` — measured, 0 files each. A `cargo test` filter matching nothing
+      exits 0, so both artifacts claim verification by evidence that never runs.
+      This SHIPPED IN v0.55.0 and was found by the post-release hygiene sweep,
+      not by any gate.
+      Two parts, and the second is the point: (1) correct or remove the two
+      citations; (2) make the class unrepresentable — a check that every `run:`
+      in `artifacts/*.yaml` naming a test filter resolves to >= 1 test, so a
+      citation cannot outlive its test. That check belongs beside
+      `scripts/oracle_wiring_check.py`, which already enforces exactly this
+      shape for repro scripts; the artifacts surface simply never got one.
+      Red-first is mandatory: the new check must be seen to FAIL on the two
+      current citations before they are fixed.
+    status: proposed
+    release: v0.56
+    tags: [instrument-quality, traceability, vacuity, spar-ported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: measurement
+      issue: "#911"
+
+  - id: RQ-56-PINS
+    type: system-req
+    title: "The pin sweep covers every surface a release bumps"
+    description: >
+      #924, found by the gate-potency audit run before tagging v0.55.0.
+      `Version Pin Sweep` is one of the nine REQUIRED contexts, and
+      `scripts/check_version_pins.py` covers intra-workspace path-dep `version =`
+      pins and `MODULE.bazel` — two of the four surfaces a release actually
+      bumps. `Cargo.lock` and `npm/package.json` are ungated, and the only
+      `--locked` in ci.yml is `cargo install --locked kani-verifier`, a tool
+      install. A lock left at the previous version therefore builds and tests
+      green.
+      Not hypothetical: during v0.55 assembly the lock had ZERO 0.55.0 entries
+      after the bump, and is correct only because a human checked a count. The
+      identical defect was caught in the v0.52 cold review — twice by a human,
+      never by a gate.
+      A reviewer reading "Version Pin Sweep ✅" reasonably concludes the
+      release's versions are consistent; for half the surfaces that conclusion
+      is unwarranted. Extend the check, then NEGATIVE-CONTROL it (revert the
+      lock, confirm the job goes red, restore) — a gate added without that step
+      is only presumed potent.
+    status: proposed
+    release: v0.56
+    tags: [instrument-quality, release-process, gate-potency]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: measurement
+      issue: "#924"
+
+  - id: RQ-56-COV
+    type: system-req
+    title: "Coverage distinguishes genuinely-untested lines from differential-covered ones"
+    description: >
+      #923. `codecov/patch` fails on essentially every PR and has been treated
+      as advisory for dozens of merges — a habit that already contributed to
+      merging past a red Clippy (#683). Measured: there is NO `codecov.yml` in
+      the repo, so the check runs on codecov's defaults; the coverage JOB itself
+      passes; and VG-009 (shipped v0.55) explains much of the rest — the
+      execution differentials spawn an uninstrumented `synth` from other CI
+      jobs, emitting no profile data, so `backend.rs` reads ~42 % while being
+      exercised constantly.
+      MEASURE BEFORE ACTING (the planning method's own rule): classify every
+      flagged line as genuinely-uncovered vs covered-only-by-a-differential.
+      That split is the deliverable; it turns an ignored red into a work list.
+      Then write the tests the split says are real, and add a `codecov.yml`
+      stating a threshold someone chose — marking the patch status
+      `informational` EXPLICITLY if that is the intent, rather than leaving it
+      de-facto advisory for a future reader to infer from merge habits.
+    status: proposed
+    release: v0.56
+    tags: [instrument-quality, coverage, measurement-first]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-track: measurement
+      issue: "#923"
+
+  - id: RQ-56-GPIO
+    type: system-req
+    title: "gpio-thin reaches 498 B via relational ranges"
+    description: >
+      #846, gale's driver, and the remaining v0.55 Wave-2 lane. An OPTIMIZATION
+      with a measured target and a constraint it must not violate: 502 B is the
+      proven sound floor today; the last 4 bytes need RELATIONAL ranges at the
+      two CRL/CRH sites. avrabe explicitly offered to scope it.
+      Constraint (non-negotiable): the correctness oracles stay green. This
+      changes SHIPPING BYTES, so the frozen anchors (10/10 bit-identical today)
+      and the gpio differential gate it — a smaller wrong answer is a
+      regression, not a win. Carries a before/after number or it is not done.
+    status: proposed
+    release: v0.56
+    tags: [optimization, gale, code-size]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: performance
+      priority: should
+      verification-track: measurement
+      issue: "#846"
+
+  - id: RQ-56-A64PARAM
+    type: system-req
+    title: "aarch64 parameter homing — unblocks 2 of the 4 remaining divergences"
+    description: >
+      #851 umbrella residual. Of the four whole-op divergences remaining at
+      v0.55.0 (counted from the ledger array at the tag, not from prose),
+      `local.set+get(param)` and `local.tee(param)` share ONE root cause:
+      aarch64 declines WRITING a parameter, because params live in arg registers
+      by reference on the value stack and a param write could alias a stacked
+      value. Param HOMING (to callee-saved registers or frame slots) is the
+      prerequisite for both.
+      Highest-value next aarch64 increment: one mechanism, two ops. The other
+      two (`memory.copy`, `memory.fill`) are independent and stay open.
+      Gate: the cross-backend parity ledger flips in the SAME commit that makes
+      them lower, and the ledger's stale-entry check keeps the count honest.
+    status: proposed
+    release: v0.56
+    tags: [aarch64, capability-gap, epic-851]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: execution-differential
+      issue: "#851"
+
+  - id: RQ-56-PLAN
+    type: system-req
+    title: "Release scope lives in rivet and survives the session that wrote it"
+    description: >
+      Found while planning this release. Measured 2026-08-07: **1 of 264
+      artifacts carried a `release:` field**, and the v0.50–v0.55 plans lived in
+      session scratchpad markdown under /private/tmp — ephemeral by
+      construction. The documented method says scope is the set of artifacts
+      tagged `release: vX.Y` and that readiness is a query over their status;
+      neither was true here, so the roadmap could not be gated on verification
+      state.
+      This file is increment one. To finish the requirement: assign `release:`
+      to in-flight scope as it is committed to (not retroactively to history),
+      and make the readiness query part of the release-execution checklist so
+      "is v0.56 cuttable" is answered by rivet rather than by re-reading prose.
+      NOTE the honest limit: only 5 of 264 artifacts are `verified` today, so a
+      strict "every artifact verified" gate would block every release. Either
+      the lifecycle gets driven to `verified` for scoped items, or the gate is
+      stated in terms the project actually meets — deciding which IS part of
+      this requirement, and pretending otherwise would recreate the same
+      documented-but-not-in-force defect one level up.
+    status: proposed
+    release: v0.56
+    tags: [release-process, traceability, meta]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: measurement
