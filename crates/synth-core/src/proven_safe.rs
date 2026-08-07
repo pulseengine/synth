@@ -140,6 +140,15 @@ pub struct ProvenSafeIngest {
 }
 
 impl ProvenSafeIngest {
+    /// A refusal the CALLER establishes, for a gate that cannot be checked
+    /// inside this module. #932: the memory floor is derived by the CLI from
+    /// the decoded module, so "no floor could be established" is refusable only
+    /// out there — and it must refuse, not fall back to a `0` floor, because
+    /// every verdict validated against a zero-byte floor is vacuous.
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self::refuse(reason)
+    }
+
     /// A refusal: nothing trusted, one named reason.
     fn refuse(reason: impl Into<String>) -> Self {
         let reason = reason.into();
