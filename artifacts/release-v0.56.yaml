@@ -225,3 +225,150 @@ artifacts:
       req-type: non-functional
       priority: must
       verification-track: measurement
+
+  # ===========================================================================
+  # ADDED 2026-08-07, after gale filed #928-#932. Four are CRITICAL and one is
+  # a SECURITY hole in the feature v0.55.0 shipped as its headline.
+  #
+  # Stacked into v0.56 rather than cut as v0.55.1: synth has no external
+  # consumers yet, so an emergency patch would be mostly ceremony. That is a
+  # DELIBERATE, LOGGED scope decision — and it stops being the right one the
+  # day anyone outside this project compiles with `--proven-safe`.
+  #
+  # These lead the release. RQ-56-CONF is the reason the other three could
+  # exist, so it is the release's centre of gravity, not a follow-up.
+  # ===========================================================================
+
+  - id: RQ-56-CONF
+    type: system-req
+    title: "WAST conformance CHECKS its assertions — 383 of them currently do not"
+    description: >
+      #928. `tests/wast/` carries 381 `assert_return` and 2 `assert_trap`
+      assertions. The only CI path over those files asserts that `synth compile`
+      exits 0; the expected values are parsed and DISCARDED. The backend's
+      primary correctness suite therefore grades "did an ELF come out", not "is
+      it right" — a codegen change making `i32.rem_s` return the wrong value
+      keeps it green.
+      This is the exit-0 vacuity class (#911, the v0.54 `sret_decide` gate that
+      printed MISMATCH and exited 0) sitting on the CORRECTNESS SUITE ITSELF,
+      and it is why #929/#930/#931 could ship: all three are silent wrong values
+      that a real conformance run catches immediately and a compile-only run
+      cannot see by construction.
+      Sharp comparison from the issue: kiln (the interpreter) has a real
+      conformance gate; synth (the compiler, whose output actually runs on
+      target) has none. `crates/synth-test/` already PARSES and COMPARES
+      assertions — the infrastructure exists and is simply not wired.
+      Also absent: the official WebAssembly testsuite, so the compiler has never
+      been graded against the standard at all.
+      Non-negotiable on delivery: the wired gate must report an EXECUTED
+      ASSERTION COUNT and fail on zero, or it recreates the defect it closes.
+    status: proposed
+    release: v0.56
+    tags: [conformance, vacuity, instrument-quality, critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#928"
+
+  - id: RQ-56-PSAFE
+    type: system-req
+    title: "--proven-safe: imported memory inverts the fail-closed contract (SECURITY)"
+    description: >
+      #932, CRITICAL/SECURITY, in the v0.55.0 headline feature. REPRODUCED on
+      v0.55.0 before planning: for a module with an IMPORTED memory the derived
+      floor is 0, so the only document synth accepts is one claiming
+      `memory_min_bytes: 0` — and it then elides real bounds guards "against the
+      0 B floor". The TRUTHFUL document, stating the import's declared minimum,
+      is REFUSED.
+      Measured (`udf` guard count, cortex-m4, --safety-bounds software):
+        baseline, no --proven-safe .......... 2 guards
+        memory_min_bytes = 0     ACCEPTED ... 0 guards   <-- guards STRIPPED
+        memory_min_bytes = 65536 REFUSED .... 2 guards   <-- the TRUTH rejected
+      The contract is inverted: the honest analysis is rejected and the vacuous
+      one strips the guards. synth's own message — "proved 1 access site
+      in-bounds against the 0 B floor" — is self-refuting, since no access is in
+      bounds of a zero-byte memory. An imported memory is real at run time, so
+      this is an unguarded access at an attacker-controlled offset.
+      ROOT CAUSE of the miss, recorded so it is not repeated: the #901
+      differential used a module with a DECLARED memory. The imported shape was
+      never exercised, so the validator tested the shape it was written against
+      — the same blind spot recorded after v0.53 ("two validators share one
+      blind spot; only execution catches it").
+      Fix must include the imported-memory shape in the differential, and a
+      module whose floor cannot be established must REFUSE, never derive 0.
+    status: proposed
+    release: v0.56
+    tags: [security, soundness, proven-safe, regression, critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: safety
+      priority: must
+      verification-track: execution-differential
+      issue: "#932"
+
+  - id: RQ-56-I64CALL
+    type: system-req
+    title: "thumb-2 silently miscompiles a call with a non-last i64 parameter"
+    description: >
+      #929, CRITICAL. Arguments land in the wrong registers for any call whose
+      i64 parameter is not last; exit 0, no warning, no decline. An ordinary
+      AAPCS shape, silently wrong.
+      Related history: #518 fixed an i64-PARAM miscompile in v0.2x and the
+      lesson recorded then was that i64 register-pair homing has to respect
+      AAPCS even alignment. This is the CALL side of the same contract, and it
+      survived because nothing executed a mixed-arity call and compared results
+      — see RQ-56-CONF.
+      Gate: an execution differential over the mixed i64/i32 argument
+      permutations against wasmtime, red-first on the current output.
+    status: proposed
+    release: v0.56
+    tags: [soundness, thumb-2, aapcs, miscompile, critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#929"
+
+  - id: RQ-56-BRVAL
+    type: system-req
+    title: "Branch out of a value-producing block discards the value (thumb-2 + rv32)"
+    description: >
+      #931 (rv32, CRITICAL) and #930 (thumb-2). On rv32 a `br` out of a
+      value-producing `block` discards its value and the merge reads the
+      FALLTHROUGH register — 8 `labels.wast` assertions. On thumb-2 a `br`/
+      `br_if` out of an `if` is not taken when its value operand is a block that
+      branches. Both are silent wrong values with exit 0.
+      Two backends, one shape: the branch-with-value path does not carry the
+      value to the join. Fixing them together is deliberate — a shared root
+      cause fixed twice tends to be fixed differently, and the cross-backend
+      parity ledger exists to keep the two honest about each other.
+      These are precisely the `labels.wast` assertions RQ-56-CONF would have
+      been checking, which is the argument for landing that first.
+    status: proposed
+    release: v0.56
+    tags: [soundness, thumb-2, rv32, control-flow, miscompile, critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#931, #930"
