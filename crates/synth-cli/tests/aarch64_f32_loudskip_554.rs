@@ -1,13 +1,15 @@
 //! synth#554 — `-b aarch64` must fail HONESTLY on an UNSUPPORTED float op, never
 //! emit a silent miscompile.
 //!
-//! m3 (#787) landed the non-trapping scalar floats; m4 (#538) landed the
-//! #709-class conversions (domain-guarded `i32.trunc_f32/f64_{s,u}`, FMIN/FMAX
-//! min/max, copysign), so this test now targets a float op that DELIBERATELY
-//! stays declined: `f64.floor` (rounding). It is DECODED (the ARM32 m7dp
-//! backend lowers it), so it reaches the aarch64 SELECTOR, which must
-//! loud-decline (`unsupported wasm op`) — the strongest form of the honesty
-//! check (nothing upstream masks it).
+//! The honesty target MOVES as the surface closes: m3 (#787) landed the
+//! non-trapping scalar floats, m4 (#538) the #709-class conversions, v0.54 L2
+//! the last four scalar-float classes, and v0.55 L6 (VCR-A64-CF-001) the
+//! VALUE-CARRYING f32-result `block` this test used to target. It now targets a
+//! float construct that DELIBERATELY stays declined: a NON-LEAF function
+//! reading an f32 PARAMETER (float params live in v0..v7, which a `bl`
+//! clobbers, and this encoder has no FP store to home them with). It is fully
+//! DECODED, so it reaches the aarch64 SELECTOR, which must loud-decline — the
+//! strongest form of the honesty check (nothing upstream masks it).
 //!
 //! These tests lock: (1) the declined-float function is REJECTED with a non-zero
 //! exit and an "unsupported" diagnostic; (2) a supported integer function still
@@ -34,7 +36,7 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
             "-b",
             "aarch64",
             "-n",
-            "f32block",
+            "f32nonleaf",
             "-o",
             "/tmp/aarch64_f32_554.o",
         ])
@@ -42,9 +44,9 @@ fn aarch64_rejects_f32_function_instead_of_silent_miscompile_554() {
         .expect("run synth");
     assert!(
         !out.status.success(),
-        "expected a non-zero exit for a declined float construct (f32-result \
-         block) on -b aarch64; got success (silent miscompile). stdout={} \
-         stderr={}",
+        "expected a non-zero exit for a declined float construct (an f32 param \
+         read in a NON-LEAF function) on -b aarch64; got success (silent \
+         miscompile). stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );

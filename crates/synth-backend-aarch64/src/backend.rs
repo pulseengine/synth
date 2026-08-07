@@ -55,9 +55,12 @@ impl AArch64Backend {
         };
         // m3: thread the per-param float masks so float params resolve to their
         // AAPCS64 V registers (an independent counter from the GP arg registers).
-        // #538 cf: also thread the decoder's blocktype-arity side-table so the
-        // void-block control-flow lowering can gate on `(0,0)` and loud-decline
-        // value-carrying (typed) blocks.
+        // #538 cf: also thread the decoder's blocktype-arity side-table, which
+        // is the ONLY channel carrying a frame's block type. VCR-A64-CF-001
+        // reads it to reserve a reconciliation register for a value-carrying
+        // `(0,1)` frame — and to distinguish a loop's PARAMETER count (what a
+        // back-edge carries) from its RESULT count (what its `end` produces).
+        // Block params and multi-value results still loud-decline from it.
         // #851: thread the call metadata so direct `call` lowers to `bl func_N`
         // + an R_AARCH64_CALL26 relocation (call-free bodies are unaffected).
         // #865: resolve `--safety-bounds` into the selector's explicit
