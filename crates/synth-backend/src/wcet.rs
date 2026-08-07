@@ -44,7 +44,7 @@
 //! instruction at most once, a per-instruction over-estimate keeps the SUM sound.
 
 use synth_core::wcet::{
-    WcetCallSite, WcetDecline, WcetFunction, WcetFunctionHints, WcetIntermediate,
+    WcetCallSite, WcetDecline, WcetDeclineSite, WcetFunction, WcetFunctionHints, WcetIntermediate,
 };
 use synth_synthesis::{ArmInstruction, ArmOp};
 
@@ -471,6 +471,45 @@ fn is_local_func_label(label: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// (#921) Build the decline site for instruction `idx`. A free function rather
+/// than an inherent impl: `WcetDeclineSite` is defined in synth-core, and only
+/// this crate has the encoder needed to compute the byte offset.
+fn decline_site_at(instrs: &[ArmInstruction], idx: usize) -> WcetDeclineSite {
+    WcetDeclineSite {
+        op: op_mnemonic(&instrs[idx].op),
+        offset: byte_offset_of(instrs, idx),
+    }
+}
+
+/// The `ArmOp` variant name, derived from `Debug` rather than a match table.
+///
+/// Deliberately NOT a hand-written table: this repo keeps paying for
+/// hand-maintained mirrors that drift from the thing they mirror (#682, #890).
+/// A new `ArmOp` variant gets a correct name here for free, and there is no
+/// second source of truth to forget to update.
+fn op_mnemonic(op: &ArmOp) -> String {
+    let s = format!("{op:?}");
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// Byte offset of instruction `idx` within the function, from the REAL encoder.
+///
+/// Same source of truth `wcet_loops` uses for `head_offset`, so a consumer can
+/// cross-reference a decline site and a loop head in ONE disassembly. Returns
+/// `None` if any preceding op is one the encoder refuses — an offset that
+/// cannot be computed is omitted, never estimated: `estimate_arm_byte_size` is
+/// not exact for every op (a high-register `SetCond` widens its IT-block MOVs),
+/// and a drifted offset would send the reader to the wrong instruction, which
+/// is worse than sending them nowhere.
+fn byte_offset_of(instrs: &[ArmInstruction], idx: usize) -> Option<u64> {
+    let encoder = crate::arm_encoder::ArmEncoder::new_thumb2();
+    let mut pos: u64 = 0;
+    for instr in instrs.iter().take(idx) {
+        pos += encoder.encode(&instr.op).ok()?.len() as u64;
+    }
+    Some(pos)
+}
+
 /// Scan for op-class declines that are INDEPENDENT of inter-procedural composition:
 /// residual label branches, looped expansions, indirect calls, external direct
 /// calls, and unmodeled ops. Direct local calls (`BL func_N`) are NOT a decline
@@ -478,15 +517,15 @@ fn is_local_func_label(label: &str) -> bool {
 /// branches (loops) are NOT a decline here either; they go to [`crate::wcet_loops`].
 ///
 /// Returns the first composition-independent decline reason, or `None`.
-fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
-    for instr in instrs {
+fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<(WcetDecline, Option<WcetDeclineSite>)> {
+    for (idx, instr) in instrs.iter().enumerate() {
         // Call-shaped ops: only a DIRECT local call is composable; everything else
         // (indirect / external) is a composition-independent decline.
         if let Some(class) = classify_call(&instr.op) {
             match class {
                 CallClass::Direct(_) => {} // composable — recorded, not declined
-                CallClass::Indirect => return Some(WcetDecline::IndirectCall),
-                CallClass::External => return Some(WcetDecline::Call),
+                CallClass::Indirect => return Some((WcetDecline::IndirectCall, None)),
+                CallClass::External => return Some((WcetDecline::Call, None)),
             }
             continue;
         }
@@ -495,11 +534,21 @@ fn scan_for_decline(instrs: &[ArmInstruction]) -> Option<WcetDecline> {
             &instr.op,
             ArmOp::B { .. } | ArmOp::Bcc { .. } | ArmOp::Bhs { .. } | ArmOp::Blo { .. }
         ) {
-            return Some(WcetDecline::UnresolvedBranch);
+            return Some((WcetDecline::UnresolvedBranch, None));
         }
         match op_cost(&instr.op) {
-            OpCost::LoopedExpansion => return Some(WcetDecline::LoopedExpansion),
-            OpCost::Unmodeled => return Some(WcetDecline::UnmodeledOp),
+            // #921: both of these name a SPECIFIC op the model cannot cost, so
+            // both carry the site. Without it the consumer's only route forward
+            // is bisecting the object by hand.
+            OpCost::LoopedExpansion => {
+                return Some((
+                    WcetDecline::LoopedExpansion,
+                    Some(decline_site_at(instrs, idx)),
+                ));
+            }
+            OpCost::Unmodeled => {
+                return Some((WcetDecline::UnmodeledOp, Some(decline_site_at(instrs, idx))));
+            }
             OpCost::Cycles(_) => {}
         }
     }
@@ -539,8 +588,15 @@ pub fn function_wcet_with_hints(
         WcetIntermediate::Declined {
             name,
             reason,
+            site,
             hint_rejections,
-        } => WcetFunction::declined_with_rejections(name, reason, hint_rejections),
+        } => match site {
+            // #921: carry the named op + offset through to the sidecar.
+            Some(s) if hint_rejections.is_empty() => {
+                WcetFunction::declined_at(name, reason, s.op, s.offset)
+            }
+            _ => WcetFunction::declined_with_rejections(name, reason, hint_rejections),
+        },
         WcetIntermediate::Composable {
             name,
             own_cycles,
@@ -591,13 +647,19 @@ pub fn function_wcet_intermediate(
     let declined = |reason, hint_rejections| WcetIntermediate::Declined {
         name: name.to_string(),
         reason,
+        site: None,
         hint_rejections,
     };
     if sound_core_class(triple).is_none() {
         return declined(WcetDecline::UnsupportedCore, Vec::new());
     }
-    if let Some(reason) = scan_for_decline(instrs) {
-        return declined(reason, Vec::new());
+    if let Some((reason, site)) = scan_for_decline(instrs) {
+        return WcetIntermediate::Declined {
+            name: name.to_string(),
+            reason,
+            site,
+            hint_rejections: Vec::new(),
+        };
     }
     // Loop analysis: prove a trip count for every backward-branch region, or
     // keep the loud `loop` decline.

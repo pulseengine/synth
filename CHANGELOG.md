@@ -29,6 +29,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`unmodeled-op` declines now NAME the op and its byte offset (#921).** gale ran
+  `--emit-wcet` over a 31-function object and got 9 `unmodeled-op` declines
+  carrying `{name, reason, note}` and nothing else — the second-largest decline
+  category, with no way forward but hand-bisecting the object. Every other reason
+  is actionable on its face; this one was not.
+
+  The record gains optional `op` (the `ArmOp` variant name) and `offset` (byte
+  offset within the function), exactly as requested and purely additive — absent
+  for every other reason, so existing consumers are unaffected:
+
+  ```json
+  {"status":"declined","name":"f","reason":"unmodeled-op",
+   "note":"op not classified by the cycle model","op":"I64Ldr","offset":8}
+  ```
+
+  `op` is derived from `Debug` rather than a hand-written table, so a new `ArmOp`
+  variant is named correctly for free and there is no second source of truth to
+  drift (#682/#890). `offset` comes from the REAL encoder — the same source
+  `WcetLoopBound::head_offset` uses, so a decline site and a loop head
+  cross-reference in one disassembly — and is OMITTED, never estimated, when a
+  preceding op is one the encoder refuses: a drifted offset sends the reader to
+  the wrong instruction, which is worse than sending them nowhere.
+
+  **The enum's own doc comment was false and is corrected.** It claimed the
+  variant was "never emitted in a released build (the classifier is exhaustive
+  with no wildcard)". `op_cost` has no wildcard arm — exhaustive in the
+  compiler's sense — but many of its arms return `Unmodeled` deliberately (the
+  i64 pseudo-ops, the whole MVE/Helium f32 family). Exhaustive over variants is
+  not costed for every variant, and gale hit the difference on the first real
+  object.
+
+  Measured rather than assumed: locally `i64.load` reproduces the decline
+  (`I64Ldr`) while `i64.add`, `i64.ge_s` and `i64.extend_i32_u` all come out
+  BOUNDED — the selector expands those before the WCET pass sees them. So "it
+  will be the i64 family" was a guess not worth shipping; the new field answers
+  it on gale's object instead of by inference from ours.
+
 - **VCR-RA-010: the const-remat seam is DERIVED, not believed.** scry's interval
   domain identifies locals with a singleton interval `[c, c]` — provably
   constant values a register allocator can REMATERIALIZE at the use instead of

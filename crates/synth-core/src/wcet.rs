@@ -112,9 +112,31 @@ pub enum WcetDecline {
     /// (Cortex-M7/M7dp: dual-issue + cache wait-states). Declined, not
     /// approximated.
     UnsupportedCore,
-    /// An op the cycle model has not classified. Never emitted in a released
-    /// build (the classifier is exhaustive with no wildcard) — present so the
-    /// schema can carry a conservative decline if the table is ever incomplete.
+    /// An op the cycle model has not classified.
+    ///
+    /// This comment used to claim the variant was "never emitted in a released
+    /// build (the classifier is exhaustive with no wildcard)". That conflated
+    /// two different things and was FALSE: `op_cost` has no wildcard arm, so it
+    /// is exhaustive in the *compiler's* sense, but a large number of its arms
+    /// return `Unmodeled` deliberately — every `i64` pseudo-op (`I64Add`,
+    /// `I64Const`, `I64Ldr`, `I64Str`, `I64ExtendI32S/U`, `I32WrapI64`, the i64
+    /// compares) and the whole MVE/Helium f32 vector family. Exhaustive over
+    /// variants is not the same as costed for every variant.
+    ///
+    /// gale hit it immediately (#921): 9 of 31 functions on a real object, the
+    /// second-largest decline category, clustered in time/timer code.
+    ///
+    /// WHICH op that is, we could not say from here — reproducing gale's object
+    /// needs meld + loom + the composite. That inability IS the issue. Locally
+    /// `i64.load` reproduces the decline (`I64Ldr`), while `i64.add`,
+    /// `i64.ge_s` and `i64.extend_i32_u` all come out BOUNDED because the
+    /// selector expands them before the WCET pass sees them — so "it will be
+    /// the i64 family" was a guess worth not shipping. The `op` field is what
+    /// answers it, on gale's object rather than by inference from ours.
+    ///
+    /// The decline now names the OP and its BYTE OFFSET (see the `op`/`offset`
+    /// fields on [`WcetFunction::Declined`]) so a consumer gets a bounded
+    /// request against the cycle model instead of a 31-function bisect.
     UnmodeledOp,
 }
 
@@ -347,6 +369,23 @@ pub enum WcetFunction {
         reason: WcetDecline,
         /// Human-readable note (`reason.note()`).
         note: String,
+        /// (#921) The op that caused the decline, as its `ArmOp` variant name
+        /// (`I64Add`, `MveDivF32`, …). Emitted for `unmodeled-op`, where the
+        /// reason alone left a consumer nothing to act on but a hand-bisect.
+        ///
+        /// ADDITIVE and optional: absent for every other reason, and absent
+        /// when it cannot be determined, so existing consumers are unaffected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op: Option<String>,
+        /// (#921) Byte offset of that op within the function, from the REAL
+        /// encoder — the same source of truth `WcetLoopBound::head_offset`
+        /// uses, so the two are cross-referenceable in one disassembly.
+        ///
+        /// `None` when any preceding op is one the encoder refuses: an offset
+        /// that cannot be computed is OMITTED, never approximated, because a
+        /// wrong offset sends a consumer to the wrong instruction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
         /// Hints that were offered for this function and rejected.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hint_rejections: Vec<WcetHintRejection>,
@@ -361,6 +400,32 @@ impl WcetFunction {
             name: name.into(),
             reason,
             note,
+            op: None,
+            offset: None,
+            hint_rejections: Vec::new(),
+        }
+    }
+
+    /// (#921) Construct a decline that NAMES the offending op and its byte
+    /// offset. Used for `unmodeled-op`, whose reason string alone left a
+    /// consumer with nothing to act on but a hand-bisect of the whole object.
+    ///
+    /// `offset` is `None` when the byte position could not be computed from the
+    /// real encoder; the op name is still emitted, because "which instruction"
+    /// is the actionable half even without "where".
+    pub fn declined_at(
+        name: impl Into<String>,
+        reason: WcetDecline,
+        op: impl Into<String>,
+        offset: Option<u64>,
+    ) -> Self {
+        let note = reason.note().to_string();
+        WcetFunction::Declined {
+            name: name.into(),
+            reason,
+            note,
+            op: Some(op.into()),
+            offset,
             hint_rejections: Vec::new(),
         }
     }
@@ -376,6 +441,8 @@ impl WcetFunction {
             name: name.into(),
             reason,
             note,
+            op: None,
+            offset: None,
             hint_rejections,
         }
     }
@@ -435,6 +502,18 @@ pub struct WcetCallSite {
 /// (including each `BL`'s branch overhead) at its proven execution count, so the
 /// composed total is `own_cycles + Σ_site multiplier_site × callee_total` — the
 /// per-site multiplier makes a call inside a proven loop sound by construction.
+/// (#921) Where a decline happened: which op, and where in the function.
+/// Travels through the intermediate so composition can carry it to the sidecar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetDeclineSite {
+    /// `ArmOp` variant name — `I64Add`, `MveDivF32`, …
+    pub op: String,
+    /// Byte offset within the function; `None` when it could not be computed
+    /// from the real encoder (omitted rather than estimated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WcetIntermediate {
     /// The function declines for a reason INDEPENDENT of composition (an unproven
@@ -442,6 +521,8 @@ pub enum WcetIntermediate {
     /// branch, an indirect call, or an unmodeled op). Carried straight through to a
     /// [`WcetFunction::Declined`]; composition never rescues these.
     Declined {
+        /// (#921) The op that caused the decline, when it names one.
+        site: Option<WcetDeclineSite>,
         name: String,
         reason: WcetDecline,
         hint_rejections: Vec<WcetHintRejection>,
