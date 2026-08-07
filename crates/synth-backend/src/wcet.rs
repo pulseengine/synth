@@ -489,10 +489,7 @@ fn decline_site_at(instrs: &[ArmInstruction], idx: usize) -> WcetDeclineSite {
 /// second source of truth to forget to update.
 fn op_mnemonic(op: &ArmOp) -> String {
     let s = format!("{op:?}");
-    s.split([' ', '{', '('])
-        .next()
-        .unwrap_or("")
-        .to_string()
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }
 
 /// Byte offset of instruction `idx` within the function, from the REAL encoder.
