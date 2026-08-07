@@ -29,6 +29,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **VCR-RA-010: the const-remat seam is DERIVED, not believed.** scry's interval
+  domain identifies locals with a singleton interval `[c, c]` — provably
+  constant values a register allocator can REMATERIALIZE at the use instead of
+  spilling and reloading. Until now that signal was a dev-dependency test
+  (`scry_const_remat_signal.rs`); it is now an allocator input, and the whole
+  design question is what "input" is allowed to mean.
+
+  A wrong `--proven-safe` verdict (#901) elides a bounds guard — a memory-safety
+  hole. A wrong const-remat verdict would re-emit the wrong VALUE — a
+  miscompile. So the seam is built like `--wcet-hints`, not like a trusted fact:
+  **eligibility is derived from the emitted ARM stream; the hint only GATES
+  consumption and can never create an eligible site.** `plan_const_remat` walks
+  the final stream and admits a reload only where it can itself see the constant
+  definition reaching the spill with no intervening write. `MOVT` over an
+  unknown low half stays unknown; a non-constant store retires the slot; a
+  branch, call or label closes the window.
+
+  The conservatism is large and REPORTED rather than hidden: any op the walk
+  cannot classify clears all state, and `reloads_seen` / `windows_closed` are
+  emitted alongside the site count so a small number reads as "narrow window",
+  never as "small opportunity". Widening that set op-by-op is the named
+  follow-up. Flag-off (`HintGate::closed()`), so bytes are unchanged.
+
+  MUTATION-CHECKED, and the mutation earned its keep: it found the red-first
+  test `lying_hint_yields_no_candidates` passing for the WRONG REASON. It
+  offered the hint value `999` while a broken stream walk invents `0`, so the
+  gate's value comparison did the rejecting and the test stayed green with the
+  property it names broken. Fixed to run the gate OPEN, so only the stream check
+  can reject; it now goes red under that mutation, as do 2 other tests.
+
 - **Oracle steps assert EXECUTION, not exit status (#910 F10).** Measured first,
   and the premise was understated: not the 63 oracles #890 wired, but **152 of
   the 160** workflow steps that run a `scripts/repro/` oracle asserted nothing

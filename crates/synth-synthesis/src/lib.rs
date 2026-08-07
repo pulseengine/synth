@@ -1,6 +1,7 @@
 //! Synth Synthesis - Code synthesis engine
 
 pub mod abi_contract;
+pub mod const_remat;
 pub mod contracts;
 pub mod control_flow;
 pub mod graph_alloc;
