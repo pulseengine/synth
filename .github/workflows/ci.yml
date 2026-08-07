@@ -213,6 +213,25 @@ jobs:
       # subprocess from other jobs. The literal below is pinned in claims.yaml
       # against the same number in scripts/repro/ORACLE_WIRING.md, so the gate
       # and the doc cannot drift apart.
+      # RQ-56-CITE / #911 — the SAME shape as the oracle-wiring gate below, on
+      # the artifacts surface, which never had one. `cargo test -- <filter>`
+      # exits 0 when the filter matches NOTHING, so a rivet artifact could claim
+      # verification by a test that does not exist. v0.55.0 shipped two such
+      # citations; a post-release sweep found them, no gate did.
+      #
+      # Scoped to CLAIMING statuses (implemented/verified/accepted): under
+      # draft/proposed a forward-looking citation is a plan, and flagging it
+      # would make this gate noisy. A noisy gate gets ignored — that is how
+      # codecov/patch stopped being read (#923).
+      - name: Artifact citation gate — no artifact claims a test that does not exist (911)
+        run: |
+          set -euo pipefail
+          python3 scripts/artifact_citation_check.py | tee /tmp/artifact-cites.log
+          # Non-vacuity: assert it examined a NON-EMPTY population rather than
+          # merely exiting 0 over nothing.
+          grep -qE '^artifact citations: [1-9][0-9]* cited filters over [1-9][0-9]* test names' \
+            /tmp/artifact-cites.log
+
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
           set -euo pipefail
