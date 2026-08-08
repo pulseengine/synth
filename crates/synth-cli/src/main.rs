@@ -3328,7 +3328,32 @@ fn compile_all_exports(
     // (post-`.wat`-parse, post-loom, post-#418 arena-bind), so a pre-compile
     // rewrite that shifts operator indices also breaks the hash — index skew
     // and byte skew are one gate.
-    let proven_safe_module_min_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
+    // #932 (CRITICAL/SECURITY): this was
+    //     all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0)
+    // and `unwrap_or(0)` turned "no floor can be established" into "the floor
+    // is 0 bytes". An IMPORTED memory is not in `all_memories` (imports land in
+    // `all_imports`), so for `(import "env" "memory" (memory 1))` the derived
+    // floor was 0 — and then:
+    //
+    //   memory_min_bytes = 0     -> ACCEPTED, 2 udf guards -> 0   (STRIPPED)
+    //   memory_min_bytes = 65536 -> REFUSED, guards kept          (the TRUTH)
+    //
+    // i.e. the fail-closed contract INVERTED: the honest document was rejected
+    // and the vacuous one stripped real guards, with synth printing "proved 1
+    // access site in-bounds against the 0 B floor" — self-refuting, since no
+    // access is in bounds of a zero-byte memory. An imported memory is real at
+    // run time, so that is an unguarded access at an attacker-controlled offset.
+    //
+    // A floor synth cannot ESTABLISH is now `None`, and `None` REFUSES. Absence
+    // of evidence is never evidence of safety — the same rule the rest of this
+    // seam already states and this line quietly broke.
+    //
+    // FOLLOW-UP (named, not silent): an imported memory declares its own
+    // minimum, but the decoder discards it (`TypeRef::Memory(_)` ->
+    // `ImportKind::Memory`), so the truthful document still cannot be accepted
+    // for imported memory — it is REFUSED, which is safe but not yet useful.
+    // Carrying the declared minimum through is tracked on #932.
+    let proven_safe_module_min_bytes: Option<u32> = all_memories.first().map(|m| m.initial_bytes());
     let proven_safe_ingest: Option<synth_core::proven_safe::ProvenSafeIngest> =
         proven_safe.as_ref().map(|path| {
             let module_bytes: &[u8] = sbom_wasm_bytes.as_deref().unwrap_or(&[]);
@@ -3338,8 +3363,29 @@ fn compile_all_exports(
                     path.display()
                 );
             }
-            let r =
-                synth_core::proven_safe::ingest(path, module_bytes, proven_safe_module_min_bytes);
+            let Some(min_bytes) = proven_safe_module_min_bytes else {
+                // #932: no DEFINED memory, so no floor synth can stand behind.
+                // The computed hash is reported even on this refusal: a
+                // consumer debugging a rejected document should not have to
+                // provoke a DIFFERENT refusal to learn what synth hashed, and
+                // #932's own regression test needs it to construct a document
+                // that reaches the floor check rather than dying at the hash.
+                eprintln!(
+                    "warning: --proven-safe {}: this module defines no linear memory \
+                     (an imported memory declares its minimum elsewhere, which synth \
+                     does not yet carry), so NO memory floor can be established; NO \
+                     bounds guard is elided (fail closed). This compile's module \
+                     hashes to {}.",
+                    path.display(),
+                    synth_core::proven_safe::hex_sha256(module_bytes)
+                );
+                return synth_core::proven_safe::ProvenSafeIngest::refused(
+                    "no linear memory is DEFINED by this module, so no memory floor \
+                     can be established; refusing rather than validating verdicts \
+                     against a 0 B floor (#932)",
+                );
+            };
+            let r = synth_core::proven_safe::ingest(path, module_bytes, min_bytes);
             for d in &r.diagnostics {
                 eprintln!("warning: proven-safe: {d}");
             }
@@ -4271,7 +4317,11 @@ fn compile_all_exports(
             scry_version: ing.scry_version.clone(),
             module_sha256: ing.actual_module_sha256.clone(),
             declared_module_sha256: ing.declared_module_sha256.clone(),
-            memory_min_bytes: proven_safe_module_min_bytes,
+            // #932: an attestation is only reached on an ACCEPTED ingest, and
+            // acceptance now requires an ESTABLISHED floor — so this cannot be
+            // the old invented 0. The `unwrap_or(0)` here is unreachable by
+            // construction; it is not a fallback.
+            memory_min_bytes: proven_safe_module_min_bytes.unwrap_or(0),
             declared_memory_min_bytes: ing.declared_memory_min_bytes,
             safety_bounds: safety_bounds.as_str().to_string(),
             accepted: ing.accepted,
