@@ -350,7 +350,7 @@ artifacts:
       signature_hash, flags), (3) string table construction with correct
       offsets, (4) FNV-1a hash computation for import type signatures,
       (5) empty import table for modules with no imports (section omitted).
-    status: implemented
+    status: proposed
     note: >
       Covered by crates/synth-cli/tests/wast_compile.rs (ELF structure validation tests)
     tags: [e2e, unit-test, import-table, synth-backend]
@@ -360,7 +360,18 @@ artifacts:
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-backend -- test_meld_import_table"
+        # RQ-56-CITE / #911: this cited `test_meld_import_table`, which exists
+        # in ZERO files. `cargo test` exits 0 on a filter matching nothing, so
+        # the artifact claimed verification by evidence that never ran — and
+        # shipped that way in v0.55.0.
+        #
+        # NOT re-pointed at a weaker test that happens to touch the section.
+        # What exists is `linker_script.rs` asserting the generated script
+        # CONTAINS the string ".meld_import_table" — that is not the ElfBuilder
+        # emission this artifact describes (import_count, ImportEntry packing,
+        # string-table offsets, FNV hash). Citing it would restate the same lie
+        # more carefully. The status is what was wrong, so the status moves.
+        run: "TODO(#911): tests described below are NOT written"
         coverage: >
           Import table emission, string table construction, hash
           computation, empty table omission. Byte-level verification
