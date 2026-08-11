@@ -516,10 +516,14 @@ jobs:
         # rate" over the official suite that README.md:122 and
         # FEATURE_MATRIX:122 advertise. That 257-file suite is checked out and
         # entirely unrun. Wiring it is RQ-56-CONF's continuation.
+        # `|| rc=$?`, NOT a bare `rc=$?` on the next line: GitHub runs `run:`
+        # under `bash -e`, so a non-zero `bazel test` aborts the step BEFORE the
+        # capture — which is exactly how the first attempt at this fix failed,
+        # with the very exit 4 it was written to report.
         run: |
           set -uo pipefail
-          bazel test //tests/renode/... --test_tag_filters=wast
-          rc=$?
+          rc=0
+          bazel test //tests/renode/... --test_tag_filters=wast || rc=$?
           if [ "$rc" -eq 4 ]; then
             echo "::warning::renode wast matrix selected ZERO tests (bazel exit 4)"
             echo "  This step is TOLERATED-EMPTY, not passing on evidence."
