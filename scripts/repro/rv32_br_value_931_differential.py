@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 16
+# ci-checks: emulations >= 17
 """#931 (CRITICAL) — RV32 `br` out of a value-producing `block` discarded its value.
 
 The RV32 selector lowered `br` as a bare `jal` and moved nothing. `br` also does
@@ -141,18 +141,31 @@ def main():
         return lo, ""
 
     fails = 0
+    executed = 0
     for name, args in VECTORS:
         gt = wt(name, args)
         res, err = run(name, args)
         ok = res == gt
         fails += 0 if ok else 1
+        executed += 1 if res is not None else 0
         shown = f"0x{res:08x}={res}" if res is not None else f"ERR({err})"
         shown_args = ", ".join(str(a) for a in args)
         print(f"{name}({shown_args}) = {shown}  wasmtime=0x{gt:08x}={gt}  {'OK' if ok else 'FAIL'}")
 
-    # NON-VACUITY: every vector must have executed. A missing symbol or a
-    # selector decline would otherwise reduce this oracle to a green zero.
-    print(f"\n#931 EMULATIONS={len(VECTORS)}")
+    # NON-VACUITY, ASSERTED — not printed.
+    #
+    # `len(VECTORS)` is a constant, so printing it proves nothing; `executed` is
+    # what a decline or a missing symbol would reduce. Counting the RUNS is the
+    # point: a vector whose function got skipped raises `symbol missing` and is
+    # a FAIL above, but a future edit that filters vectors instead would sail
+    # through a gate that only reported a constant.
+    print(f"\n#931 EMULATIONS={executed}/{len(VECTORS)}")
+    if executed != len(VECTORS):
+        print(
+            f"FAIL: only {executed} of {len(VECTORS)} vectors reached the "
+            "emulator — a function was skipped or declined."
+        )
+        sys.exit(1)
     print(
         "RISC-V br-value #931 ORACLE: PASS"
         if not fails

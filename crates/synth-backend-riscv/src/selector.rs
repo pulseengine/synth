@@ -5963,6 +5963,70 @@ mod tests {
         }
     }
 
+    /// #931: the arity of a `br` edge is inferred as the vstack delta above the
+    /// target frame's checkpoint (the decoder discards block types — #509). That
+    /// OVER-COUNTS when unrelated values sit on the stack below the branch's own
+    /// value, which wasm permits: `br` is stack-polymorphic and discards the
+    /// excess.
+    ///
+    /// Where the over-count is harmless it must still compile — a value-carrying
+    /// `br` to the INNERMOST frame, where the extra values are all above the
+    /// same checkpoint and the branch is the block's last act, so nothing falls
+    /// through to disagree with.
+    #[test]
+    fn br_value_931_junk_below_the_value_still_compiles() {
+        // (block (result i32) (i32.const 9) (br 0 (i32.const 42)))
+        let ops = [
+            WasmOp::Block,
+            WasmOp::I32Const(9), // junk the br must discard
+            WasmOp::I32Const(42),
+            WasmOp::Br(0),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(
+            select(&ops, 1).is_ok(),
+            "a value-carrying br with junk below it must still compile"
+        );
+    }
+
+    /// #931: where the over-count is NOT harmless it must LOUD-DECLINE.
+    ///
+    /// `(block $a (result i32) (block $b (i32.const 9) (br $a (i32.const 42)))
+    /// (i32.const 7))` — the branch leaves the INNER frame, so `$a`'s edge is
+    /// credited with 2 values (the junk `9` and the real `42`) while `$a`'s
+    /// fallthrough produces 1. The counts disagree, and without a declared arity
+    /// there is no way to tell which position is the result.
+    ///
+    /// **This shape COMPILED on v0.55 and returned the wrong answer** — measured
+    /// 0, wasmtime says 42. So this is a reach reduction with intent: a module
+    /// that used to build now fails, loudly, instead of building and lying.
+    /// Threading real block arities (#509) is what would let it compile.
+    #[test]
+    fn br_value_931_cross_frame_junk_loud_declines() {
+        let ops = [
+            WasmOp::Block, // $a (result i32)
+            WasmOp::Block, // $b
+            WasmOp::I32Const(9),
+            WasmOp::I32Const(42),
+            WasmOp::Br(1), // -> $a, carrying 42 (and miscounting the 9)
+            WasmOp::End,   // end $b
+            WasmOp::I32Const(7),
+            WasmOp::End, // end $a
+            WasmOp::End,
+        ];
+        match select(&ops, 1) {
+            Ok(_) => panic!(
+                "a cross-frame br whose carried-value count cannot be trusted \
+                 must decline, not silently pick a register"
+            ),
+            Err(err) => assert!(
+                matches!(err, SelectorError::ControlMismatch(m) if m.contains("#931")),
+                "must surface as the #931 arity ControlMismatch, got: {err:?}"
+            ),
+        }
+    }
+
     /// #882: a br_table depth past the control-stack height is invalid wasm —
     /// surface `BrOutOfRange`, mirroring `br`.
     #[test]
