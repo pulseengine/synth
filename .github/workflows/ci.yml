@@ -3303,6 +3303,10 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/if_else_result_343.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/if343.o
           python scripts/oracle_run.py scripts/repro/if_else_result_343_riscv_differential.py /tmp/if343.o
+      - name: RV32 br-with-value exit-edge reconciliation (#931, CRITICAL)
+        run: |
+          ./target/debug/synth compile scripts/repro/rv32_br_value_931.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/br931.o
+          python scripts/oracle_run.py scripts/repro/rv32_br_value_931_differential.py /tmp/br931.o
       - name: RV32 mask/software bounds effective-address oracle (#655)
         run: python scripts/oracle_run.py scripts/repro/mask_bounds_655_riscv_differential.py
       - name: RV32 cmp->select fusion differential (#472)

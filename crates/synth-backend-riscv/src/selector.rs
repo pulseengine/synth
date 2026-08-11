@@ -1208,6 +1208,21 @@ struct ControlFrame {
     /// leave the value in the SAME register(s) at the join. Empty for
     /// blocks/loops and for control-flow-only (arity-0) if/else.
     then_results: Vec<VstackVal>,
+    /// #931: for a value-producing `block`, the CANONICAL result register(s)
+    /// this frame's exit edges agree on.
+    ///
+    /// `lower_br` emitted only a `jal` and moved nothing, so the taken edge
+    /// left its value in whatever register computed it while the merge read the
+    /// FALLTHROUGH register — the block yielded the not-taken path's value,
+    /// silently, at exit 0. This is the same reconciliation #343 already does
+    /// for `if`/`else` arms (`then_results` above), which was simply never
+    /// applied to `br` edges.
+    ///
+    /// The FIRST exit edge to carry a value fixes the canonical registers;
+    /// every later edge (including the fallthrough at `end`) `mv`s into them.
+    /// When an edge already computed into the canonical register NO `mv` is
+    /// emitted, so a register-symmetric block stays byte-identical.
+    br_results: Vec<VstackVal>,
     /// #882: true once a `br`/`br_if` handed out this frame's END label as a
     /// branch target. Decides whether code after this frame's `end` is
     /// reachable when the fall-through path died on a `return` (dead-code
@@ -1495,13 +1510,31 @@ impl Selector {
         format!("{}{}", prefix, n)
     }
 
-    /// Registers currently pinned by a live `vstack` value. Every vstack entry
-    /// is a temp register (locals/params are always copied into a fresh temp by
-    /// `lower_local_get`), so this set is exactly the values that must survive
-    /// until they are popped — `alloc_temp` must never hand any of them out.
+    /// Registers currently pinned by a live `vstack` value — exactly the values
+    /// that must survive until they are popped, and which `alloc_temp` must
+    /// never hand out.
+    ///
+    /// Most entries are temps, but NOT all: `lower_local_get` aliases a
+    /// #472-promoted local's callee-saved s-register directly onto the vstack
+    /// (no load, no copy — that aliasing is where the promotion byte win comes
+    /// from). So a vstack register may be a promoted local's, and writing to
+    /// one writes the LOCAL. See `canonicalize_edge_value`.
+    ///
+    /// #931: the open frames' `br_results` are live too. A `br` that carries a
+    /// value out of a block leaves that value in the frame's canonical
+    /// register and then TRUNCATES the vstack (everything after an
+    /// unconditional branch is unreachable), so the register is no longer
+    /// pinned by any vstack entry — yet it must survive all the way to the
+    /// frame's `end` label, where the taken edge lands. Without this the
+    /// fallthrough code would hand the canonical register straight back out as
+    /// scratch and clobber the branch's value.
     fn live_regs(&self) -> Vec<Reg> {
         let mut live = Vec::with_capacity(self.vstack.len() * 2);
-        for v in &self.vstack {
+        let entries = self
+            .vstack
+            .iter()
+            .chain(self.ctrl.iter().flat_map(|f| f.br_results.iter()));
+        for v in entries {
             match v {
                 VstackVal::I32(r) => live.push(*r),
                 VstackVal::I64 { lo, hi } => {
@@ -1999,6 +2032,7 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    br_results: Vec::new(),
                     end_referenced: false,
                     then_unreachable: false,
                 });
@@ -2014,6 +2048,7 @@ impl Selector {
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
                     then_results: Vec::new(),
+                    br_results: Vec::new(),
                     end_referenced: false,
                     then_unreachable: false,
                 });
@@ -3068,6 +3103,7 @@ impl Selector {
             else_label: Some(else_label),
             stack_height_at_entry: self.vstack.len(),
             then_results: Vec::new(),
+            br_results: Vec::new(),
             end_referenced: false,
             then_unreachable: false,
         });
@@ -3164,6 +3200,31 @@ impl Selector {
                     self.vstack.extend(then_results);
                 }
             }
+            // #931: a value-carrying `br` out of this frame already fixed the
+            // canonical result register(s). The taken edge jumps straight to
+            // `end_label`, so the moves emitted HERE — before the label — sit
+            // on the FALLTHROUGH path only and the branch jumps over them.
+            // That is exactly the #343 else-arm argument, with the br edge
+            // playing the then-arm.
+            if !frame.br_results.is_empty() {
+                let canonical = frame.br_results;
+                let fallthrough = self.vstack.split_off(frame.stack_height_at_entry);
+                if fallthrough.is_empty() {
+                    // The fallthrough path died (a `return`/`unreachable` tail,
+                    // or a block whose body ends in the `br` itself): nothing
+                    // reaches this join except the branch, whose value is
+                    // already in the canonical registers.
+                } else if fallthrough.len() != canonical.len() {
+                    return Err(SelectorError::ControlMismatch(
+                        "br edge and fallthrough disagree on result arity (#931)",
+                    ));
+                } else {
+                    for (dst, src) in canonical.iter().zip(fallthrough.iter()) {
+                        self.reconcile_if_result(*dst, *src)?;
+                    }
+                }
+                self.vstack.extend(canonical);
+            }
             self.out.push(RiscVOp::Label {
                 name: frame.end_label,
             });
@@ -3233,7 +3294,149 @@ impl Selector {
         }
     }
 
+    /// #931: reconcile a value-carrying exit edge with its target frame's
+    /// CANONICAL result register(s), so every edge into a block's `end` label
+    /// leaves the block's result in the SAME place.
+    ///
+    /// Returns the number of values the edge carries (0 = a control-flow-only
+    /// branch, which is left byte-identical).
+    ///
+    /// # Why the arity is the vstack delta
+    ///
+    /// The decoder discards block types (`Block { .. } => WasmOp::Block`), so
+    /// the selector has no declared arity to consult — the #509
+    /// block-arity-threading class. But it does not need one: at the branch,
+    /// the vstack entries ABOVE the target frame's entry checkpoint are exactly
+    /// the values that edge carries. That is the same delta `br_table` already
+    /// uses to detect the value-carrying case, and the same one `#343` uses to
+    /// capture an if-arm's results.
+    ///
+    /// # Which register becomes canonical
+    ///
+    /// The FIRST value-carrying edge fixes it, and — where it safely can — it
+    /// donates its OWN register, so the common single-`br` block emits no move
+    /// at all and register-symmetric code stays byte-identical. It cannot
+    /// donate a **promoted local's** register: the frame's `end` reconciliation
+    /// writes the canonical register on the fallthrough path, which for `br $l
+    /// (local.get $x)` would clobber `$x` itself for every later read. See
+    /// `canonicalize_edge_value`, which copies into a fresh temp instead.
+    fn reconcile_br_edge(&mut self, depth: u32) -> Result<usize, SelectorError> {
+        let ctrl_height = self.ctrl.len();
+        let idx = ctrl_height - 1 - (depth as usize);
+        let entry = self.ctrl[idx].stack_height_at_entry;
+
+        // A branch to a frame entered at (or above) the current height carries
+        // nothing: plain jump, nothing to reconcile.
+        if self.vstack.len() <= entry {
+            return Ok(0);
+        }
+        let carried: Vec<VstackVal> = self.vstack[entry..].to_vec();
+
+        if self.ctrl[idx].br_results.is_empty() {
+            // First value-carrying edge — it defines the canonical registers.
+            let promoted: Vec<Reg> = self.promoted.values().copied().collect();
+            let mut canonical = Vec::with_capacity(carried.len());
+            for v in &carried {
+                canonical.push(self.canonicalize_edge_value(*v, &promoted));
+            }
+            self.ctrl[idx].br_results = canonical;
+        } else {
+            // A later edge into the same frame: move into the registers the
+            // first edge fixed. Arity disagreement between edges is either
+            // invalid wasm or a shape this single-pass selector cannot thread —
+            // LOUD-DECLINE rather than emit a half-reconciled join.
+            let canonical = self.ctrl[idx].br_results.clone();
+            if canonical.len() != carried.len() {
+                return Err(SelectorError::ControlMismatch(
+                    "br edges disagree on result arity (#931)",
+                ));
+            }
+            for (dst, src) in canonical.iter().zip(carried.iter()) {
+                self.reconcile_if_result(*dst, *src)?;
+            }
+        }
+        Ok(carried.len())
+    }
+
+    /// Pick the canonical register for one result position of a `br` edge,
+    /// emitting a copy only when the edge's own register cannot be donated.
+    ///
+    /// # Status: a COUPLING guard, unreachable today
+    ///
+    /// `lower_local_get` aliases a #472-promoted local's s-register straight
+    /// onto the vstack, so a vstack value CAN be a live local rather than a
+    /// temp. That aliasing is justified there by "any op consuming this value
+    /// allocates a fresh dst, so the s-reg is never clobbered by a consumer" —
+    /// an argument that does not cover a `br` edge, which is a consumer that
+    /// WRITES BACK into its operand at the frame's `end`.
+    ///
+    /// What makes it unreachable is a rule in a different pass:
+    /// `compute_local_promotion` requires `all_depth0`, and a `br` exists only
+    /// at depth >= 1, so no promoted local's register can reach a branch edge.
+    /// Nothing tied those two facts together, so this guard keeps the
+    /// soundness local instead of borrowing it from another pass's eligibility
+    /// rule; `promotion_stays_depth0_or_931_guard_goes_live` pins the coupling
+    /// so relaxing `all_depth0` reports here rather than silently miscompiling.
+    fn canonicalize_edge_value(&mut self, v: VstackVal, promoted: &[Reg]) -> VstackVal {
+        match v {
+            VstackVal::I32(r) if !promoted.contains(&r) => VstackVal::I32(r),
+            VstackVal::I64 { lo, hi } if !promoted.contains(&lo) && !promoted.contains(&hi) => {
+                VstackVal::I64 { lo, hi }
+            }
+            VstackVal::I32(r) => {
+                let c = self.alloc_temp_avoiding(&[r]);
+                self.out.push(RiscVOp::Addi {
+                    rd: c,
+                    rs1: r,
+                    imm: 0,
+                });
+                VstackVal::I32(c)
+            }
+            VstackVal::I64 { lo, hi } => {
+                let cl = self.alloc_temp_avoiding(&[lo, hi]);
+                let ch = self.alloc_temp_avoiding(&[lo, hi, cl]);
+                self.out.push(RiscVOp::Addi {
+                    rd: cl,
+                    rs1: lo,
+                    imm: 0,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: ch,
+                    rs1: hi,
+                    imm: 0,
+                });
+                VstackVal::I64 { lo: cl, hi: ch }
+            }
+        }
+    }
+
     fn lower_br(&mut self, depth: u32, _op: &WasmOp) -> Result<(), SelectorError> {
+        let ctrl_height = self.ctrl.len();
+        if (depth as usize) >= ctrl_height {
+            return Err(SelectorError::BrOutOfRange {
+                depth,
+                height: ctrl_height,
+            });
+        }
+        let carried = self.reconcile_br_edge(depth)?;
+        if carried > 0 {
+            // #931: everything between here and the next label is unreachable
+            // (wasm makes the tail of a block stack-polymorphic after an
+            // unconditional branch), and the carried values now live in the
+            // frame's canonical registers — which `live_regs` keeps reserved.
+            // Truncating to the target's checkpoint is what makes the
+            // fallthrough's own results identifiable at `end`: WITHOUT it the
+            // branch value stays on the vstack, the fallthrough `li` allocates
+            // a DIFFERENT register to avoid it, and the merge reads that one.
+            // That stale entry is the #931 miscompile.
+            //
+            // Only the innermost frame's floor may be lowered this way; a `br`
+            // to an OUTER frame must leave the frames between intact, since
+            // each still owes its own `end` a `split_off` at its checkpoint.
+            let entry = self.ctrl[ctrl_height - 1 - (depth as usize)].stack_height_at_entry;
+            let floor = entry.max(self.ctrl[ctrl_height - 1].stack_height_at_entry);
+            self.vstack.truncate(floor);
+        }
         let target_label = self.target_label_for_depth(depth)?;
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
@@ -3244,6 +3447,18 @@ impl Selector {
 
     fn lower_br_if(&mut self, depth: u32, op: &WasmOp) -> Result<(), SelectorError> {
         let cond = self.pop_i32(op)?;
+        let ctrl_height = self.ctrl.len();
+        if (depth as usize) >= ctrl_height {
+            return Err(SelectorError::BrOutOfRange {
+                depth,
+                height: ctrl_height,
+            });
+        }
+        // #931: reconcile BEFORE the branch, so the canonical register holds
+        // the value on the taken edge. Unlike `br` the vstack is NOT truncated
+        // — `br_if` leaves its operand in place for the not-taken path, which
+        // keeps running with the value on the stack.
+        self.reconcile_br_edge(depth)?;
         let target_label = self.target_label_for_depth(depth)?;
         // bne cond, zero, target — branch when condition is true (non-zero)
         self.out.push(RiscVOp::Branch {
@@ -9425,6 +9640,50 @@ mod tests {
         assert!(
             !writes_reg(&on, Reg::S8),
             "losing local 1 must be excluded by the subset probe (s8): {on:?}"
+        );
+    }
+
+    /// #931: pins the COUPLING that keeps `canonicalize_edge_value`'s
+    /// promoted-local guard unreachable.
+    ///
+    /// A `br` edge donates its value's register to the target frame as the
+    /// canonical result register, and the frame's `end` WRITES that register on
+    /// the fallthrough path. `lower_local_get` aliases a promoted local's
+    /// s-register directly onto the vstack, so if a promoted local's register
+    /// could ever reach a `br` edge, that write would clobber the LOCAL — every
+    /// later read of it returning the fallthrough value.
+    ///
+    /// It cannot today for exactly one reason: promotion requires `all_depth0`
+    /// and a `br` exists only at depth >= 1. That is a fact about a DIFFERENT
+    /// pass, so relaxing `all_depth0` (promoting locals whose accesses sit
+    /// inside control flow) makes the #931 guard load-bearing. If this test
+    /// fails, do not just re-baseline it: verify `canonicalize_edge_value` now
+    /// fires, and add an execution vector to
+    /// `rv32_br_value_931_differential.py` (`promoted`) that reaches it.
+    #[test]
+    fn promotion_stays_depth0_or_931_guard_goes_live() {
+        use std::collections::HashSet;
+        let no_i64 = HashSet::new();
+        // A local read inside a block, feeding a `br` out of it — the exact
+        // shape that would hand a promoted s-register to a branch edge.
+        let inside_block = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1),
+            WasmOp::Block,
+            WasmOp::LocalGet(1),
+            WasmOp::Br(0),
+            WasmOp::I32Const(0),
+            WasmOp::End,
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert!(
+            compute_local_promotion(&inside_block, 1, &no_i64)
+                .0
+                .is_empty(),
+            "a local touched at depth > 0 must NOT promote — the #931 br-edge \
+             canonical-register guard relies on it (see the doc comment)"
         );
     }
 
