@@ -9756,6 +9756,43 @@ impl InstructionSelector {
                 }
             }
         }
+        // #929 (CRITICAL): the SAME refusal for REGISTER argument positions,
+        // which had none — so a 64-bit argument was silently marshalled as one
+        // 32-bit register and every later argument shifted down one.
+        //
+        // `emit_arg_moves` has always DOCUMENTED that it cannot do this
+        // ("i64/f64 arguments — which AAPCS passes in register *pairs* — are NOT
+        // marshalled"), and then marshalled them anyway. A documented
+        // non-capability with nothing enforcing it is not a limitation, it is a
+        // silent miscompile: `synth compile` exited 0, no warning, and the
+        // callee received garbage.
+        //
+        // The refusal is for EVERY i64 register argument, not only the
+        // "not last" shape gale measured. AAPCS assigns an i64 an EVEN-ALIGNED
+        // pair, so for `(i32, i64)` the second argument belongs in r2:r3 while
+        // synth places its low half in r1. That shape looked correct only
+        // because the callee under test returned the i32; the i64 parameter was
+        // already wrong. Refusing the whole class is the honest boundary.
+        //
+        // FOLLOW-UP (named, gated): real AAPCS pair marshalling. The #928
+        // conformance gate currently declines 118 assertions as `i64-pair` —
+        // that is exactly this capability, and it is the acceptance oracle
+        // waiting for the implementation.
+        if stack.len() >= n {
+            let base = stack.len() - n;
+            for k in 0..n.min(ARG_REGS.len()) {
+                if stack[base + k].is_i64() {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#929: call arg {k} is 64-bit and would be passed in a \
+                         register; AAPCS requires an even-aligned register PAIR \
+                         and synth marshals only one 32-bit register per \
+                         argument, so the high half would be dropped and every \
+                         later argument shifted down. Declining rather than \
+                         emitting a silent miscompile"
+                    )));
+                }
+            }
+        }
         let mut srcs: Vec<Reg> = Vec::with_capacity(n);
         for _ in 0..n {
             let r = pop_operand(stack, next_temp, instructions, spill, &[], idx)?;
