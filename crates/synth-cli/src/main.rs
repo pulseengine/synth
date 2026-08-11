@@ -461,18 +461,35 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         wcet_hints: Option<PathBuf>,
 
-        /// #543 (Phase 1): mark a linear-memory segment as VOLATILE — the DMA
-        /// transfer window. Format `<base>:<len>`; both accept hex (`0x…`) or
-        /// decimal, e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark
-        /// more than one range. Names a region `[base, base+len)` of the fused
+        /// #543: mark a linear-memory segment as VOLATILE — the DMA transfer
+        /// window. Format `<base>:<len>`; both accept hex (`0x…`) or decimal,
+        /// e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark more
+        /// than one range. Names a region `[base, base+len)` of the fused
         /// linear memory that an external agent (the DMA engine, gale's
-        /// `own<buffer>` handoff / decision DD-DMA-REGION-001) rewrites out-of-band,
-        /// so loads/stores inside it must eventually not be cached or reordered
-        /// across the transfer boundary. PHASE 1 = plumbing only: the ranges are
-        /// parsed and threaded to codegen but NOT yet consumed — the emitted bytes
-        /// are unchanged whether or not the flag is passed. The codegen back-off
-        /// (const-CSE + #468 base-CSE decline inside these ranges) is the gated
-        /// Phase 2. See rivet VCR-DMA-001.
+        /// `own<buffer>` handoff / decision DD-DMA-REGION-001) rewrites
+        /// out-of-band, so loads/stores inside it must not be cached or
+        /// reordered across the transfer boundary.
+        ///
+        /// PASSING THIS FLAG COSTS CODE SIZE. Phase 2 has shipped: marking any
+        /// range makes the aliasing rewrites back off (const-CSE wholesale,
+        /// #468 base-CSE inside the window), so each constant is
+        /// re-materialized at every use rather than shared. Measured on
+        /// `scripts/repro/volatile_segment_543.wat`, `--cortex-m` on
+        /// `cortex-m4`: **36 B without the flag, 74 B with
+        /// `--volatile-segment 0x100:16`**. With both CSE levers already off
+        /// the flag changes nothing (98 B either way), which is what pins the
+        /// delta as exactly the back-off and not some other effect.
+        ///
+        /// So mark only the ranges an external agent really writes — this is
+        /// not a free annotation. Gated by `volatile_segment_phase2_543.rs`
+        /// (base-CSE window honoured, const-CSE declines wholesale, and the
+        /// gates are the identity when no range is marked). See rivet
+        /// VCR-DMA-001.
+        ///
+        /// #946: this text used to read "PHASE 1 = plumbing only … the emitted
+        /// bytes are unchanged whether or not the flag is passed", which
+        /// survived the Phase 2 landing and told users the opposite of the
+        /// truth about a flag that doubles code size.
         #[arg(long, value_name = "BASE:LEN")]
         volatile_segment: Vec<String>,
 
