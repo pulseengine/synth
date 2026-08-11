@@ -306,7 +306,7 @@ whole lane is about. So the counter keeps the name of the thing it counts.
 
 | mode | oracles | floor total |
 |---|---|---|
-| `emulations` | **136 oracles** | **295,421 emulator entries** |
+| `emulations` | **137 oracles** | **295,621 emulator entries** |
 | `stdout` | 7 oracles | 458 printed counts |
 | `compiles` | 9 oracles | 43 compilations |
 | `none` | **1 oracle** | — |
@@ -315,7 +315,7 @@ whole lane is about. So the counter keeps the name of the thing it counts.
 compilations and printed counts are three different units; one impressive
 combined figure is precisely the instrument defect #910 is about.
 
-`scripts/oracle_wiring_check.py --min-emulation-floor 295421` enforces the
+`scripts/oracle_wiring_check.py --min-emulation-floor 295621` enforces the
 emulations total, in the **already-required** `Claim Check` job. It shares the
 driver's header parser by import rather than re-implementing the grammar. Pinned
 in `claims.yaml` (`SYNTH-ORACLE-CHECK-FLOORS-910`) so the number here, the
@@ -365,11 +365,11 @@ so there is no transcription drift between what was proved and what CI runs.
 ===== BASELINE: wiring gate + floor ratchet =====
 STEP EXIT=0
   ci-checks compiles       9 scripts, floor total 43
-  ci-checks emulations   136 scripts, floor total 295421
+  ci-checks emulations   137 scripts, floor total 295621
   ci-checks none           1 scripts, floor total 0
   ci-checks stdout         7 scripts, floor total 458
 oracle-wiring gate is non-vacuous: ... 150 of them wired ... and every wired
-oracle declares a check floor (295421 emulator entries asserted across 136 of them).
+oracle declares a check floor (295621 emulator entries asserted across 137 of them).
 
 ===== BASELINE: one oracle step through the driver =====
 STEP EXIT=0
@@ -388,7 +388,7 @@ is a gate that cannot fail, not a passing gate.
 ===== M2: one floor lowered to 0 -> --min-emulation-floor ratchet =====
 STEP EXIT=1
 FAIL check-floor RATCHET BROKEN: summed `ci-checks: emulations` floors 294912 <
-recorded minimum 295421. An oracle lost execution, or a floor was lowered.
+recorded minimum 295621. An oracle lost execution, or a floor was lowered.
 
 ===== M3: `# ci-checks:` header deleted -> wiring gate =====
 STEP EXIT=1

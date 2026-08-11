@@ -236,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295421 \
+            --min-emulation-floor 295621 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -507,6 +507,56 @@ jobs:
       - name: Run Renode emulation tests
         run: bazel test //tests/renode/... --test_tag_filters=wast || [ $? -eq 4 ]
         timeout-minutes: 10
+
+  wast-conformance-oracle:
+    name: WAST conformance — the assertions are EXECUTED (#928)
+    # RQ-56-CONF (#928). tests/wast/ carries 381 `assert_return` and 2
+    # `assert_trap`, and until this job NONE of them were checked: the only CI
+    # path over those files asserted that `synth compile` exits 0 and discarded
+    # the expected values. The backend's primary correctness suite graded "did
+    # an ELF come out", not "is it right" — the exit-0 vacuity class (#911) on
+    # the correctness suite itself, and why three silent miscompiles (#929,
+    # #930, #931) shipped and were found from outside.
+    #
+    # Isolated job for the same reason as cmp-select: unicorn/wasmtime are
+    # pip-installed here ONLY, so `cargo test --workspace` is not taxed with a
+    # C-library build graph.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Execute the wast assertions (#928)
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/wast_conformance_928_differential.py | tee /tmp/wastconf.log
+          # NON-VACUITY, the whole point of this gate: a green result must mean
+          # assertions RAN. A floor is asserted here as well as inside the
+          # script so neither can go quiet alone.
+          grep -qE '^#928 CHECKS=[0-9]+/[1-9][0-9]{2,}' /tmp/wastconf.log
+          grep -q '^RESULT: PASS' /tmp/wastconf.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   cmp-select-oracle:
     name: cmp-select two-move execution oracle
