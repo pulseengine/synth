@@ -505,7 +505,27 @@ jobs:
       - name: Verify Rocq proofs
         run: bazel test //coq:verify_proofs
       - name: Run Renode emulation tests
-        run: bazel test //tests/renode/... --test_tag_filters=wast || [ $? -eq 4 ]
+        # #945: `|| [ $? -eq 4 ]` swallows Bazel exit 4 = NO TESTS MATCHED, so
+        # this step passed while selecting nothing. Keep tolerating a genuinely
+        # empty Renode matrix (the emulator is not always available), but SAY so
+        # rather than reporting a silent pass — an unreachable gate that prints
+        # nothing is the class this release exists to remove.
+        #
+        # NOTE, recorded not fixed here: this target tree references
+        # `tests/spec-testsuite` ZERO times, so it is NOT the "CI-tracked compile
+        # rate" over the official suite that README.md:122 and
+        # FEATURE_MATRIX:122 advertise. That 257-file suite is checked out and
+        # entirely unrun. Wiring it is RQ-56-CONF's continuation.
+        run: |
+          set -uo pipefail
+          bazel test //tests/renode/... --test_tag_filters=wast
+          rc=$?
+          if [ "$rc" -eq 4 ]; then
+            echo "::warning::renode wast matrix selected ZERO tests (bazel exit 4)"
+            echo "  This step is TOLERATED-EMPTY, not passing on evidence."
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
         timeout-minutes: 10
 
   cmp-select-oracle:

@@ -55,7 +55,7 @@ artifacts:
       shape for repro scripts; the artifacts surface simply never got one.
       Red-first is mandatory: the new check must be seen to FAIL on the two
       current citations before they are fixed.
-    status: proposed
+    status: implemented
     release: v0.56
     tags: [instrument-quality, traceability, vacuity, spar-ported]
     links:
@@ -258,8 +258,22 @@ artifacts:
       conformance gate; synth (the compiler, whose output actually runs on
       target) has none. `crates/synth-test/` already PARSES and COMPARES
       assertions — the infrastructure exists and is simply not wired.
-      Also absent: the official WebAssembly testsuite, so the compiler has never
-      been graded against the standard at all.
+      CORRECTED 2026-08-11 (doc-vs-source sweep): an earlier draft of this
+      requirement said the official WebAssembly testsuite was "absent". That was
+      FALSE and written by this project, not inherited — `tests/spec-testsuite`
+      is a checked-out submodule at 3453673 carrying 257 `.wast` files, with
+      `tests/spec/BUILD.bazel` targets that consume it.
+      The true statement is worse, not better: the suite is PRESENT, RUNNABLE and
+      UNRUN. No workflow invokes those targets — the only wast step in CI is
+      `bazel test //tests/renode/... --test_tag_filters=wast`, whose target tree
+      references `spec-testsuite` ZERO times, and whose `|| [ $? -eq 4 ]` suffix
+      swallows Bazel's "no tests matched" exit so the step passes while selecting
+      nothing. Meanwhile README.md:122 and FEATURE_MATRIX:122 both advertise a
+      "CI-tracked compile rate" over it.
+      So there are three states in the tree: a doc claiming CI tracks it, a CI
+      step that cannot reach it and cannot fail, and a requirement that called it
+      missing. Wiring the 257-file official suite is the natural continuation of
+      this requirement once the in-tree assertions execute.
       Non-negotiable on delivery: the wired gate must report an EXECUTED
       ASSERTION COUNT and fail on zero, or it recreates the defect it closes.
     status: proposed
@@ -302,7 +316,7 @@ artifacts:
       blind spot; only execution catches it").
       Fix must include the imported-memory shape in the differential, and a
       module whose floor cannot be established must REFUSE, never derive 0.
-    status: proposed
+    status: implemented
     release: v0.56
     tags: [security, soundness, proven-safe, regression, critical]
     links:
