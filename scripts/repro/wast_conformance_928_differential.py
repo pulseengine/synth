@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 200
+# ci-checks: emulations >= 263
 """RQ-56-CONF (#928) — EXECUTE the `assert_return` values in `tests/wast/`.
 
 # What was wrong
@@ -248,10 +248,29 @@ def main() -> int:
     )
     print("  declined by reason: " + (", ".join(f"{k}={v}" for k, v in sorted(declined.items())) or "none"))
 
-    # NON-VACUITY: a conformance gate that executes nothing must FAIL. This is
-    # the whole defect being closed — do not let it come back as a green zero.
-    if checked == 0:
-        print("FAIL: executed ZERO assertions — this gate would be vacuous")
+    # NON-VACUITY, RATCHETED. A conformance gate that executes nothing must
+    # FAIL — that is the whole defect being closed, and it must not come back
+    # as a green zero.
+    #
+    # But `> 0` is far too weak, and the `ci-checks: emulations` floor does not
+    # cover this either: `emulations` counts EMULATOR ENTRIES, and 23 of them
+    # are assertions that fault and then DECLINE (unmapped memory). So the
+    # executed-assertion count could fall 240 -> 205 while `emulations` stayed
+    # at 263 and both gates passed green. That is this session's own vacuity
+    # class, one level down.
+    #
+    # So the floor lives here, on the number that actually means something,
+    # asserted where it is computed. Raise it when the count rises (adding
+    # fixtures or closing declines is the ratchet direction); a DROP means a
+    # module stopped compiling or an op started declining, and that is a
+    # regression to explain, not a baseline to lower.
+    min_executed = 240
+    if checked < min_executed:
+        print(
+            f"FAIL: only {checked} assertions executed, floor is {min_executed}. "
+            "Something that used to compile-and-run now declines — find which "
+            "and why before touching this number."
+        )
         return 1
     if mismatched:
         print(f"FAIL: {mismatched} assertion(s) disagree with the spec")

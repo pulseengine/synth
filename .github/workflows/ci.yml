@@ -236,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295621 \
+            --min-emulation-floor 295684 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
