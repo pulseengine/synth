@@ -177,29 +177,56 @@ artifacts:
       verification-track: execution-differential
       issue: "#952"
 
-  - id: RQ-57-BRVAL-ARM
+  - id: RQ-57-BRTARGET
     type: system-req
-    title: "thumb-2 br-with-value: the #931 sibling, on both ARM codegen paths"
+    title: "thumb-2 branch target lands mid-instruction — and no invariant forbids it"
     description: >
-      #930. On thumb-2 a `br`/`br_if` that exits an enclosing block from inside
-      an `if` is not taken when the branch's VALUE OPERAND is itself a block that
-      branches; control falls through to the enclosing block's tail value.
-      Silent wrong value, exit 0. wasmtime and aarch64 agree with each other and
-      disagree with thumb-2.
-      Deliberately NOT bundled with #931 in v0.56: ARM has two codegen paths
-      (`select_default` vs `select_with_stack`, and `--relocatable` forces the
-      direct one), so which path is wrong must be ESTABLISHED by measurement
-      before any fix — bundling made frozen-byte movement ambiguous to bisect.
-      Note the v0.56 measurement that constrains this: RV32 compiles the nested
-      shape CORRECTLY BY ACCIDENT (both edges happened to land in `t0`), which
-      is why it is pinned there now. Do not assume the ARM mechanism is identical
-      to #931's just because the wasm shape is.
-      RED-FIRST: an execution differential under qemu-system-arm across BOTH ARM
-      paths, failing before the fix on the `labels.wast` `br` and `br_if2`
-      assertions.
+      #930. RE-DIAGNOSED by gale on v0.56.0 and re-verified here; the original
+      report (and this artifact's first draft) framed it as a control-flow
+      modelling problem and BOTH were wrong.
+      The control-flow lowering is CORRECT. `mov r2, r1` and `mov r4, r1` both
+      put the value where it belongs and the `bne` merge target is right. Exactly
+      one thing is wrong: the inner block's exit `b` at 0x10 targets 0x14, and
+      the instruction at 0x12 is a 4-byte `movw` spanning 0x12..0x15 — so the
+      branch lands on its SECOND HALFWORD and the CPU executes a halfword that
+      was never an instruction (`0x01 0x03` decodes standalone as
+      `lsls r1, r0, #12`). It should target 0x12.
+      Verified mechanically rather than by reading the decode: the instruction
+      START set for the function is {0,2,6,8,a,e,10,12,16,18,1a,1c,20,22,24};
+      the taken targets 0x12 and 0x22 are members, and **0x14 is not**.
+      From there the observed `0` follows exactly — `r3` is never set because its
+      `movw` was skipped over, so `cmp r3,#0 / bne` reads the reset value, the
+      `br_if` is not taken, and the block yields its `(i32.const 0)` tail.
+      SO THIS IS A SIBLING OF #740, NOT OF #931. #740 ("direct path: br_if
+      exiting an outer block from inside a loop lands MID-SHAPE") is closed, and
+      was fixed as a point fix. #930 is the same family on a different encoding.
+      That is why the reported shape looked so oddly specific: each ingredient
+      alone lowers fine, because none of them puts a 32-bit encoding immediately
+      at the inner block's exit label. The combination merely makes the next
+      instruction wide.
+      DELIVERABLE IS TWO THINGS, and the second is the point:
+      (1) the offset fix — candidates gale names are the exit label being
+          recorded AFTER emitting the first halfword of a following wide
+          instruction, or a fixup adding the target's width (or an
+          unconditional 2) to `target - (pc + 4)`;
+      (2) a GENERAL INVARIANT: every branch target must be a member of the
+          instruction-start set, asserted before emit. The encoder already knows
+          where each instruction begins, so a target outside that set is a hard
+          error rather than silent garbage. Nothing in `arm_encoder.rs` checks
+          this today.
+      NON-VACUITY, and the reason (2) is not speculative: run the new invariant
+      over the WHOLE fixture corpus and report how many violations it finds
+      besides #930. A family that has now recurred twice with no tripwire is
+      the instance-not-mechanism pattern this project keeps recording; if the
+      sweep finds only #930 that is a real result worth stating, and if it finds
+      more they were shipping silently.
+      RED-FIRST: the `labels.wast` `br` and `br_if2` assertions, executed under
+      qemu-system-arm, failing before the fix. Both ARM codegen paths must be
+      measured — `--relocatable` forces the direct one, which is the path #740
+      was on.
     status: proposed
     release: v0.57
-    tags: [soundness, thumb-2, control-flow, miscompile, critical]
+    tags: [soundness, thumb-2, encoder, branch-offset, miscompile, critical]
     links:
       - type: derives-from
         target: BR-001
