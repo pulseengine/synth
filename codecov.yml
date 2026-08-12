@@ -1,0 +1,71 @@
+# Codecov configuration — #923.
+#
+# Before this file there was NO codecov config anywhere in the repo, so
+# `codecov/patch` ran on codecov's defaults (patch target `auto`: changed lines
+# must meet the project average). Nobody chose that. It failed on essentially
+# every PR and was treated as advisory for dozens of merges.
+#
+# That habit is not free. It is the same reflex that once let a red **Clippy**
+# through as "just codecov" (#683, main went red). A check everyone is trained
+# to ignore is worse than no check, so the choice here is to state the intent in
+# config rather than leave it inferred from merge habits.
+#
+# ---------------------------------------------------------------------------
+# WHAT WAS MEASURED FIRST (#923 step 1), and how it changed the plan
+# ---------------------------------------------------------------------------
+# `cargo llvm-cov --workspace` (CI's exclusion set), classified per file by
+# whether an out-of-process EXECUTION oracle asserts it:
+#
+#     class          lines    instrumented-covered
+#     differential   50238    86.2 %
+#     unit-only      47754    83.4 %
+#     TOTAL          97992    84.8 %
+#
+# The hypothesis in #923 was that differential-covered files are dragged down
+# because `cargo llvm-cov` instruments the Rust suite IN-PROCESS while the
+# differentials spawn `synth` as a separate, uninstrumented process. **At the
+# aggregate that is not what the data shows** — differential-asserted files read
+# slightly HIGHER (86.2 %) than unit-only ones (83.4 %). The effect is real
+# per-file (`synth-backend-aarch64/src/backend.rs`: 267 lines, 44.2 %, exercised
+# end-to-end constantly) but it does not dominate, and 6945 uncovered lines sit
+# in differential-asserted files.
+#
+# The measurement also named the real target, which is NOT what was expected:
+# `synth-verify/src/arm_semantics.rs` — 2481 lines at 47.4 %, unit-only, the
+# largest single genuine gap in the workspace. Tests there would add evidence;
+# tests written to lift the aarch64 backend's number would not.
+#
+# ---------------------------------------------------------------------------
+# THE THRESHOLDS, and why these numbers
+# ---------------------------------------------------------------------------
+coverage:
+  status:
+    project:
+      default:
+        # Measured 84.8 % at v0.56. 80 % is a floor chosen to be met today with
+        # real headroom, so a red `project` means coverage genuinely FELL rather
+        # than "a PR touched an awkward file". Raise it when the arm_semantics.rs
+        # gap closes; the ratchet direction is up.
+        target: 80%
+        threshold: 1%
+        informational: false
+
+    patch:
+      default:
+        # EXPLICITLY informational, not de-facto.
+        #
+        # This is the honest encoding of how it is already used, and it is not a
+        # surrender: a patch status cannot distinguish "these changed lines are
+        # untested" from "these changed lines are asserted by an execution
+        # differential the instrument cannot see". Until the differentials emit
+        # profile data (VG-009), a blocking patch gate reports a number it has
+        # no way to make true.
+        #
+        # It still POSTS, so the signal stays visible on the PR — it just does
+        # not pretend to be a gate. `project` above is the one that blocks.
+        informational: true
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
