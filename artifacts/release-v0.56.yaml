@@ -55,7 +55,7 @@ artifacts:
       shape for repro scripts; the artifacts surface simply never got one.
       Red-first is mandatory: the new check must be seen to FAIL on the two
       current citations before they are fixed.
-    status: implemented
+    status: verified
     release: v0.56
     tags: [instrument-quality, traceability, vacuity, spar-ported]
     links:
@@ -90,7 +90,7 @@ artifacts:
       is unwarranted. Extend the check, then NEGATIVE-CONTROL it (revert the
       lock, confirm the job goes red, restore) — a gate added without that step
       is only presumed potent.
-    status: proposed
+    status: verified
     release: v0.56
     tags: [instrument-quality, release-process, gate-potency]
     links:
@@ -276,7 +276,7 @@ artifacts:
       this requirement once the in-tree assertions execute.
       Non-negotiable on delivery: the wired gate must report an EXECUTED
       ASSERTION COUNT and fail on zero, or it recreates the defect it closes.
-    status: proposed
+    status: verified
     release: v0.56
     tags: [conformance, vacuity, instrument-quality, critical]
     links:
@@ -316,7 +316,7 @@ artifacts:
       blind spot; only execution catches it").
       Fix must include the imported-memory shape in the differential, and a
       module whose floor cannot be established must REFUSE, never derive 0.
-    status: implemented
+    status: verified
     release: v0.56
     tags: [security, soundness, proven-safe, regression, critical]
     links:
@@ -344,7 +344,7 @@ artifacts:
       — see RQ-56-CONF.
       Gate: an execution differential over the mixed i64/i32 argument
       permutations against wasmtime, red-first on the current output.
-    status: proposed
+    status: verified
     release: v0.56
     tags: [soundness, thumb-2, aapcs, miscompile, critical]
     links:
@@ -373,7 +373,7 @@ artifacts:
       parity ledger exists to keep the two honest about each other.
       These are precisely the `labels.wast` assertions RQ-56-CONF would have
       been checking, which is the argument for landing that first.
-    status: proposed
+    status: verified
     release: v0.56
     tags: [soundness, thumb-2, rv32, control-flow, miscompile, critical]
     links:
