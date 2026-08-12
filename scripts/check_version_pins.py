@@ -82,22 +82,111 @@ def check_module_bazel(root: Path, expected: str) -> list[str]:
     return []
 
 
+def workspace_members(root: Path) -> list[str]:
+    """Crate names from `[workspace] members` — the set `Cargo.lock` must carry."""
+    members: list[str] = []
+    in_members = False
+    for line in (root / "Cargo.toml").read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("members"):
+            in_members = True
+            continue
+        if in_members:
+            if stripped.startswith("]"):
+                break
+            m = re.match(r'"crates/([^"]+)"', stripped)
+            if m:
+                members.append(m.group(1))
+    return members
+
+
+def check_cargo_lock(root: Path, expected: str) -> list[str]:
+    """#924: every workspace member must appear in `Cargo.lock` at `expected`.
+
+    This surface had NO gate. The only `--locked` anywhere in `ci.yml` is
+    `cargo install --locked kani-verifier` — installing a tool, not verifying
+    this lockfile — so a lock left at the previous version builds and tests
+    green all the way to a tag. Measured twice by hand and never by a gate: the
+    v0.52 cold review, and again during v0.55 assembly where the lock held ZERO
+    `0.55.0` entries after the bump.
+    """
+    lock = root / "Cargo.lock"
+    if not lock.exists():
+        return [f"Cargo.lock missing at {lock}"]
+    text = lock.read_text()
+    # `name = "x"` followed within the same [[package]] block by `version = "y"`.
+    versions: dict[str, str] = {}
+    name: str | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s == "[[package]]":
+            name = None
+        elif s.startswith("name = "):
+            q = re.match(r'name\s*=\s*"([^"]+)"', s)
+            name = q.group(1) if q else None
+        elif s.startswith("version = ") and name is not None:
+            q = VERSION_RE.match(s)
+            if q:
+                versions[name] = q.group(1)
+                name = None
+    errors: list[str] = []
+    for member in workspace_members(root):
+        got = versions.get(member)
+        if got is None:
+            errors.append(f"Cargo.lock: workspace member `{member}` has no entry")
+        elif got != expected:
+            errors.append(
+                f'Cargo.lock: `{member}` locked at "{got}" but workspace is "{expected}"'
+            )
+    return errors
+
+
+def check_npm_package(root: Path, expected: str) -> list[str]:
+    """#924: `npm/package.json` version must equal the workspace version.
+
+    The npm wrapper is a published release surface; nothing gated it.
+    """
+    pkg = root / "npm" / "package.json"
+    if not pkg.exists():
+        return []
+    for n, line in enumerate(pkg.read_text().splitlines(), 1):
+        m = re.match(r'\s*"version"\s*:\s*"([^"]+)"', line)
+        if m:
+            if m.group(1) != expected:
+                return [
+                    f'npm/package.json:{n}: version "{m.group(1)}" '
+                    f'but workspace is "{expected}"'
+                ]
+            return []
+    return ["npm/package.json: no `version` key found"]
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     expected = workspace_version(root)
-    errors = check_path_dep_pins(root, expected) + check_module_bazel(root, expected)
+    errors = (
+        check_path_dep_pins(root, expected)
+        + check_module_bazel(root, expected)
+        + check_cargo_lock(root, expected)
+        + check_npm_package(root, expected)
+    )
     if errors:
-        print(f"Version-pin desync (workspace = {expected}) — issue #145:\n")
+        print(f"Version-pin desync (workspace = {expected}) — issues #145/#924:\n")
         for e in errors:
             print(f"  {e}")
         print(
-            "\nBump every intra-workspace path-dep `version =` pin + MODULE.bazel "
-            "in lockstep with [workspace.package].version before tagging.\n"
-            "Helper: scripts/check_version_pins.py is the gate; the sweep itself "
-            "is a one-liner perl over Cargo.toml + MODULE.bazel."
+            "\nBump every release surface in lockstep with "
+            "[workspace.package].version before tagging:\n"
+            "  1. intra-workspace path-dep `version =` pins (crates/*/Cargo.toml)\n"
+            "  2. MODULE.bazel `module(version = ...)`\n"
+            "  3. Cargo.lock          — regenerate with `cargo metadata`\n"
+            "  4. npm/package.json\n"
         )
         return 1
-    print(f"OK: all intra-workspace pins + MODULE.bazel at {expected}")
+    print(
+        f"OK: path-dep pins + MODULE.bazel + Cargo.lock + npm/package.json "
+        f"all at {expected}"
+    )
     return 0
 
 
