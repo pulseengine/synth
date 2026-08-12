@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-08-12
+
+**The factory, not the instances.** Two silent miscompiles closed, and — the
+theme — the *checkers* that should have caught them made potent. Most of this
+release is gates: several were passing over nothing, one covered half of what
+its name claimed, and one told users the opposite of the truth. The recurring
+finding of the last four releases is that defects concentrate in checkers
+rather than checked code, so this release went at the checkers deliberately.
+
+### Fixed
+
+- **RV32 `br` out of a value-producing `block` discarded its value (#931,
+  CRITICAL).** The branch computed its value into one register and the merge
+  read a different one — the *fallthrough* register — so the block yielded the
+  not-taken path's value. `synth compile` exited 0 with no warning. This is the
+  most basic form of structured control flow carrying a value, so the blast
+  radius covered `block`, switch-style dispatch and label shadowing alike (8
+  `labels.wast` assertions).
+
+  ```wat
+  (block $exit (result i32) (br $exit (i32.const 1)) (i32.const 0))
+  ```
+  wasmtime → `1`. RV32 → `0`.
+
+  Root cause: `lower_br` emitted a bare `jal` and moved nothing — and `br` does
+  not pop, so the branch's value stayed on the vstack, the fallthrough
+  expression allocated a *different* register to avoid the live one, and the
+  merge read that one. The stale vstack entry **was** the miscompile.
+
+  `#343` already built this exact join for `if`/`else` arms; it was simply never
+  applied to `br` edges. `br_table`'s own doc comment even recorded that "plain
+  `Br`/`BrIf` share the underlying limitation" — `br_table` loud-declines it,
+  `br` shipped silent.
+
+  Every exit edge now reconciles onto the frame's canonical result registers,
+  with the fallthrough's moves emitted *before* the end label so the taken edge
+  jumps over them. Arity comes from the vstack delta above the frame
+  checkpoint, so no block-type threading (#509) is needed. Where that delta
+  over-counts across frames the selector LOUD-DECLINES rather than pick a
+  register — a **reach reduction with intent**, replacing a silent wrong answer
+  (measured 0 where wasmtime says 42) with a compile error.
+
+  Gated by `rv32_br_value_931_differential.py`: 17 vectors executed under
+  unicorn against wasmtime, **9/17 failing before the fix, 17/17 after**.
+
+- **A 64-bit call argument is now DECLINED instead of miscompiled (#929).**
+
+- **`--proven-safe` could elide bounds guards against a floor it invented
+  (#932, SECURITY).** For a module whose memory is IMPORTED, the derived floor
+  was `0`, because imported memories live in `imports`, not `memories`. The
+  fail-closed contract inverted: the honest document was rejected while the
+  vacuous one stripped real guards, and synth reported proving accesses
+  in-bounds "against the 0 B floor" — self-refuting, since no access is in
+  bounds of a zero-byte memory.
+
+### Changed — gates that now do what their names say
+
+- **The official wast assertions are EXECUTED, not discarded (#928).** The
+  suite graded "did an ELF come out". It now compiles each module, runs it
+  under unicorn, and compares against the `.wast`'s own expected literal —
+  **240 executed assertions over 25 files**. The floor is asserted on the number
+  that means something (`checked`), not on emulator entries: 23 of the 263
+  entries are assertions that fault and then decline, so an `emulations` floor
+  alone would let the executed count fall 240 → 205 and stay green.
+
+- **`Version Pin Sweep` now covers all four release surfaces (#924).** It is one
+  of the nine *required* contexts, so green reads as "the release's versions are
+  consistent" — and it checked two of four. `Cargo.lock` had no backstop of any
+  kind; the only `--locked` in the workflow installs a tool. Caught by hand
+  twice (v0.52 cold review, v0.55 assembly) and never by a gate. Each new leg is
+  negative-controlled, including the case a naive check misses: a member missing
+  from the lock *entirely*, which is a different failure from one at the wrong
+  version. A `cargo metadata --locked` step additionally catches the orphaned-
+  transitive-entry class, which had left `main` red on an unrelated job since
+  the wit-component bump.
+
+- **An artifact cannot claim a test that does not exist (#911).** Shipped
+  unfixed in v0.55; the class is now checked, status-aware — a dangling citation
+  is a note under `proposed` and a failure under `verified`.
+
+- **`codecov/patch` is explicitly informational, with a threshold someone chose
+  (#923).** There was no `codecov.yml` at all, so it ran on defaults nobody
+  picked and failed on essentially every PR. The measurement that preceded it
+  refuted its own premise: differential-asserted files read *higher* (86.2 %)
+  than unit-only ones (83.4 %), and the largest genuine gap turned out to be
+  `synth-verify/src/arm_semantics.rs` (2481 lines, 47.4 %) — not the backend the
+  hypothesis pointed at. `project` at 80 % blocks; `patch` posts but does not
+  pretend to gate.
+
+- **A Bazel step that reported a silent pass now says what it did (#945).** The
+  Renode wast matrix selects **zero** tests, and `|| [ $? -eq 4 ]` was reporting
+  that as green.
+
+### Documentation — claims corrected against measured behaviour
+
+A two-scanner sweep over ~930 claims found **30 genuine disagreements** (#946),
+with both scanners instructed to report the disagreement and never rule on
+which side was right. That framing was load-bearing: of the resolved items the
+answer differed every time, and one scanner *premise* was itself false.
+
+- **`--volatile-segment` is not free.** It was documented as inert plumbing;
+  measured **36 B → 74 B**. With the CSE levers already off the flag changes
+  nothing (98 B either way), which pins the delta as exactly the intended
+  back-off. Most stale docs understate what ships and cost nothing; this one
+  told users a flag that doubles code size was free.
+- **The VCVT precondition now names its guarantor.** "The selector guarantees
+  `dm` is a dead temp" is true of `select_with_stack` — the one the compiler
+  actually uses — and not of `select_default`. The claim "never S0" was removed:
+  it is false (`vcvt.s32.f64 s0, d0` on a three-line module) *and* unnecessary,
+  since `S(2m)` is always `dm`'s own dead half.
+
+  Both belong to a class worth naming: **a soundness argument that is locally
+  true and cites the wrong reason.** Both halves read correct, so neither a
+  prose-vs-prose check nor a doc-vs-source diff finds them — only writing a new
+  consumer does.
+
+### Deferred to v0.57 — logged, not silent
+
+`RQ-56-GPIO` (#846, changes shipping bytes for a 4-byte win), `RQ-56-A64PARAM`
+(#851, aarch64 param homing), and a newly-created `RQ-57-I32CONST` (#933, a Rocq
+*contract* change across 9 `.v` files under the "never weaken a theorem to force
+a Qed" gate). #933 had no rivet artifact at all, and an untriaged issue is
+invisible to the plan.
+
+
 ## [0.55.0] - 2026-08-07
 
 ### Added
