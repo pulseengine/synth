@@ -7277,14 +7277,48 @@ impl ArmEncoder {
         Ok(vfp_to_thumb_bytes(vcvt))
     }
 
-    /// Encode f64 → i32 truncation as Thumb-2 (round-toward-zero VCVT). The
-    /// 32-bit result stages through the SOURCE's own low S-alias (`S(2m)`,
-    /// clobbering half of an operand the selector has already popped) — never
-    /// S0, which may hold an unrelated live value (the #615 class). The
-    /// overlapping write is well-defined: VCVT reads its source operand
-    /// before writing (compilers emit `vcvt.f32.f64 s0, d0` routinely).
-    /// The SELECTOR guarantees `dm` is a dead temp, never a pinned param/
-    /// local home (it copies a home into a fresh D-temp first).
+    /// Encode f64 → i32 truncation as Thumb-2 (round-toward-zero VCVT).
+    ///
+    /// The 32-bit result stages through the SOURCE's own low S-alias, `S(2m)`,
+    /// clobbering half of an operand the selector has already popped. The
+    /// overlapping write is well-defined: VCVT reads its source operand before
+    /// writing (compilers emit `vcvt.f32.f64 s0, d0` routinely).
+    ///
+    /// # The one precondition, and who actually provides it
+    ///
+    /// `dm` must be a DEAD TEMP — never a pinned param/local home. That is the
+    /// whole safety argument, and it is worth naming the guarantor precisely
+    /// (#946): **`select_with_stack`** provides it, by copying a home into a
+    /// fresh D-temp first. Visible in the shipped output for
+    /// `(func (param f64) (result i32) (i32.trunc_f64_s (local.get 0)))`:
+    ///
+    /// ```text
+    ///   vmov r1, r2, d0     ; read the param out of its AAPCS-VFP home D0
+    ///   vmov d1, r1, r2     ; ...into a fresh D-temp
+    ///   vcvt.s32.f64 s2, d1 ; convert from the TEMP, staging into its own S2
+    /// ```
+    ///
+    /// `InstructionSelector::select` / `select_default` do NOT provide it —
+    /// `alloc_vfp_dreg` is a bare round-robin `(n + 1) % 16` with no liveness
+    /// or home test. That path is not reachable from `synth compile`
+    /// (`arm_backend.rs` calls `select_with_stack` exclusively; the only
+    /// non-test caller of `select` is `examples/compile_add.rs`), so this is
+    /// not a live miscompile — but a caller reaching that `pub` API directly
+    /// gets no such guarantee.
+    ///
+    /// # What this deliberately does NOT claim
+    ///
+    /// An earlier version of this comment said the staging register is "never
+    /// S0, which may hold an unrelated live value (the #615 class)". **That is
+    /// false**, and measurably so: for
+    /// `(func (result i32) (i32.trunc_f64_s (f64.const 3.7)))` the shipped
+    /// compiler emits `vcvt.s32.f64 s0, d0`.
+    ///
+    /// It is also unnecessary. S0 is only dangerous as an *unrelated* scratch;
+    /// here it is always the low half of `dm` itself, which the precondition
+    /// above already makes dead. Naming a guard the code does not have — and
+    /// does not need — invites a future reader to lean on it. The dead-temp
+    /// precondition is the only thing holding this up.
     fn encode_thumb_i32_trunc_f64(&self, rd: &Reg, dm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
         let dm_num = vfp_dreg_to_num(dm)?;
         if dm_num > 7 {
