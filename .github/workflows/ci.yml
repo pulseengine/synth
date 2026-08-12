@@ -152,6 +152,30 @@ jobs:
       # v0.7.0-class desync that breaks release.yml + publish at tag-push time.
       - name: Check intra-workspace version pins
         run: python3 scripts/check_version_pins.py
+      - uses: dtolnay/rust-toolchain@stable
+      # #924: the OTHER lockfile failure. `check_version_pins.py` above asserts
+      # every workspace member is in Cargo.lock at the workspace version — that
+      # catches a lock left BEHIND at the previous release. It does not catch a
+      # lock whose versions are all correct but which is stale in a different
+      # way: a dependabot manifest bump that orphans a transitive entry.
+      #
+      # That one is not theoretical. `main` was red on VCR-VER-004 from
+      # 3eec0d37 (wit-component 0.254->0.255) until 2026-08-12, because an
+      # orphaned `wasm-encoder 0.254.0` entry meant the first cargo invocation
+      # in any job regenerated the lock and its `git diff --exit-code` cleanup
+      # assert failed. The oracle in that job PASSED; only the tree-restore
+      # check went red, in a job with nothing to do with dependencies.
+      #
+      # `--locked` is the direct check: it fails if the lock would need
+      # updating. Usable here because every path dep is intra-workspace — a
+      # repo with sibling-repo path deps has inherent lock churn and cannot
+      # use it. `cargo metadata` resolves without compiling, so this is fast.
+      - name: Cargo.lock is consistent with the manifests (#924)
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null || {
+            echo "::error::Cargo.lock is stale. Run 'cargo metadata' and commit the result."
+            exit 1
+          }
 
   claim-check:
     name: Claim Check
