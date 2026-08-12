@@ -43,6 +43,99 @@ artifacts:
   # TIER 1 — the theme. Each is synth failing to tell someone what it knows.
   # ---------------------------------------------------------------------------
 
+  - id: RQ-561-ZEROMEM
+    type: system-req
+    title: "rv32 `(memory 0)` gets a 65532-byte guard — --safety-bounds software is a 64 KiB no-op"
+    description: >
+      #953, SECURITY, reported by gale 30 minutes after v0.56.0 published and
+      REPRODUCED here on the shipped tag. Scoped to a v0.56.1 PATCH, not v0.57:
+      it is a soundness hole in the mode whose entire purpose is to close it, in
+      a release already on crates.io.
+      A module declaring `(memory 0)` gets a bound baked at 65532 — byte-for-byte
+      the guard of a 1-page module — so every address in 0..=65532 passes and the
+      access is performed against a memory with no bytes. Verified on 0.56.0:
+      `lui t1, 0x10; addi t1, t1, -0x4; bltu t1, t0`. Confirmed for STORES too
+      (identical bound), so it is an out-of-bounds WRITE as well as a read.
+      ROOT CAUSE (`synth-backend-riscv/src/backend.rs:192`): `0` is used as both
+      a value and a sentinel. `linear_memory_bytes == 0` means "unset — a
+      hand-built driver with no module context, fall back to 1 page" AND is
+      exactly what a module legitimately declaring `(memory 0)` produces. The two
+      are indistinguishable, so the fallback invents a 64 KiB bound for a module
+      that declared none.
+      **This is the same disease as #932, fixed in v0.56.0, in the opposite
+      direction.** There `unwrap_or(0)` turned "no floor establishable" into
+      "the floor is 0 bytes" and STRIPPED guards; here `0` means "unset" and
+      INVENTS a guard. One sentinel/value collision each, different crates,
+      shipped one release apart. Fixing this instance without RQ-57-SENTINEL
+      would repeat the v0.53 finding that we fix instances, not mechanisms.
+      SCOPE NOTE, measured here rather than assumed: gale tested rv32 and
+      aarch64. aarch64 is correct (folds to an unconditional `brk #0` — with zero
+      pages every access is statically out of bounds). ARM was NOT tested by the
+      report; I checked it, and it does not bake a constant at all — it derives
+      the bound from `r10` at runtime with an underflow check (`sub.w r12, r10,
+      #4; cmp r10, r12; bhs`) that falls through to `udf` when the size is 0.
+      Read from the disassembly, NOT executed; confirm by execution before
+      claiming ARM is unaffected in the fix PR. Two of three backends get this
+      right, which is what makes the rv32 fallback the anomaly rather than a
+      design gap.
+      RED-FIRST: an execution differential on `(memory 0)` load AND store vs
+      wasmtime (which traps), failing before the fix. The `Option`-shaped fix
+      (`Option<u32>` rather than a magic 0) is the same one #932 took.
+    status: proposed
+    release: v0.56.1
+    tags: [security, soundness, rv32, bounds, sentinel-collision, gale-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#953"
+
+  - id: RQ-57-SENTINEL
+    type: system-req
+    title: "Sweep the sentinel/legitimate-value collisions rather than fixing another instance"
+    description: >
+      Motivated by #953 landing one release after #932 with the SAME root cause
+      in the opposite direction: a magic `0` (or `unwrap_or(0)`) that means both
+      "unset/unknown" and a value a module can legitimately declare.
+      #932: `all_memories.first().map(..).unwrap_or(0)` — imported memories live
+      in `imports`, so "no floor establishable" became "the floor is 0 bytes" and
+      real guards were stripped.
+      #953: `if config.linear_memory_bytes > 0 { .. } else { 64 * 1024 }` —
+      "no module context" and "`(memory 0)`" are indistinguishable, so a bound
+      was invented for a module that declared none.
+      Two instances, two crates, one release apart, both SECURITY. That is the
+      signature of a mechanism, and v0.53 already recorded the standing failure:
+      we fix instances, not the mechanism.
+      DELIVERABLE: an audit of every size/count/address path where a numeric
+      sentinel stands in for absence — `unwrap_or(0)`, `> 0` guards on a
+      configured size, `if x == 0 { default }` — across the memory, bounds,
+      WCET and static-data paths in all backends, each classified as (a) the
+      sentinel cannot collide, argued; (b) it can, converted to `Option`; or
+      (c) it can and is currently safe by accident, which is the #946
+      "true for the wrong reason" class and must be converted anyway.
+      NON-VACUITY: this lane produces a NUMBER — how many sites were examined and
+      how many were converted — or it has not been done. A sweep that reports
+      "looks fine" is the exact shape this release is named against.
+    status: proposed
+    release: v0.57
+    tags: [soundness, sweep, sentinel-collision, mechanism-not-instance]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: static-analysis
+      issue: "#953"
+
+
   - id: RQ-57-SKIPEXIT
     type: system-req
     title: "A declined REQUESTED export must fail the build, not exit 0"
