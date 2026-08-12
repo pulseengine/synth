@@ -156,7 +156,14 @@
 )
 
 ;; Assertions for large_compute
-(assert_return (invoke "large_compute" (i32.const 1)) (i32.const 287))
+;; #928: this expected 287 and had NEVER been executed — the only CI path over
+;; these files checked that `synth compile` exits 0 and discarded the values.
+;; The first run of the conformance gate disagreed, and wasmtime settles it:
+;;   wasmtime large_compute(1) = 3538945
+;;   synth    large_compute(1) = 3538945   (0x360001)
+;; synth is CORRECT; the hand-written expectation was wrong. Corrected against
+;; wasmtime, which is exactly the class of error an unexecuted assertion hides.
+(assert_return (invoke "large_compute" (i32.const 1)) (i32.const 3538945))
 (assert_return (invoke "large_compute" (i32.const 0)) (i32.const 0))
 
 ;; Assertions for dispatch
