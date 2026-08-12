@@ -150,7 +150,11 @@ artifacts:
       and the gpio differential gate it — a smaller wrong answer is a
       regression, not a win. Carries a before/after number or it is not done.
     status: proposed
-    release: v0.56
+    release: v0.57
+    # DEFERRED from v0.56 (scope decision, logged not silent):
+    #   #846 changes SHIPPING BYTES for a 4-byte win; it needs the frozen
+    #   anchors + the gpio differential re-pinned in its own gated lane, not a
+    #   release-tail squeeze.
     tags: [optimization, gale, code-size]
     links:
       - type: derives-from
@@ -179,7 +183,10 @@ artifacts:
       Gate: the cross-backend parity ledger flips in the SAME commit that makes
       them lower, and the ledger's stale-entry check keeps the count honest.
     status: proposed
-    release: v0.56
+    release: v0.57
+    # DEFERRED from v0.56 (scope decision, logged not silent):
+    #   #851 aarch64 param homing is capability work needing its own execution
+    #   differential across the 4 named divergences.
     tags: [aarch64, capability-gap, epic-851]
     links:
       - type: derives-from
@@ -386,3 +393,43 @@ artifacts:
       priority: must
       verification-track: execution-differential
       issue: "#931, #930"
+
+  - id: RQ-57-I32CONST
+    type: system-req
+    title: "i32.const is covered by NEITHER half of the verification story"
+    description: >
+      #933, reported by a consumer discharging a downstream object-code
+      obligation. `synth verify` DECLINES Const/Local ops as register
+      operations, deferring them to the per-rule Rocq theorems — a reasonable
+      split. Three of the four deferred-to theorems are Qed
+      (`local_get/set/tee_correct`, `i64_const_correct`). `i32_const_correct`
+      is Admitted, so for `i32.const` the SMT half skips it AND the proof half
+      is open. Nothing covers the single most common op in any module.
+      This is NOT missing mathematics: `movw_movt_reconstruct_Z` and
+      `i32_const_large_reconstruct` are both Qed. The theorem is FALSE AS
+      STATED — it quantifies over un-normalized `Z` representatives, and a
+      counterexample exists (n = 2^32 + 0x10000). Closing it is a CONTRACT
+      change, one of: (a) normalize `I32Const` at the WASM model boundary
+      (push `VI32 (I32.repr n)`), which is what a real wasm i32.const means and
+      lets `i32_const_large_reconstruct` discharge it directly; or (b) add the
+      `I32.valid_unsigned n` hypothesis, the contract the #73 div_s proof
+      adopted. (a) is the principled one and touches 9 `.v` files.
+      DEFERRED from v0.56 (scope decision, logged not silent): this is a
+      contract change under the repo's own #166 gate — "never weaken a theorem
+      to force a Qed" — so it needs deliberate review rather than a
+      release-tail squeeze, and the hermetic Rocq rebuild is a long verify
+      loop. The gap is disclosed in the source, not hidden; what makes it
+      urgent is that it turned out to be load-bearing for someone downstream.
+    status: proposed
+    release: v0.57
+    tags: [verification, rocq, coverage-gap, consumer-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: proof
+      issue: "#933"
