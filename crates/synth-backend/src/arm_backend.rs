@@ -1905,6 +1905,7 @@ fn validate_branch_targets(instrs: &[ArmInstruction], encoder: &ArmEncoder) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synth_synthesis::{Operand2, Reg};
 
     /// #539: `i32.const 0; memory.grow m` folds to `memory.size m`; other deltas
     /// (const non-zero, runtime) are left as `memory.grow` (→ the sound fixed-
@@ -1942,6 +1943,187 @@ mod tests {
             ]),
             vec![WasmOp::LocalGet(0), WasmOp::MemorySize(0), WasmOp::I32Add]
         );
+    }
+
+    /// SC-5 (#740/#930): the branch-target boundary gate. Every emitted branch
+    /// target must be a member of the instruction-start set of the final
+    /// Thumb-2 stream; a `.L`-local label branch surviving unresolved is a
+    /// dropped label. Red-first: both rejection arms were written against the
+    /// exact #930 stream shape (a `b #0` placeholder whose pc+4 target falls
+    /// on the second halfword of a 32-bit `movw`) and fail without the gate.
+    #[test]
+    fn test_validate_branch_targets_sc5_930() {
+        let enc = ArmEncoder::new_thumb2();
+        let ins = |op: ArmOp| ArmInstruction {
+            op,
+            source_line: None,
+        };
+
+        // 1. Boundary-valid stream: b over a wide movw onto the mov — OK.
+        //    positions: 0 BOffset(2B), 2 Movw(4B), 6 Mov(2B)
+        //    target = 0 + 4 + 2*1 = 6 = start of Mov.
+        let good = vec![
+            ins(ArmOp::BOffset { offset: 1 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        assert!(validate_branch_targets(&good, &enc).is_ok());
+
+        // 2. The exact #930 shape: `b #0` (offset 0) -> target = pc+4 = 4,
+        //    the SECOND halfword of the 4-byte movw spanning 2..6. Hard error.
+        let mid = vec![
+            ins(ArmOp::BOffset { offset: 0 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        let err = validate_branch_targets(&mid, &enc).unwrap_err();
+        assert!(err.contains("SC-5"), "boundary violation names SC-5: {err}");
+        assert!(err.contains("not an instruction boundary"), "{err}");
+
+        // 3. Conditional form of the same violation.
+        let mid_cond = vec![
+            ins(ArmOp::BCondOffset {
+                cond: synth_synthesis::Condition::NE,
+                offset: 0,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        assert!(validate_branch_targets(&mid_cond, &enc).is_err());
+
+        // 4. A `.L`-local label branch that was never resolved (the dropped
+        //    end label, #930's mechanism) is a hard error even though it
+        //    would encode as a well-formed placeholder.
+        let dropped = vec![
+            ins(ArmOp::B {
+                label: ".Lblock_end_3".to_string(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+        ];
+        let err = validate_branch_targets(&dropped, &enc).unwrap_err();
+        assert!(err.contains(".Lblock_end_3"), "{err}");
+        assert!(err.contains("dropped label"), "{err}");
+
+        // 5. An EXTERNAL label branch (no `.L` prefix) is legitimately absent
+        //    (patched via relocation / vector table) and must NOT trip the
+        //    gate — the carve-out that used to swallow #930 stays for real
+        //    externals only.
+        let external = vec![
+            ins(ArmOp::B {
+                label: "Trap_Handler".to_string(),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+        ];
+        assert!(validate_branch_targets(&external, &enc).is_ok());
+
+        // 6. Labels are zero-width: a target on a Label position is the start
+        //    of the instruction that follows it — OK.
+        let labeled = vec![
+            ins(ArmOp::BOffset { offset: 1 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 1,
+            }),
+            ins(ArmOp::Label {
+                name: ".Lend".to_string(),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        assert!(validate_branch_targets(&labeled, &enc).is_ok());
+    }
+
+    /// SC-5 (#930) end-to-end at the backend seam: the labels.wast `br_if2`
+    /// shape — a `br_if` exiting an enclosing block from inside an `if`, its
+    /// value operand a block-that-branches — must COMPILE (the pre-fix
+    /// selector dropped the inner block's end label, which the SC-5 gate now
+    /// turns into a hard error, so compile success proves the label was
+    /// emitted) and every branch in the emitted bytes must land on an
+    /// instruction boundary (re-derived from the encoded halfwords, not from
+    /// the resolver's own bookkeeping).
+    #[test]
+    fn test_930_brif2_shape_compiles_and_targets_boundaries() {
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::Block, // $l0 (result i32)
+            WasmOp::I32Const(1),
+            WasmOp::If,
+            WasmOp::Block, // $l1 (result i32)
+            WasmOp::I32Const(1),
+            WasmOp::Br(0), // br $l1
+            WasmOp::End,
+            WasmOp::I32Const(1),
+            WasmOp::BrIf(1), // br_if $l0
+            WasmOp::Drop,
+            WasmOp::End, // end if
+            WasmOp::I32Const(0),
+            WasmOp::End, // end $l0
+            WasmOp::End,
+        ];
+        let config = CompileConfig::default();
+        let func = backend
+            .compile_function("t", &ops, &config)
+            .expect("#930 shape must compile (SC-5 gate passes)");
+
+        // Walk the encoded halfwords: collect instruction starts, then check
+        // every narrow/wide B / B<cond> target is a member.
+        let code = &func.code;
+        let mut starts = std::collections::HashSet::new();
+        let mut widths = Vec::new();
+        let mut off = 0usize;
+        while off + 2 <= code.len() {
+            starts.insert(off as i64);
+            let hw = u16::from_le_bytes([code[off], code[off + 1]]);
+            let wide = (hw & 0xF800) >= 0xE800; // 0b11101/0b11110/0b11111
+            widths.push((off, hw, wide));
+            off += if wide { 4 } else { 2 };
+        }
+        for (off, hw, wide) in widths {
+            let target = if !wide && (hw & 0xF800) == 0xE000 {
+                // T2 B: imm11, halfwords
+                let imm = ((hw & 0x7FF) as i32) << 21 >> 21;
+                Some(off as i64 + 4 + 2 * imm as i64)
+            } else if !wide && (hw & 0xF000) == 0xD000 && (hw & 0x0F00) < 0x0E00 {
+                // T1 B<cond>: imm8, halfwords
+                let imm = ((hw & 0xFF) as i32) << 24 >> 24;
+                Some(off as i64 + 4 + 2 * imm as i64)
+            } else {
+                None
+            };
+            if let Some(t) = target {
+                assert!(
+                    starts.contains(&t),
+                    "branch at 0x{off:x} (hw 0x{hw:04x}) targets 0x{t:x}, \
+                     not an instruction boundary — the #930 miscompile shape"
+                );
+            }
+        }
     }
 
     #[test]

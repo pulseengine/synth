@@ -280,3 +280,48 @@ artifacts:
         Bounds checks present for all memory access instructions;
         CFI preserved through control flow translation; stack overflow
         detection verified on Cortex-M4 via Renode.
+
+  # ---------------------------------------------------------------------------
+  # FR-009 — the SC-5 discharge chain (#740, #930).
+  #
+  # SC-5's only satisfiers were FR-002 and FR-008: omnibus, status draft, and
+  # verified by nothing that targets SC-5's actual sentence. Both known escapes
+  # of that sentence (#740 B<cond>.W T3 offset halved; #930 dropped inner-block
+  # end label -> `b #0` placeholder landing mid-instruction) were silent and
+  # found from outside. This requirement carries SC-5's sentence VERBATIM at
+  # requirement granularity so a verification artifact (VER-SC5-001) can land
+  # `verifies` on it specifically — not on FR-002 generally, which is the
+  # coarse-granularity anti-pattern that left the chain open.
+  # ---------------------------------------------------------------------------
+
+  - id: FR-009
+    type: system-req
+    title: Branch targets are instruction-stream boundaries
+    description: >
+      Branch offset calculation shall account for Thumb instruction
+      alignment and variable instruction widths (SC-5). Concretely: every
+      branch target emitted for Thumb-2 shall be a member of the
+      instruction-start set of the final instruction stream, and every
+      locally-defined branch label shall resolve — a compile where either
+      fails shall hard-error rather than emit the miscompiled object.
+      Thumb-2 mixes 16- and 32-bit encodings, so a target off by one
+      halfword executes the second halfword of a wide instruction as if it
+      were an instruction: silent garbage with exit 0.
+    status: implemented
+    tags: [branch-targets, thumb-2, instruction-boundary, control-flow, safety]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: constraint-satisfies
+        target: SC-5
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        validate_branch_targets (crates/synth-backend/src/arm_backend.rs)
+        hard-errors any Thumb-2 compile whose stream contains a numeric
+        branch target outside the instruction-start set or an unresolved
+        .L-local label branch, on BOTH codegen paths. Regression escapes
+        #740 and #930 are pinned by execution differentials
+        (brif_outer_740_differential.py, branch_boundary_930_differential.py)
+        under unicorn vs wasmtime.
