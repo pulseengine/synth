@@ -74,7 +74,7 @@ MEMBASE = 0x20000000  # R11/fp linear-memory base at reset (cortex_m.rs)
 def compile_elf(out, target):
     r = subprocess.run(
         [SYNTH, "compile", str(WAT), "-o", out, "-b", "arm",
-         "--target", target, "--all-exports"],
+         "--target", target, "--all-exports", "--allow-skipped-exports"],
         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"},
     )
     return r.returncode == 0, (r.stderr + r.stdout)

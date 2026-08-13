@@ -432,7 +432,7 @@ def main():
 
     # ==== ARM32 self-contained (cortex-m7dp): execute ALL EIGHT forms ======
     compile_or_die("/tmp/trunc_sat_782_arm.elf",
-                   ["-b", "arm", "--target", "cortex-m7dp", "--all-exports"],
+                   ["-b", "arm", "--target", "cortex-m7dp", "--all-exports", "--allow-skipped-exports"],
                    "ARM32 cortex-m7dp")
     text, base, syms = load("/tmp/trunc_sat_782_arm.elf")
     for fn, (aty, rty) in SIGS.items():
@@ -456,7 +456,7 @@ def main():
     # trunc_sat_f32_* needs only single-precision VFP; the f64-source forms
     # ride the existing double-FPU honest-reject.
     compile_or_die("/tmp/trunc_sat_782_m4f.elf",
-                   ["-b", "arm", "--target", "cortex-m4f", "--all-exports"],
+                   ["-b", "arm", "--target", "cortex-m4f", "--all-exports", "--allow-skipped-exports"],
                    "ARM32 cortex-m4f")
     m4f_text, m4f_base, m4f_syms = load("/tmp/trunc_sat_782_m4f.elf")
     for fn, (aty, rty) in I32_FNS.items():
@@ -497,7 +497,7 @@ def main():
 
     # ==== aarch64: all eight, unicorn + native ==============================
     compile_or_die("/tmp/trunc_sat_782_a64.o",
-                   ["-b", "aarch64", "--all-exports"], "aarch64")
+                   ["-b", "aarch64", "--all-exports", "--allow-skipped-exports"], "aarch64")
     a64_code, a64_base, a64_syms = load("/tmp/trunc_sat_782_a64.o")
     host_native = platform.machine() in ("arm64", "aarch64")
     checked_native = 0

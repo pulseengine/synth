@@ -74,7 +74,7 @@ RV32_MAY_DECLINE = {"guarded"}
 
 def compile_elf(out, backend_args):
     r = subprocess.run(
-        [SYNTH, "compile", str(WAT), "-o", out, *backend_args, "--all-exports"],
+        [SYNTH, "compile", str(WAT), "-o", out, *backend_args, "--all-exports", "--allow-skipped-exports"],
         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"},
     )
     if r.returncode != 0:
