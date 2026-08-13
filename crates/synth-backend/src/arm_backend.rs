@@ -410,11 +410,35 @@ fn compile_wasm_to_arm(
             // linear-memory size is a power of two. With a non-power-of-two
             // size the AND would silently REMAP in-bounds addresses (e.g.
             // 0x18000 & 0x2FFFF = 0x8000 for a 192 KiB memory). Decline
-            // loudly rather than miscompile. `linear_memory_bytes == 0`
-            // means "unknown" (plain per-function path, no module context)
-            // — the startup default of one 64 KiB page is a power of two.
+            // loudly rather than miscompile.
+            //
+            // RQ-57-SENTINEL (#953 sibling): `bytes == 0` used to be EXEMPT
+            // from this check, because 0 was read as "unknown — plain
+            // per-function path, no module context". But 0 is also exactly
+            // what a module declaring `(memory 0)` produces, and for that
+            // module the emitted guard (`SUB R12, R10, #1; AND addr, R12`,
+            // R10 = 0 baked by the startup) computes `0 - 1 = 0xFFFFFFFF` —
+            // an IDENTITY mask. Every access then executes unmasked at
+            // `[R11 + addr]` for any 32-bit addr: an unbounded OOB read/write
+            // in the mode whose purpose is bounding. Same sentinel/value
+            // collision as #932/#953, third backend-mode instance.
+            //
+            // 0 now means what #953 made it mean everywhere: a zero-byte
+            // memory. No mask can bound an access into a memory with no bytes
+            // (wasm semantics: every access traps), and wrap-not-trap has
+            // nothing to wrap into — refuse. Callers with no module context
+            // must state the size (the #953 contract; the CLI single-function
+            // path now threads the module's declared size for all backends).
             let bytes = config.linear_memory_bytes;
-            if bytes != 0 && !bytes.is_power_of_two() {
+            if bytes == 0 {
+                return Err("--safety-bounds mask: the linear memory has ZERO bytes \
+                     (`(memory 0)`, or a driver that did not state the size) — \
+                     every access is out of bounds and a mask cannot express a \
+                     trap. Use --safety-bounds software (traps every access) \
+                     or declare a non-zero memory (RQ-57-SENTINEL, #953)"
+                    .to_string());
+            }
+            if !bytes.is_power_of_two() {
                 return Err(format!(
                     "--safety-bounds mask requires a power-of-two linear-memory \
                      size, got {bytes} bytes — switch to --safety-bounds software \
@@ -2263,13 +2287,18 @@ mod tests {
                 align: 2,
             },
         ];
+        // RQ-57-SENTINEL: mask now requires a STATED non-zero power-of-two
+        // size (0 = zero-byte memory = refused), so the test states one —
+        // exactly what the #953 fix required of the rv32 driver test.
         let cfg_mask_opt = CompileConfig {
             safety_bounds: SafetyBounds::Mask,
+            linear_memory_bytes: 64 * 1024,
             ..Default::default()
         };
         let cfg_mask_direct = CompileConfig {
             no_optimize: true,
             safety_bounds: SafetyBounds::Mask,
+            linear_memory_bytes: 64 * 1024,
             ..Default::default()
         };
         let o = backend.compile_function("st", &ops, &cfg_mask_opt).unwrap();
@@ -2279,6 +2308,39 @@ mod tests {
         assert_eq!(
             o.code, d.code,
             "#377: mask on the optimized path must fall back to the direct selector's masking"
+        );
+    }
+
+    /// RQ-57-SENTINEL (#953 sibling): `--safety-bounds mask` with a ZERO-byte
+    /// linear memory must REFUSE at compile time. Before this fix, `bytes == 0`
+    /// was exempt from the power-of-two gate ("0 means unknown"), and the
+    /// emitted `SUB R12, R10, #1; AND` guard degenerated to an IDENTITY mask
+    /// at runtime (R10 = 0 baked by the startup for a `(memory 0)` module):
+    /// an unbounded OOB access in the mode whose purpose is bounding.
+    /// Red-first: pre-fix this compile SUCCEEDED (verified on the v0.56.1
+    /// tree: exit 0, `movw r10, #0x0` in the reset handler, AND-masked body).
+    #[test]
+    fn arm_safety_bounds_mask_zero_size_refused_rq57() {
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let cfg = CompileConfig {
+            safety_bounds: SafetyBounds::Mask,
+            linear_memory_bytes: 0,
+            ..Default::default()
+        };
+        let err = backend
+            .compile_function("ld", &ops, &cfg)
+            .expect_err("mask over a zero-byte memory must refuse, not emit an identity mask");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ZERO bytes"),
+            "refusal must name the zero-byte cause, got: {msg}"
         );
     }
 
