@@ -521,6 +521,107 @@ fn i64_div_declines_with_looped_expansion_reason() {
 }
 
 // ---------------------------------------------------------------------------
+// #936 — I64Const/I64Ldr/I64Str are PRICED, not declined. Gale ran
+// `--emit-wcet` over a real 31-function `gust:os` composite (0.55.0) and
+// found the 9 `unmodeled-op` declines resolved to exactly two opcode
+// families: `I64Const` (6 functions) and `I64Str` (3 functions), with 11
+// more `callee-unbounded` cascades behind them. These ONLY appear on the
+// RELOCATABLE/direct selector (`select_with_stack`, forced by
+// `--relocatable`, #197) — the OPTIMIZED path never emits them (see
+// `coverage()` in `estimator_encoder_agreement.rs`). `I64Ldr` (the load
+// twin, sharing I64Str's `i64_effective_base` address-materialization
+// shape) is priced alongside it in the same lane to avoid an identical
+// cascade-blocking decline (confirmed live: #921's own repro used
+// `i64.load` as its `unmodeled-op` reproduction, retargeted in
+// `wcet_decline_names_op_921.rs` now that it bounds).
+//
+// Cycle literals below are sized from the REAL Thumb-2 encoder's own byte
+// length for each instance (`straightline_expansion_real`, NOT the
+// synth-synthesis byte-size estimator, which does not cover these ops) ×
+// the already-pinned `STRAIGHTLINE_CEIL_PER_HALFWORD`; see the unit tests in
+// `synth-backend/src/wcet.rs` for the exact per-shape byte/cycle
+// derivation, and `scripts/repro/wcet_phase6_936_i64_leaf_soundness.py`
+// for an execution-side (unicorn) cross-check that the bound covers real
+// hardware cycles.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn i64_const_relocatable_leaf_is_bounded() {
+    // `i64.const 1000000`: lo32 needs a MOVT (>0xFFFF), hi32=0 does not —
+    // mirrors gale's `gust:os/time@0.1.0#resolution` I64Const decline.
+    let wat = r#"
+        (module
+          (func (export "k") (result i64)
+            i64.const 1000000))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "k", 52);
+}
+
+#[test]
+fn i64_str_relocatable_leaf_is_bounded() {
+    // `i64.store` a constant — mirrors gale's `exec_admit` I64Str decline.
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "st") (param i32)
+            local.get 0
+            i64.const 42
+            i64.store))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "st", 72);
+}
+
+#[test]
+fn i64_ldr_relocatable_leaf_is_bounded() {
+    // `i64.load` — the load twin of I64Str; #921's own reproduction of an
+    // `unmodeled-op` decline used exactly this shape.
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "ld") (param i32) (result i64)
+            local.get 0
+            i64.load))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "ld", 54);
+}
+
+/// The #936 CASCADE case: a caller with a DIRECT call to an i64.load leaf.
+/// Before #936 the leaf declined `unmodeled-op` (I64Ldr) and the caller
+/// declined `callee-unbounded` — the exact "9 unmodeled-op + 11
+/// callee-unbounded" shape in the issue. Both are now BOUNDED: the leaf
+/// prices, and #778 phase-3 composition (`own_cycles + call-site ×
+/// callee_total`) carries the leaf's bound up through the caller.
+#[test]
+fn i64_ldr_cascade_composes_to_bounded() {
+    let wat = r#"
+        (module
+          (memory 1)
+          (func $leaf (export "leaf") (param i32) (result i64)
+            local.get 0
+            i64.load)
+          (func (export "caller") (param i32) (result i64)
+            local.get 0 call $leaf))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "leaf", 54);
+    // caller = own body (BL overhead + param/result plumbing) + 1x leaf(54).
+    assert_bounded(&report, "caller", 84);
+    // Independent soundness floor, same discipline as the other composed
+    // chains: the composed bound must clear the leaf's own bound (every
+    // call-site multiplier is >= 1).
+    let f = func(&report, "caller");
+    let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
+    assert!(
+        cycles > 54,
+        "caller: composed bound {cycles} does not exceed the leaf's own 54 — \
+         composition did not actually add the callee in"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unsupported / ambiguous cores — decline as `unsupported-core`.
 // ---------------------------------------------------------------------------
 
