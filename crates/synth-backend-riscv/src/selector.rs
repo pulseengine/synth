@@ -1512,7 +1512,11 @@ impl Selector {
 
     /// Registers currently pinned by a live `vstack` value — exactly the values
     /// that must survive until they are popped, and which `alloc_temp` must
-    /// never hand out.
+    /// never hand out. (One caveat: on pool exhaustion `alloc_temp_avoiding`
+    /// still RETURNS `self.temps[0]` — by construction a pinned register — but
+    /// it sets `alloc_exhausted` first and the caller turns that flag into a
+    /// loud per-function decline, so the pinned register is never silently
+    /// clobbered in emitted code.)
     ///
     /// Most entries are temps, but NOT all: `lower_local_get` aliases a
     /// #472-promoted local's callee-saved s-register directly onto the vstack

@@ -91,12 +91,17 @@
 //!   multiply — but *remainder* crosses the tractability line. Deferred
 //!   until the validator can discharge the `MLS` identity with a
 //!   multiplier-aware tactic rather than raw bit-blasting.
-//! - **i64 div_s / div_u / rem_s / rem_u** — synth lowers 64-bit division to
-//!   a *runtime-library call* (`__aeabi_ldivmod` and friends); there is no
-//!   fixed 32-bit ARM instruction sequence to symbolically execute. Modeling
-//!   a fictitious native 64-bit divide would certify a lowering the compiler
-//!   never emits. These are deferred until the validator can reason about
-//!   helper-call summaries.
+//! - **i64 div_s / div_u / rem_s / rem_u** — synth expands 64-bit division
+//!   *inline* to a software long-division sequence with an internal
+//!   64-iteration runtime loop (`arm_encoder.rs`, the `I64DivU`/`I64DivS`/
+//!   `I64RemU`/`I64RemS` arms; no `__aeabi_*` library call is ever emitted —
+//!   `__aeabi` appears in this tree only in comments). A looped expansion has
+//!   no fixed straight-line instruction sequence for this validator's
+//!   symbolic executor to walk, and unrolling 64 rounds of a symbolic
+//!   long-division bit-blasts past any practical solver budget (the same
+//!   tractability line the i32 `MLS` remainder identity already crosses).
+//!   Deferred until the validator can discharge looped expansions via loop
+//!   summaries/invariants rather than raw unrolling.
 //! - **Clz / Ctz / Popcnt** (i32 and i64) — bit-counting. The 32-bit ARM
 //!   `CLZ` is available, but `Ctz`/`Popcnt` are lowered to multi-instruction
 //!   bit-twiddling and `i64.clz/ctz/popcnt` combine two limbs conditionally.
