@@ -525,15 +525,23 @@ fn i64_div_declines_with_looped_expansion_reason() {
 // `--emit-wcet` over a real 31-function `gust:os` composite (0.55.0) and
 // found the 9 `unmodeled-op` declines resolved to exactly two opcode
 // families: `I64Const` (6 functions) and `I64Str` (3 functions), with 11
-// more `callee-unbounded` cascades behind them. These ONLY appear on the
-// RELOCATABLE/direct selector (`select_with_stack`, forced by
-// `--relocatable`, #197) — the OPTIMIZED path never emits them (see
-// `coverage()` in `estimator_encoder_agreement.rs`). `I64Ldr` (the load
-// twin, sharing I64Str's `i64_effective_base` address-materialization
-// shape) is priced alongside it in the same lane to avoid an identical
-// cascade-blocking decline (confirmed live: #921's own repro used
-// `i64.load` as its `unmodeled-op` reproduction, retargeted in
-// `wcet_decline_names_op_921.rs` now that it bounds).
+// more `callee-unbounded` cascades behind them. `I64Ldr` is a SEPARATE
+// finding, not one of gale's 9 (#921's own `unmodeled-op` reproduction used
+// `i64.load`, retargeted in `wcet_decline_names_op_921.rs` now that it
+// bounds) — priced alongside I64Const/I64Str because it shares I64Str's
+// `i64_effective_base` address-materialization shape. These are reachable on
+// the RELOCATABLE/direct selector (`select_with_stack`, forced by
+// `--relocatable`, #197); the OPTIMIZED path is hand-classified `OffPath` for
+// them in `coverage()` (`estimator_encoder_agreement.rs`), a claim that
+// file's own doc says it cannot prove exhaustively going forward.
+//
+// HONEST RESIDUAL: `scan_for_decline` reports only the FIRST decline per
+// function, so pricing these three does not mean every i64-touching function
+// now bounds — `I64Sub`, `I64ExtendI32S`/`I64ExtendI32U`, and `I32WrapI64`
+// are ALSO real direct-selector emissions with no price (found during this
+// audit, not priced here — scoped follow-up). A function that narrows an
+// i64 read to i32 (`i64.load` + `i32.wrap_i64`) still declines, now on
+// `I32WrapI64` rather than `I64Ldr`.
 //
 // Cycle literals below are sized from the REAL Thumb-2 encoder's own byte
 // length for each instance (`straightline_expansion_real`, NOT the
@@ -618,6 +626,41 @@ fn i64_ldr_cascade_composes_to_bounded() {
         cycles > 54,
         "caller: composed bound {cycles} does not exceed the leaf's own 54 — \
          composition did not actually add the callee in"
+    );
+}
+
+/// HONEST RESIDUAL, measured not asserted: pricing I64Const/I64Ldr/I64Str
+/// does NOT mean every i64-touching function now bounds. `scan_for_decline`
+/// reports only the FIRST decline, and `i32.wrap_i64` (narrowing an i64 read
+/// to i32 — a plausible OS shape) still lowers to the unpriced `I32WrapI64`
+/// pseudo-op. This function's i64.load and i64.const/i64.add all price fine;
+/// it declines on the wrap at the end, proving the fix is scoped to exactly
+/// the two (three, with I64Ldr) opcode families it claims and not a general
+/// "i64 is now bounded" claim.
+#[test]
+fn i32_wrap_i64_after_priced_i64_ops_still_declines() {
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "narrow") (param i32) (result i32)
+            local.get 0 i64.load i64.const 3 i64.add i32.wrap_i64))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    let f = func(&report, "narrow");
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("declined"),
+        "narrow: expected declined (I32WrapI64 unpriced), got {f}"
+    );
+    assert_eq!(
+        f.get("reason").and_then(Value::as_str),
+        Some("unmodeled-op")
+    );
+    assert_eq!(
+        f.get("op").and_then(Value::as_str),
+        Some("I32WrapI64"),
+        "narrow: expected the residual decline to name I32WrapI64 (the i64.load/ \
+         i64.const/i64.add ahead of it all price now); got {f}"
     );
 }
 

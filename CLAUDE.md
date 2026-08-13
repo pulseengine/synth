@@ -242,20 +242,32 @@ frozen and oracle-gated every step:
   unhinted/too-low/unmasked reject) and the `wcet_phase5_778_masked_loop_soundness.py`
   unicorn cross-check (count-down `cd(0)` executes 180 insns ≤ 339 cyc). Richer
   certificates (clamp-bounded controlling values, data-dependent recursion depths,
-  scry) are a named follow-up. #936: `I64Const`/`I64Ldr`/`I64Str` — reachable
-  ONLY on the RELOCATABLE/direct selector (`select_with_stack`, #197), which
-  gale's whole-object `--emit-wcet` run over a real `gust:os` composite showed
-  behind ALL 9 `unmodeled-op` declines (and 11 `callee-unbounded` cascades
-  behind those) — are now PRICED rather than declined. Sized from the REAL
-  Thumb-2 encoder's own byte length per instance
-  (`straightline_expansion_real`), not a hand-mirrored predicate: an exact
-  hand mirror of `i64_effective_base`'s offset-fold threshold was tried first
-  and found UNSOUND at authoring (the address-materialization `ADD` can need
-  its own `MOVW` for a large offset, which only the real encoder's own output
-  reflects) — the same drift class `op_mnemonic`'s "no second source of truth
-  to forget to update" already guards against elsewhere in this file. Gated
-  by `wcet_bound_gate.rs` (leaf + cascade-composition cases) and the
-  `wcet_phase6_936_i64_leaf_soundness.py` unicorn cross-check.
+  scry) are a named follow-up. #936: `I64Const`/`I64Ldr`/`I64Str` are now
+  PRICED rather than declined — reachable on the RELOCATABLE/direct selector
+  (`select_with_stack`, #197; `coverage()` in `estimator_encoder_agreement.rs`
+  hand-asserts they are OffPath for the optimized selector, a claim that file's
+  own doc says it cannot prove exhaustively). `I64Const`/`I64Str` are the two
+  opcode families gale's whole-object `--emit-wcet` run over a real `gust:os`
+  composite found behind all 9 of its `unmodeled-op` declines (and 11
+  `callee-unbounded` cascades behind those); `I64Ldr` is a separate finding —
+  #921's own `unmodeled-op` reproduction used `i64.load` — priced alongside
+  its two siblings because it shares `i64_effective_base`'s address-
+  materialization shape. Sized from the REAL Thumb-2 encoder's own byte length
+  per instance (`straightline_expansion_real`), not a hand-mirrored predicate:
+  an exact hand mirror of `i64_effective_base`'s offset-fold threshold was
+  tried first and found UNSOUND at authoring (the address-materialization
+  `ADD` can need its own `MOVW` for a large offset, which only the real
+  encoder's own output reflects) — the same drift class `op_mnemonic`'s "no
+  second source of truth to forget to update" already guards against
+  elsewhere in this file. HONEST RESIDUAL: `scan_for_decline` reports only the
+  FIRST decline per function, and the #936 audit found `I64Sub` (a saturating
+  trunc-sat conversion sequence), `I64ExtendI32S`/`I64ExtendI32U`, and
+  `I32WrapI64` are ALSO real direct-selector emissions with no price — a
+  function that narrows an i64 read to i32 (`i64.load` + `i32.wrap_i64`, a
+  plausible OS shape) still declines, now on `I32WrapI64` instead of `I64Ldr`
+  (measured); NOT priced by this lane. Gated by `wcet_bound_gate.rs` (leaf +
+  cascade-composition cases) and the `wcet_phase6_936_i64_leaf_soundness.py`
+  unicorn cross-check.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the
