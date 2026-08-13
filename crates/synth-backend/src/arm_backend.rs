@@ -1546,7 +1546,12 @@ fn compile_wasm_to_arm(
     // sits between the branch and its target (UsageFault on real hardware).
     // Only meaningful for Thumb-2 (the offset units are halfword/PC+4).
     let arm_instrs = if use_thumb2 {
-        resolve_label_branches(arm_instrs, &encoder)?
+        let resolved = resolve_label_branches(arm_instrs, &encoder)?;
+        // SC-5 (#740/#930): hard-gate every branch target onto the
+        // instruction-start set of the final stream — both codegen paths
+        // funnel through here. See `validate_branch_targets`.
+        validate_branch_targets(&resolved, &encoder)?;
+        resolved
     } else {
         arm_instrs
     };
@@ -1812,6 +1817,89 @@ fn resolve_label_branches(
         }
     }
     Ok(resolved)
+}
+
+/// SC-5 branch-target boundary gate (#740, #930): every emitted branch target
+/// must be a member of the instruction-start set of the final stream.
+///
+/// "Branch offset calculation shall account for Thumb instruction alignment
+/// and variable instruction widths" (`safety/stpa/system-constraints.yaml`
+/// SC-5). Thumb-2 mixes 16- and 32-bit encodings, so an off-by-one-halfword
+/// target lands on the SECOND halfword of a wide instruction and the CPU
+/// executes a halfword that was never an instruction — silent garbage, exit 0
+/// (#930: the skipped `movw` left the `br_if` condition register at its reset
+/// value). Both known escapes of that sentence were of this class: #740
+/// (`B<cond>.W` T3 offset halved) and #930 (inner-block end label never
+/// emitted, `b #0` placeholder). The encoder knows where every instruction
+/// starts, so a target outside that set is a hard error here rather than
+/// silent garbage on target.
+///
+/// Runs on the FINAL Thumb-2 stream for BOTH codegen paths — the direct
+/// (`select_with_stack`, label branches byte-resolved above) and the optimized
+/// (`optimizer_bridge`, numeric `BOffset`/`BCondOffset` pre-resolved inline) —
+/// since both funnel through this encode pipeline. Two checks, jointly total
+/// over local control flow:
+///
+/// 1. every numeric branch target is in the instruction-start set;
+/// 2. no LOCAL (`.L`-prefixed) label branch survives unresolved — the resolver
+///    deliberately skips labels it cannot find because an external target
+///    (`Trap_Handler`, `func_N`) is legitimately absent and patched by
+///    relocation, but a `.L` label is only ever defined in this same stream,
+///    so an unresolved one is a dropped label (#930), not an external.
+///
+/// A32 (Cortex-R5) is fixed-width, so the mid-instruction class needs no gate
+/// there (and its branches do not flow through the Thumb-2 resolver).
+fn validate_branch_targets(instrs: &[ArmInstruction], encoder: &ArmEncoder) -> Result<(), String> {
+    use std::collections::HashSet;
+
+    // Byte position of each element (`Label` encodes to 0 bytes, so a label's
+    // position is exactly the start of the instruction that follows it).
+    let mut positions = Vec::with_capacity(instrs.len());
+    let mut pos: i64 = 0;
+    for instr in instrs {
+        positions.push(pos);
+        pos += encoder
+            .encode(&instr.op)
+            .map_err(|e| format!("SC-5 branch-target gate: size probe failed: {}", e))?
+            .len() as i64;
+    }
+    let starts: HashSet<i64> = positions.iter().copied().collect();
+
+    for (i, instr) in instrs.iter().enumerate() {
+        let offset = match &instr.op {
+            ArmOp::BOffset { offset } => *offset,
+            ArmOp::BCondOffset { offset, .. } => *offset,
+            ArmOp::B { label }
+            | ArmOp::Bcc { label, .. }
+            | ArmOp::Bhs { label }
+            | ArmOp::Blo { label }
+                if label.starts_with(".L") =>
+            {
+                return Err(format!(
+                    "SC-5 branch-target gate: local branch label '{}' is not \
+                     defined anywhere in the emitted stream (branch at byte \
+                     offset 0x{:x}). A `.L` label is only ever defined locally, \
+                     so this is a dropped label (the #930 class) — the branch \
+                     would encode as a `b #0` placeholder and land \
+                     mid-instruction. Refusing to emit a miscompiled object.",
+                    label, positions[i]
+                ));
+            }
+            _ => continue,
+        };
+        // Thumb branch semantics: target = branch_pc + 4 + 2*offset.
+        let target = positions[i] + 4 + 2 * offset as i64;
+        if !starts.contains(&target) {
+            return Err(format!(
+                "SC-5 branch-target gate: branch at byte offset 0x{:x} targets \
+                 0x{:x}, which is not an instruction boundary (instruction-start \
+                 set violation — the target lands mid-instruction, the \
+                 #740/#930 class). Refusing to emit a miscompiled object.",
+                positions[i], target
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
