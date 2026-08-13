@@ -97,10 +97,40 @@
     (local.set 0 (i64.mul (local.get 0) (i64.extend_i32_u (local.get 1))))
     (local.get 0))
 
+  ;; --- the #457 param-count INFERENCE miscompile ---------------------------
+  ;; param 1 is written before it is read in LINEAR op order, but only
+  ;; CONDITIONALLY. The aarch64 driver inferred a function's param count from
+  ;; "which indices are READ FIRST" and capped it with the declared count, so
+  ;; param 1 was reclassified as a NON-PARAM local and ZERO-INITIALIZED — and
+  ;; the function compiled SILENTLY WRONG rather than declining: with p0 == 0
+  ;; the `if` never runs and the result must be the INCOMING p1, but the
+  ;; emitted code returned 0. MEASURED on c2f9d72 (before this increment):
+  ;;   cond_write_param(0, 42): wasmtime=42 synth=0
+  ;; The inference now uses the highest REFERENCED index (still capped by the
+  ;; declared count), so param 1 is a param and gets homed from x1.
+  (func (export "cond_write_param") (param i32 i32) (result i32)
+    (if (local.get 0)
+      (then (local.set 1 (i32.const 5))))
+    (local.get 1))
+
+  ;; The same hazard one index further out, and with the write inside a LOOP
+  ;; body that may execute zero times. Correct = p2 when p0 == 0.
+  (func (export "cond_write_param_loop") (param i32 i32 i32) (result i32)
+    (block
+      (loop
+        (br_if 1 (i32.eqz (local.get 0)))
+        (local.set 2 (i32.add (local.get 2) (local.get 1)))
+        (local.set 0 (i32.sub (local.get 0) (i32.const 1)))
+        (br 0)))
+    (local.get 2))
+
   ;; --- NON-LEAF regression guard -------------------------------------------
   ;; This shape already compiled (the v0.54 L3 non-leaf homing); it is here so
-  ;; the widened homing predicate cannot regress it. Correct = 3*p + 1.
+  ;; the widened homing predicate cannot regress it. The `call` is evaluated
+  ;; with an EMPTY value stack on purpose — a live temp across a call is a
+  ;; SEPARATE, still-live aarch64 decline ("value stack holds N entries but
+  ;; needs exactly 0"), not something param homing addresses. Correct = 3*p + 1.
   (func $one (result i32) (i32.const 1))
   (func (export "param_write_across_call") (param i32) (result i32)
     (local.set 0 (i32.mul (local.get 0) (i32.const 3)))
-    (i32.add (local.get 0) (call $one))))
+    (i32.add (call $one) (local.get 0))))
