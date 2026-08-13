@@ -1133,7 +1133,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
     doc: .github/workflows/ci.yml
-    text: "--min-emulation-floor 295710"
+    text: "--min-emulation-floor 295726"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
