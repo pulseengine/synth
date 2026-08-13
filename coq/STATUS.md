@@ -1,8 +1,9 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-17 (VCR-WASM-001 phase 3 wiring: recount 591 Qed / 3 Admitted,
+**Last Updated: 2026-08-13 (#933 `i32_const_correct` closed via boundary
+normalization: recount 592 Qed / 2 Admitted,
 +2 admit., crude `grep "Qed\."` over `coq/Synth/**/*.v` — same method
-as prior recounts; +6 vs the prior 585 are the six i64 arithmetic/bitwise
+as prior recounts; the 2026-07-17 VCR-WASM-001 phase 3 note: +6 vs the prior 585 are the six i64 arithmetic/bitwise
 executor-level refinement theorems in `WasmCertBridge.v`
 (add/sub/mul/and/or/xor). Those six ops are now WIRED in `exec_wasm_instr`
 (pop2_i64 / VI64, mirroring their i32 twins), so their executor-level
@@ -116,13 +117,16 @@ The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
   model under-trapped exactly where the compiled guard and the WASM spec
   trap — the theorem was FALSE as previously stated).
 
-**Total admits: 3** (was 5, #166) — 1 CorrectnessSimple.v, 2 ArmRefinement.v;
+**Total admits: 2** (was 3 until #933, 5 until #166) — 2 ArmRefinement.v;
 0 division admits (#73 CLOSED at i32). #166 (v0.46 verify-what-ships) discharged
 the 2 `Compilation.v` example admits (`ex_compile_simple_add`,
 `ex_compile_increment_local`) via `vm_compute` on the constant-size guard, and
 proved the shipped MOVW+MOVT large-constant reconstruction
-(`movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`, both real Qed) — see
-the #166 T3 section below for the remaining 3. The headline count grew 291 → 467
+(`movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`, both real Qed).
+#933 closed the former `i32_const_correct` T3 by normalizing `I32Const` at the
+WASM model boundary (push `VI32 (I32.repr n)`) — contract (a) of the T3 note,
+argued in `WasmSemantics.v`, not applied silently — see
+the #166 T3 section below for the remaining 2. The headline count grew 291 → 467
 because the recount now includes everything landed since 2026-06-04
 (SailArmBridge rounds 1–3, VcrSelRules increments, VcrSelExpansion, i64
 certifying validation lemmas).
@@ -234,7 +238,7 @@ umbrella #147).
 |------|---------|-------|
 | **T1: Result Correspondence** | ARM output register = WASM result value | 37¹ |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139¹ |
-| **T3: Admitted / admit.** | Not yet proven | 5 (3 Admitted + 2 admit.) |
+| **T3: Admitted / admit.** | Not yet proven | 4 (2 Admitted + 2 admit.) |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
 ¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
@@ -242,7 +246,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 591 Qed / 3 Admitted (+2 admit.) across all files** (recount 2026-07-17, CI-gated via `claims.yaml`)
+**Total: 592 Qed / 2 Admitted (+2 admit.) across all files** (recount 2026-08-13, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -356,27 +360,37 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (3 Admitted + 2 admit., #166 recount)
+## T3: Admitted (2 Admitted + 2 admit., #933 recount)
 
 > History (all now Qed, kept for the audit trail): v0.10.0 PR 1 lifted
 > `i64_add_correct` / `i64_sub_correct`; v0.10.0 PR 2 closed
 > `i64_to_i32_to_i64_wrap` (Integers.v); v0.11.0 closed the i64 And/Or/Xor
 > trio; #73 (v0.43) closed all four i32 div/rem trap guards including
 > `i32_divs_correct` against `exec_program_br`; #166 (v0.46) discharged the
-> 2 `Compilation.v` example admits. **No remaining control-flow-model or
-> division admits.** The 3 residuals below are one constant-representation
-> modeling gap and two Sail-axiom placeholders.
+> 2 `Compilation.v` example admits; #933 closed `i32_const_correct` (the
+> former constant-representation modeling gap) by normalizing `I32Const` at
+> the WASM model boundary. **No remaining control-flow-model, division, or
+> constant-representation admits.** The 2 residuals below are the two
+> Sail-axiom placeholders.
 
 | File | Count | Root Cause | Unblocking Strategy |
 |------|-------|------------|---------------------|
-| CorrectnessSimple.v | 1 | `i32_const_correct` — **#166 DOCUMENTED MODELING-GAP T3, not a missing proof.** The MOVW+MOVT reconstruction arithmetic IS proven (`movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`, both real Qed): the shipped large-constant path yields `I32.repr (I32.unsigned n) = I32.unsigned n`. The residual is a value-representation mismatch — `exec_wasm_instr (I32Const n)` pushes the RAW `Z` representative `n` (WasmSemantics does not normalize), so the theorem's `= n` is FALSE in the large branch for out-of-range `n` (concrete counterexample: `n = 2^32 + 0x10000`). | Change of contract (not a new proof): normalize `I32Const` at the WASM boundary (push `VI32 (I32.repr n)`), then `i32_const_large_reconstruct` discharges it; OR add the `I32.valid_unsigned n` register-normalization hypothesis (the #73 div_s precedent). Neither applied silently per the #166 no-weakening gate. |
 | ArmRefinement.v | 2 (Admitted) + 2 (`admit.`) | `arm_refines_sail`, `add_refines_sail` — **#166 confirmed GENUINE T3**: `SailARM.sail_exec_instr` is an opaque `Axiom` (no defining equation), so the required `= Some s_sail'` witness is not derivable. Each theorem also carries one `admit.` tactic (the 2 disclosed `admit.`). | Replace the axiom with a real computational Sail semantics; the live per-instruction ADD/ADDS/CMP correspondence already exists in `SailArmBridge.v` (this placeholder file is superseded). |
 
 **Discharged since the table's original "(13)" snapshot** (all now Qed, no longer
 admitted): `Integers.v` `i64_to_i32_to_i64_wrap`; `CorrectnessI64.v`
 `i64_and/or/xor_correct`; `CorrectnessSimple.v` `i64_const_correct`;
 `CorrectnessI32.v` all four i32 div/rem trap guards (`i32_divs_correct` last, #73);
-`Compilation.v` `ex_compile_simple_add` + `ex_compile_increment_local` (#166).
+`Compilation.v` `ex_compile_simple_add` + `ex_compile_increment_local` (#166);
+`CorrectnessSimple.v` `i32_const_correct` (#933 — the theorem as previously
+stated quantified over un-normalized `Z` representatives and was FALSE
+(counterexample `n = 2^32 + 0x10000`); per the #166 no-weakening gate the fix
+was an ARGUED change of contract, not a hypothesis bolted on to force a Qed:
+`exec_wasm_instr (I32Const n)` now pushes `VI32 (I32.repr n)` — what a wasm
+`i32.const` immediate IS, a 32-bit value — and the small-branch MOVW immediate
+is the value's bits `I32.repr (I32.unsigned n)`, what the shipped encoder
+emits; both are identities on every reachable in-range constant, and
+`i32_const_large_reconstruct` + `I32.repr_unsigned` discharge the theorem).
 
 ## VFP Semantics (Phase 5 — New)
 
@@ -502,7 +516,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
-| CorrectnessSimple.v | 30 | 1 | T2 + 1 admitted (`i32_const_correct` — #166 documented modeling-gap T3; +2 real Qed added: `movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`) |
+| CorrectnessSimple.v | 31 | 0 | T2 + T1 (`i32_const_correct` closed #933 via boundary normalization; the #166 reconstruction Qed `movw_movt_reconstruct_Z`, `i32_const_large_reconstruct` discharge its large branch) |
 | CorrectnessI32.v | 31 | 0 | T1 — all four #73 div/rem trap-guard proofs discharged against `exec_program_br` (i32_divs_correct closed 2026-07-15 with the INT_MIN/-1 double-guard case split) |
 | CorrectnessI64.v | 46 | 0 | T1 (arith/bitwise/div/rem) + T2 (shifts/cmps/bit-manip) — 0 i64 admits since v0.11.0 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |

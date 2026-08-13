@@ -297,9 +297,22 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
   (* Constants *)
   | I32Const n =>
       (* Load immediate into R0. MOVW handles 16-bit immediates;
-         values > 65535 require MOVW+MOVT to set both halves. *)
+         values > 65535 require MOVW+MOVT to set both halves.
+
+         #933: the small-branch immediate is the constant's VALUE bits
+         [I32.repr (I32.unsigned n)], not the raw [Z] representative [n] —
+         harmonizing with the large branch below, whose MOVW/MOVT immediates
+         were ALWAYS built from [I32.unsigned n]. This is what the shipped
+         Rust encoder emits: MOVW's imm16 field is derived from the value's
+         low bits and the hardware zero-extends it, so the register after
+         MOVW can only ever hold a normalized 32-bit value; a model register
+         holding a negative or >= 2^32 representative after MOVW modeled no
+         reachable machine state. For in-range [n] (guard true means
+         [I32.unsigned n <= 65535]; in-range means [n] IS its value)
+         [I32.repr (I32.unsigned n) = n] — identical instructions on the
+         reachable domain. *)
       if Z.leb (I32.unsigned n) 65535 then
-        [MOVW R0 n]
+        [MOVW R0 (I32.repr (I32.unsigned n))]
       else
         [MOVW R0 (I32.repr (Z.land (I32.unsigned n) 65535));
          MOVT R0 (I32.repr (Z.shiftr (I32.unsigned n) 16))]
