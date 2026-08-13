@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-08-13
+
+Security patch. One fix.
+
+### Fixed
+
+- **rv32: a module declaring `(memory 0)` got a 65532-byte bounds guard (#953,
+  SECURITY).** `--safety-bounds software` is the mode whose entire purpose is to
+  make every out-of-bounds access trap. A zero-page module got a bound baked at
+  **65532** — byte-for-byte the guard of a 1-page module — so every address in
+  `0..=65532` passed the check and the access was performed against a memory with
+  no bytes. Reads **and** writes.
+
+  ```
+  lui  t1, 0x10          ; 65536
+  addi t1, t1, -0x4      ; 65532   <- bound for a ZERO-byte memory
+  bltu t1, t0, ...       ; trap only if 65532 < addr
+  ```
+
+  Root cause: `0` used as both a value and a sentinel.
+  `config.linear_memory_bytes == 0` meant "unset — a hand-built driver with no
+  module context, fall back to 1 page" **and** is exactly what `(memory 0)`
+  produces. The two were indistinguishable, so the fallback invented a bound for
+  a module that declared none.
+
+  This is the same defect as #932 — fixed in v0.56.0 — running the other way:
+  there `unwrap_or(0)` turned "no floor establishable" into "the floor is 0
+  bytes" and *stripped* guards; here `0` meant "unset" and *invented* one.
+
+  The fallback is deleted. `linear_memory_bytes` is now the size, full stop —
+  `0` means zero bytes, and a caller with no module context states the size.
+  That was measured rather than assumed: removing it broke exactly one test, and
+  the bytes it rejected contained `ebreak` — rv32 already folds to an
+  unconditional trap at size 0, which is correct and is what **aarch64** does
+  (`brk #0`). ARM was never affected; it derives its bound from a runtime
+  register with an underflow check. **rv32 was the anomaly**, which is what makes
+  this a fallback to delete rather than a design gap to fill.
+
+  Gated by `rv32_zero_memory_953_differential.py` (CI-wired): 9 vectors across
+  load/store/load8, asserting synth traps **iff** wasmtime traps, observed as a
+  real `ebreak` intercept rather than a wrong return value. **6/9 failed before
+  the fix, 9/9 pass after**; the three `65536` vectors trapped beforehand too and
+  are the non-vacuity control.
+
+  Reported by gale 30 minutes after v0.56.0 published.
+
+
 ## [0.56.0] - 2026-08-12
 
 **The factory, not the instances.** Two silent miscompiles closed, and — the
