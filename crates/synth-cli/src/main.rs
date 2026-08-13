@@ -2726,9 +2726,7 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVeri
     // summary omitted. Deferred obligations are named so a consumer can join
     // against the Rocq theorem inventory instead of re-deriving selection.
     if !declined.is_empty() {
-        println!(
-            "  Declined (not SMT-verified; deferred to per-rule Rocq obligations):"
-        );
+        println!("  Declined (not SMT-verified; deferred to per-rule Rocq obligations):");
         for d in &declined {
             match d.rocq_theorem {
                 Some(thm) => println!(
@@ -7141,7 +7139,10 @@ fn verify_command(
                 declined
             );
             for (reason, (kinds, ops)) in &by_reason {
-                println!("  declined {}: {} rule kinds, {} instructions", reason, kinds, ops);
+                println!(
+                    "  declined {}: {} rule kinds, {} instructions",
+                    reason, kinds, ops
+                );
             }
 
             if let Some(report_path) = &emit_verify_report {
@@ -7171,11 +7172,9 @@ fn verify_command(
                             .collect::<serde_json::Map<String, serde_json::Value>>(),
                     },
                 });
-                std::fs::write(report_path, serde_json::to_string_pretty(&sidecar)?)
-                    .context(format!(
-                        "Failed to write verify report: {}",
-                        report_path.display()
-                    ))?;
+                std::fs::write(report_path, serde_json::to_string_pretty(&sidecar)?).context(
+                    format!("Failed to write verify report: {}", report_path.display()),
+                )?;
                 println!("  Verify report written: {}", report_path.display());
             }
 
