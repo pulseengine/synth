@@ -406,16 +406,14 @@ claims:
   # "verified"/"implemented" wording — bound to the roadmap yaml's status
   # field, never free-floating prose. rivet's status lifecycle is the source.
   # ---------------------------------------------------------------------------
-  - id: SYNTH-VCR-RA-001-VERIFIED
-    doc: README.md
-    text: "allocator with liveness-based Belady spilling: `verified`"
-    evidence:
-      - kind: yaml-field
-        path: artifacts/verified-codegen-roadmap.yaml
-        id: VCR-RA-001
-        field: status
-        equals: verified
-
+  # NOTE (v0.57 README portal): the README no longer RESTATES per-item VCR
+  # statuses — it points at epic #242 and the roadmap yaml instead, because
+  # restating them is precisely how three of these drifted stale while the
+  # machine-derived badges stayed correct. Claims that pinned the deleted
+  # README prose were re-pointed to CLAUDE.md, which still makes the claim in
+  # prose; the EVIDENCE is unchanged, so the gate lost no strength. The old
+  # SYNTH-VCR-RA-001-VERIFIED was dropped outright rather than re-pointed —
+  # the -CLAUDE-MD twin below already asserts the identical yaml-field.
   - id: SYNTH-VCR-RA-001-VERIFIED-CLAUDE-MD
     doc: CLAUDE.md
     text: "`VCR-RA-001` allocator with Belady spilling — **verified,"
@@ -427,8 +425,8 @@ claims:
         equals: verified
 
   - id: SYNTH-VCR-VER-001-DEMONSTRATED
-    doc: README.md
-    text: "**demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md))"
+    doc: CLAUDE.md
+    text: "DEMONSTRATED (implemented, evidence in"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -515,8 +513,8 @@ claims:
         expect: 1
 
   - id: SYNTH-VCR-SEL-001-STATUS
-    doc: README.md
-    text: "increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`)"
+    doc: CLAUDE.md
+    text: "increments 1–4 shipped **default-on**"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -525,8 +523,8 @@ claims:
         equals: implemented
 
   - id: SYNTH-VCR-ISA-001-STATUS
-    doc: README.md
-    text: "approved — Sail/ASL bridge spike landed"
+    doc: CLAUDE.md
+    text: "approved, Sail/ASL bridge spike landed"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -535,6 +533,36 @@ claims:
         equals: approved
       - kind: file-exists                    # lemma count flows via status.json
         path: coq/Synth/ARM/SailArmBridge.v
+
+  # ---------------------------------------------------------------------------
+  # Parity numbers (#390 / VCR-PERF-002). The v0.57 README North Star section is
+  # a POINTER, but it still QUOTES four figures from the benchmark — the
+  # 1.64x-3.48x default-path spread, and the 0.54x / 1.00x proven-premise
+  # results that carry the "verification buys something LLVM cannot" argument.
+  # A number quoted in the README is exactly what this ledger exists to pin, so
+  # the benchmark joins the claim surface rather than being allowlisted out of
+  # it. (Both endpoints of the spread are pinned, not just the headline: a
+  # single endpoint would let the other drift silently, which is the same
+  # one-sided-bound mistake the WCET masked-loop work had to fix.)
+  #
+  # The count-min is a deliberate FLOOR ON UNMEASURED-NESS, not on progress: it
+  # goes red when gale's silicon lands and cells stop reading OPEN — which is
+  # exactly when the README's "Cycles are not measured" caveat must be rewritten
+  # rather than quietly left standing as a false disclaimer.
+  - id: SYNTH-PARITY-BENCH-NUMBERS
+    doc: artifacts/parity-benchmark.md
+    text: "0.54x"
+    evidence:
+      - kind: verbatim                       # bounds-guard tax gone: guarded == unguarded
+        text: "1.00x"
+      - kind: verbatim                       # worst default-path row (gust_poll)
+        text: "3.48x"
+      - kind: verbatim                       # best default-path row (falcon_axis f32)
+        text: "1.64x"
+      - kind: count-min
+        pattern: 'OPEN — gale silicon \(DWT\)'
+        glob: ['artifacts/parity-benchmark.md']
+        min: 15
 
   # ---------------------------------------------------------------------------
   # ISA-model basis (#867) — the #682 class made an explicit, counted,
@@ -639,7 +667,11 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-SEL-DSL-RULES
     doc: README.md
-    text: "every manifest rule has a 1:1 Qed correctness theorem"
+    # README asserted this TWICE — once in the North Star section (deleted in
+    # the v0.57 portal rewrite) and once here in the verification section,
+    # where it wraps across a line. Pin the surviving single-line substring;
+    # the assertion and its count-same evidence are unchanged.
+    text: "rule has a 1:1 Qed correctness theorem"
     evidence:
       - kind: count-same
         legs:
