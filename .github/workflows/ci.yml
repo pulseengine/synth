@@ -260,7 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295710 \
+            --min-emulation-floor 295726 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1141,6 +1141,23 @@ jobs:
       # 32-bit T3 conditional branch. RED on v0.42.0 (5/6 cases) -> GREEN.
       - name: Run wide-B<cond>.W branch-target oracle (#740, cortex-m4)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/brif_outer_740_differential.py
+      # #930: sibling of #740 on the SAME SC-5 sentence ("branch offset
+      # calculation shall account for Thumb instruction alignment and variable
+      # instruction widths"). The direct selector's End handler misattributed
+      # a block-End inside an if-arm to the enclosing if, so the block's end
+      # label was NEVER emitted and its `br` encoded as a `b #0` placeholder
+      # landing on the second halfword of a 32-bit movw (labels.wast br /
+      # br_if2 — silent wrong value, exit 0). Executes both labels.wast shapes
+      # plus both if-edges and both br_if-edges under unicorn vs wasmtime on
+      # BOTH ARM codegen paths (--relocatable direct + default optimized),
+      # scratch registers seeded with a nonzero sentinel so a read of the
+      # never-written condition register cannot green by lucky zero.
+      # RED on 47f8ab84 (14/16 vectors, both paths) -> GREEN with the fix.
+      # The compile-time half of SC-5's discharge is validate_branch_targets
+      # (arm_backend.rs): any branch target outside the instruction-start set
+      # of the final stream is a hard compile error, not silent garbage.
+      - name: Run branch-target mid-instruction boundary oracle (#930, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/branch_boundary_930_differential.py
       # #406 (VCR-MEM-002 phase 1): N wasm memories = N DISTINCT native base
       # regions. Memory 0 keeps the runtime R11 base; memory k > 0 is
       # addressed via its own __synth_wasm_data_<k> symbol at the base of the

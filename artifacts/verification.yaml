@@ -440,3 +440,64 @@ artifacts:
           28+ tests: roundtrip primitives, string encoding (UTF-8,
           UTF-16, Latin-1), records, variants, options, results, enums,
           flags, lists, memory bounds checking
+
+  # ---------------------------------------------------------------------------
+  # SC-5 discharge (#740, #930) — branch-target instruction-boundary gate
+  #
+  # SC-5's last sentence ("Branch offset calculation shall account for Thumb
+  # instruction alignment and variable instruction widths") had NO verification
+  # artifact: its only downward links were two omnibus draft requirements
+  # (FR-002, FR-008), and both known escapes of the sentence (#740, #930) were
+  # silent and found from outside. This artifact's subject IS that sentence,
+  # linked `verifies` onto SC-5 itself — not onto FR-002 generally, which is
+  # the coarse-granularity anti-pattern that left the chain open.
+  # ---------------------------------------------------------------------------
+
+  - id: VER-SC5-001
+    type: sys-verification
+    title: Branch targets are instruction-stream boundaries (SC-5 discharge)
+    description: >
+      Verifies SC-5: "Branch offset calculation shall account for Thumb
+      instruction alignment and variable instruction widths." Every branch
+      target emitted for Thumb-2 must be a member of the instruction-start
+      set of the final instruction stream — Thumb-2 mixes 16- and 32-bit
+      encodings, so an off-by-one-halfword target lands on the second
+      halfword of a wide instruction and the CPU executes bytes that were
+      never an instruction (silent wrong value, exit 0). Two mechanisms:
+      (1) a compile-time TOTAL gate, validate_branch_targets
+      (crates/synth-backend/src/arm_backend.rs), runs unconditionally on the
+      final Thumb-2 stream of BOTH codegen paths (direct/--relocatable and
+      optimized) and hard-errors the compile when any numeric branch target
+      is outside the instruction-start set OR any .L-local label branch
+      survives unresolved (a dropped label — only external targets are
+      legitimately absent and relocation-patched); (2) execution
+      differentials pinning both known escapes of the sentence as regression
+      cases, executed under unicorn against wasmtime. Non-vacuity, measured:
+      sweeping the gate over the whole fixture corpus (404 ARM compiles)
+      with the pre-#930-fix selector finds the #930 fixture plus exactly one
+      pre-existing silent victim (rv32_br_value_931.wat 'nested', #930's
+      shape, only ever CI-compiled for RV32); with the fix, zero violations.
+    status: implemented
+    tags: [sc-5, branch-targets, thumb-2, instruction-boundary, stpa-discharge]
+    links:
+      # `verifies` may only target a requirement (schema), so the discharge
+      # chain is: VER-SC5-001 --verifies--> FR-009 --constraint-satisfies-->
+      # SC-5, where FR-009 carries SC-5's sentence VERBATIM at requirement
+      # granularity. NOT linked onto FR-002/FR-008 — omnibus targets are the
+      # coarse-granularity anti-pattern that left SC-5 undischarged.
+      - type: verifies
+        target: FR-009
+    fields:
+      method: automated-test
+      steps:
+        gate: >
+          validate_branch_targets — unconditional on every Thumb-2 compile,
+          both ARM codegen paths; violation = hard compile error
+        unit: "cargo test -p synth-backend --lib -- validate_branch_targets_sc5_930 930_brif2"
+        oracle-930: "SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/branch_boundary_930_differential.py"
+        oracle-740: "SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/brif_outer_740_differential.py"
+        regression-escapes: >
+          #740 (B<cond>.W T3 packed halfword_offset >> 1, offset halved past
+          254 bytes) and #930 (block-End inside an if-arm misattributed to
+          the enclosing if; dropped end label -> b #0 placeholder landing
+          mid-instruction), both pinned by the oracles above

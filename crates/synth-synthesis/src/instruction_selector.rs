@@ -13843,8 +13843,22 @@ impl InstructionSelector {
                 End => {
                     cf.exit_block();
                     // If this closes an if-block, emit the end label
-                    // and possibly the else label (if no else was present)
-                    if let Some((else_label, end_label)) = if_labels.last().cloned() {
+                    // and possibly the else label (if no else was present).
+                    //
+                    // #930: "closes an if-block" is decided by the INNERMOST open
+                    // construct (`block_labels.last()`), never by `if_labels`
+                    // alone. A plain block/loop nested inside an if's then/else
+                    // arm reaches its `End` while the enclosing if's labels are
+                    // still on `if_labels`; the old `if_labels.last()` test
+                    // misattributed that `End` to the if — emitting the if's
+                    // else/end labels at the inner block's position, popping the
+                    // wrong stacks, and NEVER emitting the inner block's own end
+                    // label. Its `B .Lblock_end_N` then stayed an unresolved
+                    // `b #0` placeholder landing mid-instruction (labels.wast
+                    // br / br_if2, silent wrong value).
+                    if block_labels.last().is_some_and(|bl| bl.is_if)
+                        && let Some((else_label, end_label)) = if_labels.last().cloned()
+                    {
                         // Check if the else label was already emitted
                         // by looking for it in the instructions
                         let else_emitted = instructions
