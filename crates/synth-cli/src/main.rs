@@ -4341,16 +4341,16 @@ fn compile_all_exports(
             scry_version: ing.scry_version.clone(),
             module_sha256: ing.actual_module_sha256.clone(),
             declared_module_sha256: ing.declared_module_sha256.clone(),
-            // #932: an attestation is only reached on an ACCEPTED ingest, and
-            // acceptance requires an ESTABLISHED floor. RQ-57-SENTINEL: that
-            // used to be `unwrap_or(0)` with a comment arguing unreachability —
-            // the "safe because another region's rule prevents it" (c)-class.
-            // If the acceptance rule ever drifts, a 0 here is the EXACT #932
-            // lie written into a signed attestation; panic loudly instead.
-            memory_min_bytes: proven_safe_module_min_bytes.expect(
-                "#932 invariant violated: proven-safe ingest was ACCEPTED with no \
-                 established memory floor — refusing to attest an invented 0 B floor",
-            ),
+            // RQ-57-SENTINEL: this was `unwrap_or(0)` with a #932-era comment
+            // arguing "an attestation is only reached on an ACCEPTED ingest,
+            // so this is unreachable". The sweep's interim `.expect()` proved
+            // that argument FALSE in one test run: attestations are ALSO
+            // emitted for REFUSED ingests (that is #901's refusal-is-attested
+            // rule), and the imported-memory refusal reached this line with no
+            // floor — so shipped v0.56.x attestations recorded an invented
+            // `"memory_min_bytes": 0` on exactly the #932 shape. The absence
+            // is now typed: `None` serializes as an explicit `null`.
+            memory_min_bytes: proven_safe_module_min_bytes,
             declared_memory_min_bytes: ing.declared_memory_min_bytes,
             safety_bounds: safety_bounds.as_str().to_string(),
             accepted: ing.accepted,

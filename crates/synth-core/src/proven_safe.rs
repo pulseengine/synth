@@ -426,8 +426,14 @@ pub struct ElisionAttestation {
     /// authoritative binding — `declared_module_sha256` is what the file said.
     pub module_sha256: String,
     pub declared_module_sha256: String,
-    /// Synth's declared linear-memory minimum, in bytes.
-    pub memory_min_bytes: u32,
+    /// Synth's declared linear-memory minimum, in bytes. RQ-57-SENTINEL:
+    /// `None` = NO floor could be established (e.g. the module's memory is
+    /// imported, #932) — serialized as an explicit `null`, never as a `0` that
+    /// collides with a real (and self-refuting) zero-byte floor. The #932 fix
+    /// commented the CLI's `unwrap_or(0)` "unreachable by construction"; the
+    /// RQ-57 sweep proved that FALSE — refusal attestations reach it — so the
+    /// absence is now typed instead of argued.
+    pub memory_min_bytes: Option<u32>,
     pub declared_memory_min_bytes: u64,
     /// The `--safety-bounds` mode in force. Elisions only change emitted bytes
     /// under `software`; any other mode is recorded so an auditor sees why the
@@ -836,7 +842,7 @@ mod tests {
             scry_version: "3.2.4".to_string(),
             module_sha256: "aa".repeat(32),
             declared_module_sha256: "bb".repeat(32),
-            memory_min_bytes: 65536,
+            memory_min_bytes: Some(65536),
             declared_memory_min_bytes: 65536,
             safety_bounds: "software".to_string(),
             accepted: false,
@@ -853,6 +859,44 @@ mod tests {
         assert!(json.contains("module_sha256 mismatch"));
         assert!(json.contains("\"sites_offered\": 8"));
         assert!(json.contains("\"sites_elided\": 0"));
+        let back: ElisionAttestation = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, a);
+    }
+
+    /// RQ-57-SENTINEL: an attestation with NO establishable floor (imported
+    /// memory, #932) must serialize the absence as an explicit `null` — never
+    /// as a `0` that reads as "synth declared a zero-byte floor". The #932 fix
+    /// left the CLI's `unwrap_or(0)` behind a comment calling it unreachable;
+    /// the sweep proved refusal attestations DO reach it, so v0.56.x shipped
+    /// `"memory_min_bytes": 0` on exactly the #932 shape.
+    #[test]
+    fn no_floor_attests_null_not_zero_rq57() {
+        let a = ElisionAttestation {
+            schema: ELISION_ATTESTATION_SCHEMA.to_string(),
+            synth_version: "0.56.1".to_string(),
+            scry_version: "3.2.4".to_string(),
+            module_sha256: "aa".repeat(32),
+            declared_module_sha256: "aa".repeat(32),
+            memory_min_bytes: None,
+            declared_memory_min_bytes: 65536,
+            safety_bounds: "software".to_string(),
+            accepted: false,
+            refusal: Some("no memory floor can be established".to_string()),
+            sites_offered: 1,
+            sites_elided: 0,
+            sites_not_elided: 1,
+            elisions: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let json = a.to_json();
+        assert!(
+            json.contains("\"memory_min_bytes\": null"),
+            "absence must be an explicit null, got:\n{json}"
+        );
+        assert!(
+            !json.contains("\"memory_min_bytes\": 0"),
+            "the invented-0 floor must be unrepresentable, got:\n{json}"
+        );
         let back: ElisionAttestation = serde_json::from_str(&json).expect("round-trips");
         assert_eq!(back, a);
     }

@@ -6,9 +6,11 @@ absence, across `synth-core`, `synth-backend`, `synth-backend-riscv`,
 where it carries a bounds value). Non-test code only; line numbers as of the
 sweep commit.
 
-**Denominator: 54 sites examined. 4 converted (with 2 latent defects found and
-fixed), 41 classified (a) with an argument each, 9 classified (c) residuals
-(listed, named, not silently dropped).**
+**Denominator: 54 sites examined. 4 converted — with THREE latent defects
+found and fixed (C1 unbounded-OOB identity mask, C2 rv32 single-function
+all-trap regression, C3 invented-0 floor in shipped refusal attestations) —
+41 classified (a) with an argument each, 9 classified (c) residuals (listed,
+named, not silently dropped).**
 
 Classification key (from the release artifact):
 
@@ -23,7 +25,7 @@ Classification key (from the release artifact):
 |---|------|-----|-------|---------|
 | C1 | `synth-backend/src/arm_backend.rs` mask gate | `bytes != 0 && !is_power_of_two` — 0 exempt as "unknown" | (b) | **LATENT SECURITY DEFECT (third instance of the #932/#953 disease).** A `(memory 0)` module under `--safety-bounds mask` compiled with startup `R10 = 0`; the emitted guard `SUB R12, R10, #1; AND addr, R12` computes `0 − 1 = 0xFFFFFFFF` — an IDENTITY mask. Every access executed unmasked at `[R11 + addr]` for any 32-bit addr: unbounded OOB read AND write in the mode whose purpose is bounding. Verified pre-fix on the v0.56.1 tree (exit 0, `movw r10, #0x0` in the reset handler). Now: zero-byte memory REFUSES loudly. Test: `arm_safety_bounds_mask_zero_size_refused_rq57` + CLI `arm_mask_zero_memory_refused`. |
 | C2 | `synth-cli/src/main.rs` single-function config (`linear_memory_bytes: if aarch64 {..} else { 0 }`) | forced 0 for ARM/RV32 on a comment claiming the field was "never consumed" there | (c) | **LATENT DEFECT — the comment's claim was false for RV32** (its `compile_function` has always read the field), and after #953 deleted the rv32 fallback, `--func-index` + `--safety-bounds software` on a `(memory 1)` module compiled EVERY access to the zero-size `ebreak` fold (verified pre-fix: `00050293 00100073` at entry; a live availability miscompile in v0.56.1). Now: the module's declared size threads to ALL backends. Byte-invisible where unconsumed (ARM reads it only for the mask gate + native-ABI statics gate, both off here; frozen anchors are `--all-exports`). Tests: `rv32_single_func_software_uses_declared_bound` + fail-closed control `rv32_single_func_zero_memory_stays_fail_closed`. |
-| C3 | `synth-cli/src/main.rs` elision attestation `memory_min_bytes: proven_safe_module_min_bytes.unwrap_or(0)` | "unreachable by construction" comment | (c) | Safe only because the ingest closure's acceptance rule refuses a floorless module — a rule in a different code region. If it drifts, the flattened 0 is the exact #932 lie written into a signed attestation. Converted to `.expect(...)` — an invariant break now panics loudly instead of attesting an invented 0 B floor. |
+| C3 | `synth-cli/src/main.rs` elision attestation `memory_min_bytes: proven_safe_module_min_bytes.unwrap_or(0)` | "unreachable by construction" comment | (b) | **LATENT DEFECT — the unreachability argument was FALSE, and the sweep's own interim `.expect()` proved it in one test run.** Attestations are ALSO emitted for REFUSED ingests (#901's refusal-is-attested rule), and the imported-memory refusal (#932's exact shape) reaches this line with no floor — so shipped v0.56.x attestations recorded an invented `"memory_min_bytes": 0`. Converted: `ElisionAttestation.memory_min_bytes` is now `Option<u32>`, absence serializes as an explicit `null`, pinned by `no_floor_attests_null_not_zero_rq57` (accepted-case shape unchanged: `Some(x)` serializes as the bare number, `proven_safe_bounds_901` still asserts 65536). |
 | C4 | `synth-cli/src/main.rs` `NativeGlobalsLayout.sp_init: i32` (0 = "no SP global") | `stack_pointer_global_opt.map(..).unwrap_or(0)` | (c) | 0-for-absent was indistinguishable from a real SP init of 0. Extent consumers happened to treat 0 as the max-fold identity (safe by coincidence of consumer shape), and `--shadow-stack-size 0` on a module with NO SP global fell through into the re-base machinery against a phantom reservation. Converted to `Option<i32>`: extent folds map `None → 0` explicitly as the identity; the shrink REFUSES `None` with a machine reason. Byte-identical otherwise. |
 
 ## Class (a) — sentinel cannot collide (argument per site)
