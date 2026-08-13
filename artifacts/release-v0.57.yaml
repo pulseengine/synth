@@ -121,8 +121,8 @@ artifacts:
       NON-VACUITY: this lane produces a NUMBER — how many sites were examined and
       how many were converted — or it has not been done. A sweep that reports
       "looks fine" is the exact shape this release is named against.
-    status: proposed
-    release: v0.57
+    status: implemented
+    release: v0.56.2
     tags: [soundness, sweep, sentinel-collision, mechanism-not-instance]
     links:
       - type: derives-from
@@ -224,8 +224,8 @@ artifacts:
       qemu-system-arm, failing before the fix. Both ARM codegen paths must be
       measured — `--relocatable` forces the direct one, which is the path #740
       was on.
-    status: proposed
-    release: v0.57
+    status: implemented
+    release: v0.56.2
     tags: [soundness, thumb-2, encoder, branch-offset, miscompile, critical]
     links:
       - type: derives-from
@@ -261,8 +261,8 @@ artifacts:
       reads is the same failure as an exit code the build system never sees.
       CONSTRAINT (#166): never weaken a theorem to force a Qed. Whichever
       contract is chosen must be argued in the PR, not applied silently.
-    status: proposed
-    release: v0.57
+    status: implemented
+    release: v0.56.2
     tags: [verification, rocq, coverage-gap, consumer-reported]
     links:
       - type: derives-from
@@ -334,8 +334,8 @@ artifacts:
       shape works.
       NON-VACUITY: the summary line must report a denominator that includes
       declines, and a fixture with a known decline must show it.
-    status: proposed
-    release: v0.57
+    status: implemented
+    release: v0.56.2
     tags: [honesty, verification, reporting, consumer-reported]
     links:
       - type: derives-from
@@ -367,8 +367,8 @@ artifacts:
       tighter and wrong is a regression).
       NON-VACUITY: carries a before/after count of bounded functions on the same
       object, or it is not done.
-    status: proposed
-    release: v0.57
+    status: implemented
+    release: v0.56.2
     tags: [wcet, capability, measured, gale-driver]
     links:
       - type: derives-from

@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.2] - 2026-08-13
+
+Security and soundness patch. Three fixes and one verification-coverage
+closure, pulled forward from the v0.57 scope because the first of them is a
+live vulnerability in a shipped release.
+
+### Fixed
+
+- **ARM `--safety-bounds mask` emitted an IDENTITY mask on a zero-byte memory
+  (#959, SECURITY).** The mask path exempted `bytes == 0` from its
+  power-of-two gate, so a module declaring `(memory 0)` compiled with exit 0
+  and `movw r10, #0x0` in the reset handler. The runtime guard computes
+  `R10 - 1`; with `R10 = 0` that is `0 - 1 = 0xFFFFFFFF` — a mask that masks
+  nothing. Every access then executed unmasked at `[R11 + addr]`: unbounded
+  out-of-bounds read *and* write, in the mode whose entire purpose is to bound
+  them. Now refused.
+
+  This is the same disease as #953 one release earlier, on the other backend
+  and in the other direction: there `0` meant "unset" and *invented* a
+  64 KiB bound; here `0` meant "no bound needed" and *erased* the one that
+  existed. Both were a numeric `0` serving as sentinel and legitimate value at
+  once — which is why the fix arrived as a **sweep** of that collision class
+  (54 sites examined, 4 converted) rather than a single patch. The sweep also
+  fixed a regression the #953 patch itself introduced on the rv32
+  `--func-index` path, and a #932 attestation defect.
+
+- **thumb-2: a branch target could land mid-instruction (#930, #961).** An
+  `End`-in-`if` misattribution let a branch resolve to an address inside a
+  32-bit instruction rather than at its start, so execution resumed on the
+  second halfword of a wide encoding — arbitrary decode, not a trap. Fixed,
+  plus an SC-5 branch-target boundary gate that checks every emitted branch
+  target against the instruction-start set, so the class cannot regrow
+  silently.
+
+- **WCET: `I64Const`/`I64Ldr`/`I64Str` were unpriced in the cycle model
+  (#936, #962).** Two opcodes accounted for all nine unmodeled-op declines.
+  An unpriced op contributes zero cycles to a bound that is only useful if it
+  is an *over*-estimate, so this was an unsound-bound risk, not a coverage
+  gap. Priced against the documented Cortex-M3/M4 worst cases.
+
+### Changed
+
+- **`synth verify` now covers `i32.const` and reports the decline denominator
+  (#933/#935, #958).** `i32.const` was covered by *neither* verification half
+  — the Rocq side had it `Admitted` and the SMT side declined `Const`, so a
+  reader of either could reasonably assume the other had it. The Rocq
+  obligation is now discharged with a real `Qed` (592 total), and `verify`
+  reports how many rules it *declined* rather than only how many it checked:
+  a 100 % pass rate over an unstated denominator is not a coverage claim.
+
+Scope note: RQ-57-SENTINEL, RQ-57-BRTARGET, RQ-57-WCET2OPS, RQ-57-I32CONST and
+RQ-57-RULEINV were planned for v0.57 and ship here instead. The move is
+deliberate and logged in the rivet artifacts — SENTINEL carried a live
+security fix, and the other four were already merged on `main`, so a tag that
+excluded them was not available.
+
 ## [0.56.1] - 2026-08-13
 
 Security patch. One fix.
