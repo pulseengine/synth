@@ -260,7 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295701 \
+            --min-emulation-floor 295710 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3355,6 +3355,10 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/rv32_br_value_931.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/br931.o
           python scripts/oracle_run.py scripts/repro/rv32_br_value_931_differential.py /tmp/br931.o
+      - name: RV32 zero-page memory traps every access (#953, SECURITY)
+        run: |
+          ./target/debug/synth compile scripts/repro/rv32_zero_memory_953.wat -b riscv -t rv32imac --safety-bounds software --all-exports --relocatable -o /tmp/z953.o
+          python scripts/oracle_run.py scripts/repro/rv32_zero_memory_953_differential.py /tmp/z953.o
       - name: RV32 mask/software bounds effective-address oracle (#655)
         run: python scripts/oracle_run.py scripts/repro/mask_bounds_655_riscv_differential.py
       - name: RV32 cmp->select fusion differential (#472)

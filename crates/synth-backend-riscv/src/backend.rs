@@ -183,17 +183,35 @@ impl Backend for RiscVBackend {
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
         ensure_supported_target(&config.target)?;
-        // Prefer the config's declared linear-memory size (the CLI populates it
-        // from the module's first memory — `--all-exports` compiles per function
-        // through here, NOT `compile_module`, so `memory.size` must read it from
-        // the config to report the right page count). Fall back to 1 wasm page
-        // when unset (a hand-built driver with no module context) so
-        // Software/Mask bounds modes can still synthesise their guard.
-        let mem_size = if config.linear_memory_bytes > 0 {
-            config.linear_memory_bytes
-        } else {
-            64 * 1024
-        };
+        // #953 (SECURITY): `linear_memory_bytes` is the memory size, FULL STOP.
+        // Zero means zero bytes — it is NOT a sentinel for "unset".
+        //
+        // This used to fall back to 1 wasm page when the value was 0, for "a
+        // hand-built driver with no module context". But 0 is also exactly what
+        // a module legitimately declaring `(memory 0)` produces, and the two
+        // were indistinguishable — so the fallback INVENTED a 65532-byte bound
+        // for a module that declared none, and every address in 0..=65532
+        // passed the `--safety-bounds software` guard for a memory with no
+        // bytes. Reads and writes both.
+        //
+        // That is the #932 disease running the other way, one release later:
+        // there `unwrap_or(0)` turned "no floor establishable" into "the floor
+        // is 0 bytes" and STRIPPED guards; here 0 meant "unset" and INVENTED
+        // one. A number that means both a value and its own absence will keep
+        // producing this.
+        //
+        // The other two backends already do it this way and are correct:
+        // aarch64 reads `config.linear_memory_bytes` raw (and folds to an
+        // unconditional `brk` at size 0, since with zero pages every access is
+        // statically out of bounds), and ARM derives its bound from a runtime
+        // register with an underflow check. rv32 was the anomaly.
+        //
+        // CONTRACT for callers with no module context: state the size. Leaving
+        // it 0 now means "zero-byte memory" and every access traps — which
+        // fails CLOSED. Exactly one in-tree caller relied on the old fallback
+        // (`compile_with_software_bounds_emits_bgeu_in_function_bytes`); it now
+        // sets the size explicitly, which is what a real driver would do.
+        let mem_size = config.linear_memory_bytes;
         let opts = build_options(config, mem_size)?;
         compile_function_with_opts(name, ops, config, opts)
     }
@@ -664,10 +682,17 @@ mod tests {
     fn compile_with_software_bounds_emits_bgeu_in_function_bytes() {
         // i32.load + safety-bounds software should produce a 32-bit instruction
         // whose lowest 7 bits == 0b1100011 (BRANCH opcode).
+        //
+        // #953: this is the ONE in-tree caller that relied on
+        // `linear_memory_bytes == 0` meaning "unset, assume a page". It now
+        // states the size, which is what a real hand-built driver would do.
+        // Left at 0 it would (correctly) emit an unconditional trap instead of
+        // a conditional guard, because 0 now means a zero-byte memory.
         let b = RiscVBackend::new();
         let cfg = CompileConfig {
             target: TargetSpec::riscv32imac(),
             safety_bounds: SafetyBounds::Software,
+            linear_memory_bytes: 64 * 1024,
             ..Default::default()
         };
         let ops = vec![
