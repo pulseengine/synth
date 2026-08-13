@@ -10,9 +10,12 @@
 //! Out of scope (see `select_simple` doc comments for the full list):
 //! - sign-extending sub-word i64 loads (`i64.load8_s` etc.)
 //! - F32/F64 (RV32F/D — not yet wired)
-//! - br_table (lowered in B3 alongside jump tables)
-//! - Cross-function calls (need linker-resolvable Call ops + relocations)
 //! - Component Model lifting/lowering
+//!
+//! Formerly listed out-of-scope, since shipped (#946 doc sweep): `br_table`
+//! (#882, compare-and-branch chain up to [`BR_TABLE_MAX_TARGETS`]) and
+//! cross-function calls (direct `call` with linker-resolvable relocations,
+//! #871 — some shapes still decline at their sites, loudly).
 //!
 //! i64 representation: on RV32, an i64 value is held in a *register pair*
 //! `(lo, hi)` where `lo` is bits [31:0] and `hi` is bits [63:32]. The two

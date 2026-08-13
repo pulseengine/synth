@@ -32,23 +32,22 @@
 //! `grow(0)≡size`, `grow(n>0)`→−1, the #539 rule — growth failure is
 //! §-permitted and keeps the #865 static bounds limit sound).
 //!
-//! **Deliberately still declined (loud-skip, never wrong code) — the
-//! mechanically-derived complement lives in the cross-backend op-parity oracle
+//! **Still declined (loud-skip, never wrong code):** the current decline
+//! complement is MECHANICALLY DERIVED by the cross-backend op-parity oracle
 //! (`crates/synth-backend-riscv/tests/cross_backend_op_parity.rs`, aarch64
-//! leg):**
-//! - `call_indirect`, import calls, `>8` integer args, multi-result or
-//!   float-result callees (returned in v0/d0, not x0), a caller reading its own
-//!   params across a call (param-homing is a later increment), and WRITING a
-//!   parameter (`local.set`/`tee` on a param index).
-//! - register spilling and bulk memory (`memory.copy`/`memory.fill`).
-//! - Float rounding (`ceil`/`floor`/`trunc`/`nearest`), f32/f64 linear-memory
-//!   load/store, i64→float converts, and the TRAPPING i64-target truncations
-//!   (the saturating forms do lower).
-//! - Data-segment init and the startup that establishes the `x28` linear-memory
-//!   base (the load/store lowering is correct given the base precondition;
-//!   wiring it at runtime is a follow-on). OOB accesses TRAP since #865 under
-//!   [`MemBounds::Software`] (the CLI default); `--safety-bounds none` is the
-//!   explicit unchecked opt-out.
+//! leg) — consult it, not a hand list. A hand-maintained list here went stale
+//! twice (#946: it still named `call_indirect`, float rounding, f32/f64
+//! linear-memory load/store, i64→float converts, and the trapping i64-target
+//! truncations as declined after all of them had shipped lowerings in this
+//! very file), so it was deleted rather than re-synced. Two decline facts
+//! worth stating because they are contracts, not coverage gaps:
+//! - Data-segment init: this backend ships NO data section and REFUSES a
+//!   module carrying active data segments loudly (#851, `backend.rs`); the
+//!   startup that establishes the `x28` linear-memory base at runtime is a
+//!   follow-on (the load/store lowering is correct given the base
+//!   precondition).
+//! - OOB accesses TRAP since #865 under [`MemBounds::Software`] (the CLI
+//!   default); `--safety-bounds none` is the explicit unchecked opt-out.
 //!
 //! **#851 — non-param locals:** GP locals beyond the params (index >=
 //! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -
@@ -266,13 +265,14 @@ fn param_map(num_params: u32, params_f32: &[bool], params_f64: &[bool]) -> Vec<V
 /// (`(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in op order),
 /// used to gate the control-flow increment.
 ///
-/// **Control-flow subset (#538 cf increment):** VOID-result `block … end` with
-/// forward `br`/`br_if` to enclosing block ends. Only `block_arity == (0,0)`
-/// blocks are accepted — a value-carrying (typed) block would need result-
-/// register reconciliation across the branch and is LOUD-DECLINED. `loop`
-/// (backward branch), `if`, and `br_table` are declined by name. This keeps the
-/// straight-line value-stack model sound: nothing crosses the branch, so at each
-/// `end` the value stack is exactly its block-entry height (asserted).
+/// **Control flow:** full since VCR-A64-CF-001 (v0.55) — `block`, `loop`,
+/// `if`/`else`, `br`/`br_if`, and `br_table` (compare-and-branch chain, up to
+/// [`BR_TABLE_MAX_TARGETS`]) are all lowered, including VALUE-CARRYING frames
+/// via the reserved reconciliation-slot construction (see the module header).
+/// The #538-era wording here ("only `(0,0)` blocks; `loop`/`if`/`br_table`
+/// declined by name") described the first cf increment and went stale (#946).
+/// Residual declines live where the lowerings themselves say so (e.g. loop
+/// PARAMETERS, over-threshold `br_table`) — each a loud skip, never wrong code.
 pub fn select_typed_cf(
     ops: &[WasmOp],
     num_params: u32,
