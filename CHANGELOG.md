@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A declined REQUESTED export now exits non-zero (#952).** Previously a
+  module whose export synth could not lower compiled with **exit 0** and the
+  symbol simply absent from the object, so a loud decline at the compiler
+  became a silent one at the build-system boundary — the link failed later,
+  somewhere else, or the missing entry point shipped. This matters more now
+  that declining is the *designed* outcome for several shapes. A declined
+  non-exported internal helper is unaffected (still a warning-only skip), and
+  `--allow-skipped-exports` restores the old behavior for corpus sweeps where
+  per-function declines are expected and counted downstream.
+
+  Five in-tree oracles took that opt-in, because the flag silences the very
+  gate this change adds and is only safe where a **tight non-vacuity floor**
+  still notices a *new* decline: `unreachable_665` (8/8), `i64_globals_643`
+  (28/28), `float_select_return_782` (702/702), `i64_float_conv_869`
+  (96296/96276) and `trunc_sat_782`. All five margins are measured, not
+  assumed.
+
 ## [0.56.2] - 2026-08-13
 
 Security and soundness patch. Three fixes and one verification-coverage
