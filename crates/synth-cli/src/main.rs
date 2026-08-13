@@ -569,6 +569,14 @@ enum Commands {
         /// Backend that produced the ELF (for verification strategy selection)
         #[arg(short, long, default_value = "arm")]
         backend: String,
+
+        /// #935: write the full rule inventory (applied / verified /
+        /// declined-with-reason) as a `synth-verify-v1` JSON sidecar. The
+        /// console summary always carries the decline denominator; this is
+        /// the machine-readable form a CI gate can join against the per-rule
+        /// Rocq obligations.
+        #[arg(long, value_name = "PATH")]
+        emit_verify_report: Option<PathBuf>,
     },
 
     /// Emit RISC-V bare-metal startup code + linker script
@@ -773,8 +781,9 @@ fn main() -> Result<()> {
             wasm_input,
             elf_input,
             backend,
+            emit_verify_report,
         } => {
-            verify_command(wasm_input, elf_input, &backend)?;
+            verify_command(wasm_input, elf_input, &backend, emit_verify_report)?;
         }
         Commands::RiscvRuntime {
             outdir,
@@ -2185,7 +2194,7 @@ fn compile_command(
         if caps.supports_rule_verification {
             #[cfg(feature = "verify")]
             {
-                run_verification(&wasm_ops, &func_name)?;
+                let _ = run_verification(&wasm_ops, &func_name)?;
             }
             #[cfg(not(feature = "verify"))]
             {
@@ -2206,25 +2215,124 @@ fn compile_command(
     Ok(())
 }
 
-/// Run per-rule translation validation using Z3 SMT solver
+/// #935: one applied-rule record in the verify inventory.
+///
+/// `rule` is the `WasmOp` variant name derived from `Debug` — deliberately NOT
+/// a hand-written table (the drift class this repo keeps paying for, #682/#890):
+/// a new op kind gets a correct, stable identifier for free. `rocq_theorem` is
+/// the join key against the per-rule Rocq obligation a decline defers to.
 #[cfg(feature = "verify")]
-fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
-    use std::collections::HashSet;
+#[derive(serde::Serialize)]
+struct VerifyRuleRecord {
+    /// Stable rule identifier: the `WasmOp` variant name (e.g. `"I32Const"`).
+    rule: String,
+    /// Occurrences of this op kind in the function's op stream (the
+    /// denominator contribution — 29 skipped `i32.const`s report 29, not 0).
+    count: u32,
+    /// "verified" | "failed" | "unknown" | "declined"
+    status: &'static str,
+    /// Human-readable SMT rule name when SMT ran (e.g. "i32.and → AND").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    smt_rule: Option<String>,
+    /// Machine decline reason: "register-operation" |
+    /// "immediate-shift-encoding" | "unmodeled-op".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    /// The Rocq theorem this decline defers to, when one exists
+    /// (`coq/Synth/Synth/CorrectnessSimple.v`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocq_theorem: Option<&'static str>,
+}
+
+/// #935: the full per-function rule inventory `synth verify` reports.
+#[cfg(feature = "verify")]
+#[derive(serde::Serialize)]
+struct FunctionVerifyReport {
+    function: String,
+    rules: Vec<VerifyRuleRecord>,
+}
+
+#[cfg(feature = "verify")]
+impl FunctionVerifyReport {
+    fn count_status(&self, status: &str) -> u32 {
+        self.rules.iter().filter(|r| r.status == status).count() as u32
+    }
+}
+
+/// The `WasmOp` variant name, derived from `Debug` rather than a match table
+/// (same pattern as `wcet::op_mnemonic` — no second source of truth to drift).
+#[cfg(feature = "verify")]
+fn wasm_op_variant_name(op: &WasmOp) -> String {
+    let s = format!("{op:?}");
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// #935: machine decline reason + the Rocq obligation the decline defers to.
+///
+/// The reasons are the taxonomy the summary aggregates over:
+/// - `register-operation`: not computational — the whole-op contract is the
+///   per-rule Rocq theorem named here (the #933 class: a decline is only
+///   covered if that theorem is Qed).
+/// - `immediate-shift-encoding`: the selector emits immediate-shift forms;
+///   SMT modeling of the variable-shift register encoding is an open gap
+///   (see the comment at the rule table). The named theorem is the
+///   existence-only (T2) Rocq obligation.
+/// - `unmodeled-op`: no SMT rule and no per-rule theorem wired here — an
+///   honest coverage gap, never silently omitted from the report.
+#[cfg(feature = "verify")]
+fn declined_rule_info(op: &WasmOp) -> (&'static str, Option<&'static str>) {
+    match op {
+        WasmOp::I32Const(_) => ("register-operation", Some("i32_const_correct")),
+        WasmOp::I64Const(_) => ("register-operation", Some("i64_const_correct")),
+        WasmOp::LocalGet(_) => ("register-operation", Some("local_get_correct")),
+        WasmOp::LocalSet(_) => ("register-operation", Some("local_set_correct")),
+        WasmOp::LocalTee(_) => ("register-operation", Some("local_tee_correct")),
+        WasmOp::GlobalGet(_) => ("register-operation", Some("global_get_correct")),
+        WasmOp::GlobalSet(_) => ("register-operation", Some("global_set_correct")),
+        WasmOp::I32Shl => ("immediate-shift-encoding", Some("i32_shl_executes")),
+        WasmOp::I32ShrS => ("immediate-shift-encoding", Some("i32_shrs_executes")),
+        WasmOp::I32ShrU => ("immediate-shift-encoding", Some("i32_shru_executes")),
+        WasmOp::I32Rotl => ("immediate-shift-encoding", Some("i32_rotl_executes")),
+        WasmOp::I32Rotr => ("immediate-shift-encoding", Some("i32_rotr_executes")),
+        _ => ("unmodeled-op", None),
+    }
+}
+
+/// Run per-rule translation validation using the QF_BV SMT solver.
+///
+/// #935: returns the FULL rule inventory — every op kind the function applies,
+/// as verified / failed / unknown / declined-with-reason — so a consumer can
+/// compute a coverage denominator. Previously declined kinds (Const/Local/…)
+/// were skipped without reporting, which made "N verified, 0 failed" read as
+/// complete while e.g. 29 `i32.const`s went unmentioned.
+#[cfg(feature = "verify")]
+fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVerifyReport> {
+    use std::collections::HashMap;
     use synth_synthesis::{ArmOp, Condition, Operand2, Pattern, Reg, Replacement, SynthesisRule};
 
     println!("\nRunning translation validation for '{}'...", func_name);
 
+    // Collect the distinct op kinds actually applied, in first-seen order,
+    // with occurrence counts (the #935 denominator).
+    let mut kind_index: HashMap<std::mem::Discriminant<WasmOp>, usize> = HashMap::new();
+    let mut kinds: Vec<(&WasmOp, u32)> = Vec::new();
+    for op in wasm_ops {
+        let disc = std::mem::discriminant(op);
+        match kind_index.get(&disc) {
+            Some(&i) => kinds[i].1 += 1,
+            None => {
+                kind_index.insert(disc, kinds.len());
+                kinds.push((op, 1));
+            }
+        }
+    }
+
     // Build verification rules for the instruction selection mappings actually used.
     // These correspond to the basic WasmOp → ArmOp translations in the instruction selector.
     let mut rules = Vec::new();
-    let mut seen = HashSet::new();
+    let mut declined: Vec<VerifyRuleRecord> = Vec::new();
 
-    for op in wasm_ops {
-        let disc = std::mem::discriminant(op);
-        if !seen.insert(disc) {
-            continue; // already added a rule for this op kind
-        }
-
+    for &(op, count) in &kinds {
         let rule = match op {
             WasmOp::I32Add => Some(SynthesisRule {
                 name: "i32.add → ADD".into(),
@@ -2540,23 +2648,37 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
             }),
             // Shift ops use immediate shift values in the instruction selector,
             // so SMT verification of the variable-shift case requires a different
-            // ARM op encoding (register-based shift). Skipped for now.
-            // LocalGet/LocalSet/Const are register operations, not computational — skip
+            // ARM op encoding (register-based shift).
+            // LocalGet/LocalSet/Const are register operations, not computational.
+            // #935: neither class is silently skipped any more — every
+            // unmatched kind lands in the report as a decline with a machine
+            // reason (and the Rocq theorem it defers to, where one exists).
             _ => None,
         };
 
-        if let Some(r) = rule {
-            rules.push(r);
+        match rule {
+            Some(r) => rules.push((r, wasm_op_variant_name(op), count)),
+            None => {
+                let (reason, rocq_theorem) = declined_rule_info(op);
+                declined.push(VerifyRuleRecord {
+                    rule: wasm_op_variant_name(op),
+                    count,
+                    status: "declined",
+                    smt_rule: None,
+                    reason: Some(reason),
+                    rocq_theorem,
+                });
+            }
         }
     }
 
-    if rules.is_empty() {
-        println!("  No verifiable computational rules for this function.");
-        println!("  (LocalGet/Set/Const are register operations, not verified by SMT)");
-        return Ok(());
-    }
+    let mut records: Vec<VerifyRuleRecord> = Vec::new();
 
-    println!("  Verifying {} instruction selection rules...", rules.len());
+    if rules.is_empty() {
+        println!("  No SMT-verifiable computational rules for this function.");
+    } else {
+        println!("  Verifying {} instruction selection rules...", rules.len());
+    }
 
     let (verified, failed, unknown) = synth_verify::with_verification_context(|| {
         let validator = synth_verify::TranslationValidator::new();
@@ -2564,33 +2686,79 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
         let mut failed = 0u32;
         let mut unknown = 0u32;
 
-        for rule in &rules {
-            match validator.verify_rule(rule) {
+        for (rule, variant, count) in &rules {
+            let status = match validator.verify_rule(rule) {
                 Ok(synth_verify::ValidationResult::Verified) => {
                     println!("  ✓ {} verified", rule.name);
                     verified += 1;
+                    "verified"
                 }
                 Ok(synth_verify::ValidationResult::Invalid { counterexample }) => {
                     println!("  ✗ {} INVALID: {:?}", rule.name, counterexample);
                     failed += 1;
+                    "failed"
                 }
                 Ok(synth_verify::ValidationResult::Unknown { reason }) => {
                     println!("  ? {} unknown: {}", rule.name, reason);
                     unknown += 1;
+                    "unknown"
                 }
                 Err(e) => {
                     println!("  ! {} error: {}", rule.name, e);
                     unknown += 1;
+                    "unknown"
                 }
-            }
+            };
+            records.push(VerifyRuleRecord {
+                rule: variant.clone(),
+                count: *count,
+                status,
+                smt_rule: Some(rule.name.clone()),
+                reason: None,
+                rocq_theorem: None,
+            });
         }
 
         (verified, failed, unknown)
     });
 
+    // #935: report the declined kinds — the half of the denominator the old
+    // summary omitted. Deferred obligations are named so a consumer can join
+    // against the Rocq theorem inventory instead of re-deriving selection.
+    if !declined.is_empty() {
+        println!(
+            "  Declined (not SMT-verified; deferred to per-rule Rocq obligations):"
+        );
+        for d in &declined {
+            match d.rocq_theorem {
+                Some(thm) => println!(
+                    "  - {} × {}: {} (Rocq: {})",
+                    d.rule,
+                    d.count,
+                    d.reason.unwrap_or("declined"),
+                    thm
+                ),
+                None => println!(
+                    "  - {} × {}: {}",
+                    d.rule,
+                    d.count,
+                    d.reason.unwrap_or("declined")
+                ),
+            }
+        }
+    }
+    let declined_kinds = declined.len() as u32;
+    let declined_ops: u32 = declined.iter().map(|d| d.count).sum();
+    records.extend(declined);
+
     println!(
-        "\nVerification summary: {} verified, {} failed, {} unknown",
-        verified, failed, unknown
+        "\nVerification summary: {} applied rule kinds — {} verified, {} failed, {} unknown, {} declined ({} instructions)",
+        records.len(),
+        verified,
+        failed,
+        unknown,
+        declined_kinds,
+        declined_ops
     );
 
     if failed > 0 {
@@ -2600,7 +2768,10 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(FunctionVerifyReport {
+        function: func_name.to_string(),
+        rules: records,
+    })
 }
 
 /// Extract module binary from WAST file (handles assert_return, etc.)
@@ -3862,7 +4033,9 @@ fn compile_all_exports(
         // Run verification if requested
         if verify {
             #[cfg(feature = "verify")]
-            run_verification(&func.ops, &name)?;
+            {
+                let _ = run_verification(&func.ops, &name)?;
+            }
             #[cfg(not(feature = "verify"))]
             {
                 eprintln!("Warning: --verify requires the 'verify' feature.");
@@ -6870,7 +7043,12 @@ fn backends_command() -> Result<()> {
     Ok(())
 }
 
-fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -> Result<()> {
+fn verify_command(
+    wasm_input: PathBuf,
+    elf_input: PathBuf,
+    backend_name: &str,
+    emit_verify_report: Option<PathBuf>,
+) -> Result<()> {
     if !wasm_input.exists() {
         anyhow::bail!("WASM file not found: {}", wasm_input.display());
     }
@@ -6926,11 +7104,79 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
 
             println!("\n  Verifying {} exported functions...", exports.len());
 
+            let mut reports: Vec<FunctionVerifyReport> = Vec::new();
             for func in &exports {
                 let name = func.export_name.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("function at index {} has no export name", func.index)
                 })?;
-                run_verification(&func.ops, name)?;
+                reports.push(run_verification(&func.ops, name)?);
+            }
+
+            // #935: the module-level inventory summary — a denominator that
+            // INCLUDES declines, so "N verified, 0 failed" can no longer read
+            // as complete while declined kinds go unmentioned.
+            let total_kinds: u32 = reports.iter().map(|r| r.rules.len() as u32).sum();
+            let verified: u32 = reports.iter().map(|r| r.count_status("verified")).sum();
+            let failed: u32 = reports.iter().map(|r| r.count_status("failed")).sum();
+            let unknown: u32 = reports.iter().map(|r| r.count_status("unknown")).sum();
+            let declined: u32 = reports.iter().map(|r| r.count_status("declined")).sum();
+            let mut by_reason: std::collections::BTreeMap<&'static str, (u32, u32)> =
+                std::collections::BTreeMap::new();
+            for r in &reports {
+                for rec in &r.rules {
+                    if let Some(reason) = rec.reason {
+                        let e = by_reason.entry(reason).or_insert((0, 0));
+                        e.0 += 1;
+                        e.1 += rec.count;
+                    }
+                }
+            }
+            println!(
+                "\nModule rule inventory: {} applied rule kinds across {} functions — {} verified, {} failed, {} unknown, {} declined",
+                total_kinds,
+                reports.len(),
+                verified,
+                failed,
+                unknown,
+                declined
+            );
+            for (reason, (kinds, ops)) in &by_reason {
+                println!("  declined {}: {} rule kinds, {} instructions", reason, kinds, ops);
+            }
+
+            if let Some(report_path) = &emit_verify_report {
+                let sidecar = serde_json::json!({
+                    "schema": "synth-verify-v1",
+                    "backend": backend_name,
+                    "source": wasm_input.display().to_string(),
+                    "binary": elf_input.display().to_string(),
+                    "functions": reports,
+                    "summary": {
+                        "applied_rule_kinds": total_kinds,
+                        "verified": verified,
+                        "failed": failed,
+                        "unknown": unknown,
+                        "declined": declined,
+                        "declined_by_reason": by_reason
+                            .iter()
+                            .map(|(reason, (kinds, ops))| {
+                                (
+                                    reason.to_string(),
+                                    serde_json::json!({
+                                        "rule_kinds": kinds,
+                                        "instructions": ops
+                                    }),
+                                )
+                            })
+                            .collect::<serde_json::Map<String, serde_json::Value>>(),
+                    },
+                });
+                std::fs::write(report_path, serde_json::to_string_pretty(&sidecar)?)
+                    .context(format!(
+                        "Failed to write verify report: {}",
+                        report_path.display()
+                    ))?;
+                println!("  Verify report written: {}", report_path.display());
             }
 
             println!("\nAll functions verified successfully.");
@@ -6992,11 +7238,17 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
         println!("  Strategy: Binary-level translation validation (ASIL B path)");
         println!("\n  Binary verification not yet implemented.");
         println!("  Requires: ARM disassembler + SMT equivalence checking on disassembled output.");
+        if emit_verify_report.is_some() {
+            println!("  (--emit-verify-report ignored: no per-rule inventory on this path)");
+        }
     } else {
         println!(
             "  No verification available for backend '{}'.",
             backend_name
         );
+        if emit_verify_report.is_some() {
+            println!("  (--emit-verify-report ignored: no per-rule inventory on this path)");
+        }
     }
 
     Ok(())

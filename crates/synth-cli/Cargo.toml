@@ -39,6 +39,14 @@ required-features = ["verify"]
 name = "fact_spec_bounds_494"
 required-features = ["verify"]
 
+# #935 non-vacuity gate: `synth verify` must report APPLIED-AND-DECLINED rules
+# (with machine reasons + Rocq join keys), so a consumer can compute a coverage
+# denominator. Needs the solver-carrying binary; the fact-spec CI job runs it
+# via `cargo test -p synth-cli --features verify --test verify_report_935`.
+[[test]]
+name = "verify_report_935"
+required-features = ["verify"]
+
 [features]
 default = ["riscv"]
 awsm = ["synth-backend-awsm"]
@@ -84,6 +92,7 @@ clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 wat.workspace = true
 wast.workspace = true

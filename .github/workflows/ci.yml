@@ -1448,6 +1448,8 @@ jobs:
         run: cargo test -p synth-cli --features verify --test fact_spec_clamp_494
       - name: Run divisor-nonzero guard-elision gates (#494 phase 2b byte evidence)
         run: cargo test -p synth-cli --features verify --test fact_spec_div_494
+      - name: Run verify rule-inventory non-vacuity gate (#935 decline denominator)
+        run: cargo test -p synth-cli --features verify --test verify_report_935
       - name: Build synth (verify feature)
         run: cargo build -p synth-cli --features verify
       - uses: actions/setup-python@v7
