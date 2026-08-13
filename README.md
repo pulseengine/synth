@@ -257,36 +257,47 @@ The `synth-verify` crate encodes WASM and ARM semantics as QF_BV formulas and ch
 
 ## Roadmap — North Star
 
-**Replace synth's patch-accreting code generator with foundationally-verified, allocator-robust infrastructure — so correctness comes from construction, not from an ever-growing pile of locally-correct patches.**
+**Replace synth's patch-accreting code generator with foundationally-verified,
+allocator-robust infrastructure — correctness from construction, not an
+ever-growing pile of locally-correct patches.** In one sentence: moving from
+*"we patched every bug we found"* to *"the structure makes the bug
+unrepresentable."*
 
-The recurring greedy fixes (the reciprocal-multiply cost-gate, the register-exhaustion hard-fail, the "selector missed an op" class behind #223/#226/#232) are all symptoms of one root cause: two single-pass, hand-written components — the **instruction selector** and the **register allocator**. The fix is filed as a phased, parallelizable rivet program (**VCR-\***, [epic #242](https://github.com/pulseengine/synth/issues/242), `artifacts/verified-codegen-roadmap.yaml`), built incrementally alongside the per-issue cadence — never a big-bang rewrite, **behavior frozen and oracle-gated at every step**.
+That is the means. The end it buys: **match native code generation, and beat it
+where a verified compiler can do something an unverified one cannot.**
 
-The one-sentence version: moving synth's correctness from *"we patched every bug we found"* to *"the structure makes the bug unrepresentable."*
+Measured today (`artifacts/parity-benchmark.md`, regenerable): the default path
+is **1.64×–3.48× larger** than native C/Rust at `-Os`. Supplied with a *proven
+premise* as a certificate, the same kernels reach **0.54×** on the clamp shape —
+below `gcc -Os`, within two bytes of the LLVM floor — and **1.00×** on software
+bounds, where the guarded build equals the *unguarded* one and the guard tax is
+gone entirely.
 
-**Historical motivation** (gale, #209, on NUCLEO-G474RE, mid-2026): the fully-composed `flat_flight` ran **315 cyc vs 99 native (3.18×)** with **61 % redundant constant materializations** and **17 stack spills**. Those numbers set the allocator track's agenda; the v0.19–v0.30 arc has since retired them.
+LLVM cannot do the second. It cannot elide a check it cannot prove redundant,
+and it has no way to accept a proof from outside. That asymmetry is the
+programme: verification is not a tax paid for safety, it is the mechanism that
+lets this compiler go somewhere an unverified one cannot follow.
 
-### Shipped (v0.19.0 → v0.30.2, 2026-07)
+**Cycles are not measured.** Every `cycles` cell in the benchmark reads
+`OPEN — gale silicon (DWT)`. The size story is real; the speed story is
+unproven, and this line stays until that changes.
 
-- **`VCR-RA-001` — allocator with liveness-based Belady spilling: `verified`, default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`). `flat_flight` reaches its Belady optimum — 412→388 B, hot-segment frame traffic 3 ld + 3 st → **0** — with every re-pinned fixture execution-proven vs wasmtime first.
-- **const-CSE default-on** (v0.29.0, #604) — the redundant-materialization datum retired; gale-confirmed on its kernel (`gust_mix` 90→86 B loom-inlined, direct-compile `func_1` 70→66 B).
-- **The lever ladder, all default-on and evidence-gated** with CI-pinned `=0`/escape-hatch opt-outs: cmp→select fusion (ARM v0.13.0, RV32 v0.28.0), i32 local promotion (v0.14.0, with the v0.15.1 never-cause-a-compile-failure fallback), immediate-shift folding (ARM v0.15.0, RV32 v0.30.0), base-CSE into R11 (v0.27.0), dead-frame-elim + uxth-fold (v0.30.0).
-- **i64 completeness arc**: direct-path i64 stack params + pair spill-pool growth (#503, v0.29.0), pair right-shifts (#599, v0.28.0), rotl/rotr/div/rem silent-zero fix (#610, v0.30.1), and the A32 (`cortex-r5`) i64 family — previously silently encoding to NOP — rebuilt with a **221-variant no-wildcard tripwire** so no silent-NOP arm can regrow (#615, v0.30.2).
-- **Verification substrate**: [ordeal](https://github.com/pulseengine/ordeal) (pure-Rust QF_BV) is the default translation-validation engine since v0.27.0; Z3 demoted to a feature-gated differential oracle (141/141 agreement). Track C's differential oracles are CI-gated jobs (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame, control_step/flight_seam symtab-based fixtures, …).
+### Where the North Star actually lives
 
-### In flight / next
+[**Epic #242**](https://github.com/pulseengine/synth/issues/242) is the source of
+truth — tracks, per-item status, done-criteria and the open gaps.
+This section is a **pointer, on purpose**: it used to restate the roadmap, and
+restating it is exactly how three of its status claims drifted out of date while
+the machine-derived badges above stayed correct.
 
-| Track | Item | What it does | Status |
-|-------|------|--------------|--------|
-| **A — codegen core** | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`): every manifest rule has a 1:1 Qed correctness theorem in `coq/Synth/Synth/VcrSelRules.v` (count-same CI-gated against `coq/vcr_sel_rules.manifest`; current counts: `artifacts/status.json`), plus pilot lemmas in `coq/Synth/Synth/VcrSelPilot.v`; the DSL is now the SHIPPED lowering path for its covered ops (byte-invisible flip — every rule was mirror-pinned byte-identical to the hand-written arm it replaces, frozen anchors unmoved) |
-| | `VCR-PERF-002` | Proof-carrying specialization (#494): loom's `wsc.facts` invariants become premises for per-elision proof obligations, certificate-checked by the ordeal-backed validator — toward gale's measured **0.45× (below-native) floor** | design traced (v0.30.0); phase 1 (facts ingestion) landed ([PR #624](https://github.com/pulseengine/synth/pull/624), v0.31.0) |
-| | `SYNTH_SPILL_ON_EXHAUST` | Replace the register-exhaustion decline with allocation-time Belady spilling (#580) — the last piece of the exhaustion hard-fail | built, flag-off; default-on held for silicon cycle numbers |
-| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec); generate the selector model, don't mirror it (#667) | approved — Sail/ASL bridge spike landed (`coq/Synth/ARM/SailArmBridge.v`); #667 "generate, don't mirror" landed: the shipped `sel_dsl::RULES` table emits the covered ops' Rocq lowerings (`coq/Synth/Synth/VcrSelRulesGenerated.v`), and `VcrSelRules.v` DEFINES `rule_X := Gen.rule_X` — the generated file is the single model source, the per-rule correctness Qed are stated directly about it, and a selector-table change breaks the matching proof (no hand-written copy left to drift) |
-| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | phases 1-3 landed: the i32 integer fragment (19 ops) AND the i64 integer family (22 ops — arithmetic/bitwise/shifts/rotates/eqz/comparisons) transcribed from the same pinned coq9.0-wasm-2.2.0 sources with line-level provenance (`coq/Synth/WASM/WasmCertReference.v`) and proven refined by `exec_wasm_instr` (`WasmCertBridge.v`; op-level for all, executor-level for the wired ops — the 6 i64 arithmetic/bitwise ops are op-level-only, a named residual; lemma count: `artifacts/status.json`); still a hand transcription, the real external dep is nix-feasible, bazel-deferred on three named blockers (unfree CompCert 3.16 in the pin) |
-| **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | **demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md)): the v0.11.20 reciprocal-mult cost-gate deleted outright (PR #322, bit-identical); the #496 exhaustion decline revertable behind `SYNTH_SPILL_ON_EXHAUST` — red case green, anchors byte-identical, declines 14→8; flip held on a measured i32-shape cycle regression |
-
-Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); float residual — `i64.trunc_sat_f32_*` declines on single-precision FPUs (the falcon cortex-m7dp VFP tail closed v0.53, #881); SIMD/Helium is untested on hardware.
-
-**What it buys us:** synth stops being a real-ish compiler held together by oracle-gated patches and becomes a genuinely best-in-class *verified* compiler — and the verified selector DSL is the part that is potentially novel/publishable, not just catching up to Cranelift.
+| looking for | read |
+|---|---|
+| the roadmap and each item's status | [epic #242](https://github.com/pulseengine/synth/issues/242) · [`artifacts/verified-codegen-roadmap.yaml`](artifacts/verified-codegen-roadmap.yaml) |
+| the numbers behind the claims above | [`artifacts/parity-benchmark.md`](artifacts/parity-benchmark.md) |
+| proof coverage, per file and tier | [`coq/STATUS.md`](coq/STATUS.md) |
+| the exact op surface and every decline | [`docs/status/FEATURE_MATRIX.md`](docs/status/FEATURE_MATRIX.md) |
+| what shipped in which release | [`CHANGELOG.md`](CHANGELOG.md) |
+| release scope as a live query | `artifacts/release-v*.yaml` (rivet `release:` + `status:`) |
 
 ## Crate Map
 
