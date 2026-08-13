@@ -310,6 +310,111 @@ artifacts:
       verification-track: static-analysis
       issue: "#946"
 
+  - id: RQ-57-RULEINV
+    type: system-req
+    title: "synth verify must report DECLINED rules, not only verified ones"
+    description: >
+      #935, and it belongs in Tier 1 because it is the release theme almost
+      verbatim: synth knows it applied and declined a rule, and does not say so,
+      so a consumer cannot compute a coverage denominator from its output.
+      Measured by gale on a small dissolved object: `Verification summary: 8
+      verified, 0 failed, 0 unknown` reads as complete. It is not — the same
+      object contains 29 `i32.const`, which BIN-VERIFY classes as a register
+      operation and skips WITHOUT REPORTING. A reader concludes "8 of 8"; the
+      truth is "8 of 8 computational rules, plus an unreported const rule whose
+      Rocq theorem is Admitted" (#933).
+      So #935 and #933 compound: #933 is the hole, #935 is what makes the hole
+      invisible. Fixing only #933 leaves a consumer unable to see the next one;
+      fixing only #935 makes an honest report of a gap that is still open. They
+      should land together, and #935 is the cheaper half.
+      DELIVERABLE: the full rule inventory — applied / verified /
+      declined-with-reason — so the denominator is computable. Same discipline
+      as the WCET decline reasons (#921/#922), which turned an opaque
+      `unmodeled-op` into an actionable `{op, offset}` and is the proof this
+      shape works.
+      NON-VACUITY: the summary line must report a denominator that includes
+      declines, and a fixture with a known decline must show it.
+    status: proposed
+    release: v0.57
+    tags: [honesty, verification, reporting, consumer-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: unit-test
+      issue: "#935"
+
+  - id: RQ-57-WCET2OPS
+    type: system-req
+    title: "Two opcodes account for ALL 9 wcet unmodeled-op declines (+11 cascades)"
+    description: >
+      #936, the payoff of #921/#922 shipping in v0.55. gale re-ran `--emit-wcet`
+      over a whole dissolved `gust:os` composite (31 functions) on 0.55.0 and the
+      9 previously-opaque `unmodeled-op` declines resolve to exactly TWO
+      opcodes: `I64Const` (6 functions) and `I64Str` (3), with byte offsets.
+      Before #922 the only way to learn that was to hand-bisect a 31-function
+      object; afterwards it took one run.
+      That makes this a very small ask with a measured payoff: modelling two
+      opcodes clears 9 direct declines and 11 cascades behind them — 20
+      functions moving from "no bound" to bounded on a real OS composite.
+      Include it BECAUSE the number is known. This is the shape release-planning
+      asks for — an optimization with a measured benefit and a constraint it
+      must not violate (the WCET bound stays SOUND; a bound that is merely
+      tighter and wrong is a regression).
+      NON-VACUITY: carries a before/after count of bounded functions on the same
+      object, or it is not done.
+    status: proposed
+    release: v0.57
+    tags: [wcet, capability, measured, gale-driver]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: execution-differential
+      issue: "#936"
+
+  - id: RQ-57-PROVGAP
+    type: system-req
+    title: "9 object branches with no WASM origin — obligations nothing can discharge"
+    description: >
+      #944. Running the first WASM->object disposition on a VERIFIED isolation
+      module (gale's `switch-thin`, an ARINC-653 partition-switch FSM) surfaced
+      object branches that `synth-provenance-v1` does not account for: 98
+      branches, 56 no-provenance, **9 only-in-synth** — including
+      `cabi_realloc`, `tick`, and `run_switch`.
+      An object branch with no WASM origin is an object-code coverage obligation
+      that nothing can discharge: the downstream tool cannot decide whether it is
+      justified-infeasible or genuinely uncovered, so it stands forever.
+      On-theme in the same way as the rest of Tier 1 — synth emitted those
+      branches and knows why (they are expansion-internal or ABI-shim control
+      flow), and the provenance record does not say so.
+      TRIAGE FIRST, and this is why it is `could` rather than `must`: the 9 need
+      classifying before any schema change. If they are all compiler-introduced
+      (realloc shims, expansion-internal guards) the fix may be a provenance
+      RECORD KIND for compiler-origin branches rather than new WASM mapping —
+      cheaper and more honest than pretending a WASM origin exists.
+    status: proposed
+    release: v0.57
+    tags: [provenance, traceability, consumer-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: could
+      verification-track: static-analysis
+      issue: "#944"
+
   # ---------------------------------------------------------------------------
   # TIER 2 — capability and optimization, carried from v0.56 with reasons logged
   # ---------------------------------------------------------------------------
