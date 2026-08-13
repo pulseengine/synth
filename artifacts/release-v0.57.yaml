@@ -1,0 +1,491 @@
+
+# =============================================================================
+# v0.57 — "Tell the caller"
+# =============================================================================
+#
+# THE THEME, and why it is not the same as v0.56's.
+#
+# v0.56 was "the factory, not the instances": the CHECKERS were wrong, so we
+# fixed the checkers. The residual finding underneath it — stated most crisply
+# by gale on #929 while correcting their own report — is sharper than that:
+#
+#     a control case has to be sensitive to the failure it is controlling for.
+#
+# Their `(i32, i64)` control returned `local.get 0`, the one operand an
+# argument-shifting bug cannot move. It "passed" for that reason alone.
+#
+# v0.57 takes the next step out. In every item below synth ALREADY KNOWS
+# something and fails to tell whoever needs it:
+#
+#   #952  it knows it declined a requested export — and exits 0, so the build
+#         system never hears it.
+#   #930  it knows how to reconcile a br edge on RV32 (#931) — thumb-2 still
+#         does not, and says nothing.
+#   #933  it knows `i32.const` is covered by NEITHER verification half — the
+#         SMT path declines Const, the Rocq theorem is Admitted — and a
+#         downstream consumer discovered that for us.
+#   #946D it claims `writes_sp` is "exhaustive over every rd-carrying op" and
+#         175 of 222 ArmOp variants fall to a wildcard, so the stated tripwire
+#         does not exist.
+#
+# That is one defect class with four faces: **honesty that stops before it
+# reaches the consumer**. Naming it is the point — v0.53–v0.56 each rediscovered
+# a face of it and treated it as an instance.
+#
+# READINESS IS A QUERY. Cut when every artifact here is `verified`, or move the
+# straggler out EXPLICITLY. v0.56 shipped 6/8 with two never moved; that is
+# corrected in release-v0.56.yaml by honest re-grading (`implemented`, remainder
+# named) rather than by back-dating them to `verified`.
+
+artifacts:
+
+  # ---------------------------------------------------------------------------
+  # TIER 1 — the theme. Each is synth failing to tell someone what it knows.
+  # ---------------------------------------------------------------------------
+
+  - id: RQ-561-ZEROMEM
+    type: system-req
+    title: "rv32 `(memory 0)` gets a 65532-byte guard — --safety-bounds software is a 64 KiB no-op"
+    description: >
+      #953, SECURITY, reported by gale 30 minutes after v0.56.0 published and
+      REPRODUCED here on the shipped tag. Scoped to a v0.56.1 PATCH, not v0.57:
+      it is a soundness hole in the mode whose entire purpose is to close it, in
+      a release already on crates.io.
+      A module declaring `(memory 0)` gets a bound baked at 65532 — byte-for-byte
+      the guard of a 1-page module — so every address in 0..=65532 passes and the
+      access is performed against a memory with no bytes. Verified on 0.56.0:
+      `lui t1, 0x10; addi t1, t1, -0x4; bltu t1, t0`. Confirmed for STORES too
+      (identical bound), so it is an out-of-bounds WRITE as well as a read.
+      ROOT CAUSE (`synth-backend-riscv/src/backend.rs:192`): `0` is used as both
+      a value and a sentinel. `linear_memory_bytes == 0` means "unset — a
+      hand-built driver with no module context, fall back to 1 page" AND is
+      exactly what a module legitimately declaring `(memory 0)` produces. The two
+      are indistinguishable, so the fallback invents a 64 KiB bound for a module
+      that declared none.
+      **This is the same disease as #932, fixed in v0.56.0, in the opposite
+      direction.** There `unwrap_or(0)` turned "no floor establishable" into
+      "the floor is 0 bytes" and STRIPPED guards; here `0` means "unset" and
+      INVENTS a guard. One sentinel/value collision each, different crates,
+      shipped one release apart. Fixing this instance without RQ-57-SENTINEL
+      would repeat the v0.53 finding that we fix instances, not mechanisms.
+      SCOPE NOTE, measured here rather than assumed: gale tested rv32 and
+      aarch64. aarch64 is correct (folds to an unconditional `brk #0` — with zero
+      pages every access is statically out of bounds). ARM was NOT tested by the
+      report; I checked it, and it does not bake a constant at all — it derives
+      the bound from `r10` at runtime with an underflow check (`sub.w r12, r10,
+      #4; cmp r10, r12; bhs`) that falls through to `udf` when the size is 0.
+      Read from the disassembly, NOT executed; confirm by execution before
+      claiming ARM is unaffected in the fix PR. Two of three backends get this
+      right, which is what makes the rv32 fallback the anomaly rather than a
+      design gap.
+      RED-FIRST: an execution differential on `(memory 0)` load AND store vs
+      wasmtime (which traps), failing before the fix. The `Option`-shaped fix
+      (`Option<u32>` rather than a magic 0) is the same one #932 took.
+    status: proposed
+    release: v0.56.1
+    tags: [security, soundness, rv32, bounds, sentinel-collision, gale-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#953"
+
+  - id: RQ-57-SENTINEL
+    type: system-req
+    title: "Sweep the sentinel/legitimate-value collisions rather than fixing another instance"
+    description: >
+      Motivated by #953 landing one release after #932 with the SAME root cause
+      in the opposite direction: a magic `0` (or `unwrap_or(0)`) that means both
+      "unset/unknown" and a value a module can legitimately declare.
+      #932: `all_memories.first().map(..).unwrap_or(0)` — imported memories live
+      in `imports`, so "no floor establishable" became "the floor is 0 bytes" and
+      real guards were stripped.
+      #953: `if config.linear_memory_bytes > 0 { .. } else { 64 * 1024 }` —
+      "no module context" and "`(memory 0)`" are indistinguishable, so a bound
+      was invented for a module that declared none.
+      Two instances, two crates, one release apart, both SECURITY. That is the
+      signature of a mechanism, and v0.53 already recorded the standing failure:
+      we fix instances, not the mechanism.
+      DELIVERABLE: an audit of every size/count/address path where a numeric
+      sentinel stands in for absence — `unwrap_or(0)`, `> 0` guards on a
+      configured size, `if x == 0 { default }` — across the memory, bounds,
+      WCET and static-data paths in all backends, each classified as (a) the
+      sentinel cannot collide, argued; (b) it can, converted to `Option`; or
+      (c) it can and is currently safe by accident, which is the #946
+      "true for the wrong reason" class and must be converted anyway.
+      NON-VACUITY: this lane produces a NUMBER — how many sites were examined and
+      how many were converted — or it has not been done. A sweep that reports
+      "looks fine" is the exact shape this release is named against.
+    status: proposed
+    release: v0.57
+    tags: [soundness, sweep, sentinel-collision, mechanism-not-instance]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: static-analysis
+      issue: "#953"
+
+
+  - id: RQ-57-SKIPEXIT
+    type: system-req
+    title: "A declined REQUESTED export must fail the build, not exit 0"
+    description: >
+      #952, raised by gale while verifying #929 on v0.56.0 and reproduced here.
+      A function that synth declines is dropped from the object and the compile
+      exits 0, so a build gating on `$?` ships an object missing a public entry
+      point; the absence surfaces only in the symbol table, downstream as a link
+      failure, or at run time.
+      Measured on 0.56.0: `warning: 1 of 2 functions were skipped (not in
+      output): f`, exit code 0, object written, `llvm-objdump -t` shows only
+      `func_0` — the export `f` is absent.
+      This got SHARPER in v0.56, not milder: declining is now the DESIGNED
+      outcome for a whole class of ordinary signatures (every call passing a
+      64-bit value in a register, incl. `fn(ptr, u64)`) plus #931's cross-frame
+      `br`. As the decline frontier grows on purpose, the cost of it being
+      invisible to `$?` grows with it.
+      Shape: nonzero exit when a REQUESTED export is skipped, opt-in
+      `--allow-skipped-exports` for callers who genuinely want partial objects
+      (the `--all-exports` corpus sweep, where skipping is expected and counted).
+      Preserve the asymmetry: skipping a non-exported helper is routine;
+      dropping a function the user explicitly asked to export is not. The
+      warning already distinguishes them textually, so the information exists —
+      it just does not reach the caller.
+      RED-FIRST: the gate is a compile that declines an export and must exit
+      non-zero; the negative control is a compile that skips only a helper and
+      must still exit 0.
+    status: proposed
+    release: v0.57
+    tags: [honesty, cli, decline-frontier, gale-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#952"
+
+  - id: RQ-57-BRTARGET
+    type: system-req
+    title: "thumb-2 branch target lands mid-instruction — and no invariant forbids it"
+    description: >
+      #930. RE-DIAGNOSED by gale on v0.56.0 and re-verified here; the original
+      report (and this artifact's first draft) framed it as a control-flow
+      modelling problem and BOTH were wrong.
+      The control-flow lowering is CORRECT. `mov r2, r1` and `mov r4, r1` both
+      put the value where it belongs and the `bne` merge target is right. Exactly
+      one thing is wrong: the inner block's exit `b` at 0x10 targets 0x14, and
+      the instruction at 0x12 is a 4-byte `movw` spanning 0x12..0x15 — so the
+      branch lands on its SECOND HALFWORD and the CPU executes a halfword that
+      was never an instruction (`0x01 0x03` decodes standalone as
+      `lsls r1, r0, #12`). It should target 0x12.
+      Verified mechanically rather than by reading the decode: the instruction
+      START set for the function is {0,2,6,8,a,e,10,12,16,18,1a,1c,20,22,24};
+      the taken targets 0x12 and 0x22 are members, and **0x14 is not**.
+      From there the observed `0` follows exactly — `r3` is never set because its
+      `movw` was skipped over, so `cmp r3,#0 / bne` reads the reset value, the
+      `br_if` is not taken, and the block yields its `(i32.const 0)` tail.
+      SO THIS IS A SIBLING OF #740, NOT OF #931. #740 ("direct path: br_if
+      exiting an outer block from inside a loop lands MID-SHAPE") is closed, and
+      was fixed as a point fix. #930 is the same family on a different encoding.
+      That is why the reported shape looked so oddly specific: each ingredient
+      alone lowers fine, because none of them puts a 32-bit encoding immediately
+      at the inner block's exit label. The combination merely makes the next
+      instruction wide.
+      DELIVERABLE IS TWO THINGS, and the second is the point:
+      (1) the offset fix — candidates gale names are the exit label being
+          recorded AFTER emitting the first halfword of a following wide
+          instruction, or a fixup adding the target's width (or an
+          unconditional 2) to `target - (pc + 4)`;
+      (2) a GENERAL INVARIANT: every branch target must be a member of the
+          instruction-start set, asserted before emit. The encoder already knows
+          where each instruction begins, so a target outside that set is a hard
+          error rather than silent garbage. Nothing in `arm_encoder.rs` checks
+          this today.
+      NON-VACUITY, and the reason (2) is not speculative: run the new invariant
+      over the WHOLE fixture corpus and report how many violations it finds
+      besides #930. A family that has now recurred twice with no tripwire is
+      the instance-not-mechanism pattern this project keeps recording; if the
+      sweep finds only #930 that is a real result worth stating, and if it finds
+      more they were shipping silently.
+      RED-FIRST: the `labels.wast` `br` and `br_if2` assertions, executed under
+      qemu-system-arm, failing before the fix. Both ARM codegen paths must be
+      measured — `--relocatable` forces the direct one, which is the path #740
+      was on.
+    status: proposed
+    release: v0.57
+    tags: [soundness, thumb-2, encoder, branch-offset, miscompile, critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#930"
+
+  - id: RQ-57-I32CONST
+    type: system-req
+    title: "i32.const is covered by NEITHER verification half"
+    description: >
+      #933, carried from v0.56 with its deferral reason logged. `synth verify`
+      DECLINES Const/Local as register operations, deferring them to the
+      per-rule Rocq theorems; three of the four deferred-to theorems are Qed and
+      `i32_const_correct` is Admitted. So for the single most common op in any
+      module the SMT half skips it AND the proof half is open.
+      NOT missing mathematics: `movw_movt_reconstruct_Z` and
+      `i32_const_large_reconstruct` are both Qed. The theorem is FALSE AS STATED
+      — it quantifies over un-normalized `Z` representatives and a counterexample
+      exists (n = 2^32 + 0x10000). Closing it is a CONTRACT change: either
+      (a) normalize `I32Const` at the WASM model boundary, which is what a real
+      wasm i32.const means and lets the existing lemma discharge it directly, or
+      (b) add the `I32.valid_unsigned n` hypothesis, the contract #73's div_s
+      proof adopted. (a) is the principled one and touches 9 `.v` files.
+      This is on-theme and is the reason it is Tier 1 rather than backlog: the
+      gap is disclosed honestly in the source, and a DOWNSTREAM CONSUMER
+      discovered it was load-bearing for them. Disclosure that only the author
+      reads is the same failure as an exit code the build system never sees.
+      CONSTRAINT (#166): never weaken a theorem to force a Qed. Whichever
+      contract is chosen must be argued in the PR, not applied silently.
+    status: proposed
+    release: v0.57
+    tags: [verification, rocq, coverage-gap, consumer-reported]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: proof
+      issue: "#933"
+
+  - id: RQ-57-SPWILD
+    type: system-req
+    title: "writes_sp claims exhaustiveness over a wildcard — make the tripwire real"
+    description: >
+      #946 Tier 1 D. `wcet_loops.rs` states `writes_sp` is "exhaustive over every
+      rd-carrying op the priced instruction set can contain"; the match ends
+      `_ => false`.
+      MEASURED in v0.56 (the report said 8 uncovered ops; the real number is
+      larger): **175 of 222 `ArmOp` variants** fall to that wildcard. And
+      `op_cost` — which IS exhaustive and would decline unmodeled ops — is NOT
+      consulted anywhere in `wcet_loops.rs`, so the hole is not shielded by an
+      earlier decline as one might assume.
+      The WCET bound is NOT currently wrong: the unhandled ops do not write SP.
+      What does not exist is the stated tripwire — a new `ArmOp` that DOES write
+      SP compiles fine and silently reads `false`, on a `claims.yaml`-pinned
+      soundness model.
+      Deliberately deferred from v0.56 rather than squeezed: a correct fix is a
+      per-variant soundness judgement across 175 arms, mirroring what `op_cost`
+      already does (grouped arms, no wildcard). That deserves its own lane.
+      RED-FIRST: after the change, adding a new SP-writing `ArmOp` variant must
+      FAIL TO COMPILE. Demonstrate it, do not assert it.
+    status: proposed
+    release: v0.57
+    tags: [wcet, soundness, tripwire, exhaustiveness]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: static-analysis
+      issue: "#946"
+
+  # ---------------------------------------------------------------------------
+  # TIER 2 — capability and optimization, carried from v0.56 with reasons logged
+  # ---------------------------------------------------------------------------
+
+  - id: RQ-57-A64PARAM
+    type: system-req
+    title: "aarch64 param homing — unblocks local.set/tee(param)"
+    description: >
+      #851, moved from v0.56 (was RQ-56-A64PARAM). Param homing unblocks
+      `local.set` + `local.get(param)` and `local.tee(param)`, 2 of the 4 named
+      divergences on gale's aarch64 acceptance frontier.
+      Needs its own execution differential across the four divergences — that is
+      why it was not squeezed into the v0.56 tail.
+    status: proposed
+    release: v0.57
+    tags: [aarch64, capability]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: execution-differential
+      issue: "#851"
+
+  - id: RQ-57-GPIO
+    type: system-req
+    title: "gpio-thin reaches 498 B via relational ranges"
+    description: >
+      #846, moved from v0.56 (was RQ-56-GPIO). An OPTIMIZATION with a measured
+      target and a constraint it must not violate: 502 B is the proven-sound
+      floor today; the last 4 bytes need RELATIONAL ranges at the two CRL/CRH
+      sites.
+      Constraint (non-negotiable): the correctness oracles stay green. This
+      changes SHIPPING BYTES, so the frozen anchors (10/10 bit-identical) and the
+      gpio differential gate it — a smaller wrong answer is a regression, not a
+      win. Carries a before/after number or it is not done.
+    status: proposed
+    release: v0.57
+    tags: [optimization, code-size, gale-driver]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: performance
+      priority: could
+      verification-track: execution-differential
+      issue: "#846"
+
+  # ---------------------------------------------------------------------------
+  # TIER 3 — remainders of v0.56 scope, split out rather than left implied
+  # ---------------------------------------------------------------------------
+
+  - id: RQ-57-ARMSEM
+    type: system-req
+    title: "Test the largest genuine coverage gap the v0.56 measurement named"
+    description: >
+      Step 2 of #923, split out of RQ-56-COV (which shipped steps 1 and 3 and is
+      graded `implemented`, not `verified`, for exactly this reason).
+      The v0.56 measurement refuted its own hypothesis and named a target nobody
+      expected: differential-asserted files read 86.2 % vs unit-only 83.4 %, so
+      "the differentials hide coverage" does not hold at the aggregate. The real
+      gap is `synth-verify/src/arm_semantics.rs` — **2481 lines at 47.4 %,
+      unit-only**, the largest in the workspace.
+      Tests there ADD EVIDENCE; tests written to lift a differential-covered
+      file's number would not. That distinction is the whole point of having
+      measured first, and it is why this is a scoped lane rather than "improve
+      coverage".
+      Done when the file's covered fraction rises on real assertions and the
+      `project` threshold in codecov.yml can be ratcheted up from 80 %.
+    status: proposed
+    release: v0.57
+    tags: [coverage, testing, measured]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: unit-test
+      issue: "#923"
+
+  - id: RQ-57-BACKFILL
+    type: system-req
+    title: "Back-fill `release:` onto historical artifacts"
+    description: >
+      Remainder of RQ-56-PLAN. The core shipped — scope lives in rivet, survives
+      the session, readiness is a real query — but the approved back-fill did
+      not happen.
+      User has APPROVED back-filling `release:` on historical artifacts PROVIDED
+      the statuses are accurate. Derive each mechanically from the first tag
+      containing the artifact; do NOT invent statuses. An artifact whose status
+      cannot be established from evidence stays unassigned rather than guessed —
+      a wrong `verified` in the ledger is worse than a missing one, which is the
+      #911 lesson applied to planning data.
+    status: proposed
+    release: v0.57
+    tags: [planning, rivet, traceability]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: could
+      verification-track: static-analysis
+      issue: "#926"
+
+  - id: RQ-57-MCDC
+    type: system-req
+    title: "witness MC/DC: N/A for five releases running — file it or wire it"
+    description: >
+      #912. The feature loop's step 5 (witness MC/DC on the Wasm artifact) has
+      been marked N/A for FIVE consecutive releases. The loop's own rule is
+      explicit: "If you mark either one N/A for the same reason three features
+      running, file it — that pattern is exactly how a real-flight MC/DC gap and
+      a missing attestation chain stayed hidden across ~20 features."
+      This artifact IS that filing, and it is on-theme: a recurring N/A is a gate
+      that reports nothing and is read as reporting "fine". Same shape as #952's
+      exit 0.
+      Deliverable is a DECISION, not necessarily an implementation: either wire
+      witness into the loop for the artifacts where it applies, or record a
+      durable rationale for why synth (a compiler, not a Wasm component) is
+      outside its scope — with the rationale in the loop's own terms so it stops
+      being re-litigated every release.
+    status: proposed
+    release: v0.57
+    tags: [process, mcdc, recurring-na]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: manual
+      issue: "#912"
+
+  - id: RQ-57-DOCSWEEP
+    type: system-req
+    title: "#946 Tiers 2 and 3 — the remaining ~26 doc disagreements"
+    description: >
+      #946. Tier 1 A/B/C were resolved and fixed in v0.56 (all three landed as
+      "doc wrong, code safe", and none for the reason the scan hypothesized —
+      one scanner PREMISE was itself false). Tier 1 D is RQ-57-SPWILD above.
+      Remaining: Tier 2 (5 items — stale rationale on a live exclusion, safe
+      today for the wrong reason) and Tier 3 (~21 items — docs that UNDERSTATE
+      what ships, incl. CLAUDE.md's own WasmCert numbers and a
+      ~10-releases-stale PROJECT_STATUS.md pinned by nothing).
+      PRIORITISE BY DIRECTION OF ERROR, not by tier. A doc that undersells a
+      shipped feature costs a missed opportunity; a doc that undersells a COST
+      changes what someone does — that is why v0.56 took `--volatile-segment`
+      (documented inert, measured 36 B -> 74 B) first. By that axis the highest
+      remaining item is Tier 2's `validator_pattern.rs:94`: four i64 ops are
+      EXCLUDED from translation validation on a rationale (`__aeabi_ldivmod`)
+      that does not describe the lowering — wrong reason, EXCLUSION consequence.
+      If the real reason does not hold, those ops should be validated and are
+      not.
+    status: proposed
+    release: v0.57
+    tags: [documentation, doc-vs-source, honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: could
+      verification-track: static-analysis
+      issue: "#946"

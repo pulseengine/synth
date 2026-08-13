@@ -123,7 +123,14 @@ artifacts:
       stating a threshold someone chose — marking the patch status
       `informational` EXPLICITLY if that is the intent, rather than leaving it
       de-facto advisory for a future reader to infer from merge habits.
-    status: proposed
+    status: implemented
+    # v0.56 RELEASE-READINESS CORRECTION (honest grading, not back-dating):
+    #   SHIPPED PARTIAL in v0.56.0: step 1 (measure the split) and step 3 (codecov.yml
+    #   with a chosen threshold, patch explicitly informational) landed in #950.
+    #   Step 2 did NOT: the measurement named `synth-verify/src/arm_semantics.rs`
+    #   (2481 lines, 47.4 %, unit-only) as the largest genuine gap and no tests were
+    #   written for it. That remainder is RQ-57-ARMSEM, release v0.57. Graded
+    #   `implemented` rather than `verified` because no oracle asserts step 2.
     release: v0.56
     tags: [instrument-quality, coverage, measurement-first]
     links:
@@ -136,68 +143,6 @@ artifacts:
       priority: should
       verification-track: measurement
       issue: "#923"
-
-  - id: RQ-56-GPIO
-    type: system-req
-    title: "gpio-thin reaches 498 B via relational ranges"
-    description: >
-      #846, gale's driver, and the remaining v0.55 Wave-2 lane. An OPTIMIZATION
-      with a measured target and a constraint it must not violate: 502 B is the
-      proven sound floor today; the last 4 bytes need RELATIONAL ranges at the
-      two CRL/CRH sites. avrabe explicitly offered to scope it.
-      Constraint (non-negotiable): the correctness oracles stay green. This
-      changes SHIPPING BYTES, so the frozen anchors (10/10 bit-identical today)
-      and the gpio differential gate it — a smaller wrong answer is a
-      regression, not a win. Carries a before/after number or it is not done.
-    status: proposed
-    release: v0.57
-    # DEFERRED from v0.56 (scope decision, logged not silent):
-    #   #846 changes SHIPPING BYTES for a 4-byte win; it needs the frozen
-    #   anchors + the gpio differential re-pinned in its own gated lane, not a
-    #   release-tail squeeze.
-    tags: [optimization, gale, code-size]
-    links:
-      - type: derives-from
-        target: BR-001
-      - type: refines
-        target: NFR-002
-    fields:
-      req-type: performance
-      priority: should
-      verification-track: measurement
-      issue: "#846"
-
-  - id: RQ-56-A64PARAM
-    type: system-req
-    title: "aarch64 parameter homing — unblocks 2 of the 4 remaining divergences"
-    description: >
-      #851 umbrella residual. Of the four whole-op divergences remaining at
-      v0.55.0 (counted from the ledger array at the tag, not from prose),
-      `local.set+get(param)` and `local.tee(param)` share ONE root cause:
-      aarch64 declines WRITING a parameter, because params live in arg registers
-      by reference on the value stack and a param write could alias a stacked
-      value. Param HOMING (to callee-saved registers or frame slots) is the
-      prerequisite for both.
-      Highest-value next aarch64 increment: one mechanism, two ops. The other
-      two (`memory.copy`, `memory.fill`) are independent and stay open.
-      Gate: the cross-backend parity ledger flips in the SAME commit that makes
-      them lower, and the ledger's stale-entry check keeps the count honest.
-    status: proposed
-    release: v0.57
-    # DEFERRED from v0.56 (scope decision, logged not silent):
-    #   #851 aarch64 param homing is capability work needing its own execution
-    #   differential across the 4 named divergences.
-    tags: [aarch64, capability-gap, epic-851]
-    links:
-      - type: derives-from
-        target: BR-001
-      - type: refines
-        target: NFR-002
-    fields:
-      req-type: functional
-      priority: should
-      verification-track: execution-differential
-      issue: "#851"
 
   - id: RQ-56-PLAN
     type: system-req
@@ -220,7 +165,13 @@ artifacts:
       stated in terms the project actually meets — deciding which IS part of
       this requirement, and pretending otherwise would recreate the same
       documented-but-not-in-force defect one level up.
-    status: proposed
+    status: implemented
+    # v0.56 RELEASE-READINESS CORRECTION (honest grading, not back-dating):
+    #   SHIPPED PARTIAL in v0.56.0: the core deliverable works and was exercised — the
+    #   release scope lives in `artifacts/release-v0.56.yaml`, survives the session,
+    #   and readiness is a real query (it is what surfaced this very grading).
+    #   The approved back-fill of `release:` onto historical artifacts did NOT
+    #   happen; that remainder is RQ-57-BACKFILL, release v0.57.
     release: v0.56
     tags: [release-process, traceability, meta]
     links:
@@ -394,42 +345,23 @@ artifacts:
       verification-track: execution-differential
       issue: "#931, #930"
 
-  - id: RQ-57-I32CONST
-    type: system-req
-    title: "i32.const is covered by NEITHER half of the verification story"
-    description: >
-      #933, reported by a consumer discharging a downstream object-code
-      obligation. `synth verify` DECLINES Const/Local ops as register
-      operations, deferring them to the per-rule Rocq theorems — a reasonable
-      split. Three of the four deferred-to theorems are Qed
-      (`local_get/set/tee_correct`, `i64_const_correct`). `i32_const_correct`
-      is Admitted, so for `i32.const` the SMT half skips it AND the proof half
-      is open. Nothing covers the single most common op in any module.
-      This is NOT missing mathematics: `movw_movt_reconstruct_Z` and
-      `i32_const_large_reconstruct` are both Qed. The theorem is FALSE AS
-      STATED — it quantifies over un-normalized `Z` representatives, and a
-      counterexample exists (n = 2^32 + 0x10000). Closing it is a CONTRACT
-      change, one of: (a) normalize `I32Const` at the WASM model boundary
-      (push `VI32 (I32.repr n)`), which is what a real wasm i32.const means and
-      lets `i32_const_large_reconstruct` discharge it directly; or (b) add the
-      `I32.valid_unsigned n` hypothesis, the contract the #73 div_s proof
-      adopted. (a) is the principled one and touches 9 `.v` files.
-      DEFERRED from v0.56 (scope decision, logged not silent): this is a
-      contract change under the repo's own #166 gate — "never weaken a theorem
-      to force a Qed" — so it needs deliberate review rather than a
-      release-tail squeeze, and the hermetic Rocq rebuild is a long verify
-      loop. The gap is disclosed in the source, not hidden; what makes it
-      urgent is that it turned out to be load-bearing for someone downstream.
-    status: proposed
-    release: v0.57
-    tags: [verification, rocq, coverage-gap, consumer-reported]
-    links:
-      - type: derives-from
-        target: BR-001
-      - type: refines
-        target: NFR-002
-    fields:
-      req-type: functional
-      priority: should
-      verification-track: proof
-      issue: "#933"
+# -----------------------------------------------------------------------------
+# DEFERRED OUT OF v0.56 — the audit trail, without duplicating the artifacts.
+#
+# Three artifacts scoped here were moved to v0.57 as a logged scope decision.
+# They are now OWNED by artifacts/release-v0.57.yaml and were removed from this
+# file rather than left as stubs carrying `release: v0.57`: rivet rejects a
+# duplicate id ("declared more than once ... the second definition silently
+# overwrites the first"), which is the check added in v0.55 and which caught
+# this while the v0.57 plan was being written.
+#
+#   RQ-56-GPIO      -> RQ-57-GPIO       (#846) changes SHIPPING BYTES for a 4 B
+#                                       win; wants frozen anchors + the gpio
+#                                       differential re-pinned in its own lane.
+#   RQ-56-A64PARAM  -> RQ-57-A64PARAM   (#851) capability work needing its own
+#                                       execution differential across the 4
+#                                       named divergences.
+#   (new)           -> RQ-57-I32CONST   (#933) a Rocq CONTRACT change across 9
+#                                       .v files under the #166 never-weaken
+#                                       gate, with a long hermetic verify loop.
+# -----------------------------------------------------------------------------
