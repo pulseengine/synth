@@ -26,8 +26,17 @@ fn synth_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_synth"))
 }
 
-/// `i64.load` lowers to `ArmOp::I64Ldr`, which `op_cost` deliberately leaves
-/// unclassified — the shortest local reproduction of gale's decline.
+/// `i32.wrap_i64` lowers to `ArmOp::I32WrapI64`, which `op_cost` deliberately
+/// leaves unclassified — the shortest local reproduction of gale's decline.
+///
+/// #936 RETARGET: this test originally reproduced the decline via `i64.load`
+/// (`ArmOp::I64Ldr`). #936 priced `I64Const`/`I64Ldr`/`I64Str` (gale's actual 9
+/// `unmodeled-op` declines on a real `gust:os` composite resolved to exactly
+/// those two opcode FAMILIES), so `i64.load` no longer declines — exactly the
+/// "good problem" this test's own non-vacuity check was written to catch (see
+/// below). Retargeted at `i32.wrap_i64`, which the #936 audit confirmed is
+/// STILL a real direct-selector emission (`instruction_selector.rs`) with NO
+/// cycle-model price.
 ///
 /// Note that `i64.add`, `i64.ge_s` and `i64.extend_i32_u` do NOT reproduce it:
 /// the selector expands those before the WCET pass sees them. That asymmetry is
@@ -35,17 +44,17 @@ fn synth_binary() -> PathBuf {
 /// distinguish which of the unclassified family a given function tripped over.
 const FIXTURE: &str = r#"(module
   (memory 1)
-  (func (export "f") (param i32) (result i64)
+  (func (export "f") (param i64) (result i32)
     local.get 0
-    i64.load))
+    i32.wrap_i64))
 "#;
 
 #[test]
 fn unmodeled_op_decline_names_the_op_and_offset() {
     let dir = std::env::temp_dir().join("synth-wcet-921");
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let wat = dir.join("i64_load.wat");
-    let obj = dir.join("i64_load.o");
+    let wat = dir.join("i32_wrap_i64.wat");
+    let obj = dir.join("i32_wrap_i64.o");
     std::fs::write(&wat, FIXTURE).expect("write fixture");
 
     let out = Command::new(synth_binary())
@@ -80,22 +89,24 @@ fn unmodeled_op_decline_names_the_op_and_offset() {
         .collect();
 
     // NON-VACUITY: if the fixture ever stops declining (a good thing — it would
-    // mean the cycle model grew to cover `I64Ldr`), this test must FAIL rather
-    // than pass over an empty set. A green assertion about no records is the
-    // exact shape #890/#910 exist to reject.
+    // mean the cycle model grew to cover `I32WrapI64`), this test must FAIL
+    // rather than pass over an empty set. A green assertion about no records is
+    // the exact shape #890/#910 exist to reject. (#936: this is exactly what
+    // happened to the ORIGINAL `i64.load` fixture — retargeted here, not
+    // deleted; see the FIXTURE doc comment above.)
     assert!(
         !declined.is_empty(),
-        "fixture no longer declines — if `I64Ldr` is now costed, retarget this \
-         test at another unclassified op rather than deleting the assertion"
+        "fixture no longer declines — if `I32WrapI64` is now costed, retarget \
+         this test at another unclassified op rather than deleting the assertion"
     );
 
     let d = declined
         .iter()
         .find(|f| f["reason"] == "unmodeled-op")
-        .expect("the i64.load fixture declines `unmodeled-op`");
+        .expect("the i32.wrap_i64 fixture declines `unmodeled-op`");
 
     assert_eq!(
-        d["op"], "I64Ldr",
+        d["op"], "I32WrapI64",
         "the decline must NAME the op (#921); got {d}"
     );
     assert!(

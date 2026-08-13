@@ -3409,9 +3409,9 @@ jobs:
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 11
 
   repro-sweep-wcet-oracle:
-    name: repro sweep — WCET bound soundness cross-checks (phases 2-5)
+    name: repro sweep — WCET bound soundness cross-checks (phases 2-6)
     # #890: the SOUNDNESS evidence for --emit-wcet. The cargo gate
-    # (wcet_bound_gate.rs) pins the bounds analytically; these four harnesses
+    # (wcet_bound_gate.rs) pins the bounds analytically; these five harnesses
     # are the only thing that EXECUTES the fixtures under unicorn and checks
     # `bound_cycles >= executed_instructions`, i.e. that the bound synth
     # publishes is actually an upper bound. They were unwired — the soundness
@@ -3453,6 +3453,8 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/wcet_phase4_49_recursion_soundness.py
       - name: WCET phase-5 masked-ceiling loop soundness (#778)
         run: python scripts/oracle_run.py scripts/repro/wcet_phase5_778_masked_loop_soundness.py
+      - name: WCET phase-6 I64Const/I64Ldr/I64Str leaf soundness (#936)
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase6_936_i64_leaf_soundness.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -3463,4 +3465,4 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 5
