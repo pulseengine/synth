@@ -543,6 +543,23 @@ enum Commands {
         /// grows down from the top of SRAM.
         #[arg(long, value_name = "BYTES")]
         stack_size: Option<u32>,
+
+        /// #952: on the `--all-exports` path, declining a function the module
+        /// EXPORTS now exits non-zero by default — a build that gates on `$?`
+        /// (every build) must not ship an object silently missing a public
+        /// entry point. Declining a non-exported internal helper (pulled in
+        /// only for reachability, #235) never fails the build either way;
+        /// that skip is routine and stays a warning. Pass this flag to
+        /// restore the pre-#952 exit-0 behavior for callers who genuinely
+        /// want the partial object — e.g. an `--all-exports` corpus sweep
+        /// over many modules, where per-function declines are expected and
+        /// counted downstream rather than treated as a build failure.
+        /// Inert on the single-function `--func-index`/`--func-name` path,
+        /// which already hard-errors `?`-style on any decline of the one
+        /// requested function — there is nothing for this flag to loosen
+        /// there.
+        #[arg(long)]
+        allow_skipped_exports: bool,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -669,6 +686,7 @@ fn main() -> Result<()> {
             stack_layout,
             stack_size,
             proven_safe,
+            allow_skipped_exports,
         } => {
             // #882: track whether `-b/--backend` was given explicitly (the
             // mismatch diagnostics differ: an explicit backend lists the
@@ -756,6 +774,7 @@ fn main() -> Result<()> {
                 volatile_segments,
                 stack_layout,
                 proven_safe,
+                allow_skipped_exports,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -1611,6 +1630,9 @@ fn compile_command(
     // VCR-MEM-004 (#901): path to scry's safe-accesses.json. Consumed only on
     // the --all-exports module path; `None` (the default) is byte-identical.
     proven_safe: Option<PathBuf>,
+    // #952: opt-in to keep exiting 0 when a REQUESTED export is declined on
+    // the --all-exports path (default is now a hard, non-zero-exit refusal).
+    allow_skipped_exports: bool,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -1683,6 +1705,7 @@ fn compile_command(
             volatile_segments,
             stack_layout,
             proven_safe,
+            allow_skipped_exports,
         );
     }
 
@@ -2801,6 +2824,13 @@ fn compile_all_exports(
     stack_layout: StackLayout,
     // VCR-MEM-004 (#901): scry's safe-accesses.json, or None (byte-identical).
     proven_safe: Option<PathBuf>,
+    // #952: `--allow-skipped-exports` — keep exiting 0 when a REQUESTED
+    // export is declined (the pre-#952 behavior). Default false: a declined
+    // export is now a hard refusal, so a build gating on `$?` cannot ship an
+    // object silently missing a public entry point. Never affects a declined
+    // non-exported internal helper (#235 reachability) — that stays a
+    // warning-only skip either way.
+    allow_skipped_exports: bool,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -3535,7 +3565,13 @@ fn compile_all_exports(
 
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
-    let mut skipped_funcs: Vec<(String, String)> = Vec::new();
+    // #952: the third field marks whether the skipped function is a REQUESTED
+    // export (`func.export_name.is_some()`) rather than an internal helper
+    // pulled in only for reachability (#235). That distinction is what the
+    // exit-code gate below keys on — a build gating on `$?` must fail when a
+    // named public entry point silently vanished, but not when an unexported
+    // implementation detail did.
+    let mut skipped_funcs: Vec<(String, String, bool)> = Vec::new();
     // #778 phase 3: collect per-function WCET intermediates (own-body cycles +
     // direct call sites, or a decline) and a `func_<idx>` → position map, so the
     // module-level composer can resolve direct calls across the call graph AFTER
@@ -3636,7 +3672,11 @@ fn compile_all_exports(
                  code for it rather than a silent miscompile (GI-FPU-001, #369)",
                 backend.name()
             );
-            skipped_funcs.push((name.clone(), format!("unsupported operator: {reason}")));
+            skipped_funcs.push((
+                name.clone(),
+                format!("unsupported operator: {reason}"),
+                func.export_name.is_some(),
+            ));
             continue;
         }
         // VCR-PERF-002 Phase 2 (#494): fact-spec — behind SYNTH_FACT_SPEC and
@@ -3745,7 +3785,7 @@ fn compile_all_exports(
                     backend.name(),
                     e
                 );
-                skipped_funcs.push((name.clone(), e.to_string()));
+                skipped_funcs.push((name.clone(), e.to_string(), func.export_name.is_some()));
                 continue;
             }
         };
@@ -3889,7 +3929,7 @@ fn compile_all_exports(
             all_exports.len(),
             skipped_funcs
                 .iter()
-                .map(|(n, _)| n.as_str())
+                .map(|(n, _, _)| n.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -3899,6 +3939,43 @@ fn compile_all_exports(
             "no functions compiled successfully ({} skipped) — nothing to emit",
             skipped_funcs.len()
         );
+    }
+
+    // #952: a declined function the module EXPORTS — as opposed to an
+    // internal helper pulled in only for #235 reachability — is not a
+    // routine skip. Before this gate, the compile above still exited 0: a
+    // build gating on `$?` (every build) accepted the object and shipped it
+    // with a public entry point silently missing. Refuse loudly instead,
+    // unless the caller opted in with `--allow-skipped-exports` (the
+    // `--all-exports` corpus-sweep shape, where per-function declines are
+    // expected and counted downstream rather than treated as a build
+    // failure). Placed AFTER the `compiled_funcs.is_empty()` bail above so a
+    // module whose ONLY export was skipped keeps that existing message
+    // ("nothing to emit") rather than being relabeled here.
+    if !allow_skipped_exports {
+        let skipped_exports: Vec<&str> = skipped_funcs
+            .iter()
+            .filter(|(_, _, is_export)| *is_export)
+            .map(|(n, _, _)| n.as_str())
+            .collect();
+        if !skipped_exports.is_empty() {
+            let total_exports = all_exports
+                .iter()
+                .filter(|f| f.export_name.is_some())
+                .count();
+            anyhow::bail!(
+                "#952: {} of {} requested export(s) were skipped (not in the \
+                 output object): {}. Exiting non-zero rather than shipping an \
+                 object that is silently missing a public entry point — a build \
+                 gating on `$?` would otherwise accept it. Pass \
+                 --allow-skipped-exports if the partial object is what you \
+                 want (e.g. an --all-exports sweep over a corpus, where \
+                 per-function declines are expected and counted downstream).",
+                skipped_exports.len(),
+                total_exports,
+                skipped_exports.join(", ")
+            );
+        }
     }
 
     // Check if any function has relocations (import calls)

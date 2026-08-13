@@ -51,8 +51,14 @@ I32_CONTROL = "t_i32"
 
 
 def compile_riscv():
+    # #952: every I64_PARAM_FNS entry below is a NAMED EXPORT this fixture
+    # expects to be loud-skipped — since v0.57 a declined requested export
+    # exits non-zero by default, so this analysis-only oracle (which wants
+    # the partial object to inspect stderr + the symtab, not a hard failure)
+    # needs the opt-in.
     cmd = [SYNTH, "compile", str(WAT), "-o", OUT, "-b", "riscv",
-           "--target", "riscv32imac", "--all-exports", "--relocatable"]
+           "--target", "riscv32imac", "--all-exports", "--relocatable",
+           "--allow-skipped-exports"]
     r = subprocess.run(cmd, capture_output=True, text=True,
                        env={"PATH": "/usr/bin:/bin"})
     if r.returncode != 0:
