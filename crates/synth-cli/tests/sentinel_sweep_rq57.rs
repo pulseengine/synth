@@ -64,22 +64,29 @@ const MEM1_WAT: &str = r#"(module
 
 /// Raw instruction words from synth's own disassembler (host-independent —
 /// the #850 lesson: never depend on an installed llvm-objdump).
+/// Every 4-byte little-endian word in the object's `.text`, as lowercase hex.
+///
+/// #850: this reads the ELF SECTION BYTES, not `synth disasm` TEXT. The first
+/// version of this helper parsed `synth disasm` output — it passed on macOS and
+/// returned an EMPTY vector on the ubuntu runner, so both assertions below
+/// failed in CI with `words: []` while the lane's local run was green. The
+/// disassembler decodes with whatever target it defaults to and its rendering is
+/// host-dependent, so its text is not a reliable data source. `.text` bytes are
+/// identical on every host — synth is a cross-compiler and its output is a pure
+/// function of (wasm, flags), which is the same property `frozen_codegen_bytes`
+/// relies on.
 fn disasm_words(obj: &std::path::Path) -> Vec<String> {
-    let out = Command::new(synth())
-        .args(["disasm", obj.to_str().unwrap()])
-        .output()
-        .expect("run synth disasm");
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            let first = it.next()?;
-            if !first.ends_with(':') {
-                return None;
-            }
-            let w = it.next()?;
-            (w.len() == 8 && w.chars().all(|c| c.is_ascii_hexdigit())).then(|| w.to_string())
-        })
+    use object::{Object, ObjectSection};
+    let data = std::fs::read(obj).expect("read object");
+    let file = object::File::parse(&*data).expect("parse ELF");
+    let text = file
+        .section_by_name(".text")
+        .expect("object must have a .text section")
+        .data()
+        .expect("read .text")
+        .to_vec();
+    text.chunks_exact(4)
+        .map(|w| format!("{:08x}", u32::from_le_bytes([w[0], w[1], w[2], w[3]])))
         .collect()
 }
 
