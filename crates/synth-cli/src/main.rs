@@ -2032,17 +2032,20 @@ fn compile_command(
         // reserved stack size under --stack-layout=low; default = 0x2000_0100
         // (byte-identical).
         linmem_base: stack_layout.optimized_linmem_base(),
-        // #865: thread the module's declared memory limit so the aarch64
-        // software bounds check compares against the REAL size. Scoped to the
-        // aarch64 backend: the ARM/RV32 single-function paths never consumed
-        // this field (it defaulted to 0), and widening it here could move
-        // frozen ARM anchor bytes — those paths derive memory context in
-        // `compile_all_exports` instead.
-        linear_memory_bytes: if backend.name() == "aarch64" {
-            single_func_linear_memory_bytes
-        } else {
-            0
-        },
+        // #865: thread the module's declared memory limit so software bounds
+        // checks compare against the REAL size. RQ-57-SENTINEL: this used to be
+        // scoped to aarch64 on the claim that "the ARM/RV32 single-function
+        // paths never consumed this field" — that claim was FALSE for RV32
+        // (its `compile_function` has always read it for the Software/Mask
+        // bound), and after #953 deleted the rv32 64 KiB fallback the forced
+        // `0` here compiled a `(memory 1)` module's every access to the
+        // zero-size `ebreak` fold under `--safety-bounds software`. Passing
+        // the declared size for ALL backends is byte-invisible where the field
+        // is unconsumed (ARM reads it only for the mask power-of-two gate and
+        // the native-pointer statics gate, both off on this path; frozen
+        // anchors are `--all-exports` and don't come through here) and is the
+        // #953 contract everywhere else: 0 means zero bytes, never "unset".
+        linear_memory_bytes: single_func_linear_memory_bytes,
         ..CompileConfig::default()
     };
 
@@ -4152,7 +4155,11 @@ fn compile_all_exports(
                             )
                         })
                         .collect(),
-                    sp_init: stack_pointer_global_opt.map(|(_, v)| v).unwrap_or(0),
+                    // RQ-57-SENTINEL: `None` = no SP global identified — no
+                    // longer flattened to a 0 that collides with a real
+                    // sp_init of 0 (consumers fold None as the max-identity
+                    // and the shadow-stack shrink refuses it loudly).
+                    sp_init: stack_pointer_global_opt.map(|(_, v)| v),
                     // #707: the re-base equivalence class — MUTABLE i32 globals
                     // whose init == sp_init (mutability preserved here because the
                     // `globals` slot list above dropped it). Empty when there is
@@ -4335,10 +4342,15 @@ fn compile_all_exports(
             module_sha256: ing.actual_module_sha256.clone(),
             declared_module_sha256: ing.declared_module_sha256.clone(),
             // #932: an attestation is only reached on an ACCEPTED ingest, and
-            // acceptance now requires an ESTABLISHED floor — so this cannot be
-            // the old invented 0. The `unwrap_or(0)` here is unreachable by
-            // construction; it is not a fallback.
-            memory_min_bytes: proven_safe_module_min_bytes.unwrap_or(0),
+            // acceptance requires an ESTABLISHED floor. RQ-57-SENTINEL: that
+            // used to be `unwrap_or(0)` with a comment arguing unreachability —
+            // the "safe because another region's rule prevents it" (c)-class.
+            // If the acceptance rule ever drifts, a 0 here is the EXACT #932
+            // lie written into a signed attestation; panic loudly instead.
+            memory_min_bytes: proven_safe_module_min_bytes.expect(
+                "#932 invariant violated: proven-safe ingest was ACCEPTED with no \
+                 established memory floor — refusing to attest an invented 0 B floor",
+            ),
             declared_memory_min_bytes: ing.declared_memory_min_bytes,
             safety_bounds: safety_bounds.as_str().to_string(),
             accepted: ing.accepted,
@@ -4540,7 +4552,12 @@ struct NativeGlobalsLayout {
     /// bytes suffice — no data relocations.
     globals: Vec<(u32, i32)>,
     /// The shadow-stack top (the SP global's init); the region must cover it.
-    sp_init: i32,
+    /// RQ-57-SENTINEL: `None` = no stack-pointer global was identified. This
+    /// was an `i32` with 0 standing in for absence — indistinguishable from a
+    /// real SP init of 0. Extent consumers fold `None` to the max-identity 0
+    /// (byte-identical); the `--shadow-stack-size` shrink REFUSES `None`
+    /// (there is no reservation to shrink) instead of shrinking a phantom one.
+    sp_init: Option<i32>,
     /// #707: indices of the globals the shadow-stack shrink may re-base — every
     /// MUTABLE i32 global whose init == sp_init (the same predicate
     /// `identify_stack_pointer_global` selects on, kept here because `globals`
@@ -4746,7 +4763,9 @@ fn build_relocatable_elf(
                 .map(|(off, d)| off + d.len() as u32)
                 .max()
                 .unwrap_or(0);
-            let sp_top = ng.sp_init.max(0) as u32;
+            // None (no SP global) contributes nothing to the extent — the
+            // explicit max-identity, not a sentinel.
+            let sp_top = ng.sp_init.map_or(0, |v| v.max(0) as u32);
             // Layout-bound globals: wasm-ld emits __data_end/__heap_base as
             // i32 globals whose inits mark the static-region extent — the
             // linker's own answer to "how much is used".
@@ -4874,8 +4893,8 @@ fn build_relocatable_elf(
     // gate fails, fall back to the one-PROGBITS arm (fat but always correct).
     let wasm_data_base: u32 = native_layout
         .as_ref()
-        .map(|ng| ng.sp_init.max(0) as u32)
-        .unwrap_or(0);
+        .and_then(|ng| ng.sp_init)
+        .map_or(0, |v| v.max(0) as u32);
     let all_static_data_abs32 = funcs.iter().flat_map(|f| &f.relocations).all(|r| {
         r.symbol != "__synth_wasm_data" || matches!(r.kind, synth_core::backend::RelocKind::Abs32)
     });
@@ -5051,7 +5070,17 @@ fn build_relocatable_elf(
     {
         None => (used_extent, None),
         Some((ng, budget)) => {
-            let sp = ng.sp_init.max(0) as u32;
+            // RQ-57-SENTINEL: absent SP global = nothing to shrink. Before the
+            // Option conversion this fell through as sp = 0 and a
+            // `--shadow-stack-size 0` request proceeded into the re-base
+            // machinery against a reservation that does not exist.
+            let Some(sp) = ng.sp_init.map(|v| v.max(0) as u32) else {
+                anyhow::bail!(
+                    "--shadow-stack-size: no stack-pointer global was identified in this \
+                     module — there is no [0, sp_init) shadow-stack reservation to shrink; \
+                     refusing. VCR-MEM-001/#383."
+                );
+            };
             // Only the per-region split geometries separate statics from the stack
             // reservation; the one-PROGBITS fallback inlines them and is not safe to
             // shrink here.
@@ -5210,18 +5239,16 @@ fn build_relocatable_elf(
             // real failure (no mutable global carries the SP init) — refuse honestly.
             if ng.sp_alias_indices.is_empty() {
                 anyhow::bail!(
-                    "--shadow-stack-size: no mutable global carries init == sp_init {}; cannot \
-                     identify the shadow-stack global to re-base; refusing. VCR-MEM-001/#383.",
-                    ng.sp_init
+                    "--shadow-stack-size: no mutable global carries init == sp_init {sp}; cannot \
+                     identify the shadow-stack global to re-base; refusing. VCR-MEM-001/#383."
                 );
             }
             if ng.sp_alias_indices.len() > 1 {
                 info!(
                     "Native-pointer shadow-stack shrink (#707): re-basing {} aliased \
-                     __stack_pointer globals (all init == sp_init {}) to budget {budget} — a \
+                     __stack_pointer globals (all init == sp_init {sp}) to budget {budget} — a \
                      multi-provider shared-memory fused node shares one reservation.",
                     ng.sp_alias_indices.len(),
-                    ng.sp_init
                 );
             }
             let mut rebased = ng.globals.clone();
@@ -8328,7 +8355,7 @@ mod tests {
         // reservation up to ~64 KiB; one global slot holds that offset.
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
-            sp_init: 65_536,
+            sp_init: Some(65_536),
             sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
@@ -8438,7 +8465,7 @@ mod tests {
         };
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
-            sp_init: 65_536,
+            sp_init: Some(65_536),
             sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
@@ -8534,7 +8561,7 @@ mod tests {
         let data_segments = vec![(SEG_OFF, seg)];
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
-            sp_init: 65_536,
+            sp_init: Some(65_536),
             sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
