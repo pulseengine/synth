@@ -100,6 +100,13 @@ fn test_275_selfcontained_a32_still_declines_loudly() {
             path.to_str().unwrap(),
             "--target",
             "cortex-r5",
+            // #952: `entry` is this fixture's SOLE export, and it is the
+            // function this test expects to be loud-skipped (the residual
+            // A32 #275 decline). Since v0.57 a declined REQUESTED export
+            // exits non-zero by default; this test wants the partial object
+            // (to inspect its symtab below), which is exactly the opt-in
+            // `--allow-skipped-exports` case, not a regression.
+            "--allow-skipped-exports",
             "-o",
             elf,
         ])

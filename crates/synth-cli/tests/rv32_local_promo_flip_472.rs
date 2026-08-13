@@ -77,6 +77,14 @@ fn compile(rel: &str, out: &str, promo_on: bool) -> Vec<u8> {
             "rv32imac",
             "--all-exports",
             "--relocatable",
+            // #952: `gust_kernel.wasm`'s `gust_poll` export already declines
+            // on RV32 (unrelated pre-existing gap: `GlobalGet` unsupported in
+            // the RV32 skeleton) in BOTH arms of this corpus sweep. Since
+            // v0.57 that exits non-zero by default; this gate compares
+            // per-function BYTE SIZES across the arms and is unaffected by a
+            // function absent from both, so the partial object is exactly
+            // what it wants.
+            "--allow-skipped-exports",
         ])
         .output()
         .expect("run synth compile");

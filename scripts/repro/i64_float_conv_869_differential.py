@@ -384,7 +384,7 @@ def main():
     # two-word build) — undefined encodings on FPv4-SP. Absent symbol = the
     # honest decline; present = the capability gate regressed.
     compile_or_die("/tmp/i64_float_conv_869_m4f.o",
-                   ["-b", "arm", "--target", "cortex-m4f", "--all-exports"],
+                   ["-b", "arm", "--target", "cortex-m4f", "--all-exports", "--allow-skipped-exports"],
                    "ARM32 cortex-m4f")
     _, _, m4f_syms = load("/tmp/i64_float_conv_869_m4f.o")
     for fn in FAMILY:
@@ -396,7 +396,7 @@ def main():
 
     # ==== execute the boundary tables (cortex-m7dp self-contained) =========
     compile_or_die("/tmp/i64_float_conv_869_arm.elf",
-                   ["-b", "arm", "--target", "cortex-m7dp", "--all-exports"],
+                   ["-b", "arm", "--target", "cortex-m7dp", "--all-exports", "--allow-skipped-exports"],
                    "ARM32 cortex-m7dp")
     text, base, syms = load("/tmp/i64_float_conv_869_arm.elf")
     for fn in FAMILY:

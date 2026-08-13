@@ -128,7 +128,17 @@ def compile_module(wat_text: str, tmp: Path) -> tuple[Path, bytes]:
     obj = tmp / "m.o"
     r = subprocess.run(
         [SYNTH, "compile", str(src), "-o", str(obj), "--target", "cortex-m4",
-         "--all-exports", "--relocatable"],
+         "--all-exports", "--relocatable",
+         # #952: this IS the corpus sweep that issue names as the intended
+         # `--allow-skipped-exports` caller — individual per-function
+         # declines are expected and already counted below by reason
+         # (per-assertion, via `symbol-missing`), not a compile failure for
+         # the whole file. Without this flag, since v0.57 a module where ANY
+         # exported function declines (not just ALL of them) now exits
+         # non-zero, which would collapse partial-decline files into
+         # `compile-declined` and undercount CHECKED assertions this oracle's
+         # `emulations >= 263` floor depends on.
+         "--allow-skipped-exports"],
         capture_output=True, text=True,
     )
     if r.returncode != 0 or not obj.exists():

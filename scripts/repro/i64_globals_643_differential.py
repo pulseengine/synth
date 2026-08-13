@@ -64,7 +64,7 @@ GLOBAL_FNS = ["set64", "get_lo", "get_hi", "set32", "get32", "roundtrip_hi"]
 
 def compile_synth(out, backend_args):
     env = {"PATH": "/usr/bin:/bin"}
-    cmd = [SYNTH, "compile", str(WAT), "-o", out, "--all-exports"] + backend_args
+    cmd = [SYNTH, "compile", str(WAT), "-o", out, "--all-exports", "--allow-skipped-exports"] + backend_args
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         sys.exit(f"compile failed ({backend_args}): {r.stderr}")

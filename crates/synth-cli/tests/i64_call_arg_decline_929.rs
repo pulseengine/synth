@@ -61,6 +61,13 @@ fn compile(tag: &str, wat: &str) -> (bool, String, String) {
             "cortex-m3",
             "--all-exports",
             "--relocatable",
+            // #952: `f` is the sole export in the two decline fixtures below,
+            // and it is exactly the function #929 declines — since v0.57 that
+            // exits non-zero by default. These tests want the decline (and
+            // its diagnostic) with the compile still reporting success, which
+            // is the opt-in `--allow-skipped-exports` case. A no-op on
+            // I32_ONLY, where nothing is skipped.
+            "--allow-skipped-exports",
             "-o",
             obj.to_str().unwrap(),
         ])

@@ -85,7 +85,11 @@ def check_selfcontained_a32_residual() -> int:
     its builder emits no funcref table, so a dispatch would be the #717 R11
     collision (a silent miscompile)."""
     out = "/tmp/ci275_selfcontained_r5.elf"
-    r = run(["--target", "cortex-r5", "-o", out])
+    # #952: `entry` is this fixture's sole export and the function expected
+    # to be loud-skipped here (the residual A32 decline this test verifies).
+    # Since v0.57 that exits non-zero by default; opt in to the partial
+    # object so the symtab/stderr checks below can still run.
+    r = run(["--target", "cortex-r5", "--allow-skipped-exports", "-o", out])
     fails = 0
     if r.returncode != 0:
         print(f"self-contained cortex-r5: compile hard-failed (expected skip-and-continue):\n{r.stderr}")
