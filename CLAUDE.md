@@ -89,7 +89,7 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 591 Qed / 3 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 592 Qed / 2 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. The 50 selector-DSL rule theorems
 (`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
 #667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted
@@ -99,13 +99,15 @@ reflexivity gate was retired as vacuous once the hand-written mirror was gone
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
-1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 division admits
+2 ArmRefinement.v — 0 division admits
 (all four i32 div/rem trap guards discharged against `exec_program_br`, #73)
 and 0 i64 admits. (#166: the 2 Compilation.v example admits were discharged
-via `vm_compute`; the CorrectnessSimple.v `i32_const_correct` residual is a
-documented T3 — the MOVW+MOVT reconstruction arithmetic is now proven
-(`movw_movt_reconstruct_Z`, `i32_const_large_reconstruct`), the residual is the
-un-normalized-`Z` WASM-constant representation gap; the 2 ArmRefinement.v admits
+via `vm_compute`; the former CorrectnessSimple.v `i32_const_correct` T3 was
+closed in #933 by normalizing `I32Const` at the WASM model boundary — the
+theorem as previously stated quantified over un-normalized `Z` representatives
+and was false; the reconstruction arithmetic (`movw_movt_reconstruct_Z`,
+`i32_const_large_reconstruct`) plus boundary normalization now discharge it;
+the 2 ArmRefinement.v admits
 are opaque-`sail_exec_instr`-axiom placeholders superseded by `SailArmBridge.v`.)
 All i32 AND i64 operations have T1 proofs (i64 T1 parity since v0.11.0).
 

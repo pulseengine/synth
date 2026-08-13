@@ -219,13 +219,13 @@ Qed/Admitted counts: artifacts/status.json — machine-derived and CI-gated
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories
-  T3 admitted: 1 CorrectnessSimple.v, 2 ArmRefinement.v
+  T3 admitted: 2 ArmRefinement.v
      (0 division admits — all four i32 div/rem trap guards discharged against
      exec_program_br, #73 closed at i32; #166 discharged the 2 Compilation.v
-     example admits via vm_compute; the CorrectnessSimple.v i32_const_correct
-     residual is a documented modeling-gap T3 — the MOVW+MOVT reconstruction
-     arithmetic is proven, the gap is the un-normalized-Z WASM-constant
-     representation; the 2 ArmRefinement.v admits are opaque-sail_exec_instr-
+     example admits via vm_compute; #933 closed the former CorrectnessSimple.v
+     i32_const_correct modeling-gap T3 by normalizing I32Const at the WASM
+     model boundary — the MOVW+MOVT reconstruction Qed now discharge it; the
+     2 ArmRefinement.v admits are opaque-sail_exec_instr-
      axiom placeholders superseded by SailArmBridge.v)
   incl. the selector-DSL rule theorems (Synth/VcrSelRules.v — every manifest
      rule has a 1:1 Qed correctness theorem, count-same CI-gated against

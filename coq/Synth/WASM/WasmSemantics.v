@@ -73,9 +73,22 @@ Definition pop2_i64 (s : wasm_state) : option (I64.int * I64.int * wasm_state) :
 (** Execute a single WebAssembly instruction *)
 Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state :=
   match i with
-  (* Constants *)
+  (* Constants.
+
+     #933 boundary normalization: [I32Const] pushes the REGISTER-NORMALIZED
+     value [I32.repr n], not the raw [Z] representative [n]. This is the
+     faithful model of wasm §2.4.1/§4.4.1: an [i32.const c] immediate IS a
+     value of type i32 — the binary format LEB128-decodes exactly 32 bits, so
+     no real module can carry an out-of-range representative like
+     [2^32 + 0x10000]. The shallow [I32.int := Z] embedding admits such junk
+     representatives syntactically; every arithmetic op already quotients them
+     out through [I32.repr]/[I32.unsigned], and the raw const push was the ONE
+     remaining injection point for un-normalized values into the machine. For
+     every in-range [n] (all reachable programs) [I32.repr n = n], so this is
+     byte-invisible on the reachable domain — a fidelity fix, not a theorem
+     weakening (#166 gate: argued, not silent). *)
   | I32Const n =>
-      Some (push_value (VI32 n) s)
+      Some (push_value (VI32 (I32.repr n)) s)
 
   | I64Const n =>
       Some (push_value (VI64 n) s)

@@ -171,8 +171,10 @@ Qed.
 
     Everything on the left is [_ mod 2^32], so the reconstruction produces the
     register-normalized value [repr u = repr (unsigned n) = unsigned n], NOT the
-    raw representative [n]. That distinction is the crux of the [i32_const_correct]
-    modeling gap documented below. *)
+    raw representative [n]. That distinction was the crux of the former
+    [i32_const_correct] modeling gap — closed in #933 by normalizing the const
+    at the WASM model boundary (see the theorem below and the rationale at
+    [exec_wasm_instr]'s [I32Const] case in WasmSemantics.v). *)
 
 Local Open Scope Z_scope.
 
@@ -250,47 +252,53 @@ Local Close Scope Z_scope.
 (** i32.const branches on the constant size: MOVW for [unsigned n <= 65535],
     MOVW+MOVT otherwise.
 
-    T3 — DOCUMENTED MODELING GAP (NOT a division admit, NOT an unproven bit fact).
-    The reconstruction arithmetic IS proven (see [movw_movt_reconstruct_Z] and
-    [i32_const_large_reconstruct] above, both real Qed). The residual is a
-    value-representation mismatch, not a missing proof:
-
-    - [exec_wasm_instr (I32Const n)] pushes [VI32 n] with the RAW [Z]
-      representative [n] (WasmSemantics does not normalize constants).
-    - The MOVW+MOVT ship path (large branch) necessarily normalizes: it yields
-      [I32.repr (I32.unsigned n) = I32.unsigned n], proven above.
-
-    So [get_reg astate' R0 = n] holds UNCONDITIONALLY only in the small (MOVW)
-    branch; in the large branch it holds iff [n] is register-normalized
-    ([I32.valid_unsigned n], i.e. [n = I32.unsigned n]). The theorem as stated
-    (no normalization hypothesis) is therefore FALSE for out-of-range
-    representatives with [unsigned n > 65535] — a real counterexample exists
-    (e.g. [n = 2^32 + 0x10000]).
-
-    Two ways to close it, both a change of contract rather than a new proof:
-      (a) normalize [I32Const] at the WASM boundary in the model
-          (push [VI32 (I32.repr n)]), then [i32_const_large_reconstruct]
-          discharges it directly; or
-      (b) add the [I32.valid_unsigned n] register-normalization hypothesis
-          (the same explicit contract the #73 div_s proof adopted).
-    Per the #166 "never weaken a theorem to force a Qed" gate, neither is
-    applied here silently; the theorem stays honestly Admitted with the
-    reconstruction fact already discharged. *)
+    #933 RESOLUTION (closed via contract (a) of the former T3 note — boundary
+    normalization, argued in WasmSemantics.v at the [I32Const] case). History:
+    the theorem was Admitted because it was FALSE AS STATED — it quantified
+    over raw un-normalized [Z] representatives ([exec_wasm_instr (I32Const n)]
+    pushed [VI32 n] raw) while the shipped MOVW+MOVT path necessarily produces
+    the register-normalized [I32.repr (I32.unsigned n)] (counterexample:
+    [n = 2^32 + 0x10000]). The model now normalizes the const at BOTH
+    embedding boundaries, which is what the artifacts being modeled do:
+    a wasm [i32.const] immediate IS a 32-bit value (the binary format decodes
+    exactly 32 bits — no real module carries a junk representative), and
+    MOVW's imm16 field is derived from the value's bits (the hardware
+    zero-extends — no real register holds one either). On the reachable
+    domain (in-range [n]) both changes are identities, so this strengthens
+    model fidelity rather than weakening the theorem (#166 gate: argued, not
+    silent). The statement now relates the value the WASM machine ACTUALLY
+    pushes ([I32.repr n]) to the register the ARM machine ACTUALLY produces —
+    and both branches discharge from facts proven above
+    ([i32_const_large_reconstruct] / [Z.mod_mod]). *)
 Theorem i32_const_correct : forall wstate astate n,
   exec_wasm_instr (I32Const n) wstate =
     Some (mkWasmState
-            (VI32 n :: wstate.(stack))
+            (VI32 (I32.repr n) :: wstate.(stack))
             wstate.(locals)
             wstate.(globals)
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (I32Const n)) astate = Some astate' /\
-    get_reg astate' R0 = n.
+    get_reg astate' R0 = I32.repr n.
 Proof.
-  (* See the T3 rationale above: false in the large branch for un-normalized
-     [n]; the reconstruction arithmetic itself is proven in
-     [i32_const_large_reconstruct]. *)
-Admitted.
+  intros wstate astate n _Hwasm.
+  destruct (Z.leb (I32.unsigned n) 65535) eqn:Hsmall.
+  - (* small branch: MOVW writes the value bits [I32.repr (I32.unsigned n)] *)
+    unfold compile_wasm_to_arm. rewrite Hsmall.
+    cbn [exec_program exec_instr].
+    eexists. split; [reflexivity|].
+    rewrite get_set_reg_eq.
+    (* [I32.repr (I32.unsigned n) = I32.repr n]: [unsigned] and [repr] are
+       both [_ mod modulus], so [repr_unsigned] closes it up to conversion. *)
+    apply I32.repr_unsigned.
+  - (* large branch: the proven MOVW+MOVT reconstruction *)
+    apply Z.leb_gt in Hsmall.
+    destruct (i32_const_large_reconstruct astate n) as [astate' [Hexec HR0]];
+      [lia|].
+    exists astate'. split; [exact Hexec|].
+    rewrite HR0.
+    apply I32.repr_unsigned.
+Qed.
 
 (** v0.9.0 PR 1 (precursor + discharge): I64Const compiles to
     `I64ConstPseudo R0 R1 n`, which writes `(i64_const_lo n, i64_const_hi n)`

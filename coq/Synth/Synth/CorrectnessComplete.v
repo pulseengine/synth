@@ -65,7 +65,8 @@ Require Export Synth.Synth.CorrectnessMemory.
 
     CorrectnessSimple.v:         28 (control, locals, globals, comparisons,
                                      shifts, bit-manip)
-                                    (I32Const, I64Const Admitted — see T3)
+                                    (I32Const closed #933, I64Const closed
+                                     v0.9.0 — see CorrectnessSimple.v)
     CorrectnessI64.v:            22 (arith, bitwise, shifts, comparisons, bit-manip)
                                     (4 div/rem Admitted — see T3)
     CorrectnessI64Comparisons.v: 19 (comparisons, bit-manip, shifts)
@@ -86,7 +87,8 @@ Require Export Synth.Synth.CorrectnessMemory.
     Integers.v:                   1 (i64_to_i32_to_i64_wrap, Rocq 9 Z.mod_mod)
     CorrectnessI32.v:             4 (divs, divu, rems, remu — trap guard sequences)
     CorrectnessI64.v:             4 (divs, divu, rems, remu — v0.8.0 PR 1a re-admit)
-    CorrectnessSimple.v:          2 (i32_const Z.leb, i64_const PR 1a re-admit)
+    CorrectnessSimple.v:          0 (i32_const closed #933 boundary
+                                     normalization; i64_const closed v0.9.0)
     Compilation.v:                2 (examples — same Z.leb reduction issue)
     ---
     Total T3:                    15

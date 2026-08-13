@@ -234,33 +234,33 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "591 Qed / 3 Admitted"
+    text: "592 Qed / 2 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 591
+        expect: 592
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 3
+        expect: 2
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "591 Qed / 3 Admitted"
+    text: "592 Qed / 2 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '591 Qed / 3 Admitted'
+        pattern: '592 Qed / 2 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 591
+        expect: 592
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 3
+        expect: 2
       - kind: count-eq                       # the "+2 admit. tactics" disclosure
         pattern: '^\s*admit\.'
         glob: ['coq/Synth/**/*.v']
@@ -287,7 +287,7 @@ claims:
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/CorrectnessSimple.v']
-        expect: 1
+        expect: 0
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/ARM/ArmRefinement.v']
