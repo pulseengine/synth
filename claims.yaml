@@ -767,6 +767,22 @@ claims:
         pattern: 'let frames = \(cert\.max_depth as u128\)\.saturating_add\(1\);'
         glob: ['crates/synth-backend/src/wcet_compose.rs']
         expect: 1
+      # #936 — I64Const/I64Ldr/I64Str are PRICED (bounded), not declined
+      # `Unmodeled`. Sound-critical because it is sized from the REAL Thumb-2
+      # encoder's own byte length for the instance (`straightline_expansion_real`),
+      # NOT the synth-synthesis byte-size estimator's `_ => 2` default (which does
+      # not cover these ops and would silently under-count) and NOT a hand-mirrored
+      # predicate (a naive "offset>0xFFF costs 2 extra ADD.W" mirror was proven
+      # WRONG at authoring — the address-materialization ADD itself can need its
+      # own MOVW for a large offset, which only calling the real encoder catches).
+      - kind: count-eq
+        pattern: 'I64Const \{ \.\. \} \| I64Ldr \{ \.\. \} \| I64Str \{ \.\. \} => match straightline_expansion_real'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'fn straightline_expansion_real\(op: &ArmOp\) -> Option<u64> \{'
+        glob: ['crates/synth-backend/src/wcet.rs']
+        expect: 1
       # #778 phase 5 — the SOUND-critical masked-ceiling BOTH-ENDPOINTS MAX. For a
       # data-dependent masked loop bound `x & K ∈ [0, K]`, the worst-case trip is
       # at the `rhs = K` endpoint for a count-UP loop and the `rhs = 0` endpoint

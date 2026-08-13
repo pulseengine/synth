@@ -242,7 +242,20 @@ frozen and oracle-gated every step:
   unhinted/too-low/unmasked reject) and the `wcet_phase5_778_masked_loop_soundness.py`
   unicorn cross-check (count-down `cd(0)` executes 180 insns ≤ 339 cyc). Richer
   certificates (clamp-bounded controlling values, data-dependent recursion depths,
-  scry) are a named follow-up.
+  scry) are a named follow-up. #936: `I64Const`/`I64Ldr`/`I64Str` — reachable
+  ONLY on the RELOCATABLE/direct selector (`select_with_stack`, #197), which
+  gale's whole-object `--emit-wcet` run over a real `gust:os` composite showed
+  behind ALL 9 `unmodeled-op` declines (and 11 `callee-unbounded` cascades
+  behind those) — are now PRICED rather than declined. Sized from the REAL
+  Thumb-2 encoder's own byte length per instance
+  (`straightline_expansion_real`), not a hand-mirrored predicate: an exact
+  hand mirror of `i64_effective_base`'s offset-fold threshold was tried first
+  and found UNSOUND at authoring (the address-materialization `ADD` can need
+  its own `MOVW` for a large offset, which only the real encoder's own output
+  reflects) — the same drift class `op_mnemonic`'s "no second source of truth
+  to forget to update" already guards against elsewhere in this file. Gated
+  by `wcet_bound_gate.rs` (leaf + cascade-composition cases) and the
+  `wcet_phase6_936_i64_leaf_soundness.py` unicorn cross-check.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the

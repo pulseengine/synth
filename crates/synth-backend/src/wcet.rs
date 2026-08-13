@@ -100,6 +100,29 @@ fn straightline_expansion(op: &ArmOp) -> u64 {
     (byte_len / 2) * STRAIGHTLINE_CEIL_PER_HALFWORD
 }
 
+/// Worst-case cycles for a straight-line multi-byte expansion, sized from the
+/// REAL Thumb-2 encoder's OWN byte length for THIS exact instance — used for
+/// ops the synth-synthesis byte-size estimator does not cover (#936:
+/// `I64Const`/`I64Ldr`/`I64Str` are RELOCATABLE/direct-selector-only —
+/// `select_with_stack`, forced by `--relocatable`, #197 — so they are
+/// classified `OffPath` for the OPTIMIZED selector `estimator_encoder_agreement`
+/// pins, and `estimate_arm_byte_size` falls to its `_ => 2` default for them,
+/// which would silently under-count). Calling the real encoder directly means
+/// there is nothing to pin against — it cannot drift from itself the way a
+/// hand-written mirror could (`op_mnemonic`'s "no second source of truth to
+/// forget to update"). `None` on an encode failure: a function already
+/// compiled successfully into `arm_instrs`, so every op in it is encodable in
+/// practice; a caller declines `Unmodeled` rather than trusting an un-costed
+/// op. Reuses the SAME pinned `STRAIGHTLINE_CEIL_PER_HALFWORD` ceiling and the
+/// same per-instruction-≤-ceiling argument (I64Const/I64Ldr/I64Str expand to
+/// only MOVW/MOVT/LDR/STR/ADD.W, all already priced well under the ceiling).
+fn straightline_expansion_real(op: &ArmOp) -> Option<u64> {
+    let bytes = crate::arm_encoder::ArmEncoder::new_thumb2()
+        .encode(op)
+        .ok()?;
+    Some((bytes.len() as u64 / 2) * STRAIGHTLINE_CEIL_PER_HALFWORD)
+}
+
 /// Classification of an `ArmOp` for the cycle model.
 enum OpCost {
     /// A single-execution op with this documented worst-case cycle count.
@@ -227,6 +250,39 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | I64Extend16S { .. }
         | I64Extend32S { .. } => Cycles(straightline_expansion(op)),
 
+        // === I64Const / I64Ldr / I64Str (#936): REAL, straight-line, ===
+        // === single-execution — priced, not declined ===
+        // Unlike the rest of the "i64 pseudo binops" bucket below, these three
+        // are NOT always folded upstream: the RELOCATABLE/direct selector
+        // (`select_with_stack`, forced by `--relocatable`, #197) emits them
+        // straight into the final `arm_instrs` stream
+        // (`instruction_selector.rs`: i64.const, i64.load/i64.store,
+        // LocalSet/LocalTee spill and incoming-param-slot stores) — confirmed
+        // reachable by a gale whole-object `--emit-wcet` run over a real
+        // `gust:os` composite, where these were the ONLY two opcodes behind
+        // all 9 `unmodeled-op` declines (I64Ldr shares the identical
+        // `i64_effective_base` address-materialization shape as I64Str and is
+        // priced alongside it to avoid an identical cascade-blocking decline).
+        // `encode_thumb`'s arms for these ops (arm_encoder.rs) each expand to
+        // a FIXED-length sequence of already-priced primitives with NO
+        // internal runtime loop:
+        //   - I64Const: 1-2 `MOVW`/`MOVT` per half (MOVT elided when the half
+        //     fits in 16 bits) = 2..4 instructions, each 1 cycle (same row as
+        //     `Movw`/`Movt` above).
+        //   - I64Ldr/I64Str: `i64_effective_base` optionally materializes an
+        //     indexed address into `ip` first (0, 1, or 2 `ADD`/`ADD.W`, each
+        //     1 cycle, same row as `Add` above — a frame access with no index
+        //     register adds nothing), then two `LDR`/`STR` (2 cycles each,
+        //     same row as `Ldr`/`Str` above).
+        // Priced via [`straightline_expansion_real`] — the REAL encoder's own
+        // byte length for THIS instance, not the (non-covering, `_ => 2`)
+        // synth-synthesis byte-size estimator [`straightline_expansion`]
+        // above uses.
+        I64Const { .. } | I64Ldr { .. } | I64Str { .. } => match straightline_expansion_real(op) {
+            Some(c) => Cycles(c),
+            None => Unmodeled,
+        },
+
         // === prologue/epilogue stack ops: real, straight-line, single-execution ===
         // Cortex-M4 STM/LDM (PUSH/POP) = 1 + N cycles for N registers. A POP that
         // writes PC is also a branch (pipeline refill up to 3). We price BOTH as
@@ -250,7 +306,21 @@ fn op_cost(op: &ArmOp) -> OpCost {
         Call { .. } | CallIndirect { .. } | BrTable { .. } => Unmodeled,
         MemorySize { .. } | MemoryGrow { .. } => Unmodeled,
 
-        // === i64 pseudo binops lowered to 32-bit pairs upstream (never in stream) ===
+        // === i64 pseudo binops/compares: mostly lowered to 32-bit pairs =====
+        // === upstream — NOT a blanket "never in stream" claim (#936 audit) ===
+        // I64Const/I64Ldr/I64Str were priced above, out of this bucket, once
+        // #936 found them REAL on the direct/relocatable selector. Auditing
+        // the rest during that fix found `I64Sub` (a saturating trunc-sat
+        // conversion sequence), `I64ExtendI32S`/`I64ExtendI32U`, and
+        // `I32WrapI64` are ALSO real direct-selector emissions with real
+        // `encode_thumb` support — reachable, just not exercised by ANY
+        // function's FIRST decline on the #936 gale composite (gale's 9
+        // unmodeled-op declines were exhaustively I64Const/I64Str), and not
+        // priced by this lane — a scoped follow-up, not a doc claim to repeat
+        // here. `I64Add`/`I64And`/`I64Or`/`I64Xor`/`I64Eqz`/`I64Eq`/`I64Ne`/
+        // `I64Lt*`/`I64Le*`/`I64Gt*`/`I64Ge*` have NO real emission site in
+        // `instruction_selector.rs` today (checked at the same time) — for
+        // THOSE the original claim holds.
         I64Add { .. }
         | I64Sub { .. }
         | I64And { .. }
@@ -267,9 +337,6 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | I64GtU { .. }
         | I64GeS { .. }
         | I64GeU { .. }
-        | I64Const { .. }
-        | I64Ldr { .. }
-        | I64Str { .. }
         | I64ExtendI32S { .. }
         | I64ExtendI32U { .. }
         | I32WrapI64 { .. } => Unmodeled,
@@ -746,7 +813,7 @@ pub fn function_wcet_intermediate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synth_synthesis::{Condition, Operand2, Reg};
+    use synth_synthesis::{Condition, MemAddr, Operand2, Reg};
 
     fn insn(op: ArmOp) -> ArmInstruction {
         ArmInstruction {
@@ -854,6 +921,110 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // #936 — I64Const/I64Ldr/I64Str are now PRICED (bounded), not declined.
+    // Each expected cycle count is `(real encoder byte-length / 2) ×
+    // STRAIGHTLINE_CEIL_PER_HALFWORD`, cross-checked against the encoder's
+    // own byte length rather than hand-derived, so a future encoder change
+    // to these expansions moves both sides together and this stays honest.
+
+    #[test]
+    fn i64_const_small_is_bounded() {
+        // value=0: both halves fit in 16 bits -> MOVW rdlo + MOVW rdhi only,
+        // no MOVT -> 8 bytes -> (8/2)*5 = 20 cycles.
+        let instrs = vec![
+            insn(ArmOp::I64Const {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                value: 0,
+            }),
+            insn(ArmOp::Bx { rm: Reg::LR }), // 4
+        ];
+        match function_wcet("k_small", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 20 + 4),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_const_wide_is_bounded() {
+        // value=-1: both halves need MOVT -> MOVW+MOVT per half -> 16 bytes
+        // -> (16/2)*5 = 40 cycles.
+        let instrs = vec![insn(ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            value: -1,
+        })];
+        match function_wcet("k_wide", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 40),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_str_frame_is_bounded() {
+        // No offset_reg (a frame/local store): i64_effective_base emits
+        // nothing extra -> 2x STR -> 8 bytes -> 20 cycles.
+        let instrs = vec![insn(ArmOp::I64Str {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr {
+                base: Reg::SP,
+                offset: 0,
+                offset_reg: None,
+            },
+        })];
+        match function_wcet("s_frame", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 20),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_str_indexed_large_offset_is_bounded() {
+        // offset_reg = Some(..) (a real i64.store) with a static offset large
+        // enough that i64_effective_base's address materialization ITSELF
+        // needs a MOVW to build the immediate before the two ADD.W folds ->
+        // 20 bytes -> 50 cycles. This is the #936 case that proved a
+        // hand-mirrored predicate would have UNDER-counted: a naive
+        // "offset>0xFFF costs 2 extra ADDs" mirror predicts 16 bytes/6
+        // cycles here, missing the immediate-materialization ADD.W's own
+        // MOVW — which is exactly why this op is priced from the REAL
+        // encoder ([`straightline_expansion_real`]) and not a hand mirror.
+        let instrs = vec![insn(ArmOp::I64Str {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr {
+                base: Reg::R11,
+                offset: 0x2000,
+                offset_reg: Some(Reg::R2),
+            },
+        })];
+        match function_wcet("s_idx", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 50),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_ldr_is_bounded() {
+        // Same shape/derivation as I64Str (shared `i64_effective_base`);
+        // priced alongside it (#936) to avoid a cascade-blocking decline
+        // identical to I64Str's.
+        let instrs = vec![insn(ArmOp::I64Ldr {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr {
+                base: Reg::SP,
+                offset: 0,
+                offset_reg: None,
+            },
+        })];
+        match function_wcet("l_frame", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 20),
+            other => panic!("expected bounded, got {other:?}"),
+        }
     }
 
     #[test]
