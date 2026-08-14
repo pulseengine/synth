@@ -518,7 +518,11 @@ mod tests {
         let fp = derive_function_provenance(0, "u", &ops, &op_offsets, &line_map, &branch_map, &[]);
         let b = &fp.object_cond_branches[0];
         assert!(!b.resolved);
-        assert!(b.origin.is_none(), "must not invent an origin: {:?}", b.origin);
+        assert!(
+            b.origin.is_none(),
+            "must not invent an origin: {:?}",
+            b.origin
+        );
         assert!(
             b.note.as_deref().unwrap_or("").contains("unattributed"),
             "the note must declare the gap, not guess: {:?}",
