@@ -36,10 +36,8 @@
 //! mechanically-derived complement lives in the cross-backend op-parity oracle
 //! (`crates/synth-backend-riscv/tests/cross_backend_op_parity.rs`, aarch64
 //! leg):**
-//! - `call_indirect`, import calls, `>8` integer args, multi-result or
-//!   float-result callees (returned in v0/d0, not x0), a caller reading its own
-//!   params across a call (param-homing is a later increment), and WRITING a
-//!   parameter (`local.set`/`tee` on a param index).
+//! - import calls, `>8` integer args, multi-result or float-result callees
+//!   (returned in v0/d0, not x0), and a live value-stack temp across a `call`.
 //! - register spilling and bulk memory (`memory.copy`/`memory.fill`).
 //! - Float rounding (`ceil`/`floor`/`trunc`/`nearest`), f32/f64 linear-memory
 //!   load/store, i64→float converts, and the TRAPPING i64-target truncations
@@ -56,10 +54,25 @@
 //! the function actually declares one. `local.get` LOADS the slot into a fresh
 //! temp (copy-semantics — a later `local.set` of the same index cannot alias a
 //! stacked value), `local.set`/`local.tee` store it (tee without popping).
-//! 64-bit slots preserve both i32 and i64. Still declined here: writing a
-//! PARAMETER (params live in arg registers by reference — a later increment
-//! homes them) and FP non-param locals (their types are not threaded to the
-//! backend, so an FP `local.set` is caught by the GP file-check and declined).
+//! 64-bit slots preserve both i32 and i64. Still declined here: FP non-param
+//! locals (their types are not threaded to the backend, so an FP `local.set` is
+//! caught by the GP file-check and declined).
+//!
+//! **RQ-57-A64PARAM (#851) — PARAM HOMING.** A function that CALLS (v0.54 lane
+//! L3) or WRITES a parameter (this increment) gives EVERY local — params
+//! included — an 8-byte slot at `[sp, #idx*8]`; the prologue stores each
+//! incoming argument register into its slot, and every `local.get` becomes a
+//! `ldr` into a fresh temp. That is what makes `local.set`/`local.tee` on a
+//! param index lower at all: the write has a durable home, and because reads
+//! are copies it cannot alias a value the stack already holds — the exact
+//! hazard the old decline was protecting against, now structurally impossible.
+//! `writes_param` is a subset of `references_param`, so this changes behaviour
+//! for exactly one class (leaf functions that write a param, all of which
+//! declined before); non-leaf homing is byte-identical.
+//!
+//! Declined here: a homing function that declares a FLOAT param — the slot
+//! model is single-register-file, so a v-register param would be stored and
+//! reloaded as a GP register (named follow-up: thread the per-local file).
 //!
 //! **Milestone 3 adds scalar floating point** (the separate V/D/S register file):
 //! f32/f64 const, add/sub/mul/div, abs/neg/sqrt, the full compare family, the
@@ -417,20 +430,42 @@ pub fn select_typed_cf_calls(
     //   * every value-stack entry is a temp (x9..x15) again — nothing lives in
     //     x0..x7 by reference — so argument marshalling stays hazard-free.
     //
-    // A LEAF function is untouched (params stay register-resident, bytes
-    // identical), so `local.set`/`local.tee` on a param still declines there.
-    let reads_param = ops.iter().any(
+    // RQ-57-A64PARAM (#851): the SAME machinery also unblocks WRITING a param.
+    //
+    // A LEAF function used to keep its params register-resident, so
+    // `local.set`/`local.tee` on a param index had nowhere durable to write and
+    // loud-declined — two of the four mechanically-derived ARM/aarch64
+    // divergences (`cross_backend_op_parity.rs`). Homing gives the write a home
+    // slot, and the copy-semantics `local.get` makes the aliasing hazard the
+    // decline was guarding against structurally impossible: every value-stack
+    // entry is a fresh temp, never the home location itself.
+    //
+    // `references_param` below matches reads AND writes, so `writes_param` is a
+    // SUBSET of it: widening the predicate changes behaviour for EXACTLY ONE
+    // class — leaf functions that write a param, every one of which declined
+    // before. Non-leaf homing is bit-for-bit unchanged, and no function that
+    // compiled without a frame starts consuming temps for `local.get`.
+    let references_param = ops.iter().any(
         |op| matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params),
     );
-    let home_params = is_non_leaf && reads_param;
-    // FLOAT params live in v0..v7 and would need an FP store to home; the
-    // encoder has no `str s/d` yet, so that shape keeps the old loud decline
-    // rather than homing the wrong register file.
+    let writes_param = ops
+        .iter()
+        .any(|op| matches!(op, WasmOp::LocalSet(i) | WasmOp::LocalTee(i) if *i < num_params));
+    let home_params = (is_non_leaf && references_param) || writes_param;
+    // FLOAT params live in v0..v7, a DIFFERENT register file from the one the
+    // slot model addresses. Homing them is not blocked by the encoder (it has
+    // `str s/d` since the v0.54 L2 float load/store increment) but by the slot
+    // model itself: `slot_resident`/`local_slot_off` are file-agnostic, and a
+    // per-local register file is not threaded through them, so a homed v-param
+    // would be stored and reloaded as a GP register — the wrong file. Rather
+    // than emit that, loud-decline the whole function. Named follow-up: thread
+    // the per-local file so float params home too.
     if home_params && (params_f32.iter().any(|b| *b) || params_f64.iter().any(|b| *b)) {
         return Err(SelectError(
-            "non-leaf function references a FLOAT parameter — homing a v-register \
-             param needs an FP store this encoder does not have; loud-declining \
-             (#851)"
+            "function homes its parameters (it calls, or writes a parameter) but \
+             declares a FLOAT parameter — the aarch64 home-slot model is \
+             single-register-file, so homing a v-register param would store and \
+             reload it as a GP register; loud-declining (#851)"
                 .into(),
         ));
     }
@@ -1482,26 +1517,27 @@ pub fn select_typed_cf_calls(
                 }
             }
             // `local.set i` — pop the top value and store it into local `i`.
-            // Non-param locals live in stack slots (`str` the value). A param
-            // target is LOUD-DECLINED: params live in arg registers BY REFERENCE
-            // on the value stack, so writing one could alias a value already
-            // pushed (the miscompile the slot model avoids for non-param locals);
-            // homing written params is a later increment.
+            // Every local a body writes is slot-resident: non-param locals
+            // always, and a written PARAM because `writes_param` forces
+            // `home_params` (RQ-57-A64PARAM, #851). The `else` is therefore an
+            // INTERNAL INVARIANT, kept as a loud error rather than deleted so a
+            // future change to the homing predicate cannot silently drop a
+            // store.
             WasmOp::LocalSet(i) => {
                 if slot_resident(*i) {
                     let src = pop_gp(&mut stack, "local.set")?;
                     words.push(enc::str_x_imm(src, enc::SP, local_slot_off(*i)));
                 } else {
                     return Err(SelectError(format!(
-                        "local.set {i}: writing a PARAMETER is not yet supported \
-                         for aarch64 (params live in arg registers by reference; \
-                         writing one could alias a stacked value) — loud-declining"
+                        "internal: local.set {i} targets a local with no home slot \
+                         (num_params={num_params}, home_params={home_params}) — the \
+                         homing predicate and the slot model disagree (#851)"
                     )));
                 }
             }
             // `local.tee i` — like `local.set` but leaves the value on the stack.
-            // Store the top value WITHOUT popping it (peek + `str`); a param
-            // target is declined for the same reason as `local.set`.
+            // Store the top value WITHOUT popping it (peek + `str`). Same
+            // slot-residency invariant as `local.set`.
             WasmOp::LocalTee(i) => {
                 if slot_resident(*i) {
                     let top = *stack
@@ -1513,8 +1549,9 @@ pub fn select_typed_cf_calls(
                     words.push(enc::str_x_imm(top.reg, enc::SP, local_slot_off(*i)));
                 } else {
                     return Err(SelectError(format!(
-                        "local.tee {i}: writing a PARAMETER is not yet supported \
-                         for aarch64 — loud-declining"
+                        "internal: local.tee {i} targets a local with no home slot \
+                         (num_params={num_params}, home_params={home_params}) — the \
+                         homing predicate and the slot model disagree (#851)"
                     )));
                 }
             }

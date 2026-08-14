@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 32
+# ci-checks: emulations >= 44
 """#851 (RQ-57-A64PARAM) — aarch64 PARAM HOMING execution differential (RED-first).
 
 Compiles `aarch64_param_homing_851.wat` with `synth compile -b aarch64`, then
