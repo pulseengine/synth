@@ -1707,8 +1707,12 @@ impl MaskedSeedEval {
                 let b = self.op2(op2);
                 self.def(*rd, cases_bin(a.as_ref(), b.as_ref(), |x, y| x & y));
             }
-            Orr { rd, rn, op2 } | Eor { rd, rn, op2 } | Add { rd, rn, op2 }
-            | Adds { rd, rn, op2 } | Sub { rd, rn, op2 } | Subs { rd, rn, op2 } => {
+            Orr { rd, rn, op2 }
+            | Eor { rd, rn, op2 }
+            | Add { rd, rn, op2 }
+            | Adds { rd, rn, op2 }
+            | Sub { rd, rn, op2 }
+            | Subs { rd, rn, op2 } => {
                 if special(rd) {
                     self.kill_all();
                     return;
@@ -1783,7 +1787,9 @@ impl MaskedSeedEval {
             // --- shifts ---
             // Immediate shifts only for amounts 1..=31: `#0` is the imm5
             // pitfall (`LSR/ASR #0` encodes shift-by-32), so it is declined.
-            Lsl { rd, rn, shift } | Lsr { rd, rn, shift } | Asr { rd, rn, shift }
+            Lsl { rd, rn, shift }
+            | Lsr { rd, rn, shift }
+            | Asr { rd, rn, shift }
             | Ror { rd, rn, shift } => {
                 if special(rd) {
                     self.kill_all();
@@ -1804,7 +1810,9 @@ impl MaskedSeedEval {
             }
             // Register-controlled shifts: the amount is `Rm<7:0>` and an
             // amount >= 32 shifts the value out entirely (all-sign for ASR).
-            LslReg { rd, rn, rm } | LsrReg { rd, rn, rm } | AsrReg { rd, rn, rm }
+            LslReg { rd, rn, rm }
+            | LsrReg { rd, rn, rm }
+            | AsrReg { rd, rn, rm }
             | RorReg { rd, rn, rm } => {
                 if special(rd) {
                     self.kill_all();
