@@ -245,6 +245,16 @@ pub(crate) fn bool_to_i32(b: &Bool) -> BV {
     b.ite(k32(1), k32(0))
 }
 
+/// The amount an ARMv7-M `<shift> (register)` form actually applies:
+/// `shift_n = UInt(Rm<7:0>)`, zero-extended back to 32 bits (#923).
+///
+/// The twin of `arm_semantics::ArmSemantics::shift_amount_rm_7_0`. Both models
+/// in this crate now state the ISA rule the same way, so neither can be read as
+/// evidence for a different one.
+pub(crate) fn shift_amount_rm_7_0(rm: &BV) -> BV {
+    rm.extract(7, 0).zero_ext(24)
+}
+
 /// 64-bit value as a pair of 32-bit limbs: `lo` is bits 0..=31, `hi` is
 /// bits 32..=63 — exactly the ARM register pair the i64 lowering uses.
 #[derive(Clone)]
@@ -860,21 +870,35 @@ impl Z3ArmValidator {
                 ArmOp::Mvn { rd, op2 } => {
                     regs[idx(rd)] = eval_op2(&regs, op2)?.bvnot();
                 }
-                // Register-amount shifts. Z3's bvshl/bvlshr/bvashr are total
-                // for any amount; the selector is responsible for masking the
-                // amount mod 32, and an unmasked lowering would fail the
-                // equivalence check.
+                // Register-amount shifts. ARMv7-M A7.7.68/70/12/117: the amount
+                // applied is `shift_n = UInt(Rm<7:0>)` — the low EIGHT bits.
+                // NOT `Rm mod 32` (that is WASM's rule, and it is the LOWERING's
+                // job to supply it — the selector emits `AND Rm,#31`), and not
+                // the raw 32-bit `Rm` either, which is what this executor used
+                // to feed the SMT shift (#923). The two differ at e.g.
+                // `Rm = 0x100`, where the core shifts by `Rm<7:0> = 0`
+                // (identity) and an unmasked `bvshl` gives 0.
+                //
+                // Verdicts are unchanged by the fix — under the shipped `AND
+                // #31` the amount is already in `[0,31]`, where the extract is
+                // the identity, and an unmasked lowering is rejected either way
+                // — but the two ARM models in this crate now state the same
+                // rule, and neither has to be re-derived from the other.
                 ArmOp::LslReg { rd, rn, rm } => {
-                    regs[idx(rd)] = regs[idx(rn)].bvshl(&regs[idx(rm)]);
+                    regs[idx(rd)] = regs[idx(rn)].bvshl(shift_amount_rm_7_0(&regs[idx(rm)]));
                 }
                 ArmOp::LsrReg { rd, rn, rm } => {
-                    regs[idx(rd)] = regs[idx(rn)].bvlshr(&regs[idx(rm)]);
+                    regs[idx(rd)] = regs[idx(rn)].bvlshr(shift_amount_rm_7_0(&regs[idx(rm)]));
                 }
                 ArmOp::AsrReg { rd, rn, rm } => {
-                    regs[idx(rd)] = regs[idx(rn)].bvashr(&regs[idx(rm)]);
+                    regs[idx(rd)] = regs[idx(rn)].bvashr(shift_amount_rm_7_0(&regs[idx(rm)]));
                 }
+                // ROR is the one form where `<7:0>` and the raw `Rm` agree —
+                // rotation has period 32 and 256 is a multiple of 32 — but the
+                // extract is applied anyway so the arm states the ISA rule
+                // instead of relying on that coincidence.
                 ArmOp::RorReg { rd, rn, rm } => {
-                    regs[idx(rd)] = regs[idx(rn)].bvrotr(&regs[idx(rm)]);
+                    regs[idx(rd)] = regs[idx(rn)].bvrotr(shift_amount_rm_7_0(&regs[idx(rm)]));
                 }
                 ArmOp::Lsl { rd, rn, shift } => {
                     regs[idx(rd)] = regs[idx(rn)].bvshl(k32(*shift as i64));
