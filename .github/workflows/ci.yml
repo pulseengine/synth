@@ -744,7 +744,12 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_divrem_851_differential.py
       - name: Run #851 non-param locals execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_locals_851_differential.py
-      - name: Run #851 RQ-57-A64PARAM param-homing execution oracle (writes to own params)
+      # NOTE the quoting: an UNQUOTED step name containing " #" is truncated by
+      # YAML at the comment marker, so 14 other steps in this file all display
+      # as bare "Run" in the Actions UI — which makes a red oracle job hard to
+      # attribute. Quoting keeps this one legible. (Sweeping the other 14 is a
+      # separate, purely cosmetic change; not done here.)
+      - name: "Run #851 RQ-57-A64PARAM param-homing execution oracle (writes to own params)"
         # Every export WRITES one of its own params — the shape that
         # loud-declined before param homing. Includes `cond_write_param`, whose
         # param is written only on ONE branch: that shape did NOT decline, it
