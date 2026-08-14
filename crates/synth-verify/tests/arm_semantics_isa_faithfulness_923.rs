@@ -37,6 +37,7 @@
 #![cfg(feature = "arm")]
 
 use synth_synthesis::rules::Condition;
+use synth_synthesis::rules::MemAddr;
 use synth_synthesis::{ArmOp, Operand2, Reg, VfpReg, WasmOp};
 use synth_verify::{
     ArmSemantics, ArmState, BV, TranslationValidator, ValidationResult, with_verification_context,
@@ -1401,6 +1402,15 @@ fn an_unmasked_shift_lowering_is_still_rejected() {
 /// — so the guard whose own doc says the silent default "must never green-wash
 /// a trap derivation" passed them through as no-ops. Every allowlisted op must
 /// now either execute or decline; none may silently skip.
+///
+/// The list below covers EVERY op on the delegate allowlist as of this commit,
+/// not a sample — a list that covered only some of them would be the very
+/// thing this test exists to catch, one hand-maintained mirror guarding
+/// another. Note also what the real guard is: `delegate_to_encode_op` checks
+/// `ArmState::unmodeled` at RUNTIME on every delegation, so a future allowlist
+/// entry with no model declines loudly whether or not anyone remembers to add
+/// it here. This test is the red-first evidence that the runtime check works,
+/// and the reminder of why it exists.
 #[test]
 fn every_trap_subset_delegate_is_actually_modeled() {
     with_verification_context(|| {
@@ -1497,6 +1507,58 @@ fn every_trap_subset_delegate_is_actually_modeled() {
             ArmOp::I32TruncF64U {
                 rd: Reg::R0,
                 dm: VfpReg::D0,
+            },
+            ArmOp::F32Const {
+                sd: VfpReg::S0,
+                value: 1.0,
+            },
+            ArmOp::F64Const {
+                dd: VfpReg::D0,
+                value: 1.0,
+            },
+            ArmOp::I64TruncF64S {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                dm: VfpReg::D0,
+            },
+            ArmOp::I64TruncF64U {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                dm: VfpReg::D0,
+            },
+            ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr {
+                    base: Reg::R1,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            },
+            ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr {
+                    base: Reg::R1,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            },
+            ArmOp::I64RemU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: false,
+            },
+            ArmOp::I64RemS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: false,
             },
         ];
         for op in delegates {

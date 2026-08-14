@@ -198,3 +198,16 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
     genuinely second model of the same operations; pinning the two against each
     other is the next rung, and until it is done "three independent validators"
     would be an overclaim.
+  - **How second that second model is, measured (#923).** "A genuinely second
+    model of the same operations" held for fewer operations than it sounds like:
+    `encode_op`'s default arm was a SILENT NO-OP, so 87 of `ArmOp`'s 222
+    variants — every register-amount shift the selector emits among them — were
+    modeled as doing NOTHING, and a lowering that destroyed its own result
+    (`ADD r0,r0,r1 ; UXTB r0,r0`, which returns `(x+y) & 0xFF` on silicon) came
+    back `Verified` from the value VC. Modeling the shipped ops and making the
+    default arm RECORD-and-DECLINE brings the unmodeled set to **73** (41 MVE
+    vector ops; 32 others — flag-setting/carry forms, subword and symbol memory,
+    branch and stack ops). Those 73 now DECLINE loudly instead of passing. So the
+    second model is genuinely second for the i32/i64/VFP core it covers, and
+    explicit about the rest; the faithfulness pin between the two op models
+    remains the follow-up above.

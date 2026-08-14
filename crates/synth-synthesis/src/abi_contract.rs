@@ -140,7 +140,11 @@
 //!   common to all three instruments. This validator closes the shared-*contract*
 //!   hole, not the shared-*op-model* hole. `synth-verify`'s
 //!   `ArmSemantics::encode_op` is a genuinely second model of the same ops, and
-//!   pinning the two against each other is the obvious next rung.
+//!   pinning the two against each other is the obvious next rung. #923 measured
+//!   how second: `encode_op`'s default arm was a silent no-op covering 87 of
+//!   `ArmOp`'s 222 variants (now 73, and they DECLINE instead of passing), so
+//!   the second model is second for the i32/i64/VFP core and explicit about the
+//!   rest.
 //! * **Scope is the label-form shape.** `BrTable`, numeric-offset branches,
 //!   computed `Bx`, the `Call`/`CallIndirect` pseudo-ops,
 //!   duplicate/unresolvable labels and any op `reg_effect` does not model produce
