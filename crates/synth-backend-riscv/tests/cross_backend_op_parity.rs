@@ -946,8 +946,10 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
 /// Thirteen were closed in the same change (v0.53 #851: `select` via
 /// CSEL/FCSEL, `drop`, `nop`, `i32.wrap_i64`, `i64.extend_i32_{s,u}`, the five
 /// `extend8/16/32_s` forms, fixed-memory `memory.size`/`memory.grow`). Later
-/// lanes closed `global.get`/`global.set` and `call_indirect` (v0.54) and
-/// `br_table` (v0.55, VCR-A64-CF-001), leaving the FOUR below. This ledger —
+/// lanes closed `global.get`/`global.set` and `call_indirect` (v0.54),
+/// `br_table` (v0.55, VCR-A64-CF-001) and — this increment, RQ-57-A64PARAM —
+/// WRITING a parameter (`local.set+get(param)`, `local.tee(param)`) via param
+/// homing, leaving the TWO below: both halves of bulk memory. This ledger —
 /// the COMPLEMENT of what aarch64 lowers — is the mechanically-derived answer
 /// to "what is missing on armv8?" (#851); the float-surface complement lives in
 /// [`a64_extended_surface`].
@@ -965,18 +967,18 @@ fn aarch64_known_divergences() -> &'static [(&'static str, &'static str)] {
         //  `br_table_subshape_asymmetry_882` below, which goes red in both
         //  directions exactly like this ledger does. Execution differential:
         //  scripts/repro/aarch64_brtable_blockvals_851_differential.py.)
-        (
-            "local.set+get(param)",
-            "aarch64 declines WRITING a parameter: params live in arg registers \
-             by reference on the value stack, so a param write could alias a \
-             stacked value; param HOMING (to callee-saved regs or slots) is the \
-             prerequisite — deferred, #851",
-        ),
-        (
-            "local.tee(param)",
-            "aarch64 declines writing a parameter (same homing prerequisite as \
-             local.set) — deferred, #851",
-        ),
+        // (local.set+get(param) and local.tee(param) CLOSED by RQ-57-A64PARAM
+        //  (#851): the aarch64 selector now HOMES params — `writes_param`
+        //  forces the slot frame even in a LEAF function, so a param write is
+        //  a `str` to its own 8-byte slot and every `local.get` is a `ldr`
+        //  into a fresh temp (a copy). The aliasing hazard the decline was
+        //  guarding against is structurally impossible, so both entries went
+        //  stale and the stale-entry check forced their deletion. Execution
+        //  differential: scripts/repro/aarch64_param_homing_851_differential.py.
+        //  What did NOT close, and is therefore not hidden by this deletion: a
+        //  homing function that declares a FLOAT param still loud-declines (the
+        //  slot model is single-register-file) — asserted end-to-end by
+        //  scripts/repro/aarch64_m2_decline_538.py.)
         (
             "memory.copy",
             "aarch64 selector has no MemoryCopy arm (loud decline); bulk-memory \
@@ -1811,11 +1813,18 @@ fn aarch64_integer_op_parity_851() {
     let (at_parity, unexpected, stale) = run_a64_parity(&ledger);
 
     // Non-vacuity floor: the probe must actually exercise the aarch64 selector
-    // across the shared integer core.
+    // across the shared integer core. TIGHT — set to the MEASURED count (108
+    // after RQ-57-A64PARAM closed the two param-write divergences), not a round
+    // number well below it. The old `>= 60` was ~half the real figure, so the
+    // whole param-write class could have regressed to a decline without the
+    // floor noticing; a floor that cannot notice a regression is the vacuous-
+    // gate class. Raising this when a NEW divergence is legitimately ledgered is
+    // the intended cost — it forces the drop to be looked at rather than absorbed.
     assert!(
-        at_parity >= 60,
+        at_parity >= 108,
         "aarch64 parity leg exercised too few common-core ops ({at_parity}); \
-         the classifier or the aarch64 probe construction regressed"
+         the classifier or the aarch64 probe construction regressed, or an op \
+         that used to reach parity now diverges"
     );
 
     assert!(

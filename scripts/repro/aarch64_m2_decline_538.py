@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 12
+# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 14
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
 Some WASM constructs are DELIBERATELY not lowered on aarch64, and the contract
@@ -70,9 +70,11 @@ DECLINED = [
      '(func (export "f") (param i32) (result i32) '
      '(block (result i32 i32) (i32.const 1) (i32.const 2)) (i32.add))',
      "MULTI-VALUE result block type"),
-    ("local.set on a param",
-     '(func (export "f") (param i32) (result i32) '
-     '(local.set 0 (i32.add (local.get 0) (i32.const 1))) (local.get 0))'),
+    # RQ-57-A64PARAM (#851) moved "local.set on a param" OFF this list: param
+    # HOMING landed, so writing a param lowers (and is execution-verified in
+    # aarch64_param_homing_851_differential.py). What replaced it is NOT
+    # nothing — the narrower FLOAT-param residual at the bottom of this list
+    # stays, because the home-slot model is single-register-file.
     ("memory.fill", '(memory 1)(func (export "f") '
                     '(memory.fill (i32.const 0) (i32.const 0) (i32.const 4)))'),
     ("f32x4.add", '(func (export "f") (param f32) (result f32) '
@@ -112,10 +114,23 @@ DECLINED = [
      '(func (export "f") (param i32) (result i32) '
      '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
      "imported function"),
-    ("non-leaf FLOAT param (homing needs an FP store)",
+    # The reason is NOT a missing FP store — the encoder has `str s/d` since the
+    # v0.54 L2 float load/store increment. It is the SLOT MODEL: `slot_resident`
+    # / `local_slot_off` are register-file-agnostic, so a homed v-register param
+    # would be stored and reloaded as a GP register. Loud-decline beats that
+    # silent miscompile (RQ-57-A64PARAM, #851).
+    ("FLOAT param in a homing function (slot model is single-register-file)",
      '(func $g (result i32) (i32.const 1)) '
      '(func (export "f") (param f32) (result f32) '
      '(drop (call $g)) (local.get 0))',
+     "FLOAT parameter"),
+    # The same decline reached the OTHER way (#851): a LEAF function homes its
+    # params as soon as it WRITES one, so a declared float param declines even
+    # with no call in the body. This entry did not exist before param homing —
+    # the shape used to decline on the param write itself.
+    ("FLOAT param in a LEAF function that writes a param",
+     '(func (export "f") (param f32 i32) (result i32) '
+     '(local.set 1 (i32.const 7)) (local.get 1))',
      "FLOAT parameter"),
 ]
 

@@ -484,13 +484,23 @@ pub fn select_typed_cf_calls(
     // Stack slots (not registers) give ALIAS SAFETY BY CONSTRUCTION: every
     // `local.get` is a `ldr` into a FRESH temp — a copy, never the home location —
     // so a later `local.set` of the same index cannot clobber a value already on
-    // the value stack (the read-by-reference param path would miscompile this;
-    // params stay read-only, see the LocalSet/LocalTee decline below).
+    // the value stack. That property is what lets a PARAM be written at all:
+    // when `home_params` is set (RQ-57-A64PARAM, #851) params are slot-resident
+    // too, and a param write is just a `str` to its own slot. The
+    // read-by-reference model — which is still what a NON-homing leaf uses for
+    // its params — could not offer that, which is why writing a param used to
+    // loud-decline rather than emit an aliasing miscompile.
     //
-    // The slot for non-param local L (num_params <= L) is at `[sp, #(L -
-    // num_params)*8]`. The frame is sized to a 16-byte multiple (AArch64 SP
-    // alignment) and only materialized when there is at least one non-param local
-    // — a function with none is byte-identical to before this increment.
+    // Slot addressing depends on whether params are homed:
+    //   * `home_params` — EVERY local (params included) has a slot, local L at
+    //     `[sp, #L*8]`, and the prologue stores each incoming arg register into
+    //     its slot.
+    //   * otherwise — only non-param locals do, local L (num_params <= L) at
+    //     `[sp, #(L - num_params)*8]`, and params stay register-resident.
+    // Either way the frame is sized to a 16-byte multiple (AArch64 SP alignment)
+    // and only materialized when there is at least one slot to hold — a leaf
+    // function with no non-param locals that never writes a param is
+    // byte-identical to before this increment.
     let max_local_idx = ops
         .iter()
         .filter_map(|op| match op {
@@ -3142,20 +3152,86 @@ mod tests {
         assert_eq!(w[3], enc::ldr_x_imm(9, enc::SP, 0));
     }
 
-    /// A LEAF function is untouched by homing: its params stay register-
-    /// resident, so writing one still loud-declines (that gap is a separate
-    /// increment, and its parity-gate entry stays valid).
+    /// RQ-57-A64PARAM (#851): a LEAF function that WRITES a param now homes its
+    /// params and lowers — `writes_param` forces `home_params` even with no
+    /// call in the body. This is the inverse of the old
+    /// `leaf_param_write_still_loud_declines`, which asserted the decline this
+    /// increment removes; the two `cross_backend_op_parity` ledger entries it
+    /// backed (`local.set+get(param)`, `local.tee(param)`) went with it.
     #[test]
-    fn leaf_param_write_still_loud_declines() {
+    fn leaf_param_write_now_lowers_via_homing() {
+        // `local.set` on a param: prologue homes x0 into [sp,#0], then the
+        // written value is stored to that same slot.
         let ops = vec![WasmOp::I32Const(42), WasmOp::LocalSet(0), WasmOp::End];
-        assert!(sel_calls(&ops, 1, 0, &[0], &[0]).is_err());
+        let (w, _) = sel_calls(&ops, 1, 0, &[0], &[0]).expect("leaf local.set(param) must lower");
+        assert!(
+            w.contains(&enc::str_x_imm(0, enc::SP, 0)),
+            "prologue must home arg x0 into its slot: {w:x?}"
+        );
+        // `local.tee` on a param lowers too (store without popping).
         let ops = vec![WasmOp::I32Const(42), WasmOp::LocalTee(0), WasmOp::End];
-        assert!(sel_calls(&ops, 1, 0, &[0], &[0]).is_err());
+        assert!(sel_calls(&ops, 1, 0, &[0], &[0]).is_ok());
     }
 
-    /// A FLOAT param in a non-leaf function keeps the loud decline: homing a
-    /// v-register needs an FP store the encoder does not have, and homing the
-    /// wrong register file would be a silent miscompile.
+    /// The write-then-read round trip a homed param must satisfy: `local.set 0`
+    /// stores to the slot and the following `local.get 0` reads THAT slot back
+    /// (a copy into a fresh temp), never the stale argument register.
+    #[test]
+    fn leaf_param_write_then_read_round_trips_through_the_slot() {
+        let ops = vec![
+            WasmOp::I32Const(42),
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let (w, _) = sel_calls(&ops, 1, 0, &[0], &[0]).expect("write-then-read must lower");
+        let store = w
+            .iter()
+            .position(|&x| x == enc::str_x_imm(9, enc::SP, 0))
+            .expect("the written value must be stored to slot 0");
+        let load = w
+            .iter()
+            .position(|&x| x == enc::ldr_x_imm(9, enc::SP, 0))
+            .expect("the read must LOAD slot 0, not reuse the argument register");
+        assert!(store < load, "the store must precede the reload: {w:x?}");
+    }
+
+    /// RQ-57-A64PARAM (#851): widening `home_params` to `writes_param` also
+    /// widens the FLOAT-param decline onto a shape that previously declined for
+    /// a DIFFERENT reason (the param write itself). A LEAF function that
+    /// declares a float param and writes an INT param must still loud-decline —
+    /// decline→decline, no silent path opens — and must do so with the FLOAT
+    /// reason the decline-matrix probe greps for.
+    #[test]
+    fn leaf_float_param_with_int_param_write_still_loud_declines() {
+        // param 0 is f32 (lives in s0), param 1 is an i32 that the body writes.
+        let ops = vec![WasmOp::I32Const(7), WasmOp::LocalSet(1), WasmOp::End];
+        let r = select_typed_cf_calls(
+            &ops,
+            2,
+            &[true, false], // param 0 is f32
+            &[],
+            &[],
+            0,
+            &[0],
+            &[0],
+            &[false],
+            MemBounds::Unchecked,
+            &ModuleCtx::default(),
+        );
+        let err = r.expect_err("a homing function with a FLOAT param must decline");
+        assert!(
+            err.0.contains("FLOAT parameter"),
+            "decline must carry the FLOAT reason the decline probe asserts, got: {}",
+            err.0
+        );
+    }
+
+    /// A FLOAT param in a non-leaf function keeps the loud decline. The reason
+    /// is NOT a missing FP store (the encoder has `str s/d` since the v0.54 L2
+    /// float load/store increment) but the SLOT MODEL: it is single-register-
+    /// file, so a homed v-register param would be stored and reloaded as a GP
+    /// register — a silent miscompile. Loud-decline instead.
     #[test]
     fn non_leaf_float_param_still_loud_declines() {
         let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
@@ -4912,11 +4988,13 @@ mod tests {
     }
 
     #[test]
-    fn set_param_loud_declines() {
-        // Writing a PARAMETER is declined (params are read-by-reference; homing
-        // written params is a later increment) — never silently miscompiled.
+    fn set_param_lowers_via_homing() {
+        // RQ-57-A64PARAM (#851): writing a PARAMETER used to loud-decline
+        // (params were read-by-reference, so a write could alias a stacked
+        // value). It now HOMES the params — every local gets an 8-byte slot and
+        // `local.get` is a copy — so the write has a durable, non-aliasing home.
         let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0), WasmOp::End];
-        assert!(select(&ops, 1).is_err());
+        assert!(select(&ops, 1).is_ok());
     }
 
     #[test]

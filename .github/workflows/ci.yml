@@ -695,10 +695,15 @@ jobs:
     # float converts, and the DOMAIN-GUARDED trapping i64-target truncations —
     # so the decline-matrix probe moved on to the STRUCTURAL declines. v0.54 L3
     # then landed call_indirect + globals and v0.55 L6 (VCR-A64-CF-001)
-    # `br_table` + value-carrying block/loop/if, so what the probe asserts today
-    # is the NARROWER residue: param writes in a LEAF function, bulk memory,
-    # SIMD, a `br_table` past 16 targets or with value-carrying targets, a block
-    # type with params / multi-value results, and a non-leaf FLOAT param. Each
+    # `br_table` + value-carrying block/loop/if. RQ-57-A64PARAM (#851) then
+    # landed PARAM HOMING, which moved "local.set on a param" off the list —
+    # what replaced it is the narrower FLOAT-param residual, now asserted from
+    # BOTH directions (a non-leaf float param, and a LEAF function that writes a
+    # param), because the home-slot model is single-register-file. So what the
+    # probe asserts today is: bulk memory, SIMD, a `br_table` past 16 targets or
+    # with value-carrying targets, a block type with params / multi-value
+    # results, the table/global structural declines, and a FLOAT param in any
+    # function that homes. Each
     # entry LEAVES this list the day its lowering lands — asserting a decline
     # for a capability that now ships is the same doc-honesty defect as claiming
     # one that does not.
@@ -739,6 +744,23 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_divrem_851_differential.py
       - name: Run #851 non-param locals execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_locals_851_differential.py
+      - name: Run #851 RQ-57-A64PARAM param-homing execution oracle (writes to own params)
+        # Every export WRITES one of its own params — the shape that
+        # loud-declined before param homing. Includes `cond_write_param`, whose
+        # param is written only on ONE branch: that shape did NOT decline, it
+        # SILENTLY MISCOMPILED (the read-before-write param heuristic demoted the
+        # param to a zero-init local), so the oracle is the only thing that
+        # catches it. NON-VACUITY: assert a non-zero emulation count and the
+        # summary verdict, so a harness that compiled nothing cannot pass
+        # silently. `set -euo pipefail` (not bare `pipefail`, which would leave
+        # the step's status as the LAST command's) makes the script's own
+        # non-zero exit fail the step (#890).
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/aarch64_param_homing_851_differential.py | tee paramhoming851.txt
+          grep -Eq 'emulations=[1-9][0-9]*' paramhoming851.txt
+          grep -q '^RESULT: PASS' paramhoming851.txt
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
@@ -906,11 +928,17 @@ jobs:
           fi
           # Non-vacuity: extraction failure counts every op as declined (=PASS),
           # so a broken objcopy/objdump would green the gate having checked
-          # nothing. Assert at least gale's 0.50.x accepted-op baseline.
+          # nothing. TIGHT floor — the MEASURED accepted-op count (61 as of
+          # RQ-57-A64PARAM, #851), not gale's stale 0.50.x baseline of 32. At 32
+          # the gate tolerated HALF the surface silently disappearing; the
+          # accepted count is deterministic (it is synth's own compile-accept
+          # decision, not a host property), so pinning it to the real figure is
+          # safe. A lowering that legitimately lands raises this number.
           acc=$(echo "$out" | sed -n 's/aarch64: \([0-9]*\) ops accepted.*/\1/p')
-          if [ "${acc:-0}" -lt 32 ]; then
-            echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 32) — \
-          objcopy/objdump/synth extraction likely broke"; exit 1
+          if [ "${acc:-0}" -lt 61 ]; then
+            echo "VACUOUS GATE: only ${acc:-0} ops accepted (expected >= 61) — \
+          objcopy/objdump/synth extraction likely broke, or an op that used to \
+          compile now declines"; exit 1
           fi
       - uses: actions/setup-python@v7
         with:
