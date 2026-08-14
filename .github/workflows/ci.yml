@@ -3604,7 +3604,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, deliberately, unlike every other job here: the floors are counts
+      # of decisions and conditions RECONSTRUCTED FROM LOWERED WASM, so they are
+      # sensitive to how `std` inlines. `@stable` is a moving target and a Rust
+      # release could red this gate with no code change. Bumping this version is
+      # allowed — it obliges a RE-MEASURE of the floors, not a lowering.
+      - uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: wasm32-wasip1
       - name: Cache Cargo dependencies
@@ -3614,9 +3619,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-mcdc-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-mcdc-
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
@@ -3636,8 +3641,11 @@ jobs:
       # MC/DC run vacuous while still printing a number.
       - name: Row-driver sanity gate (host)
         run: cargo test -p synth-mcdc-harness
+      # Invoked through `bash`, not as `./…`: scripts/ is mode 644 in this repo
+      # (cf. scripts/oracle_run.py), so an `exec` form exits 126 on a fresh
+      # checkout even though it runs fine locally after a `chmod`.
       - name: Run the MC/DC rows under witness
-        run: WITNESS="$HOME/.witness/witness" ./scripts/mcdc_run.sh target/mcdc
+        run: WITNESS="$HOME/.witness/witness" bash scripts/mcdc_run.sh target/mcdc
       - name: Score synth's own decisions against the declared floors
         run: |
           set -euo pipefail

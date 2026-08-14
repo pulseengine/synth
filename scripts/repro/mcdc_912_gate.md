@@ -1,6 +1,6 @@
 # RQ-57-MCDC (#912) — MC/DC structural coverage: surface, measurement, potency
 
-Reproduce: `scripts/mcdc_run.sh target/mcdc && scripts/mcdc_gate.py target/mcdc`
+Reproduce: `bash scripts/mcdc_run.sh target/mcdc && python3 scripts/mcdc_gate.py target/mcdc`
 (needs `witness` v0.42.0 on `$PATH` or `WITNESS=…`, and the `wasm32-wasip1`
 target). CI job: `mcdc-structural-coverage`.
 
@@ -153,7 +153,15 @@ surface" class:
    row and the percentage *improves*. So the floors are counts.
 
 Declared floors = the measured baseline, no slack:
-`decisions ≥ 20`, `conditions ≥ 144`, `proved ≥ 63`, `fully-proved decisions ≥ 3`.
+`decisions ≥ 20`, `conditions ≥ 144`, `proved ≥ 63`, `fully-proved decisions ≥ 3`,
+and `dead ≤ 50`.
+
+**Dead is ceilinged, not ignored.** 50 of the 144 scored conditions are never
+evaluated — 40 of them in `is_straight_line`, whose match arms cover RV32
+opcodes the row set does not construct. That is an honest residual, but an
+UNFLOORED residual is how a number rots: a change that stopped reaching the
+segment barriers would raise `dead`, lower nothing else, and pass. It is also a
+third potency surface — mutation (a) moves dead 50 → 52.
 
 ## 5. Red-first potency — two mutations, two distinct failure paths
 
@@ -169,6 +177,7 @@ FAIL: scored decisions 19 < floor 20
 FAIL: scored conditions 142 < floor 144
 FAIL: proved conditions 54 < floor 63
 FAIL: fully-proved decisions 2 < floor 3
+FAIL: dead conditions 52 > ceiling 50
 ```
 
 The **condition-count** drop is the signal a ratio-only floor cannot produce.

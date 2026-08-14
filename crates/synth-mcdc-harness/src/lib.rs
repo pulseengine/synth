@@ -83,8 +83,13 @@ fn overlapping_segments() -> Vec<DataSegment> {
 /// that IS the #757 fix). `c` arrives through a Wasm parameter, so the
 /// comparison is evaluated at run time.
 ///
-/// Rows: `c` below the segment (c0=F), inside it (c0=T,c1=T), above it
-/// (c0=T,c1=F). `last_wins` selects which of the two search call sites runs.
+/// Rows walk `c` below the segment, at its first byte, inside it, at its last
+/// byte, one past its end, and far past it, under both `last_wins` call sites.
+/// MEASURED RESIDUAL, stated rather than assumed: those vectors do NOT close
+/// this decision — witness still reports 2 gap conditions on it, asking for
+/// `{c0=T, c1=F}` and `{c0=F, c1=T}` with a differing outcome. The reconstructed
+/// decision is evidently not a 1:1 image of the source `&&`, and running it
+/// down is named as remaining work on #912 rather than papered over here.
 ///
 /// `nseg` matters for the MEASUREMENT, not for the predicate: `witness` records
 /// ONE truth-table row per invocation, so a decision evaluated once per

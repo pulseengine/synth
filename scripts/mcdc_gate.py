@@ -95,10 +95,18 @@ SCORED_PREFIXES = (
 # ci-checks: mcdc scored conditions >= 144
 # ci-checks: mcdc scored conditions proved >= 63
 # ci-checks: mcdc fully-proved decisions >= 3
+# ci-checks: mcdc dead conditions <= 50
 FLOOR_DECISIONS = 20
 FLOOR_CONDITIONS = 144
 FLOOR_PROVED = 63
 FLOOR_FULL_MCDC_DECISIONS = 3
+# DEAD is CEILINGED, not ignored. 50 of the 144 scored conditions are never
+# evaluated — 40 of them in `is_straight_line`, whose match arms cover RV32
+# opcodes the row set does not construct. That is an honest residual, but an
+# UNFLOORED residual is how a number rots: a change that stopped reaching the
+# segment barriers would raise `dead`, lower nothing else, and pass. It is also
+# a third potency surface — mutation (a) moved dead 50 -> 52.
+CEILING_DEAD = 50
 
 
 def demangle(sym: str) -> str:
@@ -222,6 +230,8 @@ def main() -> int:
         fails.append(
             f"fully-proved decisions {tot['full']} < floor {FLOOR_FULL_MCDC_DECISIONS}"
         )
+    if tot["dead"] > CEILING_DEAD:
+        fails.append(f"dead conditions {tot['dead']} > ceiling {CEILING_DEAD}")
 
     if fails and not args.report_only:
         for f in fails:
