@@ -44,14 +44,18 @@ impl AArch64Backend {
         // #457: cap the access-pattern inference with the declared count when
         // the driver supplied one — a read-before-write non-param local (wasm
         // zero-init) is otherwise indistinguishable from a param and would be
-        // read from an argument register (caller garbage). The reclassified
-        // local then hits the selector's "non-param locals not yet supported"
-        // guard: a LOUD skip instead of a silent miscompile (milestone-1
-        // contract; frame-slot zero-init lands with non-param local support).
-        let inferred = count_params(ops);
+        // read from an argument register (caller garbage).
+        //
+        // RQ-57-A64PARAM (#851): with a declared count in hand the bound is
+        // `min(highest REFERENCED index + 1, declared)`, not the read-first
+        // heuristic. The old `min(count_params(ops), declared)` silently
+        // demoted a CONDITIONALLY-written param to a zero-init non-param local
+        // and emitted wrong code (see [`referenced_locals`]); the exact bound
+        // makes it a param again, so it is homed from its argument register.
+        // The `min` keeps the >8-declared-params leniency intact.
         let num_params = match config.current_func_param_count {
-            Some(declared) => inferred.min(declared),
-            None => inferred,
+            Some(declared) => referenced_locals(ops).min(declared),
+            None => count_params(ops),
         };
         // m3: thread the per-param float masks so float params resolve to their
         // AAPCS64 V registers (an independent counter from the GP arg registers).
@@ -175,8 +179,49 @@ fn module_ctx(config: &CompileConfig) -> selector::ModuleCtx {
     }
 }
 
+/// The highest local index the body references, +1 (0 when it touches none).
+///
+/// RQ-57-A64PARAM (#851): this is the param-count bound to use when the DRIVER
+/// SUPPLIED a declared count, because `min(referenced, declared)` is exact —
+/// it names every index that is really a param, and clamps to the declared
+/// count so a genuine non-param local can never be mistaken for one.
+///
+/// It replaces [`count_params`] on that path, which was UNSOUND: that heuristic
+/// counts only indices READ BEFORE WRITTEN in LINEAR op order, so a param
+/// written before it is read — but only CONDITIONALLY — was reclassified as a
+/// non-param local and ZERO-INITIALIZED. The function then compiled SILENTLY
+/// WRONG instead of declining. Measured on c2f9d72 before this fix:
+///
+/// ```wat
+/// (func (export "f") (param i32 i32) (result i32)
+///   (if (local.get 0) (then (local.set 1 (i32.const 5))))
+///   (local.get 1))          ;; f(0, 42): wasmtime 42, synth 0
+/// ```
+///
+/// Using `min(referenced, declared)` rather than plain `declared` also PRESERVES
+/// the existing leniency for a function with more than 8 declared params that
+/// only touches the first few (the selector caps register params at 8): such a
+/// body still lowers, exactly as before.
+fn referenced_locals(ops: &[WasmOp]) -> u32 {
+    ops.iter()
+        .filter_map(|op| match op {
+            WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => Some(*i + 1),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Count register parameters from the op stream (a local index read before it is
 /// written is a parameter). Mirrors the ARM/RISC-V backends' heuristic.
+///
+/// HONEST RESIDUAL (#851): only reachable when the driver supplied NO declared
+/// param count — with a declared count [`referenced_locals`] is exact and this
+/// heuristic is not consulted. Without one, a write-first index is genuinely
+/// AMBIGUOUS (param whose incoming value is dead, or non-param local), and both
+/// readings can be wrong; the read-first rule keeps the #457 behaviour rather
+/// than reading caller garbage for a zero-init local. The CLI always supplies a
+/// declared count, so this path is effectively direct-`compile_function` only.
 fn count_params(ops: &[WasmOp]) -> u32 {
     use std::collections::HashMap;
     let mut first_access: HashMap<u32, bool> = HashMap::new();
