@@ -2148,6 +2148,62 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
+  cond-write-param-970-oracle:
+    name: "conditional-param-write oracle (#970, Thumb-2 + RV32)"
+    # #970 (RQ-57-CONDPARAM): a parameter written on ONE arm of an `if` was
+    # demoted to a non-param local by the read-first `count_params` heuristic,
+    # and — its first access being a WRITE — missed the #457 zero-init too, so
+    # the arm that does NOT write it read an UNINITIALISED frame slot. Both
+    # harnesses POISON every stack word below the entry SP (0xDEADBEEF) and
+    # every unused argument register (0xFEEDFACE, a DISTINCT word), so the
+    # failure is legible as a leak of previous-frame bytes rather than as a
+    # plausible zero, and the two mechanisms cannot be confused.
+    #
+    # Measured RED on cb80e60c: 22/38 on EACH backend, 12 memory-poison leaks
+    # each. GREEN after the fix: 38/38, 0 leaks. The two oracles are
+    # INDEPENDENT evidence — reverting only the ARM bound reds ARM and leaves
+    # RV32 green, and vice versa (negative control run both ways).
+    #
+    # The aarch64 instance of the same defect is covered by the #851
+    # param-homing oracle in the aarch64 job; all three backends now share one
+    # `synth_core::referenced_locals`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run #970 conditional-param-write execution oracle (ARM Thumb-2)"
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/cond_write_param_970_arm_differential.py
+      - name: "Run #970 conditional-param-write execution oracle (RV32)"
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/cond_write_param_970_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Both oracles must report, so
+      # deleting or skipping either leaves the ledger short and reds the job.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
     # VCR-ORACLE-001 (#242, #676): a HETEROGENEOUS funcref table (mixed
