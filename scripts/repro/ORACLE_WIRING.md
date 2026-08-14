@@ -306,7 +306,7 @@ whole lane is about. So the counter keeps the name of the thing it counts.
 
 | mode | oracles | floor total |
 |---|---|---|
-| `emulations` | **137 oracles** | **295,621 emulator entries** |
+| `emulations` | **144 oracles** | **296,059 emulator entries** |
 | `stdout` | 7 oracles | 458 printed counts |
 | `compiles` | 9 oracles | 43 compilations |
 | `none` | **1 oracle** | — |

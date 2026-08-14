@@ -2299,10 +2299,15 @@ fn wasm_op_variant_name(op: &WasmOp) -> String {
 /// - `register-operation`: not computational — the whole-op contract is the
 ///   per-rule Rocq theorem named here (the #933 class: a decline is only
 ///   covered if that theorem is Qed).
-/// - `immediate-shift-encoding`: the selector emits immediate-shift forms;
-///   SMT modeling of the variable-shift register encoding is an open gap
-///   (see the comment at the rule table). The named theorem is the
-///   existence-only (T2) Rocq obligation.
+/// - `immediate-shift-encoding`: the selector emits immediate-shift forms.
+///   The stated reason USED to be "SMT modeling of the variable-shift
+///   register encoding is an open gap". That gap CLOSED in #975, which
+///   modelled `LslReg`/`LsrReg`/`AsrReg`/`RorReg` faithfully as `Rm<7:0>`
+///   (ARMv7-M A7.7.68/70/12/117) and moved five shift/rotate lowerings from
+///   `Invalid` to `Verified`. The decline that remains is therefore a WIRING
+///   residual — these rules are not yet routed to the modelled ops — not a
+///   modelling gap. Tracked; do not cite the old reason. The named theorem is
+///   the existence-only (T2) Rocq obligation.
 /// - `unmodeled-op`: no SMT rule and no per-rule theorem wired here — an
 ///   honest coverage gap, never silently omitted from the report.
 #[cfg(feature = "verify")]
@@ -2672,9 +2677,10 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVeri
                     registers: 1,
                 },
             }),
-            // Shift ops use immediate shift values in the instruction selector,
-            // so SMT verification of the variable-shift case requires a different
-            // ARM op encoding (register-based shift).
+              // Shift ops use immediate shift values in the instruction selector.
+              // NOTE (#975): the register-shift ops ARE modelled now (Rm<7:0>,
+              // ARMv7-M A7.7.68/70/12/117) — what remains is a WIRING residual,
+              // not the modelling gap the previous comment claimed.
             // LocalGet/LocalSet/Const are register operations, not computational.
             // #935: neither class is silently skipped any more — every
             // unmatched kind lands in the report as a decline with a machine

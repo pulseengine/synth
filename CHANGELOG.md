@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **The checkers were the defects.**
 
-Nine artifacts landed. In five of them the bug was not in the compiled code —
+Ten artifacts landed. In five of them the bug was not in the compiled code —
 it was in the machinery that checks the compiled code. A verifier that
 silently modelled nothing for 87 opcodes. A differential that *structurally
 cannot* discriminate the miscompile it guards. An exhaustiveness claim resting
@@ -31,8 +31,11 @@ proving it by making them fail on purpose.
 - **A conditionally-written parameter was silently miscompiled on ARM and
   RISC-V (#970, #974).** `count_params` counted only parameter indices *read
   before written*. A parameter written before it is read — but only under a
-  branch — was therefore demoted to a zero-initialised local. Exit 0, no
-  decline, wrong code.
+  branch — was therefore not counted as a parameter at all, so its incoming
+  argument register was never homed. Nor did zero-init rescue it: that is
+  gated on the first access being a *read*, and here the first access is
+  the write, so the slot is simply never written on the path that skips
+  the branch. Exit 0, no decline, wrong code.
 
   On **RISC-V** the compiled function reads an **uninitialised stack slot**:
   with a poisoned stack it returns `0xDEADBEEF`, i.e. whatever the previous
@@ -71,8 +74,8 @@ proving it by making them fail on purpose.
 
 - **`writes_sp` claimed exhaustiveness over a wildcard absorbing 175 of 222
   variants (#946, #969).** Live, not latent — but the numbers were never
-  wrong, and this release does not pretend otherwise. 145 of the 175 are
-  pre-declined by `scan_for_decline`; of the 30 genuinely reachable, three
+  wrong, and this release does not pretend otherwise. **142** of the 175
+  give up with `true`, leaving **33** that answer otherwise; of those, three
   (`I64Popcnt`/`I64Rotl`/`I64Rotr`) emit real `PUSH`/`POP` and were bounded on
   ordinary modules. The bounds were correct because the push is net-zero and
   writes strictly *below* SP — **right for a reason nothing checked**. That
@@ -123,6 +126,16 @@ proving it by making them fail on purpose.
   and the RV32 bounds gate). Exclusions named, including that WCET declines
   are match-dispatch where MC/DC is structurally inapplicable.
 
+- **Documentation — claims corrected against source (#946, #968).** The
+  Tier 2/3 half of the honesty sweep: ~26 items re-grounded on what the code
+  actually does, each verified against the source rather than against the
+  issue text. Corrections included the WCET `CEIL` rationale ("with margin" →
+  EXACT), i64 div/rem described as a library call when it is an inline
+  64-iteration loop, an aarch64 decline list naming ops that had shipped
+  lowerings, 40 → 50 DSL rules, and Qed counts re-derived so `coq/STATUS.md`'s
+  table sums exactly. One item was the legitimate "the issue was stale, the
+  doc was right" outcome and is recorded as no-change.
+
 - **Verified origins for compiler-introduced object branches (#944, #967).**
   The premise was false: the 9 "branches with no WASM origin" were all real
   source ops witness never instruments. The genuinely unattributed population
@@ -141,12 +154,15 @@ proving it by making them fail on purpose.
   `--allow-skipped-exports` restores the old behavior for corpus sweeps where
   per-function declines are expected and counted downstream.
 
-  Five in-tree oracles took that opt-in, because the flag silences the very
-  gate this change adds and is only safe where a **tight non-vacuity floor**
-  still notices a *new* decline: `unreachable_665` (8/8), `i64_globals_643`
-  (28/28), `float_select_return_782` (702/702), `i64_float_conv_869`
-  (96296/96276) and `trunc_sat_782`. All five margins are measured, not
-  assumed.
+  Eight in-tree oracles and three Rust tests took that opt-in, because the
+  flag silences the very gate this change adds and is only safe where a
+  non-vacuity floor still notices a *new* decline. Five were measured tight:
+  `unreachable_665` (8/8), `i64_globals_643` (28/28),
+  `float_select_return_782` (702/702), `i64_float_conv_869` (96296/96276) and
+  `trunc_sat_782`. The other three — `call_indirect_275_selfcontained`,
+  `i64_param_518_riscv_loudskip`, `wast_conformance_928` — carry floors too,
+  but `i64_param_518_riscv_loudskip`'s is `compiles >= 1`, which is a floor
+  and not a tight one. Named rather than folded into the claim.
 
 ## [0.56.2] - 2026-08-13
 
