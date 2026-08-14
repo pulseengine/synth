@@ -1,0 +1,399 @@
+# =============================================================================
+# v0.58 — "Delete the thing you replaced"
+# =============================================================================
+#
+# THE THEME, and it is a CORRECTION to the North Star rather than a new one.
+#
+# Epic #242 says: replace the patch-accreting code generator — correctness from
+# construction, not an ever-growing pile of locally-correct patches.
+#
+# The goal is right. The strategy is not working, and the numbers say so.
+# Measured across v0.42.0 -> v0.57.0 (15 releases, 2026-08-14):
+#
+#   workspace source                  130,658 -> 174,578 lines   (+34%)
+#   instruction_selector.rs            24,909 ->  29,616 lines   (+19%)
+#     of which code (pre-test-module)                 18,481
+#     wildcard `_ =>` arms                               105
+#   selector churn since v0.42          5,515 added / 808 deleted  (6.8 : 1)
+#   VCR-SEL-001 verified rules             40 ->      50   (FLAT since v0.50)
+#   files saying "mirror"                                  57
+#   files saying "hand-maintained"                         11
+#   files saying "single source of truth"                   1
+#
+# Read those together. The thing the epic exists to REPLACE grew by 4,707 lines
+# while the replacement gained ten rules and then stalled for seven releases.
+# We are not replacing the patch-accreting selector. We are building a verified
+# path ALONGSIDE it, and the unverified one is winning on volume.
+#
+# The mechanism is visible in v0.57. VCR-SEL-001 made 50 ops' lowering
+# Rocq-proved through a BYTE-INVISIBLE FLIP — the proofs are real and the
+# shipped path did change, but the hand-written arms STAYED. So each release
+# adds a proof, plus a checker for the proof, plus a doc claim about the
+# checker, plus a ledger pin for the doc — every one of them hand-maintained.
+# v0.57 then found three of those had rotted while the gate showed green, and
+# five of its ten artifacts were defects in checkers rather than in compiled
+# code. Verification machinery has become a defect surface of its own, and it
+# is growing because nothing is ever retired.
+#
+# THE CORRECTION, one sentence:
+#
+#     A rule is not done when it is proven. It is done when the hand-written
+#     arm it replaces is DELETED.
+#
+# That turns the North Star into a metric that CAN GO THE WRONG WAY — which is
+# this repo's own standard for whether a gate is worth anything. Right now it
+# is going the wrong way and nothing notices, because nothing measures it.
+#
+# WHAT THIS RELEASE IS NOT. It is not "clean up the codebase". Refactoring
+# 29,616 lines of instruction selector without a per-step execution oracle is
+# exactly how you inject the miscompiles this project exists to prevent — and
+# v0.57 supplies the cautionary case: the gpio differential could not have
+# caught its own miscompile, so "the tests pass" would have been meaningless.
+# Every subtraction lane below is gated on byte-identity or an execution
+# differential. A deletion that changes emitted bytes without an oracle proving
+# the new bytes correct is REFUSED, not explained.
+#
+# HONEST RISK, stated up front: byte-identity is the strong gate but it only
+# proves we did not change behaviour on the inputs we HAVE. For the covered-op
+# retirement that is sufficient (the DSL path already ships those bytes). For
+# the wildcard and split lanes it is not, and those carry differentials.
+# =============================================================================
+
+artifacts:
+  - id: RQ-58-METRIC
+    type: system-req
+    title: "Make subtraction measurable — pin the numbers that are currently going the wrong way"
+    description: >
+      FIRST, because without it every other lane in this release is a vibe.
+      Nothing in CI currently measures whether the patch pile is growing. The
+      epic's own thesis is therefore unfalsifiable in practice, which is how it
+      drifted for seven releases without anyone noticing.
+      Pin, in claims.yaml and a CI step: instruction_selector.rs line count
+      (29,616 at v0.57.0), its wildcard-arm count (105), the VCR-SEL-001 rule
+      count (50), and the count of hand-maintained-mirror markers (57 files).
+      Direction matters and differs per number: the selector count and the
+      wildcard count are CEILINGS that must fall; the rule count is a FLOOR
+      that must rise.
+      RED-FIRST: adding a hand-written lowering arm without deleting one must
+      turn the gate red. Demonstrate it by adding one, watching it red, and
+      reverting — do not assert it. A ceiling set at "current + slack" would be
+      the vacuous version and is explicitly out of scope.
+      NOT a code-golf gate: the point is not fewer characters, it is fewer
+      hand-maintained decisions. If a lane legitimately needs to grow the file,
+      the ceiling moves WITH a stated reason in the same PR — the #911 rule
+      applied to size.
+    status: proposed
+    release: v0.58
+    tags: [north-star, metric, falsifiability, vcr-sel-001]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: static-analysis
+      issue: "#242"
+
+  - id: RQ-58-RETIRE
+    type: system-req
+    title: "Retire the hand-written arms for the 50 DSL-covered ops — the first deletion"
+    description: >
+      THE HEADLINE. VCR-SEL-001's 50 rules are the SHIPPED lowering path for
+      their covered ops (CLAUDE.md, byte-invisible flip). The hand-written arms
+      they replaced are still in instruction_selector.rs. Delete them.
+      This is the safest possible deletion and that is precisely why it goes
+      first: the DSL path ALREADY emits these bytes on main, so removing the
+      superseded arm must be BYTE-IDENTICAL across every frozen anchor and every
+      differential. If it is not byte-identical, that is a finding — it means
+      the flip did not cover what it claims, and the finding outranks the
+      deletion.
+      METHOD: one op per commit, anchors + differentials green per commit, so a
+      bisect lands on a single op. Report lines deleted per op and the running
+      selector total.
+      EXPECTED RESIDUAL, named in advance: some arms will be reachable from the
+      OTHER selector (#197 — `--relocatable` forces the direct path,
+      `select_with_stack`). An arm that is dead on one path and live on the
+      other is NOT deletable yet; say which those are rather than deleting them
+      and discovering it downstream. That set is the input to RQ-58-SPLIT.
+    status: proposed
+    release: v0.58
+    tags: [north-star, subtraction, vcr-sel-001, byte-identical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: frozen-anchor
+      issue: "#242"
+
+  - id: RQ-58-WILDCARD
+    type: system-req
+    title: "105 wildcard arms in the instruction selector — the same class as #946, unmeasured"
+    description: >
+      instruction_selector.rs carries 105 `_ =>` arms. v0.57 fixed exactly one
+      instance of this class (writes_sp, 175 of 222 variants absorbed, #969) and
+      found it was LIVE — three priced ops reached it — while the numbers
+      happened to be right for a reason nothing checked.
+      The selector's wildcards are the same shape with a worse consequence: a
+      missed op there is a MISCOMPILE or a silent decline, not a loose bound.
+      #615 (the A32 silent-NOP class) is the precedent and the pattern to reuse:
+      expand-or-loud-reject, plus a no-wildcard tripwire that fails to COMPILE
+      when a new variant appears.
+      DO NOT sweep all 105 blindly. Rank them first: which absorb WasmOp
+      variants (miscompile risk), which absorb internal enums (lower risk),
+      which are genuinely total. Convert the miscompile-risk set; state the
+      count converted and the count deliberately left with a reason. A partial
+      conversion with an honest denominator beats a claimed sweep — that is the
+      #935 lesson applied to refactoring.
+      EXPECT to find live holes. v0.57's writes_sp lane expected latent and
+      found live.
+    status: proposed
+    release: v0.58
+    tags: [soundness, exhaustiveness, tripwire, wildcard, selector]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#946"
+
+  - id: RQ-58-MIRRORS
+    type: system-req
+    title: "57 files say 'mirror', 1 says 'single source of truth' — generate, don't mirror"
+    description: >
+      The rot class this repo keeps paying for, now counted. 57 source files
+      mention a mirror, 11 a hand-maintained list, exactly ONE claims a single
+      source of truth.
+      v0.57 alone: the aarch64 decline list went stale TWICE and still named a
+      capability that release SHIPPED; exec_trap_subset_op's allowlist drifted
+      so three ops delegated to a model that did not implement them;
+      `referenced_locals` existed in THREE backend copies until #974 collapsed
+      it; and the FEATURE_MATRIX template carried three stale numbers behind a
+      green 43/43 because the freshness gate compares the RENDER to the
+      TEMPLATE and never the template to the CODE.
+      VCR-ISA-001 already proved the fix works — #667 made the shipped
+      sel_dsl::RULES table EMIT the Rocq model, so selector/model drift became
+      unrepresentable rather than merely tested-for.
+      DO: inventory all 57, rank by rot-risk (does a stale copy cause a wrong
+      ANSWER, or only a wrong doc?), and convert the top-ranked ones to
+      generated-from-one-source. Fixing the FEATURE_MATRIX freshness gate so it
+      can see template-vs-code drift is in scope and is the highest-leverage
+      single item, because it is the gate that hid three of the others.
+      Report the inventory even for the ones not converted — an unconverted
+      mirror that is NAMED is a known risk; an unnamed one is the next #975.
+    status: proposed
+    release: v0.58
+    tags: [north-star, generate-dont-mirror, doc-rot, vcr-isa-001]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: static-analysis
+      issue: "#242"
+
+  - id: RQ-58-SELDSL
+    type: system-req
+    title: "Un-stall VCR-SEL-001: 50 -> 70 rules, and each one DELETES its arm"
+    description: >
+      The rule count has been 50 since v0.50 — seven releases flat — while the
+      selector it replaces grew 1,197 lines. Restart it, under the new
+      definition of done.
+      Each new rule must land WITH the deletion of the hand-written arm it
+      supersedes, in the same PR. A rule that ships without its deletion is the
+      pattern that produced the current state and is not accepted here.
+      Pick the next 20 ops by SUBTRACTION VALUE, not by ease: prefer ops whose
+      hand-written arm is large, wildcard-adjacent, or duplicated across the two
+      selectors. State the selection criterion and the lines deleted per rule.
+      HONEST CONSTRAINT: some ops will not be expressible in the DSL as it
+      stands. That is a real finding about the DSL's expressiveness and should
+      be reported as such — with the specific construct that defeats it —
+      rather than quietly reducing the target from 20.
+    status: proposed
+    release: v0.58
+    tags: [north-star, vcr-sel-001, rocq, subtraction]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: proof
+      issue: "#242"
+
+  - id: RQ-58-SPLIT
+    type: system-req
+    title: "instruction_selector.rs is 29,616 lines — split it along the seam that already exists"
+    description: >
+      18,481 lines of code plus 11,135 of tests in ONE file. Nobody can hold it,
+      which is why wildcards accumulate in it and why two selectors could
+      diverge inside it unnoticed (#946's own scanner got this wrong: it claimed
+      `--relocatable` forces `select_default`, when it forces the DIRECT
+      selector, which IS `select_with_stack` — direct is not default).
+      The seam is not invented, it is already there: the two-selector split
+      (#197). Separate the shared lowering core from the two path-specific
+      layers so the difference between them is READABLE rather than
+      archaeological.
+      GATE: byte-identical output across all frozen anchors and differentials.
+      A pure move must not change a single emitted byte, and if it does the
+      move is wrong. Commit per moved unit so a bisect is meaningful.
+      SEQUENCING: runs AFTER RQ-58-RETIRE, so the file is smaller and the
+      dual-path residual it names is known before anything moves.
+      SCOPE HONESTY: this is the lane most likely to be partially completed. A
+      half-finished split with a stated boundary is acceptable; an unstated one
+      is not.
+    status: proposed
+    release: v0.58
+    tags: [structure, two-selector, byte-identical, readability]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: frozen-anchor
+      issue: "#197"
+
+  - id: RQ-58-SELECT973
+    type: system-req
+    title: "ARM select on an i64-comparison with computed arms returns the then-arm — and CI never compiles ARM fixtures"
+    description: >
+      #973, found in v0.57 only because a lane compiled the repro corpus for
+      ARM. The miscompile: `select` on an i64-comparison condition with COMPUTED
+      arms always returns the then-arm — the spill reload puts the then-value
+      into the live else-arm register and both `it` arms move the same one.
+      Proven independent of #974 (identical 44/49 on binaries built before and
+      after that fix).
+      THE BIGGER FINDING IS THE SECOND HALF: it surfaced only because someone
+      compiled ARM fixtures, WHICH CI NEVER DOES. A whole backend's fixture
+      surface is uncompiled in CI. Fixing the miscompile without closing that
+      gap leaves the next one equally invisible, so BOTH are in scope: the fix,
+      red-first with an execution differential, AND an ARM leg for the corpus
+      sweep with a declared floor.
+    status: proposed
+    release: v0.58
+    tags: [soundness, miscompile, arm, ci-gap, select]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#973"
+
+  - id: RQ-58-VERIFYWIRE
+    type: system-req
+    title: "synth verify still declines shift rules for a gap #975 closed"
+    description: >
+      #981. `i32.shl` reports `declined immediate-shift-encoding`, and the
+      stated reason — "SMT modeling of the variable-shift register encoding is
+      an open gap" — became false in v0.57: #975 modelled LslReg/LsrReg/AsrReg/
+      RorReg faithfully as Rm<7:0> (ARMv7-M A7.7.68/70/12/117) and moved five
+      lowerings Invalid -> Verified. The comments were corrected at release
+      assembly; the WIRING was deliberately left, because rewiring the rule
+      table is a verification-surface change and not release work.
+      Route the shift rules to the modelled ops and remove the decline, or
+      narrow it to whatever sub-case genuinely remains and state THAT reason.
+      RED-FIRST, and the trap is specific: "verify still passes" is not the
+      evidence. The evidence is the DECLINED COUNT dropping and the newly
+      checked rules returning Verified FOR THE RIGHT REASON — #975's own
+      measurement is the template, since it found i32.add returning Verified
+      when it should not have.
+      Worth stating because it is the general lesson: a decline that is too
+      conservative is INVISIBLE. Nothing reds, no test fails, the tool quietly
+      checks less than it could while its stated reason drifts from the truth.
+    status: proposed
+    release: v0.58
+    tags: [verification, decline-honesty, wiring, arm-semantics]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: static-analysis
+      issue: "#981"
+
+  - id: RQ-58-OBJECT
+    type: system-req
+    title: "object 0.39 -> 0.40 is a breaking 0.x-minor on the crate the differentials depend on"
+    description: >
+      #938. Currently failing Test AND Clippy, with auto-merge disabled by hand
+      during v0.57 — because the 0.x-minor hold COMMENTED but did not ENFORCE
+      (filed as #965, and it is a gate-that-cannot-fail instance in its own
+      right).
+      `object` is not incidental: it is what the execution differentials read
+      ELF symtabs with, and what #959 moved `disasm_words` onto to kill a
+      host-dependent `synth disasm` parse. A breaking bump landing unverified
+      would surface as oracle failures far from their cause.
+      Per the 0.x-minor rule this needs a FULL suite green — including the
+      feature-gated paths (`--features z3-solver`), since a feature-gated build
+      hides unhandled match sites. Either land it with that evidence or pin
+      `object` with a stated reason. #965 (make the hold enforce) is the
+      companion and should land first or alongside.
+    status: proposed
+    release: v0.58
+    tags: [dependencies, breaking, 0x-minor, differentials]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: static-analysis
+      issue: "#938"
+
+  - id: RQ-58-FLAKE
+    type: system-req
+    title: "shift_mask_elide_686 reads a non-ELF — and the silent direction is reading a STALE one"
+    description: >
+      #977, second sighting (#960 and #974, both in files those PRs never
+      touched, and on #974 the SAME test passed in the required Test job while
+      failing in the coverage job on the identical commit — which points at the
+      environment, not the assertion).
+      Why it outranks an ordinary flake: `parse elf: Could not read file magic`
+      means the harness read something that is empty or not an ELF. That is one
+      step from reading a STALE ELF and PASSING — the silent direction, and
+      exactly the v0.56 trap where a failed compile wrote nothing and the
+      previous run's object got executed.
+      FIX SHAPE: assert the compile's exit status and the file's non-zero size
+      BEFORE parsing, so a bad compile reports as a bad compile; and give the
+      fixture a process-scoped temp path if the collision hypothesis holds.
+      That converts a confusing flake into a precise message and closes the
+      silent direction at the same time.
+    status: proposed
+    release: v0.58
+    tags: [flake, stale-artifact, harness, silent-direction]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: static-analysis
+      issue: "#977"
