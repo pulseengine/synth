@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 75
+# ci-checks: emulations >= 285
 """#846 gpio-thin size-regression gate — SIZE drop + execution-UNCHANGED.
 
 gale's `gpio-thin` gust driver regressed +44 B / +9% (490→534 `.text`) on synth
@@ -64,6 +64,30 @@ SEED = {BASE_ADDR + 0x10: 0xA5A50F0F}  # ODR-ish register some drivers read
 # Pin sweep: crucially includes >= 32 (mod-32 boundary), the wrap the mask
 # guards. Also a spread of the `& 0xf` (config) domain and typical GPIO pins.
 PINS = [0, 1, 5, 7, 8, 15, 16, 31, 32, 33, 47, 63, 100, 255, 0x7FFFFFFF]
+
+# Mode sweep for `gpio_configure`'s SECOND shift chain (`mode << 2` feeding the
+# CRL/CRH mode-table lookup). Before this the mode was hardcoded to 0x3, so the
+# whole `mode` domain of the driver's largest function went unexercised.
+# Includes mode >= 8, where `mode << 2 >= 32` and a masked vs unmasked shift
+# amount genuinely diverge.
+#
+# WHAT THIS SWEEP DOES *NOT* DO — stated because a coverage claim must be
+# honest. It does NOT discriminate a wrong elision at the `and ip,r8,#31`
+# (`mode << 2`) site, and no input to THIS driver can:
+#   - for mode <=u 6 the amount `mode*4 <= 24` is already < 32, so masking is
+#     a no-op; and
+#   - for mode >u 6 the driver's own `cmp r6,#6 ; ite hi` guard REPLACES the
+#     table lookup with 0, discarding the shift's result entirely.
+# The two conditions are complementary, so the site is unobservable at the
+# WASM level in this module. That was verified end-to-end, not merely argued:
+# force-eliding it produces the pre-#682 490 B object and this differential
+# still reports every check matching. The guard for that site is the analysis
+# DECLINING (it sees a ⊤ frame-reloaded param) plus
+# `i32_shift_mask_682_differential.py`, which goes red with 6 mismatches under
+# the same force-elide. This sweep's value is real but narrower: it exercises
+# the mode domain, and it is what would catch a regression in the mode-table
+# lookup, the `>u 6` guard, or the CRL/CRH bit-position chain.
+MODES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 31, 32, 0x7FFFFFFF]
 
 
 def compile_elf(flag_off, out):
@@ -233,12 +257,15 @@ def import_call_sites(elf_path, base):
     return wpc, rpc
 
 
+# (export, func index, the full list of argument tuples to sweep).
 EXPORTS = [
-    ("gpio_clear", 2, lambda pin: (BASE_ADDR, pin)),
-    ("gpio_read", 4, lambda pin: (BASE_ADDR, pin)),
-    ("gpio_set", 5, lambda pin: (BASE_ADDR, pin)),
-    ("gpio_toggle", 6, lambda pin: (BASE_ADDR, pin)),
-    ("gpio_configure", 3, lambda pin: (BASE_ADDR, pin, 0x3)),
+    ("gpio_clear", 2, [(BASE_ADDR, p) for p in PINS]),
+    ("gpio_read", 4, [(BASE_ADDR, p) for p in PINS]),
+    ("gpio_set", 5, [(BASE_ADDR, p) for p in PINS]),
+    ("gpio_toggle", 6, [(BASE_ADDR, p) for p in PINS]),
+    # Both shift chains of the driver's largest function: the pin-derived
+    # CRL/CRH bit position AND the mode-table lookup (see MODES).
+    ("gpio_configure", 3, [(BASE_ADDR, p, m) for p in PINS for m in MODES]),
 ]
 
 
@@ -273,13 +300,12 @@ def main():
                  f"(write sites={len(wpc)}, read sites={len(rpc)}) — the "
                  f"reloc walk is broken or the fixture lost its imports")
     print("=== #846 EXECUTION UNCHANGED (flag-ON bytes vs wasmtime) ===")
-    expected = len(EXPORTS) * len(PINS)
+    expected = sum(len(argsets) for _, _, argsets in EXPORTS)
     exec_ok = True
     checks = 0
     trace_events = 0
-    for export, idx, mkargs in EXPORTS:
-        for pin in PINS:
-            args = mkargs(pin)
+    for export, idx, argsets in EXPORTS:
+        for args in argsets:
             gt_trace, gt_ret = wasmtime_trace(export, args)
             un_trace, un_ret = unicorn_trace(
                 syms, code, base, export, idx, args, wpc, rpc)
@@ -289,18 +315,21 @@ def main():
             trace_events += len(gt_trace)
             if not ok:
                 exec_ok = False
-                print(f"  MISMATCH {export}(pin={pin}):")
+                print(f"  MISMATCH {export}{args}:")
                 print(f"    wasmtime trace={gt_trace} ret={gt_ret}")
                 print(f"    unicorn  trace={un_trace} ret={un_ret}")
     if exec_ok:
         print(f"  {checks}/{checks} match — mmio (addr,value) sequences + returns "
               f"bit-identical across pins {PINS} (incl. >=32 mod-32 boundary)")
+        print(f"    gpio_configure additionally swept over modes {MODES} "
+              f"(incl. mode >= 8, where mode<<2 >= 32)")
     # ANTI-VACUITY (#879): the sweep must have RUN something. A zero check
     # count, a short sweep, or a sweep whose ground-truth traces were all
     # empty is a gate that measured nothing — hard-fail, never green.
     if checks == 0 or checks != expected:
         sys.exit(f"VACUOUS: ran {checks} checks, expected {expected} "
-                 f"({len(EXPORTS)} exports x {len(PINS)} pins)")
+                 f"({len(EXPORTS)} exports; {len(PINS)} pins, and "
+                 f"{len(MODES)} modes on gpio_configure)")
     if trace_events == 0:
         sys.exit("VACUOUS: 0 mmio trace events across the whole sweep — "
                  "wasmtime ground truth exercised no peripheral traffic, so "

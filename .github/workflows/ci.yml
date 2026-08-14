@@ -1027,17 +1027,28 @@ jobs:
       # #846/#879: gale's REAL gpio-thin driver (pinned loom.wasm, never a
       # synthetic) under the default-ON mask elision — BOTH halves of the
       # v0.50.1 headline claim: (a) .text shrinks and the redundant mod-32
-      # masks strictly drop, (b) 75 mmio (addr,value) traces + returns are
+      # masks strictly drop, (b) 285 mmio (addr,value) traces + returns are
       # bit-identical vs wasmtime across a pin sweep INCLUDING pin >= 32 (the
-      # boundary an unsound elision would corrupt). #879: this gate existed
+      # boundary an unsound elision would corrupt) AND, since the #846
+      # relational-ranges lane, a mode sweep over gpio_configure's second
+      # shift chain (75 -> 285 checks; the mode was previously hardcoded to
+      # 0x3, leaving that whole domain unexercised). #879: this gate existed
       # for two releases but was never CI-wired. The grep asserts the
       # NON-ZERO check count from the script's machine-readable summary —
       # exit 0 alone is not trusted (the "0 ops accepted PASS" lesson).
+      #
+      # SCOPE, stated so it is not over-read: this gate CANNOT catch a wrong
+      # elision at gpio_configure's surviving `mode << 2` mask — the driver's
+      # own `>u 6` guard discards that shift's result exactly when the mask
+      # would matter, which was verified by force-eliding it (the object drops
+      # to the pre-#682 490 B and this gate still reports every check
+      # matching). The oracle that DOES catch it is the i32 shift-mask
+      # differential above, red with 6 mismatches under the same mutation.
       - name: Run gpio-thin size + mmio execution oracle (#846/#879, cortex-m3)
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/gpio_thin_846_differential.py | tee gpio846.out
-          grep -q "^#846 CHECKS=75/75" gpio846.out
+          grep -q "^#846 CHECKS=285/285" gpio846.out
       # #752: the software bounds guard must trap the top-of-address-space
       # wraparound class — the retired shape ADD-computed the end address
       # mod 2^32, so `addr >= 2^32 - (offset+size-1)` wrapped small, passed
