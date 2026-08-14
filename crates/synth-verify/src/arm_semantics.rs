@@ -31,6 +31,28 @@ pub struct ArmState {
     /// `UDF` is reached under — this is the ARM-side trap term the
     /// trap-preservation VC compares against the WASM op's trap condition.
     pub may_trap: Bool,
+    /// #923: the FIRST ARM op [`ArmSemantics::encode_op`] was asked to execute
+    /// and has no semantics for, recorded by the `_ => {}` default arm instead
+    /// of being silently dropped.
+    ///
+    /// Before this field existed the default arm was a silent register no-op,
+    /// which makes an unmodeled instruction INVISIBLE to the value VC: a
+    /// lowering that computes the right value and then destroys it (measured:
+    /// `i32.add → ADD r0,r0,r1 ; UXTB r0,r0`, which returns `(x+y) & 0xFF` on
+    /// silicon) came back `Verified`. The trap path already defended itself —
+    /// [`ArmSemantics::exec_trap_subset_op`]'s doc says this default "must
+    /// never green-wash a trap derivation" — but its defence was a
+    /// hand-maintained allowlist that had drifted: `Rsb` (a SHIPPED sel-DSL
+    /// rule's instruction), `I32TruncF32S` and `I32TruncF32U` were all
+    /// allowlisted to DELEGATE to `encode_op`, which does not model them.
+    ///
+    /// Recording it here rather than in a second list is deliberate: the
+    /// modeled set keeps exactly one source of truth (the `match` arms), so it
+    /// cannot rot. Consumers turn a set field into a loud decline —
+    /// [`crate::TranslationValidator`]'s value VC into
+    /// `VerificationError::UnsupportedOperation`, `exec_trap_subset_op` into
+    /// its own `Err`.
+    pub unmodeled: Option<String>,
 }
 
 /// ARM condition flags
@@ -79,6 +101,7 @@ impl ArmState {
             locals,
             globals,
             may_trap: Bool::from_bool(false),
+            unmodeled: None,
         }
     }
 
@@ -105,6 +128,17 @@ impl ArmState {
         let index = vfp_reg_to_index(reg);
         self.vfp_registers[index] = value;
     }
+}
+
+/// The `ArmOp` variant name (`"Uxtb"` from `Uxtb { rd: R0, rm: R0 }`).
+///
+/// Derived from `Debug`, not a hand-written table — the same choice, for the
+/// same stated reason, as `synth_backend::wcet::op_mnemonic`: a hand-mirrored
+/// name table is a second source of truth that drifts from the enum it
+/// mirrors (#682, #890). A new `ArmOp` variant names itself here for free.
+fn op_variant_name(op: &ArmOp) -> String {
+    let s = format!("{op:?}");
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }
 
 /// Convert register enum to index
@@ -313,6 +347,107 @@ impl ArmSemantics {
                 let shift_val = BV::from_i64(*shift as i64, 32);
                 let result = rn_val.bvrotr(&shift_val);
                 state.set_reg(rd, result);
+            }
+
+            // ================================================================
+            // Register-amount shifts (#923). ARMv7-M ARM A7.7.68/70/12/117:
+            // every `<shift> (register)` form computes
+            //     shift_n = UInt(R[m]<7:0>)
+            // — the LOW EIGHT BITS of Rm, NOT Rm mod 32 and NOT all 32 bits.
+            // This is the #682 class of unfaithfulness, in the other file:
+            // the model must apply the ISA's own masking rule, and the WASM
+            // source op's mod-32 rule must be supplied by the LOWERING (the
+            // shipped selector emits `AND Rm,#31` ahead of these), never
+            // assumed by the ARM model.
+            //
+            // With `shift_n ∈ [0,255]` an SMT shift is then EXACTLY the ARM
+            // result: `Shift_C` with `shift_n >= 32` yields 0 for LSL/LSR and
+            // a sign fill for ASR, which is what `bvshl`/`bvlshr`/`bvashr`
+            // give for those amounts. Feeding the RAW 32-bit Rm instead would
+            // diverge from silicon at e.g. `Rm = 0x100`: the core shifts by
+            // `Rm<7:0> = 0` (identity), an unmasked `bvshl` gives 0.
+            ArmOp::LslReg { rd, rn, rm } => {
+                let rn_val = state.get_reg(rn).clone();
+                let amount = Self::shift_amount_rm_7_0(state.get_reg(rm));
+                state.set_reg(rd, rn_val.bvshl(&amount));
+            }
+
+            ArmOp::LsrReg { rd, rn, rm } => {
+                let rn_val = state.get_reg(rn).clone();
+                let amount = Self::shift_amount_rm_7_0(state.get_reg(rm));
+                state.set_reg(rd, rn_val.bvlshr(&amount));
+            }
+
+            ArmOp::AsrReg { rd, rn, rm } => {
+                let rn_val = state.get_reg(rn).clone();
+                let amount = Self::shift_amount_rm_7_0(state.get_reg(rm));
+                state.set_reg(rd, rn_val.bvashr(&amount));
+            }
+
+            // ROR (register) also takes `Rm<7:0>`, but rotation is periodic
+            // with period 32 and 256 is a multiple of 32, so `Rm<7:0> mod 32
+            // == Rm mod 32`: the extract is redundant for THIS op. Applied
+            // anyway, so the arm states the ISA rule rather than relying on an
+            // arithmetic coincidence a future reader would have to re-derive.
+            ArmOp::RorReg { rd, rn, rm } => {
+                let rn_val = state.get_reg(rn).clone();
+                let amount = Self::shift_amount_rm_7_0(state.get_reg(rm));
+                state.set_reg(rd, rn_val.bvrotr(&amount));
+            }
+
+            // RSB (immediate): Rd = imm - Rn. Emitted by the SHIPPED sel-DSL
+            // rule table (`sel_dsl::generated`, the rotl/rotr amount negation)
+            // and allowlisted by `exec_trap_subset_op` to delegate here — but
+            // unmodeled until #923, so that delegation silently no-oped.
+            ArmOp::Rsb { rd, rn, imm } => {
+                let rn_val = state.get_reg(rn).clone();
+                let result = BV::from_u64(*imm as u64, 32).bvsub(&rn_val);
+                state.set_reg(rd, result);
+            }
+
+            // Sign/zero extension of the low byte/halfword (ARMv7-M A7.7.166,
+            // .168, .217, .219 with rotation 0, the only form emitted).
+            ArmOp::Sxtb { rd, rm } => {
+                let v = state.get_reg(rm).extract(7, 0).sign_ext(24);
+                state.set_reg(rd, v);
+            }
+
+            ArmOp::Sxth { rd, rm } => {
+                let v = state.get_reg(rm).extract(15, 0).sign_ext(16);
+                state.set_reg(rd, v);
+            }
+
+            ArmOp::Uxtb { rd, rm } => {
+                let v = state.get_reg(rm).extract(7, 0).zero_ext(24);
+                state.set_reg(rd, v);
+            }
+
+            ArmOp::Uxth { rd, rm } => {
+                let v = state.get_reg(rm).extract(15, 0).zero_ext(16);
+                state.set_reg(rd, v);
+            }
+
+            // MOVW writes the whole register (top halfword ZEROED — it is a
+            // move, not an insert); MOVT writes only bits 31:16 and PRESERVES
+            // bits 15:0. Getting MOVT's preservation wrong would model the
+            // shipped 32-bit-constant idiom `MOVW/MOVT` as producing only the
+            // high half.
+            ArmOp::Movw { rd, imm16 } => {
+                state.set_reg(rd, BV::from_u64(*imm16 as u64, 32));
+            }
+
+            ArmOp::Movt { rd, imm16 } => {
+                let low = state.get_reg(rd).bvand(BV::from_u64(0xFFFF, 32));
+                let v = low.bvor(BV::from_u64((*imm16 as u64) << 16, 32));
+                state.set_reg(rd, v);
+            }
+
+            // CMN: compare negated — flags from Rn + op2, no register write.
+            ArmOp::Cmn { rn, op2 } => {
+                let a = state.get_reg(rn).clone();
+                let b = self.evaluate_operand2(op2, state);
+                let result = a.bvadd(&b);
+                self.update_flags_add(state, &a, &b, &result);
             }
 
             ArmOp::Mov { rd, op2 } => {
@@ -1882,6 +2017,23 @@ impl ArmSemantics {
                 state.set_reg(rd, result);
             }
 
+            // #923: the f32 twins of the two arms above. Both were already on
+            // `exec_trap_subset_op`'s "delegate to encode_op" allowlist for the
+            // SHIPPED `i32.trunc_f32_s/u` guard sequences, but had no arm here,
+            // so the delegation silently no-oped and the destination register
+            // kept whatever it held before the conversion. Uninterpreted, like
+            // the f64 twins: the trunc trap VC derives its condition from the
+            // guard's VCMP/branch structure, not from the converted value.
+            ArmOp::I32TruncF32S { rd, sm } => {
+                let result = BV::new_const(format!("i32_trunc_f32s_{:?}", sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I32TruncF32U { rd, sm } => {
+                let result = BV::new_const(format!("i32_trunc_f32u_{:?}", sm), 32);
+                state.set_reg(rd, result);
+            }
+
             // VCR-VER-002 (#166): UDF is the WASM trap sink — executing it
             // raises UsageFault. In the straight-line model (no path guards)
             // reaching a UDF means the sequence traps unconditionally; the
@@ -1891,10 +2043,31 @@ impl ArmSemantics {
                 state.may_trap = Bool::from_bool(true);
             }
 
-            _ => {
-                // Unsupported operations - no state change
+            // #923: an op with no semantics here is RECORDED, not ignored.
+            // The state is still left unchanged (callers that only want a
+            // best-effort register picture are unaffected), but the fact that
+            // the model skipped an instruction is now observable, so a
+            // consumer whose conclusion depends on the whole sequence having
+            // been executed can decline loudly instead of concluding from a
+            // partially-executed program. Only the FIRST such op is kept —
+            // it is the one that first invalidates the state.
+            other => {
+                if state.unmodeled.is_none() {
+                    state.unmodeled = Some(op_variant_name(other));
+                }
             }
         }
+    }
+
+    /// The shift amount an ARMv7-M `<shift> (register)` form actually applies:
+    /// `shift_n = UInt(R[m]<7:0>)`, zero-extended back to 32 bits so it can be
+    /// handed to an SMT shift.
+    ///
+    /// Concretely: `Rm = 0x0000_0100` shifts by 0 (identity), `Rm =
+    /// 0x0000_0120` shifts by 32 (LSL/LSR → 0). Neither is what the raw
+    /// 32-bit register value would give, and neither is WASM's mod-32 rule.
+    fn shift_amount_rm_7_0(rm: &BV) -> BV {
+        rm.extract(7, 0).zero_ext(24)
     }
 
     /// Evaluate an Operand2 value
@@ -2612,32 +2785,24 @@ impl ArmSemantics {
         Ok(())
     }
 
-    /// Execute one non-branch op of the trap-derivation subset. Ops the
-    /// shipped trap-guarded lowerings use but `encode_op` leaves unmodeled
-    /// (`Cmn`, `Movw`, `Movt`, the ordered VFP compares) get explicit
-    /// semantics here; a WHITELIST of register-only value ops delegates to
-    /// `encode_op`; anything else is a loud `Err` — `encode_op`'s silent
-    /// `_ => {}` default must never green-wash a trap derivation.
+    /// Execute one non-branch op of the trap-derivation subset. The ordered
+    /// VFP compares get explicit semantics here (`encode_op` models them as
+    /// uninterpreted symbols, which cannot drive a trap derivation); a
+    /// WHITELIST of register-only value ops delegates to `encode_op`; anything
+    /// else is a loud `Err` — `encode_op`'s `_ =>` default must never
+    /// green-wash a trap derivation.
+    ///
+    /// #923 hardened that last sentence into a MECHANISM. It used to rest
+    /// entirely on the allowlist below being an accurate mirror of
+    /// `encode_op`'s match arms, and it had drifted: `Rsb`, `I32TruncF32S`
+    /// and `I32TruncF32U` were allowlisted to delegate to a model that did not
+    /// implement them, so the guard passed them straight through as no-ops.
+    /// Every delegation now re-checks [`ArmState::unmodeled`] afterwards, so
+    /// an allowlist entry `encode_op` cannot honour is a loud decline rather
+    /// than a silent skip — and `Cmn`/`Movw`/`Movt`, which used to carry a
+    /// duplicate model here, now delegate to the single one in `encode_op`.
     fn exec_trap_subset_op(&self, op: &ArmOp, state: &mut ArmState) -> Result<(), String> {
         match op {
-            // CMN: compare negated — flags from rn + op2.
-            ArmOp::Cmn { rn, op2 } => {
-                let a = state.get_reg(rn).clone();
-                let b = self.evaluate_operand2(op2, state);
-                let result = a.bvadd(&b);
-                self.update_flags_add(state, &a, &b, &result);
-                Ok(())
-            }
-            ArmOp::Movw { rd, imm16 } => {
-                state.set_reg(rd, BV::from_u64(*imm16 as u64, 32));
-                Ok(())
-            }
-            ArmOp::Movt { rd, imm16 } => {
-                let low = state.get_reg(rd).bvand(BV::from_u64(0xFFFF, 32));
-                let v = low.bvor(BV::from_u64((*imm16 as u64) << 16, 32));
-                state.set_reg(rd, v);
-                Ok(())
-            }
             // Ordered VFP compares (the #709 trunc guards): real bit-pattern
             // semantics — result register is 1 iff the ordered relation
             // holds, 0 on NaN. encode_op models these as uninterpreted
@@ -2691,6 +2856,9 @@ impl ArmSemantics {
             // Register/flag-only value ops the covered lowerings use:
             // delegate to the existing encode_op semantics.
             ArmOp::Cmp { .. }
+            | ArmOp::Cmn { .. }
+            | ArmOp::Movw { .. }
+            | ArmOp::Movt { .. }
             | ArmOp::Add { .. }
             | ArmOp::Sub { .. }
             | ArmOp::Rsb { .. }
@@ -2720,10 +2888,7 @@ impl ArmSemantics {
             // stores as no-ops (no memory-contents model) — fine for a trap
             // derivation, where only the guard's flags/registers matter.
             | ArmOp::Ldr { .. }
-            | ArmOp::Str { .. } => {
-                self.encode_op(op, state);
-                Ok(())
-            }
+            | ArmOp::Str { .. } => self.delegate_to_encode_op(op, state),
             // Subword accesses (#752 gate coverage for the guarded
             // i32.load8/16 + i32.store8/16 shapes): same treatment as
             // Ldr/Str — a load writes a fresh symbol (no memory-contents
@@ -2749,13 +2914,34 @@ impl ArmSemantics {
             // the i64 trap-only VC. div_u/div_s stay OUT (their 64-bit quotient
             // value model is havoc — no value VC consumes it).
             ArmOp::I64RemU { .. } | ArmOp::I64RemS { .. } => {
-                self.encode_op(op, state);
-                Ok(())
+                self.delegate_to_encode_op(op, state)
             }
             other => Err(format!(
                 "op {other:?} outside the trap-derivation subset — loud decline"
             )),
         }
+    }
+
+    /// Run an allowlisted op through [`Self::encode_op`] and REFUSE if
+    /// `encode_op` turns out not to model it (#923).
+    ///
+    /// The allowlist above says which ops belong to the trap-derivation
+    /// subset; `encode_op`'s match arms say which ops actually have
+    /// semantics. Those are two lists, and they had drifted apart (`Rsb`,
+    /// `I32TruncF32S`, `I32TruncF32U`). This check makes the drift
+    /// unrepresentable in the only direction that matters: an allowlisted op
+    /// with no model is a loud decline, not a silent no-op that lets a trap
+    /// derivation run on a partially-executed program.
+    fn delegate_to_encode_op(&self, op: &ArmOp, state: &mut ArmState) -> Result<(), String> {
+        let before = state.unmodeled.clone();
+        self.encode_op(op, state);
+        if state.unmodeled != before {
+            return Err(format!(
+                "op {op:?} is allowlisted for the trap-derivation subset but \
+                 `encode_op` has no semantics for it — loud decline (#923)"
+            ));
+        }
+        Ok(())
     }
 }
 

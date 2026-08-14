@@ -291,9 +291,25 @@ impl TranslationValidator {
             state.set_reg(&reg, input.clone());
         }
 
-        // Execute ARM operations
+        // Execute ARM operations.
+        //
+        // #923: an op `ArmSemantics` has no model for is a LOUD decline here,
+        // never a silent skip. `encode_op`'s default arm used to leave the
+        // state untouched, which made an unmodeled instruction invisible to
+        // this VC — and "invisible" is the false-ACCEPT direction, not the
+        // conservative one: the sequence `ADD r0,r0,r1 ; UXTB r0,r0` returns
+        // `(x+y) & 0xFF` on silicon, but with `UXTB` skipped the model saw a
+        // plain `x+y` and returned `Verified` for `i32.add` (measured on
+        // v0.57 `main`). A VC whose ARM side executed only SOME of the
+        // sequence proves nothing about the sequence.
         for arm_op in arm_ops {
             self.arm_encoder.encode_op(arm_op, &mut state);
+            if let Some(name) = &state.unmodeled {
+                return Err(VerificationError::UnsupportedOperation(format!(
+                    "ARM op `{name}` has no semantics in ArmSemantics::encode_op — \
+                     declining rather than verifying a partially-executed sequence (#923)"
+                )));
+            }
         }
 
         // Extract result from R0 (ARM calling convention)

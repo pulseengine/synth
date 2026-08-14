@@ -1679,6 +1679,16 @@ artifacts:
             VCR-ISA-001 Sail-derived semantics are the eventual anchor), and
             until it is done "three independent validators" WOULD BE AN
             OVERCLAIM. This is the named follow-up.
+            (c') HOW SECOND THAT SECOND MODEL IS, MEASURED (#923). `encode_op`'s
+            default arm was a SILENT NO-OP, so 87 of `ArmOp`'s 222 variants —
+            every register-amount shift among them — were modeled as doing
+            NOTHING, and the value VC returned `Verified` for a lowering that
+            destroyed its own result (`ADD r0,r0,r1 ; UXTB r0,r0`). Modeling the
+            shipped ops and making the default arm RECORD-and-DECLINE brings the
+            unmodeled set to 73 (41 MVE, 32 others), all of which now decline
+            loudly. The second model is second for the i32/i64/VFP core it
+            covers and explicit about the rest; the faithfulness pin between the
+            two op models remains the follow-up above.
     status: implemented
     tags: [validation, abi, aapcs, translation-validation, independence, register-allocation, track-c, epic-242, release-v0.54, synth-893]
     links:
