@@ -84,25 +84,42 @@ SCORED_PREFIXES = (
 # these came from). Raise them when a lane adds rows; never lower them to make
 # a red gate green.
 #
-# MEASURED BASELINE (witness 0.28.0, wasm32-wasip1, 56 rows):
-#   20 scored decisions / 144 conditions / 63 proved / 31 gap / 50 dead
-#   3 decisions at FULL MC/DC (is_ret, sp_slot_load, build_options)
-# The floors ARE those numbers. A floor set below what was measured is the
-# half-value-floor defect this hub already found elsewhere; a floor set above
-# is a red gate nobody can fix.
+# THE FLOORS ARE THE CI PLATFORM'S MEASURED BASELINE — and the platform is
+# part of the measurement, which the first CI run proved rather than argued.
 #
-# ci-checks: mcdc scored decisions >= 20
-# ci-checks: mcdc scored conditions >= 144
-# ci-checks: mcdc scored conditions proved >= 63
-# ci-checks: mcdc fully-proved decisions >= 3
+#   ubuntu-latest x86_64, rustc 1.96.1, witness 0.42.0, 56 rows:
+#       22 decisions / 130 conditions / 57 proved / 23 gap / 50 dead
+#       4 decisions at FULL MC/DC
+#   macOS aarch64,   rustc 1.96.1, witness 0.42.0, the same 56 rows:
+#       20 decisions / 144 conditions / 63 proved / 31 gap / 50 dead
+#       3 decisions at FULL MC/DC
+#
+# Same toolchain VERSION, same witness, same rows — different HOST. These are
+# counts of decisions reconstructed from LOWERED WASM, so how `std` inlines
+# moves them: `validate_final_allocation_rv32` presents as 9 decisions / 44
+# conditions on Linux and 4 / 43 on macOS, and `ensure_supported_target`
+# disappears entirely on Linux. Recording both numbers rather than only the
+# convenient one: a developer running this locally on macOS will NOT meet these
+# floors, and that is a platform delta, not a regression. Use `--report-only`
+# locally and read the DELTA against your own previous run; the absolute floors
+# belong to the platform the gate actually blocks on.
+#
+# Witness-version invariance was verified separately (0.28.0 and 0.42.0 give
+# identical numbers on the same host), so the tool is not what moves these.
+#
+# ci-checks: mcdc scored decisions >= 22
+# ci-checks: mcdc scored conditions >= 130
+# ci-checks: mcdc scored conditions proved >= 57
+# ci-checks: mcdc fully-proved decisions >= 4
 # ci-checks: mcdc dead conditions <= 50
-FLOOR_DECISIONS = 20
-FLOOR_CONDITIONS = 144
-FLOOR_PROVED = 63
-FLOOR_FULL_MCDC_DECISIONS = 3
-# DEAD is CEILINGED, not ignored. 50 of the 144 scored conditions are never
-# evaluated — 40 of them in `is_straight_line`, whose match arms cover RV32
-# opcodes the row set does not construct. That is an honest residual, but an
+FLOOR_DECISIONS = 22
+FLOOR_CONDITIONS = 130
+FLOOR_PROVED = 57
+FLOOR_FULL_MCDC_DECISIONS = 4
+# DEAD is CEILINGED, not ignored. 50 scored conditions are never evaluated —
+# 40 of them in `is_straight_line`, whose match arms cover RV32 opcodes the row
+# set does not construct. (This is the one count that is IDENTICAL on both
+# hosts, which is what you would expect of "never reached".) That is an honest residual, but an
 # UNFLOORED residual is how a number rots: a change that stopped reaching the
 # segment barriers would raise `dead`, lower nothing else, and pass. It is also
 # a third potency surface — mutation (a) moved dead 50 -> 52.
