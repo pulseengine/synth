@@ -521,6 +521,100 @@ fn i64_div_declines_with_looped_expansion_reason() {
 }
 
 // ---------------------------------------------------------------------------
+// #946 — a proven counted loop whose body MOVES SP declines `loop`.
+//
+// `wcet_loops::may_move_sp` (was `writes_sp`) is the predicate both the region
+// check and the function-level walk use to refuse SP motion. It named 47 of
+// `ArmOp`'s 222 variants and let `_ => false` answer for the other 175 —
+// including `I64Popcnt`, `I64Rotl` and `I64Rotr`, which `op_cost` PRICES (so
+// they really do reach the walk) and whose encoder expansions really do emit
+// `PUSH`/`POP` (`0xB438`/`0xBC38`; `0xB40F` via `emit_i64_fixed_abi_entry`).
+//
+// This is a LIVE behaviour change, deliberately taken. Before the fix both
+// fixtures below came out BOUNDED (`rot` 3120 cyc, `pc` 4702 cyc, trip 8,
+// source `static`). Those numbers were not demonstrably WRONG — the push/pop
+// is net-zero across the expansion and writes strictly BELOW the incoming SP,
+// so neither the trip count nor the cycle sum is corrupted — but they rested
+// on an unenforced premise: that no tracked counter slot ever lives at a
+// NEGATIVE offset from SP (the walk tracks slots by raw signed `addr.offset`
+// and does not constrain the sign). An accidentally-correct bound is exactly
+// what the decline-honesty posture refuses to ship, so the answer moved to the
+// sound side: these shapes now decline, loudly, with a machine reason.
+//
+// Coverage cost, stated rather than hidden: an i64 rotate or popcnt inside an
+// otherwise-provable counted loop is no longer bounded. Re-earning it means
+// enforcing the non-negative-slot premise in the walk, not relaxing this
+// predicate. Named follow-up.
+// ---------------------------------------------------------------------------
+
+/// A canonical const-bound counted loop (trip 8) whose body contains an
+/// `i64.rotl` — priced, but its expansion pushes `{R0-R3}`.
+#[test]
+fn proven_loop_containing_i64_rotl_declines_on_sp_motion() {
+    let wat = r#"
+        (module
+          (func (export "rot") (param i64) (result i64)
+            (local i32) (local i64)
+            (block
+              (loop
+                local.get 1 i32.const 8 i32.lt_s i32.eqz br_if 1
+                local.get 2 local.get 0 i64.const 3 i64.rotl i64.add local.set 2
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 2))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "rot", "loop");
+}
+
+/// Same loop shape with `i64.popcnt` — expansion pushes `{R3,R4,R5}`.
+#[test]
+fn proven_loop_containing_i64_popcnt_declines_on_sp_motion() {
+    let wat = r#"
+        (module
+          (func (export "pc") (param i64) (result i64)
+            (local i32) (local i64)
+            (block
+              (loop
+                local.get 1 i32.const 8 i32.lt_s i32.eqz br_if 1
+                local.get 2 local.get 0 i64.popcnt i64.add local.set 2
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 2))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    assert_declined(&report, "pc", "loop");
+}
+
+/// NON-VACUITY for the two fixtures above: the SAME loop shape with an i64 op
+/// whose expansion does NOT touch SP (`i64.and`) must still be BOUNDED. Without
+/// this, a future change that declined every i64 loop — or every loop at all —
+/// would leave the two decline assertions green and meaningless.
+#[test]
+fn proven_loop_containing_sp_free_i64_op_is_still_bounded() {
+    let wat = r#"
+        (module
+          (func (export "andloop") (param i64) (result i64)
+            (local i32) (local i64)
+            (block
+              (loop
+                local.get 1 i32.const 8 i32.lt_s i32.eqz br_if 1
+                local.get 2 local.get 0 i64.const 3 i64.and i64.add local.set 2
+                local.get 1 i32.const 1 i32.add local.set 1
+                br 0))
+            local.get 2))
+    "#;
+    let report = compile_wcet(wat, "cortex-m4");
+    let f = func(&report, "andloop");
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("bounded"),
+        "the SP-free control must stay bounded, else the #946 decline fixtures \
+         above prove nothing about SP specifically: {f}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #936 — I64Const/I64Ldr/I64Str are PRICED, not declined. Gale ran
 // `--emit-wcet` over a real 31-function `gust:os` composite (0.55.0) and
 // found the 9 `unmodeled-op` declines resolved to exactly two opcode
