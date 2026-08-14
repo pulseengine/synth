@@ -94,7 +94,11 @@ fn flags_after(setup: &[(Reg, u32)], op: ArmOp) -> (bool, bool, bool, bool) {
         s.set_reg(r, BV::from_u64(*v as u64, 32));
     }
     e.encode_op(&op, &mut s);
-    assert!(s.unmodeled.is_none(), "flag op unmodeled: {:?}", s.unmodeled);
+    assert!(
+        s.unmodeled.is_none(),
+        "flag op unmodeled: {:?}",
+        s.unmodeled
+    );
     (
         s.flags.n.simplify().as_bool().expect("N not concrete"),
         s.flags.z.simplify().as_bool().expect("Z not concrete"),
@@ -192,11 +196,7 @@ fn lsl_register_masks_rm_low_eight_bits_not_mod_32_and_not_raw() {
         // In-range agreement with a wrapping Rust shift.
         for rn in [1u32, 0xFFFF_FFFF, 0x8000_0001, 0x1234_5678] {
             for amount in 0u32..32 {
-                assert_eq!(
-                    lsl(rn, amount),
-                    rn << amount,
-                    "LSL {rn:#010x} by {amount}"
-                );
+                assert_eq!(lsl(rn, amount), rn << amount, "LSL {rn:#010x} by {amount}");
                 // High bits of Rm above bit 7 must not participate.
                 assert_eq!(
                     lsl(rn, amount | 0xFFFF_FF00),
@@ -344,7 +344,11 @@ fn rsb_immediate_is_imm_minus_rn() {
         assert_eq!(rsb(5, 32), 27);
         assert_eq!(rsb(0, 0), 0);
         assert_eq!(rsb(1, 0), 0xFFFF_FFFF, "0 - 1 wraps");
-        assert_eq!(rsb(0x8000_0000, 0), 0x8000_0000, "0 - INT_MIN wraps to itself");
+        assert_eq!(
+            rsb(0x8000_0000, 0),
+            0x8000_0000,
+            "0 - INT_MIN wraps to itself"
+        );
         for rn in [0u32, 1, 31, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF] {
             assert_eq!(rsb(rn, 32), 32u32.wrapping_sub(rn));
         }
@@ -373,7 +377,11 @@ fn sign_and_zero_extension_take_the_low_byte_or_halfword() {
             0xDEAD_BEEF,
             0xFFFF_FFFF,
         ] {
-            assert_eq!(ext(sxtb, v), ((v as u8) as i8 as i32) as u32, "SXTB {v:#010x}");
+            assert_eq!(
+                ext(sxtb, v),
+                ((v as u8) as i8 as i32) as u32,
+                "SXTB {v:#010x}"
+            );
             assert_eq!(
                 ext(sxth, v),
                 ((v as u16) as i16 as i32) as u32,
@@ -535,14 +543,14 @@ fn cmn_sets_addition_flags_and_drives_the_div_s_overflow_guard() {
         };
 
         // The shipped guard idiom: Z is set exactly when Rn == -1.
-        assert_eq!(cmn(0xFFFF_FFFF, 1).1, true, "CMN -1, #1 sets Z");
+        assert!(cmn(0xFFFF_FFFF, 1).1, "CMN -1, #1 sets Z");
         for other in [0u32, 1, 2, 0x8000_0000, 0x7FFF_FFFF, 0xFFFF_FFFE] {
-            assert_eq!(cmn(other, 1).1, false, "CMN {other:#010x}, #1 must not set Z");
+            assert!(!cmn(other, 1).1, "CMN {other:#010x}, #1 must not set Z");
         }
 
         // Carry out of the unsigned addition.
-        assert_eq!(cmn(0xFFFF_FFFF, 1).2, true, "-1 + 1 carries out");
-        assert_eq!(cmn(1, 1).2, false, "1 + 1 does not carry out");
+        assert!(cmn(0xFFFF_FFFF, 1).2, "-1 + 1 carries out");
+        assert!(!cmn(1, 1).2, "1 + 1 does not carry out");
 
         // Signed overflow.
         assert_eq!(
@@ -578,7 +586,11 @@ fn setcond_after_cmp_matches_the_arm_condition_table() {
     with_verification_context(|| {
         // The one that separates the families, spelled out.
         assert_eq!(cmp_setcond(1, 0xFFFF_FFFF, Condition::GT), 1, "1 >s -1");
-        assert_eq!(cmp_setcond(1, 0xFFFF_FFFF, Condition::HI), 0, "1 <u 0xFFFFFFFF");
+        assert_eq!(
+            cmp_setcond(1, 0xFFFF_FFFF, Condition::HI),
+            0,
+            "1 <u 0xFFFFFFFF"
+        );
         assert_eq!(cmp_setcond(1, 0xFFFF_FFFF, Condition::LT), 0);
         assert_eq!(cmp_setcond(1, 0xFFFF_FFFF, Condition::LO), 1);
 
@@ -862,11 +874,7 @@ fn i64_add_and_sub_propagate_carry_and_borrow_across_the_pair() {
                 e.encode_op(&op, &mut s);
                 let lo = s.get_reg(&Reg::R0).simplify().as_u64().unwrap();
                 let hi = s.get_reg(&Reg::R1).simplify().as_u64().unwrap();
-                assert_eq!(
-                    (hi << 32) | lo,
-                    want,
-                    "{op:?} over {n:#018x} and {m:#018x}"
-                );
+                assert_eq!((hi << 32) | lo, want, "{op:?} over {n:#018x} and {m:#018x}");
             }
         }
     });
