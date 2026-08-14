@@ -80,9 +80,11 @@
 //!    (zeroed RAM serves every address): any nonzero runtime-image byte is
 //!    then a served/runtime mismatch (the silent initializer-drop this
 //!    validator caught on the pre-#798 RV32 path).
-//! 3. **AArch64: N/A** — the `-b aarch64` integer subset has no linear-memory
-//!    loads/stores (every memory op loud-declines at selection), so compiled
-//!    code cannot observe static data; there is nothing to validate.
+//! 3. **AArch64: N/A** — the `-b aarch64` backend HAS bounds-checked
+//!    linear-memory loads/stores (v0.52 #865), but it emits no data section
+//!    at all and REFUSES a module carrying active data segments loudly
+//!    (#851, `synth-backend-aarch64/src/backend.rs`), so there is no
+//!    served-vs-runtime image to compare; nothing to validate.
 
 use std::collections::HashMap;
 

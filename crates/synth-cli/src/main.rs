@@ -4816,11 +4816,14 @@ struct NativeGlobalsLayout {
     /// NEVER re-based.
     sp_alias_indices: Vec<u32>,
     /// #383 (VCR-MEM-001): integrator-declared shadow-stack budget in bytes. When
-    /// `Some(B)`, the caller asked to shrink the [0, sp_init) reservation to `B`
-    /// (re-basing the stack top and shifting the high zero-init static relocs
-    /// down). The retarget surgery is silicon-gated (link-fragile native-pointer
-    /// path, the #368→#359 lesson); until it lands, a `Some` here is an honest
-    /// Err, never a silent no-op.
+    /// `Some(B)`, the reservation shrinks from the full [0, sp_init) page to
+    /// `B` + the static tail (re-basing the SP global and the #707 alias set;
+    /// #739 refuses on an un-relocated baked static address the rebase cannot
+    /// see). The surgery is IMPLEMENTED and test-gated
+    /// (`shadow_stack_shrink_383.rs`: gust 1048720 → 4240 B `.bss`); shapes it
+    /// cannot handle honestly Err (budget > sp_init, no identified SP global,
+    /// multi-memory) — never a silent no-op. An earlier doc here called the
+    /// surgery "silicon-gated / not yet landed" (#946 — stale).
     shadow_stack_size: Option<u32>,
 }
 
