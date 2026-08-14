@@ -204,7 +204,7 @@ pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
     let mut saved: BTreeSet<Reg> = BTreeSet::new();
     for ins in instrs {
         if let Some((_, rs2)) = sp_slot_store(ins)
-            && is_saved_by_pass(rs2)
+            && (is_saved_by_pass(rs2) || rs2 == Reg::RA)
         {
             saved.insert(rs2);
         }
