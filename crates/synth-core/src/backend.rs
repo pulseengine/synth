@@ -265,14 +265,25 @@ pub struct CompileConfig {
     /// param) — which cannot distinguish a param from a read-before-write
     /// non-param local. WASM zero-initializes non-param locals, so such a local
     /// must read 0; the inference instead homed it in a parameter register and
-    /// read caller garbage (#457). The backends cap the inferred count at this
-    /// declared count when it is present, which reclassifies exactly the
-    /// read-before-write locals (an inferred count can only exceed the declared
-    /// one via a read-first index >= the declared count) and leaves every other
-    /// function's codegen byte-identical.
+    /// read caller garbage (#457).
+    ///
+    /// When this is `Some(declared)`, every backend uses
+    /// `min(`[`referenced_locals`](crate::referenced_locals)`(ops), declared)`
+    /// — the highest index the body touches, clamped by the signature. That is
+    /// EXACT in both directions: a genuine non-param local can never be
+    /// mistaken for a param (the clamp), and a param can never be demoted to a
+    /// local (the max over ALL accesses, reads and writes alike). The earlier
+    /// rule capped the READ-FIRST inference instead, which demoted a
+    /// conditionally-written param and produced an uninitialised-frame-slot
+    /// read on ARM and RISC-V and a zero-init local on AArch64 (#970/#851).
     ///
     /// `None` → declared signature unknown (hand-built op streams, direct
     /// `compile_function` callers) → pure inference, the legacy behaviour.
+    /// HONEST RESIDUAL (#970, unchanged from #851): on that path a write-first
+    /// index is genuinely AMBIGUOUS — a param whose incoming value is dead, or
+    /// a non-param local — and both readings can be wrong. The read-first rule
+    /// keeps the #457 behaviour rather than reading caller garbage for a
+    /// zero-init local. The CLI always supplies a declared count.
     pub current_func_param_count: Option<u32>,
     /// (#778 phase 4 / #49) The WASM index of the function CURRENTLY being compiled,
     /// so the WCET pass can identify this function's OWN `func_<idx>` self-call label

@@ -181,36 +181,13 @@ fn module_ctx(config: &CompileConfig) -> selector::ModuleCtx {
 
 /// The highest local index the body references, +1 (0 when it touches none).
 ///
-/// RQ-57-A64PARAM (#851): this is the param-count bound to use when the DRIVER
-/// SUPPLIED a declared count, because `min(referenced, declared)` is exact —
-/// it names every index that is really a param, and clamps to the declared
-/// count so a genuine non-param local can never be mistaken for one.
-///
-/// It replaces [`count_params`] on that path, which was UNSOUND: that heuristic
-/// counts only indices READ BEFORE WRITTEN in LINEAR op order, so a param
-/// written before it is read — but only CONDITIONALLY — was reclassified as a
-/// non-param local and ZERO-INITIALIZED. The function then compiled SILENTLY
-/// WRONG instead of declining. Measured on c2f9d72 before this fix:
-///
-/// ```wat
-/// (func (export "f") (param i32 i32) (result i32)
-///   (if (local.get 0) (then (local.set 1 (i32.const 5))))
-///   (local.get 1))          ;; f(0, 42): wasmtime 42, synth 0
-/// ```
-///
-/// Using `min(referenced, declared)` rather than plain `declared` also PRESERVES
-/// the existing leniency for a function with more than 8 declared params that
-/// only touches the first few (the selector caps register params at 8): such a
-/// body still lowers, exactly as before.
-fn referenced_locals(ops: &[WasmOp]) -> u32 {
-    ops.iter()
-        .filter_map(|op| match op {
-            WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => Some(*i + 1),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-}
+/// RQ-57-A64PARAM (#851) landed this as a private copy here; #970 found the
+/// identical defect in the ARM and RISC-V backends and moved the ONE
+/// implementation to [`synth_core::referenced_locals`], where its doc comment
+/// lives. Re-exported under the local name so this file's call site and the
+/// #851 references to it keep reading the same — but there is now exactly one
+/// definition for the three backends to agree on, which is the point.
+use synth_core::referenced_locals;
 
 /// Count register parameters from the op stream (a local index read before it is
 /// written is a parameter). Mirrors the ARM/RISC-V backends' heuristic.

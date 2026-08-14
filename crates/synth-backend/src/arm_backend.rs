@@ -236,6 +236,38 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
         .unwrap_or(0)
 }
 
+/// #457/#970: the parameter count the selector is given.
+///
+/// With a DECLARED count from the driver the bound is
+/// `min(`[`synth_core::referenced_locals`]`(ops), declared)` — the highest
+/// local index the body touches, clamped by the signature. That is exact in
+/// both directions: the clamp stops a read-before-write NON-PARAM local (which
+/// WASM zero-initializes) from being homed in an argument register and reading
+/// caller garbage (#457), and taking the max over ALL accesses — writes as well
+/// as reads — stops a PARAM from being demoted to a local.
+///
+/// The previous rule capped [`count_params`] (a READ-FIRST heuristic) with the
+/// declared count, which got the second direction wrong: a param written on ONE
+/// arm of an `if` is "written first" in linear op order, so it was demoted, and
+/// because the demoted local's first access is a WRITE the #457 zero-init
+/// skipped it too. The arm that does NOT write it then read an UNINITIALISED
+/// frame slot — measured under unicorn with the sub-SP stack poisoned,
+/// `cond_write_param(0, 42)` returned the poison word, i.e. previous-frame
+/// bytes rather than 42 (#970; the aarch64 instance was #851).
+///
+/// `min` rather than a plain `declared` override preserves the leniency for a
+/// body that only touches the first few of many declared params.
+///
+/// `None` (no declared signature: hand-built op streams, direct
+/// `compile_function` callers) keeps the legacy pure inference — see the
+/// residual documented on [`CompileConfig::current_func_param_count`].
+fn effective_num_params(wasm_ops: &[WasmOp], config: &CompileConfig) -> u32 {
+    match config.current_func_param_count {
+        Some(declared) => synth_core::referenced_locals(wasm_ops).min(declared),
+        None => count_params(wasm_ops),
+    }
+}
+
 /// #539: fold the `i32.const 0; memory.grow m` idiom to `memory.size m`.
 /// Moved to `synth_core::rewrite_memory_grow_zero` (#242, VCR-SEL-005) so the
 /// ARM and RISC-V backends share ONE implementation and cannot drift; re-export
@@ -383,22 +415,23 @@ fn compile_wasm_to_arm(
     // whose first access is a read is assumed to be a param), so a
     // read-before-write NON-PARAM local — which WASM zero-initializes — was
     // indistinguishable from a param: it got homed in a parameter register and
-    // read caller garbage instead of 0. When the driver supplied the DECLARED
-    // count (`current_func_param_count`, from the module's type section), cap
-    // the inference with it. `min` (not a plain override) keeps every function
-    // whose inference is <= declared byte-identical: the inferred count can only
-    // EXCEED the declared one via a read-first local index >= the declared count
-    // — i.e. exactly the read-before-write locals this issue is about.
+    // read caller garbage instead of 0. The driver supplies the DECLARED count
+    // (`current_func_param_count`, from the module's type section) to settle it.
+    //
+    // #970 (RQ-57-CONDPARAM): see [`effective_num_params`] for the bound and
+    // why the read-first inference is not it.
     let inferred_params = count_params(wasm_ops);
-    let num_params = match config.current_func_param_count {
-        Some(declared) => inferred_params.min(declared),
-        None => inferred_params,
+    let num_params = effective_num_params(wasm_ops, config);
+    // A read-before-write non-param local exists iff the ACCESS-PATTERN
+    // inference overshot the declared count — the read-first rule can only
+    // exceed it via a read-first index >= the declared count, which is exactly
+    // such a local. (Unchanged by #970: `referenced >= inferred` always, so
+    // `num_params < inferred_params` still holds iff `inferred > declared`;
+    // stated directly here rather than left to that algebra.)
+    let has_rbw_local = match config.current_func_param_count {
+        Some(declared) => inferred_params > declared,
+        None => false,
     };
-    // A read-before-write non-param local exists iff the capped count dropped.
-    // Such locals need the wasm-mandated zero-init, which only the direct
-    // selector emits — the optimized path's `ir_to_arm` maps a non-param
-    // local's vreg onto an r4+ temp with no initialization (caller garbage).
-    let has_rbw_local = num_params < inferred_params;
 
     let bounds_config = match config.effective_safety_bounds() {
         SafetyBounds::None => BoundsCheckConfig::None,
@@ -2299,6 +2332,83 @@ mod tests {
         assert_eq!(
             matching.code, inferred.code,
             "declared >= inferred must stay byte-identical"
+        );
+    }
+
+    /// #970: a CONDITIONALLY-written param must stay a param.
+    ///
+    /// The read-first heuristic sees `LocalSet(1)` before any `LocalGet(1)` in
+    /// LINEAR op order and demotes index 1 — even though the `if` means the
+    /// write may not execute at all. `min(referenced, declared)` keeps it.
+    /// The RED symptom this pins is not a wrong constant: the demoted local's
+    /// first access is a WRITE, so the #457 zero-init skips it and the
+    /// fall-through arm reads an UNINITIALISED frame slot (executed evidence:
+    /// `scripts/repro/cond_write_param_970_arm_differential.py`).
+    #[test]
+    fn conditionally_written_param_stays_a_param_970() {
+        // (param i32 i32): if (local.get 0) { local.set 1 = 5 }; local.get 1
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(1),
+            WasmOp::End,
+            WasmOp::LocalGet(1),
+            WasmOp::End,
+        ];
+        let declared = CompileConfig {
+            current_func_param_count: Some(2),
+            ..CompileConfig::default()
+        };
+        // The old rule: index 1 is written before it is read, so it is not
+        // counted — this is the undercount that produced the miscompile.
+        assert_eq!(
+            count_params(&ops),
+            1,
+            "the read-first heuristic must still undercount (this is the defect)"
+        );
+        assert_eq!(
+            effective_num_params(&ops, &declared),
+            2,
+            "a conditionally-written param must be counted as a param"
+        );
+        // The #457 direction is untouched: a genuine non-param local is still
+        // clamped away by the declared count.
+        let rbw = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert_eq!(
+            effective_num_params(
+                &rbw,
+                &CompileConfig {
+                    current_func_param_count: Some(1),
+                    ..CompileConfig::default()
+                }
+            ),
+            1,
+            "#457: a read-before-write non-param local must NOT become a param"
+        );
+        // Leniency: a body touching only the first few of many declared params
+        // still lowers with the small count (the selector homes at most 4 in
+        // registers; `min` is what keeps this from becoming `declared`).
+        assert_eq!(
+            effective_num_params(
+                &rbw,
+                &CompileConfig {
+                    current_func_param_count: Some(12),
+                    ..CompileConfig::default()
+                }
+            ),
+            2,
+            "declared >> referenced must stay at the referenced count"
+        );
+        // No declared count: the legacy inference, unchanged (honest residual).
+        assert_eq!(
+            effective_num_params(&ops, &CompileConfig::default()),
+            count_params(&ops)
         );
     }
 

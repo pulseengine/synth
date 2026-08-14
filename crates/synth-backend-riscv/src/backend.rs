@@ -400,19 +400,27 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
         .unwrap_or(0)
 }
 
-/// #457: cap the access-pattern param inference with the DECLARED count when
-/// the driver supplied one. A read-before-write non-param local (which WASM
+/// #457: settle the param count with the DECLARED count when the driver
+/// supplied one. A read-before-write non-param local (which WASM
 /// zero-initializes) is indistinguishable from a param to `count_params` — it
-/// was homed in an argument register and read caller garbage instead of 0.
-/// `min` (not a plain override) keeps every function whose inference is <= the
-/// declared count byte-identical: the inference can only exceed the declared
-/// count via a read-first local index >= it — exactly the read-before-write
-/// locals. The selector zero-inits the reclassified locals' frame slots.
+/// was homed in an argument register and read caller garbage instead of 0. The
+/// selector zero-inits the reclassified locals' frame slots.
+///
+/// #970 (RQ-57-CONDPARAM): the declared-count bound is
+/// `min(highest REFERENCED index + 1, declared)`, NOT `min(count_params(ops),
+/// declared)`. The old rule demoted a CONDITIONALLY-written param to a
+/// non-param local, and because that local's first access is a WRITE the #457
+/// zero-init skipped it too — so the branch that does not write it read an
+/// UNINITIALISED frame slot (`lw t0, 0(sp)` over a slot no path had stored).
+/// Measured under unicorn with the sub-SP stack poisoned, `cond_write_param(0,
+/// 42)` returned the poison word: previous-frame bytes, an information-
+/// disclosure shape rather than merely a wrong value. See
+/// [`synth_core::referenced_locals`]. `min` (not a plain override) keeps the
+/// leniency for a body that only touches the first few of many declared params.
 fn effective_num_params(ops: &[WasmOp], config: &CompileConfig) -> u32 {
-    let inferred = count_params(ops);
     match config.current_func_param_count {
-        Some(declared) => inferred.min(declared),
-        None => inferred,
+        Some(declared) => synth_core::referenced_locals(ops).min(declared),
+        None => count_params(ops),
     }
 }
 
@@ -571,8 +579,51 @@ mod tests {
         assert_eq!(
             effective_num_params(&ops, &over_declared),
             2,
-            "declared >= inferred keeps the inference (byte-identity)"
+            "declared >> referenced stays at the referenced count (byte-identity)"
         );
+    }
+
+    /// #970: a CONDITIONALLY-written param must stay a param.
+    ///
+    /// The read-first heuristic sees `LocalSet(1)` before any `LocalGet(1)` in
+    /// LINEAR op order and demotes index 1 — even though the `if` means the
+    /// write may not execute. The demoted local's first access is a WRITE, so
+    /// the #457 zero-init skipped it too and the fall-through arm executed
+    /// `lw t0, 0(sp)` over a slot no path had stored: previous-frame bytes,
+    /// not the incoming argument (executed evidence:
+    /// `scripts/repro/cond_write_param_970_riscv_differential.py`).
+    #[test]
+    fn conditionally_written_param_stays_a_param_970() {
+        // (param i32 i32): if (local.get 0) { local.set 1 = 5 }; local.get 1
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::I32Const(5),
+            WasmOp::LocalSet(1),
+            WasmOp::End,
+            WasmOp::LocalGet(1),
+            WasmOp::End,
+        ];
+        let base = CompileConfig {
+            target: TargetSpec::riscv32imac(),
+            ..Default::default()
+        };
+        assert_eq!(
+            count_params(&ops),
+            1,
+            "the read-first heuristic must still undercount (this is the defect)"
+        );
+        let declared = CompileConfig {
+            current_func_param_count: Some(2),
+            ..base.clone()
+        };
+        assert_eq!(
+            effective_num_params(&ops, &declared),
+            2,
+            "a conditionally-written param must be counted as a param"
+        );
+        // No declared count: the legacy inference, unchanged (honest residual).
+        assert_eq!(effective_num_params(&ops, &base), count_params(&ops));
     }
 
     #[test]

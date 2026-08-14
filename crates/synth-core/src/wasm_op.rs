@@ -495,6 +495,50 @@ pub enum WasmOp {
     F32x4ReplaceLane(u8), // f32x4.replace_lane
 }
 
+/// The highest local index the body references, +1 (0 when it touches none).
+///
+/// #970 (RQ-57-CONDPARAM): this is the param-count bound every backend uses
+/// when the driver SUPPLIED a declared count, because `min(referenced,
+/// declared)` is EXACT — it names every index that is really a param, and the
+/// clamp means a genuine non-param local can never be mistaken for one.
+///
+/// It replaces the `count_params` access-pattern heuristic on that path, which
+/// was UNSOUND: that heuristic counts only indices READ BEFORE WRITTEN in
+/// LINEAR op order, so a param written before it is read — but only
+/// CONDITIONALLY — was reclassified as a non-param local. Worse, its first
+/// access being a WRITE meant the read-before-write zero-init (#457) skipped it
+/// too, so the branch that does NOT write it read an UNINITIALISED frame slot:
+///
+/// ```wat
+/// (func (export "f") (param i32 i32) (result i32)
+///   (if (local.get 0) (then (local.set 1 (i32.const 5))))
+///   (local.get 1))          ;; f(0, 42): wasmtime 42, synth <previous frame>
+/// ```
+///
+/// Measured on cb80e60c under unicorn with the sub-SP stack poisoned, BOTH the
+/// ARM and RV32 backends returned the poison word rather than 42 — an
+/// information-disclosure shape, not merely a wrong value.
+///
+/// Using `min(referenced, declared)` rather than plain `declared` PRESERVES the
+/// leniency for a function with more declared params than the backend can
+/// register-home that only touches the first few: such a body still lowers,
+/// exactly as before.
+///
+/// Shared by the ARM (`synth-backend`), RISC-V (`synth-backend-riscv`) and
+/// AArch64 (`synth-backend-aarch64`) backends — three private copies of the
+/// same three-line rule is precisely the drift `rewrite_memory_grow_zero`
+/// below was centralised to avoid (#242, VCR-SEL-005).
+pub fn referenced_locals(wasm_ops: &[WasmOp]) -> u32 {
+    wasm_ops
+        .iter()
+        .filter_map(|op| match op {
+            WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => Some(*i + 1),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Fold `i32.const 0; memory.grow` → `memory.size` up front, on every backend.
 ///
 /// WASM Core §4.4.7: growing a memory by ZERO pages can never fail — it returns

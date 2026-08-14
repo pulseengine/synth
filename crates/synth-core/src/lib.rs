@@ -34,5 +34,5 @@ pub use wasm_decoder::{
     CallIndirectGuards, DecodedModule, ElemSegmentInfo, FunctionOps, ImportEntry, ImportKind,
     TableGuards, WasmMemory, decode_wasm_functions, decode_wasm_module,
 };
-pub use wasm_op::{WasmOp, rewrite_memory_grow_zero};
+pub use wasm_op::{WasmOp, referenced_locals, rewrite_memory_grow_zero};
 pub use wsc_facts::{FactKind, WSC_FACTS_SECTION_NAME, WscFact, WscFactsParse, parse_wsc_facts};
