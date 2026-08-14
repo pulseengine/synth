@@ -40,14 +40,35 @@
 //! ## Bounded v1 — covered vs uncovered
 //!
 //! GATE-EXERCISED: `br_if`, `br` (preserved), `select` (folded-predication),
-//! `br_table` (split). `eliminated-constant` is WIRED (schema + emitter, correct
+//! `br_table` (split), `if` (preserved — the structured-decision conditional
+//! branch, #944). `eliminated-constant` is WIRED (schema + emitter, correct
 //! byte-offset join key) but not yet gate-exercised — a fixture that drops a
 //! covered branch op is a v1 follow-up. Every object conditional branch that does
 //! NOT resolve to one of the covered source ops is surfaced in
-//! `object_cond_branches` with `resolved: false` and a `note` (e.g. an `i64`
-//! expansion branch or a div/mem trap guard) — an "only-in-synth"-style
-//! divergence the consumer SEES rather than a silent gap. Naming the uncovered
-//! ones is the deliverable's explicit follow-up boundary.
+//! `object_cond_branches` with `resolved: false` — and, since #944, with a
+//! machine-readable `origin` naming WHY synth introduced it when the introducing
+//! op family is one whose lowering is verified to emit exactly that control flow
+//! (see [`introduced_branch_origin`]). An introduced branch whose family is NOT
+//! in that verified map stays `origin: None` with the op named in the note — an
+//! unexplained-but-declared branch beats a confident wrong label (#944's own
+//! finding: a plausible "guard" label for these was tested and found wrong).
+//!
+//! ## Compiler-introduced branch origins (#944)
+//!
+//! `origin` values are kebab-case and each is backed by disassembly-verified
+//! lowering shape on the direct/relocatable ARM path:
+//! - `bulk-memory-fill-loop` — `memory.fill` expands to a byte-store loop; its
+//!   one conditional branch is the loop bound test (`cmp; bhs` — zero-trip safe).
+//! - `bulk-memory-copy-loop` — `memory.copy` (memmove semantics) expands to an
+//!   overlap-direction test (`cmp dst,src; bhi`) plus a forward- and a
+//!   backward-copy loop bound test: exactly three conditional branches.
+//! - `division-trap-guard` — `i32.div_s` emits the divide-by-zero guard plus the
+//!   two-test `INT_MIN / -1` overflow guard (three branches, each skipping a
+//!   `udf`); `i32.div_u` / `i32.rem_s` / `i32.rem_u` emit the zero guard alone.
+//!
+//! These fields are ADDITIVE on the `synth-provenance-v1` wire format: the
+//! deployed consumer (witness `object-disposition`, whose serde ignores unknown
+//! fields) keeps parsing maps that carry them.
 
 use serde::{Deserialize, Serialize};
 
@@ -109,9 +130,18 @@ pub struct ObjectCondBranch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_offset: Option<u32>,
     /// True iff this branch resolves to a covered source condition (`br_if` /
-    /// `br_table`). False = an uncovered/only-in-synth object branch (e.g. an
-    /// i64-expansion or trap-guard branch) — a v1 follow-up, surfaced not hidden.
+    /// `br_table` / `if`). False = a compiler-introduced object branch —
+    /// surfaced not hidden, and carrying `origin` when its introducing op
+    /// family is in the verified classification (#944).
     pub resolved: bool,
+    /// #944: machine-readable origin for a compiler-introduced branch
+    /// (`resolved: false`), derived from the source op the branch's encode-time
+    /// `line_map` entry traces to — never guessed. `None` for a resolved branch,
+    /// and for an introduced branch whose op family is not in the verified map
+    /// (declared-unattributed; the gate pins that count). Additive field: absent
+    /// on the wire when `None`, so pre-#944 consumers are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// Human note when `resolved` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -163,6 +193,33 @@ fn source_op_name(op: &WasmOp) -> Option<&'static str> {
         WasmOp::Br(_) => Some("Br"),
         WasmOp::BrTable { .. } => Some("BrTable"),
         WasmOp::Select => Some("Select"),
+        // #944: `if` is a real source decision — its conditional branch was
+        // previously mis-bucketed with the compiler-introduced branches.
+        WasmOp::If => Some("If"),
+        _ => None,
+    }
+}
+
+/// #944: the machine-readable origin of a compiler-introduced conditional
+/// branch, keyed by the source op whose LOWERING emits it (known exactly — the
+/// encode-time `line_map` records which op each machine instruction came from).
+///
+/// Deliberately narrow: an op family is listed ONLY once its lowering's branch
+/// shape has been verified by disassembly (see the module header for each
+/// family's shape). Anything else returns `None` and stays declared-unattributed
+/// — mislabelling a branch is worse than declaring it unexplained (#944).
+pub fn introduced_branch_origin(op: &WasmOp) -> Option<&'static str> {
+    match op {
+        // memory.fill byte-store loop: one bound-test branch (zero-trip safe).
+        WasmOp::MemoryFill => Some("bulk-memory-fill-loop"),
+        // memory.copy memmove expansion: overlap-direction test + forward- and
+        // backward-copy loop bound tests (three branches).
+        WasmOp::MemoryCopy => Some("bulk-memory-copy-loop"),
+        // WASM trap semantics: divide-by-zero guard (all four), plus the
+        // INT_MIN/-1 overflow guard pair for `i32.div_s`.
+        WasmOp::I32DivS | WasmOp::I32DivU | WasmOp::I32RemS | WasmOp::I32RemU => {
+            Some("division-trap-guard")
+        }
         _ => None,
     }
 }
@@ -217,7 +274,10 @@ pub fn derive_function_provenance(
         }
 
         let (kind, object_pcs, count) = match op {
-            WasmOp::BrIf(_) => (ProvKind::Preserved, cond_pcs.clone(), None),
+            // #944: an `if` decision is realized by its conditional branch, like
+            // a `br_if` (its then-end unconditional jump is control flow, not
+            // the decision).
+            WasmOp::BrIf(_) | WasmOp::If => (ProvKind::Preserved, cond_pcs.clone(), None),
             WasmOp::Br(_) => (ProvKind::Preserved, uncond_pcs.clone(), None),
             WasmOp::BrTable { .. } => {
                 let n = cond_pcs.len();
@@ -262,21 +322,37 @@ pub fn derive_function_provenance(
         if *class != BranchClass::CondBranch {
             continue;
         }
-        let (resolved, note, instruction_offset) = match oi {
+        let (resolved, origin, note, instruction_offset) = match oi {
             Some(idx) => match ops.get(*idx) {
-                Some(WasmOp::BrIf(_)) | Some(WasmOp::BrTable { .. }) => {
-                    (true, None, op_offsets.get(*idx).copied())
+                Some(WasmOp::BrIf(_)) | Some(WasmOp::BrTable { .. }) | Some(WasmOp::If) => {
+                    (true, None, None, op_offsets.get(*idx).copied())
                 }
-                Some(other) => (
-                    false,
-                    Some(format!(
-                        "object conditional branch from non-branch source op {other:?} \
-                         (uncovered in v1: i64-expansion / trap-guard / bounds-check branch)"
-                    )),
-                    op_offsets.get(*idx).copied(),
-                ),
+                Some(other) => {
+                    // #944: a compiler-introduced branch. When the introducing
+                    // op family's branch shape is verified, carry its
+                    // machine-readable origin; otherwise declare it
+                    // unattributed with the op named — never guess a label.
+                    let origin = introduced_branch_origin(other);
+                    let note = match origin {
+                        Some(o) => format!(
+                            "compiler-introduced: {o} — emitted lowering source op {other:?} \
+                             (serves that op's WASM semantics; not a source-level decision)"
+                        ),
+                        None => format!(
+                            "object conditional branch from non-branch source op {other:?} \
+                             (unattributed: op family not in the verified origin map, #944)"
+                        ),
+                    };
+                    (
+                        false,
+                        origin.map(str::to_string),
+                        Some(note),
+                        op_offsets.get(*idx).copied(),
+                    )
+                }
                 None => (
                     false,
+                    None,
                     Some(
                         "object conditional branch traces to an out-of-range op index".to_string(),
                     ),
@@ -285,6 +361,7 @@ pub fn derive_function_provenance(
             },
             None => (
                 false,
+                None,
                 Some(
                     "object conditional branch with no source op (prologue/epilogue synth branch)"
                         .to_string(),
@@ -297,6 +374,7 @@ pub fn derive_function_provenance(
             wasm_op_index: *oi,
             instruction_offset,
             resolved,
+            origin,
             note,
         });
     }
@@ -352,10 +430,119 @@ mod tests {
         let fp = derive_function_provenance(0, "g", &ops, &op_offsets, &line_map, &branch_map, &[]);
         // No covered source entries (I32DivU isn't a covered source branch)...
         assert!(fp.entries.is_empty());
-        // ...but the object branch is NOT missing: it's surfaced unresolved.
+        // ...but the object branch is NOT missing: it's surfaced unresolved,
+        // and (#944) with its verified machine-readable origin.
         assert_eq!(fp.object_cond_branches.len(), 1);
         assert!(!fp.object_cond_branches[0].resolved);
         assert!(fp.object_cond_branches[0].note.is_some());
+        assert_eq!(
+            fp.object_cond_branches[0].origin.as_deref(),
+            Some("division-trap-guard")
+        );
+    }
+
+    /// #944: an `if` decision's conditional branch is a SOURCE decision —
+    /// covered (preserved entry) and resolved, not a compiler-introduced branch.
+    #[test]
+    fn if_decision_branch_is_covered_and_resolved() {
+        let ops = vec![WasmOp::If];
+        let op_offsets = vec![50u32];
+        let line_map: LineMap = vec![(0x00, Some(0)), (0x04, Some(0))];
+        let branch_map: BranchMap = vec![
+            (0x00, BranchClass::Other),      // the cmp
+            (0x04, BranchClass::CondBranch), // the beq to the else/end arm
+        ];
+        let fp = derive_function_provenance(0, "f", &ops, &op_offsets, &line_map, &branch_map, &[]);
+        assert_eq!(fp.entries.len(), 1);
+        assert_eq!(fp.entries[0].op, "If");
+        assert_eq!(fp.entries[0].kind, ProvKind::Preserved);
+        assert_eq!(fp.entries[0].object_pcs, vec![0x04]);
+        assert_eq!(fp.object_cond_branches.len(), 1);
+        assert!(fp.object_cond_branches[0].resolved);
+        assert!(fp.object_cond_branches[0].origin.is_none());
+    }
+
+    /// #944 classified origins: bulk-memory expansion branches carry the
+    /// verified origin of the op whose lowering emitted them.
+    #[test]
+    fn bulk_memory_branches_carry_verified_origin() {
+        let ops = vec![WasmOp::MemoryFill, WasmOp::MemoryCopy];
+        let op_offsets = vec![10u32, 20u32];
+        // fill: one loop-bound branch; copy: direction test + two loop bounds.
+        let line_map: LineMap = vec![
+            (0x00, Some(0)),
+            (0x08, Some(1)),
+            (0x10, Some(1)),
+            (0x20, Some(1)),
+        ];
+        let branch_map: BranchMap = vec![
+            (0x00, BranchClass::CondBranch),
+            (0x08, BranchClass::CondBranch),
+            (0x10, BranchClass::CondBranch),
+            (0x20, BranchClass::CondBranch),
+        ];
+        let fp = derive_function_provenance(0, "b", &ops, &op_offsets, &line_map, &branch_map, &[]);
+        let origins: Vec<_> = fp
+            .object_cond_branches
+            .iter()
+            .map(|b| b.origin.as_deref())
+            .collect();
+        assert_eq!(
+            origins,
+            vec![
+                Some("bulk-memory-fill-loop"),
+                Some("bulk-memory-copy-loop"),
+                Some("bulk-memory-copy-loop"),
+                Some("bulk-memory-copy-loop"),
+            ]
+        );
+        // Each also carries the introducing op's byte offset — the join anchor.
+        assert_eq!(
+            fp.object_cond_branches[0].instruction_offset,
+            Some(10),
+            "fill branch anchors at the memory.fill op offset"
+        );
+    }
+
+    /// #944 negative control (non-vacuity): the origin map must NOT blanket-label.
+    /// A conditional branch tracing to an op family whose lowering shape has not
+    /// been disassembly-verified stays declared-unattributed (`origin: None`) —
+    /// widening the map without verification is exactly the failure mode the
+    /// gate exists to prevent.
+    #[test]
+    fn unverified_op_family_stays_declared_unattributed() {
+        let ops = vec![WasmOp::I64Shl];
+        let op_offsets = vec![70u32];
+        let line_map: LineMap = vec![(0x00, Some(0))];
+        let branch_map: BranchMap = vec![(0x00, BranchClass::CondBranch)];
+        let fp = derive_function_provenance(0, "u", &ops, &op_offsets, &line_map, &branch_map, &[]);
+        let b = &fp.object_cond_branches[0];
+        assert!(!b.resolved);
+        assert!(
+            b.origin.is_none(),
+            "must not invent an origin: {:?}",
+            b.origin
+        );
+        assert!(
+            b.note.as_deref().unwrap_or("").contains("unattributed"),
+            "the note must declare the gap, not guess: {:?}",
+            b.note
+        );
+    }
+
+    /// #944: a branch with NO source op at all (prologue/epilogue) is declared,
+    /// not silently labeled.
+    #[test]
+    fn no_source_op_branch_is_declared() {
+        let ops: Vec<WasmOp> = vec![];
+        let op_offsets: Vec<u32> = vec![];
+        let line_map: LineMap = vec![(0x00, None)];
+        let branch_map: BranchMap = vec![(0x00, BranchClass::CondBranch)];
+        let fp = derive_function_provenance(0, "p", &ops, &op_offsets, &line_map, &branch_map, &[]);
+        let b = &fp.object_cond_branches[0];
+        assert!(!b.resolved);
+        assert!(b.origin.is_none());
+        assert!(b.note.is_some());
     }
 
     #[test]
