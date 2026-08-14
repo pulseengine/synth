@@ -139,8 +139,10 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   — what remains open is the 7 `manual` scripts (external fixture, measurement
   and scratch categories); #851: the aarch64
   op-surface gaps the VCR-SEL-005 third-backend oracle now enumerates
-  mechanically; #846: two `gpio-thin` CRL/CRH sites still need relational
-  ranges).
+  mechanically; #846: the two `gpio-thin` CRL/CRH sites are now PROVEN by a
+  bounded masked-seed evaluation (502 -> 494 B, 3 -> 1 masks); the ONE
+  remaining mask is genuinely required, not a residual — its amount is a
+  frame-reloaded raw param, so eliding it would be the #682 miscompile).
 - **What the oracle steps ATTEST is now stated (#910).** The exit-status-only
   residual noted above was measured and was larger than described: **152 of the
   160** workflow steps that run a `scripts/repro/` oracle asserted nothing

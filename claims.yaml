@@ -1020,7 +1020,17 @@ claims:
       - kind: verbatim
         text: "pip install wasmtime unicorn pyelftools capstone"
       - kind: verbatim
-        text: 'grep -q "^#846 CHECKS=75/75" gpio846.out'
+        text: 'grep -q "^#846 CHECKS=285/285" gpio846.out'
+      # The scope caveat must travel WITH the gate. The gpio differential is
+      # blind to gpio_configure's surviving `mode << 2` mask (the driver's own
+      # `>u 6` guard discards the shift result exactly when the mask matters —
+      # verified by force-eliding it: 490 B object, gate still all-matching).
+      # Pinning the cross-reference keeps a future reader from mistaking this
+      # gate for the guard on that site.
+      # Single-LINE substring on purpose: a multi-line pin would also encode
+      # the comment's wrap column and break on a harmless re-wrap.
+      - kind: verbatim
+        text: "red with 6 mismatches under the same mutation."
 
   # ---------------------------------------------------------------------------
   # VCR-MEM-004 / #901 — the SoftwareBoundsChecker cost claim.

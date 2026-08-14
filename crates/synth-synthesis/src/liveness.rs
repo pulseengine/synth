@@ -1412,6 +1412,613 @@ impl Lt32Facts {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #846 phase 2 — bounded masked-seed evaluation ("relational ranges").
+// ---------------------------------------------------------------------------
+
+/// Maximum number of enumerated seed cases. `2^6 = 64`: a mask with more than
+/// six set bits is not enumerated at all (the submask walk would be
+/// exponential), so the seed is declined and every dependent mask stays.
+const SEED_CASES_MAX: usize = 64;
+
+/// One concrete value per enumerated case. Length is always the evaluator's
+/// current `cases`. An ABSENT entry (in `regs` / `slots`) means ⊤ — "any
+/// 32-bit value" — and can never contribute to a proof.
+type Cases = Vec<u32>;
+
+/// Exactly the values `x & k` can take for an arbitrary `x`: the submasks of
+/// `k` (standard `s = (s - 1) & k` walk, `2^popcount(k)` of them).
+fn submasks(k: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut s = k;
+    loop {
+        out.push(s);
+        if s == 0 {
+            break;
+        }
+        s = (s - 1) & k;
+    }
+    out
+}
+
+/// Does `cond` hold for the NZCV flags that `CMP a, b` sets? `CMP` computes
+/// `a - b`, so each ARM condition is exactly the corresponding comparison on
+/// the two operands: the unsigned ones read `C` (`a >= b` unsigned), the
+/// signed ones read `N == V` (`a >= b` signed), `Z` is `a == b`. Written as
+/// comparisons rather than reconstructed NZCV bits because the comparisons are
+/// what the flags MEAN and are far harder to get subtly wrong.
+fn cmp_cond_holds(cond: Condition, a: u32, b: u32) -> bool {
+    let (sa, sb) = (a as i32, b as i32);
+    match cond {
+        Condition::EQ => a == b,
+        Condition::NE => a != b,
+        Condition::LO => a < b,
+        Condition::HS => a >= b,
+        Condition::HI => a > b,
+        Condition::LS => a <= b,
+        Condition::LT => sa < sb,
+        Condition::GE => sa >= sb,
+        Condition::GT => sa > sb,
+        Condition::LE => sa <= sb,
+    }
+}
+
+/// #846 — the analysis that lifts the [`Lt32Facts`] ceiling: a bounded
+/// CONCRETE evaluation of the straight-line prefix, over the finite value set
+/// of ONE masked seed.
+///
+/// The two residual gpio-thin masks are the STM32 CRL/CRH idiom
+/// `sel ? p*4 : p*4 - 32` where `p = pin & 0xf` and `sel = (p < 8)`. The
+/// result is `< 32` on both arms, but only through the CORRELATION between
+/// `sel` and the range of `p*4`: no value-range domain can see it. `[0,60]`
+/// meet `[0,60] - 32` (which WRAPS — `p*4 - 32` is `0xFFFFFFE0` for `p = 0`)
+/// is all of `u32`, so [`Lt32Facts`] correctly declines and keeps the mask.
+///
+/// This evaluator sidesteps the relational reasoning entirely by making the
+/// correlation CONCRETE. `p = pin & 0xf` can only take the 16 submask values
+/// of `0xf` whatever `pin` is; evaluate the prefix once per value and the
+/// `sel` boolean and the `p*4` arm are computed TOGETHER in each case, so the
+/// impossible combination (`sel = 1` with `p*4 >= 32`) is never considered.
+/// Both arms land in `[0,28]` in all 16 cases, and `< 32` follows.
+///
+/// - **Abstraction.** Each register and each `[SP, #off]` frame slot maps to
+///   either ⊤ (absent — any value) or a vector of one CONCRETE value per case.
+///   Every modeled op computes exact wrapping 32-bit semantics per case; every
+///   op that is NOT modeled exactly drops its results to ⊤. So the value set
+///   this computes is a SUPERSET of the reachable one, and "every case `< 32`"
+///   implies "always `< 32`" — the #682 invariant, discharged by enumeration
+///   instead of by dataflow.
+/// - **Seed.** Exactly ONE symbolic seed: the first `and rd, rX, #K` whose
+///   input `rX` is ⊤ and whose mask has at most six set bits. `rd` is then
+///   bound to the `2^popcount(K)` submasks of `K`. Everything else in the
+///   chain must be a compile-time constant or ⊤. A second such `and` is NOT
+///   seeded (its result is ⊤): the Cartesian product would multiply the case
+///   count and, more importantly, re-indexing every tracked vector at the
+///   second allocation is the one place a silent indexing bug could
+///   manufacture a wrong `< 32` verdict. Documented precision limit, not a
+///   soundness one.
+/// - **Straight-line prefix only.** The walk STOPS at the first label or
+///   branch of any kind. A value computed over `[0, j)` is then the value at
+///   `j` on the only path that reaches `j`: with no label in the prefix
+///   nothing can jump into it, so `j` is reachable only by falling through
+///   from entry. Calls are NOT stoppers — they return inline. (Belt and
+///   braces: labels and branches are also not modeled ops, so they drop every
+///   register and slot to ⊤ anyway. Either guard alone suffices, which is why
+///   no single-guard mutation reddens the merge-point test.)
+/// - **Calls.** A call drops every REGISTER to ⊤ but PRESERVES the tracked
+///   `[SP, #off]` slots. That is the AAPCS frame premise synth's own register
+///   allocator already depends on everywhere it spills across a call (the
+///   gpio seed is spilled at `[sp,#0]` before the `mmio_read32` call and
+///   reloaded after it): a callee may not write its caller's frame. Any store
+///   this evaluator cannot place exactly — a non-`SP` base, a register offset,
+///   a sub-word store, an `SP` adjustment — drops ALL slots, since it may
+///   alias any of them.
+/// - **R12.** Encoder scratch, and the register whose defining `and` this very
+///   pass deletes. Its value is kept for EXACTLY the one instruction that
+///   follows its def (the adjacent shift, whose value the rewrite preserves)
+///   and dropped immediately after — so no conclusion can rest on an R12 def
+///   that is no longer in the stream.
+struct MaskedSeedEval {
+    /// Number of enumerated cases; 1 until the seed is allocated.
+    cases: usize,
+    /// True once the single symbolic seed has been allocated.
+    seeded: bool,
+    /// Known register values; an ABSENT register is ⊤.
+    regs: BTreeMap<Reg, Cases>,
+    /// Known `[SP, #off]` frame-slot values; an ABSENT offset is ⊤.
+    slots: BTreeMap<i32, Cases>,
+    /// `(lhs, rhs)` of the IMMEDIATELY preceding fully-known `Cmp`, the only
+    /// flag producer this evaluator trusts. Cleared by every other
+    /// instruction — `Add`/`Mvn`/`Sub` really do encode as the flag-setting
+    /// `adds`/`mvns`/`subs` forms in Thumb-2, so "the last `Cmp` still owns
+    /// the flags" is NOT a safe assumption across an arbitrary instruction.
+    flags: Option<(Cases, Cases)>,
+}
+
+/// Elementwise binary combination of two case vectors; ⊤ if either side is ⊤.
+fn cases_bin(a: Option<&Cases>, b: Option<&Cases>, f: impl Fn(u32, u32) -> u32) -> Option<Cases> {
+    let (a, b) = (a?, b?);
+    Some(a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect())
+}
+
+/// Elementwise unary map; ⊤ if the input is ⊤.
+fn cases_map(a: Option<&Cases>, f: impl Fn(u32) -> u32) -> Option<Cases> {
+    Some(a?.iter().map(|&x| f(x)).collect())
+}
+
+/// ARM register-controlled shift amount: the BOTTOM BYTE of `Rm` (`Rm<7:0>`),
+/// NOT `Rm & 31` — an amount of 32 or more shifts everything out.
+fn shift_amount(rm: u32) -> u32 {
+    rm & 0xff
+}
+
+impl MaskedSeedEval {
+    fn new() -> Self {
+        MaskedSeedEval {
+            cases: 1,
+            seeded: false,
+            regs: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            flags: None,
+        }
+    }
+
+    fn konst(&self, c: u32) -> Cases {
+        vec![c; self.cases]
+    }
+
+    fn op2(&self, op2: &Operand2) -> Option<Cases> {
+        match op2 {
+            // `c as u32` is the VALUE the IR names, whichever encoding the
+            // backend picks for it (`add #-4` may encode as `sub #4`; the
+            // wrapping arithmetic below is identical either way).
+            Operand2::Imm(c) => Some(self.konst(*c as u32)),
+            Operand2::Reg(r) => self.regs.get(r).cloned(),
+            Operand2::RegShift { .. } => None,
+        }
+    }
+
+    fn def(&mut self, rd: Reg, v: Option<Cases>) {
+        match v {
+            Some(v) => {
+                self.regs.insert(rd, v);
+            }
+            None => {
+                self.regs.remove(&rd);
+            }
+        }
+    }
+
+    fn kill_all(&mut self) {
+        self.regs.clear();
+        self.slots.clear();
+    }
+
+    /// Allocate the single symbolic seed: `rd = rX & k` with `rX` ⊤ binds `rd`
+    /// to the submasks of `k`. Returns false (leaving `rd` ⊤) if a seed is
+    /// already allocated or `k` is too wide to enumerate.
+    fn seed(&mut self, rd: Reg, k: u32) -> bool {
+        if self.seeded || k.count_ones() > 6 {
+            return false;
+        }
+        let vals = submasks(k);
+        if vals.len() > SEED_CASES_MAX {
+            return false;
+        }
+        // `cases == 1` before seeding (there is only ever one seed), so every
+        // tracked vector is a single value broadcast across the new cases —
+        // no re-indexing, nothing to get wrong.
+        let n = vals.len();
+        for v in self.regs.values_mut() {
+            *v = vec![v[0]; n];
+        }
+        for v in self.slots.values_mut() {
+            *v = vec![v[0]; n];
+        }
+        self.cases = n;
+        self.seeded = true;
+        self.regs.insert(rd, vals);
+        true
+    }
+
+    /// The tracked value of a load's address, if it names a frame slot we
+    /// track exactly: `[SP, #off]`, `off >= 0`, no register offset.
+    fn slot_of(addr: &MemAddr) -> Option<i32> {
+        (addr.base == Reg::SP && addr.offset_reg.is_none() && addr.offset >= 0)
+            .then_some(addr.offset)
+    }
+
+    /// Apply one instruction. See the struct doc for the soundness argument
+    /// behind each tier: modeled (exact), call (registers ⊤, slots kept),
+    /// anything else (registers AND slots ⊤).
+    fn step(&mut self, op: &ArmOp) {
+        use ArmOp::*;
+        // Flags are trusted for EXACTLY the instruction that follows the `Cmp`
+        // that set them.
+        let flags = self.flags.take();
+        // A modeled op that targets SP/PC/LR is not modeled after all: an SP
+        // change re-bases every tracked slot offset, and a PC/LR write is
+        // control flow.
+        let special = |rd: &Reg| matches!(rd, Reg::SP | Reg::PC | Reg::LR);
+        match op {
+            // --- flags only ---
+            Cmp { rn, op2 } => {
+                if let (Some(a), Some(b)) = (self.regs.get(rn).cloned(), self.op2(op2)) {
+                    self.flags = Some((a, b));
+                }
+            }
+            // Writes flags, no register or memory: leaves flags ⊤ (already
+            // taken above), everything else untouched.
+            Cmn { .. } | Nop => {}
+            // --- flag consumers ---
+            SetCond { rd, cond } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = flags.map(|(a, b)| {
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(&x, &y)| u32::from(cmp_cond_holds(*cond, x, y)))
+                        .collect()
+                });
+                self.def(*rd, v);
+            }
+            // `MOV{cond} rd, rm` inside an IT block: rd takes rm when the
+            // condition holds and keeps its OWN previous value otherwise, so
+            // both must be known (plus the flags) for the result to be.
+            SelectMove { rd, rm, cond } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = match (flags, self.regs.get(rd), self.regs.get(rm)) {
+                    (Some((a, b)), Some(old), Some(new)) => Some(
+                        (0..self.cases)
+                            .map(|i| {
+                                if cmp_cond_holds(*cond, a[i], b[i]) {
+                                    new[i]
+                                } else {
+                                    old[i]
+                                }
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+                self.def(*rd, v);
+            }
+            // --- binary data processing (exact wrapping 32-bit semantics) ---
+            And { rd, rn, op2 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let a = self.regs.get(rn).cloned();
+                // The SEED: masking a ⊤ value by a narrow immediate yields a
+                // small, EXACTLY enumerable value set.
+                if a.is_none()
+                    && let Operand2::Imm(k) = op2
+                    && *k >= 0
+                    && self.seed(*rd, *k as u32)
+                {
+                    return;
+                }
+                let b = self.op2(op2);
+                self.def(*rd, cases_bin(a.as_ref(), b.as_ref(), |x, y| x & y));
+            }
+            Orr { rd, rn, op2 }
+            | Eor { rd, rn, op2 }
+            | Add { rd, rn, op2 }
+            | Adds { rd, rn, op2 }
+            | Sub { rd, rn, op2 }
+            | Subs { rd, rn, op2 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let a = self.regs.get(rn).cloned();
+                let b = self.op2(op2);
+                let v = match op {
+                    Orr { .. } => cases_bin(a.as_ref(), b.as_ref(), |x, y| x | y),
+                    Eor { .. } => cases_bin(a.as_ref(), b.as_ref(), |x, y| x ^ y),
+                    Add { .. } | Adds { .. } => {
+                        cases_bin(a.as_ref(), b.as_ref(), u32::wrapping_add)
+                    }
+                    _ => cases_bin(a.as_ref(), b.as_ref(), u32::wrapping_sub),
+                };
+                self.def(*rd, v);
+            }
+            Mul { rd, rn, rm } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = cases_bin(self.regs.get(rn), self.regs.get(rm), u32::wrapping_mul);
+                self.def(*rd, v);
+            }
+            // `RSB rd, rn, #imm` — the IR's own doc: `rd = imm - rn`.
+            Rsb { rd, rn, imm } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let imm = *imm;
+                let v = cases_map(self.regs.get(rn), |x| imm.wrapping_sub(x));
+                self.def(*rd, v);
+            }
+            // --- moves ---
+            Mov { rd, op2 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = self.op2(op2);
+                self.def(*rd, v);
+            }
+            Mvn { rd, op2 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = cases_map(self.op2(op2).as_ref(), |x| !x);
+                self.def(*rd, v);
+            }
+            // MOVW zero-extends imm16 into the whole register.
+            Movw { rd, imm16 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = self.konst(u32::from(*imm16));
+                self.def(*rd, Some(v));
+            }
+            // MOVT is read-modify-write: it replaces the TOP half and keeps
+            // the bottom, so the PRIOR value must be known (never defaulted).
+            Movt { rd, imm16 } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let hi = u32::from(*imm16) << 16;
+                let v = cases_map(self.regs.get(rd), |x| (x & 0xffff) | hi);
+                self.def(*rd, v);
+            }
+            // --- shifts ---
+            // Immediate shifts only for amounts 1..=31: `#0` is the imm5
+            // pitfall (`LSR/ASR #0` encodes shift-by-32), so it is declined.
+            Lsl { rd, rn, shift }
+            | Lsr { rd, rn, shift }
+            | Asr { rd, rn, shift }
+            | Ror { rd, rn, shift } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let s = *shift;
+                let v = if (1..32).contains(&s) {
+                    cases_map(self.regs.get(rn), |x| match op {
+                        Lsl { .. } => x << s,
+                        Lsr { .. } => x >> s,
+                        Asr { .. } => ((x as i32) >> s) as u32,
+                        _ => x.rotate_right(s),
+                    })
+                } else {
+                    None
+                };
+                self.def(*rd, v);
+            }
+            // Register-controlled shifts: the amount is `Rm<7:0>` and an
+            // amount >= 32 shifts the value out entirely (all-sign for ASR).
+            LslReg { rd, rn, rm }
+            | LsrReg { rd, rn, rm }
+            | AsrReg { rd, rn, rm }
+            | RorReg { rd, rn, rm } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = cases_bin(self.regs.get(rn), self.regs.get(rm), |x, m| {
+                    let n = shift_amount(m);
+                    match op {
+                        LslReg { .. } => {
+                            if n >= 32 {
+                                0
+                            } else {
+                                x << n
+                            }
+                        }
+                        LsrReg { .. } => {
+                            if n >= 32 {
+                                0
+                            } else {
+                                x >> n
+                            }
+                        }
+                        AsrReg { .. } => {
+                            if n >= 32 {
+                                ((x as i32) >> 31) as u32
+                            } else {
+                                ((x as i32) >> n) as u32
+                            }
+                        }
+                        // ROR by `n` is ROR by `n mod 32`; `rotate_right`
+                        // already reduces, so `n >= 32` needs no special case.
+                        _ => x.rotate_right(n),
+                    }
+                });
+                self.def(*rd, v);
+            }
+            // --- extends ---
+            Uxtb { rd, rm } | Uxth { rd, rm } | Sxtb { rd, rm } | Sxth { rd, rm } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = cases_map(self.regs.get(rm), |x| match op {
+                    Uxtb { .. } => x & 0xff,
+                    Uxth { .. } => x & 0xffff,
+                    Sxtb { .. } => x as u8 as i8 as i32 as u32,
+                    _ => x as u16 as i16 as i32 as u32,
+                });
+                self.def(*rd, v);
+            }
+            // --- memory ---
+            Ldr { rd, addr } => {
+                if special(rd) {
+                    self.kill_all();
+                    return;
+                }
+                let v = Self::slot_of(addr).and_then(|off| self.slots.get(&off).cloned());
+                self.def(*rd, v);
+            }
+            Str { rd, addr } => match Self::slot_of(addr) {
+                Some(off) => match self.regs.get(rd).cloned() {
+                    Some(v) => {
+                        self.slots.insert(off, v);
+                    }
+                    None => {
+                        self.slots.remove(&off);
+                    }
+                },
+                // A store whose address we cannot place exactly may alias ANY
+                // tracked slot.
+                None => self.slots.clear(),
+            },
+            // --- calls: registers ⊤, our own frame slots preserved (AAPCS) ---
+            Bl { .. } | Blx { .. } | Call { .. } | CallIndirect { .. } => self.regs.clear(),
+            // --- everything else: may write any register AND any memory ---
+            _ => self.kill_all(),
+        }
+    }
+}
+
+/// Does `op` end the straight-line prefix the [`MaskedSeedEval`] may reason
+/// over? Any label (a merge another path can arrive at) or any branch.
+fn ends_straight_line_prefix(op: &ArmOp) -> bool {
+    use ArmOp::*;
+    matches!(
+        op,
+        Label { .. }
+            | B { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | BrTable { .. }
+            | Bx { .. }
+    ) || is_return_terminator(op)
+}
+
+/// #846 — the instruction indices at which a #682 mask `and r12, rK, #31` has
+/// its amount `rK` proven `< 32` by [`MaskedSeedEval`] over the straight-line
+/// prefix. A single forward walk: cost is linear in the stream, not quadratic
+/// in the number of mask sites.
+fn masked_seed_lt32_sites(instrs: &[ArmInstruction]) -> BTreeSet<usize> {
+    let mut sites = BTreeSet::new();
+    let mut ev = MaskedSeedEval::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if ends_straight_line_prefix(&ins.op) {
+            break;
+        }
+        if let ArmOp::And {
+            rd: Reg::R12,
+            rn,
+            op2: Operand2::Imm(31),
+        } = &ins.op
+            && *rn != Reg::R12
+            && ev.regs.get(rn).is_some_and(|v| v.iter().all(|&x| x < 32))
+        {
+            sites.insert(i);
+        }
+        ev.step(&ins.op);
+        // R12's value survives for exactly the next instruction (the adjacent
+        // shift). See the struct doc.
+        if !matches!(ins.op, ArmOp::And { rd: Reg::R12, .. }) {
+            ev.regs.remove(&Reg::R12);
+        }
+    }
+    sites
+}
+
+/// #846 phase 2 — drop the #682 masks that [`masked_seed_lt32_sites`] proved
+/// redundant, rewriting each adjacent shift to consume the amount register
+/// directly (exactly the pattern-B rewrite, on a bound proven by enumeration
+/// instead of by dataflow).
+///
+/// Runs on the phase-1 OUTPUT, not the original stream: phase 1 deletes `movw`
+/// constants it proved dead, and analysing a stream that still contains them
+/// could rest a conclusion on a def that will not be in the final code.
+fn elide_masked_seed_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let sites = masked_seed_lt32_sites(instrs);
+    if sites.is_empty() {
+        return (instrs.to_vec(), 0);
+    }
+    let mut out = instrs.to_vec();
+    let mut drop = vec![false; instrs.len()];
+    let mut elisions = 0usize;
+    for j in sites {
+        if j + 1 >= out.len() {
+            continue;
+        }
+        let ArmOp::And {
+            rd: Reg::R12,
+            rn: k,
+            op2: Operand2::Imm(31),
+        } = out[j].op
+        else {
+            continue;
+        };
+        // The adjacent shift must consume R12 as its AMOUNT (the #682 pair is
+        // emitted as a unit); `rn != R12` keeps the shifted VALUE independent
+        // of the mask we are deleting.
+        let rewritten = match &out[j + 1].op {
+            ArmOp::LslReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => ArmOp::LslReg {
+                rd: *rd,
+                rn: *rn,
+                rm: k,
+            },
+            ArmOp::LsrReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => ArmOp::LsrReg {
+                rd: *rd,
+                rn: *rn,
+                rm: k,
+            },
+            ArmOp::AsrReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => ArmOp::AsrReg {
+                rd: *rd,
+                rn: *rn,
+                rm: k,
+            },
+            _ => continue,
+        };
+        out[j + 1].op = rewritten;
+        drop[j] = true;
+        elisions += 1;
+    }
+    if elisions == 0 {
+        return (out, 0);
+    }
+    let kept: Vec<ArmInstruction> = out
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop[*i])
+        .map(|(_, ins)| ins)
+        .collect();
+    (kept, elisions)
+}
+
 /// #686 — elide the #682 mod-32 shift-amount mask when the amount is
 /// STATICALLY provably `< 32` at the shift.
 ///
@@ -1473,7 +2080,23 @@ impl Lt32Facts {
 /// Branch-offset safety: removal/rewrite-only, run BEFORE
 /// `resolve_label_branches` like [`fold_immediate_shifts`]. Pure function;
 /// the wiring is flag-gated in the backend (`SYNTH_SHIFT_MASK_ELIDE`).
+///
+/// Two phases. Phase 1 (below) is the value-range one: patterns A and B plus
+/// the [`Lt32Facts`] cross-block upgrade. Phase 2
+/// ([`elide_masked_seed_masks`], #846) is the RELATIONAL one — a bounded
+/// concrete evaluation over one masked seed's finite value set, which proves
+/// the branch-correlated `sel ? p*4 : p*4-32` CRL/CRH shape that no value-range
+/// domain can. It runs on phase 1's OUTPUT so no conclusion can rest on a
+/// `movw` phase 1 deleted.
 pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let (phase1, n1) = elide_shift_masks_ranges(instrs);
+    let (phase2, n2) = elide_masked_seed_masks(&phase1);
+    (phase2, n1 + n2)
+}
+
+/// Phase 1 of [`elide_shift_masks`]: the value-range patterns (A, B, and the
+/// [`Lt32Facts`] cross-block B).
+fn elide_shift_masks_ranges(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     #[derive(Clone, Copy)]
     enum ShiftKind {
         Lsl,
@@ -9973,6 +10596,373 @@ mod tests {
         seq.push(ret());
         let (_, n) = elide_shift_masks(&seq);
         assert_eq!(n, 0, "unmodeled control flow ⇒ whole-function decline");
+    }
+
+    // ---- elide_shift_masks phase 2: masked-seed evaluation (#846) ----
+
+    fn sp_slot(offset: i32) -> MemAddr {
+        MemAddr {
+            base: Reg::SP,
+            offset,
+            offset_reg: None,
+        }
+    }
+
+    /// The REAL gpio-thin CRL/CRH shape, transcribed from the shipped
+    /// `gpio_configure` stream (`scripts/repro/gpio_thin_846.loom.wasm`):
+    ///
+    /// ```text
+    /// and r7,r5,#seed_mask   ; p = pin & mask          <- the seed
+    /// str r7,[sp,#0]         ; spilled across the call
+    /// cmp r7,#8 ; setcc lo   ; sel = (p < 8)
+    /// str r0,[sp,#4]
+    /// bl  f                  ; mmio_read32 — regs die, OUR frame survives
+    /// ldr r6,[sp,#0]         ; reload p
+    /// lsl r8,r6,#2           ; p*4
+    /// movw r2,#31 ; mvn r2,r2 ; add r3,r8,r2   ; p*4 - 32  (WRAPS for p < 8)
+    /// ldr r6,[sp,#4] ; cmp r6,#0 ; movne r3,r8 ; sel ? p*4 : p*4-32
+    /// and r12,r3,#31 ; lsl r4,r1,r12           ; the #682 mask under test
+    /// ```
+    ///
+    /// `correct_arm` false drops the `-32` correction, leaving the raw `p*4`
+    /// (which reaches 60 and is NOT `< 32`).
+    fn crl_crh_shape(seed_mask: i32, correct_arm: bool) -> Vec<ArmInstruction> {
+        let mut seq = vec![
+            masking_and(Reg::R7, Reg::R5, seed_mask),
+            ins(ArmOp::Str {
+                rd: Reg::R7,
+                addr: sp_slot(0),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R7,
+                op2: Operand2::Imm(8),
+            }),
+            ins(ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: Condition::LO,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: sp_slot(4),
+            }),
+            ins(ArmOp::Bl {
+                label: "f".to_string(),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R6,
+                addr: sp_slot(0),
+            }),
+            ins(ArmOp::Lsl {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                shift: 2,
+            }),
+        ];
+        if correct_arm {
+            seq.extend([
+                ins(ArmOp::Movw {
+                    rd: Reg::R2,
+                    imm16: 31,
+                }),
+                ins(ArmOp::Mvn {
+                    rd: Reg::R2,
+                    op2: Operand2::Reg(Reg::R2),
+                }),
+                ins(ArmOp::Add {
+                    rd: Reg::R3,
+                    rn: Reg::R8,
+                    op2: Operand2::Reg(Reg::R2),
+                }),
+                ins(ArmOp::Ldr {
+                    rd: Reg::R6,
+                    addr: sp_slot(4),
+                }),
+                ins(ArmOp::Cmp {
+                    rn: Reg::R6,
+                    op2: Operand2::Imm(0),
+                }),
+                ins(ArmOp::SelectMove {
+                    rd: Reg::R3,
+                    rm: Reg::R8,
+                    cond: Condition::NE,
+                }),
+            ]);
+        } else {
+            seq.push(ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R8),
+            }));
+        }
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        seq
+    }
+
+    #[test]
+    fn elide_846_crl_crh_correlated_select_is_proven() {
+        // The headline: `sel ? p*4 : p*4-32` with `p = pin & 0xf` is `< 32` on
+        // BOTH arms, but only through the correlation between `sel` and the
+        // range of `p*4` — `p*4-32` WRAPS to 0xFFFFFFE0 for p = 0, so no
+        // value-range domain can prove it (`Lt32Facts` correctly declines).
+        // Enumerating the 16 submasks of 0xf computes `sel` and `p*4` TOGETHER
+        // in each case, so the impossible combination never arises.
+        let seq = crl_crh_shape(15, true);
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "the correlated bound is proven by enumeration");
+        assert_eq!(out.len(), seq.len() - 1, "only the #682 mask is removed");
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::LslReg { rm: Reg::R3, .. })),
+            "the shift consumes the proven amount register directly"
+        );
+        assert!(
+            !out.iter()
+                .any(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. })),
+            "no #682 mask survives"
+        );
+    }
+
+    #[test]
+    fn elide_846_wider_seed_mask_keeps_the_mask() {
+        // Same shape, `p = pin & 0x3f`: `p*4` now reaches 252 and the `-32`
+        // correction only brings `p >= 8` down to [0, 220] — NOT `< 32`. The
+        // enumeration finds the counterexample cases and the mask stays.
+        let (_, n) = elide_shift_masks(&crl_crh_shape(63, true));
+        assert_eq!(n, 0, "a 6-bit pin index is not bounded by 32 after *4");
+    }
+
+    #[test]
+    fn elide_846_crl_crh_without_the_correction_arm_keeps_the_mask() {
+        // Drop the `-32` arm: the amount is the raw `p*4 ∈ [0,60]`, which is
+        // `>= 32` for p >= 8. The mask is load-bearing and stays.
+        let (_, n) = elide_shift_masks(&crl_crh_shape(15, false));
+        assert_eq!(n, 0, "uncorrected p*4 reaches 60 — mask required");
+    }
+
+    #[test]
+    fn elide_846_raw_param_amount_keeps_the_mask() {
+        // The THIRD gpio-thin mask, and the one that can never be elided:
+        // `ldr r6,[sp,#36]` reloads a RAW param (no store to that slot in the
+        // stream, so it is ⊤), `lsl r8,r6,#2` is then ⊤, and `mode << 2 >= 32`
+        // for mode >= 8. Eliding this IS the #682 miscompile.
+        //
+        // This is the permanent form of a negative control that was also run
+        // end-to-end: force-eliding it takes gpio-thin to the pre-#682 490 B
+        // and turns `i32_shift_mask_682_differential.py` red (6 mismatches).
+        let seq = vec![
+            ins(ArmOp::Ldr {
+                rd: Reg::R6,
+                addr: sp_slot(36),
+            }),
+            ins(ArmOp::Lsl {
+                rd: Reg::R3,
+                rn: Reg::R6,
+                shift: 2,
+            }),
+            mask_pair(Reg::R3, lsrreg)[0].clone(),
+            mask_pair(Reg::R3, lsrreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "an unbounded param shifted left by 2 needs the mask");
+    }
+
+    #[test]
+    fn elide_846_non_sp_store_between_spill_and_reload_keeps_the_mask() {
+        // A store this evaluator cannot place exactly may alias ANY tracked
+        // slot, so it drops all of them: the reload of the spilled seed is ⊤
+        // and the correlated proof collapses.
+        let mut seq = crl_crh_shape(15, true);
+        let reload = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::Ldr { rd: Reg::R6, .. }))
+            .expect("the shape reloads the spilled seed");
+        seq.insert(
+            reload,
+            ins(ArmOp::Str {
+                rd: Reg::R9,
+                addr: MemAddr {
+                    base: Reg::R11,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "an unplaceable store kills every frame-slot fact");
+    }
+
+    #[test]
+    fn elide_846_subword_store_to_sp_keeps_the_mask() {
+        // `strb` can partially overwrite a tracked word slot. It is not
+        // modeled, so it drops every register AND every slot.
+        let mut seq = crl_crh_shape(15, true);
+        let reload = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::Ldr { rd: Reg::R6, .. }))
+            .expect("the shape reloads the spilled seed");
+        seq.insert(
+            reload,
+            ins(ArmOp::Strb {
+                rd: Reg::R9,
+                addr: sp_slot(0),
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a sub-word store to the frame kills the slot facts");
+    }
+
+    #[test]
+    fn elide_846_flags_not_from_the_adjacent_cmp_keep_the_mask() {
+        // The evaluator trusts flags for EXACTLY the instruction after the
+        // `Cmp` that set them — `Add`/`Sub`/`Mvn` really do encode as the
+        // flag-setting forms, so an intervening instruction means the
+        // condition is no longer decidable and the select result is ⊤.
+        let mut seq = crl_crh_shape(15, true);
+        let sel = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::SelectMove { .. }))
+            .expect("the shape has the CRL/CRH select");
+        seq.insert(
+            sel,
+            ins(ArmOp::Movw {
+                rd: Reg::R9,
+                imm16: 1,
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "flags one instruction stale ⇒ select is unknown");
+    }
+
+    #[test]
+    fn elide_846_only_one_seed_is_enumerated() {
+        // Documented PRECISION limit (not a soundness one): a second
+        // masked-unknown is left ⊤ rather than Cartesian-producted, because
+        // re-indexing every tracked vector at a second allocation is where a
+        // silent indexing bug could manufacture a wrong `< 32` verdict.
+        // `2 * (r2 & 15) <= 30` would be provable with two seeds; with one it
+        // is not, and the mask stays.
+        let seq = vec![
+            masking_and(Reg::R3, Reg::R0, 15), // seed
+            masking_and(Reg::R5, Reg::R2, 15), // second masked-unknown ⇒ ⊤
+            ins(ArmOp::Lsl {
+                rd: Reg::R6,
+                rn: Reg::R5,
+                shift: 1,
+            }),
+            mask_pair(Reg::R6, lslreg)[0].clone(),
+            mask_pair(Reg::R6, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "only the first masked-unknown is enumerated");
+    }
+
+    #[test]
+    fn elide_846_label_before_the_site_ends_the_straight_line_prefix() {
+        // The evaluator's soundness rests on `j` being reachable ONLY by
+        // falling through from entry, which holds because no label sits in
+        // `[0, j)`. Put one there and the walk stops — and nothing else can
+        // prove this shape either, so the mask stays.
+        //
+        // HONEST NOTE on what this test does and does not pin: a merge point
+        // is guarded TWICE — by `ends_straight_line_prefix` (the stated
+        // argument) and, independently, by `Label` falling into the
+        // unmodeled-op arm that drops every register and slot to ⊤. A
+        // mutation removing EITHER guard alone stays green here, because the
+        // other still keeps the mask. So this pins the CLASS ("a merge before
+        // the site keeps the mask"), not the specific guard.
+        let mut seq = crl_crh_shape(15, true);
+        let mask = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. }))
+            .expect("the shape has the #682 mask");
+        seq.insert(
+            mask,
+            ins(ArmOp::Label {
+                name: "L".to_string(),
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a merge point ends the straight-line prefix");
+    }
+
+    #[test]
+    fn elide_846_register_shift_amount_is_the_bottom_byte_not_five_bits() {
+        // ARM's register-controlled shift amount is `Rm<7:0>`, NOT `Rm & 31`:
+        // an amount of 32 or more shifts the value OUT (result 0). Modeling it
+        // as `& 31` would compute 256 here (>= 32, mask kept), so this test
+        // fires only under the correct semantics.
+        //
+        //   and r3,r2,#0x20   -> {0, 32}
+        //   add r7,r3,#32     -> {32, 64}   (both >= 32)
+        //   movw r6,#256
+        //   lsl r5,r6,r7      -> {0, 0}     under ARM; {256, 256} under `& 31`
+        let seq = vec![
+            masking_and(Reg::R3, Reg::R2, 0x20),
+            ins(ArmOp::Add {
+                rd: Reg::R7,
+                rn: Reg::R3,
+                op2: Operand2::Imm(32),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R6,
+                imm16: 256,
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R5,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            mask_pair(Reg::R5, lslreg)[0].clone(),
+            mask_pair(Reg::R5, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "shift-out by an amount >= 32 yields 0, not x << 0");
+    }
+
+    #[test]
+    fn elide_846_movt_is_read_modify_write() {
+        // MOVT replaces the TOP half and KEEPS the bottom, so the prior value
+        // must be known and is never defaulted to 0. `movw #8; movt #0` is 8
+        // (< 32, elide); `movw #8; movt #1` is 0x10008 (mask stays); and
+        // `movw #40; movt #0` is 40 — the case that pins the RMW itself, since
+        // assuming a zero prior would compute 0 and elide UNSOUNDLY. Neither
+        // is reachable by the phase-1 patterns — `Movt` is an RMW def they
+        // both decline on.
+        for (lo, hi, expect) in [(8u16, 0u16, 1usize), (8, 1, 0), (40, 0, 0)] {
+            let seq = vec![
+                ins(ArmOp::Movw {
+                    rd: Reg::R3,
+                    imm16: lo,
+                }),
+                ins(ArmOp::Movt {
+                    rd: Reg::R3,
+                    imm16: hi,
+                }),
+                mask_pair(Reg::R3, lslreg)[0].clone(),
+                mask_pair(Reg::R3, lslreg)[1].clone(),
+                ret(),
+            ];
+            let (_, n) = elide_shift_masks(&seq);
+            assert_eq!(n, expect, "movt #{hi} on a movw #{lo} base");
+        }
+        // And the case that pins "never DEFAULT the prior": a `movt` onto a ⊤
+        // register must stay ⊤. Assuming a zero prior would compute
+        // `(0 & 0xffff) | 0 = 0`, conclude `< 32`, and elide a mask whose
+        // amount is entirely unknown — an unsound elision from thin air.
+        let seq = vec![
+            ins(ArmOp::Movt {
+                rd: Reg::R3,
+                imm16: 0,
+            }),
+            mask_pair(Reg::R3, lslreg)[0].clone(),
+            mask_pair(Reg::R3, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "movt onto an unknown prior stays unknown");
     }
 
     // ---- fold_uxth (#428) ----
