@@ -167,7 +167,7 @@ artifacts:
       RESIDUAL, named not hidden: the `None` branch of
       `current_func_param_count` still uses the unsound heuristic. Unreachable
       from the CLI, reachable via the direct `compile_function` API.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [soundness, miscompile, information-disclosure, rv32, arm, found-by-another-lane]
     links:
@@ -499,7 +499,7 @@ artifacts:
       changes SHIPPING BYTES, so the frozen anchors (10/10 bit-identical) and the
       gpio differential gate it — a smaller wrong answer is a regression, not a
       win. Carries a before/after number or it is not done.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [optimization, code-size, gale-driver]
     links:
@@ -534,7 +534,7 @@ artifacts:
       coverage".
       Done when the file's covered fraction rises on real assertions and the
       `project` threshold in codecov.yml can be ratcheted up from 80 %.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [coverage, testing, measured]
     links:
@@ -561,7 +561,39 @@ artifacts:
       cannot be established from evidence stays unassigned rather than guessed —
       a wrong `verified` in the ledger is worse than a missing one, which is the
       #911 lesson applied to planning data.
-    status: proposed
+      OUTCOME (v0.57): the back-fill was NOT performed, because the prescribed
+      derivation is unsound — and the file supplied its own control case.
+      263 of 288 artifacts carry no `release:`. Deriving each from "the first tag
+      containing the artifact" runs cleanly (0 undecidable, 24 distinct tags) but
+      answers the WRONG QUESTION: it yields when an artifact ENTERED THE PLAN,
+      whereas rivet's `release:` means the release the work is TARGETED AT or
+      SHIPPED IN.
+      MEASURED COUNTER-EXAMPLE: `VCR-RA-001` is the ONE artifact in
+      verified-codegen-roadmap.yaml that already carries a `release:` — set by
+      hand to v0.24.0, the release its work shipped in. The mechanical rule
+      derives v0.11.30, the tag containing its introducing commit. They disagree,
+      and the hand-set value is correct. Applying the rule to the other 32
+      roadmap artifacts would have written 32 false entries, with the single
+      pre-existing correct value sitting beside them as the control disproving
+      it.
+      SCALE had it been applied blindly: 190 of the 263 resolve to v0.1.1, the
+      initial artifact import — the standing requirement base (architecture,
+      stakeholder/system requirements, component model, target platforms). Those
+      are not release-scoped work items; tagging them v0.1.1 would assert the
+      whole foundational base was targeted at the first tag, and would make
+      "what is in v0.1.1?" return 190 artifacts including work that shipped 40
+      releases later — exactly the corruption of the readiness query this
+      artifact exists to prevent.
+      DECISION, per this artifact's own guardrail: `release:` is a WORK-ITEM
+      field. Per-release plan artifacts carry it and already do. Standing
+      artifacts — the foundational base, and roadmap entries legitimately
+      spanning many releases — carry it only where the shipping release is
+      known, as VCR-RA-001 does. Their lack of `release:` is a JUSTIFIED state,
+      documented in docs/release-process.md, not an unfinished chore to re-file.
+      REMAINING: none for the back-fill. A genuinely useful follow-on is to set
+      `release:` on roadmap entries whose shipping release IS known from the
+      CHANGELOG — one at a time with evidence, never by sweep.
+    status: implemented
     release: v0.57
     tags: [planning, rivet, traceability]
     links:
@@ -592,7 +624,7 @@ artifacts:
       durable rationale for why synth (a compiler, not a Wasm component) is
       outside its scope — with the rationale in the loop's own terms so it stops
       being re-litigated every release.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [process, mcdc, recurring-na]
     links:
