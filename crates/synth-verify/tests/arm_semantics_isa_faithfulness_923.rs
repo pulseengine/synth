@@ -1355,6 +1355,42 @@ fn the_shipped_shift_and_rotate_lowerings_now_verify() {
     });
 }
 
+/// The sharpest instance, taken verbatim from the shipped table rather than
+/// paraphrased: `sel_dsl::generated::rule_i32_rotl` — a DEFAULT-ON, Rocq-proved
+/// selector rule (`VcrSelRules.rule_i32_rotl_correct`, Qed) — emits exactly
+/// `RSB rs, rm, #32` then `ROR rd, rn, rs`, and BOTH of those instructions were
+/// in the silently-dropped 87. The Rocq proof was never in question; the SMT
+/// model simply executed neither instruction, so its opinion of this rule was
+/// worth nothing in either direction.
+#[test]
+fn the_rocq_proved_shipped_rotl_rule_verifies_instruction_for_instruction() {
+    with_verification_context(|| {
+        // rd = R0, rn = R0 (the input), rm = R1 (the amount), rs = R2 scratch —
+        // the same shape `select_with_stack` instantiates, and the side
+        // condition `rs != rn` holds.
+        let shipped =
+            synth_synthesis::sel_dsl::generated::rule_i32_rotl(Reg::R0, Reg::R0, Reg::R1, Reg::R2)
+                .expect("side condition rs != rn holds for this instantiation");
+        assert!(
+            matches!(
+                shipped.as_slice(),
+                [ArmOp::Rsb { imm: 32, .. }, ArmOp::RorReg { .. }]
+            ),
+            "the shipped rule's shape changed; re-derive this test rather than \
+             loosening it: {shipped:?}"
+        );
+
+        let v = TranslationValidator::new();
+        assert!(
+            matches!(
+                v.verify_equivalence(&WasmOp::I32Rotl, &shipped),
+                Ok(ValidationResult::Verified)
+            ),
+            "the shipped Rocq-proved i32.rotl rule must verify against the ARM model"
+        );
+    });
+}
+
 /// The lowering that skips the mask stays rejected — and the counterexample is
 /// one only the `Rm<7:0>` model can find. `Rm = 0x4000_0080` has `Rm mod 32 =
 /// 0` (WASM: shift by zero, result `Rn`) but `Rm<7:0> = 128 >= 32` (ARM: result
