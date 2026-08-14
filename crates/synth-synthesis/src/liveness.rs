@@ -1501,7 +1501,10 @@ fn cmp_cond_holds(cond: Condition, a: u32, b: u32) -> bool {
 ///   branch of any kind. A value computed over `[0, j)` is then the value at
 ///   `j` on the only path that reaches `j`: with no label in the prefix
 ///   nothing can jump into it, so `j` is reachable only by falling through
-///   from entry. Calls are NOT stoppers — they return inline.
+///   from entry. Calls are NOT stoppers — they return inline. (Belt and
+///   braces: labels and branches are also not modeled ops, so they drop every
+///   register and slot to ⊤ anyway. Either guard alone suffices, which is why
+///   no single-guard mutation reddens the merge-point test.)
 /// - **Calls.** A call drops every REGISTER to ⊤ but PRESERVES the tracked
 ///   `[SP, #off]` slots. That is the AAPCS frame premise synth's own register
 ///   allocator already depends on everywhere it spills across a call (the
@@ -10585,6 +10588,373 @@ mod tests {
         seq.push(ret());
         let (_, n) = elide_shift_masks(&seq);
         assert_eq!(n, 0, "unmodeled control flow ⇒ whole-function decline");
+    }
+
+    // ---- elide_shift_masks phase 2: masked-seed evaluation (#846) ----
+
+    fn sp_slot(offset: i32) -> MemAddr {
+        MemAddr {
+            base: Reg::SP,
+            offset,
+            offset_reg: None,
+        }
+    }
+
+    /// The REAL gpio-thin CRL/CRH shape, transcribed from the shipped
+    /// `gpio_configure` stream (`scripts/repro/gpio_thin_846.loom.wasm`):
+    ///
+    /// ```text
+    /// and r7,r5,#seed_mask   ; p = pin & mask          <- the seed
+    /// str r7,[sp,#0]         ; spilled across the call
+    /// cmp r7,#8 ; setcc lo   ; sel = (p < 8)
+    /// str r0,[sp,#4]
+    /// bl  f                  ; mmio_read32 — regs die, OUR frame survives
+    /// ldr r6,[sp,#0]         ; reload p
+    /// lsl r8,r6,#2           ; p*4
+    /// movw r2,#31 ; mvn r2,r2 ; add r3,r8,r2   ; p*4 - 32  (WRAPS for p < 8)
+    /// ldr r6,[sp,#4] ; cmp r6,#0 ; movne r3,r8 ; sel ? p*4 : p*4-32
+    /// and r12,r3,#31 ; lsl r4,r1,r12           ; the #682 mask under test
+    /// ```
+    ///
+    /// `correct_arm` false drops the `-32` correction, leaving the raw `p*4`
+    /// (which reaches 60 and is NOT `< 32`).
+    fn crl_crh_shape(seed_mask: i32, correct_arm: bool) -> Vec<ArmInstruction> {
+        let mut seq = vec![
+            masking_and(Reg::R7, Reg::R5, seed_mask),
+            ins(ArmOp::Str {
+                rd: Reg::R7,
+                addr: sp_slot(0),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R7,
+                op2: Operand2::Imm(8),
+            }),
+            ins(ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: Condition::LO,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: sp_slot(4),
+            }),
+            ins(ArmOp::Bl {
+                label: "f".to_string(),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R6,
+                addr: sp_slot(0),
+            }),
+            ins(ArmOp::Lsl {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                shift: 2,
+            }),
+        ];
+        if correct_arm {
+            seq.extend([
+                ins(ArmOp::Movw {
+                    rd: Reg::R2,
+                    imm16: 31,
+                }),
+                ins(ArmOp::Mvn {
+                    rd: Reg::R2,
+                    op2: Operand2::Reg(Reg::R2),
+                }),
+                ins(ArmOp::Add {
+                    rd: Reg::R3,
+                    rn: Reg::R8,
+                    op2: Operand2::Reg(Reg::R2),
+                }),
+                ins(ArmOp::Ldr {
+                    rd: Reg::R6,
+                    addr: sp_slot(4),
+                }),
+                ins(ArmOp::Cmp {
+                    rn: Reg::R6,
+                    op2: Operand2::Imm(0),
+                }),
+                ins(ArmOp::SelectMove {
+                    rd: Reg::R3,
+                    rm: Reg::R8,
+                    cond: Condition::NE,
+                }),
+            ]);
+        } else {
+            seq.push(ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R8),
+            }));
+        }
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        seq
+    }
+
+    #[test]
+    fn elide_846_crl_crh_correlated_select_is_proven() {
+        // The headline: `sel ? p*4 : p*4-32` with `p = pin & 0xf` is `< 32` on
+        // BOTH arms, but only through the correlation between `sel` and the
+        // range of `p*4` — `p*4-32` WRAPS to 0xFFFFFFE0 for p = 0, so no
+        // value-range domain can prove it (`Lt32Facts` correctly declines).
+        // Enumerating the 16 submasks of 0xf computes `sel` and `p*4` TOGETHER
+        // in each case, so the impossible combination never arises.
+        let seq = crl_crh_shape(15, true);
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "the correlated bound is proven by enumeration");
+        assert_eq!(out.len(), seq.len() - 1, "only the #682 mask is removed");
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::LslReg { rm: Reg::R3, .. })),
+            "the shift consumes the proven amount register directly"
+        );
+        assert!(
+            !out.iter()
+                .any(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. })),
+            "no #682 mask survives"
+        );
+    }
+
+    #[test]
+    fn elide_846_wider_seed_mask_keeps_the_mask() {
+        // Same shape, `p = pin & 0x3f`: `p*4` now reaches 252 and the `-32`
+        // correction only brings `p >= 8` down to [0, 220] — NOT `< 32`. The
+        // enumeration finds the counterexample cases and the mask stays.
+        let (_, n) = elide_shift_masks(&crl_crh_shape(63, true));
+        assert_eq!(n, 0, "a 6-bit pin index is not bounded by 32 after *4");
+    }
+
+    #[test]
+    fn elide_846_crl_crh_without_the_correction_arm_keeps_the_mask() {
+        // Drop the `-32` arm: the amount is the raw `p*4 ∈ [0,60]`, which is
+        // `>= 32` for p >= 8. The mask is load-bearing and stays.
+        let (_, n) = elide_shift_masks(&crl_crh_shape(15, false));
+        assert_eq!(n, 0, "uncorrected p*4 reaches 60 — mask required");
+    }
+
+    #[test]
+    fn elide_846_raw_param_amount_keeps_the_mask() {
+        // The THIRD gpio-thin mask, and the one that can never be elided:
+        // `ldr r6,[sp,#36]` reloads a RAW param (no store to that slot in the
+        // stream, so it is ⊤), `lsl r8,r6,#2` is then ⊤, and `mode << 2 >= 32`
+        // for mode >= 8. Eliding this IS the #682 miscompile.
+        //
+        // This is the permanent form of a negative control that was also run
+        // end-to-end: force-eliding it takes gpio-thin to the pre-#682 490 B
+        // and turns `i32_shift_mask_682_differential.py` red (6 mismatches).
+        let seq = vec![
+            ins(ArmOp::Ldr {
+                rd: Reg::R6,
+                addr: sp_slot(36),
+            }),
+            ins(ArmOp::Lsl {
+                rd: Reg::R3,
+                rn: Reg::R6,
+                shift: 2,
+            }),
+            mask_pair(Reg::R3, lsrreg)[0].clone(),
+            mask_pair(Reg::R3, lsrreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "an unbounded param shifted left by 2 needs the mask");
+    }
+
+    #[test]
+    fn elide_846_non_sp_store_between_spill_and_reload_keeps_the_mask() {
+        // A store this evaluator cannot place exactly may alias ANY tracked
+        // slot, so it drops all of them: the reload of the spilled seed is ⊤
+        // and the correlated proof collapses.
+        let mut seq = crl_crh_shape(15, true);
+        let reload = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::Ldr { rd: Reg::R6, .. }))
+            .expect("the shape reloads the spilled seed");
+        seq.insert(
+            reload,
+            ins(ArmOp::Str {
+                rd: Reg::R9,
+                addr: MemAddr {
+                    base: Reg::R11,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "an unplaceable store kills every frame-slot fact");
+    }
+
+    #[test]
+    fn elide_846_subword_store_to_sp_keeps_the_mask() {
+        // `strb` can partially overwrite a tracked word slot. It is not
+        // modeled, so it drops every register AND every slot.
+        let mut seq = crl_crh_shape(15, true);
+        let reload = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::Ldr { rd: Reg::R6, .. }))
+            .expect("the shape reloads the spilled seed");
+        seq.insert(
+            reload,
+            ins(ArmOp::Strb {
+                rd: Reg::R9,
+                addr: sp_slot(0),
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a sub-word store to the frame kills the slot facts");
+    }
+
+    #[test]
+    fn elide_846_flags_not_from_the_adjacent_cmp_keep_the_mask() {
+        // The evaluator trusts flags for EXACTLY the instruction after the
+        // `Cmp` that set them — `Add`/`Sub`/`Mvn` really do encode as the
+        // flag-setting forms, so an intervening instruction means the
+        // condition is no longer decidable and the select result is ⊤.
+        let mut seq = crl_crh_shape(15, true);
+        let sel = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::SelectMove { .. }))
+            .expect("the shape has the CRL/CRH select");
+        seq.insert(
+            sel,
+            ins(ArmOp::Movw {
+                rd: Reg::R9,
+                imm16: 1,
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "flags one instruction stale ⇒ select is unknown");
+    }
+
+    #[test]
+    fn elide_846_only_one_seed_is_enumerated() {
+        // Documented PRECISION limit (not a soundness one): a second
+        // masked-unknown is left ⊤ rather than Cartesian-producted, because
+        // re-indexing every tracked vector at a second allocation is where a
+        // silent indexing bug could manufacture a wrong `< 32` verdict.
+        // `2 * (r2 & 15) <= 30` would be provable with two seeds; with one it
+        // is not, and the mask stays.
+        let seq = vec![
+            masking_and(Reg::R3, Reg::R0, 15), // seed
+            masking_and(Reg::R5, Reg::R2, 15), // second masked-unknown ⇒ ⊤
+            ins(ArmOp::Lsl {
+                rd: Reg::R6,
+                rn: Reg::R5,
+                shift: 1,
+            }),
+            mask_pair(Reg::R6, lslreg)[0].clone(),
+            mask_pair(Reg::R6, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "only the first masked-unknown is enumerated");
+    }
+
+    #[test]
+    fn elide_846_label_before_the_site_ends_the_straight_line_prefix() {
+        // The evaluator's soundness rests on `j` being reachable ONLY by
+        // falling through from entry, which holds because no label sits in
+        // `[0, j)`. Put one there and the walk stops — and nothing else can
+        // prove this shape either, so the mask stays.
+        //
+        // HONEST NOTE on what this test does and does not pin: a merge point
+        // is guarded TWICE — by `ends_straight_line_prefix` (the stated
+        // argument) and, independently, by `Label` falling into the
+        // unmodeled-op arm that drops every register and slot to ⊤. A
+        // mutation removing EITHER guard alone stays green here, because the
+        // other still keeps the mask. So this pins the CLASS ("a merge before
+        // the site keeps the mask"), not the specific guard.
+        let mut seq = crl_crh_shape(15, true);
+        let mask = seq
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::And { rd: Reg::R12, .. }))
+            .expect("the shape has the #682 mask");
+        seq.insert(
+            mask,
+            ins(ArmOp::Label {
+                name: "L".to_string(),
+            }),
+        );
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "a merge point ends the straight-line prefix");
+    }
+
+    #[test]
+    fn elide_846_register_shift_amount_is_the_bottom_byte_not_five_bits() {
+        // ARM's register-controlled shift amount is `Rm<7:0>`, NOT `Rm & 31`:
+        // an amount of 32 or more shifts the value OUT (result 0). Modeling it
+        // as `& 31` would compute 256 here (>= 32, mask kept), so this test
+        // fires only under the correct semantics.
+        //
+        //   and r3,r2,#0x20   -> {0, 32}
+        //   add r7,r3,#32     -> {32, 64}   (both >= 32)
+        //   movw r6,#256
+        //   lsl r5,r6,r7      -> {0, 0}     under ARM; {256, 256} under `& 31`
+        let seq = vec![
+            masking_and(Reg::R3, Reg::R2, 0x20),
+            ins(ArmOp::Add {
+                rd: Reg::R7,
+                rn: Reg::R3,
+                op2: Operand2::Imm(32),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R6,
+                imm16: 256,
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R5,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            mask_pair(Reg::R5, lslreg)[0].clone(),
+            mask_pair(Reg::R5, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1, "shift-out by an amount >= 32 yields 0, not x << 0");
+    }
+
+    #[test]
+    fn elide_846_movt_is_read_modify_write() {
+        // MOVT replaces the TOP half and KEEPS the bottom, so the prior value
+        // must be known and is never defaulted to 0. `movw #8; movt #0` is 8
+        // (< 32, elide); `movw #8; movt #1` is 0x10008 (mask stays); and
+        // `movw #40; movt #0` is 40 — the case that pins the RMW itself, since
+        // assuming a zero prior would compute 0 and elide UNSOUNDLY. Neither
+        // is reachable by the phase-1 patterns — `Movt` is an RMW def they
+        // both decline on.
+        for (lo, hi, expect) in [(8u16, 0u16, 1usize), (8, 1, 0), (40, 0, 0)] {
+            let seq = vec![
+                ins(ArmOp::Movw {
+                    rd: Reg::R3,
+                    imm16: lo,
+                }),
+                ins(ArmOp::Movt {
+                    rd: Reg::R3,
+                    imm16: hi,
+                }),
+                mask_pair(Reg::R3, lslreg)[0].clone(),
+                mask_pair(Reg::R3, lslreg)[1].clone(),
+                ret(),
+            ];
+            let (_, n) = elide_shift_masks(&seq);
+            assert_eq!(n, expect, "movt #{hi} on a movw #{lo} base");
+        }
+        // And the case that pins "never DEFAULT the prior": a `movt` onto a ⊤
+        // register must stay ⊤. Assuming a zero prior would compute
+        // `(0 & 0xffff) | 0 = 0`, conclude `< 32`, and elide a mask whose
+        // amount is entirely unknown — an unsound elision from thin air.
+        let seq = vec![
+            ins(ArmOp::Movt {
+                rd: Reg::R3,
+                imm16: 0,
+            }),
+            mask_pair(Reg::R3, lslreg)[0].clone(),
+            mask_pair(Reg::R3, lslreg)[1].clone(),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0, "movt onto an unknown prior stays unknown");
     }
 
     // ---- fold_uxth (#428) ----
