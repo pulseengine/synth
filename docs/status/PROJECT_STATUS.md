@@ -1,91 +1,26 @@
-# Synth Project Status
+# Synth Project Status — moved
 
-Last updated: 2026-04-12
+This file used to restate project status by hand and was pinned by nothing —
+by the time of the #946 doc sweep it was ~16 months stale (it said 291 Qed
+while the tree held 592, 16 crates while the workspace held 18, named Z3 as
+the default validator three eras after ordeal replaced it, and listed
+multi-memory and bulk memory as missing after both had shipped and been
+claim-pinned). Restating status in a second place is how status goes stale,
+so the restatement is deleted rather than re-synced.
 
-Synth is a WebAssembly-to-ARM Cortex-M compiler with mechanized correctness proofs.
-**This is pre-release software. It has not been tested on physical hardware.**
+Current status lives in the sources of truth:
 
-## Crates (16)
-
-| Crate | Purpose | Status |
-|-------|---------|--------|
-| synth-cli | CLI (`synth compile`, `synth verify`, `synth disasm`) | Implemented |
-| synth-core | Shared types, error handling, WASM decoder | Implemented |
-| synth-frontend | WASM Component Model parser and validator | Implemented |
-| synth-backend | ARM Thumb-2 encoder, ELF builder, vector table, linker | Implemented |
-| synth-backend-awsm | aWsm backend integration | Partial |
-| synth-backend-wasker | Wasker backend integration | Partial |
-| synth-synthesis | WASM to ARM instruction selection, pattern matcher | Implemented |
-| synth-cfg | Control flow graph construction and analysis | Implemented |
-| synth-opt | IR optimization passes (CSE, constant folding, DCE) | Implemented |
-| synth-verify | Z3 SMT translation validation | Implemented |
-| synth-analysis | SSA, control flow analysis, call graph | Implemented |
-| synth-abi | WebAssembly Component Model ABI (lift/lower) | Implemented |
-| synth-memory | Portable memory abstraction (Zephyr, Linux, bare-metal) | Partial |
-| synth-qemu | QEMU integration for testing | Implemented |
-| synth-test | WAST to Robot Framework test generator for Renode | Implemented |
-| synth-wit | WIT parser | Implemented |
-
-## Tests
-
-895 tests passing, 0 failing (cargo test --workspace, 2026-04-12).
-
-## Formal Verification
-
-### Rocq (Coq) Proofs
-
-291 Qed / 9 Admitted across all `.v` files in `coq/Synth/`.
-
-| Tier | Meaning | Count |
-|------|---------|-------|
-| T1: Result correspondence | ARM output = WASM result value | 35 |
-| T2: Existence-only | ARM execution succeeds (no result claim) | 142 |
-| T3: Admitted | Trap guards, constants, Sail, Rocq 9 migration | 10 |
-| Infrastructure | Integer properties, state lemmas, flag lemmas | 56 |
-
-See `coq/STATUS.md` for the per-file breakdown.
-
-### Kani (Bounded Model Checking)
-
-18 proof harnesses in `crates/synth-backend/tests/kani_arm_encoding.rs`.
-
-### Z3 (SMT Translation Validation)
-
-110 Z3-based tests in synth-verify (57 unit + 53 comprehensive).
-
-### Verus (Deductive Verification)
-
-8 spec functions in `crates/synth-synthesis/src/contracts.rs` covering register allocation,
-instruction encoding, memory access, and division trap invariants.
-
-## What Works
-
-- **i32 operations**: All arithmetic, bitwise, comparison, shift/rotate, division.
-  Fully implemented, tested, and proven (39 T1 result-correspondence proofs in Rocq).
-- **i64 operations**: Register-pair architecture for 64-bit on ARM32.
-  Implemented and tested. Rocq proofs at T2 level (execution succeeds) plus 4 T1 division proofs.
-- **f32/f64 operations**: VFP single/double precision. Implemented and tested.
-  Rocq proofs at T2 level using abstract VFP axioms (not Flocq IEEE 754).
-- **Control flow**: block, loop, br, br_if, br_table, call, return.
-- **Memory**: i32/i64/f32/f64 load/store with bounds checking.
-- **ELF output**: Produces bare-metal ELF binaries for Cortex-M4.
-- **Renode emulation tests**: WAST-derived Robot Framework tests run on emulated Cortex-M4.
-
-## What Is Partial
-
-- **i64 proofs**: T2 existence proofs only (except division). No T1 result correspondence for
-  arithmetic, bitwise, comparison, or shift operations.
-- **Float proofs**: T2 existence proofs using abstract axioms. Upgrading to T1 requires Flocq
-  IEEE 754 integration.
-- **Component Model**: WIT parser and ABI lift/lower implemented; end-to-end integration incomplete.
-- **Alternative backends**: awsm and wasker backends are stubs/partial.
-
-## What Is Missing
-
-- No testing on physical ARM hardware (Renode emulation only).
-- No WASI support.
-- SIMD (v128) Helium MVE encoding is experimental (Cortex-M55 only, untested on hardware).
-- No reference types.
-- No multi-memory.
-- No bulk memory operations.
-- No performance benchmarks.
+- **[`docs/status/FEATURE_MATRIX.md`](FEATURE_MATRIX.md)** — the generated
+  op-surface and capability matrix (rendered from
+  `scripts/templates/feature_matrix.md.tmpl` by
+  `python3 scripts/claim_check.py claims.yaml --emit-status`; staleness-gated
+  in CI).
+- **`artifacts/status.json`** — the machine-derived numbers (proof counts,
+  rule counts, harness counts; re-derived on every commit by the claim gate).
+- **[`coq/STATUS.md`](../../coq/STATUS.md)** — Rocq proof coverage, per-file
+  breakdown, tiers, and the trusted base.
+- **`artifacts/verified-codegen-roadmap.yaml`** — VCR-* roadmap statuses
+  (single source for roadmap claims).
+- **[`README.md`](../../README.md)** — the prose overview, whose load-bearing
+  claims are pinned in `claims.yaml` and re-derived by
+  `scripts/claim_check.py` in CI.

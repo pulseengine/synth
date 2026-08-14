@@ -78,7 +78,8 @@ const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;
 ///  - a 16-bit `PUSH`/`POP` of up to 4 registers is 1+4 = 5 cycles → exactly ≤ 5.
 ///
 /// Hardware `SDIV`/`UDIV` (up to 12) do NOT appear in any priced expansion — the
-/// only i64 division is the looped-expansion decline — so no single instruction
+/// only i64 division is the looped-expansion decline (it also pushes 4 registers,
+/// but is never priced here) — so no single instruction
 /// exceeds the ceiling. 5 cycles/halfword is therefore a sound over-estimate of any
 /// priced straight-line block; the block executes exactly once in a loop-free
 /// function, so summing the ceiling stays sound.
@@ -101,6 +102,11 @@ const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;
 /// why the constant had to be 4→5: at 4 the priced `I64Rotl`/`I64Rotr` prologue
 /// push would have been UNDER-counted, not merely tight. The claims.yaml pin
 /// (`SYNTH-WCET-CYCLE-MODEL`) is on the constant, which does not move.
+///
+/// FORWARD CONSTRAINT (kept from the #946 doc sweep, which reached the same
+/// conclusion independently): because the ceiling now holds EXACTLY rather
+/// than with margin, any future 16-bit `PUSH`/`POP` of 5+ registers in a
+/// PRICED arm would exceed it and must force a re-derivation of this constant.
 const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 5;
 
 /// Worst-case cycles for a straight-line multi-byte expansion, sized from the

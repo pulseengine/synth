@@ -1,7 +1,7 @@
 (** * I32 Operations Correctness
 
     This file contains correctness proofs for all i32 WebAssembly operations.
-    Total: 29 theorems — 29 Qed, 0 Admitted
+    Total: 29 theorems + 2 helper lemmas — 31 Qed, 0 Admitted
 
     Strategy:
     - Arithmetic (add, sub, mul, and, or, xor): synth_binop_proof tactic

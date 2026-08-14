@@ -242,7 +242,7 @@ umbrella #147).
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
 ¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
-and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
+and predates the VcrSelRules (52), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
@@ -511,7 +511,8 @@ All fully proved (Qed); no new axioms.
 
 ## Per-File Breakdown
 
-Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
+Recount 2026-08-13, #946 doc sweep (`grep -c 'Qed\.'` / `'Admitted\.'` per
+file; the per-file rows below sum EXACTLY to the CI-gated headline 592 / 2):
 
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
@@ -530,7 +531,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | ArmFlagLemmas.v | 46 | 0 | Infra (flag correspondence + i64 carry/borrow/shift lemmas) |
 | Tactics.v | 1 | 0 | Infra |
 | ArmState.v | 14 | 0 | Infra |
-| ArmSemantics.v | 8 | 0 | Infra |
+| ArmSemantics.v | 14 | 0 | Infra |
 | SailArmBridge.v | 92 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
 | WasmSemantics.v | 6 | 0 | Infra |
 | Compilation.v | 5 | 0 | Infra (#166: `ex_compile_simple_add` + `ex_compile_increment_local` discharged via `vm_compute`) |
@@ -540,8 +541,13 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmCertReference.v | 0 | 0 | definitions only (VCR-WASM-001: WasmCert-Coq i32 AND i64 rules transcribed from the pinned coq9.0-wasm-2.2.0 sources with line-level provenance). PHASE 3 (v0.48, #242): the extra-coq-package bazel/nix HOOK is LANDED (blocker (1) closed) but the REAL dep stays PENDING and this file stays a hand transcription — nixpkgs pin 88d3861a ships wasmcert 2.2.0, which propagates the UNFREE compcert 3.16 (inria-compcert, meta.license.free=false); wasmcert >= 2.2.1 (drops CompCert) not yet in the pin, so the "trusted transcription" caveat is NOT yet retired |
 | WasmCertBridge.v | 104 | 0 | Infra/T1-analogue (VCR-WASM-001 phase 2: 19 i32 ops; phase 3 (#242): 22 i64 ops — add/sub/mul/and/or/xor/shl/shr_u/shr_s/rotl/rotr/eqz/eq/ne/lt/gt/le/ge, each with an op-level refinement Qed against the WasmCert reference, PLUS an executor-level Qed through the real `exec_wasm_instr` for ALL 22 ops. The v0.50 wiring batch (#242) WIRED the six arithmetic/bitwise ops (add/sub/mul/and/or/xor) into `exec_wasm_instr` (pop2_i64 / VI64), closing the former op-level-only residual — plus the i64 encoding/bit-level/rotate-boundary helper Qed) |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
-| VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683. VCR-ISA-001 #667 increment 2: every `rule_X` is DEFINED as the GENERATED `Gen.rule_X` of `VcrSelRulesGenerated.v` — emitted from the shipped `sel_dsl::RULES` — so the theorems are stated directly about the shipped sequences; a table change regenerates `Gen` and breaks the matching Qed. The former `VcrSelRulesGenCheck.v` 40-lemma `reflexivity` gate is retired as vacuous/subsumed) |
-| **Total** | **585** | **3** | (+2 `admit.`; headline re-derived by the claim gate) |
+| VcrSelRules.v | 52 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 50 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683. VCR-ISA-001 #667 increment 2: every `rule_X` is DEFINED as the GENERATED `Gen.rule_X` of `VcrSelRulesGenerated.v` — emitted from the shipped `sel_dsl::RULES` — so the theorems are stated directly about the shipped sequences; a table change regenerates `Gen` and breaks the matching Qed. The former `VcrSelRulesGenCheck.v` 40-lemma `reflexivity` gate is retired as vacuous/subsumed) |
+| VcrSelExpansion.v | 29 | 0 | T1 expansion tier (the ten binary I64SetCond rules re-proven against the encoder's dual-precision CMP-lo/SBCS-hi/MOVcc chains — see the 2026-07 executor-upgrade section) |
+| VcrSelRulesGenerated.v | 0 | 0 | generated definitions only (`Module Gen`, emitted from the shipped `sel_dsl::RULES`) |
+| ArmInstructions.v | 0 | 0 | definitions only |
+| WasmInstructions.v | 0 | 0 | definitions only |
+| CompilerExtract.v | 0 | 0 | extraction directives only |
+| **Total** | **592** | **2** | (+2 `admit.`; headline re-derived by the claim gate — the rows above now sum to it exactly) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
@@ -583,8 +589,9 @@ tier: the encoder's CMP-lo/SBCS-hi expansion is below the flat executor,
 see `docs/design/vcr-sel-001-increment-4.md`).
 
 **50 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
-computes the named result", not WASM refinement). These 48 Qed (pilot +
-rules) are included in the recount above.
+computes the named result", not WASM refinement). These 57 rule/pilot Qed
+(50 rule theorems + 7 pilot, plus VcrSelRules.v's 2 helper lemmas) are
+included in the recount above.
 
 ## DSL coverage vs model relevance (per-op-family metric, #667)
 

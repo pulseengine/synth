@@ -12,11 +12,11 @@
     [crate::sel_dsl::generate_rocq_lowering_source] from the SAME shipped
     RULES table that produces the Rust lowering [sel_dsl/generated.rs]).
     There is no hand-written copy of the instruction sequences left in this
-    file — the generated file is the single source for the 40 covered ops,
+    file — the generated file is the single source for the 50 covered ops,
     so the model cannot drift from the shipped selector (the #682
     vacuous-proof failure mode). If the shipped table changes, regeneration
     changes [Gen.rule_X], and the matching correctness theorem below stops
-    compiling: the 40 Qed themselves are the divergence gate (strictly
+    compiling: the 50 Qed themselves are the divergence gate (strictly
     stronger than the retired [VcrSelRulesGenCheck.v] reflexivity check,
     which could only compare against a hand-written mirror).
     The theorems prove the T1 bound carried over from the pilot

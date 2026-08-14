@@ -150,9 +150,11 @@ frozen and oracle-gated every step:
   #682 model↔selector drift is unrepresentable at the instruction-sequence level
   for those ops (the interim `VcrSelRulesGenCheck.v` reflexivity gate was
   retired as vacuous/subsumed). `VCR-WASM-001` WasmCert-Coq source semantics —
-  phases 1+2 landed: the i32 integer fragment (19 ops) transcribed from the
+  phases 1–3 landed: the i32 (19 ops) AND i64 (22 ops) integer fragments
+  transcribed from the
   pinned coq9.0-wasm-2.2.0 sources with line-level provenance and proven
-  refined by `exec_wasm_instr` (49 Qed, `coq/Synth/WASM/WasmCertBridge.v`);
+  refined by `exec_wasm_instr` (104 Qed, `coq/Synth/WASM/WasmCertBridge.v`;
+  all 22 i64 ops carry both op-level and executor-level refinement);
   real external dep nix-feasible, bazel-deferred (roadmap entry).
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,

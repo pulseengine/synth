@@ -22,7 +22,7 @@ The Synth WebAssembly-to-ARM compiler proof-of-concept has been successfully com
 - ✅ **Pattern Matching System** - ISLE-inspired rule-based transformation
 - ✅ **Instruction Selector** - Intelligent WASM → ARM mapping with cost models
 - ✅ **Peephole Optimizer** - Local optimization passes (redundancy elimination, NOP removal, instruction fusion)
-- ✅ **Register Allocator** - Efficient management of R0-R12 registers
+- ✅ **Register Allocator** - Efficient management of the R0-R8 temp pool (R9-R11 are runtime-reserved bases, R12 is encoder scratch — see the Verus spec in `crates/synth-synthesis/src/contracts.rs`)
 
 #### 2. ARM Code Generation (65+ tests)
 

@@ -670,21 +670,21 @@ impl ArmSemantics {
             // ========================================================================
             // i64 Division and Remainder
             // ========================================================================
-            // Note: Full 64-bit division on ARM32 requires library calls or
-            // very complex multi-instruction sequences. For verification, we model
-            // the results symbolically.
+            // Note: ARM32 has no 64-bit divide instruction — the shipped
+            // lowering expands these pseudo-ops INLINE to a software
+            // long-division sequence with an internal 64-iteration runtime
+            // loop (arm_encoder.rs; no `__aeabi_*` library call is emitted).
+            // For verification, we model the results symbolically.
             ArmOp::I64DivS { rdlo, rdhi, .. } => {
-                // Signed 64-bit division
-                // Real implementation would require __aeabi_ldivmod or equivalent
-                // For verification, return symbolic values
+                // Signed 64-bit division — the value the inline expansion
+                // must produce; modeled here as symbolic values
                 state.set_reg(rdlo, BV::new_const("i64_divs_lo", 32));
                 state.set_reg(rdhi, BV::new_const("i64_divs_hi", 32));
             }
 
             ArmOp::I64DivU { rdlo, rdhi, .. } => {
-                // Unsigned 64-bit division
-                // Real implementation would require __aeabi_uldivmod or equivalent
-                // For verification, return symbolic values
+                // Unsigned 64-bit division — same inline-expansion note as
+                // I64DivS; for verification, return symbolic values
                 state.set_reg(rdlo, BV::new_const("i64_divu_lo", 32));
                 state.set_reg(rdhi, BV::new_const("i64_divu_hi", 32));
             }
@@ -700,9 +700,10 @@ impl ArmSemantics {
             } => {
                 // Signed 64-bit remainder (modulo). Same shape as I64RemU but
                 // the SIGNED remainder (`bvsrem`, SMT-LIB sign-of-dividend). The
-                // shipped lowering is an `__aeabi_ldivmod` library call; the
-                // value it must produce is exactly the native 64-bit signed
-                // remainder. The value VC (`verify_i64_rem_value_preservation`)
+                // shipped lowering is an inline software long-division
+                // expansion (arm_encoder.rs, 64-iteration loop — not a library
+                // call); the value it must produce is exactly the native
+                // 64-bit signed remainder. The value VC (`verify_i64_rem_value_preservation`)
                 // asserts the R0:R1 pair equals it on the non-trapping path.
                 // rem_s traps ONLY on ÷0 (`rem_s(INT64_MIN,-1) == 0`, no
                 // overflow trap).
@@ -730,9 +731,10 @@ impl ArmSemantics {
             } => {
                 // Unsigned 64-bit remainder (modulo). ARM32 has no 64-bit
                 // divide instruction — the shipped lowering expands this
-                // pseudo-op to an `__aeabi_uldivmod` library call — but for
-                // translation-validation the *value* the call must produce is
-                // exactly the native 64-bit unsigned remainder. Model it with
+                // pseudo-op INLINE to a software long-division loop
+                // (arm_encoder.rs, not a library call) — but for
+                // translation-validation the *value* the expansion must
+                // produce is exactly the native 64-bit unsigned remainder. Model it with
                 // the native `BvTerm::Urem` (ordeal 0.12, plumbed via
                 // `BV::bvurem`) instead of a HAVOC constant, so the value VC
                 // (`verify_i64_rem_value_preservation`) proves the register
