@@ -1027,8 +1027,10 @@ claims:
       # verified by force-eliding it: 490 B object, gate still all-matching).
       # Pinning the cross-reference keeps a future reader from mistaking this
       # gate for the guard on that site.
+      # Single-LINE substring on purpose: a multi-line pin would also encode
+      # the comment's wrap column and break on a harmless re-wrap.
       - kind: verbatim
-        text: "the i32 shift-mask\n      # differential above, red with 6 mismatches under the same mutation."
+        text: "red with 6 mismatches under the same mutation."
 
   # ---------------------------------------------------------------------------
   # VCR-MEM-004 / #901 — the SoftwareBoundsChecker cost claim.
