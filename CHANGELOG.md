@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-08-14
+
+**The checkers were the defects.**
+
+Ten artifacts landed. In five of them the bug was not in the compiled code —
+it was in the machinery that checks the compiled code. A verifier that
+silently modelled nothing for 87 opcodes. A differential that *structurally
+cannot* discriminate the miscompile it guards. An exhaustiveness claim resting
+on a wildcard absorbing 175 of 222 variants. A "9 unattributed branches"
+finding manufactured by another tool's hardcoded text. And a planning method
+that would have written 32 false entries with its own disproof sitting beside
+it. This is the fifth consecutive release where the defects concentrated in
+the checkers, which makes it the pattern rather than a run of coincidences.
+
+The unifying property: **each of those checks could not fail.** A gate that
+cannot fail is indistinguishable from a gate that passes, right up until it
+matters — so the through-line of this release is making them able to fail, and
+proving it by making them fail on purpose.
+
+### Fixed
+
+- **A conditionally-written parameter was silently miscompiled on ARM and
+  RISC-V (#970, #974).** `count_params` counted only parameter indices *read
+  before written*. A parameter written before it is read — but only under a
+  branch — was therefore not counted as a parameter at all, so its incoming
+  argument register was never homed. Nor did zero-init rescue it: that is
+  gated on the first access being a *read*, and here the first access is
+  the write, so the slot is simply never written on the path that skips
+  the branch. Exit 0, no decline, wrong code.
+
+  On **RISC-V** the compiled function reads an **uninitialised stack slot**:
+  with a poisoned stack it returns `0xDEADBEEF`, i.e. whatever the previous
+  frame left there. That is an information-disclosure shape, not merely a
+  wrong value. **ARM behaves the same way** — and that was *not* what the
+  issue predicted. The prediction was that a merge-point `str r1,[sp]` would
+  catch the still-live param; disassembly shows the `beq` jumps *past* it.
+  Only executing it settled that, which is why the fix demanded red-first
+  evidence per backend rather than letting one backend's result transfer.
+
+  `referenced_locals` now lives in `synth_core::wasm_op` and the aarch64 copy
+  added by #851 was deleted, so all three backends share one definition
+  instead of three that can drift apart.
+
+- **`ArmSemantics::encode_op` silently no-op'd 87 of 222 `ArmOp` variants
+  (#923, #975).** Its `_ => {}` default left the state *unchanged* for any op
+  it had no arm for, so the SMT model's opinion of those instructions was
+  worth nothing in either direction. The sharpest case is not hypothetical:
+  `rule_i32_rotl` is default-on and **Rocq-proved**, and emits `RSB` + `ROR` —
+  both in the dropped 87. The Rocq proof was never in question; the SMT
+  validator simply executed neither instruction.
+
+  Measured in both directions: `i32.add → ADD ; UXTB` returned **`Verified`**
+  (that computes `(x+y) & 0xFF` on silicon), and the shipped `i32.shl`
+  lowering returned **`Invalid`** — the real reason the CLI declines shift
+  rules, under a comment blaming a different cause. `exec_trap_subset_op`,
+  whose doc says it "must never green-wash a trap derivation", defended itself
+  with a hand-maintained allowlist that had drifted: three ops were
+  allowlisted to delegate to a model that did not implement them.
+
+  The default arm now records into `ArmState::unmodeled` — one source of
+  truth, no mirror to rot — and both consumers turn that into a loud decline.
+  Register shifts are modelled faithfully as `Rm<7:0>` per ARMv7-M
+  A7.7.68/70/12/117, *not* mod-32. Graded honestly as **latent**: the CLI rule
+  table uses 8 ops, all modelled. Residual 87 → 73, all now declining.
+
+- **`writes_sp` claimed exhaustiveness over a wildcard absorbing 175 of 222
+  variants (#946, #969).** Live, not latent — but the numbers were never
+  wrong, and this release does not pretend otherwise. **142** of the 175
+  give up with `true`, leaving **33** that answer otherwise; of those, three
+  (`I64Popcnt`/`I64Rotl`/`I64Rotr`) emit real `PUSH`/`POP` and were bounded on
+  ordinary modules. The bounds were correct because the push is net-zero and
+  writes strictly *below* SP — **right for a reason nothing checked**. That
+  premise is now a `WalkState` invariant, emitted bounds are identical, and a
+  no-wildcard tripwire (structural *and* behavioural) prevents the arm
+  regrowing.
+
+- **gpio-thin reaches 494 B (#846, #976)**, from 502 B — not the 498 B the
+  issue claimed, which contradicted its own arithmetic (`502 − 3×4 = 490`).
+  Phase 2 of `elide_shift_masks` evaluates a masked seed's finite value set
+  concretely, which no value-range domain can do here. The surviving mask is
+  the load-bearing one, verified by disassembly.
+
+  **The gate guarding it was blind.** Force-eliding the load-bearing mask
+  reproduces the pre-#682 miscompile exactly, and the gpio differential
+  reported *every check matching* — because for `mode ≤u 6` the amount is
+  already < 32 and for `mode >u 6` the driver discards the result.
+  Complementary conditions: no input to that driver can discriminate it. The
+  actual guard is `i32_shift_mask_682_differential.py`. Recorded in the
+  script, the CI step and the ledger. Separately, `gpio_configure` had `mode`
+  hardcoded to `0x3` — 75 → 285 executed checks.
+
+- **aarch64 written parameters are homed (#851, #971)**, so `local.set` and
+  `local.tee` on a parameter lower instead of declining — 44/44 against
+  wasmtime under unicorn and a native arm64 oracle.
+
+### Added
+
+- **MC/DC structural coverage over synth's own decision logic (#912, #978)**,
+  closing an N/A that had recurred for six releases. The blocker was a
+  mis-stated surface question, and answering it required rejecting two
+  plausible surfaces on evidence:
+
+  Native LLVM MC/DC **no longer exists** — `-Zcoverage-options=mcdc` was
+  removed in Rust 1.91 (rust-lang/rust#144999), verified on three nightlies.
+  Its surviving sibling `condition` is a trap: it *builds*, and emits
+  `mcdc_records: 0` with zero MC/DC intrinsics. And witness over the fixtures
+  synth compiles measures the *fixtures* — gap rows named five stdlib frames
+  and zero synth functions. A surface whose gap rows cannot name a synth
+  decision cannot notice a missing condition in one.
+
+  Chosen: witness over a `wasm32-wasip1` build of synth's own crates, driven
+  through the real `pub fn`s. It reconstructs decisions from *lowered* `br_if`
+  chains, so a Rust `matches!` becomes a genuine multi-condition decision —
+  **richer than the rustc capability that was removed**. Scoped to predicate
+  classes that have already shipped bugs here (`static_data_addr`,
+  `alloc_validator` — #871's fix *was* a condition added to that predicate —
+  and the RV32 bounds gate). Exclusions named, including that WCET declines
+  are match-dispatch where MC/DC is structurally inapplicable.
+
+- **Documentation — claims corrected against source (#946, #968).** The
+  Tier 2/3 half of the honesty sweep: ~26 items re-grounded on what the code
+  actually does, each verified against the source rather than against the
+  issue text. Corrections included the WCET `CEIL` rationale ("with margin" →
+  EXACT), i64 div/rem described as a library call when it is an inline
+  64-iteration loop, an aarch64 decline list naming ops that had shipped
+  lowerings, 40 → 50 DSL rules, and Qed counts re-derived so `coq/STATUS.md`'s
+  table sums exactly. One item was the legitimate "the issue was stale, the
+  doc was right" outcome and is recorded as no-change.
+
+- **Verified origins for compiler-introduced object branches (#944, #967).**
+  The premise was false: the 9 "branches with no WASM origin" were all real
+  source ops witness never instruments. The genuinely unattributed population
+  was elsewhere, and now carries origins from a closed verified vocabulary,
+  never guessed.
+
 ### Changed
 
 - **A declined REQUESTED export now exits non-zero (#952).** Previously a
@@ -19,12 +154,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--allow-skipped-exports` restores the old behavior for corpus sweeps where
   per-function declines are expected and counted downstream.
 
-  Five in-tree oracles took that opt-in, because the flag silences the very
-  gate this change adds and is only safe where a **tight non-vacuity floor**
-  still notices a *new* decline: `unreachable_665` (8/8), `i64_globals_643`
-  (28/28), `float_select_return_782` (702/702), `i64_float_conv_869`
-  (96296/96276) and `trunc_sat_782`. All five margins are measured, not
-  assumed.
+  Eight in-tree oracles and three Rust tests took that opt-in, because the
+  flag silences the very gate this change adds and is only safe where a
+  non-vacuity floor still notices a *new* decline. Five were measured tight:
+  `unreachable_665` (8/8), `i64_globals_643` (28/28),
+  `float_select_return_782` (702/702), `i64_float_conv_869` (96296/96276) and
+  `trunc_sat_782`. The other three — `call_indirect_275_selfcontained`,
+  `i64_param_518_riscv_loudskip`, `wast_conformance_928` — carry floors too,
+  but `i64_param_518_riscv_loudskip`'s is `compiles >= 1`, which is a floor
+  and not a tight one. Named rather than folded into the claim.
 
 ## [0.56.2] - 2026-08-13
 

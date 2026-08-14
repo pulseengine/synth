@@ -446,6 +446,18 @@ artifacts:
       (realloc shims, expansion-internal guards) the fix may be a provenance
       RECORD KIND for compiler-origin branches rather than new WASM mapping —
       cheaper and more honest than pretending a WASM origin exists.
+      OUTCOME (#967): the PREMISE WAS FALSE. Reproducing the join from the
+      committed gale evidence yields exactly the 9 keys — and all 9 are
+      provenance entries for REAL source WASM ops (6 unconditional `br`s, 3
+      `select`s folded to predication) that witness never instruments; its
+      manifest carries only `br_if`/`br_table_*`/`if_*`. Witness's hardcoded
+      `only_in_synth` divergence text manufactured the "object branch with no
+      WASM origin" framing. NO miscompile, and no truly unattributed branch
+      among the 9. The genuinely unattributed population was elsewhere — the
+      33 `resolved: false` entries, all disassembly-verified as legitimate
+      compiler-introduced control flow (bulk-memory loop bounds and overlap
+      tests, i32 div/rem trap guards) — and those now carry named origins
+      from a closed verified vocabulary, never guessed.
     status: implemented
     release: v0.57
     tags: [provenance, traceability, consumer-reported]

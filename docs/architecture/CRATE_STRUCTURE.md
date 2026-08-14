@@ -326,7 +326,7 @@ The crate structure is already well-organized with clear responsibilities. No ma
 
 ## Conclusion
 
-The Synth workspace is organized into **18 crates** with clear separation:
+The Synth workspace is organized into **19 crates** with clear separation:
 
 - **Foundation:** synth-core (Backend trait, IR, types), synth-wit, synth-cfg
 - **Frontend:** synth-frontend, synth-abi, synth-analysis
