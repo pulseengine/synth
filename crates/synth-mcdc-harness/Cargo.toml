@@ -1,0 +1,19 @@
+[package]
+name = "synth-mcdc-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+# `cdylib` is what `wasm32-wasip1` needs to emit exported functions; `rlib`
+# keeps the crate cheap to build on the host so `cargo test --workspace`,
+# clippy and fmt still see it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+synth-backend-riscv = { path = "../synth-backend-riscv" }

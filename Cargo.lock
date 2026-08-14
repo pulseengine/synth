@@ -1238,6 +1238,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-mcdc-harness"
+version = "0.56.2"
+dependencies = [
+ "synth-backend-riscv",
+ "synth-core",
+]
+
+[[package]]
 name = "synth-memory"
 version = "0.56.2"
 dependencies = [
