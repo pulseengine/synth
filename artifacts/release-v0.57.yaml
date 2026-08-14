@@ -81,7 +81,7 @@ artifacts:
       RED-FIRST: an execution differential on `(memory 0)` load AND store vs
       wasmtime (which traps), failing before the fix. The `Option`-shaped fix
       (`Option<u32>` rather than a magic 0) is the same one #932 took.
-    status: proposed
+    status: implemented
     release: v0.56.1
     tags: [security, soundness, rv32, bounds, sentinel-collision, gale-reported]
     links:
@@ -136,6 +136,51 @@ artifacts:
       issue: "#953"
 
 
+  - id: RQ-57-COUNTPARAMS
+    type: system-req
+    title: "count_params demotes a CONDITIONALLY-written parameter to a zero-init local — ARM + RISC-V miscompile"
+    description: >
+      #970, found by the #851 lane while fixing the aarch64 instance — it was
+      not on anyone's list, and nothing in CI was looking for it.
+      `count_params` counts only parameter indices READ BEFORE WRITTEN in linear
+      op order. A parameter written before it is read, but only CONDITIONALLY,
+      is therefore not counted as a parameter: it is demoted to a zero-init
+      local and compiled WRONG. Silently — exit 0, no decline, no diagnostic.
+      SEVERITY DIFFERS BY BACKEND, measured not assumed.
+      RISC-V is the worse instance and is EXECUTED-confirmed: under unicorn with
+      a poisoned stack the function returns `0xDEADBEEF`, i.e. it reads an
+      UNINITIALISED stack slot and hands back whatever the previous frame left
+      there. That is an information-disclosure shape, not merely a wrong value —
+      and it is adjacent to the sentinel/value-`0` class that produced a defect
+      in three consecutive releases (#932, #953, #959).
+      ARM (`arm_backend.rs`, same `inferred.min(declared)` shape) is
+      INCIDENTALLY correct on the simplest shape — a merge-point `str r1,[sp]`
+      happens to catch the still-live param — and breaks once a call clobbers
+      the param register. The #851 lane marked ARM's exact wrong value as
+      INFERRED FROM DISASSEMBLY, not executed; establishing it by execution is
+      part of this lane, and the distinction must survive into the fix.
+      aarch64 was fixed in #851 (`min(highest REFERENCED index + 1, declared)`);
+      the `min` is load-bearing — it preserves the >8-declared-params leniency
+      that plain `declared` would break. That commit is the reference shape.
+      RED-FIRST, PER BACKEND, BY EXECUTION. One backend's evidence does not
+      transfer to the other; that assumption is what left this latent.
+      RESIDUAL, named not hidden: the `None` branch of
+      `current_func_param_count` still uses the unsound heuristic. Unreachable
+      from the CLI, reachable via the direct `compile_function` API.
+    status: proposed
+    release: v0.57
+    tags: [soundness, miscompile, information-disclosure, rv32, arm, found-by-another-lane]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution-differential
+      issue: "#970"
+
   - id: RQ-57-SKIPEXIT
     type: system-req
     title: "A declined REQUESTED export must fail the build, not exit 0"
@@ -163,7 +208,7 @@ artifacts:
       RED-FIRST: the gate is a compile that declines an export and must exit
       non-zero; the negative control is a compile that skips only a helper and
       must still exit 0.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [honesty, cli, decline-frontier, gale-reported]
     links:
@@ -296,7 +341,7 @@ artifacts:
       already does (grouped arms, no wildcard). That deserves its own lane.
       RED-FIRST: after the change, adding a new SP-writing `ArmOp` variant must
       FAIL TO COMPILE. Demonstrate it, do not assert it.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [wcet, soundness, tripwire, exhaustiveness]
     links:
@@ -401,7 +446,7 @@ artifacts:
       (realloc shims, expansion-internal guards) the fix may be a provenance
       RECORD KIND for compiler-origin branches rather than new WASM mapping —
       cheaper and more honest than pretending a WASM origin exists.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [provenance, traceability, consumer-reported]
     links:
@@ -428,7 +473,7 @@ artifacts:
       divergences on gale's aarch64 acceptance frontier.
       Needs its own execution differential across the four divergences — that is
       why it was not squeezed into the v0.56 tail.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [aarch64, capability]
     links:
@@ -581,7 +626,7 @@ artifacts:
       that does not describe the lowering — wrong reason, EXCLUSION consequence.
       If the real reason does not hold, those ops should be validated and are
       not.
-    status: proposed
+    status: implemented
     release: v0.57
     tags: [documentation, doc-vs-source, honesty]
     links:
