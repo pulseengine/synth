@@ -223,6 +223,52 @@ Add to the post-workflow checks below:
 - [ ] `npx @pulseengine/synth@<version> --version` prints the matching version
       on a clean machine (verifies the download + checksum path end-to-end).
 
+## `release:` on rivet artifacts — a work-item field, not a timestamp
+
+`release:` names the release a piece of work is **targeted at or shipped in**.
+It is how "what is left in vX.Y?" becomes a query instead of an opinion.
+
+**Most artifacts legitimately have none, and that is not a backlog item.**
+263 of 288 carry no `release:`, and #912/RQ-57-BACKFILL established in v0.57
+that back-filling them mechanically would corrupt the very query the field
+exists to serve.
+
+The tempting derivation — *"the first tag containing the artifact"* — runs
+cleanly (0 undecidable across 288, 24 distinct tags) and answers the **wrong
+question**: it yields when an artifact *entered the plan*, not when its work
+shipped. The repo supplies its own control case:
+
+| | `VCR-RA-001` |
+|---|---|
+| `release:` set by hand | **v0.24.0** — the release the allocator work shipped in |
+| first tag containing its introducing commit | **v0.11.30** |
+
+It is the *only* artifact in `verified-codegen-roadmap.yaml` that already had a
+`release:`, and the mechanical rule disagrees with it. Applying that rule to the
+other 32 roadmap entries would have written 32 false values, with the one
+correct pre-existing value sitting beside them as the disproof.
+
+At scale it is worse: **190 of the 263 resolve to `v0.1.1`**, the initial
+artifact import — the standing requirement base (architecture, stakeholder and
+system requirements, component model, target platforms). Tagging those
+`release: v0.1.1` would assert that the entire foundational requirement base was
+targeted at the first tag, and would make *"what is in v0.1.1?"* return 190
+artifacts including work that shipped forty releases later.
+
+**The convention, therefore:**
+
+- **Per-release plan artifacts** (`artifacts/release-v0.5x.yaml`) carry
+  `release:` — they are work items by construction, and already do.
+- **Standing artifacts** — the foundational base, and roadmap entries that
+  legitimately span many releases — carry it **only when the shipping release
+  is known**, as `VCR-RA-001` does. Otherwise they carry none.
+- Setting `release:` on a standing artifact is a **per-artifact judgement with
+  evidence** (the CHANGELOG entry that shipped it), never a sweep.
+
+A missing `release:` here is a justified state. A wrong one is worse than a
+missing one — the #911 lesson applied to planning data.
+
+
 ## CHANGELOG.md mapping
 
 synth keeps a [Keep a Changelog](https://keepachangelog.com/) file. The
