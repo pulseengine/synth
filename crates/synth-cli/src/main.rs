@@ -2677,10 +2677,10 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVeri
                     registers: 1,
                 },
             }),
-              // Shift ops use immediate shift values in the instruction selector.
-              // NOTE (#975): the register-shift ops ARE modelled now (Rm<7:0>,
-              // ARMv7-M A7.7.68/70/12/117) — what remains is a WIRING residual,
-              // not the modelling gap the previous comment claimed.
+            // Shift ops use immediate shift values in the instruction selector.
+            // NOTE (#975): the register-shift ops ARE modelled now (Rm<7:0>,
+            // ARMv7-M A7.7.68/70/12/117) — what remains is a WIRING residual,
+            // not the modelling gap the previous comment claimed.
             // LocalGet/LocalSet/Const are register operations, not computational.
             // #935: neither class is silently skipped any more — every
             // unmatched kind lands in the report as a decline with a machine
