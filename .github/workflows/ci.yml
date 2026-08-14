@@ -3566,3 +3566,108 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 5
+
+  mcdc-structural-coverage:
+    name: MC/DC structural coverage over synth's decision logic (RQ-57-MCDC, #912)
+    # #912 asked for MC/DC and sat N/A for six releases on a SURFACE argument:
+    # `witness` measures MC/DC on a Wasm artifact and synth emits ARM/RV32/A64
+    # machine code, so "run witness on synth's output" is a category error.
+    # True about the OUTPUT — and irrelevant, because the decisions that ship a
+    # miscompile are in synth's own Rust, which compiles to Wasm fine.
+    #
+    # This job builds `synth-mcdc-harness` (a thin ROW DRIVER — it calls the
+    # REAL pub fns, it re-implements nothing) for wasm32-wasip1, drives one
+    # truth-table row per `witness run --invoke-with-args`, and scores the
+    # result over synth's OWN functions only.
+    #
+    # WHY THE MODULE-WIDE PERCENTAGE IS NOT THE GATE: a wasip1 link drags in
+    # wasi-libc and Rust std, so the raw figure is `3/770 full MC/DC` and says
+    # nothing about synth. And a ratio cannot notice a DELETED condition —
+    # removing one makes the percentage IMPROVE. scripts/mcdc_gate.py scores by
+    # DEMANGLED FUNCTION (witness's source_file is an inlined-DWARF basename and
+    # is unreliable — upstream witness#179) and floors COUNTS.
+    #
+    # RED-FIRST (verified locally before this job was written, both mutations
+    # restored byte-identical afterwards):
+    #   (a) delete the #871 condition `|| rs2 == Reg::RA` from the RV32
+    #       allocation validator -> 20/144/63/3 becomes 19/142/54/2; all four
+    #       floors trip. The CONDITION-COUNT drop is the signal a ratio misses.
+    #   (b) drop ONE truth-table row (`ra_validate:14`) -> conditions stay 144
+    #       but proved falls 63->62 and fully-proved decisions 3->2. Two
+    #       mutations, two distinct failure paths.
+    #
+    # PINNED: witness v0.42.0 and the workspace's stable toolchain. The scored
+    # numbers were identical under witness 0.28.0 and 0.42.0 (14 minor versions
+    # apart), so the measurement is not tracking the tool's phrasing. If a
+    # toolchain bump changes std inlining and moves the counts, RE-MEASURE and
+    # state the new baseline — never lower a floor to go green.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install witness (pinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.witness"
+          gh release download v0.42.0 --repo pulseengine/witness \
+            --pattern 'witness-v0.42.0-x86_64-unknown-linux-gnu.tar.gz' \
+            --dir "$HOME/.witness"
+          tar xzf "$HOME/.witness"/witness-v0.42.0-*.tar.gz -C "$HOME/.witness"
+          "$HOME/.witness/witness" --version
+      # The row drivers must reach the outcomes their doc comments claim. A
+      # driver that returned one verdict for every row would make the whole
+      # MC/DC run vacuous while still printing a number.
+      - name: Row-driver sanity gate (host)
+        run: cargo test -p synth-mcdc-harness
+      - name: Run the MC/DC rows under witness
+        run: WITNESS="$HOME/.witness/witness" ./scripts/mcdc_run.sh target/mcdc
+      - name: Score synth's own decisions against the declared floors
+        run: |
+          set -euo pipefail
+          python3 scripts/mcdc_gate.py target/mcdc | tee /tmp/mcdc.log
+          # Non-vacuity: the gate must have SCORED something. A scoping change
+          # that matched zero functions would otherwise print an empty table
+          # and fail the floors for the wrong reason — or, worse, a future
+          # `--report-only` slip would print PASS over nothing.
+          grep -qE '^TOTAL +[0-9]+' /tmp/mcdc.log
+          grep -q '^PASS: all MC/DC floors met' /tmp/mcdc.log
+      - name: Publish the truth tables and gap rows
+        if: always()
+        run: |
+          {
+            echo "### MC/DC over synth's own decision logic (#912)"
+            echo
+            echo "Scored by DEMANGLED FUNCTION, not by file — witness's"
+            echo "\`source_file\` is an inlined-DWARF basename (witness#179)."
+            echo "The module-wide percentage is NOT this gate: a wasip1 link"
+            echo "pulls in wasi-libc + std."
+            echo
+            echo '```'
+            cat /tmp/mcdc.log 2>/dev/null || echo "(gate did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mcdc-evidence
+          path: |
+            target/mcdc/report.txt
+            target/mcdc/report.json
+            target/mcdc/rollup.txt
