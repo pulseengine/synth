@@ -233,8 +233,18 @@ impl WalkState {
 
     /// Read a word slot `[sp,#off]`: the value written during this walk, else
     /// the symbolic entry value `Slot{off,0}`.
+    ///
+    /// (#946) A NEGATIVE offset is never tracked. Everything at or above SP is
+    /// the function's own live frame; everything below is scratch that any
+    /// interrupt, or any multi-instruction encoder expansion that transiently
+    /// pushes, may overwrite. Refusing to mint a `Slot` identity below SP is
+    /// what lets `may_move_sp` answer `false` for the priced expansions that
+    /// wrap a fixed-register core in `PUSH`/`POP` (`I64Popcnt`, `I64Rotl`,
+    /// `I64Rotr`): their transient writes land strictly BELOW the incoming SP,
+    /// so they provably cannot alias any slot this walk tracks. Conservative in
+    /// one direction only — `Top` can cost a bound, never invent one.
     fn read_slot(&self, off: i64) -> Sym {
-        if off % 4 != 0 || self.tainted.contains(&off) {
+        if off < 0 || off % 4 != 0 || self.tainted.contains(&off) {
             return Sym::Top;
         }
         self.written
@@ -244,7 +254,11 @@ impl WalkState {
     }
 
     fn write_slot_word(&mut self, off: i64, v: Sym) {
-        if off % 4 == 0 {
+        if off < 0 {
+            // Below SP — see `read_slot`. Record nothing; taint so a later
+            // re-base cannot resurrect a value written into scratch space.
+            self.taint_range(off, 4);
+        } else if off % 4 == 0 {
             // A full word store replaces the slot entirely — un-taint.
             self.tainted.remove(&off);
             self.written.insert(off, v);
@@ -1046,8 +1060,11 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
 /// as the #615 A32 silent-NOP class. Three of those 175 (`I64Popcnt`,
 /// `I64Rotl`, `I64Rotr`) are PRICED by `op_cost`, so they really do reach here,
 /// and their encoder expansions really do emit `PUSH`/`POP` — the wildcard's
-/// `false` was a wrong answer, not merely an absent one. The wildcard's own
-/// doc comment asserted `I64Popcnt` "is a whole-function `LoopedExpansion`
+/// `false` was an UNJUSTIFIED answer, not merely an absent one. It happened to
+/// be the right answer, but only because of a property nothing enforced; that
+/// property is now a `WalkState` invariant (see the net-zero group below), so
+/// the same `false` is now EARNED and the bounds are kept. The wildcard's own
+/// doc comment excused `I64Popcnt` as "a whole-function `LoopedExpansion`
 /// decline anyway", which was FALSE: `op_cost` prices it `Cycles`.
 /// Structurally pinned by `tests/wcet_sp_no_wildcard_946.rs`.
 ///
@@ -1056,7 +1073,11 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
 /// `scan_for_decline` FIRST. That scan declines every op `op_cost` classifies
 /// `Unmodeled` or `LoopedExpansion`, plus indirect/external calls and residual
 /// label branches. So a stream that reaches this predicate contains ONLY
-/// `OpCost::Cycles` ops and direct `BL func_N`/`Call`.
+/// `OpCost::Cycles` ops and direct calls. The one variant NOT covered by that
+/// argument is `ArmOp::Call`: `classify_call` returns `Direct` for it and
+/// `continue`s, so it never reaches the `op_cost` check at all. It is
+/// unreachable for a different reason — `encode_thumb` REFUSES it with a typed
+/// `Err` (#615), so a compile carrying one has already failed.
 #[allow(clippy::match_same_arms)] // grouped by REASON, not by answer
 fn may_move_sp(op: &ArmOp) -> bool {
     use ArmOp::*;
@@ -1127,26 +1148,36 @@ fn may_move_sp(op: &ArmOp) -> bool {
         | I64ShrU { rd_lo, rd_hi, .. }
         | I64ShrS { rd_lo, rd_hi, .. } => *rd_lo == Reg::SP || *rd_hi == Reg::SP,
 
-        // ---- Moves SP: real stack ops, and expansions that EMIT PUSH/POP ----
-        // `Push`/`Pop` obviously. The i64 group is the #946 correction: each of
-        // these expands (arm_encoder.rs) to a fixed-register core wrapped in a
-        // `PUSH`/`POP` pair — `I64Popcnt`'s `0xB438`/`0xBC38`, and `I64Rotl`/
-        // `I64Rotr`/`I64Div*`/`I64Rem*` via `emit_i64_fixed_abi_entry`/`_exit`
-        // (`PUSH {R0-R3}` + `STR src,[SP,#-4]!` marshalling). SP is restored
-        // net-zero across the whole expansion, but the transient region writes
-        // BELOW the incoming SP, and the walk tracks slots by raw signed
-        // `addr.offset` with no non-negativity constraint — so `false` would
-        // rest on an unenforced "synth never emits a negative SP offset"
-        // premise. `true` is the answer that needs no premise. The first three
-        // are PRICED (reachable); the four div/rem are `LoopedExpansion`.
+        // ---- Moves SP outright ----
         Push { .. } | Pop { .. } => true,
+
+        // ---- Expansions that transiently PUSH/POP, net-zero — EARNED `false` ----
+        // Each of these expands (arm_encoder.rs) to a fixed-register core
+        // wrapped in a `PUSH`/`POP` pair: `I64Popcnt`'s `0xB438`/`0xBC38`, and
+        // `I64Rotl`/`I64Rotr`/`I64Div*`/`I64Rem*` via
+        // `emit_i64_fixed_abi_entry`/`_exit` (`PUSH {R0-R3}` + `STR src,[SP,#-4]!`
+        // marshalling, then a matching pop/`ADD SP,#4` for all four words).
+        //
+        // TWO facts make `false` sound, both checked rather than assumed:
+        //  1. NET-ZERO: SP is restored exactly before the next op, so no
+        //     tracked offset needs re-basing (verified by reading each arm:
+        //     entry −16−12+12 = −16, exit +16).
+        //  2. NO ALIASING: the transient writes land strictly BELOW the
+        //     incoming SP, and `read_slot`/`write_slot_word`/`shift_slots`
+        //     refuse to track ANY slot at a negative offset (#946), so nothing
+        //     the walk believes can live in the region these ops scribble on.
+        //
+        // Fact 2 used to be an unenforced premise — the walk took `addr.offset`
+        // raw and signed. It is now an invariant of `WalkState`, which is why
+        // this arm answers `false` (keeping the bound) instead of declining.
+        // Weaken those three guards and this answer stops being earned.
         I64Popcnt { .. }
         | I64Rotl { .. }
         | I64Rotr { .. }
         | I64DivS { .. }
         | I64DivU { .. }
         | I64RemS { .. }
-        | I64RemU { .. } => true,
+        | I64RemU { .. } => false,
 
         // ---- Reachable and provably NOT an SP definition ----
         // Each of these is PRICED, so it really does reach here, and `true`
@@ -1185,9 +1216,11 @@ fn may_move_sp(op: &ArmOp) -> bool {
         // vector, the i64 pseudo binops/compares/extends, and the off-path
         // pseudo-ops `encode_thumb` REFUSES with a typed `Err`) or, for the
         // indirect calls and residual label branches, `scan_for_decline`
-        // declines them outright. Per the REACHABILITY note on this function,
-        // none can appear in a stream that reaches here. They answer `true`
-        // rather than `false` deliberately:
+        // declines them outright. `Call` is the one exception to that chain —
+        // `classify_call` calls it `Direct` and skips the `op_cost` check — but
+        // `encode_thumb` refuses it too, so it is equally unreachable. Per the
+        // REACHABILITY note on this function, none can appear in a stream that
+        // reaches here. They answer `true` rather than `false` deliberately:
         //
         //  1. SOUNDNESS: `true` is the give-up direction at both call sites, so
         //     an unaudited op can only cost a bound, never fabricate one.
@@ -1447,6 +1480,18 @@ fn shift_slots(st: &mut WalkState, delta: i64) {
         .map(|(&off, &v)| (off + delta, v))
         .collect();
     st.tainted = st.tainted.iter().map(|&off| off + delta).collect();
+    // (#946) A re-base can push a tracked offset BELOW the new SP — an epilogue
+    // `pop {r4-r7}` shifts by −16. Those words are scratch from here on, so
+    // drop the remembered value and taint the slot rather than keep believing
+    // it. This is what makes `read_slot`'s "nothing below SP is ever tracked"
+    // invariant hold for the WHOLE walk, not just at the moment of the store —
+    // and it is the invariant `may_move_sp` relies on to answer `false` for the
+    // priced PUSH/POP-wrapping expansions. Conservative in one direction only.
+    let below: Vec<i64> = st.written.keys().copied().filter(|&o| o < 0).collect();
+    for off in below {
+        st.written.remove(&off);
+        st.tainted.insert(off);
+    }
     // Symbolic Slot{off} identities in registers refer to pre-shift offsets —
     // drop them (registers holding loaded values stay valid as Const/Top, but a
     // Slot identity is offset-relative).
@@ -1680,19 +1725,6 @@ mod tests {
     /// cannot fail. (`Push`/`Pop` are excluded — they were already explicit.)
     fn true_but_absorbed_by_a_false_wildcard() -> Vec<ArmOp> {
         vec![
-            // PRICED (reachable) — expansions that really do emit PUSH/POP.
-            ArmOp::I64Popcnt {
-                rd: Reg::R0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R2,
-            },
-            ArmOp::I64Rotl {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                shift: Reg::R4,
-            },
             // Pre-declined families — `true` is the decline-honest default so a
             // future pricing change (cf. #936) gets a loud decline, not a
             // silently inherited `false`.
@@ -1835,6 +1867,23 @@ mod tests {
                 rdhi: Reg::R1,
                 value: 1,
             },
+            // The net-zero PUSH/POP group. `false` here is EARNED by the
+            // `WalkState` non-negative-slot invariant (`read_slot`,
+            // `write_slot_word`, `shift_slots`), not assumed — see the arm's
+            // comment. Weaken those guards and this answer must go back to
+            // `true`, costing the `rot`/`pc` bounds in `wcet_bound_gate.rs`.
+            ArmOp::I64Popcnt {
+                rd: Reg::R0,
+                rnlo: Reg::R1,
+                rnhi: Reg::R2,
+            },
+            ArmOp::I64Rotl {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                shift: Reg::R4,
+            },
         ];
         for op in &must_be_false {
             assert!(
@@ -1843,6 +1892,36 @@ mod tests {
                  this predicate) and declining it would decline proven loops"
             );
         }
+    }
+
+    /// (#946) The invariant that EARNS `may_move_sp(I64Rotl) == false`: nothing
+    /// below SP is ever tracked, at store time or after a re-base. Without it,
+    /// the transient `PUSH {R0-R3}` inside those expansions could alias a slot
+    /// the walk believes it knows.
+    #[test]
+    fn walk_state_never_tracks_a_slot_below_sp() {
+        let mut st = WalkState::fresh();
+
+        // A store below SP is not remembered, and reads there are opaque.
+        st.write_slot_word(-4, Sym::Const(7));
+        assert_eq!(st.read_slot(-4), Sym::Top, "a slot below SP must not track");
+        assert!(!st.written.contains_key(&-4));
+        // ...and no `Slot` identity is ever minted below SP, so it can never
+        // become a counter candidate.
+        assert_eq!(st.read_slot(-8), Sym::Top);
+
+        // A normal frame slot tracks as before.
+        st.write_slot_word(8, Sym::Const(3));
+        assert_eq!(st.read_slot(8), Sym::Const(3));
+
+        // A re-base that pushes it below SP (an epilogue `pop {r4-r7}`) drops
+        // the remembered value rather than carrying it into scratch space.
+        shift_slots(&mut st, -16);
+        assert!(
+            !st.written.contains_key(&-8),
+            "a re-based slot that fell below SP must be dropped, not believed"
+        );
+        assert_eq!(st.read_slot(-8), Sym::Top);
     }
 
     #[test]

@@ -521,7 +521,8 @@ fn i64_div_declines_with_looped_expansion_reason() {
 }
 
 // ---------------------------------------------------------------------------
-// #946 — a proven counted loop whose body MOVES SP declines `loop`.
+// #946 — a proven counted loop whose body TRANSIENTLY moves SP stays BOUNDED,
+// and the bound is now earned rather than accidental.
 //
 // `wcet_loops::may_move_sp` (was `writes_sp`) is the predicate both the region
 // check and the function-level walk use to refuse SP motion. It named 47 of
@@ -529,28 +530,27 @@ fn i64_div_declines_with_looped_expansion_reason() {
 // including `I64Popcnt`, `I64Rotl` and `I64Rotr`, which `op_cost` PRICES (so
 // they really do reach the walk) and whose encoder expansions really do emit
 // `PUSH`/`POP` (`0xB438`/`0xBC38`; `0xB40F` via `emit_i64_fixed_abi_entry`).
+// These two fixtures are the shapes that reached the wildcard in practice.
 //
-// This is a LIVE behaviour change, deliberately taken. Before the fix both
-// fixtures below came out BOUNDED (`rot` 3120 cyc, `pc` 4702 cyc, trip 8,
-// source `static`). Those numbers were not demonstrably WRONG — the push/pop
-// is net-zero across the expansion and writes strictly BELOW the incoming SP,
-// so neither the trip count nor the cycle sum is corrupted — but they rested
-// on an unenforced premise: that no tracked counter slot ever lives at a
-// NEGATIVE offset from SP (the walk tracks slots by raw signed `addr.offset`
-// and does not constrain the sign). An accidentally-correct bound is exactly
-// what the decline-honesty posture refuses to ship, so the answer moved to the
-// sound side: these shapes now decline, loudly, with a machine reason.
+// The wildcard's `false` produced the RIGHT numbers for the WRONG reason. The
+// push/pop is net-zero across the expansion and writes strictly BELOW the
+// incoming SP, so neither the trip count nor the cycle sum is corrupted — but
+// that argument needed a premise nothing enforced: that no tracked counter slot
+// ever lives at a NEGATIVE offset from SP (the walk took `addr.offset` raw and
+// signed). #946 makes it a `WalkState` invariant instead — `read_slot`,
+// `write_slot_word` and `shift_slots` all refuse to track below SP — so the
+// same `false` is now derived from a checked property.
 //
-// Coverage cost, stated rather than hidden: an i64 rotate or popcnt inside an
-// otherwise-provable counted loop is no longer bounded. Re-earning it means
-// enforcing the non-negative-slot premise in the walk, not relaxing this
-// predicate. Named follow-up.
+// These therefore pin the EXACT pre-existing bounds (3120 / 4702, trip 8,
+// source `static`): the lane must not silently trade Track D coverage for a
+// decline, in either direction. Flip `may_move_sp` for those ops, or weaken
+// the non-negative-slot guards, and these go red.
 // ---------------------------------------------------------------------------
 
 /// A canonical const-bound counted loop (trip 8) whose body contains an
-/// `i64.rotl` — priced, but its expansion pushes `{R0-R3}`.
+/// `i64.rotl` — priced, and its expansion pushes `{R0-R3}` transiently.
 #[test]
-fn proven_loop_containing_i64_rotl_declines_on_sp_motion() {
+fn proven_loop_containing_i64_rotl_stays_bounded() {
     let wat = r#"
         (module
           (func (export "rot") (param i64) (result i64)
@@ -564,12 +564,12 @@ fn proven_loop_containing_i64_rotl_declines_on_sp_motion() {
             local.get 2))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    assert_declined(&report, "rot", "loop");
+    assert_sp_motion_loop_bounded(&report, "rot", 3120);
 }
 
 /// Same loop shape with `i64.popcnt` — expansion pushes `{R3,R4,R5}`.
 #[test]
-fn proven_loop_containing_i64_popcnt_declines_on_sp_motion() {
+fn proven_loop_containing_i64_popcnt_stays_bounded() {
     let wat = r#"
         (module
           (func (export "pc") (param i64) (result i64)
@@ -583,15 +583,15 @@ fn proven_loop_containing_i64_popcnt_declines_on_sp_motion() {
             local.get 2))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    assert_declined(&report, "pc", "loop");
+    assert_sp_motion_loop_bounded(&report, "pc", 4702);
 }
 
-/// NON-VACUITY for the two fixtures above: the SAME loop shape with an i64 op
-/// whose expansion does NOT touch SP (`i64.and`) must still be BOUNDED. Without
-/// this, a future change that declined every i64 loop — or every loop at all —
-/// would leave the two decline assertions green and meaningless.
+/// CONTROL: the same loop shape with an i64 op whose expansion does NOT touch
+/// SP (`i64.and`). It isolates the two fixtures above to SP motion specifically
+/// — if all three were to change together, the cause is the loop prover, not
+/// `may_move_sp`.
 #[test]
-fn proven_loop_containing_sp_free_i64_op_is_still_bounded() {
+fn proven_loop_containing_sp_free_i64_op_is_bounded() {
     let wat = r#"
         (module
           (func (export "andloop") (param i64) (result i64)
@@ -609,8 +609,38 @@ fn proven_loop_containing_sp_free_i64_op_is_still_bounded() {
     assert_eq!(
         f.get("status").and_then(Value::as_str),
         Some("bounded"),
-        "the SP-free control must stay bounded, else the #946 decline fixtures \
-         above prove nothing about SP specifically: {f}"
+        "the SP-free control must be bounded: {f}"
+    );
+}
+
+/// Shared assertion for the two #946 fixtures: bounded, at exactly `cycles`,
+/// with the loop statically proven at trip 8.
+fn assert_sp_motion_loop_bounded(report: &Value, name: &str, cycles: u64) {
+    let f = func(report, name);
+    assert_eq!(
+        f.get("status").and_then(Value::as_str),
+        Some("bounded"),
+        "#946: {name} must stay BOUNDED — `may_move_sp` answers `false` for the \
+         net-zero PUSH/POP expansions, earned by the WalkState non-negative-slot \
+         invariant. A decline here means that invariant or that arm moved: {f}"
+    );
+    assert_eq!(
+        f.get("cycles").and_then(Value::as_u64),
+        Some(cycles),
+        "#946: {name} bound changed (was {cycles}, the value main emitted before \
+         the wildcard was expanded): {f}"
+    );
+    let loops = f.get("loops").and_then(Value::as_array).expect("loops[]");
+    assert_eq!(loops.len(), 1, "{name}: expected exactly one proven loop");
+    assert_eq!(
+        loops[0].get("trip_count").and_then(Value::as_u64),
+        Some(8),
+        "{name}: trip count must still be the statically proven 8"
+    );
+    assert_eq!(
+        loops[0].get("source").and_then(Value::as_str),
+        Some("static"),
+        "{name}: the trip must be proven statically, not via a hint"
     );
 }
 

@@ -8,6 +8,8 @@
 //! contain" while a single `_ => false` answered for **175 of `ArmOp`'s 222
 //! variants** — including three (`I64Popcnt`, `I64Rotl`, `I64Rotr`) that
 //! `op_cost` PRICES and whose encoder expansions really do emit `PUSH`/`POP`.
+//! Their `false` was right, but for a reason nothing checked; #946 turned that
+//! reason into a `WalkState` invariant instead of deleting the bound.
 //!
 //! `may_move_sp` is a GIVE-UP predicate: `true` declines, `false` lets the
 //! analysis proceed. So `false` is the unsound direction, and a wildcard
