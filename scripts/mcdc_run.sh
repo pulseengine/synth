@@ -91,6 +91,7 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   --invoke-with-args 'ra_validate:11' \
   --invoke-with-args 'ra_validate:12' \
   --invoke-with-args 'ra_validate:13' \
+  --invoke-with-args 'ra_validate:14' \
   --invoke-with-args 'ra_validate:15' \
   --invoke-with-args 'ra_validate:16' \
   --invoke-with-args 'ra_validate:17' \

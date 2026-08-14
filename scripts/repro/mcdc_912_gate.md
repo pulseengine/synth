@@ -95,7 +95,53 @@ Excluded, named rather than hidden:
   has no compound decision for MC/DC to speak about. Branch coverage is the
   applicable criterion there.
 
-## 3. Measured baseline (witness 0.42.0, `wasm32-wasip1`, 56 rows)
+## 3. Measured baseline — and the platform is part of the measurement
+
+witness 0.42.0, `wasm32-wasip1`, rustc **1.96.1**, the same 56 rows, two hosts:
+
+| host | dec | full | cond | proved | gap | dead |
+|---|---|---|---|---|---|---|
+| **ubuntu-latest x86_64** (the CI platform — the floors) | **22** | **4** | **130** | **57** | 23 | 50 |
+| macOS aarch64 (development) | 20 | 3 | 144 | 63 | 31 | 50 |
+
+Same toolchain VERSION, same witness, same rows, different HOST. These are
+counts of decisions reconstructed from *lowered Wasm*, so how `std` inlines
+moves them: `validate_final_allocation_rv32` presents as **9 decisions / 44
+conditions** on Linux and **4 / 43** on macOS, and `ensure_supported_target`
+disappears entirely on Linux. Only `dead` is identical (50) — as you would
+expect of "never reached".
+
+That was not predicted; it was measured, by the first CI run, after the local
+baseline had already been written down. Both numbers are recorded here and in
+`scripts/mcdc_gate.py` so the delta is a stated fact: **a developer running
+this locally on macOS will not meet the CI floors, and that is a platform
+delta, not a regression.** Use `--report-only` locally and read the delta
+against your own previous run. The absolute floors belong to the platform the
+gate actually blocks on.
+
+Witness-version invariance was checked separately — 0.28.0 and 0.42.0 give
+identical numbers on the same host — so the tool is not what moves these.
+
+### The CI table (the one the floors come from)
+
+```
+function                                                        dec  full  cond  prov  gap  dead
+synth_backend_riscv::alloc_validator::is_ret                      1     1     4     4    0     0
+synth_backend_riscv::alloc_validator::is_straight_line            1     0    52   12    0    40
+synth_backend_riscv::alloc_validator::sp_slot_load                1     1     2     2    0     0
+…alloc_validator::validate_final_allocation_rv32                  9     1    44   29   15     0
+synth_backend_riscv::backend::build_options                       2     1     7     5    0     2
+synth_backend_riscv::backend::compile_function_with_opts          1     0     4     1    0     3
+synth_backend_riscv::backend::count_params                        1     0     4     1    0     3
+…backend::count_params::{{closure}}                               1     0     2     0    0     2
+synth_core::static_data_addr::resolve_owner                       1     0     2     0    2     0
+synth_core::static_data_addr::runtime_image                       1     0     2     1    1     0
+synth_core::static_data_addr::validate_reloc_resolutions          1     0     2     0    2     0
+…static_data_addr::validate_reloc_resolutions_spanned             2     0     5     2    3     0
+TOTAL                                                            22     4  130   57   23    50
+```
+
+### The macOS/aarch64 table (development; where the potency deltas were taken)
 
 ```
 function                                                        dec  full  cond  prov  gap  dead
@@ -115,19 +161,17 @@ synth_core::static_data_addr::validate_reloc_resolutions          3     0     7 
 TOTAL                                                            20     3   144   63   31    50
 ```
 
-Identical under witness **0.28.0** and **0.42.0** — 14 minor versions apart —
-so the numbers are not tracking the tool's phrasing.
-
-**The gate reads gap rows, not a percentage.** 31 gap conditions remain and are
+**The gate reads gap rows, not a percentage.** The gap conditions are
 printed in full by `scripts/mcdc_gate.py`, each with the vector witness says
 would close it. Two examples of the residual, stated so it is named:
 
 * `validate_final_allocation_rv32` carries decisions of 10 and 20 conditions
   (whole-function `br_if` chains after inlining). Closing those needs ≥21
   co-designed vectors and is **not** claimed.
-* `ensure_supported_target`'s ISA conjunction (4 gap) cannot be flipped through
-  public constructors: there is no `TargetSpec` with family RiscV and a
-  non-RiscV32/64 ISA.
+* `ensure_supported_target`'s ISA conjunction (4 gap on macOS; the function
+  does not survive inlining on Linux at all) cannot be flipped through public
+  constructors: there is no `TargetSpec` with family RiscV and a non-RiscV32/64
+  ISA.
 
 `is_ret` went 1-proved/3-gap → **4-proved/0-gap** by adding exactly the three
 vectors witness printed, which is the practical demonstration that the gap rows
@@ -152,18 +196,20 @@ surface" class:
 3. **A ratio cannot notice a deleted condition** — removing one removes its gap
    row and the percentage *improves*. So the floors are counts.
 
-Declared floors = the measured baseline, no slack:
-`decisions ≥ 20`, `conditions ≥ 144`, `proved ≥ 63`, `fully-proved decisions ≥ 3`,
+Declared floors = the **CI platform's** measured baseline, no slack:
+`decisions ≥ 22`, `conditions ≥ 130`, `proved ≥ 57`, `fully-proved decisions ≥ 4`,
 and `dead ≤ 50`.
 
-**Dead is ceilinged, not ignored.** 50 of the 144 scored conditions are never
+**Dead is ceilinged, not ignored.** 50 scored conditions are never
 evaluated — 40 of them in `is_straight_line`, whose match arms cover RV32
 opcodes the row set does not construct. That is an honest residual, but an
 UNFLOORED residual is how a number rots: a change that stopped reaching the
 segment barriers would raise `dead`, lower nothing else, and pass. It is also a
 third potency surface — mutation (a) moves dead 50 → 52.
 
-## 5. Red-first potency — two mutations, two distinct failure paths
+## 5. Red-first potency — measured on both platforms, and one surprise
+
+### On macOS/aarch64 (local; baseline 20 / 3 / 144 / 63 / 31 / 50)
 
 Both mutations restored afterwards; `git diff` byte-identical.
 
@@ -171,7 +217,6 @@ Both mutations restored afterwards; `git diff` byte-identical.
 RV32 allocation validator's save-set predicate:
 
 ```
-baseline   TOTAL   dec 20  full 3  cond 144  proved 63  gap 31  dead 50
 mutated    TOTAL   dec 19  full 2  cond 142  proved 54  gap 36  dead 52
 FAIL: scored decisions 19 < floor 20
 FAIL: scored conditions 142 < floor 144
@@ -180,7 +225,8 @@ FAIL: fully-proved decisions 2 < floor 3
 FAIL: dead conditions 52 > ceiling 50
 ```
 
-The **condition-count** drop is the signal a ratio-only floor cannot produce.
+The **condition-count** drop is the signal a ratio-only floor cannot produce:
+delete a condition and the *percentage improves*.
 
 **(b) Weaken the vector set** — drop ONE truth-table row (`ra_validate:14`, the
 non-`sp` `Lw` that gives `sp_slot_load` its unique-cause pair):
@@ -191,7 +237,49 @@ FAIL: proved conditions 62 < floor 63
 FAIL: fully-proved decisions 2 < floor 3
 ```
 
-Conditions unchanged, coverage lost — the second failure path.
+Conditions unchanged, coverage lost — a different failure path.
+
+### On the CI platform, where the gate actually blocks
+
+Both mutations were then pushed to the PR branch and run on CI, because a
+potency result taken on one host does not obviously transfer to a host where
+the same function presents as 9 decisions instead of 4. "It obviously still
+works" is the reasoning this lane exists to distrust.
+
+**Mutation (a) went red at the WRONG STEP, and that is worth recording.** The
+job's own row-driver sanity gate (step 7) asserts `ra_validate(4) == 1` —
+"#871: unsaved `ra` must be a violation" — so deleting the condition fails
+*there* and the MC/DC measurement never runs. The commit is red, and the
+`VCR-RA-003 RV32` job goes red independently, so the change cannot land. But
+two other gates catching one mutation proves nothing about whether the **MC/DC
+floors** bite.
+
+**Mutation (b) isolates them,** because dropping a truth-table row changes no
+compiler behaviour: the sanity gate passes, the witness run executes, and the
+failure has to come from the scoring step or not at all. Measured, run
+`31821746035`:
+
+```
+step 7  Row-driver sanity gate (host)                     success
+step 8  Run the MC/DC rows under witness                  success
+step 9  Score synth's own decisions against the floors    FAILURE
+
+TOTAL                              22     3   130    56   24    50
+FAIL: proved conditions 56 < floor 57
+FAIL: fully-proved decisions 3 < floor 4
+```
+
+Against the CI baseline `22 / 4 / 130 / 57 / 23 / 50`: decisions unchanged,
+**conditions unchanged at 130** — nothing was deleted — while `proved` fell
+57 → 56 and one decision dropped out of full MC/DC. Exactly the predicted
+signature of *coverage lost, structure intact*, produced by the MC/DC scoring
+step itself, on the platform the gate blocks on.
+
+Restored immediately afterwards (`scripts/mcdc_run.sh` byte-identical to the
+pre-probe tree), and the source mutation from probe 1 likewise.
+
+The lesson generalises past this lane: **a red gate is not evidence that the
+gate you were testing works.** Read which step failed.
 
 ## 6. Two invocation traps, encoded in the scripts
 
