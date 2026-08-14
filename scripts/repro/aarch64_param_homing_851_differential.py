@@ -126,6 +126,17 @@ CASES = [
     ("i64_i32_param_write", [64, 32], 64, [0x0000000100000001, 3], False),
     ("i64_i32_param_write", [64, 32], 64, [0xFFFFFFFFFFFFFFFF, 2], False),
     ("i64_i32_param_write", [64, 32], 64, [7, 0xFFFFFFFF], False),
+    # The #457 param-count INFERENCE miscompile: a CONDITIONALLY written param
+    # was reclassified as a zero-init non-param local and compiled SILENTLY
+    # WRONG (measured on c2f9d72: cond_write_param(0,42) → 0, wasmtime 42).
+    ("cond_write_param", [32, 32], 32, [0, 42], False),
+    ("cond_write_param", [32, 32], 32, [1, 42], False),
+    ("cond_write_param", [32, 32], 32, [0, 0], False),
+    ("cond_write_param", [32, 32], 32, [0, 0xFFFFFFFF], False),
+    ("cond_write_param", [32, 32], 32, [0, 42], True),
+    ("cond_write_param_loop", [32, 32, 32], 32, [0, 5, 7], False),
+    ("cond_write_param_loop", [32, 32, 32], 32, [3, 5, 7], False),
+    ("cond_write_param_loop", [32, 32, 32], 32, [1, 0, 9], False),
     # NON-LEAF regression guard (this shape already compiled before the fix).
     ("param_write_across_call", [32], 32, [5], False),
     ("param_write_across_call", [32], 32, [0], False),
