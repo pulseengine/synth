@@ -581,7 +581,7 @@ artifacts:
     description: >
       gale #369 reported soft-float for all f32/f64; deterministic diagnosis
       against v0.11.45 showed it is WORSE — a silent wrong-value miscompile,
-      and the drop is at the DECODER, not the selector. `map_operator` in
+      and the drop is at the DECODER, not the selector. `convert_operator` in
       crates/synth-core/src/wasm_decoder.rs decodes the SIMD `F32x4*` family
       (lines 765-780) but has NO arm for any scalar `f32.*`/`f64.*` op, so
       scalar floats fall through the catch-all `_ => None`

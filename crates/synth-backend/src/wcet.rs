@@ -75,18 +75,38 @@ const BL_BLX_CALL_OVERHEAD_CYCLES: u64 = 4;
 ///  - a 16-bit (1-halfword) ALU/shift/mov/cmp/forward-branch is ≤ 3 cycles → ≤ 5;
 ///  - a 32-bit (2-halfword) op — including UMULL/MLA (M3 worst ≈ 5) — is priced at
 ///    2×5 = 10 ≥ its worst;
-///  - a 16-bit `PUSH`/`POP` of up to 4 registers is 1+4 = 5 cycles → exactly ≤ 5
-///    (the audited expansions push at most 3 registers, so this holds with margin;
-///    the i64 software div/rem, which pushes 4, is a LoopedExpansion decline and
-///    is never priced here).
+///  - a 16-bit `PUSH`/`POP` of up to 4 registers is 1+4 = 5 cycles → exactly ≤ 5.
 ///
 /// Hardware `SDIV`/`UDIV` (up to 12) do NOT appear in any priced expansion — the
-/// only i64 division is the looped-expansion decline — so no single instruction
+/// only i64 division is the looped-expansion decline (it also pushes 4 registers,
+/// but is never priced here) — so no single instruction
 /// exceeds the ceiling. 5 cycles/halfword is therefore a sound over-estimate of any
 /// priced straight-line block; the block executes exactly once in a loop-free
-/// function, so summing the ceiling stays sound. Audited against `arm_encoder.rs`
-/// (#778): the only 16-bit `PUSH`/`POP` in a priced arm is I64Popcnt's 3-register
-/// `0xB438`/`0xBC38`.
+/// function, so summing the ceiling stays sound.
+///
+/// RE-AUDITED against `arm_encoder.rs` (#946), because the previous note was
+/// STALE. It claimed "the audited expansions push at most 3 registers, so this
+/// holds with margin; the i64 software div/rem, which pushes 4, is a
+/// LoopedExpansion decline and is never priced here". The margin does not
+/// exist. Enumerating every 16-bit `PUSH`/`POP` and its owning arm:
+///
+///  - `I64Popcnt`: `0xB438`/`0xBC38`, 3 registers → 1+3 = 4 ≤ 5. PRICED.
+///  - `I64DivU`: `0xB4F0`/`0xBCF0`, 4 registers. `LoopedExpansion` — not priced.
+///  - `emit_i64_fixed_abi_entry`: `0xB40F` = `PUSH {R0-R3}`, **4 registers** →
+///    1+4 = 5, EXACTLY the ceiling for its 1 halfword, zero margin. Reached by
+///    `I64Rotl` and `I64Rotr`, which ARE priced (`Cycles(straightline_expansion)`)
+///    — so a 4-register push does occur in a priced arm, contrary to the old note.
+///    Its paired pops (`emit_i64_fixed_abi_exit`) are single-register (2 cycles).
+///
+/// The bound is unchanged and still sound — 5 ≥ 5 holds — and this is precisely
+/// why the constant had to be 4→5: at 4 the priced `I64Rotl`/`I64Rotr` prologue
+/// push would have been UNDER-counted, not merely tight. The claims.yaml pin
+/// (`SYNTH-WCET-CYCLE-MODEL`) is on the constant, which does not move.
+///
+/// FORWARD CONSTRAINT (kept from the #946 doc sweep, which reached the same
+/// conclusion independently): because the ceiling now holds EXACTLY rather
+/// than with margin, any future 16-bit `PUSH`/`POP` of 5+ registers in a
+/// PRICED arm would exceed it and must force a re-derivation of this constant.
 const STRAIGHTLINE_CEIL_PER_HALFWORD: u64 = 5;
 
 /// Worst-case cycles for a straight-line multi-byte expansion, sized from the

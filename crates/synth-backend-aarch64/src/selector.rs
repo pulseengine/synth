@@ -35,18 +35,19 @@
 //! **Deliberately still declined (loud-skip, never wrong code) — the
 //! mechanically-derived complement lives in the cross-backend op-parity oracle
 //! (`crates/synth-backend-riscv/tests/cross_backend_op_parity.rs`, aarch64
-//! leg):**
-//! - import calls, `>8` integer args, multi-result or float-result callees
-//!   (returned in v0/d0, not x0), and a live value-stack temp across a `call`.
-//! - register spilling and bulk memory (`memory.copy`/`memory.fill`).
-//! - Float rounding (`ceil`/`floor`/`trunc`/`nearest`), f32/f64 linear-memory
-//!   load/store, i64→float converts, and the TRAPPING i64-target truncations
-//!   (the saturating forms do lower).
-//! - Data-segment init and the startup that establishes the `x28` linear-memory
-//!   base (the load/store lowering is correct given the base precondition;
-//!   wiring it at runtime is a follow-on). OOB accesses TRAP since #865 under
-//!   [`MemBounds::Software`] (the CLI default); `--safety-bounds none` is the
-//!   explicit unchecked opt-out.
+//! leg) — consult it, not a hand list. A hand-maintained list here went stale
+//! twice (#946: it still named `call_indirect`, float rounding, f32/f64
+//! linear-memory load/store, i64→float converts, and the trapping i64-target
+//! truncations as declined after all of them had shipped lowerings in this
+//! very file), so it was deleted rather than re-synced. Two decline facts
+//! worth stating because they are contracts, not coverage gaps:
+//! - Data-segment init: this backend ships NO data section and REFUSES a
+//!   module carrying active data segments loudly (#851, `backend.rs`); the
+//!   startup that establishes the `x28` linear-memory base at runtime is a
+//!   follow-on (the load/store lowering is correct given the base
+//!   precondition).
+//! - OOB accesses TRAP since #865 under [`MemBounds::Software`] (the CLI
+//!   default); `--safety-bounds none` is the explicit unchecked opt-out.
 //!
 //! **#851 — non-param locals:** GP locals beyond the params (index >=
 //! `num_params`) get zero-initialized 8-byte stack slots (`[sp, #(idx -

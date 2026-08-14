@@ -55,7 +55,9 @@
 //! only manufacture a false-positive (a body `s11` read/def with no save the pass
 //! was never going to add). Unlike the ARM validator, there is NO "unmodeled op →
 //! force prologue" fail-safe: on RV every `op_dest == None` op is control-flow /
-//! system / label / call (none write an `s`-register), so the fail-safe is
+//! system / label / call / store (`Sb`/`Sh`/`Sw` are `op_dest == None` too —
+//! stores write memory, not a register), so none of them can write an
+//! `s`-register and the fail-safe is
 //! unnecessary AND would disagree with the pass (which has none) → false-positive.
 //!
 //! # Documented boundaries (false-negatives, never false-positives)

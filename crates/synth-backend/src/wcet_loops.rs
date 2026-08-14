@@ -233,8 +233,18 @@ impl WalkState {
 
     /// Read a word slot `[sp,#off]`: the value written during this walk, else
     /// the symbolic entry value `Slot{off,0}`.
+    ///
+    /// (#946) A NEGATIVE offset is never tracked. Everything at or above SP is
+    /// the function's own live frame; everything below is scratch that any
+    /// interrupt, or any multi-instruction encoder expansion that transiently
+    /// pushes, may overwrite. Refusing to mint a `Slot` identity below SP is
+    /// what lets `may_move_sp` answer `false` for the priced expansions that
+    /// wrap a fixed-register core in `PUSH`/`POP` (`I64Popcnt`, `I64Rotl`,
+    /// `I64Rotr`): their transient writes land strictly BELOW the incoming SP,
+    /// so they provably cannot alias any slot this walk tracks. Conservative in
+    /// one direction only — `Top` can cost a bound, never invent one.
     fn read_slot(&self, off: i64) -> Sym {
-        if off % 4 != 0 || self.tainted.contains(&off) {
+        if off < 0 || off % 4 != 0 || self.tainted.contains(&off) {
             return Sym::Top;
         }
         self.written
@@ -244,7 +254,11 @@ impl WalkState {
     }
 
     fn write_slot_word(&mut self, off: i64, v: Sym) {
-        if off % 4 == 0 {
+        if off < 0 {
+            // Below SP — see `read_slot`. Record nothing; taint so a later
+            // re-base cannot resurrect a value written into scratch space.
+            self.taint_range(off, 4);
+        } else if off % 4 == 0 {
             // A full word store replaces the slot entirely — un-taint.
             self.tainted.remove(&off);
             self.written.insert(off, v);
@@ -510,7 +524,7 @@ pub(crate) fn analyze_loops(
                     return unproven(hints, &head_offsets);
                 }
                 op => {
-                    if writes_sp(op) {
+                    if may_move_sp(op) {
                         return unproven(hints, &head_offsets);
                     }
                     // A dynamic or non-word-offset SP store inside a region is
@@ -1031,15 +1045,44 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
     }
 }
 
-/// `writes_sp` — does this op define SP? (Loop regions refuse any SP motion;
-/// the function-level walk re-bases on the immediate push/pop/add/sub forms and
-/// gives up on anything else.) Exhaustive over every `rd`-carrying op the
-/// priced instruction set can contain; multi-instruction encoder expansions
-/// never target SP (audited: arithmetic scratch only, I64Popcnt's push/pop is
-/// SP-net-zero and it is a whole-function `LoopedExpansion` decline anyway).
-fn writes_sp(op: &ArmOp) -> bool {
+/// `may_move_sp` — may executing this op change SP, or is its SP effect
+/// UNAUDITED? Either way the answer is `true` and the caller gives up.
+///
+/// Both call sites use this as a *give-up* predicate: loop regions refuse any SP
+/// motion, and the function-level walk re-bases only on the immediate
+/// push/pop/add/sub forms. So `true` is the SOUND direction — it can only cost a
+/// bound, never invent one — and `false` is the direction that must be EARNED.
+///
+/// (#946) EXHAUSTIVE — no wildcard, no bare-identifier catch-all. It previously
+/// named 47 of `ArmOp`'s 222 variants and let a `_ => false` absorb the other
+/// 175, i.e. it *claimed* exhaustiveness over the priced instruction set while
+/// silently answering "does not touch SP" for 79 % of the enum — the same shape
+/// as the #615 A32 silent-NOP class. Three of those 175 (`I64Popcnt`,
+/// `I64Rotl`, `I64Rotr`) are PRICED by `op_cost`, so they really do reach here,
+/// and their encoder expansions really do emit `PUSH`/`POP` — the wildcard's
+/// `false` was an UNJUSTIFIED answer, not merely an absent one. It happened to
+/// be the right answer, but only because of a property nothing enforced; that
+/// property is now a `WalkState` invariant (see the net-zero group below), so
+/// the same `false` is now EARNED and the bounds are kept. The wildcard's own
+/// doc comment excused `I64Popcnt` as "a whole-function `LoopedExpansion`
+/// decline anyway", which was FALSE: `op_cost` prices it `Cycles`.
+/// Structurally pinned by `tests/wcet_sp_no_wildcard_946.rs`.
+///
+/// REACHABILITY (why the `true` bucket below is behaviourally free): the sole
+/// caller of [`analyze_loops`] is `wcet::function_wcet_intermediate`, which runs
+/// `scan_for_decline` FIRST. That scan declines every op `op_cost` classifies
+/// `Unmodeled` or `LoopedExpansion`, plus indirect/external calls and residual
+/// label branches. So a stream that reaches this predicate contains ONLY
+/// `OpCost::Cycles` ops and direct calls. The one variant NOT covered by that
+/// argument is `ArmOp::Call`: `classify_call` returns `Direct` for it and
+/// `continue`s, so it never reaches the `op_cost` check at all. It is
+/// unreachable for a different reason — `encode_thumb` REFUSES it with a typed
+/// `Err` (#615), so a compile carrying one has already failed.
+#[allow(clippy::match_same_arms)] // grouped by REASON, not by answer
+fn may_move_sp(op: &ArmOp) -> bool {
     use ArmOp::*;
     match op {
+        // ---- Defines a named destination register: SP iff that register is SP ----
         Add { rd, .. }
         | Sub { rd, .. }
         | Adds { rd, .. }
@@ -1085,8 +1128,253 @@ fn writes_sp(op: &ArmOp) -> bool {
         | SetCond { rd, .. }
         | SelectMove { rd, .. } => *rd == Reg::SP,
         Umull { rdlo, rdhi, .. } => *rdlo == Reg::SP || *rdhi == Reg::SP,
+
+        // ---- PRICED i64 expansions with a register destination (#946) ----
+        // Reachable (`op_cost` → `Cycles(straightline_expansion(..))`), so these
+        // get the SAME precise `rd == SP` test as their i32 counterparts above
+        // rather than the wildcard's unconditional `false`. `I64Const`/`I64Ldr`
+        // are the #936 ops: pricing them made them reachable here, where they
+        // silently inherited the wildcard.
+        I64SetCond { rd, .. } | I64SetCondZ { rd, .. } | I64Clz { rd, .. } | I64Ctz { rd, .. } => {
+            *rd == Reg::SP
+        }
+        I64Const { rdlo, rdhi, .. }
+        | I64Ldr { rdlo, rdhi, .. }
+        | I64Extend8S { rdlo, rdhi, .. }
+        | I64Extend16S { rdlo, rdhi, .. }
+        | I64Extend32S { rdlo, rdhi, .. } => *rdlo == Reg::SP || *rdhi == Reg::SP,
+        I64Mul { rd_lo, rd_hi, .. }
+        | I64Shl { rd_lo, rd_hi, .. }
+        | I64ShrU { rd_lo, rd_hi, .. }
+        | I64ShrS { rd_lo, rd_hi, .. } => *rd_lo == Reg::SP || *rd_hi == Reg::SP,
+
+        // ---- Moves SP outright ----
         Push { .. } | Pop { .. } => true,
-        _ => false,
+
+        // ---- Expansions that transiently PUSH/POP, net-zero — EARNED `false` ----
+        // Each of these expands (arm_encoder.rs) to a fixed-register core
+        // wrapped in a `PUSH`/`POP` pair: `I64Popcnt`'s `0xB438`/`0xBC38`, and
+        // `I64Rotl`/`I64Rotr`/`I64Div*`/`I64Rem*` via
+        // `emit_i64_fixed_abi_entry`/`_exit` (`PUSH {R0-R3}` + `STR src,[SP,#-4]!`
+        // marshalling, then a matching pop/`ADD SP,#4` for all four words).
+        //
+        // TWO facts make `false` sound, both checked rather than assumed:
+        //  1. NET-ZERO: SP is restored exactly before the next op, so no
+        //     tracked offset needs re-basing (verified by reading each arm:
+        //     entry −16−12+12 = −16, exit +16).
+        //  2. NO ALIASING: the transient writes land strictly BELOW the
+        //     incoming SP, and `read_slot`/`write_slot_word`/`shift_slots`
+        //     refuse to track ANY slot at a negative offset (#946), so nothing
+        //     the walk believes can live in the region these ops scribble on.
+        //
+        // Fact 2 used to be an unenforced premise — the walk took `addr.offset`
+        // raw and signed. It is now an invariant of `WalkState`, which is why
+        // this arm answers `false` (keeping the bound) instead of declining.
+        // Weaken those three guards and this answer stops being earned.
+        I64Popcnt { .. }
+        | I64Rotl { .. }
+        | I64Rotr { .. }
+        | I64DivS { .. }
+        | I64DivU { .. }
+        | I64RemS { .. }
+        | I64RemU { .. } => false,
+
+        // ---- Reachable and provably NOT an SP definition ----
+        // Each of these is PRICED, so it really does reach here, and `true`
+        // would be a live regression: the proven counter lives in an SP-relative
+        // slot written by `Str`, the exit predicate is `Cmp`, and the region
+        // closers/exits are `BOffset`/`BCondOffset` — declining any of them
+        // would decline EVERY proven loop.
+        //
+        //  - `Cmp`/`Cmn` write flags only, no register.
+        //  - `Str`/`Strb`/`Strh`/`I64Str`: `rd` (`rdlo`/`rdhi`) is the stored
+        //    VALUE, a SOURCE. `MemAddr` has base/offset/offset_reg and NO
+        //    writeback field, so the base register is never updated either.
+        //  - `Label`/`Nop` have no register effect (`op_cost` prices both 0).
+        //  - `Udf` traps.
+        //  - `Bx`/`Bl`/`BOffset`/`BCondOffset` write PC (and `Bl` also LR); an
+        //    AAPCS callee restores SP before returning. NOTE: `Bx` MUST stay
+        //    `false` — `resolve_toplevel_inits` matches its `may_move_sp` guard
+        //    arm BEFORE its `ArmOp::Bx` arm, so a `true` here would silently
+        //    shadow the return handling (no unreachable-pattern warning).
+        Cmp { .. }
+        | Cmn { .. }
+        | Str { .. }
+        | Strb { .. }
+        | Strh { .. }
+        | I64Str { .. }
+        | Label { .. }
+        | Nop
+        | Udf { .. }
+        | Bx { .. }
+        | Bl { .. }
+        | BOffset { .. }
+        | BCondOffset { .. } => false,
+
+        // ---- Not reachable here — answered `true` (give up), not `false` ----
+        // `op_cost` classifies every variant below `Unmodeled` (VFP scalar, MVE
+        // vector, the i64 pseudo binops/compares/extends, and the off-path
+        // pseudo-ops `encode_thumb` REFUSES with a typed `Err`) or, for the
+        // indirect calls and residual label branches, `scan_for_decline`
+        // declines them outright. `Call` is the one exception to that chain —
+        // `classify_call` calls it `Direct` and skips the `op_cost` check — but
+        // `encode_thumb` refuses it too, so it is equally unreachable. Per the
+        // REACHABILITY note on this function, none can appear in a stream that
+        // reaches here. They answer `true` rather than `false` deliberately:
+        //
+        //  1. SOUNDNESS: `true` is the give-up direction at both call sites, so
+        //     an unaudited op can only cost a bound, never fabricate one.
+        //  2. FUTURE-PROOFING: #936 priced `I64Const`/`I64Ldr`/`I64Str` and they
+        //     instantly became reachable here, inheriting the wildcard's
+        //     unaudited `false` with nobody revisiting this function. With
+        //     `true` as the default, pricing an op produces a LOUD decline until
+        //     its SP behaviour is consciously audited and moved to a group above.
+        //  3. TRIPWIRE POTENCY: a re-added `_ => false` flips all 142 of these
+        //     answers, so the #946 behavioural pins can actually fail. A bucket
+        //     of `false`s would make the wildcard behaviourally identical and
+        //     the tripwire vacuous.
+        MemorySize { .. }
+        | MemoryGrow { .. }
+        | B { .. }
+        | Bhs { .. }
+        | Blo { .. }
+        | Bcc { .. }
+        | Blx { .. }
+        | Select { .. }
+        | LocalGet { .. }
+        | LocalSet { .. }
+        | LocalTee { .. }
+        | GlobalGet { .. }
+        | GlobalSet { .. }
+        | BrTable { .. }
+        | Call { .. }
+        | CallIndirect { .. }
+        | I64Add { .. }
+        | I64Sub { .. }
+        | I64And { .. }
+        | I64Or { .. }
+        | I64Xor { .. }
+        | I64Eqz { .. }
+        | I64Eq { .. }
+        | I64Ne { .. }
+        | I64LtS { .. }
+        | I64LtU { .. }
+        | I64LeS { .. }
+        | I64LeU { .. }
+        | I64GtS { .. }
+        | I64GtU { .. }
+        | I64GeS { .. }
+        | I64GeU { .. }
+        | I64ExtendI32S { .. }
+        | I64ExtendI32U { .. }
+        | I32WrapI64 { .. }
+        | F32Add { .. }
+        | F32Sub { .. }
+        | F32Mul { .. }
+        | F32Div { .. }
+        | F32Abs { .. }
+        | F32Neg { .. }
+        | F32Sqrt { .. }
+        | F32Ceil { .. }
+        | F32Floor { .. }
+        | F32Trunc { .. }
+        | F32Nearest { .. }
+        | F32Min { .. }
+        | F32Max { .. }
+        | F32Copysign { .. }
+        | F32Eq { .. }
+        | F32Ne { .. }
+        | F32Lt { .. }
+        | F32Le { .. }
+        | F32Gt { .. }
+        | F32Ge { .. }
+        | F32Const { .. }
+        | F32Load { .. }
+        | F32Store { .. }
+        | F32ConvertI32S { .. }
+        | F32ConvertI32U { .. }
+        | F32ConvertI64S { .. }
+        | F32ConvertI64U { .. }
+        | F32ReinterpretI32 { .. }
+        | I32ReinterpretF32 { .. }
+        | I32TruncF32S { .. }
+        | I32TruncF32U { .. }
+        | F64Add { .. }
+        | F64Sub { .. }
+        | F64Mul { .. }
+        | F64Div { .. }
+        | F64Abs { .. }
+        | F64Neg { .. }
+        | F64Sqrt { .. }
+        | F64Ceil { .. }
+        | F64Floor { .. }
+        | F64Trunc { .. }
+        | F64Nearest { .. }
+        | F64Min { .. }
+        | F64Max { .. }
+        | F64Copysign { .. }
+        | F64Eq { .. }
+        | F64Ne { .. }
+        | F64Lt { .. }
+        | F64Le { .. }
+        | F64Gt { .. }
+        | F64Ge { .. }
+        | F64Const { .. }
+        | F64Load { .. }
+        | F64Store { .. }
+        | F64ConvertI32S { .. }
+        | F64ConvertI32U { .. }
+        | F64ConvertI64S { .. }
+        | F64ConvertI64U { .. }
+        | F64PromoteF32 { .. }
+        | F32DemoteF64 { .. }
+        | F64ReinterpretI64 { .. }
+        | I64ReinterpretF64 { .. }
+        | I64TruncF64S { .. }
+        | I64TruncF64U { .. }
+        | I32TruncF64S { .. }
+        | I32TruncF64U { .. }
+        | MveLoad { .. }
+        | MveStore { .. }
+        | MveConst { .. }
+        | MveAnd { .. }
+        | MveOrr { .. }
+        | MveEor { .. }
+        | MveMvn { .. }
+        | MveBic { .. }
+        | MveAddI { .. }
+        | MveSubI { .. }
+        | MveMulI { .. }
+        | MveNegI { .. }
+        | MveCmpEqI { .. }
+        | MveCmpNeI { .. }
+        | MveCmpLtS { .. }
+        | MveCmpLtU { .. }
+        | MveCmpGtS { .. }
+        | MveCmpGtU { .. }
+        | MveCmpLeS { .. }
+        | MveCmpLeU { .. }
+        | MveCmpGeS { .. }
+        | MveCmpGeU { .. }
+        | MveDup { .. }
+        | MveExtractLane { .. }
+        | MveInsertLane { .. }
+        | MveAddF32 { .. }
+        | MveSubF32 { .. }
+        | MveMulF32 { .. }
+        | MveNegF32 { .. }
+        | MveAbsF32 { .. }
+        | MveCmpEqF32 { .. }
+        | MveCmpNeF32 { .. }
+        | MveCmpLtF32 { .. }
+        | MveCmpLeF32 { .. }
+        | MveCmpGtF32 { .. }
+        | MveCmpGeF32 { .. }
+        | MveDupF32 { .. }
+        | MveExtractLaneF32 { .. }
+        | MveReplaceLaneF32 { .. }
+        | MveDivF32 { .. }
+        | MveSqrtF32 { .. } => true,
     }
 }
 
@@ -1159,7 +1447,10 @@ fn resolve_toplevel_inits(regions: &mut [Region], instrs: &[ArmInstruction]) -> 
                     _ => return false,
                 }
             }
-            op if writes_sp(op) => return false, // any other SP write — give up
+            // NOTE: this guard arm is matched BEFORE the `ArmOp::Bx` arm below,
+            // so `may_move_sp(Bx) == false` is load-bearing — a `true` there
+            // would shadow the return handling with no compiler warning (#946).
+            op if may_move_sp(op) => return false, // any other SP motion — give up
             ArmOp::Bx { .. } => {
                 // A return: nothing after it can be reached by fallthrough, and
                 // all remaining region heads (if any) would be unreachable —
@@ -1189,6 +1480,18 @@ fn shift_slots(st: &mut WalkState, delta: i64) {
         .map(|(&off, &v)| (off + delta, v))
         .collect();
     st.tainted = st.tainted.iter().map(|&off| off + delta).collect();
+    // (#946) A re-base can push a tracked offset BELOW the new SP — an epilogue
+    // `pop {r4-r7}` shifts by −16. Those words are scratch from here on, so
+    // drop the remembered value and taint the slot rather than keep believing
+    // it. This is what makes `read_slot`'s "nothing below SP is ever tracked"
+    // invariant hold for the WHOLE walk, not just at the moment of the store —
+    // and it is the invariant `may_move_sp` relies on to answer `false` for the
+    // priced PUSH/POP-wrapping expansions. Conservative in one direction only.
+    let below: Vec<i64> = st.written.keys().copied().filter(|&o| o < 0).collect();
+    for off in below {
+        st.written.remove(&off);
+        st.tainted.insert(off);
+    }
     // Symbolic Slot{off} identities in registers refer to pre-shift offsets —
     // drop them (registers holding loaded values stay valid as Const/Top, but a
     // Slot identity is offset-relative).
@@ -1399,6 +1702,226 @@ mod tests {
         assert_eq!(exit_index(0, 1, &pred(Rel::Eq, 8, 0)), Some((8, true)));
         // step 2 over an odd distance NEVER lands → None (may not terminate).
         assert_eq!(exit_index(0, 2, &pred(Rel::Eq, 9, 0)), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // #946 — `may_move_sp` behavioural pins.
+    //
+    // The STRUCTURAL half of the tripwire (no wildcard may regrow, every one of
+    // the 222 `ArmOp` variants must be named) lives in
+    // `tests/wcet_sp_no_wildcard_946.rs`. These pins are the BEHAVIOURAL half:
+    // they fix the answers a re-added `_ => false` would change, and the
+    // reachable answers a careless `_ => true` would change. Both directions
+    // matter — `true` is the sound/give-up direction, but on a REACHABLE op it
+    // is a live regression (declining `Str`/`Cmp`/`BOffset` would decline every
+    // proven loop, since those are what a canonical counted loop is built from).
+    // -----------------------------------------------------------------------
+
+    use synth_synthesis::{MemAddr, QReg, VfpReg};
+
+    /// Ops whose answer is `true` but which a `_ => false` wildcard would have
+    /// answered `false`. NON-VACUITY: this list must be non-empty, otherwise the
+    /// wildcard is behaviourally identical to the explicit arms and the tripwire
+    /// cannot fail. (`Push`/`Pop` are excluded — they were already explicit.)
+    fn true_but_absorbed_by_a_false_wildcard() -> Vec<ArmOp> {
+        vec![
+            // Pre-declined families — `true` is the decline-honest default so a
+            // future pricing change (cf. #936) gets a loud decline, not a
+            // silently inherited `false`.
+            ArmOp::I64Add {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+            },
+            ArmOp::F64Add {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            },
+            ArmOp::MveAddF32 {
+                qd: QReg::Q0,
+                qn: QReg::Q1,
+                qm: QReg::Q2,
+            },
+            ArmOp::Select {
+                rd: Reg::R0,
+                rval1: Reg::R1,
+                rval2: Reg::R2,
+                rcond: Reg::R3,
+            },
+            ArmOp::B {
+                label: "L".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn may_move_sp_true_answers_are_not_reproducible_by_a_false_wildcard() {
+        let ops = true_but_absorbed_by_a_false_wildcard();
+        assert!(
+            !ops.is_empty(),
+            "non-vacuity: with an empty list a re-added `_ => false` would be \
+             behaviourally identical and this tripwire could never fail"
+        );
+        for op in &ops {
+            assert!(
+                may_move_sp(op),
+                "{op:?}: must answer `true`; a `_ => false` wildcard would say `false`"
+            );
+        }
+    }
+
+    #[test]
+    fn may_move_sp_true_on_real_sp_definitions() {
+        // The unconditional stack ops.
+        assert!(may_move_sp(&ArmOp::Push {
+            regs: vec![Reg::R4]
+        }));
+        assert!(may_move_sp(&ArmOp::Pop {
+            regs: vec![Reg::R4]
+        }));
+        // A destination register that IS SP, across every destination shape.
+        assert!(may_move_sp(&ArmOp::Add {
+            rd: Reg::SP,
+            rn: Reg::SP,
+            op2: Operand2::Imm(8)
+        }));
+        assert!(may_move_sp(&ArmOp::Umull {
+            rdlo: Reg::SP,
+            rdhi: Reg::R1,
+            rn: Reg::R2,
+            rm: Reg::R3
+        }));
+        // #946: the i64 destination shapes the wildcard used to absorb.
+        assert!(may_move_sp(&ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::SP,
+            value: 1
+        }));
+        assert!(may_move_sp(&ArmOp::I64Mul {
+            rd_lo: Reg::SP,
+            rd_hi: Reg::R1,
+            rn_lo: Reg::R2,
+            rn_hi: Reg::R3,
+            rm_lo: Reg::R4,
+            rm_hi: Reg::R5
+        }));
+        assert!(may_move_sp(&ArmOp::I64Clz {
+            rd: Reg::SP,
+            rnlo: Reg::R1,
+            rnhi: Reg::R2
+        }));
+    }
+
+    #[test]
+    fn may_move_sp_false_on_the_reachable_counted_loop_vocabulary() {
+        // These are exactly the ops a canonical counted loop is built from. A
+        // `true` here would decline EVERY proven loop — the regression a
+        // blanket "be conservative" sweep would have caused.
+        let must_be_false = vec![
+            // The counter's slot store (`rd` is the stored VALUE, a source; and
+            // `MemAddr` has no writeback so the SP base is never updated).
+            ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 4),
+            },
+            ArmOp::I64Str {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            },
+            // The exit predicate.
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(10),
+            },
+            // The region closer and its exit branch.
+            ArmOp::BOffset { offset: -6 },
+            ArmOp::BCondOffset {
+                cond: Condition::GE,
+                offset: 4,
+            },
+            // `Bx` MUST be false: `resolve_toplevel_inits` matches the
+            // `may_move_sp` guard arm BEFORE its `ArmOp::Bx` arm, so a `true`
+            // would silently shadow the return handling.
+            ArmOp::Bx { rm: Reg::LR },
+            ArmOp::Bl {
+                label: "func_1".to_string(),
+            },
+            ArmOp::Label {
+                name: "L".to_string(),
+            },
+            ArmOp::Nop,
+            ArmOp::Udf { imm: 0 },
+            // A non-SP destination still answers false.
+            ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Imm(1),
+            },
+            ArmOp::I64Const {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                value: 1,
+            },
+            // The net-zero PUSH/POP group. `false` here is EARNED by the
+            // `WalkState` non-negative-slot invariant (`read_slot`,
+            // `write_slot_word`, `shift_slots`), not assumed — see the arm's
+            // comment. Weaken those guards and this answer must go back to
+            // `true`, costing the `rot`/`pc` bounds in `wcet_bound_gate.rs`.
+            ArmOp::I64Popcnt {
+                rd: Reg::R0,
+                rnlo: Reg::R1,
+                rnhi: Reg::R2,
+            },
+            ArmOp::I64Rotl {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                shift: Reg::R4,
+            },
+        ];
+        for op in &must_be_false {
+            assert!(
+                !may_move_sp(op),
+                "{op:?}: must answer `false` — it is PRICED (so it really reaches \
+                 this predicate) and declining it would decline proven loops"
+            );
+        }
+    }
+
+    /// (#946) The invariant that EARNS `may_move_sp(I64Rotl) == false`: nothing
+    /// below SP is ever tracked, at store time or after a re-base. Without it,
+    /// the transient `PUSH {R0-R3}` inside those expansions could alias a slot
+    /// the walk believes it knows.
+    #[test]
+    fn walk_state_never_tracks_a_slot_below_sp() {
+        let mut st = WalkState::fresh();
+
+        // A store below SP is not remembered, and reads there are opaque.
+        st.write_slot_word(-4, Sym::Const(7));
+        assert_eq!(st.read_slot(-4), Sym::Top, "a slot below SP must not track");
+        assert!(!st.written.contains_key(&-4));
+        // ...and no `Slot` identity is ever minted below SP, so it can never
+        // become a counter candidate.
+        assert_eq!(st.read_slot(-8), Sym::Top);
+
+        // A normal frame slot tracks as before.
+        st.write_slot_word(8, Sym::Const(3));
+        assert_eq!(st.read_slot(8), Sym::Const(3));
+
+        // A re-base that pushes it below SP (an epilogue `pop {r4-r7}`) drops
+        // the remembered value rather than carrying it into scratch space.
+        shift_slots(&mut st, -16);
+        assert!(
+            !st.written.contains_key(&-8),
+            "a re-based slot that fell below SP must be dropped, not believed"
+        );
+        assert_eq!(st.read_slot(-8), Sym::Top);
     }
 
     #[test]

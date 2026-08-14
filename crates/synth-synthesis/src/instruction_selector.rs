@@ -2282,8 +2282,13 @@ fn vfp_s_index(r: VfpReg) -> Option<usize> {
 }
 
 /// Allocate the lowest-numbered free single-precision S-register (S0..S15).
-/// Errs (honest decline) when all 16 are live — phase 1 has no VFP spilling, so
-/// an f32 expression deeper than the register file loud-skips its function.
+/// Errs (honest decline) when all 16 are live. Since #881 (VCR-RA-004) this
+/// Err is RECOVERABLE: the backend catches the "VFP register file exhausted"
+/// substring (`arm_backend.rs`, the VFP rung) and reruns the entire selection
+/// with VFP spilling enabled — the pre-op pressure guard spills the deepest
+/// segment-local f32/f64 value to the frame and reloads before consumers. A
+/// function that exhausts even under the spill rung stays a loud skip. (The
+/// substring is the retry trigger — keep it stable.)
 fn alloc_vfp_temp(used: &mut [bool; 16]) -> Result<VfpReg> {
     for (i, slot) in used.iter_mut().enumerate() {
         if !*slot {
@@ -2292,8 +2297,9 @@ fn alloc_vfp_temp(used: &mut [bool; 16]) -> Result<VfpReg> {
         }
     }
     Err(synth_core::Error::synthesis(
-        "GI-FPU-002: VFP register file exhausted (S0..S15 all live) — f32 \
-         expression too deep for phase 1 (no VFP spilling yet)"
+        "GI-FPU-002: VFP register file exhausted (S0..S15 all live) — \
+         f32/f64 register pressure exceeds the file; the backend retries \
+         with VFP spilling (#881) and this surfaces only if that also fails"
             .to_string(),
     ))
 }
@@ -2916,7 +2922,10 @@ fn vfp_d_index(r: VfpReg) -> Option<usize> {
 
 /// Allocate the lowest-numbered free caller-saved D-register (D0..D7), marking
 /// BOTH aliased S-slots in the shared `vfp_used` map. Errs (honest decline)
-/// when no aligned pair of S-slots is free — no VFP spilling mid-expression.
+/// when no aligned pair of S-slots is free. Like [`alloc_vfp_temp`]'s S-file
+/// exhaustion, this Err is RECOVERABLE since #881: the backend catches the
+/// "VFP D-register file exhausted" substring and retries the whole selection
+/// with VFP spilling enabled (keep the substring stable — it is the trigger).
 fn alloc_vfp_dtemp(used: &mut [bool; 16]) -> Result<VfpReg> {
     for i in 0..8usize {
         if !used[2 * i] && !used[2 * i + 1] {
@@ -2927,8 +2936,10 @@ fn alloc_vfp_dtemp(used: &mut [bool; 16]) -> Result<VfpReg> {
     }
     Err(synth_core::Error::synthesis(
         "GI-FPU-002 phase 2: caller-saved VFP D-register file exhausted \
-         (D0..D7 all live) — f64 expression too deep for this increment \
-         (no VFP spilling, and D8..D15 are callee-saved) — declining (#369)"
+         (D0..D7 all live; D8..D15 are callee-saved and never allocated \
+         here) — f64 register pressure exceeds the file; the backend \
+         retries with VFP spilling (#881) and this surfaces only if that \
+         also fails"
             .to_string(),
     ))
 }
@@ -5035,9 +5046,12 @@ pub struct InstructionSelector {
 }
 
 /// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): **default ON** since the increment-1..4
-/// default-on flip — the 40 Rocq-proved rules are the SHIPPED lowering path for
-/// their covered ops (i32 add/sub/mul/and/or/xor/rotl/rotr + comparisons +
-/// shifts + clz/ctz/popcnt, i64 add/sub/and/or/xor/eqz + i64 comparisons). The
+/// default-on flip — the 50 Rocq-proved rules are the SHIPPED lowering path for
+/// their covered ops. The op list is `sel_dsl::RULES` itself (the single
+/// source — it also emits the Rocq model, `VcrSelRulesGenerated.v`, and is
+/// 1:1 coverage-gated against `coq/vcr_sel_rules.manifest`); a hand
+/// enumeration here said "40" and omitted nine i64 ops (#946), so it was
+/// replaced by this pointer. The
 /// flip is byte-invisible by construction: every rule was mirror-pinned
 /// byte-identical to the hand-written arm it replaces.
 ///
