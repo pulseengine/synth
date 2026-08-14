@@ -50,7 +50,7 @@ impl AArch64Backend {
         // `min(highest REFERENCED index + 1, declared)`, not the read-first
         // heuristic. The old `min(count_params(ops), declared)` silently
         // demoted a CONDITIONALLY-written param to a zero-init non-param local
-        // and emitted wrong code (see [`referenced_locals`]); the exact bound
+        // and emitted wrong code (see `synth_core::referenced_locals`); the exact bound
         // makes it a param again, so it is homed from its argument register.
         // The `min` keeps the >8-declared-params leniency intact.
         let num_params = match config.current_func_param_count {
@@ -193,7 +193,7 @@ use synth_core::referenced_locals;
 /// written is a parameter). Mirrors the ARM/RISC-V backends' heuristic.
 ///
 /// HONEST RESIDUAL (#851): only reachable when the driver supplied NO declared
-/// param count — with a declared count [`referenced_locals`] is exact and this
+/// param count — with a declared count [`synth_core::referenced_locals`] is exact and this
 /// heuristic is not consulted. Without one, a write-first index is genuinely
 /// AMBIGUOUS (param whose incoming value is dead, or non-param local), and both
 /// readings can be wrong; the read-first rule keeps the #457 behaviour rather
