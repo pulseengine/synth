@@ -129,8 +129,11 @@ ever-growing pile of locally-correct patches.**
 > A rule is NOT done when it is proven. It is done when the hand-written arm it
 > replaces is **DELETED**. Measured v0.42.0 → v0.57.0: `instruction_selector.rs`
 > grew **24,909 → 29,616** lines (churn **5,515 added / 808 deleted**, 6.8:1)
-> while VCR-SEL-001's verified rules went **40 → 50 and then sat flat for seven
-> releases**; the workspace grew 130,658 → 174,578 lines. We were building the
+> while VCR-SEL-001's verified rules went **40 → 50 and then sat flat for twelve
+> releases** (RQ-58-METRIC re-derived this: the manifest reached 50 at
+> **v0.45.0**, not v0.50 — 40 at v0.42/v0.43, 41 at v0.44, 50 ever since, so the
+> stall is nearly twice as long as first reported);
+> the workspace grew 130,658 → 174,578 lines. We were building the
 > verified path ALONGSIDE the unverified one, and the unverified one was winning
 > on volume — because "replace" was never measured, only asserted.
 >
@@ -145,6 +148,29 @@ ever-growing pile of locally-correct patches.**
 > (RQ-58-METRIC): selector line count and wildcard count are CEILINGS that must
 > fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
 > without deleting one must turn the gate red.
+>
+> **The ratchet, and how to move it.** Seven `kind: ratchet` pins in
+> `claims.yaml` (engine + escape hatch documented in `scripts/claim_check.py`,
+> unit-tested in `scripts/test_claim_check.py`, printed every CI run by
+> `claim_check.py claims.yaml --metric`). Each carries a `value:` that must
+> EQUAL the live derivation — there is no "current + slack" ceiling to hide in,
+> so **every movement of a pinned number is a visible `claims.yaml` diff in the
+> PR that caused it**. Beating a baseline fails until `baseline:` is updated
+> too, so a win cannot be silently given back. The DIRECTED pins are
+> region-scoped (measured before `#[cfg(test)] mod tests`) because 43 of the
+> selector's 105 `_ =>` arms and 11,136 of its 29,616 lines are its own test
+> module; the whole-file counts are pinned `direction: track` — slack-free, but
+> asserting no direction, so adding test coverage costs a number update and not
+> a waiver.
+>
+> This is deliberately **not a code-golf gate** — it counts hand-maintained
+> DECISIONS, not characters, and the ceilings are measured over the selector's
+> non-test region so adding tests never moves them. When a lane legitimately
+> needs to grow the file, the ceiling MOVES: add a `waivers:` entry whose `to:`
+> equals the new value with a written `reason:`, in the same PR (the #911 rule
+> applied to size). The waiver is bound to that value, so a second regression
+> needs a second waiver — permission is per-growth, never standing. Use it;
+> a gate people cannot move honestly is a gate they route around.
 >
 > This is NOT "clean up the codebase" — refactoring 29k lines of selector
 > without a per-step execution oracle is how you inject the miscompiles this
