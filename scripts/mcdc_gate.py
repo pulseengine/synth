@@ -73,8 +73,23 @@ from pathlib import Path
 #   * synth_backend::wcet* — the decline predicates are match-dispatch
 #     (`scan_for_decline`: 1 boolean-operator line in 1061), so most of that
 #     surface has no compound decision to measure.
+# RQ-58-MIRRORS (#242): `synth_core::wasm_op::` joins the scored set because
+# decision logic MOVED there, not because a floor needed help.
+#
+# `count_params` existed as three byte-equivalent private copies, one per
+# backend; the RV32 copy was inside `synth_backend_riscv::backend::` and so was
+# scored here. Collapsing the three into `synth_core::count_params_heuristic`
+# took its decisions OUT of every scored prefix, and the floors tripped —
+# correctly. The logic did not disappear, it relocated, so the SCOPE follows it
+# rather than the floor being lowered (which this file forbids, rightly).
+#
+# The module also owns `referenced_locals` — the #970 param-classification rule
+# every backend now shares — and `rewrite_memory_grow_zero` (#539). Both are
+# exactly the kind of small, shared, correctness-critical decision logic this
+# gate exists to measure, and neither was scored anywhere before.
 SCORED_PREFIXES = (
     "synth_core::static_data_addr::",
+    "synth_core::wasm_op::",
     "synth_backend_riscv::alloc_validator::",
     "synth_backend_riscv::backend::",
 )
