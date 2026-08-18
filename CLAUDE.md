@@ -123,7 +123,34 @@ public claim; when a proof/rule landed, bump doc + ledger together.
 
 **Replace synth's patch-accreting code generator with foundationally-verified,
 allocator-robust infrastructure — correctness from construction, not an
-ever-growing pile of locally-correct patches.** The recurring greedy fixes
+ever-growing pile of locally-correct patches.**
+
+> **CORRECTION (v0.58, measured — the goal is right, the strategy was not).**
+> A rule is NOT done when it is proven. It is done when the hand-written arm it
+> replaces is **DELETED**. Measured v0.42.0 → v0.57.0: `instruction_selector.rs`
+> grew **24,909 → 29,616** lines (churn **5,515 added / 808 deleted**, 6.8:1)
+> while VCR-SEL-001's verified rules went **40 → 50 and then sat flat for seven
+> releases**; the workspace grew 130,658 → 174,578 lines. We were building the
+> verified path ALONGSIDE the unverified one, and the unverified one was winning
+> on volume — because "replace" was never measured, only asserted.
+>
+> The compounding cost: each release added a proof, a checker for the proof, a
+> doc claim about the checker and a ledger pin for the doc — all hand-maintained
+> (57 files say "mirror", 11 "hand-maintained", exactly **1** "single source of
+> truth"). v0.57 then found **5 of its 10** defects were in checkers, and three
+> doc claims had rotted behind a green gate. Verification machinery became its
+> own defect surface because nothing was ever retired.
+>
+> So the metric is now **subtraction**, CI-pinned so it can go the wrong way
+> (RQ-58-METRIC): selector line count and wildcard count are CEILINGS that must
+> fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
+> without deleting one must turn the gate red.
+>
+> This is NOT "clean up the codebase" — refactoring 29k lines of selector
+> without a per-step execution oracle is how you inject the miscompiles this
+> project exists to prevent. Every subtraction is gated on byte-identity or an
+> execution differential; a deletion that moves emitted bytes without an oracle
+> proving the new bytes correct is REFUSED, not explained. The recurring greedy fixes
 (reciprocal-mult cost-gate, register-exhaustion hard-fail, the "selector missed
 an op" class #223/#226/#232) are symptoms of two single-pass hand-written
 components: the instruction selector and the register allocator. Filed as the
