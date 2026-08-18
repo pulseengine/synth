@@ -199,6 +199,32 @@ jobs:
         run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
+      # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC. Epic #242 exists to
+      # REPLACE the patch-accreting code generator; measured v0.42.0 -> v0.57.0
+      # it went the other way (selector non-test code 14,694 -> 18,480 lines,
+      # verified rules flat at 50 since v0.45.0) and nothing noticed, because
+      # nothing measured it. The `kind: ratchet` pins in claims.yaml are
+      # DIRECTED (ceilings must fall, the rule floor must rise) and SLACK-FREE
+      # (the ledger must carry the live number exactly), so adding a
+      # hand-written lowering arm without deleting one is red.
+      #
+      # `--metric` prints the table with each pin's delta from baseline, so the
+      # trend is readable in the job log and not only in a failed assertion —
+      # and it FAILS if the pin population is empty, because deleting a ceiling
+      # must never be the cheapest way to satisfy it.
+      #
+      # Lives in the already-REQUIRED claim-check job for the same reason the
+      # oracle-wiring gate below does: a brand-new job is not a required
+      # context on main, so it could sit red for weeks blocking nothing.
+      - name: Subtraction metric — directed ratchets on the patch pile (RQ-58-METRIC, #242)
+        run: python3 scripts/claim_check.py claims.yaml --metric
+      # The gate that polices the checkers does not get to be the unchecked
+      # one. v0.57 found 5 of its 10 defects in checking machinery; this drives
+      # the ratchet predicate and the region/counting primitives through every
+      # branch, including the ones that must PASS. Mutation-verified at
+      # authoring: stubbing check_ratchet to return no failures kills 18 of 32.
+      - name: Unit-test the claim-check engine itself (RQ-58-METRIC, #242)
+        run: python3 scripts/test_claim_check.py
       # #867: coverage OF the ISA semantics model. Re-derives
       # artifacts/model-coverage.json (static heuristic, documented in the
       # script) and fails if the committed artifact is stale or hand-edited;

@@ -613,14 +613,23 @@ def report_metric(claims, status):
                 delta = f"{delta:+d}"
             rows.append((name, str(live), str(base), delta, arrow, len(ev.get("waivers") or [])))
     if not rows:
-        print("subtraction metric: NO ratchet pins declared — the North Star is unmeasured.")
-        return
+        # ANTI-VACUITY. Deleting the pins does not make a claim fail — an
+        # evidence-less claim passes trivially — so the ABSENCE of the metric
+        # has to be its own failure, or the easiest way to green this gate is
+        # to remove it. (The exact POPULATION is pinned separately, by
+        # SYNTH-SUBTRACTION-PINS-DECLARED, so removing just one is red too.)
+        print(
+            "subtraction metric: NO ratchet pins declared — the North Star is "
+            "unmeasured. Restore them or this gate measures nothing."
+        )
+        return False
     w = max(len(r[0]) for r in rows)
     print(f"\n=== subtraction metric (epic #242) — {len(rows)} directed pins ===")
     print(f"{'metric'.ljust(w)}  {'now':>7}  {'baseline':>8}  {'delta':>6}  direction   waivers")
     for name, live, base, delta, arrow, nw in rows:
         print(f"{name.ljust(w)}  {live:>7}  {base:>8}  {delta:>6}  {arrow:<10}  {nw}")
     print()
+    return True
 
 
 def main():
@@ -646,10 +655,10 @@ def main():
         (root / FEATURE_MATRIX).write_text(render_feature_matrix(status, root))
         print(f"emitted {STATUS_JSON} + {FEATURE_MATRIX}")
 
-    if metric:
-        report_metric(claims, status)
-
     bad = 0
+    if metric and not report_metric(claims, status):
+        bad += 1
+
     for c in claims:
         fails = check_claim(c, root, status_spec, status)
         if fails:

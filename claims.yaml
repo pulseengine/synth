@@ -147,6 +147,71 @@ status_fields:
     file: crates/synth-backend-aarch64/src/selector.rs
     pattern: 'WasmOp::([A-Za-z0-9]+)'
     before: 'mod tests'
+  # ---------------------------------------------------------------------------
+  # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC.
+  #
+  # Derived ONCE here; the directed `kind: ratchet` pins under `claims:` name
+  # these fields instead of carrying their own regexes, so the gate cannot
+  # mirror-drift from the numbers it publishes.
+  #
+  # WHY REGION-SCOPED, and it is the load-bearing design choice. The plan of
+  # record quotes whole-file figures (29,616 lines, 105 `_ =>` arms). Re-derived
+  # here, 43 of those 105 arms and 11,136 of those lines are in the file's OWN
+  # TEST MODULE. A ceiling on the whole file would therefore (a) let a lane
+  # "make progress" by deleting test arms, and (b) fire on every PR that adds
+  # test coverage — training everyone to bump the ledger reflexively, which is
+  # how a ratchet rots into a formality. Both figures are pinned: the `_code`
+  # ones (measured before `#[cfg(test)] mod tests`) are where the hand-written
+  # lowering decisions actually live; the `_total` ones are pinned because the
+  # release plan and the sibling lanes quote them, and an unpinned quoted number
+  # is the drift class this whole release is about.
+  #
+  # `\n` counts newlines == `wc -l`, verified against the real file (29,616 /
+  # 18,480). The wildcard pattern is line-anchored on purpose: `Some(_) =>` and
+  # a `_ =>` inside comment prose must not count as match arms (regression-
+  # tested in scripts/test_claim_check.py).
+  selector_lines_total:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+  selector_lines_code:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    before: "#[cfg(test)]\nmod tests"
+  selector_wildcard_arms_total:
+    kind: count
+    pattern: '^[ \t]*_ =>'
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+  selector_wildcard_arms_code:
+    kind: count
+    pattern: '^[ \t]*_ =>'
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    before: "#[cfg(test)]\nmod tests"
+  # The "generate, don't mirror" inventory, counted in FILES (`unit: files`)
+  # because that is the population the plan states and the unit a mirror is
+  # retired in. STATIC TEXTUAL CLASSIFICATION, labelled as the heuristic it is
+  # (same disclosure as `sel_rules_simplified_basis` above): it finds files that
+  # SAY they carry a mirror / a hand-maintenance obligation, which is a proxy
+  # for files that HAVE one. It over-counts prose ("the encoder mirrors the
+  # operand order") and cannot see an unlabelled mirror at all — #974's three
+  # copies of `referenced_locals` were found by a human, not by this.
+  mirror_marker_files:
+    kind: count
+    pattern: '(?i)mirror'
+    glob: ['crates/**/*.rs']
+    unit: files
+  # The RANKED subset, and the one RQ-58-MIRRORS should actually drive down: a
+  # file that states a keep-in-sync OBLIGATION, whatever wording it uses. 23
+  # files; 17 of them also say "mirror" (the intersection), 6 state the
+  # obligation without the word. "hand-maintained" alone — the plan's figure —
+  # is 11, a strict subset of these 23.
+  mirror_obligation_files:
+    kind: count
+    pattern: '(?i)hand-maintained|hand-written mirror|keep(?:s|ing)? in sync|must (?:agree|stay in sync|match)|second source of truth|forget to update'
+    glob: ['crates/**/*.rs']
+    unit: files
+
   # Names, not numbers — const is allowed here, but the supporting crates must
   # exist on disk or the derivation fails.
   backends:
@@ -698,6 +763,165 @@ claims:
         expect: 50
       - kind: verbatim
         text: "**50 Qed / 0 Admitted**"
+
+  # ===========================================================================
+  # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC.
+  #
+  # Epic #242 exists to REPLACE the patch-accreting code generator. Measured
+  # v0.42.0 -> v0.57.0 it went the other way and nothing noticed, because
+  # nothing measured it. Re-derived independently for this ledger (per-tag,
+  # `git show <tag>:<file>`; the `_code` region ends at `#[cfg(test)] mod
+  # tests`, which occurs exactly once and is asserted to):
+  #
+  #   tag        lines_total  lines_code  wild_total  wild_code  dsl_rules
+  #   v0.42.0         24,909      14,694          89         51         40
+  #   v0.45.0         27,179      16,072          99         56         50
+  #   v0.50.0         28,419      17,283          99         56         50
+  #   v0.54.0         29,551      18,415         105         62         50
+  #   v0.57.0         29,616      18,480         105         62         50
+  #
+  # Read the CODE column: +3,786 hand-written lines (+25.8%) against +10 rules,
+  # and the rules have been flat since v0.45.0 — TWELVE releases, not the seven
+  # first reported. The growth is not test growth: the test module grew 10,215
+  # -> 11,136 over the same span, a fifth of the code growth.
+  #
+  # DIRECTION IS THE POINT. Ceilings must FALL; the floor must RISE; `value:`
+  # must EQUAL the live derivation so no slack is expressible; an improvement
+  # must be BANKED into `baseline:`; growth is allowed but costs a `waivers:`
+  # entry bound to the new value with a written reason. Full semantics and the
+  # honest residual: the RQ-58-METRIC block in scripts/claim_check.py. The
+  # predicate is unit-tested (scripts/test_claim_check.py, 32 cases, wired in
+  # the claim-check job) because this release's thesis is that the CHECKERS are
+  # where the defects are, and this is a new checker.
+  # ===========================================================================
+  - id: SYNTH-SUBTRACTION-SELECTOR
+    doc: CLAUDE.md
+    text: "It is done when the hand-written arm it"
+    evidence:
+      # THE LOAD-BEARING PIN: hand-written lowering code, test module excluded.
+      # RQ-58-RETIRE (delete the arms the 50 DSL rules replaced) is measured
+      # here, and so is any lane that adds an arm without deleting one.
+      - kind: ratchet
+        name: selector_lines_code
+        direction: down
+        value: 18480
+        baseline: 18480
+      # The whole-file figure the release plan and the sibling lanes quote. An
+      # unpinned quoted number is the drift class this release is about.
+      - kind: ratchet
+        name: selector_lines_total
+        direction: down
+        value: 29616
+        baseline: 29616
+      # RQ-58-WILDCARD's real denominator. 62 absorbing arms are in the
+      # lowering code; the other 43 of the plan's 105 are assertion helpers in
+      # the test module, where a `_ =>` is not a miscompile risk.
+      - kind: ratchet
+        name: selector_wildcard_arms_code
+        direction: down
+        value: 62
+        baseline: 62
+      - kind: ratchet
+        name: selector_wildcard_arms_total
+        direction: down
+        value: 105
+        baseline: 105
+
+  # The other half of the same trade: the verified path must GROW as the
+  # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
+  # dropped to make a refactor easier — and so the stall itself is visible.
+  # (SYNTH-SEL-DSL-RULES above pins the 1:1 manifest<->Qed invariant; this pins
+  # the DIRECTION. A retirement lane that deletes 10 arms AND 10 rules would
+  # pass the invariant and fail here, which is correct.)
+  - id: SYNTH-SUBTRACTION-VERIFIED-RULES
+    doc: CLAUDE.md
+    text: "the rule count is a FLOOR that must rise"
+    evidence:
+      - kind: ratchet
+        name: sel_dsl_rules
+        direction: up
+        value: 50
+        baseline: 50
+
+  # ---------------------------------------------------------------------------
+  # "Generate, don't mirror" — the rot class this repo keeps paying for, now
+  # counted AND RANKED. Heuristic, and labelled as one in status_fields: it
+  # finds files that SAY they carry a mirror obligation. It cannot see an
+  # unlabelled one (#974's three copies of `referenced_locals` were found by a
+  # human), so a falling number is necessary, never sufficient.
+  #
+  # RANKED INVENTORY, derived 2026-08-18 — the 17 files that both say "mirror"
+  # AND state a keep-in-sync obligation, by mirror-mention count. This is the
+  # input RQ-58-MIRRORS should work top-down, not the raw 57:
+  #
+  #    54  synth-synthesis/src/instruction_selector.rs
+  #    21  synth-synthesis/src/liveness.rs
+  #    15  synth-synthesis/src/optimizer_bridge.rs
+  #    14  synth-backend-riscv/src/selector.rs
+  #    11  synth-synthesis/src/sel_dsl/mod.rs
+  #     9  synth-core/src/static_data_addr.rs
+  #     9  synth-backend/tests/estimator_encoder_agreement.rs
+  #     7  synth-cli/src/main.rs
+  #     6  synth-backend/src/wcet.rs
+  #     4  synth-verify/src/arm_semantics.rs
+  #     4  synth-backend-riscv/tests/cross_backend_op_parity.rs
+  #     4  synth-backend-riscv/src/elf_builder.rs
+  #     4  synth-backend-aarch64/src/selector.rs
+  #     3  synth-verify/src/validator_pattern.rs
+  #     2  synth-verify/tests/arm_semantics_isa_faithfulness_923.rs
+  #     2  synth-backend-riscv/src/backend.rs
+  #     1  synth-verify/src/translation_validator.rs
+  #
+  # The 6 files that state the obligation WITHOUT the word "mirror" (and so are
+  # invisible to a grep for it): frozen_codegen_bytes.rs, synth-memory/src/lib.rs,
+  # abi_contract.rs, trunc_sat_782.rs, expansion_validator.rs,
+  # trap_preservation.rs. 17 + 6 = the 23 pinned below.
+  #
+  # NOT PINNED, deliberately: the "single source of truth" count (exactly 1
+  # file, crates/synth-core/src/wsc_facts.rs). A floor on a PHRASE anyone can
+  # type into a comment for free cannot go red in any interesting way — it is
+  # inventory, not a gate, and nobody should cite it as evidence of progress.
+  # ---------------------------------------------------------------------------
+  # ANTI-VACUITY for the metric itself, and the reason it is a separate claim:
+  # an evidence-less claim passes TRIVIALLY, so deleting the pins above would
+  # green this gate rather than red it — the easiest way to satisfy a ceiling
+  # would be to delete the ceiling. `--metric` fails loudly when the population
+  # is EMPTY (no config needed); this pins the exact population, so removing a
+  # single pin is red too, and adding one requires saying so here. That is the
+  # "can this check still fail" audit applied to the check being added.
+  - id: SYNTH-SUBTRACTION-PINS-DECLARED
+    doc: CLAUDE.md
+    text: "Seven `kind: ratchet` pins in"
+    evidence:
+      - kind: count-eq
+        pattern: '^      - kind: ratchet$'
+        glob: ['claims.yaml']
+        expect: 7
+      - kind: count-eq                       # the CI step that prints them
+        pattern: 'claim_check\.py claims\.yaml --metric'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: count-eq                       # the checker's own unit tests
+        pattern: 'python3 scripts/test_claim_check\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: file-exists
+        path: scripts/test_claim_check.py
+
+  - id: SYNTH-SUBTRACTION-MIRRORS
+    doc: CLAUDE.md
+    text: "all hand-maintained"
+    evidence:
+      - kind: ratchet
+        name: mirror_marker_files
+        direction: down
+        value: 57
+        baseline: 57
+      - kind: ratchet
+        name: mirror_obligation_files
+        direction: down
+        value: 23
+        baseline: 23
 
   # ---------------------------------------------------------------------------
   # Trusted base — the axioms the Rocq suite rests on, re-counted, never
