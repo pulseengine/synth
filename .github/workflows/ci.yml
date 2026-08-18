@@ -3554,10 +3554,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+      # Deliberately NO wabt. Both oracles here assemble `.wat` with wasmtime's
+      # OWN assembler (`wasmtime.wat2wasm` / `Module.from_file`), so the
+      # reference side is ONE toolchain: what parses and what runs cannot
+      # disagree, and the executed population does not depend on the runner's
+      # wabt build. That host-dependency class (#850/#881) is the one thing a
+      # never-before-run job discovers the hard way.
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone
-      - name: Install wabt (wat2wasm — the whole corpus is .wat)
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
       - name: "#973 i64-cmp select execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/select_i64cmp_973_arm_differential.py
       - name: "ARM corpus sweep — compile census + execution differential (#973)"

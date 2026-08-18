@@ -69,7 +69,7 @@ harness carries its own `MIN_COMPARED` floor on vectors actually COMPARED
 against wasmtime (2327, likewise measured). A known mismatch is SUPPRESSED, not
 skipped, so listing debt cannot buy slack in that floor either.
 
-Run (needs wasmtime + unicorn + pyelftools + wat2wasm):
+Run (needs wasmtime + unicorn + pyelftools — no wabt):
   SYNTH=./target/debug/synth python scripts/repro/arm_corpus_sweep_973.py
 """
 import os
@@ -233,20 +233,27 @@ def impure_sections(wasm):
 
 
 def to_wasm(wat):
-    """Assemble the fixture, or None when the REFERENCE toolchain refuses it.
+    """Assemble the fixture with WASMTIME'S OWN assembler, or None if refused.
 
-    `--enable-all` because several fixtures use post-MVP proposals synth's own
-    frontend accepts (multi-memory, bulk-memory). A fixture wat2wasm still
-    refuses is a Phase-B skip with its own counter, never a silent one: synth
-    compiled it in Phase A, so the gap is in the reference side, and calling
-    that a miscompile would be the harness blaming the compiler for its own
-    tooling.
+    Deliberately not `wat2wasm`: the reference side must be ONE toolchain. wabt
+    needs `--enable-all` for the post-MVP proposals several fixtures use
+    (multi-memory, bulk-memory), which makes the executed population depend on
+    the runner's wabt build — a host dependency this repo has been bitten by
+    twice, and one this leg would only discover the first time CI ran it.
+    `wasmtime.wat2wasm` is the same library that then instantiates the module,
+    so what parses and what runs cannot disagree. Measured across all 156
+    fixtures: wabt and wasmtime accept exactly the same set, and the purity
+    classification below is identical for every one of them.
+
+    A refusal is a Phase-B skip with its own counter, never a silent one: synth
+    compiled the fixture in Phase A, so the gap is on the reference side, and
+    calling that a miscompile would be the harness blaming the compiler for its
+    own tooling.
     """
-    p = subprocess.run(
-        ["wat2wasm", "--enable-all", str(wat), "-o", "/dev/stdout"],
-        capture_output=True,
-    )
-    return p.stdout if p.returncode == 0 else None
+    try:
+        return wasmtime.wat2wasm(wat.read_text())
+    except Exception:
+        return None
 
 
 def compile_arm(wat, out):
@@ -494,6 +501,16 @@ def main():
               + ", ".join(f"{f}:{e} (#{KNOWN_ARM_MISMATCHES[(f, e)]})"
                           for f, e in sorted(known_seen)))
 
+    # Name a HOST problem as a host problem. Without this a runner whose
+    # wasmtime cannot assemble the corpus reds on the comparison floor, which
+    # reads as "the sweep lost coverage" and sends the next reader to the
+    # compiler. Fail-closed either way; the difference is the diagnostic.
+    if reference_refused:
+        fails.append(
+            f"PHASE B REFERENCE: wasmtime's assembler refused {reference_refused} "
+            f"fixture(s) that synth compiled. That is a toolchain/host problem, "
+            f"not a miscompile — measured 0 on the v0.58 tree across all 156."
+        )
     if checks < MIN_COMPARED:
         fails.append(
             f"PHASE B FLOOR: only {checks} vectors were actually COMPARED, floor is "
