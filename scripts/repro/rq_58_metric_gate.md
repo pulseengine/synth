@@ -206,6 +206,48 @@ a866e44beef45679f0a2d3fbc23f94949b47a9b91eb64c6b83c10058b3531e76  base.elf
 a866e44beef45679f0a2d3fbc23f94949b47a9b91eb64c6b83c10058b3531e76  after.elf
 ```
 
+## 4b. The defect this lane shipped and then caught — read this one
+
+Between §3 and §4 the `direction: track` change to the two whole-file pins was
+**silently reverted**: the escape-hatch cleanup ran
+
+```
+$ git checkout -- crates/synth-synthesis/src/instruction_selector.rs claims.yaml
+```
+
+and `claims.yaml` went back to its last COMMITTED state, which still said
+`direction: down`. Then:
+
+```
+$ python3 scripts/claim_check.py claims.yaml --metric
+47/47 claims hold.                                                     (rc=0)
+```
+
+**Green.** The pins were `down` at values that happened to match the tree, so
+every assertion passed — while `CLAUDE.md`, the `claim_check.py` module
+docstring, this transcript and the release artifact all described `track`. The
+checker compared each pin to the CODE. Nothing compared the DOCUMENTED shape to
+the LEDGERED one.
+
+That is the FEATURE_MATRIX failure — *compare the render to the template, never
+the template to the code* — reproduced **inside the gate written to be immune to
+it**, in the release whose thesis is that the checkers are where the defects
+are. It was caught by a cold re-read of `git diff origin/main...HEAD`, not by
+CI, which is exactly the wrong way round.
+
+Closed rather than noted: `SYNTH-SUBTRACTION-PINS-DECLARED` now pins the
+direction BREAKDOWN — 4 `down` + 1 `up` + 2 `track` == the 7 pins — plus the
+CLAUDE.md sentence those directions have to match. Verified biting: flipping one
+`track` back to `down` reddens with
+
+```
+count drifted: derived 5 != documented 4  [/^        direction: down$/]
+count drifted: derived 1 != documented 2  [/^        direction: track$/]
+```
+
+while the ratchet itself stayed green — which is the proof the drift really was
+invisible before, and is not now.
+
 ## 5. The gate's own gate
 
 The metric adds a checker to a release whose thesis is that this repo's checkers

@@ -806,16 +806,25 @@ claims:
         direction: down
         value: 18480
         baseline: 18480
-      # The whole-file figure the release plan and the sibling lanes quote. An
-      # unpinned quoted number is the drift class this release is about.
+      # The whole-file figures the release plan and the sibling lanes quote. An
+      # unpinned quoted number is the drift class this release is about — but
+      # they are `track`, not `down`, and the distinction is deliberate. Both
+      # include the file's TEST MODULE, so a PR that only adds test coverage
+      # moves them; requiring a WAIVER for that would file "added 40 lines of
+      # tests" next to "grew the patch pile" in the same list, and a waiver
+      # channel full of noise is one nobody reads. `track` still forbids slack
+      # — the ledger must carry the live number — it just declines to assert a
+      # direction for a mixed population. Nothing is lost: total minus code IS
+      # the test module, and code is pinned `down`.
       - kind: ratchet
         name: selector_lines_total
-        direction: down
+        direction: track
         value: 29616
-        baseline: 29616
-      # RQ-58-WILDCARD's real denominator. 62 absorbing arms are in the
-      # lowering code; the other 43 of the plan's 105 are assertion helpers in
-      # the test module, where a `_ =>` is not a miscompile risk.
+      # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
+      # absorbing arms are in the lowering code; the other 43 of the plan's 105
+      # are assertion helpers in the test module, where a `_ =>` is not a
+      # miscompile risk. Red-first demonstrated on the REAL file, not only
+      # against a synthetic fixture: see scripts/repro/rq_58_metric_gate.md §1b.
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
@@ -823,9 +832,8 @@ claims:
         baseline: 62
       - kind: ratchet
         name: selector_wildcard_arms_total
-        direction: down
+        direction: track
         value: 105
-        baseline: 105
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -897,6 +905,33 @@ claims:
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
         expect: 7
+      # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
+      # building this lane the `direction: track` change to the two whole-file
+      # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
+      # during the red-first cycle, and EVERYTHING STILL PASSED: the pins were
+      # back to `down` at values that happened to match, so the ledger checked
+      # green while CLAUDE.md, the module docstring and the frozen transcript
+      # all described `track`. Nothing compared the DOCUMENTED shape to the
+      # LEDGERED one — the FEATURE_MATRIX failure (compare the render to the
+      # template, never the template to the code) reproduced inside the very
+      # gate written to be immune to it. Caught by a cold re-read of the diff,
+      # not by CI. These three counts are what a re-read should not have had to
+      # do: 4 ceilings + 1 floor + 2 tracked == the 7 above, and flipping any
+      # pin's direction without updating the prose is now red.
+      - kind: count-eq
+        pattern: '^        direction: down$'
+        glob: ['claims.yaml']
+        expect: 4
+      - kind: count-eq
+        pattern: '^        direction: up$'
+        glob: ['claims.yaml']
+        expect: 1
+      - kind: count-eq
+        pattern: '^        direction: track$'
+        glob: ['claims.yaml']
+        expect: 2
+      - kind: verbatim                       # the prose those directions match
+        text: "the whole-file counts are pinned `direction: track`"
       - kind: count-eq                       # the CI step that prints them
         pattern: 'claim_check\.py claims\.yaml --metric'
         glob: ['.github/workflows/ci.yml']
