@@ -1192,6 +1192,87 @@ fn pop_operand(
     }
 }
 
+/// #973 — [`pop_operand`] for a MULTI-operand op, reserving what the op has
+/// ALREADY committed to, and PROVING the reload honoured it.
+///
+/// [`pop_operand`]'s reload allocates against the *remaining* vstack plus
+/// `reserved`. A value this same op popped a moment ago is on NEITHER list —
+/// it left the vstack when it was popped, and the caller has to thread it
+/// through by hand — so the allocator is free to hand back exactly the
+/// register the op still needs. That is #973: an `i64` comparison's
+/// [`alloc_consecutive_pair`] spilled a `select`'s then-arm (unconditionally —
+/// this is not the opt-in `SYNTH_SPILL_ON_EXHAUST` rung), and the reload during
+/// the select's own pops landed in the register still holding the LIVE
+/// else-arm, so both `it` arms moved the same register and the select always
+/// returned the then-value.
+///
+/// `committed` is the op-local half of the reservation (already-popped
+/// operands, a destination allocated ahead of the pops, the condition
+/// register); `live_params` is the #193 reservation the whole op loop carries.
+/// The union is what the reload must avoid. Same discipline #677 already
+/// applies in [`bulk_mutable_operand`] — "every popped operand of the op" —
+/// generalized so the next multi-pop site cannot forget it.
+///
+/// The post-check ([`reload_clobbers_committed`]) is not redundant with the
+/// reservation: it is the invariant stated where a future edit would break it.
+/// With the reservation in place it is UNREACHABLE by construction, so it is
+/// honest to say it is a tripwire and not a live path — the predicate itself is
+/// unit-tested directly (`reload_clobbers_committed_*_973`), the integration
+/// cannot be. It only consults a RELOAD, because a register-resident operand
+/// legitimately aliases a live param and `select (local.get 0) (local.get 0) c`
+/// legitimately pops the same register twice. A fired check is an internal
+/// compiler bug, so it returns the honest recoverable `Err` the rest of this
+/// allocator uses rather than emitting code known to be wrong.
+fn pop_operand_committed(
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    live_params: &[Reg],
+    committed: &[Reg],
+    line: usize,
+) -> Result<Reg> {
+    let reloaded = match stack.last() {
+        Some(StackVal::Spilled { is_i64, .. }) => Some(*is_i64),
+        _ => None,
+    };
+    let mut reserved: Vec<Reg> = live_params.to_vec();
+    reserved.extend_from_slice(committed);
+    let reg = pop_operand(stack, next_temp, instructions, spill, &reserved, line)?;
+    if let Some(is_i64) = reloaded
+        && let Some(clobbered) = reload_clobbers_committed(reg, is_i64, committed)?
+    {
+        return Err(synth_core::Error::synthesis(format!(
+            "#973 internal compiler bug: reloading a spilled operand landed in \
+             {clobbered:?}, a register this operation had already committed to \
+             ({committed:?}) — the reload would destroy a value the operation \
+             still needs. Refusing to emit the miscompile."
+        )));
+    }
+    Ok(reg)
+}
+
+/// #973 tripwire predicate: did a reload into `reg` (a PAIR when `is_i64`) land
+/// on a register the operation had already committed to?
+///
+/// Split out from [`pop_operand_committed`] so the invariant is testable on its
+/// own. Checking the pair's HIGH half matters as much as the low: an i64 reload
+/// allocates `(lo, lo+1)` and writes both, so a committed register sitting in
+/// the implicit high slot is destroyed just as thoroughly and is invisible to a
+/// check that only looks at the returned `lo`.
+fn reload_clobbers_committed(reg: Reg, is_i64: bool, committed: &[Reg]) -> Result<Option<Reg>> {
+    if committed.contains(&reg) {
+        return Ok(Some(reg));
+    }
+    if is_i64 {
+        let hi = i64_pair_hi(reg)?;
+        if committed.contains(&hi) {
+            return Ok(Some(hi));
+        }
+    }
+    Ok(None)
+}
+
 /// Peek the top operand WITHOUT consuming it, returning its `lo` register (#171).
 /// If the top was spilled, reload it into a fresh consecutive pair and rewrite
 /// the stack entry to [`StackVal::Reg`] (so the value is register-resident again
@@ -15259,23 +15340,33 @@ impl InstructionSelector {
                         )?;
                         // Reserve the dst pair through the (possibly reloading)
                         // pops so a spilled operand cannot reload into it.
-                        resv.push(dlo);
-                        resv.push(dhi);
-                        let val2 = pop_operand(
+                        // #973: `val2`'s PAIR joins the reservation for the
+                        // second pop for the same reason — it is off the vstack
+                        // but still read by the two EQ moves below. (This path
+                        // measured GREEN on the #973 fixture pre-fix; the
+                        // omission is the identical latent shape, closed here
+                        // rather than left for the next pressure change to
+                        // expose.)
+                        let mut committed = vec![cond_reg, dlo, dhi];
+                        let val2 = pop_operand_committed(
                             &mut stack,
                             &mut next_temp,
                             &mut instructions,
                             &mut spill,
-                            &resv,
+                            &live_params,
+                            &committed,
                             idx,
                         )?;
                         let hi2 = i64_pair_hi(val2)?;
-                        let val1 = pop_operand(
+                        committed.push(val2);
+                        committed.push(hi2);
+                        let val1 = pop_operand_committed(
                             &mut stack,
                             &mut next_temp,
                             &mut instructions,
                             &mut spill,
-                            &resv,
+                            &live_params,
+                            &committed,
                             idx,
                         )?;
                         let hi1 = i64_pair_hi(val1)?;
@@ -15306,20 +15397,31 @@ impl InstructionSelector {
                         stack.push(StackVal::i64(dlo));
                         continue;
                     }
-                    let val2 = pop_operand(
+                    // #973: both pops may RELOAD a spilled operand, and the
+                    // allocator only avoids what is still on the vstack plus
+                    // what it is told. `cond_reg` came off the vstack above but
+                    // is not read until the CMP below; `val2` is not read until
+                    // the EQ move. Commit both so a reload cannot land on them —
+                    // the i64-comparison condition spills the then-arm every
+                    // time (`alloc_consecutive_pair` frees a pair by spilling
+                    // the deepest entry), and the reload used to pick the
+                    // else-arm's register.
+                    let val2 = pop_operand_committed(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
                         &mut spill,
                         &live_params,
+                        &[cond_reg],
                         idx,
                     )?;
-                    let val1 = pop_operand(
+                    let val1 = pop_operand_committed(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
                         &mut spill,
                         &live_params,
+                        &[cond_reg, val2],
                         idx,
                     )?;
                     // #209/VCR-SEL-002 — in-place select. `val2` is consumed by
@@ -27650,6 +27752,127 @@ mod tests {
         assert_eq!(reloads.len(), 1, "exactly one reload of the spilled slot");
         // The slot was freed on reload — allocatable again.
         assert_eq!(spill.alloc(), Some(0), "slot 0 reusable after reload");
+    }
+
+    // ── #973: a reload must not land on a register the op still needs ──
+
+    /// Drive one pop off a stack holding a single SPILLED entry, with
+    /// `next_temp` parked so the allocator's first candidate is R5.
+    fn spilled_top(slot: i32, is_i64: bool) -> (Vec<StackVal>, SpillState) {
+        let mut spill = SpillState::new(0);
+        assert_eq!(spill.alloc(), Some(slot), "test wants slot {slot}");
+        (
+            vec![StackVal::Spilled {
+                lo_slot: slot,
+                is_i64,
+            }],
+            spill,
+        )
+    }
+
+    /// RED: the hazard is real, not hypothetical. With the reservation the
+    /// pre-#973 `Select` arm used (`live_params` only), the reload of the
+    /// spilled then-arm lands squarely on R5 — the register the else-arm was
+    /// still living in. This is the miscompile, reproduced at the allocator.
+    #[test]
+    fn pop_operand_red_973_reload_lands_on_the_live_operand() {
+        let (mut stack, mut spill) = spilled_top(0, false);
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut next_temp: u8 = 5; // ALLOCATABLE_REGS[5] == R5
+        let reg = pop_operand(
+            &mut stack,
+            &mut next_temp,
+            &mut instructions,
+            &mut spill,
+            &[Reg::R0, Reg::R1], // live params only — what the old code passed
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            reg,
+            Reg::R5,
+            "#973: the reload takes R5 even though the op still needs it — the \
+             already-popped operand is on neither the vstack nor `reserved`"
+        );
+    }
+
+    /// GREEN: committing R5 moves the reload off it. Same state, same
+    /// `next_temp`, one extra fact told to the allocator.
+    #[test]
+    fn pop_operand_committed_keeps_the_reload_clear_973() {
+        let (mut stack, mut spill) = spilled_top(0, false);
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut next_temp: u8 = 5;
+        let reg = pop_operand_committed(
+            &mut stack,
+            &mut next_temp,
+            &mut instructions,
+            &mut spill,
+            &[Reg::R0, Reg::R1],
+            &[Reg::R4, Reg::R5], // cond_reg + the already-popped else-arm
+            0,
+        )
+        .unwrap();
+        assert_ne!(reg, Reg::R5, "the committed else-arm register survives");
+        assert_ne!(reg, Reg::R4, "the committed condition register survives");
+        assert!(
+            instructions
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { rd, .. } if *rd == reg)),
+            "the value really was reloaded into the register that was returned"
+        );
+    }
+
+    /// A register-resident operand is NOT a reload, so committing its register
+    /// must not fire the tripwire: `select (local.get 0) (local.get 0) c`
+    /// legitimately pops R0 twice, and both `it` arms reading it is correct.
+    #[test]
+    fn pop_operand_committed_allows_a_register_resident_alias_973() {
+        let mut stack = vec![StackVal::i32(Reg::R0)];
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let mut next_temp: u8 = 0;
+        let reg = pop_operand_committed(
+            &mut stack,
+            &mut next_temp,
+            &mut instructions,
+            &mut spill,
+            &[Reg::R0],
+            &[Reg::R0], // the same register, already committed
+            0,
+        )
+        .expect("a register-resident duplicate is legal, not an internal bug");
+        assert_eq!(reg, Reg::R0);
+        assert!(instructions.is_empty(), "no reload, so nothing emitted");
+    }
+
+    /// The tripwire predicate itself. Unreachable through
+    /// `pop_operand_committed` once the reservation holds, so it is exercised
+    /// here directly rather than left as untested prose — including the i64
+    /// case, where the IMPLICIT high half is what gets clobbered.
+    #[test]
+    fn reload_clobbers_committed_detects_lo_and_hi_973() {
+        assert_eq!(
+            reload_clobbers_committed(Reg::R5, false, &[Reg::R4, Reg::R5]).unwrap(),
+            Some(Reg::R5),
+            "a 32-bit reload onto a committed register is caught"
+        );
+        assert_eq!(
+            reload_clobbers_committed(Reg::R5, false, &[Reg::R4, Reg::R6]).unwrap(),
+            None,
+            "a 32-bit reload clear of every committed register is silent"
+        );
+        assert_eq!(
+            reload_clobbers_committed(Reg::R4, true, &[Reg::R5]).unwrap(),
+            Some(Reg::R5),
+            "an i64 reload into (R4,R5) destroys a committed R5 via the IMPLICIT \
+             high half, which a lo-only check would miss entirely"
+        );
+        assert_eq!(
+            reload_clobbers_committed(Reg::R4, false, &[Reg::R5]).unwrap(),
+            None,
+            "the same registers as i32: only the lo half is written, so R5 is safe"
+        );
     }
 
     // ── #326: arg-move cycles break via the parallel-move resolver ──
