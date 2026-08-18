@@ -215,6 +215,111 @@ status_fields:
       - crates/synth-backend-riscv
       - crates/synth-backend-aarch64
 
+# =============================================================================
+# RQ-58-MIRRORS (#242) — THE MIRROR INVENTORY, ranked by rot-risk.
+#
+# A named unconverted mirror is a known risk; an unnamed one is the next #975.
+# This block names them ALL, converted and unconverted, so the unconverted ones
+# are a register rather than a discovery.
+#
+# COUNTS, re-derivable (the spec's figures reproduce exactly, and their scope
+# is worth stating because it excludes where the costliest drift happened):
+#   git ls-files 'crates/*' | grep '\.rs$' | xargs grep -lIi mirror            -> 57
+#   ... | xargs grep -lIi hand-maintained                                      -> 11
+#   ... | xargs grep -lIi 'single source of truth'                             ->  1
+# Repo-wide, over ALL tracked text files, the same three greps give 125 / 22 / 8.
+# The 68 files outside crates/**/*.rs include scripts/ (18) and docs (18) —
+# where the FEATURE_MATRIX template rot actually lived.
+#
+# DISCRIMINATOR: does a stale copy give a wrong ANSWER (a miscompile, a
+# wrongly-passed verification, a wrongly-green gate, a wrong decline) or only a
+# wrong DOC? Ranked wrong-answer-and-unguarded first.
+#
+# --- TIER 1 · wrong ANSWER, nothing mechanically checked it ------------------
+#  1. count_params x3 backends .......................... CONVERTED this lane
+#     was: arm_backend.rs:214 / riscv backend.rs:383 / aarch64 backend.rs:202,
+#     three byte-equivalent copies of an UNSOUND read-before-write heuristic.
+#     now: synth_core::count_params_heuristic + SYNTH-COUNT-PARAMS-SINGLE-SOURCE
+#     (byte-identical over 512 objects; count-max 0 anti-regrowth tripwire).
+#  2. aarch64 decline list: code vs FEATURE_MATRIX ...... CONVERTED this lane
+#     was: hand-typed template prose; went stale TWICE in v0.57 and named a
+#     SHIPPED capability as a decline. now: artifacts/aarch64-op-surface.json
+#     emitted from the real selector, substituted as {{aarch64_declined_ops}}.
+#  3. ARM_OP_VARIANT_COUNT x2 tripwire files ............ CONVERTED this lane
+#     a32_no_silent_nop_615.rs:33 / wcet_sp_no_wildcard_946.rs:38, guarded only
+#     by a comment ("bump ... here AND in ..."). A desync disables one soundness
+#     tripwire while the other stays green. now: SYNTH-A32-TRIPWIRE-UNIVERSE
+#     (fields-equal, value-level).
+#  4. all_wasm_op_representatives() ..................... NOT CONVERTED
+#     cross_backend_op_parity.rs:706. A hand-maintained Vec mirroring the WasmOp
+#     enum; classify() is compiler-enforced complete but does NOT force a Vec
+#     entry. An op missing from the Vec is silently never parity-probed AND
+#     silently absent from the derived op-surface artifact this lane added — so
+#     it under-reports without any signal. HIGHEST-VALUE REMAINING CONVERSION.
+#  5. exec_trap_subset_op allowlist <-> encode_op arms <-> the test's re-list
+#     .................................................... NOT CONVERTED
+#     synth-verify/src/arm_semantics.rs:2804 + its encode_op match + tests/
+#     arm_semantics_isa_faithfulness_923.rs:1435, whose own doc says "one
+#     hand-maintained mirror guarding another". The v0.57 drift allowlisted Rsb
+#     (emitted by the default-on Rocq-proved rule_i32_rotl) and two trunc ops to
+#     arms that did not exist. MITIGATED by ArmState::unmodeled re-checking at
+#     runtime (loud, not preventive) — the two hand lists remain.
+#  6. shrink_callee_saved_saves <-> body_uses_callee_saved allowlists
+#     liveness.rs:4993 / :5431 — "mirrors shrink's allowlist exactly", twice.
+#     A prologue save elided for a register the body uses. Guard: the comment.
+#  7. liveness.rs ResolvedBranchGeometry's `Label = 0` table (:7745) vs the
+#     estimator, which has no arm for it — a third byte-size opinion the
+#     estimator_encoder_agreement oracle does not cover.
+#  8. reg_effect <-> rewrite_op positional mirror (liveness.rs:3494) — checked
+#     by a mutual-consistency oracle (:11518) with "no third ground truth".
+#
+# --- TIER 2 · wrong ANSWER, a named mechanical check exists ------------------
+#  9. estimate_arm_byte_size <-> ArmEncoder::encode — estimator_encoder_
+#     agreement.rs, exhaustive, empty gap allowlist. The best-defended mirror
+#     in the repo and the model for #4.
+# 10. RV32 emitted_byte_size <-> assemble_function sizing — checked by a
+#     3-size-class sample, NOT exhaustive over RiscVOp.
+# 11. WCET cycle literals: wcet.rs <-> claims.yaml SYNTH-WCET-CYCLE-MODEL <->
+#     wcet_bound_gate.rs literals. Pins the literal TEXT, not the derivation.
+# 12. sel_dsl::RULES <-> coq/vcr_sel_rules.manifest <-> VcrSelRules.v — largely
+#     CONVERTED by #667 (the .v re-exports generated Gen.rule_X); the manifest
+#     is a third hand-maintained file, checked both ways.
+# 13. synth-verify/src/trap.rs <-> ordeal::trap taxonomy — structural drift
+#     fails to compile, semantic drift does not.
+# 14. shadow_budget.rs StackDepthBound <-> scry's StackBound — a deliberately
+#     dep-free re-declaration of another tool's three-valued result. Unchecked.
+# 15. WasmOp matched exhaustively in 5 places, ArmOp in 9 — pairwise checks
+#     only, no transitive closure. synth-verify's two reference models are not
+#     parity-checked against any selector.
+#
+# --- TIER 3 · wrong DOC ------------------------------------------------------
+# 16. FEATURE_MATRIX template numbers — the 21 `unchecked` entries below ARE
+#     this tier, itemized with rationales. One of them (221 vs 222) was already
+#     STALE when this lane found it and is now derived.
+# 17. known_divergences() prose "**18 entries** — the number below. Keep this
+#     line in step with the array" (cross_backend_op_parity.rs:810). The array's
+#     staleness IS asserted; the sentence's is not. Correct today (18 == 18).
+# 18. ORACLE_WIRING.md "**145 wired**" — pinned by count-MIN 145, so the prose
+#     can silently UNDERSTATE as oracles are added. Same shape for "7 manual".
+# 19. scripts/publish.rs CRATES_TO_PUBLISH <-> workspace members <-> docs/
+#     release-process.md — checked only at release time.
+# 20. RV32 startup.rs / linker_script.rs / pmp.rs "Mirrors synth-backend::..."
+#     — parallel implementations of emitted C and linker text; unchecked.
+# 21. safety/stpa/system-constraints.yaml:92,112 — a cross-REPO three-way ABI
+#     mirror (meld/kiln), asserted as a constraint and checked by nothing here.
+#
+# --- ALREADY CONVERTED before this lane (cite as patterns, do not re-do) -----
+#   * wcet.rs op_cost / op_mnemonic — exhaustive no-wildcard match + Debug-
+#     derived mnemonics: "no second source of truth to forget to update".
+#   * expansion_validator.rs — validates the literal emitted bytes, so there is
+#     no hand copy of the expansion to drift.
+#   * oracle_wiring_check.py — IMPORTS oracle_run.py's declaration parser
+#     instead of re-implementing it.
+#   * synth_core::referenced_locals (#974), rewrite_memory_grow_zero.
+#   * artifacts/status.json, model-coverage.json, aarch64-op-surface.json —
+#     committed derived artifacts under a byte-equality freshness gate.
+# =============================================================================
+
 # -----------------------------------------------------------------------------
 # feature_matrix_facts — RQ-58-MIRRORS (#242). The EXHAUSTIVENESS half of the
 # template-vs-code gate.
@@ -463,6 +568,42 @@ claims:
   # count-same over a literal it cannot go vacuously green if both copies are
   # edited to the same wrong number.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # RQ-58-MIRRORS (#242) — count_params: three copies collapsed to one, and the
+  # collapse made permanent.
+  #
+  # #974 centralised `referenced_locals` (the FIX) and left `count_params` (the
+  # UNSOUND heuristic it replaced on the declared-count path) as three
+  # byte-equivalent private copies, one per backend. Three copies of an unsound
+  # rule is the worse case: a correction applied to one silently does not reach
+  # the other two.
+  #
+  # Collapsed to `synth_core::count_params_heuristic`. Proven behaviour-
+  # preserving by byte-identity: 512 objects over scripts/repro/*.wat x
+  # {cortex-m4, self-contained --cortex-m, --relocatable, rv32, aarch64},
+  # md5-identical before and after.
+  #
+  # The count-max leg is the anti-regrowth tripwire: `let mut first_access` is
+  # the heuristic's distinctive local, so a backend re-growing a private copy
+  # reddens rather than quietly re-triplicating.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
+    doc: crates/synth-core/src/wasm_op.rs
+    text: "pub fn count_params_heuristic"
+    evidence:
+      - kind: count-eq                       # exactly ONE definition, repo-wide
+        pattern: 'pub fn count_params_heuristic'
+        glob: ['crates/**/*.rs']
+        expect: 1
+      - kind: count-max                      # no backend may re-grow a copy
+        pattern: 'let mut first_access'
+        glob: ['crates/synth-backend/src/**/*.rs',
+               'crates/synth-backend-riscv/src/**/*.rs',
+               'crates/synth-backend-aarch64/src/**/*.rs']
+        max: 0
+      - kind: verbatim                       # the unsoundness stays NAMED
+        text: "UNSOUND, deliberately kept and deliberately named"
+
   - id: SYNTH-A32-TRIPWIRE-UNIVERSE
     doc: scripts/templates/feature_matrix.md.tmpl
     text: "no-wildcard tripwire"
