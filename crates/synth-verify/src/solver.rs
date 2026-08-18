@@ -290,6 +290,15 @@ mod z3_backend {
             BvTerm::Ite { cond, then_, else_ } => {
                 bool_to_z3(cond).ite(&bv_to_z3(then_), &bv_to_z3(else_))
             }
+            // ordeal ≥0.17 seals the term enums (`#[non_exhaustive]`,
+            // ordeal#104). A differential oracle must never guess a
+            // translation — an unknown variant means an ordeal bump added an
+            // op nobody taught this backend; refuse loudly (see the term.rs
+            // catch-alls, which fire first on any such term).
+            other => panic!(
+                "synth-verify z3 oracle: unmodeled ordeal BvTerm variant {other:?} — \
+                 extend bv_to_z3 before trusting any differential verdict"
+            ),
         }
     }
 
@@ -308,6 +317,11 @@ mod z3_backend {
             BoolTerm::Not(a) => bool_to_z3(a).not(),
             BoolTerm::And(a, b) => z3::ast::Bool::and(&[&bool_to_z3(a), &bool_to_z3(b)]),
             BoolTerm::Or(a, b) => z3::ast::Bool::or(&[&bool_to_z3(a), &bool_to_z3(b)]),
+            // Sealed enum (ordeal#104) — see the `bv_to_z3` catch-all.
+            other => panic!(
+                "synth-verify z3 oracle: unmodeled ordeal BoolTerm variant {other:?} — \
+                 extend bool_to_z3 before trusting any differential verdict"
+            ),
         }
     }
 
