@@ -173,10 +173,17 @@ status_fields:
   # representative (`a64_op_surface_artifact_is_fresh_242`, freshness-gated in
   # the Test job; 0 representatives may fall through unprobed).
   #
-  # MEASURED at the swap: the retired grep and the new probe independently
-  # produce 185, so the render did not move — a strictly stronger derivation
-  # replacing a weaker one, byte-invisible. The weaker one was DELETED, not
-  # kept alongside (v0.58's subtraction rule).
+  # MEASURED at the swap: the retired grep and the new probe both produce 185,
+  # so the render did not move — a strictly stronger derivation replacing a
+  # weaker one, byte-invisible. The weaker one was DELETED, not kept alongside
+  # (v0.58's subtraction rule).
+  #
+  # NOT treated as corroboration, deliberately: 185 distinct `WasmOp::` tokens
+  # and 185 lowering probe labels are DIFFERENT UNIVERSES (197 labels total,
+  # and one label such as `simd (grouped)` covers several variants). The
+  # equality is almost certainly coincidence, which is why it is not pinned
+  # with `count-same` — a false 1:1 invariant is exactly the kind of gate this
+  # release exists to stop shipping.
   aarch64_ops_probed:
     kind: count
     pattern: '"op": '
@@ -584,6 +591,15 @@ claims:
   # preserving by byte-identity: 512 objects over scripts/repro/*.wat x
   # {cortex-m4, self-contained --cortex-m, --relocatable, rv32, aarch64},
   # md5-identical before and after.
+  #
+  # THE NEEDLE WAS COUNTED BEFORE AND AFTER (v0.56's lesson: a mutation test
+  # that never mutated printed `ok`). Byte-identity over a sweep that never
+  # REACHES the moved code proves nothing, and this heuristic only runs on the
+  # no-declared-count path. Negative control: make the function return a
+  # constant 7 and re-run the same sweep — 174 of 510 hashes MOVE (and 2
+  # compiles fail outright). So the sweep genuinely exercises it on ~34 % of
+  # the corpus, and the zero-diff result is evidence rather than an artifact of
+  # dead code.
   #
   # The count-max leg is the anti-regrowth tripwire: `let mut first_access` is
   # the heuristic's distinctive local, so a backend re-growing a private copy
