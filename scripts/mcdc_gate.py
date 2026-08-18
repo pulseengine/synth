@@ -73,8 +73,31 @@ from pathlib import Path
 #   * synth_backend::wcet* — the decline predicates are match-dispatch
 #     (`scan_for_decline`: 1 boolean-operator line in 1061), so most of that
 #     surface has no compound decision to measure.
+# RQ-58-MIRRORS (#242): `count_params_heuristic` joins the scored set because
+# decision logic MOVED there, not because a floor needed help.
+#
+# `count_params` existed as three byte-equivalent private copies, one per
+# backend. The RV32 copy lived in `synth_backend_riscv::backend::` and was
+# therefore scored here. Collapsing the three into
+# `synth_core::count_params_heuristic` took its decisions OUT of every scored
+# prefix and the floors tripped — correctly. The logic did not disappear, it
+# relocated, so the SCOPE follows it. No floor was lowered.
+#
+# MEASURED, and the reason this entry names ONE FUNCTION rather than the
+# module. On ubuntu-latest / rustc 1.96.1 / witness 0.42.0, 56 rows:
+#   main                                      22 dec · 130 cond · 57 proved · 50 dead
+#   after the collapse, no scope change       21 · 131 · 56 · 45   (dec+proved trip)
+#   + the whole `synth_core::wasm_op::`       26 · 145 · 57 · 54   (dead ceiling trips)
+#   + only `count_params_heuristic`           22 · 135 · 57 · 48   (all floors met)
+# The module-wide form drags in `rewrite_memory_grow_zero` (#539) and
+# `referenced_locals` (#970) — 9 unreached conditions that no row exercises,
+# which is a real coverage GAP but a SEPARATE decision: widening scope needs
+# its own rows and its own re-measured dead ceiling, and doing it as a side
+# effect of a mirror collapse is the sloppiness this lane exists to stop.
+# Named as a follow-up, not smuggled in.
 SCORED_PREFIXES = (
     "synth_core::static_data_addr::",
+    "synth_core::wasm_op::count_params_heuristic",
     "synth_backend_riscv::alloc_validator::",
     "synth_backend_riscv::backend::",
 )

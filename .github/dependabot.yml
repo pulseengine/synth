@@ -6,6 +6,16 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # For dtolnay/rust-toolchain the ref IS the rustc version. The MC/DC
+      # structural-coverage job pins @1.96.1 as a MEASUREMENT constant (its
+      # floors are counts over std-inlined lowered wasm); dependabot #984
+      # bumped it to 1.100.0 as if it were an action version and silently
+      # changed the measured compiler with no re-measure. Bumps to that pin
+      # are only valid inside a PR that re-measures and restates the floors,
+      # so dependabot must not touch this action. (Its other refs here are
+      # @stable/@nightly, which dependabot never bumps anyway.)
+      - dependency-name: dtolnay/rust-toolchain
   - package-ecosystem: cargo
     directory: /
     schedule:

@@ -2168,3 +2168,284 @@ fn br_table_subshape_asymmetry_882() {
         );
     }
 }
+
+// ===========================================================================
+// RQ-58-MIRRORS (#242) — GENERATE, DON'T MIRROR: the aarch64 op surface is
+// EMITTED from the real selector, never hand-typed.
+// ===========================================================================
+//
+// WHY THIS EXISTS. `docs/status/FEATURE_MATRIX.md` is generated, and
+// `claim_check.check_generated_fresh` byte-compares the render against the
+// TEMPLATE — which proves the render is faithful to the template and NEVER
+// that the template is faithful to the CODE. The aarch64 decline list is the
+// class that cost the most: it went stale TWICE and, at v0.57, still named a
+// capability that release had SHIPPED. The selector's own header comment
+// already deleted its hand list in favour of "consult the oracle, not a hand
+// list" (#946); the template did not, so the hand list simply moved.
+//
+// The fix is the #667 pattern (the shipped `sel_dsl::RULES` table EMITS the
+// Rocq model): the OP-LEVEL surface is derived here from the REAL selector's
+// probe outcomes into `artifacts/aarch64-op-surface.json`, and the template
+// SUBSTITUTES it. A lowering that lands (or regresses) moves the artifact,
+// which moves `status.json`, which moves the render, which fails
+// `check_generated_fresh` — so the doc cannot disagree with the code.
+//
+// SCOPE, stated honestly: this covers the surface that is a FUNCTION OF THE OP
+// ALONE. Module- and shape-level refusals (an import call, `>8` args, a
+// float-result callee, an imported global, a growable imported table, a block
+// type with parameters, a `br_table` past the threshold, an active data
+// segment) are not properties of a `WasmOp` variant and are NOT in this
+// artifact. They remain HAND-WRITTEN PROSE in the feature matrix, declared
+// `unchecked` in claims.yaml with that rationale. They were verified once, by
+// compiling one probe module each at v0.58 (18/18 declined), but nothing
+// re-checks them per commit — naming that honestly beats citing a gate that
+// does not exist.
+
+/// RQ-58-MIRRORS (#242) — the representative list is pinned to the ENUM.
+///
+/// [`all_wasm_op_representatives`] says of itself: "this `Vec`, by contrast, is
+/// HAND-MAINTAINED". Its safety argument is that a new `WasmOp` variant fails
+/// to compile in [`classify`], which points the author here. That argument
+/// covers ADDING a variant; it does not cover a variant that is classified but
+/// never given a representative, and it never covered DELETION.
+///
+/// The consequence got worse when this file started EMITTING
+/// `artifacts/aarch64-op-surface.json` from this same `Vec`: an op missing from
+/// it is now silently absent from a derived artifact whose entire claim is
+/// "derived, never a hand list", and the feature matrix substitutes that
+/// artifact. A hand list feeding a generated doc is the shape this release
+/// exists to kill.
+///
+/// So pin the list's LENGTH to the enum's own declaration, read out of
+/// `synth-core/src/wasm_op.rs` at test time. Textual, and deliberately narrow:
+/// it counts lines inside `pub enum WasmOp { .. }` that START a variant. It
+/// cannot check that the right ops are present — only that none is missing or
+/// duplicated, which is exactly the failure the compile error does not catch.
+#[test]
+fn representatives_cover_every_wasm_op_variant_242() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../synth-core/src/wasm_op.rs");
+    let text = std::fs::read_to_string(&src).expect("read synth-core/src/wasm_op.rs");
+
+    let after = text
+        .split_once("pub enum WasmOp")
+        .expect("`pub enum WasmOp` not found — the enum moved or was renamed")
+        .1;
+    let body_start = after.find('{').expect("enum body") + 1;
+    let mut depth = 1usize;
+    let mut end = 0usize;
+    for (i, ch) in after[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &after[body_start..body_start + end];
+
+    // A variant STARTS at exactly-4-space indentation with an upper-case
+    // ident. Deeper indentation is a struct-variant FIELD; `//` is a comment
+    // and `#` an attribute.
+    let declared = body
+        .lines()
+        .filter(|l| {
+            let Some(rest) = l.strip_prefix("    ") else {
+                return false;
+            };
+            !rest.starts_with(' ')
+                && !rest.starts_with("//")
+                && !rest.starts_with('#')
+                && rest.starts_with(|c: char| c.is_ascii_uppercase())
+        })
+        .count();
+
+    let reps = all_wasm_op_representatives().len();
+
+    // Non-vacuity: a parse that finds nothing must not silently agree with an
+    // emptied Vec.
+    assert!(
+        declared >= 250,
+        "the WasmOp variant parse found only {declared} variants — the enum's \
+         formatting changed and this check has stopped measuring anything"
+    );
+    assert_eq!(
+        reps, declared,
+        "all_wasm_op_representatives() has {reps} entries but WasmOp declares \
+         {declared} variants. A variant with no representative is silently \
+         never parity-probed AND silently absent from \
+         artifacts/aarch64-op-surface.json, which the feature matrix \
+         substitutes — add the representative (or remove the stale one)."
+    );
+}
+
+/// The probe this file uses for `op` on the aarch64 selector: the extended
+/// surface's probe when it has one, otherwise the integer-core parity probe.
+/// Both source matches are wildcard-free, so the union is universe-complete.
+fn a64_probe_for(op: &WasmOp) -> Option<(&'static str, u32, Vec<WasmOp>)> {
+    if let Some((label, num_params, ops, _expect)) = a64_extended_surface(op) {
+        return Some((label, num_params, ops));
+    }
+    match classify(op) {
+        ParityClass::IntegerCore {
+            label,
+            num_params,
+            ops,
+        } => Some((label, num_params, ops)),
+        ParityClass::StructurallyExcluded(_) => None,
+    }
+}
+
+/// Minimal JSON string escaping — enough for the labels and decline reasons
+/// this artifact carries, and it keeps the oracle free of a serde dev-dep.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Re-derive the aarch64 op surface by RUNNING the selector on every probe.
+///
+/// Returns `(rows, unprobed)` — `unprobed` names any representative that BOTH
+/// wildcard-free matches decline to give a probe for. It must stay empty, or
+/// the artifact is silently under-reporting the surface (the exact class this
+/// lane exists to kill: a derived artifact that looks authoritative while
+/// omitting ops).
+fn derive_a64_op_surface() -> (String, Vec<String>) {
+    let mut rows: Vec<(String, Option<String>)> = Vec::new();
+    let mut unprobed: Vec<String> = Vec::new();
+    for op in all_wasm_op_representatives() {
+        let Some((label, num_params, ops)) = a64_probe_for(&op) else {
+            unprobed.push(format!("{op:?}"));
+            continue;
+        };
+        let outcome = aarch64_decline_reason(&ops, num_params).err();
+        rows.push((label.to_string(), outcome));
+    }
+    rows.sort();
+    rows.dedup();
+    unprobed.sort();
+    let mut s = String::new();
+    s.push_str("{\n");
+    s.push_str(
+        "  \"_generated_by\": \"cargo test -p synth-backend-riscv --test \
+         cross_backend_op_parity a64_op_surface_artifact_is_fresh_242\",\n",
+    );
+    s.push_str(
+        "  \"_source\": \"REAL probe outcomes of \
+         synth_backend_aarch64::selector::select_typed_cf_calls — never a hand list\",\n",
+    );
+    s.push_str(
+        "  \"_scope\": \"OP-LEVEL ONLY. Module/shape-level refusals (import call, \
+         >8 args, imported global, active data segment, ...) are not a function of \
+         a WasmOp and are NOT covered here; they are hand-written prose in the \
+         feature matrix, declared unchecked in claims.yaml\",\n",
+    );
+    s.push_str("  \"ops\": [\n");
+    for (i, (label, reason)) in rows.iter().enumerate() {
+        let comma = if i + 1 == rows.len() { "" } else { "," };
+        match reason {
+            None => s.push_str(&format!(
+                "    {{ \"op\": \"{}\", \"status\": \"lowered\" }}{comma}\n",
+                json_escape(label)
+            )),
+            Some(r) => s.push_str(&format!(
+                "    {{ \"op\": \"{}\", \"status\": \"declined\", \"reason\": \"{}\" }}{comma}\n",
+                json_escape(label),
+                json_escape(r)
+            )),
+        }
+    }
+    s.push_str("  ]\n}\n");
+    (s, unprobed)
+}
+
+fn a64_surface_artifact_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/aarch64-op-surface.json")
+}
+
+/// The committed `artifacts/aarch64-op-surface.json` must EQUAL what running
+/// the real selector produces right now.
+///
+/// Regenerate with `SYNTH_EMIT_A64_SURFACE=1 cargo test -p synth-backend-riscv
+/// --test cross_backend_op_parity a64_op_surface_artifact_is_fresh_242`.
+#[test]
+fn a64_op_surface_artifact_is_fresh_242() {
+    let (want, unprobed) = derive_a64_op_surface();
+    let probed = want.matches("\"op\": ").count();
+
+    // Completeness: every representative must land in the artifact.
+    assert!(
+        unprobed.is_empty(),
+        "{} WasmOp representative(s) got NO aarch64 probe, so the derived \
+         surface silently omits them:\n  {}",
+        unprobed.len(),
+        unprobed.join("\n  ")
+    );
+    // Non-vacuity floor: the probe must span the real universe, not a stub.
+    assert!(
+        probed >= 190,
+        "aarch64 op-surface derivation probed too few ops ({probed}); the \
+         probe construction or the op universe regressed"
+    );
+    assert!(
+        want.contains("\"status\": \"declined\""),
+        "the derived surface records NO decline — a surface with an empty \
+         complement is the vacuous-artifact failure, not a perfect backend"
+    );
+    assert!(
+        want.contains("\"status\": \"lowered\""),
+        "the derived surface records NO lowering — the probe construction \
+         regressed"
+    );
+
+    let path = a64_surface_artifact_path();
+    if std::env::var_os("SYNTH_EMIT_A64_SURFACE").is_some() {
+        std::fs::write(&path, &want).expect("write aarch64-op-surface.json");
+        return;
+    }
+    let got = std::fs::read_to_string(&path).unwrap_or_default();
+    if got == want {
+        return;
+    }
+    // Report the DIFFERING ROWS, not two 11 kB blobs — a failure nobody can
+    // read is a failure nobody acts on.
+    let committed: Vec<&str> = got.lines().collect();
+    let derived: Vec<&str> = want.lines().collect();
+    let mut diff = String::new();
+    for line in &derived {
+        if !committed.contains(line) {
+            diff.push_str(&format!("  DERIVED-NOW : {}\n", line.trim()));
+        }
+    }
+    for line in &committed {
+        if !derived.contains(line) {
+            diff.push_str(&format!("  COMMITTED   : {}\n", line.trim()));
+        }
+    }
+    panic!(
+        "artifacts/aarch64-op-surface.json is STALE or hand-edited.\n\
+         It is DERIVED from the real aarch64 selector, and \
+         docs/status/FEATURE_MATRIX.md substitutes it, so the doc cannot \
+         disagree with the code.\n{diff}\n\
+         Regenerate with:\n  \
+         SYNTH_EMIT_A64_SURFACE=1 cargo test -p synth-backend-riscv --test \
+         cross_backend_op_parity a64_op_surface_artifact_is_fresh_242\n\
+         then `python3 scripts/claim_check.py claims.yaml --emit-status` and \
+         commit both."
+    );
+}

@@ -539,6 +539,46 @@ pub fn referenced_locals(wasm_ops: &[WasmOp]) -> u32 {
         .unwrap_or(0)
 }
 
+/// The read-before-write param-count HEURISTIC, used only when the driver
+/// supplied NO declared count.
+///
+/// RQ-58-MIRRORS (#242): this existed as THREE byte-equivalent private copies —
+/// `synth-backend/src/arm_backend.rs`, `synth-backend-riscv/src/backend.rs` and
+/// `synth-backend-aarch64/src/backend.rs` — differing only in local variable
+/// names and rustfmt line breaks. #974 collapsed [`referenced_locals`], which
+/// REPLACED this heuristic on the declared-count path, but left the heuristic
+/// itself triplicated: the fix was centralised and the bug's original carrier
+/// was not. Three copies of an UNSOUND rule is worse than three copies of a
+/// sound one, because a correction applied to one of them silently does not
+/// reach the other two.
+///
+/// UNSOUND, deliberately kept and deliberately named: it counts only indices
+/// READ BEFORE WRITTEN in LINEAR op order, so a conditionally-written param is
+/// misclassified — see [`referenced_locals`] for the measured
+/// information-disclosure shape (#970). It survives ONLY on the no-declared-
+/// count path (direct `compile_function` callers and hand-built op streams),
+/// where there is no signature to clamp against. Every caller that HAS a
+/// declared count must use `min(referenced_locals(ops), declared)` instead.
+pub fn count_params_heuristic(wasm_ops: &[WasmOp]) -> u32 {
+    let mut first_access: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+    for op in wasm_ops {
+        match op {
+            WasmOp::LocalGet(idx) => {
+                first_access.entry(*idx).or_insert(true);
+            }
+            WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
+                first_access.entry(*idx).or_insert(false);
+            }
+            _ => {}
+        }
+    }
+    first_access
+        .iter()
+        .filter_map(|(&idx, &is_read_first)| if is_read_first { Some(idx + 1) } else { None })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Fold `i32.const 0; memory.grow` → `memory.size` up front, on every backend.
 ///
 /// WASM Core §4.4.7: growing a memory by ZERO pages can never fail — it returns

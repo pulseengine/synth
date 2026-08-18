@@ -199,25 +199,11 @@ use synth_core::referenced_locals;
 /// readings can be wrong; the read-first rule keeps the #457 behaviour rather
 /// than reading caller garbage for a zero-init local. The CLI always supplies a
 /// declared count, so this path is effectively direct-`compile_function` only.
-fn count_params(ops: &[WasmOp]) -> u32 {
-    use std::collections::HashMap;
-    let mut first_access: HashMap<u32, bool> = HashMap::new();
-    for op in ops {
-        match op {
-            WasmOp::LocalGet(i) => {
-                first_access.entry(*i).or_insert(true);
-            }
-            WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => {
-                first_access.entry(*i).or_insert(false);
-            }
-            _ => {}
-        }
-    }
-    first_access
-        .iter()
-        .filter_map(|(&i, &read_first)| if read_first { Some(i + 1) } else { None })
-        .max()
-        .unwrap_or(0)
+/// RQ-58-MIRRORS (#242): was a private copy of the read-before-write param
+/// heuristic, byte-equivalent to the other two backends'. Now the ONE shared
+/// definition in `synth-core`, so a correction reaches every backend.
+fn count_params(wasm_ops: &[WasmOp]) -> u32 {
+    synth_core::count_params_heuristic(wasm_ops)
 }
 
 impl Backend for AArch64Backend {

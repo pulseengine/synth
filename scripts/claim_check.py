@@ -57,6 +57,10 @@ Evidence predicates re-derive from source — never a number typed only in prose
                wording in prose is bound to the roadmap's status field
   status-field the named field is declared in `status_fields:` (used to bind a
                README badge's JSONPath query to a real derived field)
+  fields-equal two or more DERIVED status fields must carry the same VALUE —
+               pins hand-maintained copies of one constant against each other
+               (count-same at the value level, so editing BOTH copies to the
+               same wrong number cannot green it)
 
 Derived-status field kinds (under `status_fields:`):
 
@@ -67,6 +71,11 @@ Derived-status field kinds (under `status_fields:`):
   distinct-tokens number of DISTINCT capture-group values in one file,
                   optionally truncated at a `before:` marker (e.g. the ops an
                   instruction selector handles, stopping before `mod tests`)
+  json-list       a LIST of names selected out of a derived, freshness-gated
+                  JSON artifact and rendered as prose (RQ-58-MIRRORS: a decline
+                  list stops being hand-typed template prose and becomes a
+                  substitution, so code drift moves the render). Fails loudly
+                  when the selection matches nothing.
   const           a hand-written value (names, not numbers) whose supporting
                   paths under `require:` must all exist
 
@@ -260,6 +269,44 @@ def derive_status(spec, root):
                     f"status field {name!r}: no tokens matched in {f['file']}"
                 )
             out[name] = len(toks)
+        elif kind == "json-list":
+            # A LIST of names pulled out of a DERIVED, freshness-gated JSON
+            # artifact and rendered into the template as prose. This is the
+            # RQ-58-MIRRORS seam: a decline list, an op list or a capability
+            # list stops being hand-typed template prose and becomes a
+            # substitution, so code drift moves the render and
+            # check_generated_fresh goes red.
+            path = root / f["file"]
+            if not path.exists():
+                raise RuntimeError(
+                    f"status field {name!r}: derived artifact missing: {f['file']}"
+                )
+            data = json.loads(path.read_text(errors="ignore"))
+            items = data.get(f["list"])
+            if not isinstance(items, list):
+                raise RuntimeError(
+                    f"status field {name!r}: {f['file']} has no list at "
+                    f"key {f['list']!r}"
+                )
+            where = f.get("where") or {}
+            vals = sorted(
+                {
+                    it[f["field"]]
+                    for it in items
+                    if isinstance(it, dict)
+                    and f["field"] in it
+                    and all(it.get(k) == v for k, v in where.items())
+                }
+            )
+            if not vals:
+                # An empty selection would render an empty phrase and green a
+                # claim it never measured — the vacuous-derivation failure.
+                raise RuntimeError(
+                    f"status field {name!r}: selection {where!r} over "
+                    f"{f['file']}:{f['list']} matched NOTHING"
+                )
+            w = f.get("wrap", "")
+            out[name] = f.get("join", ", ").join(f"{w}{v}{w}" for v in vals)
         elif kind == "const":
             for p in f.get("require", []):
                 if not (root / p).exists():
@@ -312,6 +359,189 @@ def check_generated_fresh(status, root):
                 f"generated file STALE or hand-edited: {rel} — regenerate with "
                 f"`python3 scripts/claim_check.py claims.yaml --emit-status` "
                 f"and commit the result"
+            )
+    return fails
+
+
+# ---------------------------------------------------------------------------
+# RQ-58-MIRRORS — TEMPLATE-vs-CODE coverage.
+#
+# `check_generated_fresh` above byte-compares the RENDERED feature matrix
+# against the TEMPLATE. That proves the render is faithful to the template and
+# says NOTHING about whether the template is faithful to the code — which is
+# why v0.57 shipped three stale numbers behind a green 43/43, one of them a
+# capability that release had shipped, listed as a loud decline.
+#
+# The repo already had the right MECHANISM (a claim whose `doc:` is the
+# template, pinning prose to a re-derivation — #880). What it lacked was
+# EXHAUSTIVENESS: nothing said which of the template's assertions were covered
+# by it, so an unpinned number was indistinguishable from a pinned one.
+#
+# This gate supplies the missing half. Every NUMBER in the template must be
+# accounted for as exactly one of:
+#
+#   DERIVED    inside a `{{field}}` substitution — status.json re-derives it
+#              from source every run, and a drift fails check_generated_fresh
+#   PINNED     inside the `text:`/`verbatim:` span of a claim whose `doc:` is
+#              the template — some evidence predicate re-derives it
+#   UNCHECKED  declared in `feature_matrix_facts.unchecked` WITH a rationale —
+#              narrative prose that no derivation covers, named as such
+#   MASKED     an identifier-shaped token that is not a measurement at all
+#              (issue refs, type widths, target names, spec sections), each
+#              mask declared with a `why:` in claims.yaml
+#
+# Anything left over is a number nobody classified: RED. The gate cannot prove
+# a pinned or unchecked claim TRUE — it proves that every assertion has been
+# put in one of those buckets on purpose, and it fails closed on new ones.
+# The mask list is the residual trust; it is declared in claims.yaml so it is
+# reviewable rather than buried here.
+# ---------------------------------------------------------------------------
+
+_NUM_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
+
+
+def _blank(text, needle):
+    """Replace every occurrence of `needle` with same-length NULs, so offsets
+    (and therefore the surrounding context reported on failure) survive."""
+    if not needle:
+        return text, 0
+    n = text.count(needle)
+    return text.replace(needle, "\x00" * len(needle)), n
+
+
+def check_template_facts(data, claims, root):
+    fails = []
+    cfg = data.get("feature_matrix_facts")
+    if cfg is None:
+        return ["claims.yaml has no `feature_matrix_facts:` section — the "
+                "template-vs-code coverage gate is not configured"]
+
+    tmpl = (root / FEATURE_MATRIX_TMPL).read_text()
+    census = {"derived": 0, "pinned": 0, "unchecked": 0, "masked": 0}
+
+    # 1. DERIVED — {{field}} substitutions.
+    def _sub_blank(m):
+        census["derived"] += 1
+        return "\x00" * len(m.group(0))
+
+    text = re.sub(r"\{\{(\w+)\}\}", _sub_blank, tmpl)
+
+    # 2. PINNED — claim spans whose `doc:` is the template itself.
+    for c in claims:
+        if c.get("doc") != FEATURE_MATRIX_TMPL:
+            continue
+        spans = [c.get("text")]
+        spans += [
+            e.get("text")
+            for e in c.get("evidence", [])
+            if e.get("kind") == "verbatim"
+        ]
+        for s in spans:
+            if not s:
+                continue
+            if s not in text and s not in tmpl:
+                fails.append(
+                    f"claim {c['id']} pins template text that is ABSENT: {s!r}"
+                )
+                continue
+            text, n = _blank(text, s)
+            census["pinned"] += n
+
+    # 3. UNCHECKED — declared narrative prose, each with a rationale.
+    for e in cfg.get("unchecked", []) or []:
+        s = e.get("text", "")
+        why = (e.get("rationale") or "").strip()
+        if len(why) < 20:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry {s[:40]!r} needs a "
+                f">=20-char rationale saying WHY no derivation covers it"
+            )
+        if not any(ch.isdigit() for ch in s):
+            fails.append(
+                f"feature_matrix_facts.unchecked entry {s[:40]!r} contains no "
+                f"number — the hatch exists for unpinnable ASSERTIONS, not for "
+                f"blanking prose wholesale"
+            )
+        if len(s) > 240:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry is {len(s)} chars — keep "
+                f"an entry to the assertion (<=240), not a paragraph"
+            )
+        if s and s not in text:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry no longer present in the "
+                f"template (dead entry — delete it): {s[:60]!r}"
+            )
+            continue
+        text, n = _blank(text, s)
+        census["unchecked"] += n
+
+    # 4. MASKED — identifier-shaped tokens that are not measurements.
+    for m in cfg.get("masks", []) or []:
+        why = (m.get("why") or "").strip()
+        if len(why) < 20:
+            fails.append(
+                f"feature_matrix_facts.masks entry {m.get('pattern')!r} needs a "
+                f">=20-char `why:` — the mask list is the residual trust in this "
+                f"gate and must be reviewable"
+            )
+        try:
+            rx = re.compile(m["pattern"])
+        except re.error as exc:
+            fails.append(f"feature_matrix_facts.masks pattern does not compile: {exc}")
+            continue
+        hits = 0
+
+        def _mask_blank(mm):
+            nonlocal hits
+            hits += 1
+            return "\x00" * len(mm.group(0))
+
+        text = rx.sub(_mask_blank, text)
+        if hits == 0:
+            fails.append(
+                f"feature_matrix_facts.masks pattern matches NOTHING (dead "
+                f"mask — delete it): {m['pattern']!r}"
+            )
+        census["masked"] += hits
+
+    # 5. Whatever is left is an unclassified assertion.
+    for mm in _NUM_RE.finditer(text):
+        s, e = mm.start(), mm.end()
+        ctx = tmpl[max(0, s - 60) : min(len(tmpl), e + 60)].replace("\n", " ")
+        fails.append(
+            f"UNCLASSIFIED number {mm.group(0)!r} in the feature-matrix "
+            f"template — make it a {{{{field}}}} substitution, pin it with a "
+            f"claim whose doc: is the template, or declare it under "
+            f"feature_matrix_facts.unchecked with a rationale.\n"
+            f"        context: ...{ctx}..."
+        )
+
+    print(
+        f"template-fact census: {census['derived']} derived · "
+        f"{census['pinned']} pinned · {census['unchecked']} unchecked · "
+        f"{census['masked']} masked identifier tokens"
+    )
+
+    # NON-VACUITY. Without this, the cheapest way to green the gate is to
+    # DELETE the assertions — an empty template classifies perfectly. Floors
+    # (>=, so adding coverage never reddens) on the two buckets that represent
+    # real verification; the ratchet direction is up. Lower one only when
+    # evidence genuinely weakened.
+    floors = cfg.get("floors") or {}
+    for bucket in ("derived", "pinned"):
+        want = floors.get(bucket)
+        if want is None:
+            fails.append(
+                f"feature_matrix_facts.floors has no {bucket!r} floor — the "
+                f"exhaustiveness gate would pass over an emptied template"
+            )
+        elif census[bucket] < want:
+            fails.append(
+                f"feature-matrix {bucket} coverage FELL: {census[bucket]} < "
+                f"recorded floor {want}. Verified assertions were removed from "
+                f"the template — restore them, or lower the floor in the same "
+                f"PR that says why the evidence weakened"
             )
     return fails
 
@@ -606,6 +836,26 @@ def _check_evidence(ev, kind, c, doc, text, root, status_spec, status):
                 f'— a badge/query is pointing at a field status.json will '
                 f'never carry'
             )
+    elif kind == "fields-equal":
+        # Two or more DERIVED fields must carry the same VALUE. This is
+        # `count-same` at the value level: it pins two hand-maintained
+        # copies of one constant against each other, and unlike a
+        # count-same over a literal pattern it cannot go vacuously green
+        # when BOTH copies are edited to the same wrong number.
+        names = ev["names"]
+        missing = [n for n in names if n not in status]
+        if missing:
+            fails.append(
+                f"fields-equal names undeclared status field(s): {missing}"
+            )
+        else:
+            seen = {n: status[n] for n in names}
+            if len({str(v) for v in seen.values()}) > 1:
+                fails.append(
+                    "hand-maintained copies of one constant DISAGREE: "
+                    + ", ".join(f"{n}={v}" for n, v in seen.items())
+                    + " — update every copy together"
+                )
     elif kind == "ratchet":
         # SINGLE-DERIVATION: the pin names a status_fields entry; it does not
         # carry its own regex, so this gate cannot mirror-drift from the number
@@ -716,6 +966,7 @@ def main():
     extra = []
     if status_spec:
         extra += check_generated_fresh(status, root)
+    extra += check_template_facts(data, claims, root)
     extra += check_readme_links(data, claims, root)
     for f in extra:
         bad += 1

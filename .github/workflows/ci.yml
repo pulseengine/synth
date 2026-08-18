@@ -3705,7 +3705,15 @@ jobs:
       # sensitive to how `std` inlines. `@stable` is a moving target and a Rust
       # release could red this gate with no code change. Bumping this version is
       # allowed — it obliges a RE-MEASURE of the floors, not a lowering.
-      - uses: dtolnay/rust-toolchain@1.100.0
+      #
+      # RESTORED to 1.96.1: dependabot #984 auto-bumped this to 1.100.0 as an
+      # "action version" — but for dtolnay/rust-toolchain the ref IS the rustc
+      # version, so the bump silently changed the measured compiler with no
+      # re-measure of the floors, defeating the pin's whole purpose. Every
+      # baseline in scripts/mcdc_gate.py and scripts/repro/mcdc_912_gate.md is
+      # a 1.96.1 measurement. Do not let dependabot move this line: a bump is
+      # only valid inside a PR that re-measures and restates the floors.
+      - uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: wasm32-wasip1
       - name: Cache Cargo dependencies

@@ -211,29 +211,11 @@ impl Backend for ArmBackend {
 }
 
 /// Count the number of function parameters by analyzing LocalGet patterns
+/// RQ-58-MIRRORS (#242): was a private copy of the read-before-write param
+/// heuristic, byte-equivalent to the other two backends'. Now the ONE shared
+/// definition in `synth-core`, so a correction reaches every backend.
 fn count_params(wasm_ops: &[WasmOp]) -> u32 {
-    let mut first_access: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
-    for op in wasm_ops {
-        match op {
-            WasmOp::LocalGet(idx) => {
-                first_access.entry(*idx).or_insert(true);
-            }
-            WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
-                first_access.entry(*idx).or_insert(false);
-            }
-            _ => {}
-        }
-    }
-
-    first_access
-        .iter()
-        .filter_map(
-            |(&idx, &is_read_first)| {
-                if is_read_first { Some(idx + 1) } else { None }
-            },
-        )
-        .max()
-        .unwrap_or(0)
+    synth_core::count_params_heuristic(wasm_ops)
 }
 
 /// #457/#970: the parameter count the selector is given.
