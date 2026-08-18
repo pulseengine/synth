@@ -3679,7 +3679,7 @@ jobs:
       # sensitive to how `std` inlines. `@stable` is a moving target and a Rust
       # release could red this gate with no code change. Bumping this version is
       # allowed — it obliges a RE-MEASURE of the floors, not a lowering.
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: wasm32-wasip1
       - name: Cache Cargo dependencies
