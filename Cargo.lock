@@ -1204,7 +1204,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasmparser 0.255.0",
- "wast 255.0.0",
+ "wast",
  "wat",
 ]
 
@@ -1218,7 +1218,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
- "wasm-encoder 0.256.0",
+ "wasm-encoder",
  "wasmparser 0.255.0",
  "wat",
 ]
@@ -1231,7 +1231,7 @@ dependencies = [
  "synth-core",
  "thiserror",
  "tracing",
- "wasm-encoder 0.256.0",
+ "wasm-encoder",
  "wasmparser 0.255.0",
  "wit-component",
  "wit-parser",
@@ -1291,7 +1291,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
- "wast 255.0.0",
+ "wast",
  "wat",
 ]
 
@@ -1544,16 +1544,6 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
-version = "0.255.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b524283fb5df62eec102ed0574838961bdd7ba5ac9c50d38e2756c51c971a42"
-dependencies = [
- "leb128fmt",
- "wasmparser 0.255.0",
-]
-
-[[package]]
-name = "wasm-encoder"
 version = "0.256.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec1492381bfd5ea51c2a99a919b676662559925cb8d7490547ec2e14c1ad3eb1"
@@ -1570,7 +1560,7 @@ checksum = "d6187f9fce741db43bea48f1ec42174897d763b8cdea7df726f2dd05561848d7"
 dependencies = [
  "anyhow",
  "indexmap",
- "wasm-encoder 0.256.0",
+ "wasm-encoder",
  "wasmparser 0.256.0",
 ]
 
@@ -1610,19 +1600,6 @@ dependencies = [
 
 [[package]]
 name = "wast"
-version = "255.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55ffec530f199bd3d553ac442c13dd108353cad533cad8514bc41e1f1f0fe686"
-dependencies = [
- "bumpalo",
- "leb128fmt",
- "memchr",
- "unicode-width",
- "wasm-encoder 0.255.0",
-]
-
-[[package]]
-name = "wast"
 version = "256.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3ad42723fc9222da007f05812a3249c9a4ee7af79d497fc2a2079579ad7efe6"
@@ -1631,7 +1608,7 @@ dependencies = [
  "leb128fmt",
  "memchr",
  "unicode-width",
- "wasm-encoder 0.256.0",
+ "wasm-encoder",
 ]
 
 [[package]]
@@ -1640,7 +1617,7 @@ version = "1.256.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37cc86c54d8011b3202e265bfebada440733ea3a788ffaf46d395f7d2fdeacfb"
 dependencies = [
- "wast 256.0.0",
+ "wast",
 ]
 
 [[package]]
@@ -1771,7 +1748,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "wasm-encoder 0.256.0",
+ "wasm-encoder",
  "wasm-metadata",
  "wasmparser 0.256.0",
  "wit-parser",
