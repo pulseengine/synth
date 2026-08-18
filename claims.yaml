@@ -250,12 +250,14 @@ status_fields:
 #     by a comment ("bump ... here AND in ..."). A desync disables one soundness
 #     tripwire while the other stays green. now: SYNTH-A32-TRIPWIRE-UNIVERSE
 #     (fields-equal, value-level).
-#  4. all_wasm_op_representatives() ..................... NOT CONVERTED
+#  4. all_wasm_op_representatives() ..................... CONVERTED this lane
 #     cross_backend_op_parity.rs:706. A hand-maintained Vec mirroring the WasmOp
 #     enum; classify() is compiler-enforced complete but does NOT force a Vec
-#     entry. An op missing from the Vec is silently never parity-probed AND
-#     silently absent from the derived op-surface artifact this lane added — so
-#     it under-reports without any signal. HIGHEST-VALUE REMAINING CONVERSION.
+#     entry, and never covered DELETION. Once this file began EMITTING the
+#     op-surface artifact from that Vec, a missing op became silently absent
+#     from a derived doc. now: representatives_cover_every_wasm_op_variant_242
+#     pins len() to the enum's own declaration (279 == 279), with a >=250
+#     non-vacuity floor on the parse.
 #  5. exec_trap_subset_op allowlist <-> encode_op arms <-> the test's re-list
 #     .................................................... NOT CONVERTED
 #     synth-verify/src/arm_semantics.rs:2804 + its encode_op match + tests/

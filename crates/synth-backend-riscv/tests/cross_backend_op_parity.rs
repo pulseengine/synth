@@ -2201,6 +2201,88 @@ fn br_table_subshape_asymmetry_882() {
 // re-checks them per commit — naming that honestly beats citing a gate that
 // does not exist.
 
+/// RQ-58-MIRRORS (#242) — the representative list is pinned to the ENUM.
+///
+/// [`all_wasm_op_representatives`] says of itself: "this `Vec`, by contrast, is
+/// HAND-MAINTAINED". Its safety argument is that a new `WasmOp` variant fails
+/// to compile in [`classify`], which points the author here. That argument
+/// covers ADDING a variant; it does not cover a variant that is classified but
+/// never given a representative, and it never covered DELETION.
+///
+/// The consequence got worse when this file started EMITTING
+/// `artifacts/aarch64-op-surface.json` from this same `Vec`: an op missing from
+/// it is now silently absent from a derived artifact whose entire claim is
+/// "derived, never a hand list", and the feature matrix substitutes that
+/// artifact. A hand list feeding a generated doc is the shape this release
+/// exists to kill.
+///
+/// So pin the list's LENGTH to the enum's own declaration, read out of
+/// `synth-core/src/wasm_op.rs` at test time. Textual, and deliberately narrow:
+/// it counts lines inside `pub enum WasmOp { .. }` that START a variant. It
+/// cannot check that the right ops are present — only that none is missing or
+/// duplicated, which is exactly the failure the compile error does not catch.
+#[test]
+fn representatives_cover_every_wasm_op_variant_242() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../synth-core/src/wasm_op.rs");
+    let text = std::fs::read_to_string(&src).expect("read synth-core/src/wasm_op.rs");
+
+    let after = text
+        .split_once("pub enum WasmOp")
+        .expect("`pub enum WasmOp` not found — the enum moved or was renamed")
+        .1;
+    let body_start = after.find('{').expect("enum body") + 1;
+    let mut depth = 1usize;
+    let mut end = 0usize;
+    for (i, ch) in after[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &after[body_start..body_start + end];
+
+    // A variant STARTS at exactly-4-space indentation with an upper-case
+    // ident. Deeper indentation is a struct-variant FIELD; `//` is a comment
+    // and `#` an attribute.
+    let declared = body
+        .lines()
+        .filter(|l| {
+            let Some(rest) = l.strip_prefix("    ") else {
+                return false;
+            };
+            !rest.starts_with(' ')
+                && !rest.starts_with("//")
+                && !rest.starts_with('#')
+                && rest.starts_with(|c: char| c.is_ascii_uppercase())
+        })
+        .count();
+
+    let reps = all_wasm_op_representatives().len();
+
+    // Non-vacuity: a parse that finds nothing must not silently agree with an
+    // emptied Vec.
+    assert!(
+        declared >= 250,
+        "the WasmOp variant parse found only {declared} variants — the enum's \
+         formatting changed and this check has stopped measuring anything"
+    );
+    assert_eq!(
+        reps, declared,
+        "all_wasm_op_representatives() has {reps} entries but WasmOp declares \
+         {declared} variants. A variant with no representative is silently \
+         never parity-probed AND silently absent from \
+         artifacts/aarch64-op-surface.json, which the feature matrix \
+         substitutes — add the representative (or remove the stale one)."
+    );
+}
+
 /// The probe this file uses for `op` on the aarch64 selector: the extended
 /// surface's probe when it has one, otherwise the integer-core parity probe.
 /// Both source matches are wildcard-free, so the union is universe-complete.
