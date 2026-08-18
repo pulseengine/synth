@@ -804,8 +804,21 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18480
+        value: 18582
         baseline: 18480
+        waivers:
+          - to: 18582
+            reason: >-
+              #973 (PR #992) — the ARM `select`-on-i64-compare MISCOMPILE fix. `pop_operand`
+              reloaded a spilled operand into the register still holding the OTHER arm, so
+              both `it` arms moved the same source and the then-value always won. The fix
+              reserves the just-popped operand (`pop_operand_committed`), generalizing
+              #677's discipline. GROWTH IS THE CORRECT OUTCOME HERE: this is a soundness
+              invariant, not a lowering patch — there is no hand-written arm to delete
+              against it. Evidence: 264/360 -> 360/360 executed vs wasmtime on both ARM
+              legs, 10/10 frozen anchors unchanged, and where bytes move they SHRINK
+              (sel_i64_lt_s 68 B -> 64 B). The ceiling re-banks at the new value, so the
+              next unexplained growth still reds.
       # The whole-file figures the release plan and the sibling lanes quote. An
       # unpinned quoted number is the drift class this release is about — but
       # they are `track`, not `down`, and the distinction is deliberate. Both
@@ -819,7 +832,7 @@ claims:
       - kind: ratchet
         name: selector_lines_total
         direction: track
-        value: 29616
+        value: 29839
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -828,12 +841,19 @@ claims:
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 62
+        value: 63
         baseline: 62
+        waivers:
+          - to: 63
+            reason: >-
+              #973 (PR #992) — same fix. The added `_ =>` is in the reservation helper's
+              match over operand provenance, where the fallback is the CONSERVATIVE answer
+              (reserve it) rather than a silent skip. Counted honestly rather than written
+              to dodge the pin.
       - kind: ratchet
         name: selector_wildcard_arms_total
         direction: track
-        value: 105
+        value: 106
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
