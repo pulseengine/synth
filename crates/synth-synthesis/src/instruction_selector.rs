@@ -1192,6 +1192,67 @@ fn pop_operand(
     }
 }
 
+/// #973 — [`pop_operand`] for a MULTI-operand op, reserving what the op has
+/// ALREADY committed to, and PROVING the reload honoured it.
+///
+/// [`pop_operand`]'s reload allocates against the *remaining* vstack plus
+/// `reserved`. A value this same op popped a moment ago is on NEITHER list —
+/// it left the vstack when it was popped, and the caller has to thread it
+/// through by hand — so the allocator is free to hand back exactly the
+/// register the op still needs. That is #973: an `i64` comparison's
+/// [`alloc_consecutive_pair`] spilled a `select`'s then-arm (unconditionally —
+/// this is not the opt-in `SYNTH_SPILL_ON_EXHAUST` rung), and the reload during
+/// the select's own pops landed in the register still holding the LIVE
+/// else-arm, so both `it` arms moved the same register and the select always
+/// returned the then-value.
+///
+/// `committed` is the op-local half of the reservation (already-popped
+/// operands, a destination allocated ahead of the pops, the condition
+/// register); `live_params` is the #193 reservation the whole op loop carries.
+/// The union is what the reload must avoid. Same discipline #677 already
+/// applies in [`bulk_mutable_operand`] — "every popped operand of the op" —
+/// generalized so the next multi-pop site cannot forget it.
+///
+/// The post-check is not redundant with the reservation: it is the invariant
+/// stated where a future edit would break it. It only fires on a RELOAD (a
+/// register-resident operand legitimately aliases a live param, and `select
+/// (local.get 0) (local.get 0) c` legitimately pops the same register twice),
+/// and a fired check is an internal compiler bug, so it returns the honest
+/// recoverable `Err` the rest of this allocator uses rather than emitting code
+/// known to be wrong.
+fn pop_operand_committed(
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    live_params: &[Reg],
+    committed: &[Reg],
+    line: usize,
+) -> Result<Reg> {
+    let reloaded = match stack.last() {
+        Some(StackVal::Spilled { is_i64, .. }) => Some(*is_i64),
+        _ => None,
+    };
+    let mut reserved: Vec<Reg> = live_params.to_vec();
+    reserved.extend_from_slice(committed);
+    let reg = pop_operand(stack, next_temp, instructions, spill, &reserved, line)?;
+    if let Some(is_i64) = reloaded {
+        let mut landed = vec![reg];
+        if is_i64 {
+            landed.push(i64_pair_hi(reg)?);
+        }
+        if let Some(clobbered) = landed.into_iter().find(|r| committed.contains(r)) {
+            return Err(synth_core::Error::synthesis(format!(
+                "#973 internal compiler bug: reloading a spilled operand landed in \
+                 {clobbered:?}, a register this operation had already committed to \
+                 ({committed:?}) — the reload would destroy a value the operation \
+                 still needs. Refusing to emit the miscompile."
+            )));
+        }
+    }
+    Ok(reg)
+}
+
 /// Peek the top operand WITHOUT consuming it, returning its `lo` register (#171).
 /// If the top was spilled, reload it into a fresh consecutive pair and rewrite
 /// the stack entry to [`StackVal::Reg`] (so the value is register-resident again
@@ -15259,23 +15320,33 @@ impl InstructionSelector {
                         )?;
                         // Reserve the dst pair through the (possibly reloading)
                         // pops so a spilled operand cannot reload into it.
-                        resv.push(dlo);
-                        resv.push(dhi);
-                        let val2 = pop_operand(
+                        // #973: `val2`'s PAIR joins the reservation for the
+                        // second pop for the same reason — it is off the vstack
+                        // but still read by the two EQ moves below. (This path
+                        // measured GREEN on the #973 fixture pre-fix; the
+                        // omission is the identical latent shape, closed here
+                        // rather than left for the next pressure change to
+                        // expose.)
+                        let mut committed = vec![cond_reg, dlo, dhi];
+                        let val2 = pop_operand_committed(
                             &mut stack,
                             &mut next_temp,
                             &mut instructions,
                             &mut spill,
-                            &resv,
+                            &live_params,
+                            &committed,
                             idx,
                         )?;
                         let hi2 = i64_pair_hi(val2)?;
-                        let val1 = pop_operand(
+                        committed.push(val2);
+                        committed.push(hi2);
+                        let val1 = pop_operand_committed(
                             &mut stack,
                             &mut next_temp,
                             &mut instructions,
                             &mut spill,
-                            &resv,
+                            &live_params,
+                            &committed,
                             idx,
                         )?;
                         let hi1 = i64_pair_hi(val1)?;
@@ -15306,20 +15377,31 @@ impl InstructionSelector {
                         stack.push(StackVal::i64(dlo));
                         continue;
                     }
-                    let val2 = pop_operand(
+                    // #973: both pops may RELOAD a spilled operand, and the
+                    // allocator only avoids what is still on the vstack plus
+                    // what it is told. `cond_reg` came off the vstack above but
+                    // is not read until the CMP below; `val2` is not read until
+                    // the EQ move. Commit both so a reload cannot land on them —
+                    // the i64-comparison condition spills the then-arm every
+                    // time (`alloc_consecutive_pair` frees a pair by spilling
+                    // the deepest entry), and the reload used to pick the
+                    // else-arm's register.
+                    let val2 = pop_operand_committed(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
                         &mut spill,
                         &live_params,
+                        &[cond_reg],
                         idx,
                     )?;
-                    let val1 = pop_operand(
+                    let val1 = pop_operand_committed(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
                         &mut spill,
                         &live_params,
+                        &[cond_reg, val2],
                         idx,
                     )?;
                     // #209/VCR-SEL-002 — in-place select. `val2` is consumed by
