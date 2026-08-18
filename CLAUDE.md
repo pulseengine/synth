@@ -156,7 +156,12 @@ ever-growing pile of locally-correct patches.**
 > EQUAL the live derivation — there is no "current + slack" ceiling to hide in,
 > so **every movement of a pinned number is a visible `claims.yaml` diff in the
 > PR that caused it**. Beating a baseline fails until `baseline:` is updated
-> too, so a win cannot be silently given back.
+> too, so a win cannot be silently given back. The DIRECTED pins are
+> region-scoped (measured before `#[cfg(test)] mod tests`) because 43 of the
+> selector's 105 `_ =>` arms and 11,136 of its 29,616 lines are its own test
+> module; the whole-file counts are pinned `direction: track` — slack-free, but
+> asserting no direction, so adding test coverage costs a number update and not
+> a waiver.
 >
 > This is deliberately **not a code-golf gate** — it counts hand-maintained
 > DECISIONS, not characters, and the ceilings are measured over the selector's

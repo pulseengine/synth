@@ -133,6 +133,38 @@ class RatchetWaivers(unittest.TestCase):
         self.assertIn("must be an integer", check_ratchet(100, ev)[0])
 
 
+class RatchetTrack(unittest.TestCase):
+    """`direction: track` — slack-free, but asserts no direction."""
+
+    def track(self, **kw):
+        ev = {"kind": "ratchet", "name": "m", "direction": "track", "value": 100}
+        ev.update(kw)
+        return ev
+
+    def test_on_value_passes(self):
+        self.assertEqual(check_ratchet(100, self.track()), [])
+
+    def test_movement_in_either_direction_is_red(self):
+        for derived in (101, 99):
+            fails = check_ratchet(derived, self.track())
+            self.assertEqual(len(fails), 1, derived)
+            self.assertIn("MOVED", fails[0])
+            self.assertIn("NO waiver needed", fails[0])
+
+    def test_waiver_on_a_track_pin_is_red(self):
+        # An inert waiver on a non-directional pin reads as permission later.
+        ev = self.track(waivers=[{"to": 120, "reason": "x"}])
+        self.assertIn("cannot carry waivers", check_ratchet(100, ev)[0])
+
+    def test_baseline_on_a_track_pin_is_red(self):
+        # A field the checker reads nowhere will drift and then get quoted.
+        ev = self.track(baseline=100)
+        self.assertIn("no baseline", check_ratchet(100, ev)[0])
+
+    def test_track_does_not_demand_a_baseline(self):
+        self.assertNotIn("baseline", "".join(check_ratchet(100, self.track())))
+
+
 class RatchetMalformed(unittest.TestCase):
     """A malformed pin must be LOUD, never silently skipped."""
 
@@ -143,6 +175,10 @@ class RatchetMalformed(unittest.TestCase):
 
     def test_bogus_direction_is_red(self):
         self.assertIn("direction must be", check_ratchet(100, ceiling(direction="sideways"))[0])
+
+    def test_directed_pin_still_demands_a_baseline(self):
+        ev = {"kind": "ratchet", "name": "m", "direction": "down", "value": 100}
+        self.assertIn("'baseline' must be an integer", check_ratchet(100, ev)[0])
 
     def test_non_integer_value_is_red(self):
         self.assertIn("must be an integer", check_ratchet(100, ceiling(value="100"))[0])

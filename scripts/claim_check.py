@@ -88,9 +88,13 @@ way is not falsifiable in practice.
     of this gate; here there is no room to record one. Every movement of the
     number is therefore a visible claims.yaml diff in the PR that caused it.
 
-  * DIRECTED. `direction: down` = a ceiling that must fall (selector size,
-    wildcard arms, mirror markers). `direction: up` = a floor that must rise
-    (verified DSL rules).
+  * DIRECTED. `direction: down` = a ceiling that must fall (selector lowering
+    code, its wildcard arms, mirror markers). `direction: up` = a floor that
+    must rise (verified DSL rules). `direction: track` = slack-free but NOT
+    directional — for a number quoted elsewhere that must not drift silently,
+    but whose population is mixed enough that asserting a direction would file
+    honest work (adding tests) in the waiver channel next to the growth the
+    gate exists to catch.
 
   * SELF-BANKING. `baseline:` is the best value ever recorded. Move the number
     the GOOD way and the gate fails until `baseline:` is updated too — so an
@@ -385,11 +389,46 @@ def check_ratchet(derived, ev):
     fails = []
     name = ev.get("name")
     direction = ev.get("direction")
-    if direction not in ("up", "down"):
-        return [f"ratchet {name!r}: direction must be 'up' or 'down', got {direction!r}"]
-    for key in ("value", "baseline"):
-        if not isinstance(ev.get(key), int) or isinstance(ev.get(key), bool):
-            return [f"ratchet {name!r}: {key!r} must be an integer, got {ev.get(key)!r}"]
+    if direction not in ("up", "down", "track"):
+        return [
+            f"ratchet {name!r}: direction must be 'up', 'down' or 'track', "
+            f"got {direction!r}"
+        ]
+    if not isinstance(ev.get("value"), int) or isinstance(ev.get("value"), bool):
+        return [f"ratchet {name!r}: 'value' must be an integer, got {ev.get('value')!r}"]
+
+    # `track` — SLACK-FREE but NOT directional. For a number that is quoted
+    # elsewhere and must not drift silently, yet whose direction we decline to
+    # assert because the population is mixed. Concretely: the selector's
+    # whole-file counts include its test module, so a PR that only adds test
+    # coverage moves them. Demanding a WAIVER for that would file "added 40
+    # lines of tests" alongside "grew the patch pile" in the same list, and a
+    # waiver channel full of noise is a waiver channel nobody reads — which is
+    # how a gate gets routed around. The directed pin is the region-scoped one.
+    if direction == "track":
+        if "baseline" in ev:
+            fails.append(
+                f"ratchet {name!r}: 'track' has no baseline to measure against "
+                f"— remove the field rather than leaving one nothing reads"
+            )
+        if ev.get("waivers"):
+            fails.append(
+                f"ratchet {name!r}: 'track' cannot carry waivers — there is no "
+                f"direction to waive, and an inert waiver reads as permission"
+            )
+        if derived != ev["value"]:
+            fails.append(
+                f"tracked number {name!r} MOVED: derived {derived} != ledger "
+                f"value {ev['value']} — update claims.yaml in the SAME PR. NO "
+                f"waiver needed: this pin asserts no direction (the directed "
+                f"one is the region-scoped pin) [{_RATCHET_HELP}]"
+            )
+        return fails
+
+    if not isinstance(ev.get("baseline"), int) or isinstance(ev.get("baseline"), bool):
+        return [
+            f"ratchet {name!r}: 'baseline' must be an integer, got {ev.get('baseline')!r}"
+        ]
     value, baseline = ev["value"], ev["baseline"]
     goal = "ceiling that must FALL" if direction == "down" else "floor that must RISE"
 
@@ -607,11 +646,16 @@ def report_metric(claims, status):
             name = ev.get("name")
             live = status.get(name)
             base = ev.get("baseline")
-            arrow = "must FALL" if ev.get("direction") == "down" else "must RISE"
-            delta = (live - base) if isinstance(live, int) and isinstance(base, int) else "?"
-            if isinstance(delta, int):
-                delta = f"{delta:+d}"
-            rows.append((name, str(live), str(base), delta, arrow, len(ev.get("waivers") or [])))
+            arrow = {"down": "must FALL", "up": "must RISE"}.get(
+                ev.get("direction"), "tracked"
+            )
+            if isinstance(live, int) and isinstance(base, int):
+                delta, base_s = f"{live - base:+d}", str(base)
+            else:
+                # `track` pins have no baseline; print "—", never a bare None
+                # next to a direction they do not have.
+                delta, base_s = "—", "—"
+            rows.append((name, str(live), base_s, delta, arrow, len(ev.get("waivers") or [])))
     if not rows:
         # ANTI-VACUITY. Deleting the pins does not make a claim fail — an
         # evidence-less claim passes trivially — so the ABSENCE of the metric

@@ -22,15 +22,24 @@ $ python3 scripts/claim_check.py claims.yaml --metric
 === subtraction metric (epic #242) — 7 directed pins ===
 metric                            now  baseline   delta  direction   waivers
 selector_lines_code             18480     18480      +0  must FALL   0
-selector_lines_total            29616     29616      +0  must FALL   0
+selector_lines_total            29616         —       —  tracked     0
 selector_wildcard_arms_code        62        62      +0  must FALL   0
-selector_wildcard_arms_total      105       105      +0  must FALL   0
+selector_wildcard_arms_total      105         —       —  tracked     0
 sel_dsl_rules                      50        50      +0  must RISE   0
 mirror_marker_files                57        57      +0  must FALL   0
 mirror_obligation_files            23        23      +0  must FALL   0
 
 47/47 claims hold.                                                  (rc=0)
 ```
+
+The two whole-file counts are `track`, not `down`, and the distinction is a
+design decision worth stating: they include the file's TEST MODULE, so a PR that
+only adds test coverage moves them. Making that demand a WAIVER would file
+"added 40 lines of tests" next to "grew the patch pile" in the same list, and a
+waiver channel full of noise is one nobody reads. `track` still forbids slack —
+the ledger must carry the live number — it just declines to assert a direction
+for a mixed population. Nothing is lost: total minus code IS the test module,
+and code is pinned `down`.
 
 Reference artefact, `flight_seam.wasm` compiled for `thumbv7em-none-eabi`:
 
@@ -46,6 +55,8 @@ of exactly the kind epic #242 exists to stop accumulating:
 
 ```rust
 I32Add => {
+    // RED-FIRST PROBE (RQ-58-METRIC) — a hand-written lowering
+    // special case added WITHOUT deleting one. Reverted below.
     if rn == rm {
         return Ok(vec![ArmOp::Lsl { rd, rn, shift: 1 }]);
     }
@@ -53,25 +64,69 @@ I32Add => {
 }
 ```
 
+Five lines: two of comment, three of lowering decision. Both count — the metric
+measures the hand-maintained surface, and a comment explaining a special case is
+part of what has to be kept true.
+
 ```
 $ python3 scripts/claim_check.py claims.yaml --metric                  (rc=1)
 
 selector_lines_code             18485     18480      +5  must FALL   0
-selector_lines_total            29621     29616      +5  must FALL   0
+selector_lines_total            29621         —       —  tracked     0
 
 FAIL SYNTH-SUBTRACTION-SELECTOR
     ratchet 'selector_lines_code' MOVED the WRONG way: derived 18485 !=
     ledger value 18480 (baseline 18480, ceiling that must FALL) — update
     claims.yaml in the SAME PR; if it moved the wrong way add a waivers:
     entry saying why [...]
-    ratchet 'selector_lines_total' MOVED the WRONG way: derived 29621 !=
-    ledger value 29616 (baseline 29616, ceiling that must FALL) — ...
+    tracked number 'selector_lines_total' MOVED: derived 29621 != ledger
+    value 29616 — update claims.yaml in the SAME PR. NO waiver needed: this
+    pin asserts no direction (the directed one is the region-scoped pin) — ...
 
 47 claims checked; 2 failure(s) incl. surface gates.
 ```
 
 (The second failure is `artifacts/status.json` staleness — correct: the
 derived numbers artifact must be regenerated too.)
+
+## 1b. RED — the WILDCARD pin, fired on the real file
+
+The lines pin and the wildcard pin are different derivations, and a passing
+number proves nothing about the second. This probe moves only the wildcard
+count. A `_ =>` arm added inside the code region:
+
+```rust
+I32Add => {
+    match rd {
+        _ => {}
+    }
+    ...unchanged...
+}
+```
+
+```
+$ python3 scripts/claim_check.py claims.yaml --metric                  (rc=1)
+
+selector_wildcard_arms_code        63        62      +1  must FALL   0
+selector_wildcard_arms_total      106         —       —  tracked     0
+
+FAIL SYNTH-SUBTRACTION-SELECTOR
+    ratchet 'selector_wildcard_arms_code' MOVED the WRONG way: derived 63 !=
+    ledger value 62 (baseline 62, ceiling that must FALL) — ...
+    tracked number 'selector_wildcard_arms_total' MOVED: derived 106 != ledger
+    value 105 — update claims.yaml in the SAME PR. NO waiver needed: this pin
+    asserts no direction (the directed one is the region-scoped pin) — ...
+```
+
+62 -> 63 on the region-scoped pin, 105 -> 106 tracked, with the two failure
+messages correctly distinguished by direction. This is the pin RQ-58-WILDCARD
+will drive, so it is demonstrated firing on the REAL selector rather than only
+against a synthetic fixture in the unit tests.
+
+This probe also FOUND A DEFECT in the gate, in the honest place — its own
+output. `--metric` was printing `baseline None / delta ? / must RISE` for the
+`track` pins, i.e. asserting a direction they do not have. Fixed to print
+`— / — / tracked` before the pin count was frozen.
 
 ## 2. What NO existing oracle noticed — the reason this gate exists
 
@@ -95,29 +150,48 @@ fifteen releases.
 ## 3. The escape hatch — a growth that is justified, not blocked
 
 This is not a code-golf gate. With the probe still applied, adding the
-documented waiver to both pins:
+documented waiver to the DIRECTED pin (the tracked one needs only its number
+updated — no waiver, by design):
+
+Re-run after the `track` change with a 3-line variant of the same probe, so the
+numbers below are what the tree actually produced:
 
 ```yaml
 - kind: ratchet
   name: selector_lines_code
   direction: down
-  value: 18485          # ledger carries the LIVE number — no slack expressible
+  value: 18483          # ledger carries the LIVE number — no slack expressible
   baseline: 18480       # best ever; the waiver is measured against THIS
   waivers:
-    - to: 18485         # bound to the value, so a 2nd growth needs a 2nd waiver
+    - to: 18483         # bound to the value, so a 2nd growth needs a 2nd waiver
       reason: "ESCAPE-HATCH DEMO ONLY — reverted in this same PR."
+
+- kind: ratchet
+  name: selector_lines_total
+  direction: track
+  value: 29619          # tracked: number updated, NO waiver — by design
 ```
 
 ```
-$ python3 scripts/claim_check.py claims.yaml --metric
-selector_lines_code             18485     18480      +5  must FALL   1
-selector_lines_total            29621     29616      +5  must FALL   1
+$ python3 scripts/claim_check.py claims.yaml --metric                  (rc=1)
+selector_lines_code             18483     18480      +3  must FALL   1
+selector_lines_total            29619         —       —  tracked     0
 ok   SYNTH-SUBTRACTION-SELECTOR
+
+47 claims checked; 1 failure(s) incl. surface gates.
 ```
 
-Note the intermediate state observed while writing this: a waiver whose `to:`
-did not equal the live value (18489 against a derived 18485) did **not** silence
-the pin. Permission is bound to a number, never granted in general.
+The subtraction claim is GREEN — the growth was justified and accepted. The one
+remaining failure is `artifacts/status.json` staleness, which is correct and
+unrelated: the derived numbers artifact must be regenerated in the same PR too.
+
+Two intermediate states observed while producing this, both worth keeping:
+
+* A waiver whose `to:` did not equal the live value (18,489 against a derived
+  18,485) did **not** silence the pin. Permission is bound to a number, never
+  granted in general.
+* Setting the tracked pin's value required NO waiver — one line, no ceremony.
+  That is the asymmetry the `track` direction exists to create.
 
 ## 4. GREEN again after revert, byte-identical
 
@@ -139,11 +213,12 @@ are where the defects are. Its predicate is unit-tested rather than trusted:
 
 ```
 $ python3 scripts/test_claim_check.py
-Ran 32 tests ... OK                                                    (rc=0)
+Ran 38 tests ... OK                                                    (rc=0)
 ```
 
 Mutation-verified at authoring — stubbing `check_ratchet` to return no failures
-kills 18 of the 32 (5 failures + 13 errors). Anti-vacuity beyond the tests:
+kills 18 of the 38 (5 failures + 13 errors); a separate mutant of the
+`track` branch kills 3 more. Anti-vacuity beyond the tests:
 `--metric` fails outright on an EMPTY pin population, and
 `SYNTH-SUBTRACTION-PINS-DECLARED` pins the population at 7 plus both CI step
 commands, so deleting a single ceiling — or unwiring the step — is red rather
