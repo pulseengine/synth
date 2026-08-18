@@ -6,6 +6,17 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # dtolnay/rust-toolchain is NOT an ordinary action pin — for this action
+      # THE REF IS THE COMPILER VERSION. #978 pinned the MC/DC job to @1.96.1
+      # precisely so a Rust release could not red that gate with no code
+      # change; its floors (decisions/conditions/proved/dead) are derived from
+      # that exact compiler on the CI host. #984 bumped it to @1.100.0 as if it
+      # were a routine action version, which silently defeated the pin and
+      # would have measured a different compiler against 1.96.1 floors.
+      # Bumping it is a deliberate act that must RE-MEASURE the floors, so it
+      # does not belong to a bot.
+      - dependency-name: dtolnay/rust-toolchain
   - package-ecosystem: cargo
     directory: /
     schedule:
