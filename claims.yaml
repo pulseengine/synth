@@ -139,14 +139,47 @@ status_fields:
     kind: count
     pattern: '^pub open spec fn '
     glob: ['crates/synth-synthesis/src/contracts.rs']
-  # Distinct WasmOp variants the AArch64 selector implementation references
-  # (truncated before its test module — decline-list mentions live in tests).
-  # This is the mechanical "ops handled" figure for the host-native backend.
-  aarch64_selector_ops:
-    kind: distinct-tokens
-    file: crates/synth-backend-aarch64/src/selector.rs
-    pattern: 'WasmOp::([A-Za-z0-9]+)'
-    before: 'mod tests'
+  # -- RQ-58-MIRRORS (#242): the aarch64 op surface, derived from the REAL
+  # selector rather than from text ABOUT it.
+  #
+  # HISTORY, because the replacement is the point. This used to be
+  # `aarch64_selector_ops`: distinct `WasmOp::` tokens in selector.rs before
+  # `mod tests`. That measures which op names APPEAR in a file, which is a
+  # proxy for "handled" — an op named only inside a decline arm would have
+  # counted as handled. The three fields below come instead from
+  # `artifacts/aarch64-op-surface.json`, which the cross-backend op-parity
+  # oracle EMITS by running `select_typed_cf_calls` on every `WasmOp`
+  # representative (`a64_op_surface_artifact_is_fresh_242`, freshness-gated in
+  # the Test job; 0 representatives may fall through unprobed).
+  #
+  # MEASURED at the swap: the retired grep and the new probe independently
+  # produce 185, so the render did not move — a strictly stronger derivation
+  # replacing a weaker one, byte-invisible. The weaker one was DELETED, not
+  # kept alongside (v0.58's subtraction rule).
+  aarch64_ops_probed:
+    kind: count
+    pattern: '"op": '
+    glob: ['artifacts/aarch64-op-surface.json']
+  aarch64_ops_lowered:
+    kind: count
+    pattern: '"status": "lowered"'
+    glob: ['artifacts/aarch64-op-surface.json']
+  aarch64_ops_declined:
+    kind: count
+    pattern: '"status": "declined"'
+    glob: ['artifacts/aarch64-op-surface.json']
+  # The op-level decline LIST itself, substituted into the feature matrix.
+  # This is what stops the aarch64 decline enumeration being hand-typed prose
+  # that went stale twice in v0.57.
+  aarch64_declined_ops:
+    kind: json-list
+    file: artifacts/aarch64-op-surface.json
+    list: ops
+    where:
+      status: declined
+    field: op
+    wrap: '`'
+    join: ', '
   # Names, not numbers — const is allowed here, but the supporting crates must
   # exist on disk or the derivation fails.
   backends:

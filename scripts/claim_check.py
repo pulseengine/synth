@@ -63,6 +63,11 @@ Derived-status field kinds (under `status_fields:`):
   distinct-tokens number of DISTINCT capture-group values in one file,
                   optionally truncated at a `before:` marker (e.g. the ops an
                   instruction selector handles, stopping before `mod tests`)
+  json-list       a LIST of names selected out of a derived, freshness-gated
+                  JSON artifact and rendered as prose (RQ-58-MIRRORS: a decline
+                  list stops being hand-typed template prose and becomes a
+                  substitution, so code drift moves the render). Fails loudly
+                  when the selection matches nothing.
   const           a hand-written value (names, not numbers) whose supporting
                   paths under `require:` must all exist
 """
@@ -158,6 +163,44 @@ def derive_status(spec, root):
                     f"status field {name!r}: no tokens matched in {f['file']}"
                 )
             out[name] = len(toks)
+        elif kind == "json-list":
+            # A LIST of names pulled out of a DERIVED, freshness-gated JSON
+            # artifact and rendered into the template as prose. This is the
+            # RQ-58-MIRRORS seam: a decline list, an op list or a capability
+            # list stops being hand-typed template prose and becomes a
+            # substitution, so code drift moves the render and
+            # check_generated_fresh goes red.
+            path = root / f["file"]
+            if not path.exists():
+                raise RuntimeError(
+                    f"status field {name!r}: derived artifact missing: {f['file']}"
+                )
+            data = json.loads(path.read_text(errors="ignore"))
+            items = data.get(f["list"])
+            if not isinstance(items, list):
+                raise RuntimeError(
+                    f"status field {name!r}: {f['file']} has no list at "
+                    f"key {f['list']!r}"
+                )
+            where = f.get("where") or {}
+            vals = sorted(
+                {
+                    it[f["field"]]
+                    for it in items
+                    if isinstance(it, dict)
+                    and f["field"] in it
+                    and all(it.get(k) == v for k, v in where.items())
+                }
+            )
+            if not vals:
+                # An empty selection would render an empty phrase and green a
+                # claim it never measured — the vacuous-derivation failure.
+                raise RuntimeError(
+                    f"status field {name!r}: selection {where!r} over "
+                    f"{f['file']}:{f['list']} matched NOTHING"
+                )
+            w = f.get("wrap", "")
+            out[name] = f.get("join", ", ").join(f"{w}{v}{w}" for v in vals)
         elif kind == "const":
             for p in f.get("require", []):
                 if not (root / p).exists():

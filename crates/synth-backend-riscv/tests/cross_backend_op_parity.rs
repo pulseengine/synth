@@ -2333,11 +2333,30 @@ fn a64_op_surface_artifact_is_fresh_242() {
         return;
     }
     let got = std::fs::read_to_string(&path).unwrap_or_default();
-    assert_eq!(
-        got, want,
+    if got == want {
+        return;
+    }
+    // Report the DIFFERING ROWS, not two 11 kB blobs — a failure nobody can
+    // read is a failure nobody acts on.
+    let committed: Vec<&str> = got.lines().collect();
+    let derived: Vec<&str> = want.lines().collect();
+    let mut diff = String::new();
+    for line in &derived {
+        if !committed.contains(line) {
+            diff.push_str(&format!("  DERIVED-NOW : {}\n", line.trim()));
+        }
+    }
+    for line in &committed {
+        if !derived.contains(line) {
+            diff.push_str(&format!("  COMMITTED   : {}\n", line.trim()));
+        }
+    }
+    panic!(
         "artifacts/aarch64-op-surface.json is STALE or hand-edited.\n\
          It is DERIVED from the real aarch64 selector, and \
-         docs/status/FEATURE_MATRIX.md substitutes it. Regenerate with:\n  \
+         docs/status/FEATURE_MATRIX.md substitutes it, so the doc cannot \
+         disagree with the code.\n{diff}\n\
+         Regenerate with:\n  \
          SYNTH_EMIT_A64_SURFACE=1 cargo test -p synth-backend-riscv --test \
          cross_backend_op_parity a64_op_surface_artifact_is_fresh_242\n\
          then `python3 scripts/claim_check.py claims.yaml --emit-status` and \
