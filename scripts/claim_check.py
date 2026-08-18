@@ -45,6 +45,8 @@ Evidence predicates re-derive from source — never a number typed only in prose
                base size (for things that must not grow)
   count-min    re-count from source; fail if it falls below the recorded floor
                (for tracks that must not silently empty out)
+  ratchet      a DIRECTED, slack-free pin on a `status_fields:` derivation —
+               see the RQ-58-METRIC block below
   count-same   two or more independent derivations must agree with EACH OTHER
                (1:1 invariants — e.g. DSL manifest rules == Qed rule theorems)
                without pinning the value itself; the value flows to
@@ -58,13 +60,65 @@ Evidence predicates re-derive from source — never a number typed only in prose
 
 Derived-status field kinds (under `status_fields:`):
 
-  count           len(regex findall) over globs (same engine as count-eq)
+  count           len(regex findall) over globs (same engine as count-eq),
+                  optionally truncated at a `before:` marker and optionally
+                  counting FILES-with-a-match instead of matches (`unit: files`)
   capture         first regex capture group in one file (e.g. the version)
   distinct-tokens number of DISTINCT capture-group values in one file,
                   optionally truncated at a `before:` marker (e.g. the ops an
                   instruction selector handles, stopping before `mod tests`)
   const           a hand-written value (names, not numbers) whose supporting
                   paths under `require:` must all exist
+
+===============================================================================
+RQ-58-METRIC — the `ratchet` evidence kind (epic #242)
+===============================================================================
+
+Epic #242 says "replace the patch-accreting code generator". Measured v0.42.0 ->
+v0.57.0 it went the OTHER way and nothing noticed, because nothing measured it:
+the instruction selector's non-test code grew 14,694 -> 18,480 lines while the
+verified-rule count that is supposed to be replacing it went 40 -> 50 and then
+sat flat for twelve releases. A North Star with no number that can go the wrong
+way is not falsifiable in practice.
+
+`ratchet` is that number, and it is deliberately UNLIKE count-max/count-min:
+
+  * SLACK-FREE. `value:` must EQUAL the live derivation, always, in both
+    directions. A ceiling recorded at "current + slack" is the vacuous version
+    of this gate; here there is no room to record one. Every movement of the
+    number is therefore a visible claims.yaml diff in the PR that caused it.
+
+  * DIRECTED. `direction: down` = a ceiling that must fall (selector size,
+    wildcard arms, mirror markers). `direction: up` = a floor that must rise
+    (verified DSL rules).
+
+  * SELF-BANKING. `baseline:` is the best value ever recorded. Move the number
+    the GOOD way and the gate fails until `baseline:` is updated too — so an
+    improvement cannot be silently given back later.
+
+  * WAIVED, NOT ROUTED AROUND. Moving the number the BAD way is allowed, and
+    that is the point: this is not a code-golf gate, it measures hand-maintained
+    decisions, and a lane that legitimately needs to grow the file must be able
+    to. It costs a `waivers:` entry whose `to:` equals the new value plus a
+    written `reason:` — the #911 rule (say why, in the same PR) applied to size.
+    Because the waiver is bound to a specific value, a SECOND regression needs a
+    SECOND waiver; a waiver is not a standing licence.
+
+  * SINGLE-DERIVATION. A ratchet names a `status_fields:` entry rather than
+    carrying its own regex. The number is derived exactly once, flows to
+    status.json, and is staleness-gated there. Re-deriving it here would make
+    this gate a hand-maintained mirror of the thing it exists to count.
+
+HONEST RESIDUAL, stated so nobody has to rediscover it: the checker is stateless
+(no git history), so it enforces "worse than the best ever recorded needs a
+waiver bound to this exact value", not "worse than last week". A regression past
+an ALREADY-waived value still needs its own new waiver; a return to a previously
+waived value does not. Every movement remains a ledger diff either way.
+
+The ratchet predicate itself is unit-tested — `scripts/test_claim_check.py`,
+wired in the claim-check CI job. v0.57's lesson was that the checkers are where
+the defects are; a 60-line gate whose only validation is that it fired once is
+the next one.
 """
 
 import glob
@@ -83,20 +137,54 @@ FEATURE_MATRIX = "docs/status/FEATURE_MATRIX.md"
 FEATURE_MATRIX_TMPL = "scripts/templates/feature_matrix.md.tmpl"
 
 
-def _count(pattern, globs, root):
+class MeasureError(Exception):
+    """A derivation could not be performed as specified — never a silent 0."""
+
+
+def _region(text, marker, where):
+    """Truncate `text` at `marker`, which must occur EXACTLY ONCE.
+
+    Absent marker => the derivation would silently widen to the whole file.
+    Repeated marker => it would silently truncate at the wrong one, which is the
+    FEATURE_MATRIX staleness failure (compare the render to the template, never
+    the template to the code) wearing a different hat. Both are hard errors.
+    """
+    n = text.count(marker)
+    if n != 1:
+        raise MeasureError(
+            f"{where}: region marker {marker!r} occurs {n} times, expected "
+            f"exactly 1 — the measured region is undefined"
+        )
+    return text.split(marker, 1)[0]
+
+
+def _count(pattern, globs, root, before=None, unit="matches"):
+    """Count regex matches (or files-with-a-match) over globs.
+
+    `before` restricts each file to the text preceding a unique marker — used to
+    measure a source region (e.g. an instruction selector's non-test code)
+    without the file's test module, so that adding tests never moves a size
+    ceiling and a ledger bump therefore always MEANS something.
+    """
     rx = re.compile(pattern, re.MULTILINE)
     globs = [globs] if isinstance(globs, str) else globs
+    if unit not in ("matches", "files"):
+        raise MeasureError(f"unknown count unit {unit!r} (matches|files)")
     total = 0
     matched_any = False
     for g in globs:
         # Resolve globs relative to the claims file's directory, NOT the CWD —
         # otherwise the predicate silently matches nothing and greens a claim
         # it never checked (the "oracle that measures nothing" failure).
-        for f in glob.glob(str(root / g), recursive=True):
+        for f in sorted(glob.glob(str(root / g), recursive=True)):
             p = pathlib.Path(f)
             if p.is_file():
                 matched_any = True
-                total += len(rx.findall(p.read_text(errors="ignore")))
+                text = p.read_text(errors="ignore")
+                if before is not None:
+                    text = _region(text, before, p.name)
+                hits = len(rx.findall(text))
+                total += min(hits, 1) if unit == "files" else hits
     return total, matched_any
 
 
