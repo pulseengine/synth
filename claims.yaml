@@ -195,6 +195,195 @@ status_fields:
       - crates/synth-backend-aarch64
 
 # -----------------------------------------------------------------------------
+# feature_matrix_facts — RQ-58-MIRRORS (#242). The EXHAUSTIVENESS half of the
+# template-vs-code gate.
+#
+# `check_generated_fresh` compares the RENDER to the TEMPLATE, never the
+# template to the CODE. The repo already had the right mechanism for the second
+# half (#880: a claim whose `doc:` is the template), but nothing said which
+# assertions it covered — so an unpinned number looked exactly like a pinned
+# one, and v0.57 shipped three stale ones behind a green 43/43.
+#
+# `check_template_facts` now requires EVERY number in the template to be one of
+# DERIVED ({{field}}), PINNED (a template-doc claim), UNCHECKED (declared
+# below, with a rationale) or MASKED (an identifier token, declared below with
+# a `why:`). Anything else is red. Dead entries and dead masks are red too, so
+# the ledger cannot rot in the other direction.
+#
+# WHAT THIS GATE DOES **NOT** DO, stated plainly: it does not prove a pinned or
+# unchecked claim TRUE. It proves every assertion was classified on purpose and
+# fails closed on new ones. The `unchecked` list below IS the honest inventory
+# of what remains unverified — read it as the risk register, not as noise.
+# -----------------------------------------------------------------------------
+feature_matrix_facts:
+  # NON-VACUITY floors. An EMPTY template classifies perfectly, so the cheapest
+  # way to green an exhaustiveness gate is to delete the assertions. These are
+  # `>=` floors on the two buckets that represent real verification; adding
+  # coverage never reddens, the ratchet direction is UP.
+  floors:
+    derived: 24            # {{field}} substitutions re-derived every run
+    pinned: 11             # spans pinned by a claim whose doc: is the template
+
+  # Identifier-shaped tokens that carry a digit but assert nothing measurable.
+  # This list is the RESIDUAL TRUST in the exhaustiveness gate: a real fact
+  # hidden behind one of these patterns would go unclassified and unnoticed, so
+  # every mask is narrow and says why.
+  masks:
+    - pattern: '#\d+'
+      why: GitHub issue/PR reference — a stable identifier, never a measurement
+    - pattern: '\bv\d+\.\d+(?:\.\d+)?\b'
+      why: release-version reference (v0.53); the live version is {{version}}
+    - pattern: '\b[iuf](?:8|16|32|64)\b'
+      why: WASM/Rust scalar type-width token (i32, i64, f32, f64) — a type name
+    - pattern: '\bv128\b'
+      why: the WASM SIMD value-type name; a type, not a count of anything
+    - pattern: '§[\d.]+'
+      why: WebAssembly specification section reference (§4.4.8) — a citation
+    - pattern: 'IEEE 754-\d+'
+      why: the name of an IEEE standard revision, not a derived quantity
+    - pattern: '\bT[123]\b'
+      why: proof-tier names T1/T2/T3 defined in coq/STATUS.md — labels
+    - pattern: '(?:VCR|RQ)-[A-Z0-9]+(?:-[A-Z0-9]+)+'
+      why: rivet artifact identifiers (VCR-SEL-005, VCR-A64-CF-001) — names
+    - pattern: '\bAAPCS\d*\b|\bR_[A-Z0-9_]+\b|:lo12:'
+      why: ABI, ELF relocation and assembler-operator names — ISA identifiers
+    - pattern: '\bcortex-[a-z0-9]+\b|\brv32[a-z]*\b|\besp32c3\b|\bRV32IMAC\b|\bM3\b|\bM4\b|\bM7\b|\bM4F\b'
+      why: target/profile names (cortex-m4f, rv32imac, esp32c3) — hardware names
+    - pattern: '\bAArch64\b|\bA64\b|\bA32\b|\bThumb-2\b|\bx28\b|\bR9\b|\bR11\b|\bIP0\b'
+      why: architecture and architectural-register names — ISA identifiers
+    - pattern: '0x[0-9A-Fa-f]+'
+      why: hex literals name an encoding (the 0xFC prefix), not a measurement
+    - pattern: '\bmemory (?:0\b|k>0\b|k\b)|grow\((?:0|n>0)\)|(?<![\w])[−-]1\b|÷0|\[0\]\[brk|exits? 0\b|\b1:1\b'
+      why: WASM/POSIX semantics written inline (grow(0) ≡ size, memory k>0,
+        returns -1, exits 0, a 1:1 correspondence, the null table slot [0]) —
+        the digits are part of an operation's definition, not a measurement
+    - pattern: 'extend(?:8|16|32)_s|extend8/16/32_s|trunc_sat_f(?:32|64)_[su]|convert_i(?:32|64)_[su]|reinterpret_[if](?:32|64)|wrap_i64|promote_f32|demote_f64|load(?:8|16|32)_[su]|store(?:8|16|32)\b'
+      why: WASM operator NAMES whose spelling embeds a width (i64.extend8_s,
+        i32.trunc_sat_f64_u) — op names, never counts
+    - pattern: 'phases? \d(?:[–-]\d)?\b|milestone \d\b|phase \d\b|lane L\d\b|Tiers? \d\b'
+      why: work-item labels (phase 3, milestone 4, lane L3) — ordinals, not data
+    - pattern: '\bO\(n\)|\bINT_MIN\b|\bNaN\b|1e30\b|\bfunc_N\b|\bu32\b'
+      why: notation appearing in prose (O(n), 1e30, func_N) — symbols, not counts
+
+  # ---------------------------------------------------------------------------
+  # UNCHECKED — the honest residual. Each entry is an assertion in the template
+  # that NO derivation covers. A named unconverted mirror is a known risk; an
+  # unnamed one is the next #975.
+  # ---------------------------------------------------------------------------
+  unchecked:
+    - text: "221-variant no-wildcard tripwire"
+      rationale: >
+        The A32 tripwire's variant count lives in a test's match arms, not in a
+        countable declaration; a regex over `synth-backend/tests` would count
+        arms of unrelated matches too. Convert by having the tripwire EMIT its
+        universe size the way the aarch64 op surface now does.
+    - text: "`>8`"
+      rationale: >
+        The AAPCS64 register-argument limit. It is a constant of the ABI rather
+        than of synth, and the code expresses it as a slice length rather than a
+        named const, so there is nothing to re-derive against today.
+    - text: "past 16 targets"
+      rationale: >
+        `BR_TABLE_MAX_TARGETS` IS a named const and IS asserted == 16 by
+        `br_table_subshape_asymmetry_882`, but no status field exposes it, so
+        the template's copy is not re-derived. The cheapest remaining
+        conversion: publish the const as a status field.
+    - text: "an 8-byte slot"
+      rationale: >
+        The aarch64 globals slot width. Expressed as arithmetic on offsets in
+        selector.rs rather than a named constant, so there is no token to
+        re-derive; naming the constant is the prerequisite for pinning it.
+    - text: "i32 (19 ops) + i64 (22 ops)"
+      rationale: >
+        The WasmCert-Coq fragment sizes. The Qed total IS derived
+        ({{wasmcert_bridge_qed}}); the per-fragment op split is not separately
+        countable from the .v file without a convention marking each op's
+        theorems, which does not exist yet.
+    - text: "5 of 8 sites proven ⇒ 232 → 152 B (80 B, 58 % of the guard tax) and 70 → 45 executed instructions"
+      rationale: >
+        A MEASUREMENT from one #901 fixture run, not a property of the tree. Its
+        oracle re-measures it in CI; reproducing the number inside claim_check
+        would mean re-running a compile from a doc gate. Left as a dated
+        measurement, deliberately.
+    - text: "502 -> 494 B, 3 -> 1 masks"
+      rationale: >
+        Same class as the #901 measurement above — a gpio-thin fixture size
+        recorded from a differential run, re-measured by its own oracle rather
+        than by this doc gate.
+    - text: "the 7 `manual` scripts"
+      rationale: >
+        Pinned only by a count-MAX of 7 in SYNTH-ORACLE-WIRING-890, so the prose
+        can silently overstate if the real number falls. The count-max protects
+        the budget, not the sentence.
+    - text: "**152 of the\n  160** workflow steps"
+      rationale: >
+        A historical measurement of the pre-#910 state ("asserted nothing beyond
+        the exit code"). It describes a tree that no longer exists, so there is
+        nothing live to re-derive it from; it is narrative by construction.
+    - text: "exactly 8 asserted a printed verdict or count"
+      rationale: >
+        Part of the same pre-#910 historical measurement above.
+    - text: "7 assert a printed count, 9 assert compilations, and 1"
+      rationale: >
+        The per-mode split of oracle floor declarations. Countable in principle
+        (`# ci-checks: stdout|compiles|none` headers) but not exposed as status
+        fields; the emulations leg IS pinned by SYNTH-ORACLE-CHECK-FLOORS-910.
+    - text: "reads ~42 %"
+      rationale: >
+        A coverage percentage produced by `cargo llvm-cov` in a different CI
+        job. Approximate by intent (the "~"), and re-deriving it here would mean
+        running the coverage tool from a doc gate.
+    - text: "`Holds 431 / NotAttempted 202 / Violated 0` over 633 corpus functions"
+      rationale: >
+        A VCR-VER-004 corpus measurement whose own text says the counts GROW as
+        lanes add fixtures — the invariant is `Violated 0`, which its CI floor
+        asserts; the two absolute counts are a dated snapshot.
+    - text: "~68 % of the shipping path"
+      rationale: >
+        Derived from the 431/633 snapshot above; same class, same reason.
+    - text: "so 87 of `ArmOp`'s 222\n    variants"
+      rationale: >
+        The #923 before-state. `ArmOp` variants ARE countable, but "87 modeled
+        as no-ops" describes the code BEFORE the fix and cannot be re-derived
+        from the tree that shipped it. Historical by construction.
+    - text: "unmodeled set to **73** (41 MVE\n    vector ops; 32 others"
+      rationale: >
+        The CURRENT unmodeled count, and the one genuinely worth converting:
+        `encode_op`'s decline arm could emit its own universe the way the
+        aarch64 op surface now does. Named as the next conversion, not done in
+        this lane.
+    - text: "Those 73 now DECLINE"
+      rationale: >
+        Restates the 73 above in the same paragraph; converts with it.
+    - text: ">8-arg / i64-arg / multi-value calls decline loudly"
+      rationale: >
+        The RISC-V call-marshalling arity limit. Same class as the aarch64 `>8`
+        entry: an ABI constant expressed as a slice length, with no named
+        constant in the code to re-derive the sentence from.
+    - text: "(0 against the Sail-derived one)"
+      rationale: >
+        An assertion that ZERO rule theorems are stated against the Sail-derived
+        model. It is the complement of {{sel_rules_simplified_basis}}, which IS
+        derived, but the complement itself has no derivation — a Sail-basis
+        theorem could land and this sentence would not notice.
+    - text: "leaves 0 undeclared and 0 unwired scripts"
+      rationale: >
+        Pinned by SYNTH-ORACLE-WIRING-890's count-max 0 — but that claim's doc:
+        is ORACLE_WIRING.md, so the pin covers the OTHER copy of this sentence,
+        not this one. A textbook instance of the class this release is about.
+    - text: "the invariant is `Violated 0`"
+      rationale: >
+        The VCR-VER-004 corpus invariant. Its CI job asserts it on every run;
+        nothing re-derives the sentence in this doc, and there is no status
+        field carrying the validator's Violated count.
+    - text: "18/18 declined"
+      rationale: >
+        The v0.58 empirical probe of the module/shape-level aarch64 declines.
+        Not a function of a WasmOp, so it is outside the derived op-surface
+        artifact; converting it needs a probe harness per shape claim, named as
+        follow-up work in this lane's report.
+
+# -----------------------------------------------------------------------------
 # readme_link_coverage — the README-linked .md surface is CLOSED. A linked doc
 # must be claim-covered (some claim's `doc:`), listed as generated, or
 # allowlisted here WITH a rationale. New links fail CI until classified.

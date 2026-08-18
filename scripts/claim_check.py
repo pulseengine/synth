@@ -258,6 +258,189 @@ def check_generated_fresh(status, root):
 
 
 # ---------------------------------------------------------------------------
+# RQ-58-MIRRORS — TEMPLATE-vs-CODE coverage.
+#
+# `check_generated_fresh` above byte-compares the RENDERED feature matrix
+# against the TEMPLATE. That proves the render is faithful to the template and
+# says NOTHING about whether the template is faithful to the code — which is
+# why v0.57 shipped three stale numbers behind a green 43/43, one of them a
+# capability that release had shipped, listed as a loud decline.
+#
+# The repo already had the right MECHANISM (a claim whose `doc:` is the
+# template, pinning prose to a re-derivation — #880). What it lacked was
+# EXHAUSTIVENESS: nothing said which of the template's assertions were covered
+# by it, so an unpinned number was indistinguishable from a pinned one.
+#
+# This gate supplies the missing half. Every NUMBER in the template must be
+# accounted for as exactly one of:
+#
+#   DERIVED    inside a `{{field}}` substitution — status.json re-derives it
+#              from source every run, and a drift fails check_generated_fresh
+#   PINNED     inside the `text:`/`verbatim:` span of a claim whose `doc:` is
+#              the template — some evidence predicate re-derives it
+#   UNCHECKED  declared in `feature_matrix_facts.unchecked` WITH a rationale —
+#              narrative prose that no derivation covers, named as such
+#   MASKED     an identifier-shaped token that is not a measurement at all
+#              (issue refs, type widths, target names, spec sections), each
+#              mask declared with a `why:` in claims.yaml
+#
+# Anything left over is a number nobody classified: RED. The gate cannot prove
+# a pinned or unchecked claim TRUE — it proves that every assertion has been
+# put in one of those buckets on purpose, and it fails closed on new ones.
+# The mask list is the residual trust; it is declared in claims.yaml so it is
+# reviewable rather than buried here.
+# ---------------------------------------------------------------------------
+
+_NUM_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
+
+
+def _blank(text, needle):
+    """Replace every occurrence of `needle` with same-length NULs, so offsets
+    (and therefore the surrounding context reported on failure) survive."""
+    if not needle:
+        return text, 0
+    n = text.count(needle)
+    return text.replace(needle, "\x00" * len(needle)), n
+
+
+def check_template_facts(data, claims, root):
+    fails = []
+    cfg = data.get("feature_matrix_facts")
+    if cfg is None:
+        return ["claims.yaml has no `feature_matrix_facts:` section — the "
+                "template-vs-code coverage gate is not configured"]
+
+    tmpl = (root / FEATURE_MATRIX_TMPL).read_text()
+    census = {"derived": 0, "pinned": 0, "unchecked": 0, "masked": 0}
+
+    # 1. DERIVED — {{field}} substitutions.
+    def _sub_blank(m):
+        census["derived"] += 1
+        return "\x00" * len(m.group(0))
+
+    text = re.sub(r"\{\{(\w+)\}\}", _sub_blank, tmpl)
+
+    # 2. PINNED — claim spans whose `doc:` is the template itself.
+    for c in claims:
+        if c.get("doc") != FEATURE_MATRIX_TMPL:
+            continue
+        spans = [c.get("text")]
+        spans += [
+            e.get("text")
+            for e in c.get("evidence", [])
+            if e.get("kind") == "verbatim"
+        ]
+        for s in spans:
+            if not s:
+                continue
+            if s not in text and s not in tmpl:
+                fails.append(
+                    f"claim {c['id']} pins template text that is ABSENT: {s!r}"
+                )
+                continue
+            text, n = _blank(text, s)
+            census["pinned"] += n
+
+    # 3. UNCHECKED — declared narrative prose, each with a rationale.
+    for e in cfg.get("unchecked", []) or []:
+        s = e.get("text", "")
+        why = (e.get("rationale") or "").strip()
+        if len(why) < 20:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry {s[:40]!r} needs a "
+                f">=20-char rationale saying WHY no derivation covers it"
+            )
+        if not any(ch.isdigit() for ch in s):
+            fails.append(
+                f"feature_matrix_facts.unchecked entry {s[:40]!r} contains no "
+                f"number — the hatch exists for unpinnable ASSERTIONS, not for "
+                f"blanking prose wholesale"
+            )
+        if len(s) > 240:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry is {len(s)} chars — keep "
+                f"an entry to the assertion (<=240), not a paragraph"
+            )
+        if s and s not in text:
+            fails.append(
+                f"feature_matrix_facts.unchecked entry no longer present in the "
+                f"template (dead entry — delete it): {s[:60]!r}"
+            )
+            continue
+        text, n = _blank(text, s)
+        census["unchecked"] += n
+
+    # 4. MASKED — identifier-shaped tokens that are not measurements.
+    for m in cfg.get("masks", []) or []:
+        why = (m.get("why") or "").strip()
+        if len(why) < 20:
+            fails.append(
+                f"feature_matrix_facts.masks entry {m.get('pattern')!r} needs a "
+                f">=20-char `why:` — the mask list is the residual trust in this "
+                f"gate and must be reviewable"
+            )
+        try:
+            rx = re.compile(m["pattern"])
+        except re.error as exc:
+            fails.append(f"feature_matrix_facts.masks pattern does not compile: {exc}")
+            continue
+        hits = 0
+
+        def _mask_blank(mm):
+            nonlocal hits
+            hits += 1
+            return "\x00" * len(mm.group(0))
+
+        text = rx.sub(_mask_blank, text)
+        if hits == 0:
+            fails.append(
+                f"feature_matrix_facts.masks pattern matches NOTHING (dead "
+                f"mask — delete it): {m['pattern']!r}"
+            )
+        census["masked"] += hits
+
+    # 5. Whatever is left is an unclassified assertion.
+    for mm in _NUM_RE.finditer(text):
+        s, e = mm.start(), mm.end()
+        ctx = tmpl[max(0, s - 60) : min(len(tmpl), e + 60)].replace("\n", " ")
+        fails.append(
+            f"UNCLASSIFIED number {mm.group(0)!r} in the feature-matrix "
+            f"template — make it a {{{{field}}}} substitution, pin it with a "
+            f"claim whose doc: is the template, or declare it under "
+            f"feature_matrix_facts.unchecked with a rationale.\n"
+            f"        context: ...{ctx}..."
+        )
+
+    print(
+        f"template-fact census: {census['derived']} derived · "
+        f"{census['pinned']} pinned · {census['unchecked']} unchecked · "
+        f"{census['masked']} masked identifier tokens"
+    )
+
+    # NON-VACUITY. Without this, the cheapest way to green the gate is to
+    # DELETE the assertions — an empty template classifies perfectly. Floors
+    # (>=, so adding coverage never reddens) on the two buckets that represent
+    # real verification; the ratchet direction is up. Lower one only when
+    # evidence genuinely weakened.
+    floors = cfg.get("floors") or {}
+    for bucket in ("derived", "pinned"):
+        want = floors.get(bucket)
+        if want is None:
+            fails.append(
+                f"feature_matrix_facts.floors has no {bucket!r} floor — the "
+                f"exhaustiveness gate would pass over an emptied template"
+            )
+        elif census[bucket] < want:
+            fails.append(
+                f"feature-matrix {bucket} coverage FELL: {census[bucket]} < "
+                f"recorded floor {want}. Verified assertions were removed from "
+                f"the template — restore them, or lower the floor in the same "
+                f"PR that says why the evidence weakened"
+            )
+    return fails
+
+
+# ---------------------------------------------------------------------------
 # README link coverage — the linked-doc surface cannot grow unverified.
 # ---------------------------------------------------------------------------
 
@@ -451,6 +634,7 @@ def main():
     extra = []
     if status_spec:
         extra += check_generated_fresh(status, root)
+    extra += check_template_facts(data, claims, root)
     extra += check_readme_links(data, claims, root)
     for f in extra:
         bad += 1
