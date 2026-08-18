@@ -1,7 +1,7 @@
 {
   "_generated_by": "cargo test -p synth-backend-riscv --test cross_backend_op_parity a64_op_surface_artifact_is_fresh_242",
   "_source": "REAL probe outcomes of synth_backend_aarch64::selector::select_typed_cf_calls — never a hand list",
-  "_scope": "op-level only; module/shape-level refusals are gated by scripts/repro/aarch64_decline_claims_242.py",
+  "_scope": "OP-LEVEL ONLY. Module/shape-level refusals (import call, >8 args, imported global, active data segment, ...) are not a function of a WasmOp and are NOT covered here; they are hand-written prose in the feature matrix, declared unchecked in claims.yaml",
   "ops": [
     { "op": "block", "status": "lowered" },
     { "op": "br", "status": "lowered" },

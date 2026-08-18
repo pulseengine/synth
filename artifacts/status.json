@@ -1,4 +1,6 @@
 {
+  "a32_tripwire_variants": "222",
+  "a32_tripwire_variants_sp_leg": "222",
   "aarch64_declined_ops": "`memory.copy`, `memory.fill`, `multi-memory wrapper`, `simd (grouped)`, `v128.and`, `v128.andnot`, `v128.const`, `v128.load`, `v128.not`, `v128.or`, `v128.store`, `v128.xor`",
   "aarch64_ops_declined": 12,
   "aarch64_ops_lowered": 185,

@@ -2195,9 +2195,11 @@ fn br_table_subshape_asymmetry_882() {
 // float-result callee, an imported global, a growable imported table, a block
 // type with parameters, a `br_table` past the threshold, an active data
 // segment) are not properties of a `WasmOp` variant and are NOT in this
-// artifact; they are gated end-to-end by
-// `scripts/repro/aarch64_decline_claims_242.py`, which compiles a probe module
-// per claim NAMED IN THE TEMPLATE.
+// artifact. They remain HAND-WRITTEN PROSE in the feature matrix, declared
+// `unchecked` in claims.yaml with that rationale. They were verified once, by
+// compiling one probe module each at v0.58 (18/18 declined), but nothing
+// re-checks them per commit — naming that honestly beats citing a gate that
+// does not exist.
 
 /// The probe this file uses for `op` on the aarch64 selector: the extended
 /// surface's probe when it has one, otherwise the integer-core parity probe.
@@ -2266,8 +2268,10 @@ fn derive_a64_op_surface() -> (String, Vec<String>) {
          synth_backend_aarch64::selector::select_typed_cf_calls — never a hand list\",\n",
     );
     s.push_str(
-        "  \"_scope\": \"op-level only; module/shape-level refusals are gated by \
-         scripts/repro/aarch64_decline_claims_242.py\",\n",
+        "  \"_scope\": \"OP-LEVEL ONLY. Module/shape-level refusals (import call, \
+         >8 args, imported global, active data segment, ...) are not a function of \
+         a WasmOp and are NOT covered here; they are hand-written prose in the \
+         feature matrix, declared unchecked in claims.yaml\",\n",
     );
     s.push_str("  \"ops\": [\n");
     for (i, (label, reason)) in rows.iter().enumerate() {

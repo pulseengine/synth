@@ -55,6 +55,10 @@ Evidence predicates re-derive from source — never a number typed only in prose
                wording in prose is bound to the roadmap's status field
   status-field the named field is declared in `status_fields:` (used to bind a
                README badge's JSONPath query to a real derived field)
+  fields-equal two or more DERIVED status fields must carry the same VALUE —
+               pins hand-maintained copies of one constant against each other
+               (count-same at the value level, so editing BOTH copies to the
+               same wrong number cannot green it)
 
 Derived-status field kinds (under `status_fields:`):
 
@@ -494,7 +498,7 @@ def check_readme_links(data, claims, root):
 # ---------------------------------------------------------------------------
 
 
-def check_claim(c, root, status_spec):
+def check_claim(c, root, status_spec, status):
     fails = []
     doc_path = root / c["doc"]
     if not doc_path.exists():
@@ -586,6 +590,26 @@ def check_claim(c, root, status_spec):
                     f'claim requires {ev["equals"]!r} — fix the PROSE to match '
                     f'the roadmap, or land the status change first'
                 )
+        elif kind == "fields-equal":
+            # Two or more DERIVED fields must carry the same VALUE. This is
+            # `count-same` at the value level: it pins two hand-maintained
+            # copies of one constant against each other, and unlike a
+            # count-same over a literal pattern it cannot go vacuously green
+            # when BOTH copies are edited to the same wrong number.
+            names = ev["names"]
+            missing = [n for n in names if n not in status]
+            if missing:
+                fails.append(
+                    f"fields-equal names undeclared status field(s): {missing}"
+                )
+            else:
+                seen = {n: status[n] for n in names}
+                if len({str(v) for v in seen.values()}) > 1:
+                    fails.append(
+                        "hand-maintained copies of one constant DISAGREE: "
+                        + ", ".join(f"{n}={v}" for n, v in seen.items())
+                        + " — update every copy together"
+                    )
         elif kind == "status-field":
             if ev["name"] not in status_spec:
                 fails.append(
@@ -622,7 +646,7 @@ def main():
 
     bad = 0
     for c in claims:
-        fails = check_claim(c, root, status_spec)
+        fails = check_claim(c, root, status_spec, status)
         if fails:
             bad += 1
             print(f"FAIL {c['id']}")

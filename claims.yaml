@@ -139,6 +139,27 @@ status_fields:
     kind: count
     pattern: '^pub open spec fn '
     glob: ['crates/synth-synthesis/src/contracts.rs']
+  # -- RQ-58-MIRRORS (#242): the A32 no-wildcard tripwire's universe size.
+  #
+  # FOUND STALE BY THIS LANE: the feature matrix said "221-variant no-wildcard
+  # tripwire" while BOTH tripwire constants said 222 — a doc number that had
+  # already rotted, sitting behind a green 43/43, in the release whose subject
+  # is doc rot. Substituting it means the sentence tracks the constant.
+  #
+  # The constant itself is DOUBLE hand-maintained on purpose (two independent
+  # soundness tripwires, each re-scanning `rules.rs` against its own copy), and
+  # `wcet_sp_no_wildcard_946.rs` says "bump ARM_OP_VARIANT_COUNT here AND in
+  # a32_no_silent_nop_615.rs". SYNTH-A32-TRIPWIRE-UNIVERSE below pins the two
+  # copies to EACH OTHER with `fields-equal`, so the reminder is now a check.
+  a32_tripwire_variants:
+    kind: capture
+    file: crates/synth-backend/tests/a32_no_silent_nop_615.rs
+    pattern: '^const ARM_OP_VARIANT_COUNT: usize = (\d+);'
+  a32_tripwire_variants_sp_leg:
+    kind: capture
+    file: crates/synth-backend/tests/wcet_sp_no_wildcard_946.rs
+    pattern: '^const ARM_OP_VARIANT_COUNT: usize = (\d+);'
+
   # -- RQ-58-MIRRORS (#242): the aarch64 op surface, derived from the REAL
   # selector rather than from text ABOUT it.
   #
@@ -221,8 +242,8 @@ feature_matrix_facts:
   # `>=` floors on the two buckets that represent real verification; adding
   # coverage never reddens, the ratchet direction is UP.
   floors:
-    derived: 24            # {{field}} substitutions re-derived every run
-    pinned: 11             # spans pinned by a claim whose doc: is the template
+    derived: 25            # {{field}} substitutions re-derived every run
+    pinned: 12             # spans pinned by a claim whose doc: is the template
 
   # Identifier-shaped tokens that carry a digit but assert nothing measurable.
   # This list is the RESIDUAL TRUST in the exhaustiveness gate: a real fact
@@ -271,12 +292,6 @@ feature_matrix_facts:
   # unnamed one is the next #975.
   # ---------------------------------------------------------------------------
   unchecked:
-    - text: "221-variant no-wildcard tripwire"
-      rationale: >
-        The A32 tripwire's variant count lives in a test's match arms, not in a
-        countable declaration; a regex over `synth-backend/tests` would count
-        arms of unrelated matches too. Convert by having the tripwire EMIT its
-        universe size the way the aarch64 op surface now does.
     - text: "`>8`"
       rationale: >
         The AAPCS64 register-argument limit. It is a constant of the ABI rather
@@ -433,6 +448,34 @@ claims:
   # "298 Qed / 8 Admitted" prose while the tree held 470; prose numbers are
   # now banned from the README entirely.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # RQ-58-MIRRORS (#242) — the A32 tripwire universe, pinned copy-to-copy.
+  #
+  # `ARM_OP_VARIANT_COUNT` is deliberately declared TWICE: `a32_no_silent_nop_615`
+  # (the silent-NOP tripwire) and `wcet_sp_no_wildcard_946` (the may_move_sp
+  # tripwire) each re-scan `rules.rs` against their own copy, so two independent
+  # instruments assert the universe rather than one. The cost of that
+  # independence is a hand-maintained mirror whose only guard was a comment
+  # ("bump ... here AND in a32_no_silent_nop_615.rs"). A desync silently
+  # disables one soundness tripwire while the other stays green.
+  #
+  # `fields-equal` makes the comment a check. It compares VALUES, so unlike a
+  # count-same over a literal it cannot go vacuously green if both copies are
+  # edited to the same wrong number.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-A32-TRIPWIRE-UNIVERSE
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "no-wildcard tripwire"
+    evidence:
+      - kind: fields-equal
+        names: [a32_tripwire_variants, a32_tripwire_variants_sp_leg]
+      - kind: status-field
+        name: a32_tripwire_variants
+      - kind: file-exists
+        path: crates/synth-backend/tests/a32_no_silent_nop_615.rs
+      - kind: file-exists
+        path: crates/synth-backend/tests/wcet_sp_no_wildcard_946.rs
+
   - id: SYNTH-README-STATUS-BADGES
     doc: README.md
     text: "artifacts/status.json"
