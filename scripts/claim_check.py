@@ -216,7 +216,16 @@ def derive_status(spec, root):
     for name, f in sorted(spec.items()):
         kind = f.get("kind")
         if kind == "count":
-            n, matched = _count(f["pattern"], f["glob"], root)
+            try:
+                n, matched = _count(
+                    f["pattern"],
+                    f["glob"],
+                    root,
+                    before=f.get("before"),
+                    unit=f.get("unit", "matches"),
+                )
+            except MeasureError as e:
+                raise RuntimeError(f"status field {name!r}: {e}") from e
             if not matched:
                 raise RuntimeError(
                     f"status field {name!r}: glob matched NO files: {f['glob']}"
@@ -234,12 +243,13 @@ def derive_status(spec, root):
             text = (root / f["file"]).read_text(errors="ignore")
             marker = f.get("before")
             if marker:
-                if marker not in text:
-                    raise RuntimeError(
-                        f"status field {name!r}: 'before' marker {marker!r} "
-                        f"absent from {f['file']} — derivation region undefined"
-                    )
-                text = text.split(marker, 1)[0]
+                # ONE implementation of the region rule, shared with `count` —
+                # a second copy here would be exactly the hand-maintained
+                # mirror this file's RQ-58-METRIC block exists to count.
+                try:
+                    text = _region(text, marker, f["file"])
+                except MeasureError as e:
+                    raise RuntimeError(f"status field {name!r}: {e}") from e
             toks = set(re.findall(f["pattern"], text))
             if not toks:
                 raise RuntimeError(
@@ -352,11 +362,103 @@ def check_readme_links(data, claims, root):
 
 
 # ---------------------------------------------------------------------------
+# RQ-58-METRIC — the directed, slack-free ratchet (see the module docstring).
+#
+# A PURE function of (derived, spec) so it is unit-testable without touching the
+# filesystem: `scripts/test_claim_check.py` drives every branch below. The gate
+# whose thesis is "checkers are where the defects are" does not get to be the
+# unvalidated one.
+# ---------------------------------------------------------------------------
+
+_RATCHET_HELP = (
+    "the subtraction metric (epic #242) — see the RQ-58-METRIC block in "
+    "scripts/claim_check.py"
+)
+
+
+def check_ratchet(derived, ev):
+    """Return a list of failure strings for one `kind: ratchet` evidence item.
+
+    `derived` is the live value of the `status_fields:` entry named by the pin;
+    the pin itself carries NO regex, so the number is derived exactly once.
+    """
+    fails = []
+    name = ev.get("name")
+    direction = ev.get("direction")
+    if direction not in ("up", "down"):
+        return [f"ratchet {name!r}: direction must be 'up' or 'down', got {direction!r}"]
+    for key in ("value", "baseline"):
+        if not isinstance(ev.get(key), int) or isinstance(ev.get(key), bool):
+            return [f"ratchet {name!r}: {key!r} must be an integer, got {ev.get(key)!r}"]
+    value, baseline = ev["value"], ev["baseline"]
+    goal = "ceiling that must FALL" if direction == "down" else "floor that must RISE"
+
+    def worse_than_baseline(v):
+        return v > baseline if direction == "down" else v < baseline
+
+    def better_than_baseline(v):
+        return v < baseline if direction == "down" else v > baseline
+
+    # 1. SLACK-FREE. No "current + slack" ceiling is expressible: the ledger
+    #    must carry the live number exactly, so every movement is a PR diff.
+    if derived != value:
+        moved = "the WRONG way" if worse_than_baseline(derived) else "the right way"
+        fails.append(
+            f"ratchet {name!r} MOVED {moved}: derived {derived} != ledger value "
+            f"{value} (baseline {baseline}, {goal}) — update claims.yaml in the "
+            f"SAME PR; if it moved the wrong way add a waivers: entry saying why "
+            f"[{_RATCHET_HELP}]"
+        )
+        return fails  # everything below reasons about `value`; don't pile on.
+
+    # 2. SELF-BANKING. An improvement must be recorded, or it can be silently
+    #    given back later — which is how a ceiling rots into decoration.
+    if better_than_baseline(value):
+        fails.append(
+            f"ratchet {name!r}: {value} beats baseline {baseline} but the win is "
+            f"NOT BANKED — set `baseline: {value}` so it cannot be given back "
+            f"without a waiver [{_RATCHET_HELP}]"
+        )
+
+    # 3. WAIVED, NOT ROUTED AROUND. Growth is allowed — it costs a written
+    #    reason bound to this exact value (#911's rule applied to size).
+    waivers = ev.get("waivers") or []
+    if worse_than_baseline(value):
+        matching = [w for w in waivers if w.get("to") == value]
+        if not matching:
+            fails.append(
+                f"ratchet {name!r}: {value} is worse than baseline {baseline} "
+                f"({goal}) with NO waiver — either delete a hand-written arm "
+                f"instead, or add `waivers: [{{to: {value}, reason: ...}}]` in "
+                f"THIS PR stating why the growth is justified [{_RATCHET_HELP}]"
+            )
+        for w in matching:
+            if not str(w.get("reason", "")).strip():
+                fails.append(
+                    f"ratchet {name!r}: waiver to {value} has an EMPTY reason — a "
+                    f"waiver is a stated justification, not a checkbox"
+                )
+
+    # 4. No dead waivers. A waiver whose value is already met is a standing
+    #    licence nobody reviewed; same dead-entry rule as unpinned_ok.
+    for w in waivers:
+        to = w.get("to")
+        if not isinstance(to, int) or isinstance(to, bool):
+            fails.append(f"ratchet {name!r}: waiver `to` must be an integer, got {to!r}")
+        elif not worse_than_baseline(to):
+            fails.append(
+                f"ratchet {name!r}: DEAD waiver to {to} — baseline is {baseline} "
+                f"({goal}), so this waiver authorises nothing; delete it"
+            )
+    return fails
+
+
+# ---------------------------------------------------------------------------
 # Claim evidence predicates
 # ---------------------------------------------------------------------------
 
 
-def check_claim(c, root, status_spec):
+def check_claim(c, root, status_spec, status=None):
     fails = []
     doc_path = root / c["doc"]
     if not doc_path.exists():
@@ -367,102 +469,164 @@ def check_claim(c, root, status_spec):
     if text and text not in doc:
         fails.append(f'claim text not found verbatim in {c["doc"]}: "{text}"')
 
+    status = status if status is not None else {}
     for ev in c.get("evidence", []):
         kind = ev.get("kind")
-        if kind == "verbatim":
-            s = ev.get("text", text)
-            if s and s not in doc:
-                fails.append(f'verbatim string absent from {c["doc"]}: "{s}"')
-        elif kind == "file-exists":
-            if not (root / ev["path"]).exists():
-                fails.append(f'evidence file missing: {ev["path"]}')
-        elif kind == "count-eq":
-            n, matched = _count(ev["pattern"], ev["glob"], root)
-            if not matched:
-                fails.append(
-                    f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
-                )
-            elif n != ev["expect"]:
-                fails.append(
-                    f'count drifted: derived {n} != documented {ev["expect"]}  '
-                    f'[/{ev["pattern"]}/ over {ev["glob"]}]  '
-                    f'— update the doc AND claims.yaml together'
-                )
-        elif kind == "count-max":
-            n, matched = _count(ev["pattern"], ev["glob"], root)
-            if not matched:
-                fails.append(
-                    f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
-                )
-            elif n > ev["max"]:
-                fails.append(
-                    f'trusted base grew: {n} > recorded max {ev["max"]}  '
-                    f'[/{ev["pattern"]}/]  — update the claim, not just the number'
-                )
-        elif kind == "count-min":
-            n, matched = _count(ev["pattern"], ev["glob"], root)
-            if not matched:
-                fails.append(
-                    f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
-                )
-            elif n < ev["min"]:
-                fails.append(
-                    f'track shrank below floor: {n} < recorded min {ev["min"]}  '
-                    f'[/{ev["pattern"]}/]  — update the claim, not just the number'
-                )
-        elif kind == "count-same":
-            derived = []
-            for leg in ev["legs"]:
-                n, matched = _count(leg["pattern"], leg["glob"], root)
-                if not matched:
-                    fails.append(
-                        f'count-same leg matched NO files: glob {leg["glob"]}'
-                    )
-                    break
-                derived.append((leg.get("name", leg["glob"]), n))
-            else:
-                vals = {n for _, n in derived}
-                if len(vals) > 1:
-                    fails.append(
-                        f"1:1 invariant broken — legs disagree: "
-                        + ", ".join(f"{name}={n}" for name, n in derived)
-                    )
-        elif kind == "no-new":
-            n, matched = _count(ev["pattern"], ev["glob"], root)
-            if not matched:
-                fails.append(
-                    f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
-                )
-            elif n > ev.get("recorded", 0):
-                fails.append(
-                    f'new unproven obligations: {n} > recorded {ev.get("recorded", 0)}  '
-                    f'[/{ev["pattern"]}/]'
-                )
-        elif kind == "yaml-field":
-            val, err = _yaml_field(ev, root)
-            if err:
-                fails.append(err)
-            elif val != ev["equals"]:
-                fails.append(
-                    f'{ev["path"]}: {ev["id"]}.{ev["field"]} is {val!r}, '
-                    f'claim requires {ev["equals"]!r} — fix the PROSE to match '
-                    f'the roadmap, or land the status change first'
-                )
-        elif kind == "status-field":
-            if ev["name"] not in status_spec:
-                fails.append(
-                    f'status field {ev["name"]!r} not declared in status_fields '
-                    f'— a badge/query is pointing at a field status.json will '
-                    f'never carry'
-                )
-        else:
-            fails.append(f"unknown evidence kind: {kind!r}")
+        try:
+            fails += _check_evidence(ev, kind, c, doc, text, root, status_spec, status)
+        except MeasureError as e:
+            fails.append(f"derivation failed: {e}")
     return fails
+
+
+def _check_evidence(ev, kind, c, doc, text, root, status_spec, status):
+    fails = []
+    if kind == "verbatim":
+        s = ev.get("text", text)
+        if s and s not in doc:
+            fails.append(f'verbatim string absent from {c["doc"]}: "{s}"')
+    elif kind == "file-exists":
+        if not (root / ev["path"]).exists():
+            fails.append(f'evidence file missing: {ev["path"]}')
+    elif kind == "count-eq":
+        n, matched = _count(ev["pattern"], ev["glob"], root)
+        if not matched:
+            fails.append(
+                f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
+            )
+        elif n != ev["expect"]:
+            fails.append(
+                f'count drifted: derived {n} != documented {ev["expect"]}  '
+                f'[/{ev["pattern"]}/ over {ev["glob"]}]  '
+                f'— update the doc AND claims.yaml together'
+            )
+    elif kind == "count-max":
+        n, matched = _count(ev["pattern"], ev["glob"], root)
+        if not matched:
+            fails.append(
+                f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
+            )
+        elif n > ev["max"]:
+            fails.append(
+                f'trusted base grew: {n} > recorded max {ev["max"]}  '
+                f'[/{ev["pattern"]}/]  — update the claim, not just the number'
+            )
+    elif kind == "count-min":
+        n, matched = _count(ev["pattern"], ev["glob"], root)
+        if not matched:
+            fails.append(
+                f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
+            )
+        elif n < ev["min"]:
+            fails.append(
+                f'track shrank below floor: {n} < recorded min {ev["min"]}  '
+                f'[/{ev["pattern"]}/]  — update the claim, not just the number'
+            )
+    elif kind == "count-same":
+        derived = []
+        for leg in ev["legs"]:
+            n, matched = _count(leg["pattern"], leg["glob"], root)
+            if not matched:
+                fails.append(
+                    f'count-same leg matched NO files: glob {leg["glob"]}'
+                )
+                break
+            derived.append((leg.get("name", leg["glob"]), n))
+        else:
+            vals = {n for _, n in derived}
+            if len(vals) > 1:
+                fails.append(
+                    f"1:1 invariant broken — legs disagree: "
+                    + ", ".join(f"{name}={n}" for name, n in derived)
+                )
+    elif kind == "no-new":
+        n, matched = _count(ev["pattern"], ev["glob"], root)
+        if not matched:
+            fails.append(
+                f'predicate matched NO files (measures nothing): glob {ev["glob"]}'
+            )
+        elif n > ev.get("recorded", 0):
+            fails.append(
+                f'new unproven obligations: {n} > recorded {ev.get("recorded", 0)}  '
+                f'[/{ev["pattern"]}/]'
+            )
+    elif kind == "yaml-field":
+        val, err = _yaml_field(ev, root)
+        if err:
+            fails.append(err)
+        elif val != ev["equals"]:
+            fails.append(
+                f'{ev["path"]}: {ev["id"]}.{ev["field"]} is {val!r}, '
+                f'claim requires {ev["equals"]!r} — fix the PROSE to match '
+                f'the roadmap, or land the status change first'
+            )
+    elif kind == "status-field":
+        if ev["name"] not in status_spec:
+            fails.append(
+                f'status field {ev["name"]!r} not declared in status_fields '
+                f'— a badge/query is pointing at a field status.json will '
+                f'never carry'
+            )
+    elif kind == "ratchet":
+        # SINGLE-DERIVATION: the pin names a status_fields entry; it does not
+        # carry its own regex, so this gate cannot mirror-drift from the number
+        # it publishes.
+        name = ev.get("name")
+        if name not in status_spec:
+            fails.append(
+                f"ratchet {name!r} names no status_fields derivation — a "
+                f"directed pin MUST bind to the single derivation of its "
+                f"number, never re-derive it here"
+            )
+        elif name not in status:
+            fails.append(f"ratchet {name!r}: status derivation produced no value")
+        elif not isinstance(status[name], int) or isinstance(status[name], bool):
+            fails.append(
+                f"ratchet {name!r}: derivation yields {status[name]!r}, not a "
+                f"number — only counting derivations can be ratcheted"
+            )
+        else:
+            fails += check_ratchet(status[name], ev)
+    else:
+        fails.append(f"unknown evidence kind: {kind!r}")
+    return fails
+
+
+def report_metric(claims, status):
+    """Print the subtraction metric (RQ-58-METRIC) with its delta from baseline.
+
+    A gate nobody can read is a gate nobody defends: CI prints this table on
+    every run, so "the patch pile grew again" is visible in the job log rather
+    than only in a red assertion.
+    """
+    rows = []
+    for c in claims:
+        for ev in c.get("evidence", []):
+            if ev.get("kind") != "ratchet":
+                continue
+            name = ev.get("name")
+            live = status.get(name)
+            base = ev.get("baseline")
+            arrow = "must FALL" if ev.get("direction") == "down" else "must RISE"
+            delta = (live - base) if isinstance(live, int) and isinstance(base, int) else "?"
+            if isinstance(delta, int):
+                delta = f"{delta:+d}"
+            rows.append((name, str(live), str(base), delta, arrow, len(ev.get("waivers") or [])))
+    if not rows:
+        print("subtraction metric: NO ratchet pins declared — the North Star is unmeasured.")
+        return
+    w = max(len(r[0]) for r in rows)
+    print(f"\n=== subtraction metric (epic #242) — {len(rows)} directed pins ===")
+    print(f"{'metric'.ljust(w)}  {'now':>7}  {'baseline':>8}  {'delta':>6}  direction   waivers")
+    for name, live, base, delta, arrow, nw in rows:
+        print(f"{name.ljust(w)}  {live:>7}  {base:>8}  {delta:>6}  {arrow:<10}  {nw}")
+    print()
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     emit = "--emit-status" in sys.argv[1:]
+    metric = "--metric" in sys.argv[1:]
     path = pathlib.Path(args[0] if args else "claims.yaml")
     if not path.exists():
         sys.exit(f"claim_check: {path} not found")
@@ -482,9 +646,12 @@ def main():
         (root / FEATURE_MATRIX).write_text(render_feature_matrix(status, root))
         print(f"emitted {STATUS_JSON} + {FEATURE_MATRIX}")
 
+    if metric:
+        report_metric(claims, status)
+
     bad = 0
     for c in claims:
-        fails = check_claim(c, root, status_spec)
+        fails = check_claim(c, root, status_spec, status)
         if fails:
             bad += 1
             print(f"FAIL {c['id']}")
