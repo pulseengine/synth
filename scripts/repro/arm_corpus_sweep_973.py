@@ -354,7 +354,8 @@ def main():
 
     compiled, declined, unexpected = [], {}, []
     objects = {}
-    td = tempfile.mkdtemp()
+    tmp = tempfile.TemporaryDirectory()
+    td = tmp.name
     for wat in wats:
         out = os.path.join(td, wat.stem + ".o")
         rc, log = compile_arm(wat, out)

@@ -71,6 +71,7 @@ from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
 from unicorn.arm_const import (
     UC_ARM_REG_LR,
+    UC_ARM_REG_PC,
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
     UC_ARM_REG_R2,
@@ -209,6 +210,13 @@ def run(syms, text, base, name, args):
         mu.emu_start((CODE + addr) | 1, RET_PAD, count=20000)
     except UcError as ex:
         return None, str(ex)
+    # The instruction budget is ~500x what these straight-line functions need,
+    # so exhausting it cannot happen today. Check anyway: without this, a run
+    # that stopped early returns whatever R0 happened to hold and could COMPARE
+    # EQUAL by accident — a differential that passes on a value it never
+    # finished computing is the vacuity this repo keeps rediscovering.
+    if mu.reg_read(UC_ARM_REG_PC) & ~1 != RET_PAD & ~1:
+        return None, "did not reach the return pad (instruction budget exhausted)"
     return mu.reg_read(UC_ARM_REG_R0) & M32, ""
 
 
