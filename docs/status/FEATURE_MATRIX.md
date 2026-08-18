@@ -150,7 +150,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
   the newly wired ones; exactly 8 asserted a printed verdict or count. Every
   `wired` oracle now declares a `# ci-checks:` floor that
   `scripts/oracle_run.py` enforces per run by counting real emulator entries,
-  wasmtime executions and compilations: **144 oracles assert 296,059 emulator
+  wasmtime executions and compilations: **146 oracles assert 298,754 emulator
   entries**, 7 assert a printed count, 9 assert compilations, and 1
   (`aarch64_matrix.sh`, a POSIX shell oracle the in-process driver cannot
   instrument) is itemized as unbindable in `scripts/repro/ORACLE_WIRING.md`

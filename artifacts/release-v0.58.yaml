@@ -82,7 +82,36 @@ artifacts:
       hand-maintained decisions. If a lane legitimately needs to grow the file,
       the ceiling moves WITH a stated reason in the same PR — the #911 rule
       applied to size.
-    status: proposed
+      IMPLEMENTED. Seven `kind: ratchet` pins in claims.yaml, derived once each
+      in `status_fields:` and printed every CI run by
+      `claim_check.py claims.yaml --metric`; engine + escape hatch documented in
+      scripts/claim_check.py, unit-tested in scripts/test_claim_check.py (32
+      cases, mutation-verified: stubbing check_ratchet kills 18 of them).
+      NUMBERS RE-DERIVED, and two differ from the figures above — those figures
+      stand as written since they are the plan of record, but the LEDGER carries
+      these:
+        * DSL rules have been flat since v0.45.0 (40 at v0.42/v0.43, 41 at
+          v0.44, 50 since), i.e. twelve releases of stall, not seven.
+        * 43 of the 105 wildcard arms are in the selector's OWN TEST MODULE;
+          the lowering code carries 62. Both are pinned, region-scoped and
+          whole-file, because a whole-file-only ceiling would let a lane
+          "progress" by deleting test arms and would fire on every PR that adds
+          coverage.
+        * Selector non-test code grew 14,694 -> 18,480 (+25.8%) v0.42 -> v0.57,
+          so the thesis survives the honest denominator (the test module grew
+          10,215 -> 11,136 over the same span).
+        * 18,481 in the plan is the grep LINE NUMBER of `#[cfg(test)]`; the
+          region is 18,480 lines.
+      RED-FIRST DEMONSTRATED, not asserted: a hand-written `rn == rm` special
+      case added to the `I32Add` lowering arm without deleting one turned
+      SYNTH-SUBTRACTION-SELECTOR red on both selector pins (18,480 -> 18,485).
+      The probe was BYTE-INVISIBLE — the compiled ELF hash was unchanged and all
+      10 frozen-anchor tests passed — which is the point: this gate catches the
+      growth that byte-identity and frozen-anchor oracles structurally cannot
+      see. Adding a matching `waivers:` entry turned it green (escape hatch
+      works); reverting restored green with the ELF hash byte-identical to
+      baseline.
+    status: implemented
     release: v0.58
     tags: [north-star, metric, falsifiability, vcr-sel-001]
     links:

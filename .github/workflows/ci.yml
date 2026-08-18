@@ -199,6 +199,32 @@ jobs:
         run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
+      # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC. Epic #242 exists to
+      # REPLACE the patch-accreting code generator; measured v0.42.0 -> v0.57.0
+      # it went the other way (selector non-test code 14,694 -> 18,480 lines,
+      # verified rules flat at 50 since v0.45.0) and nothing noticed, because
+      # nothing measured it. The `kind: ratchet` pins in claims.yaml are
+      # DIRECTED (ceilings must fall, the rule floor must rise) and SLACK-FREE
+      # (the ledger must carry the live number exactly), so adding a
+      # hand-written lowering arm without deleting one is red.
+      #
+      # `--metric` prints the table with each pin's delta from baseline, so the
+      # trend is readable in the job log and not only in a failed assertion —
+      # and it FAILS if the pin population is empty, because deleting a ceiling
+      # must never be the cheapest way to satisfy it.
+      #
+      # Lives in the already-REQUIRED claim-check job for the same reason the
+      # oracle-wiring gate below does: a brand-new job is not a required
+      # context on main, so it could sit red for weeks blocking nothing.
+      - name: Subtraction metric — directed ratchets on the patch pile (RQ-58-METRIC, #242)
+        run: python3 scripts/claim_check.py claims.yaml --metric
+      # The gate that polices the checkers does not get to be the unchecked
+      # one. v0.57 found 5 of its 10 defects in checking machinery; this drives
+      # the ratchet predicate and the region/counting primitives through every
+      # branch, including the ones that must PASS. Mutation-verified at
+      # authoring: stubbing check_ratchet to return no failures kills 18 of 32.
+      - name: Unit-test the claim-check engine itself (RQ-58-METRIC, #242)
+        run: python3 scripts/test_claim_check.py
       # #867: coverage OF the ISA semantics model. Re-derives
       # artifacts/model-coverage.json (static heuristic, documented in the
       # script) and fails if the committed artifact is stale or hand-edited;
@@ -260,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 295726 \
+            --min-emulation-floor 298754 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3508,6 +3534,76 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 11
 
+  repro-sweep-arm-corpus-oracle:
+    name: "repro sweep — ARM corpus (#973: CI never compiled these for ARM)"
+    # RQ-58-SELECT973, the second half and the larger one. #973 — `select` on an
+    # i64-comparison condition returning the then-arm on every vector where the
+    # else-arm was due — was found only because a lane compiled
+    # `scripts/repro/*.wat` for ARM BY HAND. Nothing in CI did that. The
+    # `repro-sweep-*` jobs above run hand-listed oracles, each pinned to the one
+    # fixture its issue was about, so a fixture written for RV32 or aarch64 never
+    # reached the ARM backend even when its shape is backend-independent.
+    # `rv32_cmp_select_472.wat` carried the #973 shape as `sel_cmp_i64` since
+    # v0.11 and no ARM build ever saw it — MEASURED: run against the PRE-fix
+    # binary this sweep reports 7 wrong vectors for exactly that export, so the
+    # leg is red-first against the defect it was built for, using a fixture that
+    # was already in the tree.
+    #
+    # Two phases, because compiling alone would NOT have caught #973 (it compiled
+    # perfectly and returned the wrong number): a no-wildcard COMPILE census over
+    # every fixture, then an EXECUTION differential against wasmtime over every
+    # all-i32 export of every module pure enough to emulate faithfully.
+    #
+    # Turning this on surfaced 48 pre-existing wrong vectors unrelated to #973 —
+    # #989 (a local.set/tee clobbers a live local.get of the same local) and #990
+    # (a local written on one arm of a br_if is never zero-inited, so the merge
+    # reads uninitialised stack). They are LISTED by name against their issue
+    # inside the harness and ratcheted in both directions, not narrowed away.
+    runs-on: ubuntu-latest
+    env:
+      SYNTH: ./target/debug/synth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      # Deliberately NO wabt. Both oracles here assemble `.wat` with wasmtime's
+      # OWN assembler (`wasmtime.wat2wasm` / `Module.from_file`), so the
+      # reference side is ONE toolchain: what parses and what runs cannot
+      # disagree, and the executed population does not depend on the runner's
+      # wabt build. That host-dependency class (#850/#881) is the one thing a
+      # never-before-run job discovers the hard way.
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: "#973 i64-cmp select execution differential (both ARM legs)"
+        run: python scripts/oracle_run.py scripts/repro/select_i64cmp_973_arm_differential.py
+      - name: "ARM corpus sweep — compile census + execution differential (#973)"
+        run: python scripts/oracle_run.py scripts/repro/arm_corpus_sweep_973.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-6)
     # #890: the SOUNDNESS evidence for --emit-wcet. The cargo gate
@@ -3609,6 +3705,14 @@ jobs:
       # sensitive to how `std` inlines. `@stable` is a moving target and a Rust
       # release could red this gate with no code change. Bumping this version is
       # allowed — it obliges a RE-MEASURE of the floors, not a lowering.
+      #
+      # RESTORED to 1.96.1: dependabot #984 auto-bumped this to 1.100.0 as an
+      # "action version" — but for dtolnay/rust-toolchain the ref IS the rustc
+      # version, so the bump silently changed the measured compiler with no
+      # re-measure of the floors, defeating the pin's whole purpose. Every
+      # baseline in scripts/mcdc_gate.py and scripts/repro/mcdc_912_gate.md is
+      # a 1.96.1 measurement. Do not let dependabot move this line: a bump is
+      # only valid inside a PR that re-measures and restates the floors.
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: wasm32-wasip1
