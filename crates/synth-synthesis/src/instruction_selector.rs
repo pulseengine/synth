@@ -6289,17 +6289,7 @@ impl InstructionSelector {
 
             I32Or => crate::sel_dsl::generated::rule_i32_or(rd, rn, rm),
 
-            I32Xor => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_xor(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Xor => crate::sel_dsl::generated::rule_i32_xor(rd, rn, rm),
 
             // Shifts: WASM pops both value (rn) and shift amount (rm) from stack.
             // #682: ARMv7-M register shifts use Rm[7:0] (>= 32 yields 0/sign)
