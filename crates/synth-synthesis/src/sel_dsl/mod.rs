@@ -564,7 +564,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.and`: rd = rn & rm",
     },
     SelRule {
@@ -1383,6 +1383,15 @@ pub const RULES: &[SelRule] = &[
         seq: &[TemplateOp::SubImmVar { rd: Rd, rn: Rn }],
         delegation: Delegation::SelectWithStack,
         doc: "`i32.sub` (folded const): rd = rn - imm",
+    },
+    SelRule {
+        name: "rule_i32_and_imm",
+        op: WasmOp::I32And,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::AndImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.and` (folded const): rd = rn & imm",
     },
 ];
 

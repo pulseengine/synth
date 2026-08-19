@@ -185,4 +185,7 @@ Definition rule_i32_add_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
 Definition rule_i32_sub_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
   [SUB rd rn (Imm imm)].
 
+Definition rule_i32_and_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [AND rd rn (Imm imm)].
+
 End Gen.
