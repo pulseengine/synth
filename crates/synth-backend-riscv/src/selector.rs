@@ -1425,8 +1425,17 @@ impl Selector {
     /// go above.
     fn compute_local_layout(&mut self, wasm_ops: &[WasmOp], num_params: u32) {
         use std::collections::BTreeSet;
-        self.i64_locals =
-            synth_synthesis::infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        // #946: the inference also pops call ARGUMENTS now (the stale-width
+        // class). This ctx has no per-type table — `call_indirect` on RV32 is
+        // a loud decline, so the empty slice can only under-pop on op streams
+        // that would not compile here anyway.
+        self.i64_locals = synth_synthesis::infer_i64_locals(
+            wasm_ops,
+            &self.func_ret_i64,
+            &self.type_ret_i64,
+            &self.func_arg_counts,
+            &[],
+        );
         // #472: VCR-RA local promotion — default-on (SYNTH_RV_LOCAL_PROMO=0
         // opts out). Under the opt-out the map is empty, every local falls to
         // the frame path below, and codegen is byte-identical to the pre-lever
