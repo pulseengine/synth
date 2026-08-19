@@ -6293,29 +6293,12 @@ impl InstructionSelector {
 
             // Shifts: WASM pops both value (rn) and shift amount (rm) from stack.
             // #682: ARMv7-M register shifts use Rm[7:0] (>= 32 yields 0/sign)
-            // while WASM requires amount mod 32 — mask into R12 first (encoder
-            // scratch, never allocatable per #212, so no liveness hazard; the
-            // same pattern the optimized path always used). Flag-on delegates
-            // to the Rocq-proved masked rules, byte-identical by construction.
-            I32Shl => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R12,
-                            rn: rm,
-                            op2: Operand2::Imm(31),
-                        },
-                        ArmOp::LslReg {
-                            rd,
-                            rn,
-                            rm: Reg::R12,
-                        },
-                    ]
-                }
-            }
+            // while WASM requires amount mod 32 — the Rocq-proved masked rules
+            // mask into R12 first (encoder scratch, never allocatable per #212,
+            // so no liveness hazard; the same pattern the optimized path always
+            // used).
+            I32Shl => crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
+                .map_err(synth_core::Error::synthesis)?,
             I32ShrS => {
                 if self.sel_dsl {
                     crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
