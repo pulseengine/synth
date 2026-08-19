@@ -6317,13 +6317,7 @@ impl InstructionSelector {
                     .map_err(synth_core::Error::synthesis)?
             }
 
-            I32Rotr => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_rotr(rd, rn, rm)
-                } else {
-                    vec![ArmOp::RorReg { rd, rn, rm }]
-                }
-            }
+            I32Rotr => crate::sel_dsl::generated::rule_i32_rotr(rd, rn, rm),
 
             // Bit count operations — VCR-SEL-001 increment 4 (#242): behind
             // SYNTH_SEL_DSL (default OFF) these delegate to the Rocq-proved
