@@ -16867,30 +16867,18 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single I64Mul pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical to the hand-written
-                    // emission below (mirror-pinned; `rd_hi <> rd_lo` holds by
-                    // construction via alloc_consecutive_pair).
-                    let mul_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_pair_bin_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 mul op dispatch")
-                        .map_err(synth_core::Error::synthesis)?
-                        .into_iter()
-                        .next()
-                        .expect("i64 mul rule emits one op")
-                    } else {
-                        ArmOp::I64Mul {
-                            rd_lo: dst_lo,
-                            rd_hi: dst_hi,
-                            rn_lo: a_lo,
-                            rn_hi: a_hi,
-                            rm_lo: b_lo,
-                            rm_hi: b_hi,
-                        }
-                    };
+                    // The single I64Mul pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE;
+                    // `rd_hi <> rd_lo` holds by construction via
+                    // alloc_consecutive_pair).
+                    let mul_op = crate::sel_dsl::i64_pair_bin_rule(
+                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .expect("i64 mul op dispatch")
+                    .map_err(synth_core::Error::synthesis)?
+                    .into_iter()
+                    .next()
+                    .expect("i64 mul rule emits one op");
                     instructions.push(ArmInstruction {
                         op: mul_op,
                         source_line: Some(idx),
