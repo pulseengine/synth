@@ -5081,22 +5081,6 @@ pub struct InstructionSelector {
     /// compiles with the default pool keeps its frame byte-identical by
     /// construction.
     i64_spill_slots: usize,
-    /// VCR-SEL-001 increments 1+2 (#242): serve the migrated selector arms
-    /// from the generated, Rocq-proved rule table
-    /// [`crate::sel_dsl::generated`] instead of the hand-written lowering —
-    /// increment 1: `select_default`'s tier-A i32 ALU six + `i32.rotl`;
-    /// increment 2: the i32 register shifts + `rotr` (both selectors) and
-    /// the ten i32 comparisons (`select_with_stack`'s reg-reg CMP+SetCond
-    /// arm — `select_default`'s blind bare-`Cmp` comparison arms never
-    /// materialize the 0/1 result and stay hand-written). Default OFF (read
-    /// from `SYNTH_SEL_DSL`) — OFF keeps every arm on its original
-    /// hand-written body, and ON is byte-identical by construction. The two
-    /// implementations are mirror-pinned per op
-    /// (`sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242`,
-    /// `sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242`).
-    /// See `docs/design/vcr-sel-001-first-increment.md` and
-    /// `docs/design/vcr-sel-001-increment-2.md`.
-    sel_dsl: bool,
     /// #494 phase 2b (divisor-nonzero fact): op indices (into the stream fed
     /// to `select_with_stack`) of `div`/`rem` ops whose DIVIDE-BY-ZERO trap
     /// guard is proven dead — the fact-spec pass discharged
@@ -5124,28 +5108,6 @@ pub struct InstructionSelector {
     /// (no table size, no verdicts) DECLINES every `call_indirect` — an
     /// unchecked indirect branch is never emitted.
     call_indirect_guards: synth_core::CallIndirectGuards,
-}
-
-/// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): **default ON** since the increment-1..4
-/// default-on flip — the 50 Rocq-proved rules are the SHIPPED lowering path for
-/// their covered ops. The op list is `sel_dsl::RULES` itself (the single
-/// source — it also emits the Rocq model, `VcrSelRulesGenerated.v`, and is
-/// 1:1 coverage-gated against `coq/vcr_sel_rules.manifest`); a hand
-/// enumeration here said "40" and omitted nine i64 ops (#946), so it was
-/// replaced by this pointer. The
-/// flip is byte-invisible by construction: every rule was mirror-pinned
-/// byte-identical to the hand-written arm it replaces.
-///
-/// Opt-out (CI-gated back to the hand-written path): `SYNTH_NO_SEL_DSL=1`
-/// (mirrors every other default-on lever's opt-out) or the back-compat
-/// `SYNTH_SEL_DSL=0`. `SYNTH_NO_SEL_DSL` wins if both are set.
-fn sel_dsl_from_env() -> bool {
-    // Opt-out escape hatch takes precedence over any opt-in.
-    if std::env::var("SYNTH_NO_SEL_DSL").is_ok_and(|v| v != "0") {
-        return false;
-    }
-    // Default ON; only an explicit `SYNTH_SEL_DSL=0` forces the old path.
-    !std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v == "0")
 }
 
 /// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
@@ -5200,7 +5162,6 @@ impl InstructionSelector {
             vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
-            sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
             fact_mem_bounds_elide: Vec::new(),
@@ -5252,7 +5213,6 @@ impl InstructionSelector {
             vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
-            sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
             fact_mem_bounds_elide: Vec::new(),
@@ -5312,16 +5272,6 @@ impl InstructionSelector {
     /// bit-identical. See the `local_promote` field and [`compute_local_promotion`].
     pub fn set_local_promote(&mut self, enabled: bool) {
         self.local_promote = enabled;
-    }
-
-    /// VCR-SEL-001 increment 1 (#242): serve the migrated `select_default`
-    /// arms from the generated, Rocq-proved rule table instead of the
-    /// hand-written lowering. Off ⇒ hand-written path, byte-identical by
-    /// construction. See the `sel_dsl` field; default comes from
-    /// `SYNTH_SEL_DSL` — this setter exists so the mirror-pin tests can flip
-    /// the lever without racing on the process environment.
-    pub fn set_sel_dsl(&mut self, enabled: bool) {
-        self.sel_dsl = enabled;
     }
 
     /// #494 phase 2b (divisor-nonzero fact): per-site trap-guard elision marks
@@ -6272,209 +6222,61 @@ impl InstructionSelector {
         let rm = self.regs.alloc_reg();
 
         let instrs = match wasm_op {
-            // VCR-SEL-001 increment 1 (#242): the tier-A i32 ALU arms (and
-            // I32Rotl below) are migrated to the Rocq-proved rule table —
-            // behind `SYNTH_SEL_DSL` (default OFF) they delegate to
-            // `crate::sel_dsl::generated::rule_*`; OFF keeps the original
-            // hand-written body, byte-identical by construction. The two are
-            // mirror-pinned per op, and every `rule_*` has its 1:1 Qed theorem
-            // in coq/Synth/Synth/VcrSelRules.v.
-            I32Add => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_add(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Add {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            // VCR-SEL-001 / RQ-58-RETIRE (#242): the tier-A i32 ALU ops (and
+            // I32Rotl below) lower through the Rocq-proved rule table
+            // (`crate::sel_dsl::generated::rule_*`) as the ONLY path — the
+            // hand-written arms the rules superseded were byte-identical by
+            // construction (mirror-pinned since the flip) and are DELETED.
+            // Every `rule_*` has its 1:1 Qed theorem in
+            // coq/Synth/Synth/VcrSelRules.v.
+            I32Add => crate::sel_dsl::generated::rule_i32_add(rd, rn, rm),
 
-            I32Sub => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_sub(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Sub {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Sub => crate::sel_dsl::generated::rule_i32_sub(rd, rn, rm),
 
-            I32Mul => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_mul(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Mul { rd, rn, rm }]
-                }
-            }
+            I32Mul => crate::sel_dsl::generated::rule_i32_mul(rd, rn, rm),
 
-            I32And => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_and(rd, rn, rm)
-                } else {
-                    vec![ArmOp::And {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32And => crate::sel_dsl::generated::rule_i32_and(rd, rn, rm),
 
-            I32Or => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_or(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Or => crate::sel_dsl::generated::rule_i32_or(rd, rn, rm),
 
-            I32Xor => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_xor(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Xor => crate::sel_dsl::generated::rule_i32_xor(rd, rn, rm),
 
             // Shifts: WASM pops both value (rn) and shift amount (rm) from stack.
             // #682: ARMv7-M register shifts use Rm[7:0] (>= 32 yields 0/sign)
-            // while WASM requires amount mod 32 — mask into R12 first (encoder
-            // scratch, never allocatable per #212, so no liveness hazard; the
-            // same pattern the optimized path always used). Flag-on delegates
-            // to the Rocq-proved masked rules, byte-identical by construction.
-            I32Shl => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R12,
-                            rn: rm,
-                            op2: Operand2::Imm(31),
-                        },
-                        ArmOp::LslReg {
-                            rd,
-                            rn,
-                            rm: Reg::R12,
-                        },
-                    ]
-                }
-            }
-            I32ShrS => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R12,
-                            rn: rm,
-                            op2: Operand2::Imm(31),
-                        },
-                        ArmOp::AsrReg {
-                            rd,
-                            rn,
-                            rm: Reg::R12,
-                        },
-                    ]
-                }
-            }
-            I32ShrU => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shr_u(rd, rn, rm, Reg::R12)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R12,
-                            rn: rm,
-                            op2: Operand2::Imm(31),
-                        },
-                        ArmOp::LsrReg {
-                            rd,
-                            rn,
-                            rm: Reg::R12,
-                        },
-                    ]
-                }
-            }
+            // while WASM requires amount mod 32 — the Rocq-proved masked rules
+            // mask into R12 first (encoder scratch, never allocatable per #212,
+            // so no liveness hazard; the same pattern the optimized path always
+            // used).
+            I32Shl => crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
+                .map_err(synth_core::Error::synthesis)?,
+            I32ShrS => crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
+                .map_err(synth_core::Error::synthesis)?,
+            I32ShrU => crate::sel_dsl::generated::rule_i32_shr_u(rd, rn, rm, Reg::R12)
+                .map_err(synth_core::Error::synthesis)?,
 
             // Rotate operations: shift amount from stack register
             I32Rotl => {
                 // Rotate left by N = Rotate right by (32 - N)
                 // RSB rtmp, rm, #32; ROR rd, rn, rtmp
+                // Tier-B rule: carries the explicit `rs <> rn` scratch
+                // non-aliasing side condition (hypothesis of
+                // rule_i32_rotl_correct) — Ok-or-Err, never a silent
+                // misassemble.
                 let rtmp = self.regs.alloc_reg();
-                if self.sel_dsl {
-                    // Tier-B rule: carries the explicit `rs <> rn` scratch
-                    // non-aliasing side condition (hypothesis of
-                    // rule_i32_rotl_correct) — Ok-or-Err, never a silent
-                    // misassemble.
-                    crate::sel_dsl::generated::rule_i32_rotl(rd, rn, rm, rtmp)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Rsb {
-                            rd: rtmp,
-                            rn: rm,
-                            imm: 32,
-                        },
-                        ArmOp::RorReg { rd, rn, rm: rtmp },
-                    ]
-                }
+                crate::sel_dsl::generated::rule_i32_rotl(rd, rn, rm, rtmp)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
-            I32Rotr => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_rotr(rd, rn, rm)
-                } else {
-                    vec![ArmOp::RorReg { rd, rn, rm }]
-                }
-            }
+            I32Rotr => crate::sel_dsl::generated::rule_i32_rotr(rd, rn, rm),
 
-            // Bit count operations — VCR-SEL-001 increment 4 (#242): behind
-            // SYNTH_SEL_DSL (default OFF) these delegate to the Rocq-proved
-            // rules (clz single-CLZ; ctz the two-instruction RBIT+CLZ
-            // scratch=dest shape; popcnt the pseudo-op), byte-identical by
-            // construction (mirror-pinned per op).
-            I32Clz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_clz(rd, rm)
-                } else {
-                    vec![ArmOp::Clz { rd, rm }]
-                }
-            }
+            // Bit count operations — Rocq-proved rules are the only path
+            // (RQ-58-RETIRE): clz single-CLZ; ctz the two-instruction RBIT+CLZ
+            // scratch=dest shape; popcnt the pseudo-op.
+            I32Clz => crate::sel_dsl::generated::rule_i32_clz(rd, rm),
 
-            I32Ctz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_ctz(rd, rm)
-                } else {
-                    // Count trailing zeros: RBIT + CLZ
-                    vec![ArmOp::Rbit { rd, rm }, ArmOp::Clz { rd, rm: rd }]
-                }
-            }
+            I32Ctz => crate::sel_dsl::generated::rule_i32_ctz(rd, rm),
 
-            I32Popcnt => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_popcnt(rd, rm)
-                } else {
-                    // Population count - no native ARM instruction
-                    // Use Popcnt pseudo-op which the encoder expands to a parallel
-                    // bit-count algorithm (shift-and-add with masks)
-                    vec![ArmOp::Popcnt { rd, rm }]
-                }
-            }
+            I32Popcnt => crate::sel_dsl::generated::rule_i32_popcnt(rd, rm),
 
             I32Const(val) => {
                 let uval = *val as u32;
@@ -7110,206 +6912,81 @@ impl InstructionSelector {
                 }]
             }
 
-            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub.
-            // VCR-SEL-001 increment 3 (#242): the i64 pair arms delegate to
-            // the Rocq-proved pair rules behind SYNTH_SEL_DSL (default OFF),
-            // byte-identical by construction — the fixed R0:R1 += R2:R3
-            // in-place shape satisfies all three pair aliasing side
-            // conditions (rd_hi≠rd_lo, rd_lo≠rn_hi, rd_lo≠rm_hi), so the
-            // Err arm is unreachable here but stays loud, never silent.
-            I64Add => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_add(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Adds {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Adc {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub — the
+            // Rocq-proved pair rules are the only path (RQ-58-RETIRE). The
+            // fixed R0:R1 += R2:R3 in-place shape satisfies all three pair
+            // aliasing side conditions (rd_hi≠rd_lo, rd_lo≠rn_hi,
+            // rd_lo≠rm_hi), so the Err arm is unreachable here but stays
+            // loud, never silent.
+            I64Add => crate::sel_dsl::generated::rule_i64_add(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
-            I64Sub => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_sub(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Subs {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Sbc {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64Sub => crate::sel_dsl::generated::rule_i64_sub(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             // i64 bitwise: operate on each half independently
-            I64And => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_and(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::And {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64And => crate::sel_dsl::generated::rule_i64_and(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
-            I64Or => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_or(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Orr {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Orr {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64Or => crate::sel_dsl::generated::rule_i64_or(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
-            I64Xor => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_xor(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Eor {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Eor {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64Xor => crate::sel_dsl::generated::rule_i64_xor(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             // i64 comparisons: compare register pairs, result 0/1 in R0.
-            // i64.eqz is increment 3's SetCondZ-shape rule (no side
-            // conditions — the pseudo-op reads both halves before writing).
-            I64Eqz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1)
-                } else {
-                    vec![ArmOp::I64SetCondZ {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                    }]
-                }
-            }
+            // i64.eqz is the SetCondZ-shape rule (no side conditions — the
+            // pseudo-op reads both halves before writing).
+            I64Eqz => crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1),
 
-            // Binary i64 comparisons — VCR-SEL-001 increment 4 (#242): one
-            // I64SetCond pseudo-op over the fixed (R0:R1, R2:R3) pairs.
-            // Behind SYNTH_SEL_DSL (default OFF) the pseudo-op comes from
-            // the generated Rocq-proved rule (mirror-pinned per op); OFF
-            // keeps the hand-written emission, byte-identical by
-            // construction.
+            // Binary i64 comparisons: one I64SetCond pseudo-op over the fixed
+            // (R0:R1, R2:R3) pairs, from the generated Rocq-proved rule — the
+            // only path (RQ-58-RETIRE).
             I64Eq | I64Ne | I64LtS | I64LtU | I64LeS | I64LeU | I64GtS | I64GtU | I64GeS
-            | I64GeU => {
-                if self.sel_dsl {
-                    crate::sel_dsl::i64_setcond_rule(
-                        wasm_op,
-                        Reg::R0,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .expect("binary i64 comparison has a generated rule")
-                } else {
-                    let cond = match wasm_op {
-                        I64Eq => Condition::EQ,
-                        I64Ne => Condition::NE,
-                        I64LtS => Condition::LT,
-                        I64LtU => Condition::LO,
-                        I64LeS => Condition::LE,
-                        I64LeU => Condition::LS,
-                        I64GtS => Condition::GT,
-                        I64GtU => Condition::HI,
-                        I64GeS => Condition::GE,
-                        I64GeU => Condition::HS,
-                        _ => unreachable!(),
-                    };
-                    vec![ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
-                        cond,
-                    }]
-                }
-            }
+            | I64GeU => crate::sel_dsl::i64_setcond_rule(
+                wasm_op,
+                Reg::R0,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .expect("binary i64 comparison has a generated rule"),
 
             // i64 multiply: UMULL + MLA cross products
             I64Mul => {
@@ -16105,44 +15782,18 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the ADDS+ADC pair comes from the
-                    // generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned). The pair
-                    // aliasing side conditions hold by construction here:
+                    // The ADDS+ADC pair comes from the generated Rocq-proved
+                    // rule — the only path (RQ-58-RETIRE). The pair aliasing
+                    // side conditions hold by construction here:
                     // alloc_consecutive_pair avoids every operand half and a
                     // consecutive pair never self-aliases.
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::generated::rule_i64_add(
-                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
+                    let rule_ops = crate::sel_dsl::generated::rule_i64_add(
+                        dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Adds {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-
-                        // ADC dst_hi, a_hi, b_hi  (adds with carry)
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Adc {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16184,39 +15835,15 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): same delegation as
-                    // I64Add — the SUBS+SBC pair rule, byte-identical.
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::generated::rule_i64_sub(
-                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
+                    // Same as I64Add — the Rocq-proved SUBS+SBC pair rule is
+                    // the only path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::generated::rule_i64_sub(
+                        dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Subs {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-
-                        // SBC dst_hi, a_hi, b_hi  (subtracts with borrow)
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Sbc {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16266,76 +15893,20 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the per-half bitwise pair comes from the
-                    // generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned; side
+                    // The per-half bitwise pair comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE; side
                     // conditions hold by construction, see I64Add).
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::i64_pair_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 bitwise op has a pair rule")
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                        stack.push(StackVal::i64(dst_lo));
-                        continue;
+                    let rule_ops =
+                        crate::sel_dsl::i64_pair_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi)
+                            .expect("i64 bitwise op has a pair rule")
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     }
-                    let (lo_op, hi_op) = match op {
-                        I64Or => (
-                            ArmOp::Orr {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::Orr {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        I64And => (
-                            ArmOp::And {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::And {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        I64Xor => (
-                            ArmOp::Eor {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::Eor {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        _ => unreachable!(),
-                    };
-                    instructions.push(ArmInstruction {
-                        op: lo_op,
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-                    instructions.push(ArmInstruction {
-                        op: hi_op,
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
                     stack.push(StackVal::i64(dst_lo));
                 }
 
@@ -16457,50 +16028,18 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 shift pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical to the hand-written
-                    // emission below (mirror-pinned). The `rd_hi <> rd_lo` side
-                    // condition holds by construction: alloc_consecutive_pair
-                    // returns a distinct pair.
-                    let shift_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_pair_bin_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 shift op dispatch")
-                        .map_err(synth_core::Error::synthesis)?
-                        .into_iter()
-                        .next()
-                        .expect("i64 shift rule emits one op")
-                    } else {
-                        match op {
-                            I64Shl => ArmOp::I64Shl {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            I64ShrU => ArmOp::I64ShrU {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            I64ShrS => ArmOp::I64ShrS {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    // The single i64 shift pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE). The
+                    // `rd_hi <> rd_lo` side condition holds by construction:
+                    // alloc_consecutive_pair returns a distinct pair.
+                    let shift_op = crate::sel_dsl::i64_pair_bin_rule(
+                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .expect("i64 shift op dispatch")
+                    .map_err(synth_core::Error::synthesis)?
+                    .into_iter()
+                    .next()
+                    .expect("i64 shift rule emits one op");
                     instructions.push(ArmInstruction {
                         op: shift_op,
                         source_line: Some(idx),
@@ -16688,25 +16227,11 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): the SetCondZ-shape rule
-                    // behind SYNTH_SEL_DSL (default OFF) — single identical
-                    // pseudo-op, byte-identical by construction.
-                    if self.sel_dsl {
-                        for rule_op in crate::sel_dsl::generated::rule_i64_eqz(dst, src_lo, src_hi)
-                        {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The SetCondZ-shape Rocq-proved rule is the only path
+                    // (RQ-58-RETIRE).
+                    for rule_op in crate::sel_dsl::generated::rule_i64_eqz(dst, src_lo, src_hi) {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::I64SetCondZ {
-                                rd: dst,
-                                rn_lo: src_lo,
-                                rn_hi: src_hi,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16743,14 +16268,13 @@ impl InstructionSelector {
                     } else {
                         None
                     };
-                    // VCR-SEL-001 increment 2 (#242): the plain reg-reg
-                    // CMP+SetCond pair is served from the Rocq-proved rule
-                    // table behind SYNTH_SEL_DSL — `reg_operands` records the
-                    // operand registers so the delegation below can call the
-                    // rule with the exact registers the hand-written arm
-                    // uses (byte-identical by construction; the #258
-                    // imm-fold peephole stays hand-written, outside the
-                    // reg-reg rule's shape).
+                    // The plain reg-reg CMP+SetCond pair is served from the
+                    // Rocq-proved rule table (the only reg-reg path,
+                    // RQ-58-RETIRE) — `reg_operands` records the operand
+                    // registers so the dispatch below can call the rule with
+                    // the registers the selector chose (the #258 imm-fold
+                    // peephole stays hand-written, outside the reg-reg
+                    // rule's shape).
                     let mut reg_operands = None;
                     let cmp_op = if let Some((is_neg, mag)) = fold {
                         let _b = pop_operand(
@@ -16829,17 +16353,14 @@ impl InstructionSelector {
                         I32GeU => Condition::HS,
                         _ => unreachable!(),
                     };
-                    // VCR-SEL-001 increment 2 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the reg-reg pair comes from the generated
-                    // Rocq-proved rule — [Cmp {rn:a, Reg(b)}, SetCond {dst,
-                    // cond}], byte-identical to the hand-written emission
-                    // below (mirror-pinned per op). OFF, or on the imm-fold
-                    // path, keeps the original hand-written body.
-                    let dsl_ops = if self.sel_dsl {
-                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b))
-                    } else {
-                        None
-                    };
+                    // The reg-reg pair comes from the generated Rocq-proved
+                    // rule — [Cmp {rn:a, Reg(b)}, SetCond {dst, cond}] — as
+                    // the only reg-reg path (RQ-58-RETIRE). RESIDUAL, not
+                    // superseded: the #258 cmp/cmn IMM-FOLD case below has no
+                    // DSL rule (no CmpImm-shaped rule exists), so its
+                    // hand-written Cmp+SetCond emission stays.
+                    let dsl_ops =
+                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b));
                     if let Some(rule_ops) = dsl_ops {
                         for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
@@ -16887,39 +16408,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 (#242): behind SYNTH_SEL_DSL (default ON,
-                    // opt out SYNTH_NO_SEL_DSL) the CMP+SetCond pair comes from
-                    // the generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned). Same holdout
-                    // story as the i32 comparisons: select_with_stack owns the
-                    // materializing lowering, so the rule is wired here only.
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_eqz_rule(op, dst, a)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The CMP+SetCond pair comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE).
+                    // select_with_stack owns the materializing lowering, so
+                    // the rule is wired here only.
+                    let rule_ops = crate::sel_dsl::i32_eqz_rule(op, dst, a)
+                        .expect("i32.eqz has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: a,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SetCond {
-                                rd: dst,
-                                cond: Condition::EQ,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16961,70 +16458,16 @@ impl InstructionSelector {
                     };
                     // #682: LSL/LSR/ASR mask the amount mod 32 through R12
                     // (ARM uses Rm[7:0]; WASM requires mod 32). ROR is cyclic,
-                    // so Rm[7:0] already agrees with WASM — no mask. The mask
-                    // is emitted in the hand-written branch below; the DSL
-                    // branch's generated rules carry their own.
-                    let masked_amt = if matches!(op, I32Rotr) {
-                        shift_amt
-                    } else {
-                        Reg::R12
-                    };
-                    let shift_op = match op {
-                        I32Shl => ArmOp::LslReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32ShrU => ArmOp::LsrReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32ShrS => ArmOp::AsrReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32Rotr => ArmOp::RorReg {
-                            rd: dst,
-                            rn: value,
-                            rm: shift_amt,
-                        },
-                        _ => unreachable!(),
-                    };
-                    // VCR-SEL-001 increment 2 (#242): behind SYNTH_SEL_DSL the
-                    // single shift instruction comes from the generated
-                    // Rocq-proved rule — the identical ArmOp, byte-identical
-                    // by construction (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
+                    // so Rm[7:0] already agrees with WASM — no mask. The
+                    // generated Rocq-proved rules carry the mask themselves
+                    // and are the only path (RQ-58-RETIRE).
+                    let rule_ops =
                         crate::sel_dsl::i32_shift_rule(op, dst, value, shift_amt, Reg::R12)
-                            .map(|r| r.map_err(synth_core::Error::synthesis))
-                            .transpose()?
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        if !matches!(op, I32Rotr) {
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::And {
-                                    rd: Reg::R12,
-                                    rn: shift_amt,
-                                    op2: Operand2::Imm(31),
-                                },
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
+                            .expect("i32 shift/rotate op has a generated rule")
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: shift_op,
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -17116,26 +16559,13 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 increment 4 (#242): behind SYNTH_SEL_DSL the
-                    // single CLZ comes from the generated Rocq-proved rule —
-                    // the identical ArmOp, byte-identical by construction
-                    // (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_unary_rule(op, dst, src)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The single CLZ comes from the generated Rocq-proved
+                    // rule — the only path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::i32_unary_rule(op, dst, src)
+                        .expect("i32.clz has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Clz { rd: dst, rm: src },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -17165,31 +16595,14 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 increment 4 (#242): behind SYNTH_SEL_DSL the
-                    // two-instruction RBIT+CLZ scratch=dest shape comes from
-                    // the generated Rocq-proved rule, byte-identical by
-                    // construction (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_unary_rule(op, dst, src)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The two-instruction RBIT+CLZ scratch=dest shape comes
+                    // from the generated Rocq-proved rule — the only path
+                    // (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::i32_unary_rule(op, dst, src)
+                        .expect("i32.ctz has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Rbit { rd: dst, rm: src },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Clz { rd: dst, rm: dst },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -17220,25 +16633,13 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 increment 4 (#242): pseudo-op-tier rule —
-                    // the identical ArmOp::Popcnt, byte-identical by
-                    // construction (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_unary_rule(op, dst, src)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // Pseudo-op-tier Rocq-proved rule (ArmOp::Popcnt) — the
+                    // only path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::i32_unary_rule(op, dst, src)
+                        .expect("i32.popcnt has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Popcnt { rd: dst, rm: src },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -17360,47 +16761,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    let cond = match op {
-                        I64Eq => Condition::EQ,
-                        I64Ne => Condition::NE,
-                        I64LtS => Condition::LT,
-                        I64LtU => Condition::LO,
-                        I64LeS => Condition::LE,
-                        I64LeU => Condition::LS,
-                        I64GtS => Condition::GT,
-                        I64GtU => Condition::HI,
-                        I64GeS => Condition::GE,
-                        I64GeU => Condition::HS,
-                        _ => unreachable!(),
-                    };
-                    // VCR-SEL-001 increment 4 (#242): behind SYNTH_SEL_DSL the
-                    // I64SetCond pseudo-op comes from the generated
-                    // Rocq-proved rule — the identical ArmOp (same condition
-                    // mapping), byte-identical by construction (mirror-pinned
-                    // per op).
-                    let dsl_ops = if self.sel_dsl {
+                    // The I64SetCond pseudo-op (condition mapping included)
+                    // comes from the generated Rocq-proved rule — the only
+                    // path (RQ-58-RETIRE).
+                    let rule_ops =
                         crate::sel_dsl::i64_setcond_rule(op, dst, a_lo, a_hi, b_lo, b_hi)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                            .expect("binary i64 comparison has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::I64SetCond {
-                                rd: dst,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                                cond,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -17447,30 +16816,18 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single I64Mul pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical to the hand-written
-                    // emission below (mirror-pinned; `rd_hi <> rd_lo` holds by
-                    // construction via alloc_consecutive_pair).
-                    let mul_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_pair_bin_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 mul op dispatch")
-                        .map_err(synth_core::Error::synthesis)?
-                        .into_iter()
-                        .next()
-                        .expect("i64 mul rule emits one op")
-                    } else {
-                        ArmOp::I64Mul {
-                            rd_lo: dst_lo,
-                            rd_hi: dst_hi,
-                            rn_lo: a_lo,
-                            rn_hi: a_hi,
-                            rm_lo: b_lo,
-                            rm_hi: b_hi,
-                        }
-                    };
+                    // The single I64Mul pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE;
+                    // `rd_hi <> rd_lo` holds by construction via
+                    // alloc_consecutive_pair).
+                    let mul_op = crate::sel_dsl::i64_pair_bin_rule(
+                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .expect("i64 mul op dispatch")
+                    .map_err(synth_core::Error::synthesis)?
+                    .into_iter()
+                    .next()
+                    .expect("i64 mul rule emits one op");
                     instructions.push(ArmInstruction {
                         op: mul_op,
                         source_line: Some(idx),
@@ -17608,36 +16965,15 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 rotate pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical (mirror-pinned;
+                    // The single i64 rotate pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE;
                     // `rd_hi <> rd_lo` holds by construction).
-                    let arm_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_rot_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo)
-                            .expect("i64 rotate op dispatch")
-                            .map_err(synth_core::Error::synthesis)?
-                            .into_iter()
-                            .next()
-                            .expect("i64 rotate rule emits one op")
-                    } else {
-                        match op {
-                            I64Rotl => ArmOp::I64Rotl {
-                                rdlo: dst_lo,
-                                rdhi: dst_hi,
-                                rnlo: a_lo,
-                                rnhi: a_hi,
-                                shift: b_lo,
-                            },
-                            I64Rotr => ArmOp::I64Rotr {
-                                rdlo: dst_lo,
-                                rdhi: dst_hi,
-                                rnlo: a_lo,
-                                rnhi: a_hi,
-                                shift: b_lo,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    let arm_op = crate::sel_dsl::i64_rot_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo)
+                        .expect("i64 rotate op dispatch")
+                        .map_err(synth_core::Error::synthesis)?
+                        .into_iter()
+                        .next()
+                        .expect("i64 rotate rule emits one op");
                     instructions.push(ArmInstruction {
                         op: arm_op,
                         source_line: Some(idx),
@@ -17675,38 +17011,17 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 bit-count pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical (mirror-pinned). The
-                    // trailing `Movw dst_hi, 0` (hi-half zeroing) is outside the
-                    // rule's single-pseudo-op scope, exactly as the flat-model
-                    // ancestor proves only the count pseudo-op.
-                    let arm_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_unary_count_rule(op, dst_lo, src_lo, src_hi)
-                            .expect("i64 count op dispatch")
-                            .into_iter()
-                            .next()
-                            .expect("i64 count rule emits one op")
-                    } else {
-                        match op {
-                            I64Clz => ArmOp::I64Clz {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            I64Ctz => ArmOp::I64Ctz {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            I64Popcnt => ArmOp::I64Popcnt {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    // The single i64 bit-count pseudo-op comes from the
+                    // generated Rocq-proved rule — the only path
+                    // (RQ-58-RETIRE). The trailing `Movw dst_hi, 0` (hi-half
+                    // zeroing) is outside the rule's single-pseudo-op scope,
+                    // exactly as the flat-model ancestor proves only the count
+                    // pseudo-op.
+                    let arm_op = crate::sel_dsl::i64_unary_count_rule(op, dst_lo, src_lo, src_hi)
+                        .expect("i64 count op dispatch")
+                        .into_iter()
+                        .next()
+                        .expect("i64 count rule emits one op");
                     instructions.push(ArmInstruction {
                         op: arm_op,
                         source_line: Some(idx),
@@ -18675,699 +17990,28 @@ mod tests {
         }
     }
 
-    /// VCR-SEL-001 increments 1+2+3 (#242) — gate 1, the #511/#513
-    /// mirror-pinning pattern: for every rule delegated in `select_default`
-    /// (`Delegation::SelectDefault`/`Both`), lower its op through BOTH the
-    /// hand-written `select_default` arm (flag OFF) and the generated
-    /// Rocq-proved rule (flag ON) from identical selector state, and assert
-    /// the emitted `ArmOp` sequences are EQUAL. Same-ArmOps ⇒ same encoded
-    /// bytes, so the two must-agree implementations are pinned before the
-    /// `SYNTH_SEL_DSL` flag can matter — the migration moves structure,
-    /// never bytes. Uses `set_sel_dsl` (not the env var) so parallel tests
-    /// never race on the process environment. Since increment 3 this loop
-    /// also pins the six i64 pair rules: `select_default`'s fixed
-    /// `R0:R1 op= R2:R3` arms are in-place instances of the pair rules
-    /// (the single-op probe is exactly that shape).
-    ///
-    /// Comparison rules (`Delegation::SelectWithStack`) are NOT probed here:
-    /// `select_default`'s comparison arms are a blind bare-`Cmp` lowering
-    /// (never materializes the 0/1 result; production-unreachable —
-    /// `select_with_stack` owns comparisons) and stay hand-written. Their
-    /// mirror-pin is
-    /// `sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242`.
-    /// Positive default-on guard for the VCR-SEL-001 flip (#242): the mirror-pin
-    /// tests use `set_sel_dsl` explicitly and the frozen/differential gates are
-    /// byte-identical by design, so NONE of them would notice if the default
-    /// silently reverted to OFF (a construction site hardcoding `false`, or the
-    /// env logic inverting). This asserts the shipped default actually routes
-    /// the covered ops through the DSL: a freshly constructed selector — the
-    /// exact object the compile path builds — has `sel_dsl` set with no env.
+    /// RQ-58-RETIRE residual pin (#242/#258): the imm-fold comparison
+    /// peephole (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg
+    /// `i32_cmp_rule`'s shape and its hand-written Cmp/Cmn+SetCond emission
+    /// deliberately SURVIVED the arm retirement (no CmpImm-shaped rule
+    /// exists). This pins that the fold still fires — if a future rule
+    /// covers the imm shape, this test is the one to retire with it.
     #[test]
-    fn sel_dsl_defaults_on_after_flip_242() {
-        // Guard against a polluted test-process environment (no test sets these,
-        // but be explicit): the assertion is only meaningful when neither the
-        // opt-out nor the back-compat disable is present.
-        if std::env::var("SYNTH_NO_SEL_DSL").is_ok() || std::env::var("SYNTH_SEL_DSL").is_ok() {
-            return;
-        }
-        assert!(
-            sel_dsl_from_env(),
-            "VCR-SEL-001 flip: sel_dsl_from_env() must default ON"
-        );
-        // Both public constructors must carry the default onto the live path.
-        assert!(
-            InstructionSelector::new(vec![]).sel_dsl,
-            "InstructionSelector::new must default sel_dsl ON"
-        );
-        assert!(
-            InstructionSelector::with_bounds_check(vec![], BoundsCheckConfig::None).sel_dsl,
-            "InstructionSelector::with_bounds_check must default sel_dsl ON"
-        );
-    }
-
-    #[test]
-    fn sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242() {
-        use crate::sel_dsl::Delegation;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if rule.delegation == Delegation::SelectWithStack {
-                continue;
-            }
-            probed += 1;
-            let ops = vec![rule.op.clone()];
-
-            // Empty rule set ⇒ the pattern matcher never fires and every op
-            // takes the select_default path under test.
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select(&ops)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select(&ops)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: generated rule diverges from the hand-written arm — \
-                 the migration moves structure, never bytes",
-                rule.name
-            );
-        }
-        // Non-vacuity: increment 1's seven + increment 2's four shifts +
-        // increment 3's six i64 pair-family rules + increment 4's three i32
-        // bit-manipulation and ten binary I64SetCond comparison rules.
-        assert_eq!(probed, 30, "unexpected select_default-delegated rule count");
-    }
-
-    /// VCR-SEL-001 increment 2 (#242) — gate 1 for the rules delegated in
-    /// `select_with_stack` (the ten comparisons: `Delegation::SelectWithStack`;
-    /// the four register shifts: `Delegation::Both`). For each, lower a
-    /// two-param probe (`local.get 0; local.get 1; <op>`) through
-    /// `select_with_stack` with the flag OFF and ON and assert the FULL
-    /// emitted sequences are equal. Non-vacuity (the RMW-vacuity gotcha):
-    /// locate the hand-written emission window in the OFF sequence, extract
-    /// the registers the selector chose, and assert the window equals the
-    /// generated rule's output for exactly those registers — proving the
-    /// delegation actually fired and the rule reproduces the hand-written
-    /// arm byte-for-byte.
-    #[test]
-    fn sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242() {
-        use crate::sel_dsl::Delegation;
-        use synth_core::WasmOp;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if rule.delegation == Delegation::SelectDefault {
-                continue;
-            }
-            // The i64 pair rules (increment 3) need i64-typed probes and a
-            // pair-shaped emission window — pinned by the dedicated
-            // `sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242`.
-            if rule.name.starts_with("rule_i64_") {
-                continue;
-            }
-            // i32.eqz is the sole UNARY compare-with-zero rule (CmpImm +
-            // SetCond); it needs a single-operand probe and a CmpImm window,
-            // pinned separately below.
-            if rule.name == "rule_i32_eqz" {
-                continue;
-            }
-            probed += 1;
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), rule.op.clone()];
-
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select_with_stack(&ops, 2)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 2)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: SYNTH_SEL_DSL=1 diverges from the hand-written \
-                 select_with_stack arm — the migration moves structure, never bytes",
-                rule.name
-            );
-
-            // Non-vacuity: find the hand-written window, extract the chosen
-            // registers, and check it equals the rule's own output for them.
-            let is_cmp_rule = rule
-                .seq
-                .iter()
-                .any(|t| matches!(t, crate::sel_dsl::TemplateOp::SetCond { .. }));
-            let is_unary_rule = rule.seq.iter().any(|t| {
-                matches!(
-                    t,
-                    crate::sel_dsl::TemplateOp::Clz { .. }
-                        | crate::sel_dsl::TemplateOp::Rbit { .. }
-                        | crate::sel_dsl::TemplateOp::Popcnt { .. }
-                )
-            });
-            let (window, rule_ops) = if is_unary_rule {
-                // Increment 4's i32 bit-manipulation shapes: the window starts
-                // at the first Clz/Rbit/Popcnt and spans the rule's length
-                // (ctz is the two-instruction RBIT+CLZ scratch=dest shape).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::Clz { .. } | ArmOp::Rbit { .. } | ArmOp::Popcnt { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no bit-manip op in probe output", rule.name));
-                let (rd, rm) = match &baseline[i] {
-                    ArmOp::Clz { rd, rm } | ArmOp::Rbit { rd, rm } | ArmOp::Popcnt { rd, rm } => {
-                        (*rd, *rm)
-                    }
-                    _ => unreachable!(),
-                };
-                let rule_ops = crate::sel_dsl::i32_unary_rule(&rule.op, rd, rm)
-                    .unwrap_or_else(|| panic!("{}: unary dispatch missing", rule.name));
-                assert!(
-                    baseline.len() >= i + rule_ops.len(),
-                    "{}: probe output too short for the rule window",
-                    rule.name
-                );
-                (baseline[i..i + rule_ops.len()].to_vec(), rule_ops)
-            } else if is_cmp_rule {
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::Cmp { .. }))
-                    .unwrap_or_else(|| panic!("{}: no Cmp in probe output", rule.name));
-                let (rn, rm) = match &baseline[i] {
-                    ArmOp::Cmp {
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rn, *rm),
-                    other => panic!("{}: probe Cmp is not reg-reg: {other:?}", rule.name),
-                };
-                let rd = match &baseline[i + 1] {
-                    ArmOp::SetCond { rd, .. } => *rd,
-                    other => panic!("{}: no SetCond after Cmp: {other:?}", rule.name),
-                };
-                (
-                    baseline[i..i + 2].to_vec(),
-                    crate::sel_dsl::i32_cmp_rule(&rule.op, rd, rn, rm)
-                        .unwrap_or_else(|| panic!("{}: cmp dispatch missing", rule.name)),
-                )
-            } else {
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::LslReg { .. }
-                                | ArmOp::LsrReg { .. }
-                                | ArmOp::AsrReg { .. }
-                                | ArmOp::RorReg { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no shift op in probe output", rule.name));
-                let (rd, rn, rm) = match &baseline[i] {
-                    ArmOp::LslReg { rd, rn, rm }
-                    | ArmOp::LsrReg { rd, rn, rm }
-                    | ArmOp::AsrReg { rd, rn, rm }
-                    | ArmOp::RorReg { rd, rn, rm } => (*rd, *rn, *rm),
-                    _ => unreachable!(),
-                };
-                // #682: LSL/LSR/ASR windows are two instructions (And #31 into
-                // R12, then the shift by R12); the rule is invoked with the
-                // ORIGINAL amount register (the And's rn). ROR stays unmasked.
-                let is_masked = !matches!(&baseline[i], ArmOp::RorReg { .. });
-                let (window, orig_rm) = if is_masked {
-                    let orig = match &baseline[i - 1] {
-                        ArmOp::And { rn, .. } => *rn,
-                        other => panic!(
-                            "{}: expected the #682 mask before the shift, found {:?}",
-                            rule.name, other
-                        ),
-                    };
-                    (baseline[i - 1..=i].to_vec(), orig)
-                } else {
-                    (baseline[i..i + 1].to_vec(), rm)
-                };
-                (
-                    window,
-                    crate::sel_dsl::i32_shift_rule(&rule.op, rd, rn, orig_rm, Reg::R12)
-                        .unwrap_or_else(|| panic!("{}: shift dispatch missing", rule.name))
-                        .unwrap_or_else(|e| panic!("{}: side condition: {e}", rule.name)),
-                )
-            };
-            assert_eq!(
-                window, rule_ops,
-                "{}: the hand-written emission window does not equal the \
-                 generated rule's output for the same registers",
-                rule.name
-            );
-        }
-        // Ten comparisons + four shifts + increment 4's three i32
-        // bit-manipulation rules.
-        assert_eq!(
-            probed, 17,
-            "unexpected select_with_stack-delegated rule count"
-        );
-
-        // i32.eqz — the unary compare-with-zero rule, probed with a single
-        // operand. OFF vs ON full-sequence equality, plus the CmpImm+SetCond
-        // window RMW-vacuity check for the registers the selector chose.
-        let eqz_ops = vec![WasmOp::LocalGet(0), WasmOp::I32Eqz];
-        let mut hw = InstructionSelector::new(vec![]);
-        hw.set_sel_dsl(false);
-        let eqz_baseline: Vec<ArmOp> = hw
-            .select_with_stack(&eqz_ops, 1)
-            .expect("i32.eqz hand-written arm failed")
-            .into_iter()
-            .map(|i| i.op)
-            .collect();
-        let mut dsl = InstructionSelector::new(vec![]);
-        dsl.set_sel_dsl(true);
-        let eqz_generated: Vec<ArmOp> = dsl
-            .select_with_stack(&eqz_ops, 1)
-            .expect("i32.eqz generated rule failed")
-            .into_iter()
-            .map(|i| i.op)
-            .collect();
-        assert_eq!(
-            eqz_baseline, eqz_generated,
-            "rule_i32_eqz: SYNTH_SEL_DSL=1 diverges from the hand-written \
-             select_with_stack arm"
-        );
-        let i = eqz_baseline
-            .iter()
-            .position(|o| {
-                matches!(
-                    o,
-                    ArmOp::Cmp {
-                        op2: Operand2::Imm(_),
-                        ..
-                    }
-                )
-            })
-            .expect("rule_i32_eqz: no CMP #imm in probe output");
-        let rn = match &eqz_baseline[i] {
-            ArmOp::Cmp { rn, .. } => *rn,
-            _ => unreachable!(),
-        };
-        let rd = match &eqz_baseline[i + 1] {
-            ArmOp::SetCond { rd, .. } => *rd,
-            other => panic!("rule_i32_eqz: no SetCond after CMP: {other:?}"),
-        };
-        let eqz_rule = crate::sel_dsl::i32_eqz_rule(&WasmOp::I32Eqz, rd, rn)
-            .expect("rule_i32_eqz: dispatch missing");
-        assert_eq!(
-            eqz_baseline[i..i + 2].to_vec(),
-            eqz_rule,
-            "rule_i32_eqz: the hand-written emission window does not equal the \
-             generated rule's output for the same registers"
-        );
-    }
-
-    /// VCR-SEL-001 increment 3 (#242) — gate 1 for the i64 pair-family rules
-    /// in `select_with_stack` (all `Delegation::Both`; their `select_default`
-    /// half is pinned by the loop above). Each binary rule is probed with
-    /// `i64.const; i64.const; <op>` so the selector allocates real register
-    /// pairs; `i64.eqz` with a single constant. OFF vs ON full-sequence
-    /// equality, plus the RMW-vacuity-proof window check: extract the SIX
-    /// registers the hand-written arm chose from the OFF sequence and assert
-    /// the emission window equals the generated rule's output for exactly
-    /// those registers — proving the delegation fired and satisfied the pair
-    /// aliasing side conditions with the selector's own assignment.
-    #[test]
-    fn sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242() {
-        use synth_core::WasmOp;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if !rule.name.starts_with("rule_i64_") {
-                continue;
-            }
-            probed += 1;
-            let ops = if matches!(rule.op, WasmOp::I64Eqz) {
-                vec![WasmOp::I64Const(0x1_0000_0005), rule.op.clone()]
-            } else {
-                vec![
-                    WasmOp::I64Const(0x1_0000_0005),
-                    WasmOp::I64Const(0x2_0000_0007),
-                    rule.op.clone(),
-                ]
-            };
-
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select_with_stack(&ops, 0)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 0)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: SYNTH_SEL_DSL=1 diverges from the hand-written \
-                 select_with_stack arm — the migration moves structure, never bytes",
-                rule.name
-            );
-
-            // Non-vacuity: locate the hand-written emission window, extract
-            // the registers the selector chose, and check the window equals
-            // the rule's own output for them.
-            let (window, rule_ops) = if matches!(rule.op, WasmOp::I64Eqz) {
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64SetCondZ { .. }))
-                    .unwrap_or_else(|| panic!("{}: no I64SetCondZ in probe output", rule.name));
-                let (rd, rn_lo, rn_hi) = match &baseline[i] {
-                    ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } => (*rd, *rn_lo, *rn_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::generated::rule_i64_eqz(rd, rn_lo, rn_hi),
-                )
-            } else if rule
-                .seq
-                .iter()
-                .any(|t| matches!(t, crate::sel_dsl::TemplateOp::I64SetCond { .. }))
-            {
-                // Increment 4's binary comparison family: the window is the
-                // single I64SetCond pseudo-op; extract the FIVE registers the
-                // hand-written arm chose (result + both operand pairs).
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64SetCond { .. }))
-                    .unwrap_or_else(|| panic!("{}: no I64SetCond in probe output", rule.name));
-                let (rd, rn_lo, rn_hi, rm_lo, rm_hi) = match &baseline[i] {
-                    ArmOp::I64SetCond {
-                        rd,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                        ..
-                    } => (*rd, *rn_lo, *rn_hi, *rm_lo, *rm_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_setcond_rule(&rule.op, rd, rn_lo, rn_hi, rm_lo, rm_hi)
-                        .unwrap_or_else(|| panic!("{}: setcond dispatch missing", rule.name)),
-                )
-            } else if matches!(rule.op, WasmOp::I64Clz | WasmOp::I64Ctz | WasmOp::I64Popcnt) {
-                // VCR-ISA-001 wave-2: the unary bit-count single-pseudo-op
-                // window. Extract the three registers the hand-written arm
-                // chose (rd + operand pair).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::I64Clz { .. } | ArmOp::I64Ctz { .. } | ArmOp::I64Popcnt { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no i64 count op in probe output", rule.name));
-                let (rd, rn_lo, rn_hi) = match &baseline[i] {
-                    ArmOp::I64Clz { rd, rnlo, rnhi }
-                    | ArmOp::I64Ctz { rd, rnlo, rnhi }
-                    | ArmOp::I64Popcnt { rd, rnlo, rnhi } => (*rd, *rnlo, *rnhi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_unary_count_rule(&rule.op, rd, rn_lo, rn_hi)
-                        .unwrap_or_else(|| panic!("{}: count dispatch missing", rule.name)),
-                )
-            } else if matches!(rule.op, WasmOp::I64Rotl | WasmOp::I64Rotr) {
-                // VCR-ISA-001 wave-2: the i64 rotate single-pseudo-op window
-                // (five registers: result pair + operand pair + single shift).
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. }))
-                    .unwrap_or_else(|| panic!("{}: no i64 rotate op in probe output", rule.name));
-                let (rd_lo, rd_hi, rn_lo, rn_hi, shift) = match &baseline[i] {
-                    ArmOp::I64Rotl {
-                        rdlo,
-                        rdhi,
-                        rnlo,
-                        rnhi,
-                        shift,
-                    }
-                    | ArmOp::I64Rotr {
-                        rdlo,
-                        rdhi,
-                        rnlo,
-                        rnhi,
-                        shift,
-                    } => (*rdlo, *rdhi, *rnlo, *rnhi, *shift),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_rot_rule(&rule.op, rd_lo, rd_hi, rn_lo, rn_hi, shift)
-                        .unwrap_or_else(|| panic!("{}: rotate dispatch missing", rule.name))
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "{}: selector regs violate rotate side condition: {e}",
-                                rule.name
-                            )
-                        }),
-                )
-            } else if matches!(
-                rule.op,
-                WasmOp::I64Mul | WasmOp::I64Shl | WasmOp::I64ShrU | WasmOp::I64ShrS
-            ) {
-                // VCR-ISA-001 wave-2: the i64 binary register-pair
-                // single-pseudo-op window (six registers).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::I64Mul { .. }
-                                | ArmOp::I64Shl { .. }
-                                | ArmOp::I64ShrU { .. }
-                                | ArmOp::I64ShrS { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no i64 pair-bin op in probe output", rule.name));
-                let (rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi) = match &baseline[i] {
-                    ArmOp::I64Mul {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64Shl {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64ShrU {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64ShrS {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    } => (*rd_lo, *rd_hi, *rn_lo, *rn_hi, *rm_lo, *rm_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_pair_bin_rule(
-                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
-                    )
-                    .unwrap_or_else(|| panic!("{}: pair-bin dispatch missing", rule.name))
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{}: selector regs violate pair-bin side condition: {e}",
-                            rule.name
-                        )
-                    }),
-                )
-            } else {
-                // The pair window is the two-instruction sequence starting at
-                // the first lo-half data-processing op (the probe's constant
-                // materializations are I64Const pseudo-ops, never Adds/Subs/
-                // And/Orr/Eor, so the first match is the rule window).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::Adds { .. }
-                                | ArmOp::Subs { .. }
-                                | ArmOp::And { .. }
-                                | ArmOp::Orr { .. }
-                                | ArmOp::Eor { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no pair lo-half op in probe output", rule.name));
-                assert!(
-                    baseline.len() >= i + 2,
-                    "{}: probe output too short for a pair window",
-                    rule.name
-                );
-                let (rd_lo, rn_lo, rm_lo) = match &baseline[i] {
-                    ArmOp::Adds {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Subs {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::And {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rd, *rn, *rm),
-                    other => panic!("{}: unexpected lo-half op {other:?}", rule.name),
-                };
-                let (rd_hi, rn_hi, rm_hi) = match &baseline[i + 1] {
-                    ArmOp::Adc {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Sbc {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::And {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rd, *rn, *rm),
-                    other => panic!("{}: unexpected hi-half op {other:?}", rule.name),
-                };
-                (
-                    baseline[i..i + 2].to_vec(),
-                    crate::sel_dsl::i64_pair_rule(
-                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
-                    )
-                    .unwrap_or_else(|| panic!("{}: pair dispatch missing", rule.name))
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{}: selector-chosen registers violate a pair side \
-                                 condition: {e}",
-                            rule.name
-                        )
-                    }),
-                )
-            };
-            assert_eq!(
-                window, rule_ops,
-                "{}: the hand-written emission window does not equal the \
-                 generated rule's output for the same registers",
-                rule.name
-            );
-        }
-        // Five binary pair rules + i64.eqz + increment 4's ten binary
-        // I64SetCond comparison rules + VCR-ISA-001 wave-2's nine
-        // single-pseudo-op i64 shapes (clz/ctz/popcnt/mul/shl/shr_u/shr_s/
-        // rotl/rotr).
-        assert_eq!(probed, 25, "unexpected i64 pair rule count");
-    }
-
-    /// VCR-SEL-001 increment 2 (#242): the #258 imm-fold comparison peephole
-    /// (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg rule's shape — the
-    /// delegation must skip it and stay byte-identical with the flag ON.
-    #[test]
-    fn sel_dsl_cmp_imm_fold_path_stays_handwritten_and_byte_identical_242() {
+    fn cmp_imm_fold_residual_path_stays_handwritten_258() {
         use synth_core::WasmOp;
         for (c, opv) in [(5i32, WasmOp::I32Eq), (-7i32, WasmOp::I32LtS)] {
             let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Const(c), opv];
 
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
+            let emitted: Vec<ArmOp> = InstructionSelector::new(vec![])
                 .select_with_stack(&ops, 1)
-                .expect("hand-written fold path failed")
+                .expect("imm-fold comparison probe failed")
                 .into_iter()
                 .map(|i| i.op)
                 .collect();
 
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 1)
-                .expect("fold path with flag ON failed")
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "imm-fold comparison path must stay byte-identical under SYNTH_SEL_DSL=1"
-            );
-            // The fold actually fired (imm cmp/cmn present, no reg-reg Cmp).
+            // The fold actually fired (imm cmp/cmn present)...
             assert!(
-                baseline.iter().any(|o| matches!(
+                emitted.iter().any(|o| matches!(
                     o,
                     ArmOp::Cmp {
                         op2: Operand2::Imm(_),
@@ -19378,6 +18022,18 @@ mod tests {
                     }
                 )),
                 "probe did not exercise the imm-fold path"
+            );
+            // ...and the reg-reg rule shape did NOT (no reg-reg Cmp), i.e.
+            // the probe really took the residual hand-written emission.
+            assert!(
+                !emitted.iter().any(|o| matches!(
+                    o,
+                    ArmOp::Cmp {
+                        op2: Operand2::Reg(_),
+                        ..
+                    }
+                )),
+                "imm-fold probe unexpectedly took the reg-reg rule path"
             );
         }
     }

@@ -1226,22 +1226,18 @@ claims:
       # THE LOAD-BEARING PIN: hand-written lowering code, test module excluded.
       # RQ-58-RETIRE (delete the arms the 50 DSL rules replaced) is measured
       # here, and so is any lane that adds an arm without deleting one.
+      # RQ-58-RETIRE (v0.58): first downward movement — the 50 DSL rules'
+      # superseded hand-written arms deleted (36 flag-guarded sites across
+      # both selectors) plus the then-dead SYNTH_SEL_DSL lever, each deletion
+      # byte-identity-gated (688-row corpus manifest + 10 frozen anchors).
+      # 18,582 -> 17,897; banked. The former #992 waiver (to: 18582) is
+      # deleted with the re-bank — a surviving waiver above the new baseline
+      # would be a standing licence to grow back to it.
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18582
-        baseline: 18480
-        waivers:
-          - to: 18582
-            reason: >-
-              Growth is #992's, not this lane's: the ARM select-on-i64-comparison
-              miscompile fix (#973) added 102 code-region lines (an operand-
-              classification helper + two guarded call sites). #992 merged at
-              19:50 UTC and #991 pinned these values at 20:07 from a PR base
-              that predated it (strict=false stale-base cross), so main itself
-              derives 18582 against a ledger saying 18480 — this PR is the
-              first to carry the union and the ledger moves here, with the
-              growth attributed to the correctness fix that caused it.
+        value: 17897
+        baseline: 17897
       # The whole-file figures the release plan and the sibling lanes quote. An
       # unpinned quoted number is the drift class this release is about — but
       # they are `track`, not `down`, and the distinction is deliberate. Both
@@ -1255,35 +1251,32 @@ claims:
       - kind: ratchet
         name: selector_lines_total
         direction: track
-        # 29616 -> 29839: #992 (+102 code-region lines, +121 test-module lines)
-        # crossed with #991's pin measurement on a stale base; see the
-        # selector_lines_code waiver above for the attribution.
-        value: 29839
+        # 29839 -> 28495 (RQ-58-RETIRE): -685 code-region lines (the arm
+        # deletions) and -659 test-module lines (the four mirror-pin tests,
+        # vacuous once the hand-written mirror was gone — the
+        # VcrSelRulesGenCheck precedent).
+        value: 28495
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
       # miscompile risk. Red-first demonstrated on the REAL file, not only
       # against a synthetic fixture: see scripts/repro/rq_58_metric_gate.md §1b.
+      # RQ-58-RETIRE (v0.58): 63 -> 56. Seven '_ => unreachable!()' arms
+      # lived INSIDE deleted hand-written bodies (the sd/sws i64-comparison
+      # condition maps, the sws i64 bitwise/shift/rotate/bit-count group
+      # dispatches, the sws i32 shift dispatch); they went with their arms.
+      # Banked; the former #992 waiver (to: 63) deleted with the re-bank.
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 63
-        baseline: 62
-        waivers:
-          - to: 63
-            reason: >-
-              The one new absorbing arm is `_ => None` in #992's i64-comparison
-              operand-classification helper (a total function over WasmOp whose
-              non-comparison arms decline, feeding the #973 miscompile fix) —
-              added on main by #992 after #991 measured this pin on a stale
-              base. Same cross as the selector_lines_code waiver.
+        value: 56
+        baseline: 56
       - kind: ratchet
         name: selector_wildcard_arms_total
         direction: track
-        # 105 -> 106: the same #992 `_ => None` helper arm the code-region
-        # waiver above covers (the arm is in the CODE region; both counts
-        # include it), crossed with #991's stale-base pin measurement.
-        value: 106
+        # 106 -> 91 (RQ-58-RETIRE): the 7 code-region arms above plus 8
+        # assertion-helper '_ =>' arms inside the retired mirror-pin tests.
+        value: 91
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

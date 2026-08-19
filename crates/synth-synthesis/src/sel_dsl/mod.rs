@@ -39,10 +39,11 @@
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
-//! [`generated`] (reviewable diffs, no build-time codegen). `select_default`
-//! keeps dispatch ownership: a migrated arm delegates to the generated rule
-//! behind `SYNTH_SEL_DSL` (default ON since v0.39.0; opt out with SYNTH_NO_SEL_DSL), so OFF ≡ baseline byte-identical by
-//! construction.
+//! [`generated`] (reviewable diffs, no build-time codegen). The selectors keep
+//! dispatch ownership: a covered op's arm calls the generated rule as its ONLY
+//! lowering — RQ-58-RETIRE (#242, v0.58) deleted the hand-written arms the
+//! rules had superseded (and with them the `SYNTH_SEL_DSL`/`SYNTH_NO_SEL_DSL`
+//! lever, which had been byte-invisible since the default-on flip).
 //!
 //! Every rule carries a **1:1 Rocq obligation**: rule `rule_i32_add` ↔ theorem
 //! `rule_i32_add_correct` in `coq/Synth/Synth/VcrSelRules.v` (T1, discharged by
@@ -140,8 +141,8 @@ pub enum SideCondition {
     NotAlias(RegVar, RegVar),
 }
 
-/// Which hand-written selector arm delegates to this rule behind
-/// `SYNTH_SEL_DSL` — i.e. where the rule is byte-identically wired.
+/// Which selector arm(s) the rule is wired into as the sole lowering
+/// (RQ-58-RETIRE deleted the hand-written alternatives).
 ///
 /// Increment 1 wired `select_default` only. Increment 2 steps the comparison
 /// family into `select_with_stack` because that is where the load-bearing

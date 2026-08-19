@@ -187,9 +187,11 @@ frozen and oracle-gated every step:
 - **Track A (core):** `VCR-RA-001` allocator with Belady spilling — **verified,
   default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`; `SYNTH_SPILL_ON_EXHAUST`
   built flag-off, silicon-gated #580). Next: `VCR-SEL-001` Rocq-discharged
-  verified selector DSL (increments 1–4 shipped **default-on**, 50 rules / 50 Qed,
-  `SYNTH_SEL_DSL`; the Rocq-proved rules are the SHIPPED lowering path for their
-  50 covered ops, opt-out `SYNTH_NO_SEL_DSL=1`, byte-invisible flip) and
+  verified selector DSL (increments 1–4 shipped **default-on**, 50 rules / 50 Qed;
+  the Rocq-proved rules are the ONLY lowering path for their 50 covered ops —
+  RQ-58-RETIRE (v0.58) deleted the superseded hand-written arms byte-identically,
+  and with them the `SYNTH_SEL_DSL`/`SYNTH_NO_SEL_DSL` lever and the mirror-pin
+  gates, both vacuous once the second implementation was gone) and
   `VCR-PERF-002` proof-carrying specialization (#494,
   0.45× floor; phase 1 facts ingestion landed, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —

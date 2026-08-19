@@ -474,6 +474,22 @@ artifacts:
       verified) — i64 mul/div/shifts/rotates/comparisons (I64SetCond) +
       optimizer_bridge + the remaining select_with_stack families; div/rem
       (VCR-ISA-001-gated).
+      RQ-58-RETIRE LANDED (v0.58): the hand-written arms the 50 rules had
+      superseded are DELETED — 36 flag-guarded sites across both selectors
+      (21 select_default + 15 select_with_stack), one op/group per commit,
+      each gated on a 688-row corpus byte-identity manifest (156 fixtures x
+      4 configs vs the pre-deletion baseline) + the 10 frozen anchors. The
+      SYNTH_SEL_DSL/SYNTH_NO_SEL_DSL lever and the four mirror-pin tests
+      went with them (vacuous once the second implementation was gone — the
+      VcrSelRulesGenCheck precedent); the #258 cmp/cmn imm-fold holdout is
+      re-pinned as cmp_imm_fold_residual_path_stays_handwritten_258.
+      Selector non-test code 18,582 -> 17,897 lines, absorbing wildcards
+      63 -> 56 (ratchet re-banked in claims.yaml). Residual (RQ-58-SPLIT
+      input): select_with_stack's i32 add/sub/mul/and/or/xor (imm-fold
+      shapes) + i32.rotl arms; select_default's blind-Cmp i32 comparison
+      + i32.eqz arms and its fixed-pair i64 mul/shift/rotate/bit-count
+      arms — covered ops whose per-path arms were never DSL-wired, so
+      nothing there was superseded or deletable.
     status: implemented
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
