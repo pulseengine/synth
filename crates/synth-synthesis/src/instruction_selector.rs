@@ -6299,25 +6299,8 @@ impl InstructionSelector {
             // used).
             I32Shl => crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
                 .map_err(synth_core::Error::synthesis)?,
-            I32ShrS => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R12,
-                            rn: rm,
-                            op2: Operand2::Imm(31),
-                        },
-                        ArmOp::AsrReg {
-                            rd,
-                            rn,
-                            rm: Reg::R12,
-                        },
-                    ]
-                }
-            }
+            I32ShrS => crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
+                .map_err(synth_core::Error::synthesis)?,
             I32ShrU => {
                 if self.sel_dsl {
                     crate::sel_dsl::generated::rule_i32_shr_u(rd, rn, rm, Reg::R12)
