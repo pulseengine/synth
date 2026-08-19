@@ -95,7 +95,10 @@ synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 synth disasm firmware.elf
 ```
 
-Translation validation (`synth verify`, `--verify`) is feature-gated in the CLI. Since v0.27.0 the default verification engine is [ordeal](https://github.com/pulseengine/ordeal), a pure-Rust QF_BV solver — `synth-verify` itself no longer needs a C++ toolchain. The CLI `verify` feature currently also enables the feature-gated Z3 differential oracle (statically linked):
+Translation validation (`synth verify`, `--verify`) is feature-gated in the CLI. Since v0.27.0 the default verification engine is [ordeal](https://github.com/pulseengine/ordeal), a pure-Rust QF_BV solver — `synth-verify` itself no longer needs a C++ toolchain. Building with `--features verify` costs **no Z3 and no C++ toolchain** — it enables
+`synth-verify` with its default (ordeal) engine only. The Z3 differential oracle is a
+separate opt-in (`--features verify,synth-verify/z3-solver` plus `SYNTH_SOLVER_DIFF=1`)
+and links the *system* libz3 rather than bundling it (#553):
 
 ```bash
 cargo build --release -p synth-cli --features verify
