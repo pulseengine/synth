@@ -17062,38 +17062,17 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 bit-count pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical (mirror-pinned). The
-                    // trailing `Movw dst_hi, 0` (hi-half zeroing) is outside the
-                    // rule's single-pseudo-op scope, exactly as the flat-model
-                    // ancestor proves only the count pseudo-op.
-                    let arm_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_unary_count_rule(op, dst_lo, src_lo, src_hi)
-                            .expect("i64 count op dispatch")
-                            .into_iter()
-                            .next()
-                            .expect("i64 count rule emits one op")
-                    } else {
-                        match op {
-                            I64Clz => ArmOp::I64Clz {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            I64Ctz => ArmOp::I64Ctz {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            I64Popcnt => ArmOp::I64Popcnt {
-                                rd: dst_lo,
-                                rnlo: src_lo,
-                                rnhi: src_hi,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    // The single i64 bit-count pseudo-op comes from the
+                    // generated Rocq-proved rule — the only path
+                    // (RQ-58-RETIRE). The trailing `Movw dst_hi, 0` (hi-half
+                    // zeroing) is outside the rule's single-pseudo-op scope,
+                    // exactly as the flat-model ancestor proves only the count
+                    // pseudo-op.
+                    let arm_op = crate::sel_dsl::i64_unary_count_rule(op, dst_lo, src_lo, src_hi)
+                        .expect("i64 count op dispatch")
+                        .into_iter()
+                        .next()
+                        .expect("i64 count rule emits one op");
                     instructions.push(ArmInstruction {
                         op: arm_op,
                         source_line: Some(idx),
