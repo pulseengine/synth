@@ -6272,24 +6272,14 @@ impl InstructionSelector {
         let rm = self.regs.alloc_reg();
 
         let instrs = match wasm_op {
-            // VCR-SEL-001 increment 1 (#242): the tier-A i32 ALU arms (and
-            // I32Rotl below) are migrated to the Rocq-proved rule table —
-            // behind `SYNTH_SEL_DSL` (default OFF) they delegate to
-            // `crate::sel_dsl::generated::rule_*`; OFF keeps the original
-            // hand-written body, byte-identical by construction. The two are
-            // mirror-pinned per op, and every `rule_*` has its 1:1 Qed theorem
-            // in coq/Synth/Synth/VcrSelRules.v.
-            I32Add => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_add(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Add {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            // VCR-SEL-001 / RQ-58-RETIRE (#242): the tier-A i32 ALU ops (and
+            // I32Rotl below) lower through the Rocq-proved rule table
+            // (`crate::sel_dsl::generated::rule_*`) as the ONLY path — the
+            // hand-written arms the rules superseded were byte-identical by
+            // construction (mirror-pinned since the flip) and are DELETED.
+            // Every `rule_*` has its 1:1 Qed theorem in
+            // coq/Synth/Synth/VcrSelRules.v.
+            I32Add => crate::sel_dsl::generated::rule_i32_add(rd, rn, rm),
 
             I32Sub => {
                 if self.sel_dsl {
