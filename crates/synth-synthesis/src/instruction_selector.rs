@@ -16405,17 +16405,14 @@ impl InstructionSelector {
                         I32GeU => Condition::HS,
                         _ => unreachable!(),
                     };
-                    // VCR-SEL-001 increment 2 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the reg-reg pair comes from the generated
-                    // Rocq-proved rule — [Cmp {rn:a, Reg(b)}, SetCond {dst,
-                    // cond}], byte-identical to the hand-written emission
-                    // below (mirror-pinned per op). OFF, or on the imm-fold
-                    // path, keeps the original hand-written body.
-                    let dsl_ops = if self.sel_dsl {
-                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b))
-                    } else {
-                        None
-                    };
+                    // The reg-reg pair comes from the generated Rocq-proved
+                    // rule — [Cmp {rn:a, Reg(b)}, SetCond {dst, cond}] — as
+                    // the only reg-reg path (RQ-58-RETIRE). RESIDUAL, not
+                    // superseded: the #258 cmp/cmn IMM-FOLD case below has no
+                    // DSL rule (no CmpImm-shaped rule exists), so its
+                    // hand-written Cmp+SetCond emission stays.
+                    let dsl_ops =
+                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b));
                     if let Some(rule_ops) = dsl_ops {
                         for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
