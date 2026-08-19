@@ -89,8 +89,8 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 592 Qed / 2 Admitted
-(+2 `admit.` tactics) across `coq/Synth/`. The 50 selector-DSL rule theorems
+See `coq/STATUS.md` for the complete coverage matrix. Current: 617 Qed / 2 Admitted
+(+2 `admit.` tactics) across `coq/Synth/`. The 74 selector-DSL rule theorems
 (`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
 #667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted
 from the shipped `sel_dsl::RULES`); the former 40-lemma `VcrSelRulesGenCheck.v`
@@ -190,8 +190,8 @@ frozen and oracle-gated every step:
 - **Track A (core):** `VCR-RA-001` allocator with Belady spilling — **verified,
   default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`; `SYNTH_SPILL_ON_EXHAUST`
   built flag-off, silicon-gated #580). Next: `VCR-SEL-001` Rocq-discharged
-  verified selector DSL (increments 1–4 shipped **default-on**, 50 rules / 50 Qed;
-  the Rocq-proved rules are the ONLY lowering path for their 50 covered ops —
+  verified selector DSL (increments 1–5 shipped **default-on**, 74 rules / 74 Qed;
+  the Rocq-proved rules are the ONLY lowering path for their 54 covered ops —
   RQ-58-RETIRE (v0.58) deleted the superseded hand-written arms byte-identically,
   and with them the `SYNTH_SEL_DSL`/`SYNTH_NO_SEL_DSL` lever and the mirror-pin
   gates, both vacuous once the second implementation was gone) and
@@ -200,10 +200,10 @@ frozen and oracle-gated every step:
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —
   approved, Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`);
   "generate, don't mirror" landed (#667): the shipped `sel_dsl::RULES` table
-  EMITS the 50 covered ops' Rocq lowerings
+  EMITS the covered ops' Rocq lowerings
   (`coq/Synth/Synth/VcrSelRulesGenerated.v`, `Module Gen`), and `VcrSelRules.v`
   DEFINES `rule_X := Gen.rule_X` — the generated file is the single model
-  source, the 50 correctness Qed are stated directly about it, and a
+  source, the 74 correctness Qed are stated directly about it, and a
   selector-table change regenerates `Gen` and breaks the matching proof, so the
   #682 model↔selector drift is unrepresentable at the instruction-sequence level
   for those ops (the interim `VcrSelRulesGenCheck.v` reflexivity gate was
