@@ -16400,15 +16400,17 @@ impl InstructionSelector {
                     } else {
                         None
                     };
-                    // The plain reg-reg CMP+SetCond pair is served from the
-                    // Rocq-proved rule table (the only reg-reg path,
-                    // RQ-58-RETIRE) — `reg_operands` records the operand
-                    // registers so the dispatch below can call the rule with
-                    // the registers the selector chose (the #258 imm-fold
-                    // peephole stays hand-written, outside the reg-reg
-                    // rule's shape).
+                    // Rocq-proved rules on the reg-reg path (increment 2) AND
+                    // the positive imm-fold path (increment 5,
+                    // `rule_i32_*_imm`: `cmp a, #C; SetCond`). `reg_operands`
+                    // records the reg-reg operand pair for its dispatch.
+                    // RESIDUAL, not superseded: the NEGATIVE fold half
+                    // (`cmn a, #-C`) has no rule — its add-derived NZCV needs
+                    // a sub<->add flag-correspondence lemma family the Rocq
+                    // model does not carry — so its hand-written Cmn+SetCond
+                    // emission stays (see the else branch below).
                     let mut reg_operands = None;
-                    let cmp_op = if let Some((is_neg, mag)) = fold {
+                    let (a, imm_fold) = if let Some((is_neg, mag)) = fold {
                         let _b = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -16426,17 +16428,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        if is_neg {
-                            ArmOp::Cmn {
-                                rn: a,
-                                op2: Operand2::Imm(mag),
-                            }
-                        } else {
-                            ArmOp::Cmp {
-                                rn: a,
-                                op2: Operand2::Imm(mag),
-                            }
-                        }
+                        (a, Some((is_neg, mag)))
                     } else {
                         let b = pop_operand(
                             &mut stack,
@@ -16455,10 +16447,7 @@ impl InstructionSelector {
                             idx,
                         )?;
                         reg_operands = Some((a, b));
-                        ArmOp::Cmp {
-                            rn: a,
-                            op2: Operand2::Reg(b),
-                        }
+                        (a, None)
                     };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -16472,27 +16461,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    let cond = match op {
-                        I32Eq => Condition::EQ,
-                        I32Ne => Condition::NE,
-                        I32LtS => Condition::LT,
-                        I32LtU => Condition::LO,
-                        I32GtS => Condition::GT,
-                        I32GtU => Condition::HI,
-                        I32LeS => Condition::LE,
-                        I32LeU => Condition::LS,
-                        I32GeS => Condition::GE,
-                        I32GeU => Condition::HS,
-                        _ => unreachable!(),
+                    let dsl_ops = match imm_fold {
+                        None => {
+                            let (a, b) = reg_operands.expect("reg-reg operands recorded");
+                            crate::sel_dsl::i32_cmp_rule(op, dst, a, b)
+                        }
+                        Some((false, mag)) => crate::sel_dsl::i32_cmp_imm_rule(op, dst, a, mag),
+                        // cmn residual: falls through to the hand-written arm.
+                        Some((true, _)) => None,
                     };
-                    // The reg-reg pair comes from the generated Rocq-proved
-                    // rule — [Cmp {rn:a, Reg(b)}, SetCond {dst, cond}] — as
-                    // the only reg-reg path (RQ-58-RETIRE). RESIDUAL, not
-                    // superseded: the #258 cmp/cmn IMM-FOLD case below has no
-                    // DSL rule (no CmpImm-shaped rule exists), so its
-                    // hand-written Cmp+SetCond emission stays.
-                    let dsl_ops =
-                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b));
                     if let Some(rule_ops) = dsl_ops {
                         for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
@@ -16502,8 +16479,26 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                     } else {
+                        let (_, mag) =
+                            imm_fold.expect("only the negative fold reaches the cmn residual");
+                        let cond = match op {
+                            I32Eq => Condition::EQ,
+                            I32Ne => Condition::NE,
+                            I32LtS => Condition::LT,
+                            I32LtU => Condition::LO,
+                            I32GtS => Condition::GT,
+                            I32GtU => Condition::HI,
+                            I32LeS => Condition::LE,
+                            I32LeU => Condition::LS,
+                            I32GeS => Condition::GE,
+                            I32GeU => Condition::HS,
+                            _ => unreachable!(),
+                        };
                         instructions.push(ArmInstruction {
-                            op: cmp_op,
+                            op: ArmOp::Cmn {
+                                rn: a,
+                                op2: Operand2::Imm(mag),
+                            },
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -18118,16 +18113,17 @@ mod tests {
         }
     }
 
-    /// RQ-58-RETIRE residual pin (#242/#258): the imm-fold comparison
-    /// peephole (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg
-    /// `i32_cmp_rule`'s shape and its hand-written Cmp/Cmn+SetCond emission
-    /// deliberately SURVIVED the arm retirement (no CmpImm-shaped rule
-    /// exists). This pins that the fold still fires — if a future rule
-    /// covers the imm shape, this test is the one to retire with it.
+    /// #242/#258 fold pins, updated by RQ-58-SELDSL: the POSITIVE fold half
+    /// (`cmp a, #C`) is now served by the Rocq-proved `rule_i32_*_imm`
+    /// family (increment 5) — this asserts the fold still fires and lands on
+    /// the imm-Cmp shape. The NEGATIVE half (`cmn a, #-C`) remains the
+    /// hand-written RESIDUAL (its add-derived NZCV needs a sub<->add
+    /// flag-correspondence lemma family the Rocq model does not carry) —
+    /// if a future cmn rule covers it, this is the pin to retire with it.
     #[test]
-    fn cmp_imm_fold_residual_path_stays_handwritten_258() {
+    fn cmp_imm_fold_rule_path_and_cmn_residual_258() {
         use synth_core::WasmOp;
-        for (c, opv) in [(5i32, WasmOp::I32Eq), (-7i32, WasmOp::I32LtS)] {
+        for (c, opv, expect_cmn) in [(5i32, WasmOp::I32Eq, false), (-7i32, WasmOp::I32LtS, true)] {
             let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Const(c), opv];
 
             let emitted: Vec<ArmOp> = InstructionSelector::new(vec![])
@@ -18137,22 +18133,34 @@ mod tests {
                 .map(|i| i.op)
                 .collect();
 
-            // The fold actually fired (imm cmp/cmn present)...
-            assert!(
-                emitted.iter().any(|o| matches!(
-                    o,
-                    ArmOp::Cmp {
-                        op2: Operand2::Imm(_),
-                        ..
-                    } | ArmOp::Cmn {
-                        op2: Operand2::Imm(_),
-                        ..
-                    }
-                )),
-                "probe did not exercise the imm-fold path"
-            );
-            // ...and the reg-reg rule shape did NOT (no reg-reg Cmp), i.e.
-            // the probe really took the residual hand-written emission.
+            // The fold actually fired, on the expected shape: positive const
+            // → imm Cmp (the increment-5 rule emission), negative const →
+            // imm Cmn (the hand-written residual).
+            if expect_cmn {
+                assert!(
+                    emitted.iter().any(|o| matches!(
+                        o,
+                        ArmOp::Cmn {
+                            op2: Operand2::Imm(_),
+                            ..
+                        }
+                    )),
+                    "negative-const probe did not take the cmn residual"
+                );
+            } else {
+                assert!(
+                    emitted.iter().any(|o| matches!(
+                        o,
+                        ArmOp::Cmp {
+                            op2: Operand2::Imm(_),
+                            ..
+                        }
+                    )),
+                    "positive-const probe did not take the imm-Cmp rule path"
+                );
+            }
+            // Neither probe may fall back to the reg-reg shape — the fold
+            // must have consumed the const materialization.
             assert!(
                 !emitted.iter().any(|o| matches!(
                     o,

@@ -1420,3 +1420,132 @@ Proof.
   eexists. split; [reflexivity |].
   rewrite get_set_reg_eq. rewrite HR0. reflexivity.
 Qed.
+
+(** ** Increment-5 comparison-immediate rules — the #258 compare-bound fold's
+    positive-constant half ([cmp rn, #C; SetCond rd, <cond>]). Same flag
+    lemmas as the reg-reg comparison family: [eval_operand2 (Imm imm)] is
+    [imm], so every [compute_*_flag (I32.sub v1 v2)] lemma instantiates with
+    [v2 := imm] directly. NO side conditions (CMP latches NZCV before [rd]
+    is written). The negative-constant ([cmn]) half of the fold has no rule —
+    its add-derived NZCV needs a sub<->add flag-correspondence lemma family
+    the model does not carry; it stays hand-written in the selector. *)
+
+Definition rule_i32_eq_imm := Gen.rule_i32_eq_imm.
+Definition rule_i32_ne_imm := Gen.rule_i32_ne_imm.
+Definition rule_i32_lt_s_imm := Gen.rule_i32_lt_s_imm.
+Definition rule_i32_lt_u_imm := Gen.rule_i32_lt_u_imm.
+Definition rule_i32_gt_s_imm := Gen.rule_i32_gt_s_imm.
+Definition rule_i32_gt_u_imm := Gen.rule_i32_gt_u_imm.
+Definition rule_i32_le_s_imm := Gen.rule_i32_le_s_imm.
+Definition rule_i32_le_u_imm := Gen.rule_i32_le_u_imm.
+Definition rule_i32_ge_s_imm := Gen.rule_i32_ge_s_imm.
+Definition rule_i32_ge_u_imm := Gen.rule_i32_ge_u_imm.
+
+(** Discharge tactic: [synth_cmp_binop_proof_poly] with the second operand
+    hypothesis replaced by the quantified immediate. *)
+Ltac synth_cmp_imm_proof_poly flag_lemma :=
+  intros astate v1 imm rd rn HR0;
+  unfold rule_i32_eq_imm, rule_i32_ne_imm, rule_i32_lt_s_imm,
+         rule_i32_lt_u_imm, rule_i32_gt_s_imm, rule_i32_gt_u_imm,
+         rule_i32_le_s_imm, rule_i32_le_u_imm, rule_i32_ge_s_imm,
+         rule_i32_ge_u_imm,
+         Gen.rule_i32_eq_imm, Gen.rule_i32_ne_imm, Gen.rule_i32_lt_s_imm,
+         Gen.rule_i32_lt_u_imm, Gen.rule_i32_gt_s_imm, Gen.rule_i32_gt_u_imm,
+         Gen.rule_i32_le_s_imm, Gen.rule_i32_le_u_imm, Gen.rule_i32_ge_s_imm,
+         Gen.rule_i32_ge_u_imm;
+  simpl;
+  rewrite HR0; simpl;
+  rewrite flag_lemma;
+  destruct (_ v1 imm);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+
+Theorem rule_i32_eq_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_eq_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly z_flag_sub_eq. Qed.
+
+Theorem rule_i32_ne_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ne_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ne v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_ne_imm, Gen.rule_i32_ne_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- flags_ne.
+  destruct (compute_z_flag (I32.sub v1 imm));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_lt_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_lt_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.lts v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_lt_s_imm, Gen.rule_i32_lt_s_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- nv_flag_sub_lts.
+  destruct (Bool.eqb (compute_n_flag (I32.sub v1 imm)) (compute_v_flag_sub v1 imm));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_lt_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_lt_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ltu v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_lt_u_imm, Gen.rule_i32_lt_u_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- flags_ltu.
+  destruct (compute_c_flag_sub v1 imm);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_gt_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_gt_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.gts v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_gts. Qed.
+
+Theorem rule_i32_gt_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_gt_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.gtu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_gtu. Qed.
+
+Theorem rule_i32_le_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_le_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.les v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_les. Qed.
+
+Theorem rule_i32_le_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_le_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.leu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_leu. Qed.
+
+Theorem rule_i32_ge_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ge_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ges v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_ges. Qed.
+
+Theorem rule_i32_ge_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ge_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.geu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_geu. Qed.

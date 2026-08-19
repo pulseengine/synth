@@ -970,3 +970,163 @@ pub fn rule_i32_xor_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
         op2: Operand2::Imm(imm),
     }]
 }
+
+/// `i32.eq` (folded const): rd = if rn == imm {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_eq_imm_correct` (Qed).
+pub fn rule_i32_eq_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::EQ,
+        },
+    ]
+}
+
+/// `i32.ne` (folded const): rd = if rn != imm {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ne_imm_correct` (Qed).
+pub fn rule_i32_ne_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::NE,
+        },
+    ]
+}
+
+/// `i32.lt_s` (folded const): rd = if rn < imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_lt_s_imm_correct` (Qed).
+pub fn rule_i32_lt_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LT,
+        },
+    ]
+}
+
+/// `i32.lt_u` (folded const): rd = if rn < imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_lt_u_imm_correct` (Qed).
+pub fn rule_i32_lt_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LO,
+        },
+    ]
+}
+
+/// `i32.gt_s` (folded const): rd = if rn > imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_gt_s_imm_correct` (Qed).
+pub fn rule_i32_gt_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::GT,
+        },
+    ]
+}
+
+/// `i32.gt_u` (folded const): rd = if rn > imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_gt_u_imm_correct` (Qed).
+pub fn rule_i32_gt_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::HI,
+        },
+    ]
+}
+
+/// `i32.le_s` (folded const): rd = if rn <= imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_le_s_imm_correct` (Qed).
+pub fn rule_i32_le_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LE,
+        },
+    ]
+}
+
+/// `i32.le_u` (folded const): rd = if rn <= imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_le_u_imm_correct` (Qed).
+pub fn rule_i32_le_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LS,
+        },
+    ]
+}
+
+/// `i32.ge_s` (folded const): rd = if rn >= imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ge_s_imm_correct` (Qed).
+pub fn rule_i32_ge_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::GE,
+        },
+    ]
+}
+
+/// `i32.ge_u` (folded const): rd = if rn >= imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ge_u_imm_correct` (Qed).
+pub fn rule_i32_ge_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::HS,
+        },
+    ]
+}

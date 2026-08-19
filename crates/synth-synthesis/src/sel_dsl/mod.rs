@@ -1411,6 +1411,161 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::SelectWithStack,
         doc: "`i32.xor` (folded const): rd = rn ^ imm",
     },
+    // ---- increment 5: the #258 compare-bound fold, positive-constant half —
+    // `cmp rn, #C; SetCond rd, <cond>` over the dynamic immediate. Like the
+    // reg-reg comparison family (increment 2): NO side conditions (CMP
+    // latches NZCV before rd is written). The negative-constant half
+    // (`cmn rn, #-C`) stays hand-written — see the arm's comment. ----
+    SelRule {
+        name: "rule_i32_eq_imm",
+        op: WasmOp::I32Eq,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.eq` (folded const): rd = if rn == imm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ne_imm",
+        op: WasmOp::I32Ne,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ne` (folded const): rd = if rn != imm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_s_imm",
+        op: WasmOp::I32LtS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_s` (folded const): rd = if rn < imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_u_imm",
+        op: WasmOp::I32LtU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lo,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_u` (folded const): rd = if rn < imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_s_imm",
+        op: WasmOp::I32GtS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Gt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_s` (folded const): rd = if rn > imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_u_imm",
+        op: WasmOp::I32GtU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hi,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_u` (folded const): rd = if rn > imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_s_imm",
+        op: WasmOp::I32LeS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Le,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_s` (folded const): rd = if rn <= imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_u_imm",
+        op: WasmOp::I32LeU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ls,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_u` (folded const): rd = if rn <= imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_s_imm",
+        op: WasmOp::I32GeS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ge,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_s` (folded const): rd = if rn >= imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_u_imm",
+        op: WasmOp::I32GeU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hs,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_u` (folded const): rd = if rn >= imm (unsigned) {1} else {0}",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule
@@ -1434,6 +1589,32 @@ pub fn i32_cmp_rule(
         WasmOp::I32LeU => generated::rule_i32_le_u(rd, rn, rm),
         WasmOp::I32GeS => generated::rule_i32_ge_s(rd, rn, rm),
         WasmOp::I32GeU => generated::rule_i32_ge_u(rd, rn, rm),
+        _ => return None,
+    })
+}
+
+/// Dispatch an i32 comparison op with a FOLDED POSITIVE constant bound
+/// (#258, `cmp rn, #C`) to its generated Rocq-proved dynamic-immediate rule
+/// (increment 5). Same contract as [`i32_cmp_rule`]: `None` for ops outside
+/// the family. The negative-constant (`cmn`) half of the fold stays with the
+/// caller.
+pub fn i32_cmp_imm_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn: crate::rules::Reg,
+    imm: i32,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Eq => generated::rule_i32_eq_imm(rd, rn, imm),
+        WasmOp::I32Ne => generated::rule_i32_ne_imm(rd, rn, imm),
+        WasmOp::I32LtS => generated::rule_i32_lt_s_imm(rd, rn, imm),
+        WasmOp::I32LtU => generated::rule_i32_lt_u_imm(rd, rn, imm),
+        WasmOp::I32GtS => generated::rule_i32_gt_s_imm(rd, rn, imm),
+        WasmOp::I32GtU => generated::rule_i32_gt_u_imm(rd, rn, imm),
+        WasmOp::I32LeS => generated::rule_i32_le_s_imm(rd, rn, imm),
+        WasmOp::I32LeU => generated::rule_i32_le_u_imm(rd, rn, imm),
+        WasmOp::I32GeS => generated::rule_i32_ge_s_imm(rd, rn, imm),
+        WasmOp::I32GeU => generated::rule_i32_ge_u_imm(rd, rn, imm),
         _ => return None,
     })
 }
