@@ -6326,16 +6326,7 @@ impl InstructionSelector {
 
             I32Ctz => crate::sel_dsl::generated::rule_i32_ctz(rd, rm),
 
-            I32Popcnt => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_popcnt(rd, rm)
-                } else {
-                    // Population count - no native ARM instruction
-                    // Use Popcnt pseudo-op which the encoder expands to a parallel
-                    // bit-count algorithm (shift-and-add with masks)
-                    vec![ArmOp::Popcnt { rd, rm }]
-                }
-            }
+            I32Popcnt => crate::sel_dsl::generated::rule_i32_popcnt(rd, rm),
 
             I32Const(val) => {
                 let uval = *val as u32;
