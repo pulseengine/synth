@@ -315,7 +315,8 @@
           "proof_layer_refs": [
             "coq/Synth/ARM/SailArmBridge.v",
             "coq/Synth/Synth/Compilation.v",
-            "coq/Synth/Synth/CorrectnessI32.v"
+            "coq/Synth/Synth/CorrectnessI32.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
           ],
           "tier": "bridge-validated"
         },
@@ -898,7 +899,8 @@
           "bridge_theorems": [],
           "name": "I64ExtendI32SPseudo",
           "proof_layer_refs": [
-            "coq/Synth/Synth/Compilation.v"
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
           ],
           "tier": "simplified-only"
         },
@@ -914,7 +916,8 @@
           "bridge_theorems": [],
           "name": "I32WrapI64Pseudo",
           "proof_layer_refs": [
-            "coq/Synth/Synth/Compilation.v"
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
           ],
           "tier": "simplified-only"
         },
