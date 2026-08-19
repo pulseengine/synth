@@ -6989,32 +6989,15 @@ impl InstructionSelector {
             .map_err(synth_core::Error::synthesis)?,
 
             // i64 bitwise: operate on each half independently
-            I64And => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_and(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::And {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::And {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64And => crate::sel_dsl::generated::rule_i64_and(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             I64Or => {
                 if self.sel_dsl {
