@@ -16079,50 +16079,18 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 shift pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical to the hand-written
-                    // emission below (mirror-pinned). The `rd_hi <> rd_lo` side
-                    // condition holds by construction: alloc_consecutive_pair
-                    // returns a distinct pair.
-                    let shift_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_pair_bin_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 shift op dispatch")
-                        .map_err(synth_core::Error::synthesis)?
-                        .into_iter()
-                        .next()
-                        .expect("i64 shift rule emits one op")
-                    } else {
-                        match op {
-                            I64Shl => ArmOp::I64Shl {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            I64ShrU => ArmOp::I64ShrU {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            I64ShrS => ArmOp::I64ShrS {
-                                rd_lo: dst_lo,
-                                rd_hi: dst_hi,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    // The single i64 shift pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE). The
+                    // `rd_hi <> rd_lo` side condition holds by construction:
+                    // alloc_consecutive_pair returns a distinct pair.
+                    let shift_op = crate::sel_dsl::i64_pair_bin_rule(
+                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .expect("i64 shift op dispatch")
+                    .map_err(synth_core::Error::synthesis)?
+                    .into_iter()
+                    .next()
+                    .expect("i64 shift rule emits one op");
                     instructions.push(ArmInstruction {
                         op: shift_op,
                         source_line: Some(idx),
