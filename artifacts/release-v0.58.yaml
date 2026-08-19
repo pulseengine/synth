@@ -200,7 +200,20 @@ artifacts:
       #935 lesson applied to refactoring.
       EXPECT to find live holes. v0.57's writes_sp lane expected latent and
       found live.
-    status: proposed
+      IMPLEMENTED (fix/selector-wildcard-arms-946): found live and EXECUTED —
+      wasm_stack_effect said if/br_if/br_table have no stack effect (each
+      pops an i32), its wildcard absorbed memory.copy/memory.fill as (0, 0)
+      (each pops 3), and call arguments were never popped; every stale entry
+      shifted infer_i64_locals' width stack, so an i64 local set past one of
+      those shapes was inferred i32 and single-word stored (hi half dropped;
+      unicorn vs wasmtime returned 32/0 where wasmtime returns 1), shared
+      with the RV32 selector (#312). Fixed + fully enumerated (279 variants,
+      no wildcard — a new WasmOp variant fails to compile), tripwire
+      tests/selector_stack_effect_no_wildcard_946.rs, executed fixtures in
+      the #973 corpus sweep, 8 silent last-variant refinement maps converted
+      to loud unreachable!(). Ratchet 56 -> 55 banked; +94 lines waived in
+      claims.yaml with the classification of the 55 that remain.
+    status: implemented
     release: v0.58
     tags: [soundness, exhaustiveness, tripwire, wildcard, selector]
     links:
@@ -459,7 +472,12 @@ artifacts:
       DELIBERATELY OUT OF SCOPE, named: #1000's items on `synthesize` vs `compile`
       description overlap, `--format json`, and help-line width. Real, minor, and
       not this artifact's subject.
-    status: proposed
+      IMPLEMENTED by PR #1002 (merged 2026-08-19): release builds carry
+      --features verify, the released-artifact smoke gate runs `synth verify`
+      and asserts a verdict (red-first demonstrated on a featureless binary),
+      and the capability check precedes the banner. Re-graded here by the
+      RQ-58-WILDCARD lane — the ledger had drifted behind the merge.
+    status: implemented
     release: v0.58
     tags: [release-workflow, verification, non-vacuity, doc-rot, tool-friction]
     links:

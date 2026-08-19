@@ -157,9 +157,12 @@ ever-growing pile of locally-correct patches.**
 > so **every movement of a pinned number is a visible `claims.yaml` diff in the
 > PR that caused it**. Beating a baseline fails until `baseline:` is updated
 > too, so a win cannot be silently given back. The DIRECTED pins are
-> region-scoped (measured before `#[cfg(test)] mod tests`) because 43 of the
-> selector's 105 `_ =>` arms and 11,136 of its 29,616 lines are its own test
-> module; the whole-file counts are pinned `direction: track` — slack-free, but
+> region-scoped (measured before `#[cfg(test)] mod tests`) because a large
+> share of the selector file is its own test module (at pin creation, v0.57:
+> 43 of its 105 `_ =>` arms and 11,136 of its 29,616 lines; the live figures
+> move with the pins in `claims.yaml` — 35 of 90 and 10,608 of 28,599 after
+> RQ-58-RETIRE + RQ-58-WILDCARD);
+> the whole-file counts are pinned `direction: track` — slack-free, but
 > asserting no direction, so adding test coverage costs a number update and not
 > a waiver.
 >

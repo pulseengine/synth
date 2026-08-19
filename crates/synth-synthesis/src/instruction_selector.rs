@@ -1631,6 +1631,8 @@ fn compute_local_layout(
     params_f64_vfp: &[bool],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    type_arg_counts: &[u32],
     force_spill_area: bool,
     force_param_backing: bool,
     force_vfp_area: bool,
@@ -1638,7 +1640,13 @@ fn compute_local_layout(
     i64_spill_slots: usize,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
-    let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
+    let i64_set = infer_i64_locals(
+        wasm_ops,
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        type_arg_counts,
+    );
     // #503-i64: the width-aware AAPCS assignment — which params are register-
     // resident and which live on the caller's stack (and at what NSAA offset).
     // `params_f64_vfp` is non-empty only on a double-precision target, where
@@ -1977,10 +1985,21 @@ fn compute_local_promotion(
 /// `pub` because the RV32 selector (`synth-backend-riscv`) reuses the same
 /// inference for its i64 frame-slot layout (#312 — the RISC-V analogue of
 /// the ARM #311 fix); the wasm op stream and width rules are ISA-neutral.
+///
+/// #946: the walk must pop what each op REALLY consumes, or the width stack
+/// drifts and a later `local.set` reads a stale width (executed miscompile:
+/// an i64 local set after a `br_if`/`if`/`br_table`/`memory.copy`/arg-taking
+/// `call` was inferred i32, single-word-stored, hi half dropped).
+/// `func_arg_counts[full_idx]` / `type_arg_counts[type_idx]` are the callee
+/// argument counts (one slot per VALUE — the decoder counts a wide param as
+/// one, which is exactly the width-stack unit); empty tables degrade to the
+/// pre-#946 zero-arg approximation, matching `lower_call`'s own fallback.
 pub fn infer_i64_locals(
     wasm_ops: &[WasmOp],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    type_arg_counts: &[u32],
 ) -> std::collections::HashSet<u32> {
     use WasmOp::*;
     let mut i64_locals: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -2050,8 +2069,16 @@ pub fn infer_i64_locals(
             // without this, an i64-returning call feeding `local.set` left the
             // local inferred as i32 (4-byte slot, single-word store: the hi
             // half of gale's packed u64 decision was silently dropped).
+            // #946: and a call's ARGUMENTS leave the stack — the former
+            // `wasm_stack_effect` row `(0, 1)` left one stale width per arg,
+            // shifting every entry below (the same executed-miscompile class
+            // as the `br_if` condition). An absent table entry degrades to
+            // zero args, mirroring the call lowering's own #195 fallback.
             Call(func_idx) => {
-                let (pops, pushes) = wasm_stack_effect(op);
+                let pops = func_arg_counts
+                    .get(*func_idx as usize)
+                    .copied()
+                    .unwrap_or(0);
                 for _ in 0..pops {
                     vstack.pop();
                 }
@@ -2059,12 +2086,16 @@ pub fn infer_i64_locals(
                     .get(*func_idx as usize)
                     .copied()
                     .unwrap_or(false);
-                for _ in 0..pushes {
-                    vstack.push(w);
-                }
+                vstack.push(w);
             }
             CallIndirect { type_index, .. } => {
-                let (pops, pushes) = wasm_stack_effect(op);
+                // The dynamic table INDEX operand is popped unconditionally —
+                // it exists regardless of signature-table availability.
+                vstack.pop();
+                let pops = type_arg_counts
+                    .get(*type_index as usize)
+                    .copied()
+                    .unwrap_or(0);
                 for _ in 0..pops {
                     vstack.pop();
                 }
@@ -2072,9 +2103,7 @@ pub fn infer_i64_locals(
                     .get(*type_index as usize)
                     .copied()
                     .unwrap_or(false);
-                for _ in 0..pushes {
-                    vstack.push(w);
-                }
+                vstack.push(w);
             }
             _ => {
                 let (pops, pushes) = wasm_stack_effect(op);
@@ -2188,28 +2217,70 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
         MemorySize(_) => (0, 1),
         MemoryGrow(_) => (1, 1),
 
-        // Control flow / structural — no value stack effect at this level
-        Block
-        | Loop
-        | If
-        | Else
-        | End
-        | Nop
-        | Unreachable
-        | Return
-        | Br(_)
-        | BrIf(_)
-        | BrTable { .. } => (0, 0),
+        // Structural — genuinely no value stack effect.
+        //
+        // Approximation residuals, stated (#946): after `Br`/`Unreachable`/
+        // `Return` the stack is polymorphic and the linear walk keeps tracking
+        // the (unreachable) fall-through; at an `Else` the then-arm's results
+        // remain, so an `if`-with-result double-counts its result across the
+        // join. Neither can be fixed by a per-op (pops, pushes) row — they
+        // need a control-frame-aware walk, a named follow-up. `Return`'s
+        // popped result arity is signature-dependent and only affects the
+        // unreachable fall-through, so it stays (0, 0).
+        Block | Loop | Else | End | Nop | Unreachable | Return | Br(_) => (0, 0),
+
+        // #946 EXECUTED-MISCOMPILE FIX: these three POP their i32 condition /
+        // table index. The former `(0, 0)` row left one stale width entry, so
+        // an i64 local set past a `br_if` was inferred i32 and single-word
+        // stored (unicorn vs wasmtime: 32 where wasmtime returns 1).
+        If | BrIf(_) | BrTable { .. } => (1, 0),
 
         // Special
         Drop => (1, 0),
         Select => (3, 1),
-        Call(_) | CallIndirect { .. } => (0, 1), // approximate: push return value
+        // Signature-dependent: args (and call_indirect's table index) are NOT
+        // expressible as a per-op row. `infer_i64_locals` special-cases both
+        // against the real arg-count tables (#946); the only other consumer is
+        // `select_with_stack`'s explicitly-approximate select_default
+        // fallback tracker, which calls never reach (the selector lowers
+        // Call/CallIndirect in their own arms).
+        Call(_) | CallIndirect { .. } => (0, 1),
 
-        // v128 SIMD and anything else — conservative default
-        // Most SIMD ops are binary (pop 2, push 1) but some are unary.
-        // Using (0, 0) as safe fallback since SIMD isn't stack-tracked yet.
-        _ => (0, 0),
+        // Bulk memory (#374): pop (dst, src/val, len), push nothing. The
+        // former wildcard absorbed these as (0, 0) — three stale entries, the
+        // same executed-miscompile class as the `br_if` condition (#946).
+        MemoryCopy | MemoryFill => (3, 0),
+
+        // v128 SIMD — enumerated, not wildcarded (#946): no lowering path
+        // tracks SIMD yet (select_default loud-declines without Helium), but
+        // a wildcard here would silently mis-track any future variant. A new
+        // `WasmOp` variant must state its stack effect to compile.
+        V128Const(_) => (0, 1),
+        V128Load { .. } => (1, 1),
+        V128Store { .. } => (2, 0),
+        V128Not => (1, 1),
+        V128And | V128Or | V128Xor | V128AndNot => (2, 1),
+
+        I8x16Neg | I8x16Splat | I8x16ExtractLaneS(_) | I8x16ExtractLaneU(_) => (1, 1),
+        I8x16Add | I8x16Sub | I8x16Eq | I8x16Ne | I8x16LtS | I8x16LtU | I8x16GtS | I8x16GtU
+        | I8x16LeS | I8x16LeU | I8x16GeS | I8x16GeU | I8x16ReplaceLane(_) | I8x16Shuffle(_)
+        | I8x16Swizzle => (2, 1),
+
+        I16x8Neg | I16x8Splat | I16x8ExtractLaneS(_) | I16x8ExtractLaneU(_) => (1, 1),
+        I16x8Add | I16x8Sub | I16x8Mul | I16x8Eq | I16x8Ne | I16x8LtS | I16x8LtU | I16x8GtS
+        | I16x8GtU | I16x8LeS | I16x8LeU | I16x8GeS | I16x8GeU | I16x8ReplaceLane(_) => (2, 1),
+
+        I32x4Neg | I32x4Splat | I32x4ExtractLane(_) => (1, 1),
+        I32x4Add | I32x4Sub | I32x4Mul | I32x4Eq | I32x4Ne | I32x4LtS | I32x4LtU | I32x4GtS
+        | I32x4GtU | I32x4LeS | I32x4LeU | I32x4GeS | I32x4GeU | I32x4ReplaceLane(_) => (2, 1),
+
+        I64x2Neg | I64x2Splat | I64x2ExtractLane(_) => (1, 1),
+        I64x2Add | I64x2Sub | I64x2Mul | I64x2Eq | I64x2Ne | I64x2LtS | I64x2GtS | I64x2LeS
+        | I64x2GeS | I64x2ReplaceLane(_) => (2, 1),
+
+        F32x4Abs | F32x4Neg | F32x4Sqrt | F32x4Splat | F32x4ExtractLane(_) => (1, 1),
+        F32x4Add | F32x4Sub | F32x4Mul | F32x4Div | F32x4Eq | F32x4Ne | F32x4Lt | F32x4Le
+        | F32x4Gt | F32x4Ge | F32x4ReplaceLane(_) => (2, 1),
     }
 }
 
@@ -2578,7 +2649,10 @@ fn try_lower_f32(
                 F32Add => ArmOp::F32Add { sd, sn, sm },
                 F32Sub => ArmOp::F32Sub { sd, sn, sm },
                 F32Mul => ArmOp::F32Mul { sd, sn, sm },
-                _ => ArmOp::F32Div { sd, sn, sm },
+                F32Div => ArmOp::F32Div { sd, sn, sm },
+                // #946: outer arm pins the set; a widened outer arm must be
+                // placed here explicitly, never silently lowered as a divide.
+                _ => unreachable!("outer arm admits only F32Add|F32Sub|F32Mul|F32Div"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -2654,7 +2728,8 @@ fn try_lower_f32(
                 F32Lt => ArmOp::F32Lt { rd, sn, sm },
                 F32Le => ArmOp::F32Le { rd, sn, sm },
                 F32Gt => ArmOp::F32Gt { rd, sn, sm },
-                _ => ArmOp::F32Ge { rd, sn, sm },
+                F32Ge => ArmOp::F32Ge { rd, sn, sm },
+                _ => unreachable!("outer arm admits only the six f32 comparisons"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4430,7 +4505,8 @@ fn try_lower_f64(
                 F64Add => ArmOp::F64Add { dd, dn, dm },
                 F64Sub => ArmOp::F64Sub { dd, dn, dm },
                 F64Mul => ArmOp::F64Mul { dd, dn, dm },
-                _ => ArmOp::F64Div { dd, dn, dm },
+                F64Div => ArmOp::F64Div { dd, dn, dm },
+                _ => unreachable!("outer arm admits only F64Add|F64Sub|F64Mul|F64Div"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4447,7 +4523,8 @@ fn try_lower_f64(
             let arm = match op {
                 F64Abs => ArmOp::F64Abs { dd, dm },
                 F64Neg => ArmOp::F64Neg { dd, dm },
-                _ => ArmOp::F64Sqrt { dd, dm },
+                F64Sqrt => ArmOp::F64Sqrt { dd, dm },
+                _ => unreachable!("outer arm admits only F64Abs|F64Neg|F64Sqrt"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4472,7 +4549,8 @@ fn try_lower_f64(
                 F64Lt => ArmOp::F64Lt { rd, dn, dm },
                 F64Le => ArmOp::F64Le { rd, dn, dm },
                 F64Gt => ArmOp::F64Gt { rd, dn, dm },
-                _ => ArmOp::F64Ge { rd, dn, dm },
+                F64Ge => ArmOp::F64Ge { rd, dn, dm },
+                _ => unreachable!("outer arm admits only the six f64 comparisons"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4493,7 +4571,8 @@ fn try_lower_f64(
                 F64Ceil => ArmOp::F64Ceil { dd, dm },
                 F64Floor => ArmOp::F64Floor { dd, dm },
                 F64Trunc => ArmOp::F64Trunc { dd, dm },
-                _ => ArmOp::F64Nearest { dd, dm },
+                F64Nearest => ArmOp::F64Nearest { dd, dm },
+                _ => unreachable!("outer arm admits only F64Ceil|F64Floor|F64Trunc|F64Nearest"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -9236,7 +9315,12 @@ impl InstructionSelector {
             (1, true) => ArmOp::Ldrsb { rd, addr },
             (2, false) => ArmOp::Ldrh { rd, addr },
             (2, true) => ArmOp::Ldrsh { rd, addr },
-            _ => ArmOp::Ldr { rd, addr }, // fallback to word load
+            (4, _) => ArmOp::Ldr { rd, addr },
+            // #946: an unexpected width must not silently become a 4-byte
+            // access — that reads/writes the wrong number of bytes. Loud
+            // internal-bug panic instead (the #615 expand-or-loud-reject
+            // direction; callers only pass 1/2/4).
+            _ => unreachable!("access_size {access_size} is not 1/2/4"),
         };
 
         match self.bounds_check {
@@ -9299,10 +9383,12 @@ impl InstructionSelector {
                 rd: value_reg,
                 addr,
             },
-            _ => ArmOp::Str {
+            4 => ArmOp::Str {
                 rd: value_reg,
                 addr,
             },
+            // #946: see the load twin — never silently widen to a word store.
+            _ => unreachable!("access_size {access_size} is not 1/2/4"),
         };
 
         match self.bounds_check {
@@ -10257,6 +10343,8 @@ impl InstructionSelector {
             &params_f64_vfp,
             &self.func_ret_i64,
             &self.type_ret_i64,
+            &self.func_arg_counts,
+            &self.type_arg_counts,
             // #881: the VFP spill rung hands out slots from the same shared
             // pool, so it must force the area exactly like the integer rung.
             self.spill_on_exhaustion || self.vfp_spill_on_exhaustion,
@@ -10443,7 +10531,13 @@ impl InstructionSelector {
             // `layout.incoming_params`; there is no register home.
         }
 
-        let mut i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        let mut i64_locals = infer_i64_locals(
+            wasm_ops,
+            &self.func_ret_i64,
+            &self.type_ret_i64,
+            &self.func_arg_counts,
+            &self.type_arg_counts,
+        );
         // #518: an i64/f64 PARAM is 64-bit by signature even if it is only READ
         // (never `local.set`/`tee`), which `infer_i64_locals` — driven by
         // LocalSet/Tee/Call result widths — cannot see. Seed those indices so a
@@ -25900,6 +25994,8 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
+            &[],
             false,
             false,
             false,
@@ -25921,6 +26017,8 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             1,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -25956,6 +26054,8 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
+            &[],
             false,
             false,
             false,
@@ -25984,6 +26084,8 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             0,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -26024,6 +26126,8 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
+            &[],
             false,
             false,
             false,
@@ -26040,7 +26144,7 @@ mod tests {
     fn test_infer_i64_locals_from_localset() {
         // i64.const → local.set marks that local as i64.
         let ops = vec![WasmOp::I64Const(7), WasmOp::LocalSet(3)];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&3));
     }
 
@@ -26049,7 +26153,7 @@ mod tests {
         // local.tee preserves the value on the stack and stores to local —
         // its width should be inferred from what's on the stack.
         let ops = vec![WasmOp::I64Const(99), WasmOp::LocalTee(2), WasmOp::Drop];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&2));
     }
 
@@ -26057,7 +26161,7 @@ mod tests {
     fn test_infer_i64_locals_does_not_flag_i32_locals() {
         // i32 ops should not produce i64 locals.
         let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0)];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(!i64_locals.contains(&0));
     }
 
@@ -26070,7 +26174,7 @@ mod tests {
             WasmOp::I64Add,
             WasmOp::LocalSet(5),
         ];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&5));
     }
 
@@ -27953,9 +28057,9 @@ mod tests {
         // must mark the local i64 (8-byte slot, both halves stored) — without
         // the result-type table the hi word was silently dropped.
         let ops = vec![WasmOp::Call(1), WasmOp::LocalSet(0)];
-        let with_table = infer_i64_locals(&ops, &[false, true], &[]);
+        let with_table = infer_i64_locals(&ops, &[false, true], &[], &[], &[]);
         assert!(with_table.contains(&0), "call-fed local inferred i64");
-        let without = infer_i64_locals(&ops, &[], &[]);
+        let without = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(!without.contains(&0), "no table -> conservative i32");
     }
 
