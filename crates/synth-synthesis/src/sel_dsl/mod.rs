@@ -1,4 +1,4 @@
-//! VCR-SEL-001 increments 1+2+3+4 (#242) — the Rocq-discharged selector rule DSL.
+//! VCR-SEL-001 increments 1+2+3+4+5 (#242) — the Rocq-discharged selector rule DSL.
 //!
 //! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1),
 //! `docs/design/vcr-sel-001-increment-2.md` (increment 2),
@@ -36,6 +36,16 @@
 //!   CMP-lo/SBCS-hi flags-chain #615 re-implemented on A32; the rules and
 //!   theorems live at the pseudo-op tier the flat Rocq executor can express,
 //!   see `docs/design/vcr-sel-001-increment-4.md` for the honest bound).
+//! - increment 5 (RQ-58-SELDSL, #242, v0.58): the DYNAMIC-IMMEDIATE tier —
+//!   rules additionally quantified over an `imm` parameter (the #250/#253
+//!   ADDW/SUBW and #209/#248 bitwise folds, and the #258 compare-bound
+//!   fold's positive half; the selector keeps the fold GUARD, the rule owns
+//!   the emission) — plus the width conversions (`i32.wrap_i64`,
+//!   `i64.extend_i32_s`, `i64.extend_i32_u` fresh/in-place) and the five
+//!   `select` shapes (fresh/in-place i32, full/in-place i64 pair,
+//!   select_default's MOV+EQ-override). Under the v0.58 definition of done,
+//!   every increment-5 rule landed WITH the deletion of the hand-written
+//!   emission it supersedes, byte-identity-gated.
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
@@ -87,6 +97,10 @@ pub enum RegVar {
     RmLo,
     /// Second operand pair, high word (i64 pair rules).
     RmHi,
+    /// Condition operand register (`select` rules, increment 5): the register
+    /// holding the WASM `select` condition, compared against zero before the
+    /// conditional moves.
+    Rc,
 }
 
 impl RegVar {
@@ -104,6 +118,7 @@ impl RegVar {
             RegVar::RnHi => "rn_hi",
             RegVar::RmLo => "rm_lo",
             RegVar::RmHi => "rm_hi",
+            RegVar::Rc => "rc",
         }
     }
 
@@ -123,6 +138,7 @@ impl RegVar {
             RegVar::RnHi => "rnhi",
             RegVar::RmLo => "rmlo",
             RegVar::RmHi => "rmhi",
+            RegVar::Rc => "rc",
         }
     }
 }
@@ -340,6 +356,49 @@ pub enum TemplateOp {
         rn_hi: RegVar,
         shift: RegVar,
     },
+    /// Increment 5: data-processing shapes whose second operand is the rule's
+    /// dynamic immediate PARAMETER (`imm: i32` in the generated function,
+    /// `(imm : I32.int)` binder in the Rocq definition — universally
+    /// quantified, unlike the fixed-constant `RsbImm`/`AndImm` shapes above).
+    /// These carry the #250/#253 (`ADDW`/`SUBW`) and #209/#248 (bitwise-byte)
+    /// immediate folds the selectors previously hand-emitted.
+    AddImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Sub { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    SubImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::And { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    AndImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Orr { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    OrrImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Eor { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    EorImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Cmp { rn, op2: Imm(imm) }` over the dynamic imm parameter —
+    /// the #258 compare-bound fold's positive-constant half.
+    CmpImmVar { rn: RegVar },
+    /// `ArmOp::Mov { rd, op2: Reg(rm) }` — plain register move.
+    MovReg { rd: RegVar, rm: RegVar },
+    /// `ArmOp::Movw { rd, imm16 }` — 16-bit immediate materialization with a
+    /// FIXED constant (the `i64.extend_i32_u` zero-high-half shape).
+    MovwImm { rd: RegVar, imm16: u16 },
+    /// `ArmOp::I64ExtendI32S { rdlo, rdhi, rn }` — sign-extend pseudo-op
+    /// (encoder-expanded). Modeled by `I64ExtendI32SPseudo` in the flat model.
+    I64ExtendS {
+        rd_lo: RegVar,
+        rd_hi: RegVar,
+        rn: RegVar,
+    },
+    /// `ArmOp::I32WrapI64 { rd, rnlo }` — wrap pseudo-op (keeps the low half).
+    /// Modeled by `I32WrapI64Pseudo` in the flat model.
+    I32Wrap { rd: RegVar, rn_lo: RegVar },
+    /// `ArmOp::SelectMove { rd, rm, cond }` — the flag-preserving IT;MOV
+    /// conditional move (`select` lowering). Modeled by the flat model's
+    /// `MOV<cc> rd (Reg rm)` family (the same constructors `SetCond`'s
+    /// expansion uses) — semantically identical: writes `rd` iff `cond` holds
+    /// over the current NZCV, never touches the flags.
+    SelectMove {
+        rd: RegVar,
+        rm: RegVar,
+        cond: CondCode,
+    },
     /// The single-pseudo-op i64 unary bit-count shapes (`I64Clz` / `I64Ctz` /
     /// `I64Popcnt`). One ArmOp reads both operand halves and writes the single
     /// i32 count into `rd` — NO aliasing side condition (`rd` may alias `rn_lo`,
@@ -395,14 +454,38 @@ pub struct SelRule {
     pub doc: &'static str,
 }
 
+impl TemplateOp {
+    /// Whether this shape reads the rule's dynamic immediate parameter
+    /// (increment 5). Deriving imm-param-ness from the sequence keeps
+    /// [`SelRule`] unchanged for the 50 pre-increment-5 rules.
+    const fn uses_imm_var(&self) -> bool {
+        matches!(
+            self,
+            TemplateOp::AddImmVar { .. }
+                | TemplateOp::SubImmVar { .. }
+                | TemplateOp::AndImmVar { .. }
+                | TemplateOp::OrrImmVar { .. }
+                | TemplateOp::EorImmVar { .. }
+                | TemplateOp::CmpImmVar { .. }
+        )
+    }
+}
+
 impl SelRule {
     /// The 1:1 paired Rocq theorem name.
     pub fn theorem(&self) -> String {
         format!("{}_correct", self.name)
     }
+
+    /// Whether the generated function takes a trailing `imm: i32` parameter
+    /// (and the Rocq definition a trailing `(imm : I32.int)` binder) —
+    /// true iff any shape in the sequence reads the dynamic immediate.
+    pub fn has_imm_param(&self) -> bool {
+        self.seq.iter().any(TemplateOp::uses_imm_var)
+    }
 }
 
-use RegVar::{Rd, RdHi, RdLo, Rm, RmHi, RmLo, Rn, RnHi, RnLo, Rs};
+use RegVar::{Rc, Rd, RdHi, RdLo, Rm, RmHi, RmLo, Rn, RnHi, RnLo, Rs};
 
 /// The three aliasing side conditions every two-instruction i64 pair rule
 /// carries (increment 3 — the #632 lesson made explicit): the low-half
@@ -452,7 +535,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.add`: rd = rn + rm",
     },
     SelRule {
@@ -465,7 +548,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.sub`: rd = rn - rm",
     },
     SelRule {
@@ -478,7 +561,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.mul`: rd = rn * rm",
     },
     SelRule {
@@ -491,7 +574,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.and`: rd = rn & rm",
     },
     SelRule {
@@ -504,7 +587,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.or`: rd = rn | rm",
     },
     SelRule {
@@ -517,7 +600,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.xor`: rd = rn ^ rm",
     },
     SelRule {
@@ -537,7 +620,7 @@ pub const RULES: &[SelRule] = &[
                 rm: Rs,
             },
         ],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.rotl`: rotate left by rm = rotate right by (32 - rm), via scratch rs",
     },
     // ---- increment 2: i32 register shifts + rotr (all tier-A: single
@@ -1150,7 +1233,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.clz`: rd = count-leading-zeros of (rn_hi:rn_lo), as i32",
     },
     SelRule {
@@ -1164,7 +1247,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.ctz`: rd = count-trailing-zeros of (rn_hi:rn_lo), as i32",
     },
     SelRule {
@@ -1178,7 +1261,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.popcnt`: rd = population-count of (rn_hi:rn_lo), as i32",
     },
     // i64.mul / i64.shl / i64.shr_u / i64.shr_s — binary register-pair shapes:
@@ -1198,7 +1281,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.mul`: (rd_hi:rd_lo) = (rn_hi:rn_lo) * (rm_hi:rm_lo)",
     },
     SelRule {
@@ -1215,7 +1298,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) << (rm_lo mod 64)",
     },
     SelRule {
@@ -1232,7 +1315,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shr_u`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (logical)",
     },
     SelRule {
@@ -1249,7 +1332,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shr_s`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (arithmetic)",
     },
     // i64.rotl / i64.rotr — rotate shapes: the amount is a SINGLE register
@@ -1268,7 +1351,7 @@ pub const RULES: &[SelRule] = &[
             rn_hi: RnHi,
             shift: RmLo,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.rotl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-left (shift mod 64)",
     },
     SelRule {
@@ -1284,8 +1367,382 @@ pub const RULES: &[SelRule] = &[
             rn_hi: RnHi,
             shift: RmLo,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.rotr`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-right (shift mod 64)",
+    },
+    // ---- increment 5 (RQ-58-SELDSL, #242): dynamic-immediate ALU rules —
+    // the #250/#253 ADDW/SUBW and #209/#248 bitwise-byte immediate folds
+    // `select_with_stack` previously hand-emitted. The rule is universally
+    // quantified over the immediate (a trailing `imm` parameter); the
+    // SELECTOR keeps dispatch ownership of the fold guard (const range +
+    // clean-tail materialization), the rule owns the emission. ----
+    SelRule {
+        name: "rule_i32_add_imm",
+        op: WasmOp::I32Add,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::AddImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.add` (folded const): rd = rn + imm",
+    },
+    SelRule {
+        name: "rule_i32_sub_imm",
+        op: WasmOp::I32Sub,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::SubImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.sub` (folded const): rd = rn - imm",
+    },
+    SelRule {
+        name: "rule_i32_and_imm",
+        op: WasmOp::I32And,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::AndImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.and` (folded const): rd = rn & imm",
+    },
+    SelRule {
+        name: "rule_i32_or_imm",
+        op: WasmOp::I32Or,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::OrrImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.or` (folded const): rd = rn | imm",
+    },
+    SelRule {
+        name: "rule_i32_xor_imm",
+        op: WasmOp::I32Xor,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::EorImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.xor` (folded const): rd = rn ^ imm",
+    },
+    // ---- increment 5: the #258 compare-bound fold, positive-constant half —
+    // `cmp rn, #C; SetCond rd, <cond>` over the dynamic immediate. Like the
+    // reg-reg comparison family (increment 2): NO side conditions (CMP
+    // latches NZCV before rd is written). The negative-constant half
+    // (`cmn rn, #-C`) stays hand-written — see the arm's comment. ----
+    SelRule {
+        name: "rule_i32_eq_imm",
+        op: WasmOp::I32Eq,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.eq` (folded const): rd = if rn == imm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ne_imm",
+        op: WasmOp::I32Ne,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ne` (folded const): rd = if rn != imm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_s_imm",
+        op: WasmOp::I32LtS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_s` (folded const): rd = if rn < imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_u_imm",
+        op: WasmOp::I32LtU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lo,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_u` (folded const): rd = if rn < imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_s_imm",
+        op: WasmOp::I32GtS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Gt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_s` (folded const): rd = if rn > imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_u_imm",
+        op: WasmOp::I32GtU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hi,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_u` (folded const): rd = if rn > imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_s_imm",
+        op: WasmOp::I32LeS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Le,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_s` (folded const): rd = if rn <= imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_u_imm",
+        op: WasmOp::I32LeU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ls,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_u` (folded const): rd = if rn <= imm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_s_imm",
+        op: WasmOp::I32GeS,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ge,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_s` (folded const): rd = if rn >= imm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_u_imm",
+        op: WasmOp::I32GeU,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImmVar { rn: Rn },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hs,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_u` (folded const): rd = if rn >= imm (unsigned) {1} else {0}",
+    },
+    // ---- increment 5: i32<->i64 width conversions. wrap and extend_i32_s
+    // are single pseudo-ops (modeled by I32WrapI64Pseudo /
+    // I64ExtendI32SPseudo); extend_i32_u is the two-instruction
+    // MOV lo + MOVW hi,#0 shape, with an IN-PLACE variant for the
+    // register-coincidence elision (`val == dst_lo` skips the MOV) the
+    // selector performs — the coincidence dispatch stays selector-owned,
+    // each form is its own proven rule. ----
+    SelRule {
+        name: "rule_i32_wrap_i64",
+        op: WasmOp::I32WrapI64,
+        params: &[Rd, RnLo],
+        side_conditions: &[],
+        seq: &[TemplateOp::I32Wrap {
+            rd: Rd,
+            rn_lo: RnLo,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.wrap_i64`: rd = low word of the i64 (high half dropped)",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_s",
+        op: WasmOp::I64ExtendI32S,
+        params: &[RdLo, RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64ExtendS {
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn: Rn,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_s`: (rd_hi:rd_lo) = sign-extended rn",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_u",
+        op: WasmOp::I64ExtendI32U,
+        params: &[RdLo, RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[
+            TemplateOp::MovReg { rd: RdLo, rm: Rn },
+            TemplateOp::MovwImm { rd: RdHi, imm16: 0 },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_u`: rd_lo = rn, rd_hi = 0",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_u_inplace",
+        op: WasmOp::I64ExtendI32U,
+        params: &[RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, Rn)],
+        seq: &[TemplateOp::MovwImm { rd: RdHi, imm16: 0 }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_u` (in place, rd_lo = rn): rd_hi = 0, low half stays rn",
+    },
+    // ---- increment 5: `select` — CMP #0 + flag-preserving IT;MOV
+    // conditional moves (SelectMove never touches NZCV, so a CMP latched
+    // before the first move governs every move in the sequence). Four
+    // shapes, one per emission form the selectors use; the fresh-dst /
+    // in-place choice stays selector-owned as dispatch between proven
+    // rules. ----
+    SelRule {
+        name: "rule_i32_select",
+        op: WasmOp::Select,
+        params: &[Rd, Rc, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rn,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rm,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (fresh dst): rd = if rc != 0 { rn } else { rm }",
+    },
+    SelRule {
+        name: "rule_i32_select_inplace",
+        op: WasmOp::Select,
+        params: &[Rd, Rc, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rn,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (in place, rd holds val2): rd = if rc != 0 { rn } else { rd }",
+    },
+    SelRule {
+        name: "rule_i64_select",
+        op: WasmOp::Select,
+        params: &[RdLo, RdHi, RnLo, RnHi, RmLo, RmHi, Rc],
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RnLo,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RnHi,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RmLo,
+                cond: CondCode::Eq,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RmHi,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (i64 pair): (rd_hi:rd_lo) = if rc != 0 { rn pair } else { rm pair }",
+    },
+    SelRule {
+        name: "rule_i64_select_inplace",
+        op: WasmOp::Select,
+        params: &[RdLo, RdHi, RnLo, RnHi, Rc],
+        side_conditions: &[
+            SideCondition::NotAlias(RdHi, RdLo),
+            SideCondition::NotAlias(RdLo, RnHi),
+        ],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RnLo,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RnHi,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (i64 pair, in place — rd pair holds val2): NE-override with the rn pair",
+    },
+    SelRule {
+        name: "rule_i32_select_default",
+        op: WasmOp::Select,
+        params: &[Rd, Rn, Rm, Rc],
+        side_conditions: &[SideCondition::NotAlias(Rd, Rm)],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::MovReg { rd: Rd, rm: Rn },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rm,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectDefault,
+        doc: "`select` (select_default shape): MOV rd, rn then EQ-override with rm",
     },
 ];
 
@@ -1310,6 +1767,32 @@ pub fn i32_cmp_rule(
         WasmOp::I32LeU => generated::rule_i32_le_u(rd, rn, rm),
         WasmOp::I32GeS => generated::rule_i32_ge_s(rd, rn, rm),
         WasmOp::I32GeU => generated::rule_i32_ge_u(rd, rn, rm),
+        _ => return None,
+    })
+}
+
+/// Dispatch an i32 comparison op with a FOLDED POSITIVE constant bound
+/// (#258, `cmp rn, #C`) to its generated Rocq-proved dynamic-immediate rule
+/// (increment 5). Same contract as [`i32_cmp_rule`]: `None` for ops outside
+/// the family. The negative-constant (`cmn`) half of the fold stays with the
+/// caller.
+pub fn i32_cmp_imm_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn: crate::rules::Reg,
+    imm: i32,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Eq => generated::rule_i32_eq_imm(rd, rn, imm),
+        WasmOp::I32Ne => generated::rule_i32_ne_imm(rd, rn, imm),
+        WasmOp::I32LtS => generated::rule_i32_lt_s_imm(rd, rn, imm),
+        WasmOp::I32LtU => generated::rule_i32_lt_u_imm(rd, rn, imm),
+        WasmOp::I32GtS => generated::rule_i32_gt_s_imm(rd, rn, imm),
+        WasmOp::I32GtU => generated::rule_i32_gt_u_imm(rd, rn, imm),
+        WasmOp::I32LeS => generated::rule_i32_le_s_imm(rd, rn, imm),
+        WasmOp::I32LeU => generated::rule_i32_le_u_imm(rd, rn, imm),
+        WasmOp::I32GeS => generated::rule_i32_ge_s_imm(rd, rn, imm),
+        WasmOp::I32GeU => generated::rule_i32_ge_u_imm(rd, rn, imm),
         _ => return None,
     })
 }
@@ -1497,6 +1980,19 @@ fn dp_reg_expr(op: &str, rd: RegVar, rn: RegVar, rm: RegVar, indent: usize) -> S
         field("rd", rd),
         field("rn", rn),
         rm.rust_name()
+    )
+}
+
+/// Render an `ArmOp` data-processing constructor whose second operand is the
+/// rule's dynamic immediate parameter (`op2: Operand2::Imm(imm)`), exploded
+/// exactly like [`dp_reg_expr`] so the generated file stays a rustfmt fixpoint.
+fn dp_imm_var_expr(op: &str, rd: RegVar, rn: RegVar, indent: usize) -> String {
+    let ind = " ".repeat(indent);
+    let fld = " ".repeat(indent + 4);
+    format!(
+        "ArmOp::{op} {{\n{fld}{},\n{fld}{},\n{fld}op2: Operand2::Imm(imm),\n{ind}}}",
+        field("rd", rd),
+        field("rn", rn)
     )
 }
 
@@ -1699,6 +2195,66 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
                 cond.rust_name()
             )
         }
+        // ---- increment 5 shapes ----
+        TemplateOp::AddImmVar { rd, rn } => dp_imm_var_expr("Add", rd, rn, indent),
+        TemplateOp::SubImmVar { rd, rn } => dp_imm_var_expr("Sub", rd, rn, indent),
+        TemplateOp::AndImmVar { rd, rn } => dp_imm_var_expr("And", rd, rn, indent),
+        TemplateOp::OrrImmVar { rd, rn } => dp_imm_var_expr("Orr", rd, rn, indent),
+        TemplateOp::EorImmVar { rd, rn } => dp_imm_var_expr("Eor", rd, rn, indent),
+        TemplateOp::CmpImmVar { rn } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Cmp {{\n{fld}{},\n{fld}op2: Operand2::Imm(imm),\n{ind}}}",
+                field("rn", rn)
+            )
+        }
+        TemplateOp::MovReg { rd, rm } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Mov {{\n{fld}{},\n{fld}op2: Operand2::Reg({}),\n{ind}}}",
+                field("rd", rd),
+                rm.rust_name()
+            )
+        }
+        TemplateOp::MovwImm { rd, imm16 } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Movw {{\n{fld}{},\n{fld}imm16: {imm16},\n{ind}}}",
+                field("rd", rd)
+            )
+        }
+        TemplateOp::I64ExtendS { rd_lo, rd_hi, rn } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::I64ExtendI32S {{\n{fld}{},\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rdlo", rd_lo),
+                field("rdhi", rd_hi),
+                field("rn", rn)
+            )
+        }
+        TemplateOp::I32Wrap { rd, rn_lo } => {
+            // Short literal: rustfmt keeps it on one line (struct_lit_width),
+            // unlike the wider exploded shapes above.
+            format!(
+                "ArmOp::I32WrapI64 {{ {}, {} }}",
+                field("rd", rd),
+                field("rnlo", rn_lo)
+            )
+        }
+        TemplateOp::SelectMove { rd, rm, cond } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::SelectMove {{\n{fld}{},\n{fld}{},\n{fld}cond: {},\n{ind}}}",
+                field("rd", rd),
+                field("rm", rm),
+                cond.rust_name()
+            )
+        }
     }
 }
 
@@ -1713,11 +2269,14 @@ pub fn generate_lowering_source() -> String {
         "//! GENERATED FILE — DO NOT EDIT BY HAND.\n\
          //!\n\
          //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative\n\
-         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,\n\
+         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4+5, #242,\n\
          //! `docs/design/vcr-sel-001-first-increment.md` +\n\
          //! `docs/design/vcr-sel-001-increment-2.md` +\n\
          //! `docs/design/vcr-sel-001-increment-3.md` +\n\
-         //! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the\n\
+         //! `docs/design/vcr-sel-001-increment-4.md`; increment 5 is RQ-58-SELDSL —\n\
+         //! dynamic-immediate folds, width conversions and the select family, each\n\
+         //! landed WITH the deletion of the hand-written emission it supersedes).\n\
+         //! Pinned up-to-date by the\n\
          //! `generated_lowering_is_up_to_date` test; regenerate with\n\
          //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.\n\
          //!\n\
@@ -1730,11 +2289,14 @@ pub fn generate_lowering_source() -> String {
     );
 
     for rule in RULES {
-        let params: Vec<String> = rule
+        let mut params: Vec<String> = rule
             .params
             .iter()
             .map(|p| format!("{}: Reg", p.rust_name()))
             .collect();
+        if rule.has_imm_param() {
+            params.push("imm: i32".to_string());
+        }
         let params = params.join(", ");
 
         out.push('\n');
@@ -1770,17 +2332,30 @@ pub fn generate_lowering_source() -> String {
             for p in rule.params {
                 out.push_str(&format!("    {}: Reg,\n", p.rust_name()));
             }
+            if rule.has_imm_param() {
+                out.push_str("    imm: i32,\n");
+            }
             out.push_str(&format!(") -> {ret} {{\n"));
         }
         for sc in rule.side_conditions {
             let SideCondition::NotAlias(a, b) = sc;
-            out.push_str(&format!(
-                "    if {a} == {b} {{\n        return Err(\"{name}: side condition violated: \
-                 {a} must not alias {b}\");\n    }}\n",
-                a = a.rust_name(),
-                b = b.rust_name(),
-                name = rule.name
-            ));
+            let a = a.rust_name();
+            let b = b.rust_name();
+            let msg = format!(
+                "{}: side condition violated: {a} must not alias {b}",
+                rule.name
+            );
+            // Mirror rustfmt: the one-line `return Err("..");` only when it
+            // fits max_width; otherwise the wrapped parenthesized form.
+            let one_line = format!("        return Err(\"{msg}\");");
+            if one_line.len() <= 100 {
+                out.push_str(&format!("    if {a} == {b} {{\n{one_line}\n    }}\n"));
+            } else {
+                out.push_str(&format!(
+                    "    if {a} == {b} {{\n        return Err(\n            \"{msg}\",\n        \
+                     );\n    }}\n"
+                ));
+            }
         }
         let (open, close) = if rule.side_conditions.is_empty() {
             ("vec![", "]")
@@ -1985,6 +2560,46 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
             };
             vec![format!("{ctor} {} {} {}", r(rd), r(rn_lo), r(rn_hi))]
         }
+        // ---- increment 5 shapes: the dynamic immediate renders as the bare
+        // Coq binder [imm] (universally quantified I32.int), the fixed MOVW
+        // constant as [I32.repr n]; [SelectMove] denotes the flat model's
+        // MOV<cc> family (the same constructors SetCond's expansion uses). ----
+        TemplateOp::AddImmVar { rd, rn } => {
+            vec![format!("ADD {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::SubImmVar { rd, rn } => {
+            vec![format!("SUB {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::AndImmVar { rd, rn } => {
+            vec![format!("AND {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::OrrImmVar { rd, rn } => {
+            vec![format!("ORR {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::EorImmVar { rd, rn } => {
+            vec![format!("EOR {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::CmpImmVar { rn } => vec![format!("CMP {} (Imm imm)", r(rn))],
+        TemplateOp::MovReg { rd, rm } => {
+            vec![format!("MOV {} (Reg {})", r(rd), r(rm))]
+        }
+        TemplateOp::MovwImm { rd, imm16 } => {
+            vec![format!("MOVW {} (I32.repr {imm16})", r(rd))]
+        }
+        TemplateOp::I64ExtendS { rd_lo, rd_hi, rn } => {
+            vec![format!(
+                "I64ExtendI32SPseudo {} {} {}",
+                r(rd_lo),
+                r(rd_hi),
+                r(rn)
+            )]
+        }
+        TemplateOp::I32Wrap { rd, rn_lo } => {
+            vec![format!("I32WrapI64Pseudo {} {}", r(rd), r(rn_lo))]
+        }
+        TemplateOp::SelectMove { rd, rm, cond } => {
+            vec![format!("{} {} (Reg {})", cond.coq_movcc(), r(rd), r(rm))]
+        }
     }
 }
 
@@ -1995,8 +2610,15 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
 pub fn emit_rocq_definition(rule: &SelRule) -> String {
     let binders: Vec<&str> = rule.params.iter().map(|p| p.coq_name()).collect();
     let instrs: Vec<String> = rule.seq.iter().flat_map(coq_instrs).collect();
+    // Increment 5: rules over a dynamic immediate get a second binder group —
+    // the universally-quantified [(imm : I32.int)] the sequence references.
+    let imm_binder = if rule.has_imm_param() {
+        " (imm : I32.int)"
+    } else {
+        ""
+    };
     format!(
-        "Definition {} ({} : arm_reg) : arm_program :=\n  [{}].",
+        "Definition {} ({} : arm_reg){imm_binder} : arm_program :=\n  [{}].",
         rule.name,
         binders.join(" "),
         instrs.join("; "),

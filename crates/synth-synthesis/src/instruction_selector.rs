@@ -6911,26 +6911,13 @@ impl InstructionSelector {
             Select => {
                 // WASM select: pops condition, val2, val1 from stack;
                 // pushes val1 if condition != 0, else val2.
-                // In select_default (non-stack mode), we emit:
-                //   CMP rcond, #0
-                //   MOV rd, rval1     (default: pick val1)
-                //   IT EQ; MOVEQ rd, rval2  (override if cond == 0)
+                // CMP rcond, #0; MOV rd, rval1; IT EQ; MOVEQ rd, rval2 —
+                // from the Rocq-proved rule (increment 5, RQ-58-SELDSL),
+                // which carries the rd <> rm side condition (the EQ override
+                // must not read a value the MOV just destroyed) Ok-or-Err.
                 let rcond = self.regs.alloc_reg();
-                vec![
-                    ArmOp::Cmp {
-                        rn: rcond,
-                        op2: Operand2::Imm(0),
-                    },
-                    ArmOp::Mov {
-                        rd,
-                        op2: Operand2::Reg(rn),
-                    },
-                    ArmOp::SelectMove {
-                        rd,
-                        rm,
-                        cond: Condition::EQ,
-                    },
-                ]
+                crate::sel_dsl::generated::rule_i32_select_default(rd, rn, rm, rcond)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             // ===== i64 operations using register pairs on 32-bit ARM =====
@@ -7067,95 +7054,34 @@ impl InstructionSelector {
             )
             .expect("binary i64 comparison has a generated rule"),
 
-            // i64 multiply: UMULL + MLA cross products
-            I64Mul => {
-                vec![ArmOp::I64Mul {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
+            // i64 multiply / shifts: single pseudo-ops over the fixed
+            // (R0:R1, R2:R3) pairs — from the Rocq-proved rules, the only
+            // path (RQ-58-SELDSL wires select_default too; the in-place
+            // R0:R1 shape satisfies the rd_hi <> rd_lo side condition, and
+            // the Err arm stays loud, never silent).
+            I64Mul | I64Shl | I64ShrU | I64ShrS => crate::sel_dsl::i64_pair_bin_rule(
+                wasm_op,
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .expect("binary i64 pair op has a generated rule")
+            .map_err(synth_core::Error::synthesis)?,
+
+            // i64 rotates: amount is the single low-half register R2.
+            I64Rotl | I64Rotr => {
+                crate::sel_dsl::i64_rot_rule(wasm_op, Reg::R0, Reg::R1, Reg::R0, Reg::R1, Reg::R2)
+                    .expect("i64 rotate op has a generated rule")
+                    .map_err(synth_core::Error::synthesis)?
             }
 
-            // i64 shifts: multi-instruction funnel shifts
-            I64Shl => {
-                vec![ArmOp::I64Shl {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64ShrU => {
-                vec![ArmOp::I64ShrU {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64ShrS => {
-                vec![ArmOp::I64ShrS {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64Rotl => {
-                vec![ArmOp::I64Rotl {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                    shift: Reg::R2,
-                }]
-            }
-
-            I64Rotr => {
-                vec![ArmOp::I64Rotr {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                    shift: Reg::R2,
-                }]
-            }
-
-            // i64 bit manipulation
-            I64Clz => {
-                vec![ArmOp::I64Clz {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
-            }
-
-            I64Ctz => {
-                vec![ArmOp::I64Ctz {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
-            }
-
-            I64Popcnt => {
-                vec![ArmOp::I64Popcnt {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
+            // i64 bit manipulation: single pseudo-op, count into R0.
+            I64Clz | I64Ctz | I64Popcnt => {
+                crate::sel_dsl::i64_unary_count_rule(wasm_op, Reg::R0, Reg::R0, Reg::R1)
+                    .expect("i64 bit-count op has a generated rule")
             }
 
             // i64 division/remainder
@@ -11215,14 +11141,23 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Add {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Both emission paths are Rocq-proved rules (increment 5,
+                    // RQ-58-SELDSL): the folded form `rule_i32_add_imm`, the
+                    // reg-reg form `rule_i32_add` — the hand-written
+                    // ArmOp::Add construction is deleted.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_add_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_add(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.add operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -11286,14 +11221,21 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sub {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rules on both paths (increment 5,
+                    // RQ-58-SELDSL): rule_i32_sub_imm / rule_i32_sub.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_sub_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_sub(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.sub operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -11326,14 +11268,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Mul {
-                            rd: dst,
-                            rn: a,
-                            rm: b,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): the hand-written ArmOp::Mul construction
+                    // is deleted.
+                    for rule_op in crate::sel_dsl::generated::rule_i32_mul(dst, a, b) {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -11399,14 +11342,21 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::And {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rules on both paths (increment 5,
+                    // RQ-58-SELDSL): rule_i32_and_imm / rule_i32_and.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_and_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_and(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.and operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -11470,14 +11420,21 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Orr {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rules on both paths (increment 5,
+                    // RQ-58-SELDSL): rule_i32_or_imm / rule_i32_or.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_or_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_or(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.or operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -11541,14 +11498,21 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Eor {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rules on both paths (increment 5,
+                    // RQ-58-SELDSL): rule_i32_xor_imm / rule_i32_xor.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_xor_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_xor(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.xor operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -14958,24 +14922,18 @@ impl InstructionSelector {
                         cf.add_instruction();
                         // CMP first, then the single flag-preserving IT;MOV —
                         // `rb` already holds val2's pattern (the EQ result), so
-                        // only the NE override is needed (in-place form).
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: rb,
-                                rm: ra,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // only the NE override is needed (in-place form). Both
+                        // come from the Rocq-proved in-place select rule
+                        // (increment 5, RQ-58-SELDSL).
+                        for rule_op in
+                            crate::sel_dsl::generated::rule_i32_select_inplace(rb, cond_reg, ra)
+                        {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         // Free the two consumed S-registers (home-aware), then
                         // home the selected pattern in a fresh S-register.
                         free_vfp_temp(&mut vfp_used, &vfp_home, s1);
@@ -15035,34 +14993,22 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        // Two IT;MOVs — each is the flag-preserving 0x46xx
-                        // MOV, so the second still sees the CMP's flags.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: blo,
-                                rm: alo,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: bhi,
-                                rm: ahi,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // CMP + two flag-preserving IT;MOVs (the b pair holds
+                        // val2's pattern, only the NE override is needed) —
+                        // from the Rocq-proved in-place i64-pair select rule
+                        // (increment 5, RQ-58-SELDSL), pair side conditions
+                        // Ok-or-Err.
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_select_inplace(
+                            blo, bhi, alo, ahi, cond_reg,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         free_vfp_dtemp(&mut vfp_used, &vfp_home, d1);
                         free_vfp_dtemp(&mut vfp_used, &vfp_home, d2);
                         let dd = alloc_vfp_dtemp(&mut vfp_used)?;
@@ -15141,26 +15087,18 @@ impl InstructionSelector {
                             idx,
                         )?;
                         let hi1 = i64_pair_hi(val1)?;
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        // Four IT;MOVs (the flag-preserving 0x46xx MOV — the
-                        // CMP flags survive all four). dst is disjoint from
-                        // both source pairs by construction, so the NE/EQ
-                        // moves never clobber a source half they still need.
-                        for (rd, rm, cond) in [
-                            (dlo, val1, Condition::NE),
-                            (dhi, hi1, Condition::NE),
-                            (dlo, val2, Condition::EQ),
-                            (dhi, hi2, Condition::EQ),
-                        ] {
+                        // CMP + four flag-preserving IT;MOVs — from the
+                        // Rocq-proved i64-pair select rule (increment 5,
+                        // RQ-58-SELDSL). The pair aliasing constraints the
+                        // old comment argued by construction are the rule's
+                        // machine-checked side conditions, Ok-or-Err.
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_select(
+                            dlo, dhi, val1, hi1, val2, hi2, cond_reg,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
-                                op: ArmOp::SelectMove { rd, rm, cond },
+                                op: rule_op,
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
@@ -15234,35 +15172,19 @@ impl InstructionSelector {
                     // dst with cond/val1/val2 (cond is already consumed by CMP).
                     // In the in-place case there is NO instruction between the CMP
                     // and the conditional move, so the flags are likewise intact.
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: cond_reg,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-
-                    // cond != 0 → dst = val1
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::SelectMove {
-                            rd: dst,
-                            rm: val1,
-                            cond: Condition::NE,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-
-                    // cond == 0 → dst = val2. Skipped when dst already IS val2
-                    // (in-place): the EQ branch is a no-op move on itself.
-                    if !in_place {
+                    // Emission from the Rocq-proved select rules (increment
+                    // 5, RQ-58-SELDSL): the in-place/fresh-dst choice above
+                    // stays selector-owned as dispatch between the two proven
+                    // forms — the in-place theorem pins the EQ fall-through
+                    // (dst keeps val2) that the elision relies on.
+                    let rule_ops = if in_place {
+                        crate::sel_dsl::generated::rule_i32_select_inplace(dst, cond_reg, val1)
+                    } else {
+                        crate::sel_dsl::generated::rule_i32_select(dst, cond_reg, val1, val2)
+                    };
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: dst,
-                                rm: val2,
-                                cond: Condition::EQ,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16032,24 +15954,26 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if val != dst_lo {
+                    // Rocq-proved rules as the only path (increment 5,
+                    // RQ-58-SELDSL): the register-coincidence elision
+                    // (val == dst_lo skips the MOV) stays selector-owned as
+                    // DISPATCH between two proven rules — the in-place form's
+                    // theorem pins the low half under rd_hi <> rn, which is
+                    // exactly what the elision relies on.
+                    let rule_ops = if val != dst_lo {
+                        crate::sel_dsl::generated::rule_i64_extend_i32_u(dst_lo, dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?
+                    } else {
+                        crate::sel_dsl::generated::rule_i64_extend_i32_u_inplace(dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?
+                    };
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Mov {
-                                rd: dst_lo,
-                                op2: Operand2::Reg(val),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
                     }
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Movw {
-                            rd: dst_hi,
-                            imm16: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
                     stack.push(StackVal::i64(dst_lo));
                 }
 
@@ -16071,15 +15995,19 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I64ExtendI32S {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rn: val,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): rule_i64_extend_i32_s, with the
+                    // rd_hi <> rd_lo pair side condition Ok-or-Err.
+                    let rule_ops =
+                        crate::sel_dsl::generated::rule_i64_extend_i32_s(dst_lo, dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i64(dst_lo));
                 }
 
@@ -16362,15 +16290,17 @@ impl InstructionSelector {
                     } else {
                         None
                     };
-                    // The plain reg-reg CMP+SetCond pair is served from the
-                    // Rocq-proved rule table (the only reg-reg path,
-                    // RQ-58-RETIRE) — `reg_operands` records the operand
-                    // registers so the dispatch below can call the rule with
-                    // the registers the selector chose (the #258 imm-fold
-                    // peephole stays hand-written, outside the reg-reg
-                    // rule's shape).
+                    // Rocq-proved rules on the reg-reg path (increment 2) AND
+                    // the positive imm-fold path (increment 5,
+                    // `rule_i32_*_imm`: `cmp a, #C; SetCond`). `reg_operands`
+                    // records the reg-reg operand pair for its dispatch.
+                    // RESIDUAL, not superseded: the NEGATIVE fold half
+                    // (`cmn a, #-C`) has no rule — its add-derived NZCV needs
+                    // a sub<->add flag-correspondence lemma family the Rocq
+                    // model does not carry — so its hand-written Cmn+SetCond
+                    // emission stays (see the else branch below).
                     let mut reg_operands = None;
-                    let cmp_op = if let Some((is_neg, mag)) = fold {
+                    let (a, imm_fold) = if let Some((is_neg, mag)) = fold {
                         let _b = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -16388,17 +16318,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        if is_neg {
-                            ArmOp::Cmn {
-                                rn: a,
-                                op2: Operand2::Imm(mag),
-                            }
-                        } else {
-                            ArmOp::Cmp {
-                                rn: a,
-                                op2: Operand2::Imm(mag),
-                            }
-                        }
+                        (a, Some((is_neg, mag)))
                     } else {
                         let b = pop_operand(
                             &mut stack,
@@ -16417,10 +16337,7 @@ impl InstructionSelector {
                             idx,
                         )?;
                         reg_operands = Some((a, b));
-                        ArmOp::Cmp {
-                            rn: a,
-                            op2: Operand2::Reg(b),
-                        }
+                        (a, None)
                     };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -16434,27 +16351,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    let cond = match op {
-                        I32Eq => Condition::EQ,
-                        I32Ne => Condition::NE,
-                        I32LtS => Condition::LT,
-                        I32LtU => Condition::LO,
-                        I32GtS => Condition::GT,
-                        I32GtU => Condition::HI,
-                        I32LeS => Condition::LE,
-                        I32LeU => Condition::LS,
-                        I32GeS => Condition::GE,
-                        I32GeU => Condition::HS,
-                        _ => unreachable!(),
+                    let dsl_ops = match imm_fold {
+                        None => {
+                            let (a, b) = reg_operands.expect("reg-reg operands recorded");
+                            crate::sel_dsl::i32_cmp_rule(op, dst, a, b)
+                        }
+                        Some((false, mag)) => crate::sel_dsl::i32_cmp_imm_rule(op, dst, a, mag),
+                        // cmn residual: falls through to the hand-written arm.
+                        Some((true, _)) => None,
                     };
-                    // The reg-reg pair comes from the generated Rocq-proved
-                    // rule — [Cmp {rn:a, Reg(b)}, SetCond {dst, cond}] — as
-                    // the only reg-reg path (RQ-58-RETIRE). RESIDUAL, not
-                    // superseded: the #258 cmp/cmn IMM-FOLD case below has no
-                    // DSL rule (no CmpImm-shaped rule exists), so its
-                    // hand-written Cmp+SetCond emission stays.
-                    let dsl_ops =
-                        reg_operands.and_then(|(a, b)| crate::sel_dsl::i32_cmp_rule(op, dst, a, b));
                     if let Some(rule_ops) = dsl_ops {
                         for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
@@ -16464,8 +16369,26 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                     } else {
+                        let (_, mag) =
+                            imm_fold.expect("only the negative fold reaches the cmn residual");
+                        let cond = match op {
+                            I32Eq => Condition::EQ,
+                            I32Ne => Condition::NE,
+                            I32LtS => Condition::LT,
+                            I32LtU => Condition::LO,
+                            I32GtS => Condition::GT,
+                            I32GtU => Condition::HI,
+                            I32LeS => Condition::LE,
+                            I32LeU => Condition::LS,
+                            I32GeS => Condition::GE,
+                            I32GeU => Condition::HS,
+                            _ => unreachable!(),
+                        };
                         instructions.push(ArmInstruction {
-                            op: cmp_op,
+                            op: ArmOp::Cmn {
+                                rn: a,
+                                op2: Operand2::Imm(mag),
+                            },
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -16608,24 +16531,20 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Rsb {
-                            rd: tmp,
-                            rn: shift_amt,
-                            imm: 32,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::RorReg {
-                            rd: dst,
-                            rn: value,
-                            rm: tmp,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // RSB+ROR from the Rocq-proved rule — the only path
+                    // (increment 5, RQ-58-SELDSL closes the #999 residual:
+                    // the rule existed but was never wired here). Carries the
+                    // `rs <> rn` scratch side condition, Ok-or-Err.
+                    let rule_ops =
+                        crate::sel_dsl::generated::rule_i32_rotl(dst, value, shift_amt, tmp)
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -17220,14 +17139,16 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I32WrapI64 {
-                            rd: dst,
-                            rnlo: src_lo,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): the pseudo-op comes from
+                    // rule_i32_wrap_i64.
+                    for rule_op in crate::sel_dsl::generated::rule_i32_wrap_i64(dst, src_lo) {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -18084,16 +18005,17 @@ mod tests {
         }
     }
 
-    /// RQ-58-RETIRE residual pin (#242/#258): the imm-fold comparison
-    /// peephole (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg
-    /// `i32_cmp_rule`'s shape and its hand-written Cmp/Cmn+SetCond emission
-    /// deliberately SURVIVED the arm retirement (no CmpImm-shaped rule
-    /// exists). This pins that the fold still fires — if a future rule
-    /// covers the imm shape, this test is the one to retire with it.
+    /// #242/#258 fold pins, updated by RQ-58-SELDSL: the POSITIVE fold half
+    /// (`cmp a, #C`) is now served by the Rocq-proved `rule_i32_*_imm`
+    /// family (increment 5) — this asserts the fold still fires and lands on
+    /// the imm-Cmp shape. The NEGATIVE half (`cmn a, #-C`) remains the
+    /// hand-written RESIDUAL (its add-derived NZCV needs a sub<->add
+    /// flag-correspondence lemma family the Rocq model does not carry) —
+    /// if a future cmn rule covers it, this is the pin to retire with it.
     #[test]
-    fn cmp_imm_fold_residual_path_stays_handwritten_258() {
+    fn cmp_imm_fold_rule_path_and_cmn_residual_258() {
         use synth_core::WasmOp;
-        for (c, opv) in [(5i32, WasmOp::I32Eq), (-7i32, WasmOp::I32LtS)] {
+        for (c, opv, expect_cmn) in [(5i32, WasmOp::I32Eq, false), (-7i32, WasmOp::I32LtS, true)] {
             let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Const(c), opv];
 
             let emitted: Vec<ArmOp> = InstructionSelector::new(vec![])
@@ -18103,22 +18025,34 @@ mod tests {
                 .map(|i| i.op)
                 .collect();
 
-            // The fold actually fired (imm cmp/cmn present)...
-            assert!(
-                emitted.iter().any(|o| matches!(
-                    o,
-                    ArmOp::Cmp {
-                        op2: Operand2::Imm(_),
-                        ..
-                    } | ArmOp::Cmn {
-                        op2: Operand2::Imm(_),
-                        ..
-                    }
-                )),
-                "probe did not exercise the imm-fold path"
-            );
-            // ...and the reg-reg rule shape did NOT (no reg-reg Cmp), i.e.
-            // the probe really took the residual hand-written emission.
+            // The fold actually fired, on the expected shape: positive const
+            // → imm Cmp (the increment-5 rule emission), negative const →
+            // imm Cmn (the hand-written residual).
+            if expect_cmn {
+                assert!(
+                    emitted.iter().any(|o| matches!(
+                        o,
+                        ArmOp::Cmn {
+                            op2: Operand2::Imm(_),
+                            ..
+                        }
+                    )),
+                    "negative-const probe did not take the cmn residual"
+                );
+            } else {
+                assert!(
+                    emitted.iter().any(|o| matches!(
+                        o,
+                        ArmOp::Cmp {
+                            op2: Operand2::Imm(_),
+                            ..
+                        }
+                    )),
+                    "positive-const probe did not take the imm-Cmp rule path"
+                );
+            }
+            // Neither probe may fall back to the reg-reg shape — the fold
+            // must have consumed the const materialization.
             assert!(
                 !emitted.iter().any(|o| matches!(
                     o,

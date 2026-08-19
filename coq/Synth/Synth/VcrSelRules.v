@@ -1329,3 +1329,500 @@ Proof.
   - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
   - apply get_set_reg_eq.
 Qed.
+
+(** ** Increment 5 (RQ-58-SELDSL, #242): dynamic-immediate + move/select tier.
+
+    New in increment 5, rules may be additionally quantified over a DYNAMIC
+    immediate operand [(imm : I32.int)] — the #250/#253 ADDW/SUBW and
+    #209/#248 bitwise-byte folds, and the #258 compare-bound fold, that
+    [select_with_stack] previously hand-emitted next to the reg-reg rule
+    calls. The SELECTOR keeps ownership of the fold GUARD (const range,
+    clean-tail materialization); the rule owns the emission, so the theorem
+    quantifies over every immediate the guard can admit (and more — the
+    model sequence is correct for ALL 32-bit immediates; the encoder's
+    range restriction is enforced upstream by the guard, exactly as the
+    register side conditions are enforced by the allocator).
+
+    Statement style follows increment 3 (value-level T1, no [wstate]): the
+    WASM-side spec function is named directly in the conclusion. For the
+    fused const+op shapes there IS no single WASM instruction — the rule
+    covers the two-instruction [I32Const c; <op>] source sequence after
+    #933 boundary normalization, so the value-level statement over
+    normalized [I32.int] values is the honest one. *)
+
+Definition rule_i32_add_imm := Gen.rule_i32_add_imm.
+
+(** Tier-A single-instruction discharge, immediate operand: same skeleton as
+    [synth_binop_proof_poly] with the second operand hypothesis replaced by
+    the quantified immediate itself ([eval_operand2 (Imm imm)] is [imm]). *)
+
+Theorem rule_i32_add_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_add_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.add v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_add_imm, Gen.rule_i32_add_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+Definition rule_i32_sub_imm := Gen.rule_i32_sub_imm.
+Definition rule_i32_and_imm := Gen.rule_i32_and_imm.
+Definition rule_i32_or_imm := Gen.rule_i32_or_imm.
+Definition rule_i32_xor_imm := Gen.rule_i32_xor_imm.
+
+Theorem rule_i32_sub_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_sub_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.sub v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_sub_imm, Gen.rule_i32_sub_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+Theorem rule_i32_and_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_and_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.and v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_and_imm, Gen.rule_i32_and_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+Theorem rule_i32_or_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_or_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.or v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_or_imm, Gen.rule_i32_or_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+Theorem rule_i32_xor_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_xor_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.xor v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_xor_imm, Gen.rule_i32_xor_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+(** ** Increment-5 comparison-immediate rules — the #258 compare-bound fold's
+    positive-constant half ([cmp rn, #C; SetCond rd, <cond>]). Same flag
+    lemmas as the reg-reg comparison family: [eval_operand2 (Imm imm)] is
+    [imm], so every [compute_*_flag (I32.sub v1 v2)] lemma instantiates with
+    [v2 := imm] directly. NO side conditions (CMP latches NZCV before [rd]
+    is written). The negative-constant ([cmn]) half of the fold has no rule —
+    its add-derived NZCV needs a sub<->add flag-correspondence lemma family
+    the model does not carry; it stays hand-written in the selector. *)
+
+Definition rule_i32_eq_imm := Gen.rule_i32_eq_imm.
+Definition rule_i32_ne_imm := Gen.rule_i32_ne_imm.
+Definition rule_i32_lt_s_imm := Gen.rule_i32_lt_s_imm.
+Definition rule_i32_lt_u_imm := Gen.rule_i32_lt_u_imm.
+Definition rule_i32_gt_s_imm := Gen.rule_i32_gt_s_imm.
+Definition rule_i32_gt_u_imm := Gen.rule_i32_gt_u_imm.
+Definition rule_i32_le_s_imm := Gen.rule_i32_le_s_imm.
+Definition rule_i32_le_u_imm := Gen.rule_i32_le_u_imm.
+Definition rule_i32_ge_s_imm := Gen.rule_i32_ge_s_imm.
+Definition rule_i32_ge_u_imm := Gen.rule_i32_ge_u_imm.
+
+(** Discharge tactic: [synth_cmp_binop_proof_poly] with the second operand
+    hypothesis replaced by the quantified immediate. *)
+Ltac synth_cmp_imm_proof_poly flag_lemma :=
+  intros astate v1 imm rd rn HR0;
+  unfold rule_i32_eq_imm, rule_i32_ne_imm, rule_i32_lt_s_imm,
+         rule_i32_lt_u_imm, rule_i32_gt_s_imm, rule_i32_gt_u_imm,
+         rule_i32_le_s_imm, rule_i32_le_u_imm, rule_i32_ge_s_imm,
+         rule_i32_ge_u_imm,
+         Gen.rule_i32_eq_imm, Gen.rule_i32_ne_imm, Gen.rule_i32_lt_s_imm,
+         Gen.rule_i32_lt_u_imm, Gen.rule_i32_gt_s_imm, Gen.rule_i32_gt_u_imm,
+         Gen.rule_i32_le_s_imm, Gen.rule_i32_le_u_imm, Gen.rule_i32_ge_s_imm,
+         Gen.rule_i32_ge_u_imm;
+  simpl;
+  rewrite HR0; simpl;
+  rewrite flag_lemma;
+  destruct (_ v1 imm);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+
+Theorem rule_i32_eq_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_eq_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly z_flag_sub_eq. Qed.
+
+Theorem rule_i32_ne_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ne_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ne v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_ne_imm, Gen.rule_i32_ne_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- flags_ne.
+  destruct (compute_z_flag (I32.sub v1 imm));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_lt_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_lt_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.lts v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_lt_s_imm, Gen.rule_i32_lt_s_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- nv_flag_sub_lts.
+  destruct (Bool.eqb (compute_n_flag (I32.sub v1 imm)) (compute_v_flag_sub v1 imm));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_lt_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_lt_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ltu v1 imm then I32.one else I32.zero).
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_lt_u_imm, Gen.rule_i32_lt_u_imm; simpl.
+  rewrite HR0; simpl.
+  rewrite <- flags_ltu.
+  destruct (compute_c_flag_sub v1 imm);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
+
+Theorem rule_i32_gt_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_gt_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.gts v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_gts. Qed.
+
+Theorem rule_i32_gt_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_gt_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.gtu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_gtu. Qed.
+
+Theorem rule_i32_le_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_le_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.les v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_les. Qed.
+
+Theorem rule_i32_le_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_le_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.leu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_leu. Qed.
+
+Theorem rule_i32_ge_s_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ge_s_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.ges v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_ges. Qed.
+
+Theorem rule_i32_ge_u_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_ge_u_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.geu v1 imm then I32.one else I32.zero).
+Proof. synth_cmp_imm_proof_poly flags_geu. Qed.
+
+(** ** Increment-5 width conversions. [rule_i32_wrap_i64] and
+    [rule_i64_extend_i32_s] are single-pseudo-op shapes at the same
+    pseudo-op tier as the increment-4 i64 rules ([I32WrapI64Pseudo] /
+    [I64ExtendI32SPseudo]; the sign-extended high half is pinned to the
+    concrete [I32.shrs rn 31] via [i64_extend_s_hi_spec]).
+    [rule_i64_extend_i32_u] is a real two-instruction shape
+    (MOV lo; MOVW hi,#0) with an IN-PLACE variant for the selector's
+    register-coincidence elision ([rd_lo = rn] skips the MOV) — the
+    in-place theorem's conclusion pins the low half of the PRE-state value,
+    which is exactly the property the elision relies on, under the
+    [rdhi <> rn] hypothesis that makes it true. *)
+
+Definition rule_i32_wrap_i64 := Gen.rule_i32_wrap_i64.
+Definition rule_i64_extend_i32_s := Gen.rule_i64_extend_i32_s.
+Definition rule_i64_extend_i32_u := Gen.rule_i64_extend_i32_u.
+Definition rule_i64_extend_i32_u_inplace := Gen.rule_i64_extend_i32_u_inplace.
+
+Theorem rule_i32_wrap_i64_correct : forall astate lo1 rd rnlo,
+  get_reg astate rnlo = lo1 ->
+  exists astate',
+    exec_program (rule_i32_wrap_i64 rd rnlo) astate = Some astate' /\
+    get_reg astate' rd = lo1.
+Proof.
+  intros astate lo1 rd rnlo HR0.
+  unfold rule_i32_wrap_i64, Gen.rule_i32_wrap_i64; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. exact HR0.
+Qed.
+
+Theorem rule_i64_extend_i32_s_correct : forall astate v rdlo rdhi rn,
+  rdhi <> rdlo ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_s rdlo rdhi rn) astate = Some astate' /\
+    get_reg astate' rdlo = v /\
+    get_reg astate' rdhi = I32.shrs v (I32.repr 31).
+Proof.
+  intros astate v rdlo rdhi rn Hdd HR0.
+  unfold rule_i64_extend_i32_s, Gen.rule_i64_extend_i32_s; simpl.
+  rewrite HR0.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - rewrite get_set_reg_eq. apply i64_extend_s_hi_spec.
+Qed.
+
+Theorem rule_i64_extend_i32_u_correct : forall astate v rdlo rdhi rn,
+  rdhi <> rdlo ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_u rdlo rdhi rn) astate = Some astate' /\
+    get_reg astate' rdlo = v /\
+    get_reg astate' rdhi = I32.zero.
+Proof.
+  intros astate v rdlo rdhi rn Hdd HR0.
+  unfold rule_i64_extend_i32_u, Gen.rule_i64_extend_i32_u; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. rewrite get_set_reg_eq. exact HR0.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_extend_i32_u_inplace_correct : forall astate v rdhi rn,
+  rdhi <> rn ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_u_inplace rdhi rn) astate = Some astate' /\
+    get_reg astate' rn = v /\
+    get_reg astate' rdhi = I32.zero.
+Proof.
+  intros astate v rdhi rn Hdn HR0.
+  unfold rule_i64_extend_i32_u_inplace, Gen.rule_i64_extend_i32_u_inplace; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdn. exact HR0.
+  - apply get_set_reg_eq.
+Qed.
+
+(** ** Increment-5 `select` rules. One [CMP rc (Imm 0)] latches NZCV; the
+    [MOV<cc>] conditional moves (the model of the flag-preserving IT;MOV
+    [ArmOp::SelectMove]) never write the flags, so a single compare governs
+    every move in the sequence — exactly the property the hand-written arm's
+    comment argued informally after the gale br_table flag-clobber bug. The
+    fresh-dst i32 form needs NO side conditions (exactly one move fires per
+    branch); the i64 pair form carries the standard three pair-aliasing
+    hypotheses; the select_default shape (unconditional MOV then EQ
+    override) needs [rd <> rm] — the override must not read a value the MOV
+    just destroyed. *)
+
+Definition rule_i32_select := Gen.rule_i32_select.
+Definition rule_i32_select_inplace := Gen.rule_i32_select_inplace.
+Definition rule_i64_select := Gen.rule_i64_select.
+Definition rule_i64_select_inplace := Gen.rule_i64_select_inplace.
+Definition rule_i32_select_default := Gen.rule_i32_select_default.
+
+(** Increment-5 select discharge helper: one reduction+flag-rewrite pass.
+    A conditional instruction's exec sits under the PREVIOUS instruction's
+    match binder, so its flag read only becomes concrete after the previous
+    conditional is resolved — iterate this step (progress-guarded) until the
+    whole chain is reduced. [Hc] is the destructed compare-condition
+    equation; rewriting it resolves each conditional as it surfaces. *)
+Ltac select_step Hc :=
+  cbn [exec_program exec_instr eval_operand2];
+  repeat rewrite flags_set_reg;
+  repeat rewrite flags_set_flags;
+  repeat rewrite flag_z_update_flags_arith;
+  repeat rewrite z_flag_sub_eq;
+  repeat rewrite Hc.
+
+Theorem rule_i32_select_correct : forall astate c v1 v2 rd rc rn rm,
+  get_reg astate rc = c ->
+  get_reg astate rn = v1 ->
+  get_reg astate rm = v2 ->
+  exists astate',
+    exec_program (rule_i32_select rd rc rn rm) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
+Proof.
+  intros astate c v1 v2 rd rc rn rm HRc HRn HRm.
+  unfold rule_i32_select, Gen.rule_i32_select.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
+  - (* cond = 0: NE move skipped, EQ move writes v2 *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRm.
+  - (* cond <> 0: NE move writes v1, EQ move skipped *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
+Qed.
+
+Theorem rule_i32_select_inplace_correct : forall astate c v1 v2 rd rc rn,
+  get_reg astate rc = c ->
+  get_reg astate rn = v1 ->
+  get_reg astate rd = v2 ->
+  exists astate',
+    exec_program (rule_i32_select_inplace rd rc rn) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
+Proof.
+  intros astate c v1 v2 rd rc rn HRc HRn HRd.
+  unfold rule_i32_select_inplace, Gen.rule_i32_select_inplace.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
+  - (* cond = 0: nothing writes rd — it keeps val2 *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_reg_set_flags. exact HRd.
+  - (* cond <> 0: NE move writes v1 *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
+Qed.
+
+Theorem rule_i64_select_correct :
+  forall astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi rc,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  rdlo <> rmhi ->
+  get_reg astate rc = c ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_select rdlo rdhi rnlo rnhi rmlo rmhi rc) astate
+      = Some astate' /\
+    get_reg astate' rdlo = (if I32.eq c I32.zero then lo2 else lo1) /\
+    get_reg astate' rdhi = (if I32.eq c I32.zero then hi2 else hi1).
+Proof.
+  intros astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi rc
+         Hdd Hdnh Hdmh HRc HRnl HRnh HRml HRmh.
+  unfold rule_i64_select, Gen.rule_i64_select.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
+  - (* cond = 0: the two EQ moves write the rm pair *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity | split].
+    + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
+      rewrite get_set_reg_eq.
+      rewrite get_reg_set_flags. exact HRml.
+    + rewrite get_set_reg_eq.
+      rewrite (get_set_reg_neq _ rdlo rmhi) by exact Hdmh.
+      rewrite get_reg_set_flags. exact HRmh.
+  - (* cond <> 0: the two NE moves write the rn pair *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity | split].
+    + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
+      rewrite get_set_reg_eq.
+      rewrite get_reg_set_flags. exact HRnl.
+    + rewrite get_set_reg_eq.
+      rewrite (get_set_reg_neq _ rdlo rnhi) by exact Hdnh.
+      rewrite get_reg_set_flags. exact HRnh.
+Qed.
+
+Theorem rule_i64_select_inplace_correct :
+  forall astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rc,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  get_reg astate rc = c ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rdlo = lo2 ->
+  get_reg astate rdhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_select_inplace rdlo rdhi rnlo rnhi rc) astate
+      = Some astate' /\
+    get_reg astate' rdlo = (if I32.eq c I32.zero then lo2 else lo1) /\
+    get_reg astate' rdhi = (if I32.eq c I32.zero then hi2 else hi1).
+Proof.
+  intros astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rc
+         Hdd Hdnh HRc HRnl HRnh HRdl HRdh.
+  unfold rule_i64_select_inplace, Gen.rule_i64_select_inplace.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
+  - (* cond = 0: nothing writes — the rd pair keeps val2 *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity | split].
+    + rewrite get_reg_set_flags. exact HRdl.
+    + rewrite get_reg_set_flags. exact HRdh.
+  - (* cond <> 0: the two NE moves write the rn pair *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity | split].
+    + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
+      rewrite get_set_reg_eq.
+      rewrite get_reg_set_flags. exact HRnl.
+    + rewrite get_set_reg_eq.
+      rewrite (get_set_reg_neq _ rdlo rnhi) by exact Hdnh.
+      rewrite get_reg_set_flags. exact HRnh.
+Qed.
+
+Theorem rule_i32_select_default_correct : forall astate c v1 v2 rd rn rm rc,
+  rd <> rm ->
+  get_reg astate rc = c ->
+  get_reg astate rn = v1 ->
+  get_reg astate rm = v2 ->
+  exists astate',
+    exec_program (rule_i32_select_default rd rn rm rc) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
+Proof.
+  intros astate c v1 v2 rd rn rm rc Hdm HRc HRn HRm.
+  unfold rule_i32_select_default, Gen.rule_i32_select_default.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
+  - (* cond = 0: MOV writes v1, EQ override replaces it with v2 *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq _ rd rm) by exact Hdm.
+    rewrite get_reg_set_flags. exact HRm.
+  - (* cond <> 0: MOV's v1 stands *)
+    repeat (progress (select_step Hc)).
+    eexists. split; [reflexivity |].
+    rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
+Qed.

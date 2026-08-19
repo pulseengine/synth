@@ -724,12 +724,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "592 Qed / 2 Admitted"
+    text: "617 Qed / 2 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 592
+        expect: 617
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -737,16 +737,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "592 Qed / 2 Admitted"
+    text: "617 Qed / 2 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '592 Qed / 2 Admitted'
+        pattern: '617 Qed / 2 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 592
+        expect: 617
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -1004,7 +1004,7 @@ claims:
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: CLAUDE.md
-    text: "increments 1–4 shipped **default-on**"
+    text: "increments 1–5 shipped **default-on**"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -1075,10 +1075,10 @@ claims:
     evidence:
       - kind: verbatim                       # "covered" != "faithful" must stay in the doc
         text: '**"covered" ≠ "faithful"**'
-      - kind: count-eq                       # all 50 rule theorems conclude via the simplified executor
+      - kind: count-eq                       # all 74 rule theorems conclude via the simplified executor
         pattern: 'exec_program \(rule_'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
-        expect: 50
+        expect: 74
       - kind: count-same                     # rule theorems == simplified-basis conclusions,
         legs:                                # 1:1 — a future Sail-basis rule theorem breaks
           - name: rule-correct-theorems      # this pair and forces reclassification HERE
@@ -1180,14 +1180,14 @@ claims:
 
   - id: SYNTH-SEL-DSL-COVERAGE-STATUS-MD
     doc: coq/STATUS.md
-    text: "**50 (32%)**"                     # DSL-served column total, per-op-family table (#667)
+    text: "**54 (35%)**"                     # DSL-served column total, per-op-family table (#667)
     evidence:
       - kind: count-eq
         pattern: '^rule_'
         glob: ['coq/vcr_sel_rules.manifest']
-        expect: 50
+        expect: 74
       - kind: verbatim
-        text: "**50 Qed / 0 Admitted**"
+        text: "**74 Qed / 0 Admitted**"
 
   # ===========================================================================
   # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC.
@@ -1236,10 +1236,10 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 17991
+        value: 17912
         baseline: 17897
         waivers:
-          - to: 17991
+          - to: 17912
             reason: >-
               RQ-58-WILDCARD (#946): wasm_stack_effect's `_ => (0, 0)`
               wildcard — which absorbed ~92 WasmOp variants and was hiding an
@@ -1254,7 +1254,11 @@ claims:
               tests/selector_stack_effect_no_wildcard_946.rs (no catch-all
               regrowth, every variant named) and the executed
               i64_width_vstack_946 fixtures. Wildcard ceiling fell 56 -> 55
-              in the same PR.
+              in the same PR. RQ-58-SELDSL then took back 79 of the +94
+              (17,991 -> 17,912): 24 new Rocq-proved rules (51-74) deleted
+              the hand-written imm-fold/conversion/select emissions, each
+              byte-identity-gated — the residual 15 above baseline is the
+              #946 enumeration, still justified as stated above.
       # The whole-file figures the release plan and the sibling lanes quote. An
       # unpinned quoted number is the drift class this release is about — but
       # they are `track`, not `down`, and the distinction is deliberate. Both
@@ -1275,7 +1279,10 @@ claims:
         # 28495 -> 28599 (RQ-58-WILDCARD #946): +94 code (the waived
         # wasm_stack_effect enumeration above) +10 test module (the
         # threaded infer_i64_locals/compute_local_layout test call sites).
-        value: 28599
+        # 28599 -> 28533 (RQ-58-SELDSL): -79 code (24 new rules deleted the
+        # imm-fold/conversion/select hand-written emissions) +13 test module
+        # (the reworked #258 fold pin asserts each half separately).
+        value: 28533
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1327,8 +1334,14 @@ claims:
       - kind: ratchet
         name: sel_dsl_rules
         direction: up
-        value: 50
-        baseline: 50
+        # 50 -> 74 (RQ-58-SELDSL, increment 5): +5 dynamic-immediate ALU
+        # folds, +10 comparison-immediate folds (#258 positive half), +4
+        # width conversions (wrap / extend_i32_s / extend_i32_u + in-place),
+        # +5 select shapes (fresh/in-place i32, pair/in-place i64,
+        # select_default) — each landed WITH the deletion of the hand-written
+        # emission it supersedes, byte-identity-gated. Banked.
+        value: 74
+        baseline: 74
 
   # ---------------------------------------------------------------------------
   # "Generate, don't mirror" — the rot class this repo keeps paying for, now

@@ -1,11 +1,14 @@
 //! GENERATED FILE — DO NOT EDIT BY HAND.
 //!
 //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative
-//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,
+//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4+5, #242,
 //! `docs/design/vcr-sel-001-first-increment.md` +
 //! `docs/design/vcr-sel-001-increment-2.md` +
 //! `docs/design/vcr-sel-001-increment-3.md` +
-//! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the
+//! `docs/design/vcr-sel-001-increment-4.md`; increment 5 is RQ-58-SELDSL —
+//! dynamic-immediate folds, width conversions and the select family, each
+//! landed WITH the deletion of the hand-written emission it supersedes).
+//! Pinned up-to-date by the
 //! `generated_lowering_is_up_to_date` test; regenerate with
 //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
 //!
@@ -914,4 +917,452 @@ pub fn rule_i64_rotr(
         rnhi: rn_hi,
         shift: rm_lo,
     }])
+}
+
+/// `i32.add` (folded const): rd = rn + imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_add_imm_correct` (Qed).
+pub fn rule_i32_add_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Add {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
+
+/// `i32.sub` (folded const): rd = rn - imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_sub_imm_correct` (Qed).
+pub fn rule_i32_sub_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Sub {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
+
+/// `i32.and` (folded const): rd = rn & imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_and_imm_correct` (Qed).
+pub fn rule_i32_and_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::And {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
+
+/// `i32.or` (folded const): rd = rn | imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_or_imm_correct` (Qed).
+pub fn rule_i32_or_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Orr {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
+
+/// `i32.xor` (folded const): rd = rn ^ imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_xor_imm_correct` (Qed).
+pub fn rule_i32_xor_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Eor {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
+
+/// `i32.eq` (folded const): rd = if rn == imm {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_eq_imm_correct` (Qed).
+pub fn rule_i32_eq_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::EQ,
+        },
+    ]
+}
+
+/// `i32.ne` (folded const): rd = if rn != imm {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ne_imm_correct` (Qed).
+pub fn rule_i32_ne_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::NE,
+        },
+    ]
+}
+
+/// `i32.lt_s` (folded const): rd = if rn < imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_lt_s_imm_correct` (Qed).
+pub fn rule_i32_lt_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LT,
+        },
+    ]
+}
+
+/// `i32.lt_u` (folded const): rd = if rn < imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_lt_u_imm_correct` (Qed).
+pub fn rule_i32_lt_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LO,
+        },
+    ]
+}
+
+/// `i32.gt_s` (folded const): rd = if rn > imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_gt_s_imm_correct` (Qed).
+pub fn rule_i32_gt_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::GT,
+        },
+    ]
+}
+
+/// `i32.gt_u` (folded const): rd = if rn > imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_gt_u_imm_correct` (Qed).
+pub fn rule_i32_gt_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::HI,
+        },
+    ]
+}
+
+/// `i32.le_s` (folded const): rd = if rn <= imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_le_s_imm_correct` (Qed).
+pub fn rule_i32_le_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LE,
+        },
+    ]
+}
+
+/// `i32.le_u` (folded const): rd = if rn <= imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_le_u_imm_correct` (Qed).
+pub fn rule_i32_le_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::LS,
+        },
+    ]
+}
+
+/// `i32.ge_s` (folded const): rd = if rn >= imm (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ge_s_imm_correct` (Qed).
+pub fn rule_i32_ge_s_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::GE,
+        },
+    ]
+}
+
+/// `i32.ge_u` (folded const): rd = if rn >= imm (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ge_u_imm_correct` (Qed).
+pub fn rule_i32_ge_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(imm),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::HS,
+        },
+    ]
+}
+
+/// `i32.wrap_i64`: rd = low word of the i64 (high half dropped)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_wrap_i64_correct` (Qed).
+pub fn rule_i32_wrap_i64(rd: Reg, rn_lo: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I32WrapI64 { rd, rnlo: rn_lo }]
+}
+
+/// `i64.extend_i32_s`: (rd_hi:rd_lo) = sign-extended rn
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_s(rd_lo: Reg, rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend_i32_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64ExtendI32S {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rn,
+    }])
+}
+
+/// `i64.extend_i32_u`: rd_lo = rn, rd_hi = 0
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_u_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_u(rd_lo: Reg, rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend_i32_u: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![
+        ArmOp::Mov {
+            rd: rd_lo,
+            op2: Operand2::Reg(rn),
+        },
+        ArmOp::Movw {
+            rd: rd_hi,
+            imm16: 0,
+        },
+    ])
+}
+
+/// `i64.extend_i32_u` (in place, rd_lo = rn): rd_hi = 0, low half stays rn
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_u_inplace_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rn` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_u_inplace(rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rn {
+        return Err(
+            "rule_i64_extend_i32_u_inplace: side condition violated: rd_hi must not alias rn",
+        );
+    }
+    Ok(vec![ArmOp::Movw {
+        rd: rd_hi,
+        imm16: 0,
+    }])
+}
+
+/// `select` (fresh dst): rd = if rc != 0 { rn } else { rm }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_correct` (Qed).
+pub fn rule_i32_select(rd: Reg, rc: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm: rn,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm,
+            cond: Condition::EQ,
+        },
+    ]
+}
+
+/// `select` (in place, rd holds val2): rd = if rc != 0 { rn } else { rd }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_inplace_correct` (Qed).
+pub fn rule_i32_select_inplace(rd: Reg, rc: Reg, rn: Reg) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm: rn,
+            cond: Condition::NE,
+        },
+    ]
+}
+
+/// `select` (i64 pair): (rd_hi:rd_lo) = if rc != 0 { rn pair } else { rm pair }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_select_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rn_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rm_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_select(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_select: side condition violated: rd_hi must not alias rd_lo");
+    }
+    if rd_lo == rn_hi {
+        return Err("rule_i64_select: side condition violated: rd_lo must not alias rn_hi");
+    }
+    if rd_lo == rm_hi {
+        return Err("rule_i64_select: side condition violated: rd_lo must not alias rm_hi");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rn_lo,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rn_hi,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rm_lo,
+            cond: Condition::EQ,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rm_hi,
+            cond: Condition::EQ,
+        },
+    ])
+}
+
+/// `select` (i64 pair, in place — rd pair holds val2): NE-override with the rn pair
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_select_inplace_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rn_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_select_inplace(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_select_inplace: side condition violated: rd_hi must not alias rd_lo");
+    }
+    if rd_lo == rn_hi {
+        return Err("rule_i64_select_inplace: side condition violated: rd_lo must not alias rn_hi");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rn_lo,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rn_hi,
+            cond: Condition::NE,
+        },
+    ])
+}
+
+/// `select` (select_default shape): MOV rd, rn then EQ-override with rm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_default_correct` (Qed).
+///
+/// Side condition: `rd` must not alias `rm` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i32_select_default(
+    rd: Reg,
+    rn: Reg,
+    rm: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd == rm {
+        return Err("rule_i32_select_default: side condition violated: rd must not alias rm");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::Mov {
+            rd,
+            op2: Operand2::Reg(rn),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm,
+            cond: Condition::EQ,
+        },
+    ])
 }

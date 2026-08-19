@@ -179,4 +179,76 @@ Definition rule_i64_rotl (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
 Definition rule_i64_rotr (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
   [I64RotrPseudo rdlo rdhi rnlo rnhi rmlo].
 
+Definition rule_i32_add_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [ADD rd rn (Imm imm)].
+
+Definition rule_i32_sub_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [SUB rd rn (Imm imm)].
+
+Definition rule_i32_and_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [AND rd rn (Imm imm)].
+
+Definition rule_i32_or_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [ORR rd rn (Imm imm)].
+
+Definition rule_i32_xor_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [EOR rd rn (Imm imm)].
+
+Definition rule_i32_eq_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVEQ rd (Imm I32.one)].
+
+Definition rule_i32_ne_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVNE rd (Imm I32.one)].
+
+Definition rule_i32_lt_s_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVLT rd (Imm I32.one)].
+
+Definition rule_i32_lt_u_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVLO rd (Imm I32.one)].
+
+Definition rule_i32_gt_s_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVGT rd (Imm I32.one)].
+
+Definition rule_i32_gt_u_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVHI rd (Imm I32.one)].
+
+Definition rule_i32_le_s_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVLE rd (Imm I32.one)].
+
+Definition rule_i32_le_u_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVLS rd (Imm I32.one)].
+
+Definition rule_i32_ge_s_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVGE rd (Imm I32.one)].
+
+Definition rule_i32_ge_u_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVHS rd (Imm I32.one)].
+
+Definition rule_i32_wrap_i64 (rd rnlo : arm_reg) : arm_program :=
+  [I32WrapI64Pseudo rd rnlo].
+
+Definition rule_i64_extend_i32_s (rdlo rdhi rn : arm_reg) : arm_program :=
+  [I64ExtendI32SPseudo rdlo rdhi rn].
+
+Definition rule_i64_extend_i32_u (rdlo rdhi rn : arm_reg) : arm_program :=
+  [MOV rdlo (Reg rn); MOVW rdhi (I32.repr 0)].
+
+Definition rule_i64_extend_i32_u_inplace (rdhi rn : arm_reg) : arm_program :=
+  [MOVW rdhi (I32.repr 0)].
+
+Definition rule_i32_select (rd rc rn rm : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rd (Reg rn); MOVEQ rd (Reg rm)].
+
+Definition rule_i32_select_inplace (rd rc rn : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rd (Reg rn)].
+
+Definition rule_i64_select (rdlo rdhi rnlo rnhi rmlo rmhi rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rdlo (Reg rnlo); MOVNE rdhi (Reg rnhi); MOVEQ rdlo (Reg rmlo); MOVEQ rdhi (Reg rmhi)].
+
+Definition rule_i64_select_inplace (rdlo rdhi rnlo rnhi rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rdlo (Reg rnlo); MOVNE rdhi (Reg rnhi)].
+
+Definition rule_i32_select_default (rd rn rm rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOV rd (Reg rn); MOVEQ rd (Reg rm)].
+
 End Gen.
