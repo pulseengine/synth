@@ -16510,70 +16510,16 @@ impl InstructionSelector {
                     };
                     // #682: LSL/LSR/ASR mask the amount mod 32 through R12
                     // (ARM uses Rm[7:0]; WASM requires mod 32). ROR is cyclic,
-                    // so Rm[7:0] already agrees with WASM — no mask. The mask
-                    // is emitted in the hand-written branch below; the DSL
-                    // branch's generated rules carry their own.
-                    let masked_amt = if matches!(op, I32Rotr) {
-                        shift_amt
-                    } else {
-                        Reg::R12
-                    };
-                    let shift_op = match op {
-                        I32Shl => ArmOp::LslReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32ShrU => ArmOp::LsrReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32ShrS => ArmOp::AsrReg {
-                            rd: dst,
-                            rn: value,
-                            rm: masked_amt,
-                        },
-                        I32Rotr => ArmOp::RorReg {
-                            rd: dst,
-                            rn: value,
-                            rm: shift_amt,
-                        },
-                        _ => unreachable!(),
-                    };
-                    // VCR-SEL-001 increment 2 (#242): behind SYNTH_SEL_DSL the
-                    // single shift instruction comes from the generated
-                    // Rocq-proved rule — the identical ArmOp, byte-identical
-                    // by construction (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
+                    // so Rm[7:0] already agrees with WASM — no mask. The
+                    // generated Rocq-proved rules carry the mask themselves
+                    // and are the only path (RQ-58-RETIRE).
+                    let rule_ops =
                         crate::sel_dsl::i32_shift_rule(op, dst, value, shift_amt, Reg::R12)
-                            .map(|r| r.map_err(synth_core::Error::synthesis))
-                            .transpose()?
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        if !matches!(op, I32Rotr) {
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::And {
-                                    rd: Reg::R12,
-                                    rn: shift_amt,
-                                    op2: Operand2::Imm(31),
-                                },
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
+                            .expect("i32 shift/rotate op has a generated rule")
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: shift_op,
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
