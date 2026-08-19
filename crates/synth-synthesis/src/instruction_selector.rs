@@ -6287,17 +6287,7 @@ impl InstructionSelector {
 
             I32And => crate::sel_dsl::generated::rule_i32_and(rd, rn, rm),
 
-            I32Or => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_or(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Or => crate::sel_dsl::generated::rule_i32_or(rd, rn, rm),
 
             I32Xor => {
                 if self.sel_dsl {
