@@ -7009,32 +7009,15 @@ impl InstructionSelector {
             )
             .map_err(synth_core::Error::synthesis)?,
 
-            I64Xor => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_xor(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Eor {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Eor {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64Xor => crate::sel_dsl::generated::rule_i64_xor(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             // i64 comparisons: compare register pairs, result 0/1 in R0.
             // i64.eqz is increment 3's SetCondZ-shape rule (no side
