@@ -6324,14 +6324,7 @@ impl InstructionSelector {
             // scratch=dest shape; popcnt the pseudo-op.
             I32Clz => crate::sel_dsl::generated::rule_i32_clz(rd, rm),
 
-            I32Ctz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_ctz(rd, rm)
-                } else {
-                    // Count trailing zeros: RBIT + CLZ
-                    vec![ArmOp::Rbit { rd, rm }, ArmOp::Clz { rd, rm: rd }]
-                }
-            }
+            I32Ctz => crate::sel_dsl::generated::rule_i32_ctz(rd, rm),
 
             I32Popcnt => {
                 if self.sel_dsl {
