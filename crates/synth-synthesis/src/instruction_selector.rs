@@ -11342,14 +11342,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Mul {
-                            rd: dst,
-                            rn: a,
-                            rm: b,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): the hand-written ArmOp::Mul construction
+                    // is deleted.
+                    for rule_op in crate::sel_dsl::generated::rule_i32_mul(dst, a, b) {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
