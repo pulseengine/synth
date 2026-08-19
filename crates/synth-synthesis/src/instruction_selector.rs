@@ -7024,48 +7024,19 @@ impl InstructionSelector {
             // pseudo-op reads both halves before writing).
             I64Eqz => crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1),
 
-            // Binary i64 comparisons — VCR-SEL-001 increment 4 (#242): one
-            // I64SetCond pseudo-op over the fixed (R0:R1, R2:R3) pairs.
-            // Behind SYNTH_SEL_DSL (default OFF) the pseudo-op comes from
-            // the generated Rocq-proved rule (mirror-pinned per op); OFF
-            // keeps the hand-written emission, byte-identical by
-            // construction.
+            // Binary i64 comparisons: one I64SetCond pseudo-op over the fixed
+            // (R0:R1, R2:R3) pairs, from the generated Rocq-proved rule — the
+            // only path (RQ-58-RETIRE).
             I64Eq | I64Ne | I64LtS | I64LtU | I64LeS | I64LeU | I64GtS | I64GtU | I64GeS
-            | I64GeU => {
-                if self.sel_dsl {
-                    crate::sel_dsl::i64_setcond_rule(
-                        wasm_op,
-                        Reg::R0,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .expect("binary i64 comparison has a generated rule")
-                } else {
-                    let cond = match wasm_op {
-                        I64Eq => Condition::EQ,
-                        I64Ne => Condition::NE,
-                        I64LtS => Condition::LT,
-                        I64LtU => Condition::LO,
-                        I64LeS => Condition::LE,
-                        I64LeU => Condition::LS,
-                        I64GtS => Condition::GT,
-                        I64GtU => Condition::HI,
-                        I64GeS => Condition::GE,
-                        I64GeU => Condition::HS,
-                        _ => unreachable!(),
-                    };
-                    vec![ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
-                        cond,
-                    }]
-                }
-            }
+            | I64GeU => crate::sel_dsl::i64_setcond_rule(
+                wasm_op,
+                Reg::R0,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .expect("binary i64 comparison has a generated rule"),
 
             // i64 multiply: UMULL + MLA cross products
             I64Mul => {
