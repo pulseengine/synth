@@ -87,6 +87,10 @@ pub enum RegVar {
     RmLo,
     /// Second operand pair, high word (i64 pair rules).
     RmHi,
+    /// Condition operand register (`select` rules, increment 5): the register
+    /// holding the WASM `select` condition, compared against zero before the
+    /// conditional moves.
+    Rc,
 }
 
 impl RegVar {
@@ -104,6 +108,7 @@ impl RegVar {
             RegVar::RnHi => "rn_hi",
             RegVar::RmLo => "rm_lo",
             RegVar::RmHi => "rm_hi",
+            RegVar::Rc => "rc",
         }
     }
 
@@ -123,6 +128,7 @@ impl RegVar {
             RegVar::RnHi => "rnhi",
             RegVar::RmLo => "rmlo",
             RegVar::RmHi => "rmhi",
+            RegVar::Rc => "rc",
         }
     }
 }
@@ -340,6 +346,45 @@ pub enum TemplateOp {
         rn_hi: RegVar,
         shift: RegVar,
     },
+    /// Increment 5: data-processing shapes whose second operand is the rule's
+    /// dynamic immediate PARAMETER (`imm: i32` in the generated function,
+    /// `(imm : I32.int)` binder in the Rocq definition — universally
+    /// quantified, unlike the fixed-constant `RsbImm`/`AndImm` shapes above).
+    /// These carry the #250/#253 (`ADDW`/`SUBW`) and #209/#248 (bitwise-byte)
+    /// immediate folds the selectors previously hand-emitted.
+    AddImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Sub { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    SubImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::And { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    AndImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Orr { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    OrrImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Eor { rd, rn, op2: Imm(imm) }` over the dynamic imm parameter.
+    EorImmVar { rd: RegVar, rn: RegVar },
+    /// `ArmOp::Cmp { rn, op2: Imm(imm) }` over the dynamic imm parameter —
+    /// the #258 compare-bound fold's positive-constant half.
+    CmpImmVar { rn: RegVar },
+    /// `ArmOp::Mov { rd, op2: Reg(rm) }` — plain register move.
+    MovReg { rd: RegVar, rm: RegVar },
+    /// `ArmOp::Movw { rd, imm16 }` — 16-bit immediate materialization with a
+    /// FIXED constant (the `i64.extend_i32_u` zero-high-half shape).
+    MovwImm { rd: RegVar, imm16: u16 },
+    /// `ArmOp::I64ExtendI32S { rdlo, rdhi, rn }` — sign-extend pseudo-op
+    /// (encoder-expanded). Modeled by `I64ExtendI32SPseudo` in the flat model.
+    I64ExtendS { rd_lo: RegVar, rd_hi: RegVar, rn: RegVar },
+    /// `ArmOp::I32WrapI64 { rd, rnlo }` — wrap pseudo-op (keeps the low half).
+    /// Modeled by `I32WrapI64Pseudo` in the flat model.
+    I32Wrap { rd: RegVar, rn_lo: RegVar },
+    /// `ArmOp::SelectMove { rd, rm, cond }` — the flag-preserving IT;MOV
+    /// conditional move (`select` lowering). Modeled by the flat model's
+    /// `MOV<cc> rd (Reg rm)` family (the same constructors `SetCond`'s
+    /// expansion uses) — semantically identical: writes `rd` iff `cond` holds
+    /// over the current NZCV, never touches the flags.
+    SelectMove {
+        rd: RegVar,
+        rm: RegVar,
+        cond: CondCode,
+    },
     /// The single-pseudo-op i64 unary bit-count shapes (`I64Clz` / `I64Ctz` /
     /// `I64Popcnt`). One ArmOp reads both operand halves and writes the single
     /// i32 count into `rd` — NO aliasing side condition (`rd` may alias `rn_lo`,
@@ -395,10 +440,34 @@ pub struct SelRule {
     pub doc: &'static str,
 }
 
+impl TemplateOp {
+    /// Whether this shape reads the rule's dynamic immediate parameter
+    /// (increment 5). Deriving imm-param-ness from the sequence keeps
+    /// [`SelRule`] unchanged for the 50 pre-increment-5 rules.
+    const fn uses_imm_var(&self) -> bool {
+        matches!(
+            self,
+            TemplateOp::AddImmVar { .. }
+                | TemplateOp::SubImmVar { .. }
+                | TemplateOp::AndImmVar { .. }
+                | TemplateOp::OrrImmVar { .. }
+                | TemplateOp::EorImmVar { .. }
+                | TemplateOp::CmpImmVar { .. }
+        )
+    }
+}
+
 impl SelRule {
     /// The 1:1 paired Rocq theorem name.
     pub fn theorem(&self) -> String {
         format!("{}_correct", self.name)
+    }
+
+    /// Whether the generated function takes a trailing `imm: i32` parameter
+    /// (and the Rocq definition a trailing `(imm : I32.int)` binder) —
+    /// true iff any shape in the sequence reads the dynamic immediate.
+    pub fn has_imm_param(&self) -> bool {
+        self.seq.iter().any(TemplateOp::uses_imm_var)
     }
 }
 
@@ -1500,6 +1569,19 @@ fn dp_reg_expr(op: &str, rd: RegVar, rn: RegVar, rm: RegVar, indent: usize) -> S
     )
 }
 
+/// Render an `ArmOp` data-processing constructor whose second operand is the
+/// rule's dynamic immediate parameter (`op2: Operand2::Imm(imm)`), exploded
+/// exactly like [`dp_reg_expr`] so the generated file stays a rustfmt fixpoint.
+fn dp_imm_var_expr(op: &str, rd: RegVar, rn: RegVar, indent: usize) -> String {
+    let ind = " ".repeat(indent);
+    let fld = " ".repeat(indent + 4);
+    format!(
+        "ArmOp::{op} {{\n{fld}{},\n{fld}{},\n{fld}op2: Operand2::Imm(imm),\n{ind}}}",
+        field("rd", rd),
+        field("rn", rn)
+    )
+}
+
 /// Render one instruction template as an `ArmOp` constructor expression,
 /// starting at column `indent` (continuation lines are indented relative to
 /// it). Shapes mirror what rustfmt emits for the equivalent hand-written
@@ -1699,6 +1781,66 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
                 cond.rust_name()
             )
         }
+        // ---- increment 5 shapes ----
+        TemplateOp::AddImmVar { rd, rn } => dp_imm_var_expr("Add", rd, rn, indent),
+        TemplateOp::SubImmVar { rd, rn } => dp_imm_var_expr("Sub", rd, rn, indent),
+        TemplateOp::AndImmVar { rd, rn } => dp_imm_var_expr("And", rd, rn, indent),
+        TemplateOp::OrrImmVar { rd, rn } => dp_imm_var_expr("Orr", rd, rn, indent),
+        TemplateOp::EorImmVar { rd, rn } => dp_imm_var_expr("Eor", rd, rn, indent),
+        TemplateOp::CmpImmVar { rn } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Cmp {{\n{fld}{},\n{fld}op2: Operand2::Imm(imm),\n{ind}}}",
+                field("rn", rn)
+            )
+        }
+        TemplateOp::MovReg { rd, rm } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Mov {{\n{fld}{},\n{fld}op2: Operand2::Reg({}),\n{ind}}}",
+                field("rd", rd),
+                rm.rust_name()
+            )
+        }
+        TemplateOp::MovwImm { rd, imm16 } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Movw {{\n{fld}{},\n{fld}imm16: {imm16},\n{ind}}}",
+                field("rd", rd)
+            )
+        }
+        TemplateOp::I64ExtendS { rd_lo, rd_hi, rn } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::I64ExtendI32S {{\n{fld}{},\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rdlo", rd_lo),
+                field("rdhi", rd_hi),
+                field("rn", rn)
+            )
+        }
+        TemplateOp::I32Wrap { rd, rn_lo } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::I32WrapI64 {{\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rd", rd),
+                field("rnlo", rn_lo)
+            )
+        }
+        TemplateOp::SelectMove { rd, rm, cond } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::SelectMove {{\n{fld}{},\n{fld}{},\n{fld}cond: {},\n{ind}}}",
+                field("rd", rd),
+                field("rm", rm),
+                cond.rust_name()
+            )
+        }
     }
 }
 
@@ -1730,11 +1872,14 @@ pub fn generate_lowering_source() -> String {
     );
 
     for rule in RULES {
-        let params: Vec<String> = rule
+        let mut params: Vec<String> = rule
             .params
             .iter()
             .map(|p| format!("{}: Reg", p.rust_name()))
             .collect();
+        if rule.has_imm_param() {
+            params.push("imm: i32".to_string());
+        }
         let params = params.join(", ");
 
         out.push('\n');
@@ -1769,6 +1914,9 @@ pub fn generate_lowering_source() -> String {
             out.push_str(&format!("pub fn {}(\n", rule.name));
             for p in rule.params {
                 out.push_str(&format!("    {}: Reg,\n", p.rust_name()));
+            }
+            if rule.has_imm_param() {
+                out.push_str("    imm: i32,\n");
             }
             out.push_str(&format!(") -> {ret} {{\n"));
         }
@@ -1985,6 +2133,46 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
             };
             vec![format!("{ctor} {} {} {}", r(rd), r(rn_lo), r(rn_hi))]
         }
+        // ---- increment 5 shapes: the dynamic immediate renders as the bare
+        // Coq binder [imm] (universally quantified I32.int), the fixed MOVW
+        // constant as [I32.repr n]; [SelectMove] denotes the flat model's
+        // MOV<cc> family (the same constructors SetCond's expansion uses). ----
+        TemplateOp::AddImmVar { rd, rn } => {
+            vec![format!("ADD {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::SubImmVar { rd, rn } => {
+            vec![format!("SUB {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::AndImmVar { rd, rn } => {
+            vec![format!("AND {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::OrrImmVar { rd, rn } => {
+            vec![format!("ORR {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::EorImmVar { rd, rn } => {
+            vec![format!("EOR {} {} (Imm imm)", r(rd), r(rn))]
+        }
+        TemplateOp::CmpImmVar { rn } => vec![format!("CMP {} (Imm imm)", r(rn))],
+        TemplateOp::MovReg { rd, rm } => {
+            vec![format!("MOV {} (Reg {})", r(rd), r(rm))]
+        }
+        TemplateOp::MovwImm { rd, imm16 } => {
+            vec![format!("MOVW {} (I32.repr {imm16})", r(rd))]
+        }
+        TemplateOp::I64ExtendS { rd_lo, rd_hi, rn } => {
+            vec![format!(
+                "I64ExtendI32SPseudo {} {} {}",
+                r(rd_lo),
+                r(rd_hi),
+                r(rn)
+            )]
+        }
+        TemplateOp::I32Wrap { rd, rn_lo } => {
+            vec![format!("I32WrapI64Pseudo {} {}", r(rd), r(rn_lo))]
+        }
+        TemplateOp::SelectMove { rd, rm, cond } => {
+            vec![format!("{} {} (Reg {})", cond.coq_movcc(), r(rd), r(rm))]
+        }
     }
 }
 
@@ -1995,8 +2183,15 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
 pub fn emit_rocq_definition(rule: &SelRule) -> String {
     let binders: Vec<&str> = rule.params.iter().map(|p| p.coq_name()).collect();
     let instrs: Vec<String> = rule.seq.iter().flat_map(coq_instrs).collect();
+    // Increment 5: rules over a dynamic immediate get a second binder group —
+    // the universally-quantified [(imm : I32.int)] the sequence references.
+    let imm_binder = if rule.has_imm_param() {
+        " (imm : I32.int)"
+    } else {
+        ""
+    };
     format!(
-        "Definition {} ({} : arm_reg) : arm_program :=\n  [{}].",
+        "Definition {} ({} : arm_reg){imm_binder} : arm_program :=\n  [{}].",
         rule.name,
         binders.join(" "),
         instrs.join("; "),
