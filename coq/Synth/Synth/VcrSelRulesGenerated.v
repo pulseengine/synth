@@ -191,4 +191,7 @@ Definition rule_i32_and_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
 Definition rule_i32_or_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
   [ORR rd rn (Imm imm)].
 
+Definition rule_i32_xor_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [EOR rd rn (Imm imm)].
+
 End Gen.

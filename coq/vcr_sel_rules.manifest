@@ -57,3 +57,4 @@ rule_i32_add_imm
 rule_i32_sub_imm
 rule_i32_and_imm
 rule_i32_or_imm
+rule_i32_xor_imm
