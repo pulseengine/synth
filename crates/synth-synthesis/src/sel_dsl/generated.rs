@@ -1,11 +1,14 @@
 //! GENERATED FILE — DO NOT EDIT BY HAND.
 //!
 //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative
-//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,
+//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4+5, #242,
 //! `docs/design/vcr-sel-001-first-increment.md` +
 //! `docs/design/vcr-sel-001-increment-2.md` +
 //! `docs/design/vcr-sel-001-increment-3.md` +
-//! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the
+//! `docs/design/vcr-sel-001-increment-4.md`; increment 5 is RQ-58-SELDSL —
+//! dynamic-immediate folds, width conversions and the select family, each
+//! landed WITH the deletion of the hand-written emission it supersedes).
+//! Pinned up-to-date by the
 //! `generated_lowering_is_up_to_date` test; regenerate with
 //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
 //!

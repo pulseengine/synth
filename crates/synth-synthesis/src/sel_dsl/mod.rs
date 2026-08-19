@@ -1,4 +1,4 @@
-//! VCR-SEL-001 increments 1+2+3+4 (#242) — the Rocq-discharged selector rule DSL.
+//! VCR-SEL-001 increments 1+2+3+4+5 (#242) — the Rocq-discharged selector rule DSL.
 //!
 //! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1),
 //! `docs/design/vcr-sel-001-increment-2.md` (increment 2),
@@ -36,6 +36,16 @@
 //!   CMP-lo/SBCS-hi flags-chain #615 re-implemented on A32; the rules and
 //!   theorems live at the pseudo-op tier the flat Rocq executor can express,
 //!   see `docs/design/vcr-sel-001-increment-4.md` for the honest bound).
+//! - increment 5 (RQ-58-SELDSL, #242, v0.58): the DYNAMIC-IMMEDIATE tier —
+//!   rules additionally quantified over an `imm` parameter (the #250/#253
+//!   ADDW/SUBW and #209/#248 bitwise folds, and the #258 compare-bound
+//!   fold's positive half; the selector keeps the fold GUARD, the rule owns
+//!   the emission) — plus the width conversions (`i32.wrap_i64`,
+//!   `i64.extend_i32_s`, `i64.extend_i32_u` fresh/in-place) and the five
+//!   `select` shapes (fresh/in-place i32, full/in-place i64 pair,
+//!   select_default's MOV+EQ-override). Under the v0.58 definition of done,
+//!   every increment-5 rule landed WITH the deletion of the hand-written
+//!   emission it supersedes, byte-identity-gated.
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
@@ -2259,11 +2269,14 @@ pub fn generate_lowering_source() -> String {
         "//! GENERATED FILE — DO NOT EDIT BY HAND.\n\
          //!\n\
          //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative\n\
-         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,\n\
+         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4+5, #242,\n\
          //! `docs/design/vcr-sel-001-first-increment.md` +\n\
          //! `docs/design/vcr-sel-001-increment-2.md` +\n\
          //! `docs/design/vcr-sel-001-increment-3.md` +\n\
-         //! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the\n\
+         //! `docs/design/vcr-sel-001-increment-4.md`; increment 5 is RQ-58-SELDSL —\n\
+         //! dynamic-immediate folds, width conversions and the select family, each\n\
+         //! landed WITH the deletion of the hand-written emission it supersedes).\n\
+         //! Pinned up-to-date by the\n\
          //! `generated_lowering_is_up_to_date` test; regenerate with\n\
          //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.\n\
          //!\n\
