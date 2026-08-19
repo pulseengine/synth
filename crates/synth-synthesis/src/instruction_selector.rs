@@ -16813,47 +16813,14 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    let cond = match op {
-                        I64Eq => Condition::EQ,
-                        I64Ne => Condition::NE,
-                        I64LtS => Condition::LT,
-                        I64LtU => Condition::LO,
-                        I64LeS => Condition::LE,
-                        I64LeU => Condition::LS,
-                        I64GtS => Condition::GT,
-                        I64GtU => Condition::HI,
-                        I64GeS => Condition::GE,
-                        I64GeU => Condition::HS,
-                        _ => unreachable!(),
-                    };
-                    // VCR-SEL-001 increment 4 (#242): behind SYNTH_SEL_DSL the
-                    // I64SetCond pseudo-op comes from the generated
-                    // Rocq-proved rule — the identical ArmOp (same condition
-                    // mapping), byte-identical by construction (mirror-pinned
-                    // per op).
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i64_setcond_rule(op, dst, a_lo, a_hi, b_lo, b_hi)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The I64SetCond pseudo-op (condition mapping included)
+                    // comes from the generated Rocq-proved rule — the only
+                    // path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::i64_setcond_rule(op, dst, a_lo, a_hi, b_lo, b_hi)
+                        .expect("binary i64 comparison has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::I64SetCond {
-                                rd: dst,
-                                rn_lo: a_lo,
-                                rn_hi: a_hi,
-                                rm_lo: b_lo,
-                                rm_hi: b_hi,
-                                cond,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
