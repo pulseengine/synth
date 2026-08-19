@@ -6978,32 +6978,15 @@ impl InstructionSelector {
             )
             .map_err(synth_core::Error::synthesis)?,
 
-            I64Sub => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_sub(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Subs {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Sbc {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            I64Sub => crate::sel_dsl::generated::rule_i64_sub(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             // i64 bitwise: operate on each half independently
             I64And => {
@@ -15992,39 +15975,15 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): same delegation as
-                    // I64Add — the SUBS+SBC pair rule, byte-identical.
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::generated::rule_i64_sub(
-                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
+                    // Same as I64Add — the Rocq-proved SUBS+SBC pair rule is
+                    // the only path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::generated::rule_i64_sub(
+                        dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Subs {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-
-                        // SBC dst_hi, a_hi, b_hi  (subtracts with borrow)
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Sbc {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
