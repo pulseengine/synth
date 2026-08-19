@@ -572,8 +572,9 @@ enum Commands {
     /// List available compilation backends and their status
     Backends,
 
-    /// Verify compilation correctness via Z3 — requires a build with
-    /// `--features verify` (e.g., synth verify input.wat output.elf)
+    /// Verify compilation correctness via SMT translation validation
+    /// (pure-Rust ordeal engine) — requires the `verify` feature
+    /// (e.g., synth verify input.wat output.elf)
     Verify {
         /// Input WASM or WAT file (source)
         #[arg(value_name = "WASM")]
@@ -7174,6 +7175,31 @@ fn verify_command(
 
     let caps = backend.capabilities();
 
+    // #1000: capability check BEFORE the banner. This used to live after the
+    // four `Translation validation:` lines below, so a binary built without
+    // the `verify` feature printed `Strategy: Per-rule SMT verification
+    // (ASIL D path)` and only THEN discovered it could not verify — a
+    // log-scraper grepping for the strategy line would find it in a run that
+    // verified nothing. The exit code was already correct (1, issue #124);
+    // now the output is too: a binary that cannot verify prints nothing
+    // verification-shaped before failing.
+    #[cfg(not(feature = "verify"))]
+    if caps.supports_rule_verification {
+        // This binary was built without the `verify` feature, so no SMT
+        // translation validation can run. Returning Ok here would make
+        // `synth verify` exit success-shaped while doing nothing — a
+        // script or CI step gating on `synth verify` would silently
+        // believe the binary was validated (issue #124). Fail loudly
+        // with a non-zero exit instead.
+        anyhow::bail!(
+            "this `synth` binary was built without the `verify` feature — \
+             SMT translation validation is unavailable.\n  \
+             Rebuild with verification support:\n    \
+             cargo build --features verify\n  \
+             (or `cargo install --path crates/synth-cli --features verify`)"
+        );
+    }
+
     println!("Translation validation:");
     println!("  Source: {}", wasm_input.display());
     println!("  Binary: {}", elf_input.display());
@@ -7328,23 +7354,6 @@ fn verify_command(
                     );
                 }
             }
-        }
-
-        #[cfg(not(feature = "verify"))]
-        {
-            // This binary was built without the `verify` feature, so no SMT
-            // translation validation can run. Returning Ok here would make
-            // `synth verify` exit success-shaped while doing nothing — a
-            // script or CI step gating on `synth verify` would silently
-            // believe the binary was validated (issue #124). Fail loudly
-            // with a non-zero exit instead.
-            anyhow::bail!(
-                "this `synth` binary was built without the `verify` feature — \
-                 SMT translation validation is unavailable.\n  \
-                 Rebuild with verification support:\n    \
-                 cargo build --features verify\n  \
-                 (or `cargo install --path crates/synth-cli --features verify`)"
-            );
         }
     } else if caps.supports_binary_verification {
         println!("  Strategy: Binary-level translation validation (ASIL B path)");
