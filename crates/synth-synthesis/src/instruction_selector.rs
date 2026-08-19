@@ -16611,26 +16611,13 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 increment 4 (#242): behind SYNTH_SEL_DSL the
-                    // single CLZ comes from the generated Rocq-proved rule —
-                    // the identical ArmOp, byte-identical by construction
-                    // (mirror-pinned per op).
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_unary_rule(op, dst, src)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The single CLZ comes from the generated Rocq-proved
+                    // rule — the only path (RQ-58-RETIRE).
+                    let rule_ops = crate::sel_dsl::i32_unary_rule(op, dst, src)
+                        .expect("i32.clz has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Clz { rd: dst, rm: src },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
