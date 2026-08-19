@@ -6308,24 +6308,13 @@ impl InstructionSelector {
             I32Rotl => {
                 // Rotate left by N = Rotate right by (32 - N)
                 // RSB rtmp, rm, #32; ROR rd, rn, rtmp
+                // Tier-B rule: carries the explicit `rs <> rn` scratch
+                // non-aliasing side condition (hypothesis of
+                // rule_i32_rotl_correct) — Ok-or-Err, never a silent
+                // misassemble.
                 let rtmp = self.regs.alloc_reg();
-                if self.sel_dsl {
-                    // Tier-B rule: carries the explicit `rs <> rn` scratch
-                    // non-aliasing side condition (hypothesis of
-                    // rule_i32_rotl_correct) — Ok-or-Err, never a silent
-                    // misassemble.
-                    crate::sel_dsl::generated::rule_i32_rotl(rd, rn, rm, rtmp)
-                        .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Rsb {
-                            rd: rtmp,
-                            rn: rm,
-                            imm: 32,
-                        },
-                        ArmOp::RorReg { rd, rn, rm: rtmp },
-                    ]
-                }
+                crate::sel_dsl::generated::rule_i32_rotl(rd, rn, rm, rtmp)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             I32Rotr => {
