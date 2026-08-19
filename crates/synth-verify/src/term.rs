@@ -82,6 +82,20 @@ fn bv_rank(t: &BvTerm) -> u8 {
         BvTerm::ZeroExt { .. } => 16,
         BvTerm::SignExt { .. } => 17,
         BvTerm::Ite { .. } => 18,
+        // ordeal ≥0.17 seals the term enums (`#[non_exhaustive]`, ordeal#104):
+        // a variant is only ever added together with a proven blasting rule
+        // and a CHANGELOG callout. synth-verify builds no terms outside the
+        // fragment above, so reaching this arm means an ordeal bump added an
+        // op nobody taught this crate. Refuse LOUDLY (ordeal's documented
+        // consumer policy: conservative error, "never a guess") — a guessed
+        // rank would silently corrupt canonicalization. When this fires,
+        // extend ALL sibling matches together: `bool_rank`, `ord_bv`,
+        // `ord_bool`, `canonicalize_bv`, `canonicalize_bool`, `fmt_bv`,
+        // `fmt_bool`, and the z3 oracle translation in `solver.rs`.
+        other => panic!(
+            "synth-verify: unmodeled ordeal BvTerm variant {other:?} — \
+             extend term.rs + solver.rs before trusting any verdict"
+        ),
     }
 }
 
@@ -100,6 +114,11 @@ fn bool_rank(t: &BoolTerm) -> u8 {
         BoolTerm::Not(..) => 10,
         BoolTerm::And(..) => 11,
         BoolTerm::Or(..) => 12,
+        // Sealed enum (ordeal#104) — see the `bv_rank` catch-all.
+        other => panic!(
+            "synth-verify: unmodeled ordeal BoolTerm variant {other:?} — \
+             extend term.rs + solver.rs before trusting any verdict"
+        ),
     }
 }
 
@@ -284,6 +303,14 @@ fn canonicalize_bv(t: &BvTerm) -> BvTerm {
             then_: Box::new(canonicalize_bv(then_)),
             else_: Box::new(canonicalize_bv(else_)),
         },
+        // Sealed enum (ordeal#104) — see the `bv_rank` catch-all. Cloning an
+        // unknown node instead would silently skip canonicalizing its
+        // children: exactly the commuted-`Mul` CDCL cliff this function
+        // exists to prevent (the 0.12-era hang class, #849).
+        other => panic!(
+            "synth-verify: unmodeled ordeal BvTerm variant {other:?} — \
+             extend term.rs + solver.rs before trusting any verdict"
+        ),
     }
 }
 
@@ -339,6 +366,11 @@ fn canonicalize_bool(t: &BoolTerm) -> BoolTerm {
         BoolTerm::Or(a, b) => BoolTerm::Or(
             Box::new(canonicalize_bool(a)),
             Box::new(canonicalize_bool(b)),
+        ),
+        // Sealed enum (ordeal#104) — see the `canonicalize_bv` catch-all.
+        other => panic!(
+            "synth-verify: unmodeled ordeal BoolTerm variant {other:?} — \
+             extend term.rs + solver.rs before trusting any verdict"
         ),
     }
 }
@@ -887,6 +919,11 @@ fn fmt_bv(t: &BvTerm, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             fmt_bv(else_, f)?;
             write!(f, ")")
         }
+        // Sealed enum (ordeal#104). Display feeds diagnostics, so it must
+        // not panic mid-report — emit an unmistakable marker instead (any
+        // such term already panics loudly in `bv_rank`/`canonicalize_bv`
+        // before verification consumes it).
+        _ => write!(f, "<unmodeled-ordeal-bv-term>"),
     }
 }
 
@@ -936,6 +973,8 @@ fn fmt_bool(t: &BoolTerm, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             fmt_bool(b, f)?;
             write!(f, ")")
         }
+        // Sealed enum (ordeal#104) — see the `fmt_bv` catch-all.
+        _ => write!(f, "<unmodeled-ordeal-bool-term>"),
     }
 }
 
