@@ -244,6 +244,15 @@ Proof.
   intros. unfold set_flags, set_reg. reflexivity.
 Qed.
 
+(** set_reg never touches the flags: a conditional instruction's flag read
+    passes through any interleaved register write (the select rules'
+    MOV<cc>-after-MOV<cc> shapes, VCR-SEL-001 increment 5). *)
+Theorem flags_set_reg : forall s r v,
+  (set_reg s r v).(flags) = s.(flags).
+Proof.
+  intros. unfold set_reg. reflexivity.
+Qed.
+
 (** Loading memory after storing returns the stored value *)
 Theorem load_store_mem_eq : forall s addr v,
   load_mem (store_mem s addr v) addr = v.

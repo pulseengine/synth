@@ -1642,6 +1642,20 @@ Definition rule_i64_select := Gen.rule_i64_select.
 Definition rule_i64_select_inplace := Gen.rule_i64_select_inplace.
 Definition rule_i32_select_default := Gen.rule_i32_select_default.
 
+(** Increment-5 select discharge helper: one reduction+flag-rewrite pass.
+    A conditional instruction's exec sits under the PREVIOUS instruction's
+    match binder, so its flag read only becomes concrete after the previous
+    conditional is resolved — iterate this step (progress-guarded) until the
+    whole chain is reduced. [Hc] is the destructed compare-condition
+    equation; rewriting it resolves each conditional as it surfaces. *)
+Ltac select_step Hc :=
+  cbn [exec_program exec_instr eval_operand2];
+  repeat rewrite flags_set_reg;
+  repeat rewrite flags_set_flags;
+  repeat rewrite flag_z_update_flags_arith;
+  repeat rewrite z_flag_sub_eq;
+  repeat rewrite Hc.
+
 Theorem rule_i32_select_correct : forall astate c v1 v2 rd rc rn rm,
   get_reg astate rc = c ->
   get_reg astate rn = v1 ->
@@ -1651,14 +1665,20 @@ Theorem rule_i32_select_correct : forall astate c v1 v2 rd rc rn rm,
     get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
 Proof.
   intros astate c v1 v2 rd rc rn rm HRc HRn HRm.
-  unfold rule_i32_select, Gen.rule_i32_select; simpl.
-  rewrite HRc; simpl.
-  rewrite z_flag_sub_eq.
-  destruct (I32.eq c I32.zero).
+  unfold rule_i32_select, Gen.rule_i32_select.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
   - (* cond = 0: NE move skipped, EQ move writes v2 *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRm.
   - (* cond <> 0: NE move writes v1, EQ move skipped *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
 Qed.
@@ -1672,14 +1692,20 @@ Theorem rule_i32_select_inplace_correct : forall astate c v1 v2 rd rc rn,
     get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
 Proof.
   intros astate c v1 v2 rd rc rn HRc HRn HRd.
-  unfold rule_i32_select_inplace, Gen.rule_i32_select_inplace; simpl.
-  rewrite HRc; simpl.
-  rewrite z_flag_sub_eq.
-  destruct (I32.eq c I32.zero).
+  unfold rule_i32_select_inplace, Gen.rule_i32_select_inplace.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
   - (* cond = 0: nothing writes rd — it keeps val2 *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_reg_set_flags. exact HRd.
   - (* cond <> 0: NE move writes v1 *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
 Qed.
@@ -1702,11 +1728,16 @@ Theorem rule_i64_select_correct :
 Proof.
   intros astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi rc
          Hdd Hdnh Hdmh HRc HRnl HRnh HRml HRmh.
-  unfold rule_i64_select, Gen.rule_i64_select; simpl.
-  rewrite HRc; simpl.
-  rewrite z_flag_sub_eq.
-  destruct (I32.eq c I32.zero).
+  unfold rule_i64_select, Gen.rule_i64_select.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
   - (* cond = 0: the two EQ moves write the rm pair *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity | split].
     + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
       rewrite get_set_reg_eq.
@@ -1715,6 +1746,7 @@ Proof.
       rewrite (get_set_reg_neq _ rdlo rmhi) by exact Hdmh.
       rewrite get_reg_set_flags. exact HRmh.
   - (* cond <> 0: the two NE moves write the rn pair *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity | split].
     + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
       rewrite get_set_reg_eq.
@@ -1741,15 +1773,21 @@ Theorem rule_i64_select_inplace_correct :
 Proof.
   intros astate c lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rc
          Hdd Hdnh HRc HRnl HRnh HRdl HRdh.
-  unfold rule_i64_select_inplace, Gen.rule_i64_select_inplace; simpl.
-  rewrite HRc; simpl.
-  rewrite z_flag_sub_eq.
-  destruct (I32.eq c I32.zero).
+  unfold rule_i64_select_inplace, Gen.rule_i64_select_inplace.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
   - (* cond = 0: nothing writes — the rd pair keeps val2 *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity | split].
     + rewrite get_reg_set_flags. exact HRdl.
     + rewrite get_reg_set_flags. exact HRdh.
   - (* cond <> 0: the two NE moves write the rn pair *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity | split].
     + rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd.
       rewrite get_set_reg_eq.
@@ -1769,16 +1807,22 @@ Theorem rule_i32_select_default_correct : forall astate c v1 v2 rd rn rm rc,
     get_reg astate' rd = (if I32.eq c I32.zero then v2 else v1).
 Proof.
   intros astate c v1 v2 rd rn rm rc Hdm HRc HRn HRm.
-  unfold rule_i32_select_default, Gen.rule_i32_select_default; simpl.
-  rewrite HRc; simpl.
-  rewrite z_flag_sub_eq.
-  destruct (I32.eq c I32.zero).
+  unfold rule_i32_select_default, Gen.rule_i32_select_default.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite HRc.
+  repeat rewrite flags_set_reg.
+  repeat rewrite flags_set_flags.
+  repeat rewrite flag_z_update_flags_arith.
+  repeat rewrite z_flag_sub_eq.
+  destruct (I32.eq c I32.zero) eqn:Hc.
   - (* cond = 0: MOV writes v1, EQ override replaces it with v2 *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq.
     rewrite (get_set_reg_neq _ rd rm) by exact Hdm.
     rewrite get_reg_set_flags. exact HRm.
   - (* cond <> 0: MOV's v1 stands *)
+    repeat (progress (select_step Hc)).
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
 Qed.
