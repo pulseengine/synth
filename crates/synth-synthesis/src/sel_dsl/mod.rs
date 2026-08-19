@@ -1223,7 +1223,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.clz`: rd = count-leading-zeros of (rn_hi:rn_lo), as i32",
     },
     SelRule {
@@ -1237,7 +1237,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.ctz`: rd = count-trailing-zeros of (rn_hi:rn_lo), as i32",
     },
     SelRule {
@@ -1251,7 +1251,7 @@ pub const RULES: &[SelRule] = &[
             rn_lo: RnLo,
             rn_hi: RnHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.popcnt`: rd = population-count of (rn_hi:rn_lo), as i32",
     },
     // i64.mul / i64.shl / i64.shr_u / i64.shr_s — binary register-pair shapes:
@@ -1271,7 +1271,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.mul`: (rd_hi:rd_lo) = (rn_hi:rn_lo) * (rm_hi:rm_lo)",
     },
     SelRule {
@@ -1288,7 +1288,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) << (rm_lo mod 64)",
     },
     SelRule {
@@ -1305,7 +1305,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shr_u`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (logical)",
     },
     SelRule {
@@ -1322,7 +1322,7 @@ pub const RULES: &[SelRule] = &[
             rm_lo: RmLo,
             rm_hi: RmHi,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.shr_s`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (arithmetic)",
     },
     // i64.rotl / i64.rotr — rotate shapes: the amount is a SINGLE register
@@ -1341,7 +1341,7 @@ pub const RULES: &[SelRule] = &[
             rn_hi: RnHi,
             shift: RmLo,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.rotl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-left (shift mod 64)",
     },
     SelRule {
@@ -1357,7 +1357,7 @@ pub const RULES: &[SelRule] = &[
             rn_hi: RnHi,
             shift: RmLo,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.rotr`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-right (shift mod 64)",
     },
     // ---- increment 5 (RQ-58-SELDSL, #242): dynamic-immediate ALU rules —
@@ -2227,10 +2227,10 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
             )
         }
         TemplateOp::I32Wrap { rd, rn_lo } => {
-            let ind = " ".repeat(indent);
-            let fld = " ".repeat(indent + 4);
+            // Short literal: rustfmt keeps it on one line (struct_lit_width),
+            // unlike the wider exploded shapes above.
             format!(
-                "ArmOp::I32WrapI64 {{\n{fld}{},\n{fld}{},\n{ind}}}",
+                "ArmOp::I32WrapI64 {{ {}, {} }}",
                 field("rd", rd),
                 field("rnlo", rn_lo)
             )
@@ -2326,13 +2326,23 @@ pub fn generate_lowering_source() -> String {
         }
         for sc in rule.side_conditions {
             let SideCondition::NotAlias(a, b) = sc;
-            out.push_str(&format!(
-                "    if {a} == {b} {{\n        return Err(\"{name}: side condition violated: \
-                 {a} must not alias {b}\");\n    }}\n",
-                a = a.rust_name(),
-                b = b.rust_name(),
-                name = rule.name
-            ));
+            let a = a.rust_name();
+            let b = b.rust_name();
+            let msg = format!(
+                "{}: side condition violated: {a} must not alias {b}",
+                rule.name
+            );
+            // Mirror rustfmt: the one-line `return Err("..");` only when it
+            // fits max_width; otherwise the wrapped parenthesized form.
+            let one_line = format!("        return Err(\"{msg}\");");
+            if one_line.len() <= 100 {
+                out.push_str(&format!("    if {a} == {b} {{\n{one_line}\n    }}\n"));
+            } else {
+                out.push_str(&format!(
+                    "    if {a} == {b} {{\n        return Err(\n            \"{msg}\",\n        \
+                     );\n    }}\n"
+                ));
+            }
         }
         let (open, close) = if rule.side_conditions.is_empty() {
             ("vec![", "]")

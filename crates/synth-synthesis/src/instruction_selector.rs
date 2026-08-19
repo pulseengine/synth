@@ -7054,95 +7054,34 @@ impl InstructionSelector {
             )
             .expect("binary i64 comparison has a generated rule"),
 
-            // i64 multiply: UMULL + MLA cross products
-            I64Mul => {
-                vec![ArmOp::I64Mul {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
+            // i64 multiply / shifts: single pseudo-ops over the fixed
+            // (R0:R1, R2:R3) pairs — from the Rocq-proved rules, the only
+            // path (RQ-58-SELDSL wires select_default too; the in-place
+            // R0:R1 shape satisfies the rd_hi <> rd_lo side condition, and
+            // the Err arm stays loud, never silent).
+            I64Mul | I64Shl | I64ShrU | I64ShrS => crate::sel_dsl::i64_pair_bin_rule(
+                wasm_op,
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .expect("binary i64 pair op has a generated rule")
+            .map_err(synth_core::Error::synthesis)?,
+
+            // i64 rotates: amount is the single low-half register R2.
+            I64Rotl | I64Rotr => {
+                crate::sel_dsl::i64_rot_rule(wasm_op, Reg::R0, Reg::R1, Reg::R0, Reg::R1, Reg::R2)
+                    .expect("i64 rotate op has a generated rule")
+                    .map_err(synth_core::Error::synthesis)?
             }
 
-            // i64 shifts: multi-instruction funnel shifts
-            I64Shl => {
-                vec![ArmOp::I64Shl {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64ShrU => {
-                vec![ArmOp::I64ShrU {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64ShrS => {
-                vec![ArmOp::I64ShrS {
-                    rd_lo: Reg::R0,
-                    rd_hi: Reg::R1,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                    rm_lo: Reg::R2,
-                    rm_hi: Reg::R3,
-                }]
-            }
-
-            I64Rotl => {
-                vec![ArmOp::I64Rotl {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                    shift: Reg::R2,
-                }]
-            }
-
-            I64Rotr => {
-                vec![ArmOp::I64Rotr {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                    shift: Reg::R2,
-                }]
-            }
-
-            // i64 bit manipulation
-            I64Clz => {
-                vec![ArmOp::I64Clz {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
-            }
-
-            I64Ctz => {
-                vec![ArmOp::I64Ctz {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
-            }
-
-            I64Popcnt => {
-                vec![ArmOp::I64Popcnt {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                    rnhi: Reg::R1,
-                }]
+            // i64 bit manipulation: single pseudo-op, count into R0.
+            I64Clz | I64Ctz | I64Popcnt => {
+                crate::sel_dsl::i64_unary_count_rule(wasm_op, Reg::R0, Reg::R0, Reg::R1)
+                    .expect("i64 bit-count op has a generated rule")
             }
 
             // i64 division/remainder
