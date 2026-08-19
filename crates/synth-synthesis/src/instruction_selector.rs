@@ -7020,19 +7020,9 @@ impl InstructionSelector {
             .map_err(synth_core::Error::synthesis)?,
 
             // i64 comparisons: compare register pairs, result 0/1 in R0.
-            // i64.eqz is increment 3's SetCondZ-shape rule (no side
-            // conditions — the pseudo-op reads both halves before writing).
-            I64Eqz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1)
-                } else {
-                    vec![ArmOp::I64SetCondZ {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                    }]
-                }
-            }
+            // i64.eqz is the SetCondZ-shape rule (no side conditions — the
+            // pseudo-op reads both halves before writing).
+            I64Eqz => crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1),
 
             // Binary i64 comparisons — VCR-SEL-001 increment 4 (#242): one
             // I64SetCond pseudo-op over the fixed (R0:R1, R2:R3) pairs.
@@ -16349,25 +16339,11 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): the SetCondZ-shape rule
-                    // behind SYNTH_SEL_DSL (default OFF) — single identical
-                    // pseudo-op, byte-identical by construction.
-                    if self.sel_dsl {
-                        for rule_op in crate::sel_dsl::generated::rule_i64_eqz(dst, src_lo, src_hi)
-                        {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The SetCondZ-shape Rocq-proved rule is the only path
+                    // (RQ-58-RETIRE).
+                    for rule_op in crate::sel_dsl::generated::rule_i64_eqz(dst, src_lo, src_hi) {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::I64SetCondZ {
-                                rd: dst,
-                                rn_lo: src_lo,
-                                rn_hi: src_hi,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
