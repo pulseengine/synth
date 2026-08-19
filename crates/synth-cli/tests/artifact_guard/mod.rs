@@ -123,10 +123,21 @@ pub fn compile_artifact(cmd: &mut Command, out: &Path) -> Result<Vec<u8>, String
 }
 
 /// [`compile_artifact`], panicking with `ctx` prefixed — the ergonomic form for
-/// a byte gate whose only sane response to a failed compile is to stop.
+/// a byte gate whose only sane response to a failed compile is to stop. Leaves
+/// the artifact in place for callers that need the path afterwards.
 pub fn compile_artifact_or_panic(cmd: &mut Command, out: &Path, ctx: &str) -> Vec<u8> {
     match compile_artifact(cmd, out) {
         Ok(bytes) => bytes,
         Err(e) => panic!("{ctx}: {e}"),
     }
+}
+
+/// [`compile_artifact_or_panic`] for gates that only want the bytes: the
+/// artifact is deleted once read. Per-call unique paths mean nothing is ever
+/// reused, so without this the temp dir would grow by one file per compile on a
+/// long-lived (self-hosted) runner.
+pub fn compile_bytes_or_panic(cmd: &mut Command, out: &Path, ctx: &str) -> Vec<u8> {
+    let bytes = compile_artifact_or_panic(cmd, out, ctx);
+    let _ = std::fs::remove_file(out);
+    bytes
 }

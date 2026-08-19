@@ -25,7 +25,7 @@
 //! must never fire) is owned by `scripts/repro/i32_shift_mask_682_differential.py`
 //! — re-run green with the flag ON at land time, and red-tested against a
 //! force-elide of a >= 32 case (10 rows red, both paths).
-
+//!
 //! RQ-58-FLAKE (#977): this file was the one that kept reading a non-ELF. Its
 //! output path was derived from `(fixture, relocatable, flag)` alone, and its
 //! two `#[test]` fns walk the SAME corpus with the SAME flag values on parallel
@@ -105,14 +105,11 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
     if relocatable {
         cmd.arg("--relocatable");
     }
-    let bytes = artifact_guard::compile_artifact_or_panic(
+    let bytes = artifact_guard::compile_bytes_or_panic(
         &mut cmd,
         &elf,
         &format!("{wasm} (relocatable={relocatable}, elide={elide:?})"),
     );
-    // Bounded: one artifact per call would otherwise accumulate on a
-    // long-lived (self-hosted) runner.
-    let _ = std::fs::remove_file(&elf);
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj.section_by_name(".text").expect(".text");
     let data = text.data().expect("read .text").to_vec();
