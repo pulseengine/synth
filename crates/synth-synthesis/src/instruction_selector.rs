@@ -5081,22 +5081,6 @@ pub struct InstructionSelector {
     /// compiles with the default pool keeps its frame byte-identical by
     /// construction.
     i64_spill_slots: usize,
-    /// VCR-SEL-001 increments 1+2 (#242): serve the migrated selector arms
-    /// from the generated, Rocq-proved rule table
-    /// [`crate::sel_dsl::generated`] instead of the hand-written lowering —
-    /// increment 1: `select_default`'s tier-A i32 ALU six + `i32.rotl`;
-    /// increment 2: the i32 register shifts + `rotr` (both selectors) and
-    /// the ten i32 comparisons (`select_with_stack`'s reg-reg CMP+SetCond
-    /// arm — `select_default`'s blind bare-`Cmp` comparison arms never
-    /// materialize the 0/1 result and stay hand-written). Default OFF (read
-    /// from `SYNTH_SEL_DSL`) — OFF keeps every arm on its original
-    /// hand-written body, and ON is byte-identical by construction. The two
-    /// implementations are mirror-pinned per op
-    /// (`sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242`,
-    /// `sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242`).
-    /// See `docs/design/vcr-sel-001-first-increment.md` and
-    /// `docs/design/vcr-sel-001-increment-2.md`.
-    sel_dsl: bool,
     /// #494 phase 2b (divisor-nonzero fact): op indices (into the stream fed
     /// to `select_with_stack`) of `div`/`rem` ops whose DIVIDE-BY-ZERO trap
     /// guard is proven dead — the fact-spec pass discharged
@@ -5124,28 +5108,6 @@ pub struct InstructionSelector {
     /// (no table size, no verdicts) DECLINES every `call_indirect` — an
     /// unchecked indirect branch is never emitted.
     call_indirect_guards: synth_core::CallIndirectGuards,
-}
-
-/// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): **default ON** since the increment-1..4
-/// default-on flip — the 50 Rocq-proved rules are the SHIPPED lowering path for
-/// their covered ops. The op list is `sel_dsl::RULES` itself (the single
-/// source — it also emits the Rocq model, `VcrSelRulesGenerated.v`, and is
-/// 1:1 coverage-gated against `coq/vcr_sel_rules.manifest`); a hand
-/// enumeration here said "40" and omitted nine i64 ops (#946), so it was
-/// replaced by this pointer. The
-/// flip is byte-invisible by construction: every rule was mirror-pinned
-/// byte-identical to the hand-written arm it replaces.
-///
-/// Opt-out (CI-gated back to the hand-written path): `SYNTH_NO_SEL_DSL=1`
-/// (mirrors every other default-on lever's opt-out) or the back-compat
-/// `SYNTH_SEL_DSL=0`. `SYNTH_NO_SEL_DSL` wins if both are set.
-fn sel_dsl_from_env() -> bool {
-    // Opt-out escape hatch takes precedence over any opt-in.
-    if std::env::var("SYNTH_NO_SEL_DSL").is_ok_and(|v| v != "0") {
-        return false;
-    }
-    // Default ON; only an explicit `SYNTH_SEL_DSL=0` forces the old path.
-    !std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v == "0")
 }
 
 /// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
@@ -5200,7 +5162,6 @@ impl InstructionSelector {
             vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
-            sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
             fact_mem_bounds_elide: Vec::new(),
@@ -5252,7 +5213,6 @@ impl InstructionSelector {
             vfp_spill_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
-            sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
             fact_mem_bounds_elide: Vec::new(),
@@ -5312,16 +5272,6 @@ impl InstructionSelector {
     /// bit-identical. See the `local_promote` field and [`compute_local_promotion`].
     pub fn set_local_promote(&mut self, enabled: bool) {
         self.local_promote = enabled;
-    }
-
-    /// VCR-SEL-001 increment 1 (#242): serve the migrated `select_default`
-    /// arms from the generated, Rocq-proved rule table instead of the
-    /// hand-written lowering. Off ⇒ hand-written path, byte-identical by
-    /// construction. See the `sel_dsl` field; default comes from
-    /// `SYNTH_SEL_DSL` — this setter exists so the mirror-pin tests can flip
-    /// the lever without racing on the process environment.
-    pub fn set_sel_dsl(&mut self, enabled: bool) {
-        self.sel_dsl = enabled;
     }
 
     /// #494 phase 2b (divisor-nonzero fact): per-site trap-guard elision marks
@@ -15946,11 +15896,10 @@ impl InstructionSelector {
                     // The per-half bitwise pair comes from the generated
                     // Rocq-proved rule — the only path (RQ-58-RETIRE; side
                     // conditions hold by construction, see I64Add).
-                    let rule_ops = crate::sel_dsl::i64_pair_rule(
-                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                    )
-                    .expect("i64 bitwise op has a pair rule")
-                    .map_err(synth_core::Error::synthesis)?;
+                    let rule_ops =
+                        crate::sel_dsl::i64_pair_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi)
+                            .expect("i64 bitwise op has a pair rule")
+                            .map_err(synth_core::Error::synthesis)?;
                     for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
                             op: rule_op,
@@ -16319,14 +16268,13 @@ impl InstructionSelector {
                     } else {
                         None
                     };
-                    // VCR-SEL-001 increment 2 (#242): the plain reg-reg
-                    // CMP+SetCond pair is served from the Rocq-proved rule
-                    // table behind SYNTH_SEL_DSL — `reg_operands` records the
-                    // operand registers so the delegation below can call the
-                    // rule with the exact registers the hand-written arm
-                    // uses (byte-identical by construction; the #258
-                    // imm-fold peephole stays hand-written, outside the
-                    // reg-reg rule's shape).
+                    // The plain reg-reg CMP+SetCond pair is served from the
+                    // Rocq-proved rule table (the only reg-reg path,
+                    // RQ-58-RETIRE) — `reg_operands` records the operand
+                    // registers so the dispatch below can call the rule with
+                    // the registers the selector chose (the #258 imm-fold
+                    // peephole stays hand-written, outside the reg-reg
+                    // rule's shape).
                     let mut reg_operands = None;
                     let cmp_op = if let Some((is_neg, mag)) = fold {
                         let _b = pop_operand(
@@ -16816,8 +16764,9 @@ impl InstructionSelector {
                     // The I64SetCond pseudo-op (condition mapping included)
                     // comes from the generated Rocq-proved rule — the only
                     // path (RQ-58-RETIRE).
-                    let rule_ops = crate::sel_dsl::i64_setcond_rule(op, dst, a_lo, a_hi, b_lo, b_hi)
-                        .expect("binary i64 comparison has a generated rule");
+                    let rule_ops =
+                        crate::sel_dsl::i64_setcond_rule(op, dst, a_lo, a_hi, b_lo, b_hi)
+                            .expect("binary i64 comparison has a generated rule");
                     for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
                             op: rule_op,
@@ -18041,699 +17990,28 @@ mod tests {
         }
     }
 
-    /// VCR-SEL-001 increments 1+2+3 (#242) — gate 1, the #511/#513
-    /// mirror-pinning pattern: for every rule delegated in `select_default`
-    /// (`Delegation::SelectDefault`/`Both`), lower its op through BOTH the
-    /// hand-written `select_default` arm (flag OFF) and the generated
-    /// Rocq-proved rule (flag ON) from identical selector state, and assert
-    /// the emitted `ArmOp` sequences are EQUAL. Same-ArmOps ⇒ same encoded
-    /// bytes, so the two must-agree implementations are pinned before the
-    /// `SYNTH_SEL_DSL` flag can matter — the migration moves structure,
-    /// never bytes. Uses `set_sel_dsl` (not the env var) so parallel tests
-    /// never race on the process environment. Since increment 3 this loop
-    /// also pins the six i64 pair rules: `select_default`'s fixed
-    /// `R0:R1 op= R2:R3` arms are in-place instances of the pair rules
-    /// (the single-op probe is exactly that shape).
-    ///
-    /// Comparison rules (`Delegation::SelectWithStack`) are NOT probed here:
-    /// `select_default`'s comparison arms are a blind bare-`Cmp` lowering
-    /// (never materializes the 0/1 result; production-unreachable —
-    /// `select_with_stack` owns comparisons) and stay hand-written. Their
-    /// mirror-pin is
-    /// `sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242`.
-    /// Positive default-on guard for the VCR-SEL-001 flip (#242): the mirror-pin
-    /// tests use `set_sel_dsl` explicitly and the frozen/differential gates are
-    /// byte-identical by design, so NONE of them would notice if the default
-    /// silently reverted to OFF (a construction site hardcoding `false`, or the
-    /// env logic inverting). This asserts the shipped default actually routes
-    /// the covered ops through the DSL: a freshly constructed selector — the
-    /// exact object the compile path builds — has `sel_dsl` set with no env.
+    /// RQ-58-RETIRE residual pin (#242/#258): the imm-fold comparison
+    /// peephole (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg
+    /// `i32_cmp_rule`'s shape and its hand-written Cmp/Cmn+SetCond emission
+    /// deliberately SURVIVED the arm retirement (no CmpImm-shaped rule
+    /// exists). This pins that the fold still fires — if a future rule
+    /// covers the imm shape, this test is the one to retire with it.
     #[test]
-    fn sel_dsl_defaults_on_after_flip_242() {
-        // Guard against a polluted test-process environment (no test sets these,
-        // but be explicit): the assertion is only meaningful when neither the
-        // opt-out nor the back-compat disable is present.
-        if std::env::var("SYNTH_NO_SEL_DSL").is_ok() || std::env::var("SYNTH_SEL_DSL").is_ok() {
-            return;
-        }
-        assert!(
-            sel_dsl_from_env(),
-            "VCR-SEL-001 flip: sel_dsl_from_env() must default ON"
-        );
-        // Both public constructors must carry the default onto the live path.
-        assert!(
-            InstructionSelector::new(vec![]).sel_dsl,
-            "InstructionSelector::new must default sel_dsl ON"
-        );
-        assert!(
-            InstructionSelector::with_bounds_check(vec![], BoundsCheckConfig::None).sel_dsl,
-            "InstructionSelector::with_bounds_check must default sel_dsl ON"
-        );
-    }
-
-    #[test]
-    fn sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242() {
-        use crate::sel_dsl::Delegation;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if rule.delegation == Delegation::SelectWithStack {
-                continue;
-            }
-            probed += 1;
-            let ops = vec![rule.op.clone()];
-
-            // Empty rule set ⇒ the pattern matcher never fires and every op
-            // takes the select_default path under test.
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select(&ops)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select(&ops)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: generated rule diverges from the hand-written arm — \
-                 the migration moves structure, never bytes",
-                rule.name
-            );
-        }
-        // Non-vacuity: increment 1's seven + increment 2's four shifts +
-        // increment 3's six i64 pair-family rules + increment 4's three i32
-        // bit-manipulation and ten binary I64SetCond comparison rules.
-        assert_eq!(probed, 30, "unexpected select_default-delegated rule count");
-    }
-
-    /// VCR-SEL-001 increment 2 (#242) — gate 1 for the rules delegated in
-    /// `select_with_stack` (the ten comparisons: `Delegation::SelectWithStack`;
-    /// the four register shifts: `Delegation::Both`). For each, lower a
-    /// two-param probe (`local.get 0; local.get 1; <op>`) through
-    /// `select_with_stack` with the flag OFF and ON and assert the FULL
-    /// emitted sequences are equal. Non-vacuity (the RMW-vacuity gotcha):
-    /// locate the hand-written emission window in the OFF sequence, extract
-    /// the registers the selector chose, and assert the window equals the
-    /// generated rule's output for exactly those registers — proving the
-    /// delegation actually fired and the rule reproduces the hand-written
-    /// arm byte-for-byte.
-    #[test]
-    fn sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242() {
-        use crate::sel_dsl::Delegation;
-        use synth_core::WasmOp;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if rule.delegation == Delegation::SelectDefault {
-                continue;
-            }
-            // The i64 pair rules (increment 3) need i64-typed probes and a
-            // pair-shaped emission window — pinned by the dedicated
-            // `sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242`.
-            if rule.name.starts_with("rule_i64_") {
-                continue;
-            }
-            // i32.eqz is the sole UNARY compare-with-zero rule (CmpImm +
-            // SetCond); it needs a single-operand probe and a CmpImm window,
-            // pinned separately below.
-            if rule.name == "rule_i32_eqz" {
-                continue;
-            }
-            probed += 1;
-            let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), rule.op.clone()];
-
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select_with_stack(&ops, 2)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 2)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: SYNTH_SEL_DSL=1 diverges from the hand-written \
-                 select_with_stack arm — the migration moves structure, never bytes",
-                rule.name
-            );
-
-            // Non-vacuity: find the hand-written window, extract the chosen
-            // registers, and check it equals the rule's own output for them.
-            let is_cmp_rule = rule
-                .seq
-                .iter()
-                .any(|t| matches!(t, crate::sel_dsl::TemplateOp::SetCond { .. }));
-            let is_unary_rule = rule.seq.iter().any(|t| {
-                matches!(
-                    t,
-                    crate::sel_dsl::TemplateOp::Clz { .. }
-                        | crate::sel_dsl::TemplateOp::Rbit { .. }
-                        | crate::sel_dsl::TemplateOp::Popcnt { .. }
-                )
-            });
-            let (window, rule_ops) = if is_unary_rule {
-                // Increment 4's i32 bit-manipulation shapes: the window starts
-                // at the first Clz/Rbit/Popcnt and spans the rule's length
-                // (ctz is the two-instruction RBIT+CLZ scratch=dest shape).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::Clz { .. } | ArmOp::Rbit { .. } | ArmOp::Popcnt { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no bit-manip op in probe output", rule.name));
-                let (rd, rm) = match &baseline[i] {
-                    ArmOp::Clz { rd, rm } | ArmOp::Rbit { rd, rm } | ArmOp::Popcnt { rd, rm } => {
-                        (*rd, *rm)
-                    }
-                    _ => unreachable!(),
-                };
-                let rule_ops = crate::sel_dsl::i32_unary_rule(&rule.op, rd, rm)
-                    .unwrap_or_else(|| panic!("{}: unary dispatch missing", rule.name));
-                assert!(
-                    baseline.len() >= i + rule_ops.len(),
-                    "{}: probe output too short for the rule window",
-                    rule.name
-                );
-                (baseline[i..i + rule_ops.len()].to_vec(), rule_ops)
-            } else if is_cmp_rule {
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::Cmp { .. }))
-                    .unwrap_or_else(|| panic!("{}: no Cmp in probe output", rule.name));
-                let (rn, rm) = match &baseline[i] {
-                    ArmOp::Cmp {
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rn, *rm),
-                    other => panic!("{}: probe Cmp is not reg-reg: {other:?}", rule.name),
-                };
-                let rd = match &baseline[i + 1] {
-                    ArmOp::SetCond { rd, .. } => *rd,
-                    other => panic!("{}: no SetCond after Cmp: {other:?}", rule.name),
-                };
-                (
-                    baseline[i..i + 2].to_vec(),
-                    crate::sel_dsl::i32_cmp_rule(&rule.op, rd, rn, rm)
-                        .unwrap_or_else(|| panic!("{}: cmp dispatch missing", rule.name)),
-                )
-            } else {
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::LslReg { .. }
-                                | ArmOp::LsrReg { .. }
-                                | ArmOp::AsrReg { .. }
-                                | ArmOp::RorReg { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no shift op in probe output", rule.name));
-                let (rd, rn, rm) = match &baseline[i] {
-                    ArmOp::LslReg { rd, rn, rm }
-                    | ArmOp::LsrReg { rd, rn, rm }
-                    | ArmOp::AsrReg { rd, rn, rm }
-                    | ArmOp::RorReg { rd, rn, rm } => (*rd, *rn, *rm),
-                    _ => unreachable!(),
-                };
-                // #682: LSL/LSR/ASR windows are two instructions (And #31 into
-                // R12, then the shift by R12); the rule is invoked with the
-                // ORIGINAL amount register (the And's rn). ROR stays unmasked.
-                let is_masked = !matches!(&baseline[i], ArmOp::RorReg { .. });
-                let (window, orig_rm) = if is_masked {
-                    let orig = match &baseline[i - 1] {
-                        ArmOp::And { rn, .. } => *rn,
-                        other => panic!(
-                            "{}: expected the #682 mask before the shift, found {:?}",
-                            rule.name, other
-                        ),
-                    };
-                    (baseline[i - 1..=i].to_vec(), orig)
-                } else {
-                    (baseline[i..i + 1].to_vec(), rm)
-                };
-                (
-                    window,
-                    crate::sel_dsl::i32_shift_rule(&rule.op, rd, rn, orig_rm, Reg::R12)
-                        .unwrap_or_else(|| panic!("{}: shift dispatch missing", rule.name))
-                        .unwrap_or_else(|e| panic!("{}: side condition: {e}", rule.name)),
-                )
-            };
-            assert_eq!(
-                window, rule_ops,
-                "{}: the hand-written emission window does not equal the \
-                 generated rule's output for the same registers",
-                rule.name
-            );
-        }
-        // Ten comparisons + four shifts + increment 4's three i32
-        // bit-manipulation rules.
-        assert_eq!(
-            probed, 17,
-            "unexpected select_with_stack-delegated rule count"
-        );
-
-        // i32.eqz — the unary compare-with-zero rule, probed with a single
-        // operand. OFF vs ON full-sequence equality, plus the CmpImm+SetCond
-        // window RMW-vacuity check for the registers the selector chose.
-        let eqz_ops = vec![WasmOp::LocalGet(0), WasmOp::I32Eqz];
-        let mut hw = InstructionSelector::new(vec![]);
-        hw.set_sel_dsl(false);
-        let eqz_baseline: Vec<ArmOp> = hw
-            .select_with_stack(&eqz_ops, 1)
-            .expect("i32.eqz hand-written arm failed")
-            .into_iter()
-            .map(|i| i.op)
-            .collect();
-        let mut dsl = InstructionSelector::new(vec![]);
-        dsl.set_sel_dsl(true);
-        let eqz_generated: Vec<ArmOp> = dsl
-            .select_with_stack(&eqz_ops, 1)
-            .expect("i32.eqz generated rule failed")
-            .into_iter()
-            .map(|i| i.op)
-            .collect();
-        assert_eq!(
-            eqz_baseline, eqz_generated,
-            "rule_i32_eqz: SYNTH_SEL_DSL=1 diverges from the hand-written \
-             select_with_stack arm"
-        );
-        let i = eqz_baseline
-            .iter()
-            .position(|o| {
-                matches!(
-                    o,
-                    ArmOp::Cmp {
-                        op2: Operand2::Imm(_),
-                        ..
-                    }
-                )
-            })
-            .expect("rule_i32_eqz: no CMP #imm in probe output");
-        let rn = match &eqz_baseline[i] {
-            ArmOp::Cmp { rn, .. } => *rn,
-            _ => unreachable!(),
-        };
-        let rd = match &eqz_baseline[i + 1] {
-            ArmOp::SetCond { rd, .. } => *rd,
-            other => panic!("rule_i32_eqz: no SetCond after CMP: {other:?}"),
-        };
-        let eqz_rule = crate::sel_dsl::i32_eqz_rule(&WasmOp::I32Eqz, rd, rn)
-            .expect("rule_i32_eqz: dispatch missing");
-        assert_eq!(
-            eqz_baseline[i..i + 2].to_vec(),
-            eqz_rule,
-            "rule_i32_eqz: the hand-written emission window does not equal the \
-             generated rule's output for the same registers"
-        );
-    }
-
-    /// VCR-SEL-001 increment 3 (#242) — gate 1 for the i64 pair-family rules
-    /// in `select_with_stack` (all `Delegation::Both`; their `select_default`
-    /// half is pinned by the loop above). Each binary rule is probed with
-    /// `i64.const; i64.const; <op>` so the selector allocates real register
-    /// pairs; `i64.eqz` with a single constant. OFF vs ON full-sequence
-    /// equality, plus the RMW-vacuity-proof window check: extract the SIX
-    /// registers the hand-written arm chose from the OFF sequence and assert
-    /// the emission window equals the generated rule's output for exactly
-    /// those registers — proving the delegation fired and satisfied the pair
-    /// aliasing side conditions with the selector's own assignment.
-    #[test]
-    fn sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242() {
-        use synth_core::WasmOp;
-        let mut probed = 0;
-        for rule in crate::sel_dsl::RULES {
-            if !rule.name.starts_with("rule_i64_") {
-                continue;
-            }
-            probed += 1;
-            let ops = if matches!(rule.op, WasmOp::I64Eqz) {
-                vec![WasmOp::I64Const(0x1_0000_0005), rule.op.clone()]
-            } else {
-                vec![
-                    WasmOp::I64Const(0x1_0000_0005),
-                    WasmOp::I64Const(0x2_0000_0007),
-                    rule.op.clone(),
-                ]
-            };
-
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
-                .select_with_stack(&ops, 0)
-                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 0)
-                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "{}: SYNTH_SEL_DSL=1 diverges from the hand-written \
-                 select_with_stack arm — the migration moves structure, never bytes",
-                rule.name
-            );
-
-            // Non-vacuity: locate the hand-written emission window, extract
-            // the registers the selector chose, and check the window equals
-            // the rule's own output for them.
-            let (window, rule_ops) = if matches!(rule.op, WasmOp::I64Eqz) {
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64SetCondZ { .. }))
-                    .unwrap_or_else(|| panic!("{}: no I64SetCondZ in probe output", rule.name));
-                let (rd, rn_lo, rn_hi) = match &baseline[i] {
-                    ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } => (*rd, *rn_lo, *rn_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::generated::rule_i64_eqz(rd, rn_lo, rn_hi),
-                )
-            } else if rule
-                .seq
-                .iter()
-                .any(|t| matches!(t, crate::sel_dsl::TemplateOp::I64SetCond { .. }))
-            {
-                // Increment 4's binary comparison family: the window is the
-                // single I64SetCond pseudo-op; extract the FIVE registers the
-                // hand-written arm chose (result + both operand pairs).
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64SetCond { .. }))
-                    .unwrap_or_else(|| panic!("{}: no I64SetCond in probe output", rule.name));
-                let (rd, rn_lo, rn_hi, rm_lo, rm_hi) = match &baseline[i] {
-                    ArmOp::I64SetCond {
-                        rd,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                        ..
-                    } => (*rd, *rn_lo, *rn_hi, *rm_lo, *rm_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_setcond_rule(&rule.op, rd, rn_lo, rn_hi, rm_lo, rm_hi)
-                        .unwrap_or_else(|| panic!("{}: setcond dispatch missing", rule.name)),
-                )
-            } else if matches!(rule.op, WasmOp::I64Clz | WasmOp::I64Ctz | WasmOp::I64Popcnt) {
-                // VCR-ISA-001 wave-2: the unary bit-count single-pseudo-op
-                // window. Extract the three registers the hand-written arm
-                // chose (rd + operand pair).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::I64Clz { .. } | ArmOp::I64Ctz { .. } | ArmOp::I64Popcnt { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no i64 count op in probe output", rule.name));
-                let (rd, rn_lo, rn_hi) = match &baseline[i] {
-                    ArmOp::I64Clz { rd, rnlo, rnhi }
-                    | ArmOp::I64Ctz { rd, rnlo, rnhi }
-                    | ArmOp::I64Popcnt { rd, rnlo, rnhi } => (*rd, *rnlo, *rnhi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_unary_count_rule(&rule.op, rd, rn_lo, rn_hi)
-                        .unwrap_or_else(|| panic!("{}: count dispatch missing", rule.name)),
-                )
-            } else if matches!(rule.op, WasmOp::I64Rotl | WasmOp::I64Rotr) {
-                // VCR-ISA-001 wave-2: the i64 rotate single-pseudo-op window
-                // (five registers: result pair + operand pair + single shift).
-                let i = baseline
-                    .iter()
-                    .position(|o| matches!(o, ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. }))
-                    .unwrap_or_else(|| panic!("{}: no i64 rotate op in probe output", rule.name));
-                let (rd_lo, rd_hi, rn_lo, rn_hi, shift) = match &baseline[i] {
-                    ArmOp::I64Rotl {
-                        rdlo,
-                        rdhi,
-                        rnlo,
-                        rnhi,
-                        shift,
-                    }
-                    | ArmOp::I64Rotr {
-                        rdlo,
-                        rdhi,
-                        rnlo,
-                        rnhi,
-                        shift,
-                    } => (*rdlo, *rdhi, *rnlo, *rnhi, *shift),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_rot_rule(&rule.op, rd_lo, rd_hi, rn_lo, rn_hi, shift)
-                        .unwrap_or_else(|| panic!("{}: rotate dispatch missing", rule.name))
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "{}: selector regs violate rotate side condition: {e}",
-                                rule.name
-                            )
-                        }),
-                )
-            } else if matches!(
-                rule.op,
-                WasmOp::I64Mul | WasmOp::I64Shl | WasmOp::I64ShrU | WasmOp::I64ShrS
-            ) {
-                // VCR-ISA-001 wave-2: the i64 binary register-pair
-                // single-pseudo-op window (six registers).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::I64Mul { .. }
-                                | ArmOp::I64Shl { .. }
-                                | ArmOp::I64ShrU { .. }
-                                | ArmOp::I64ShrS { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no i64 pair-bin op in probe output", rule.name));
-                let (rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi) = match &baseline[i] {
-                    ArmOp::I64Mul {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64Shl {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64ShrU {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    }
-                    | ArmOp::I64ShrS {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    } => (*rd_lo, *rd_hi, *rn_lo, *rn_hi, *rm_lo, *rm_hi),
-                    _ => unreachable!(),
-                };
-                (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i64_pair_bin_rule(
-                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
-                    )
-                    .unwrap_or_else(|| panic!("{}: pair-bin dispatch missing", rule.name))
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{}: selector regs violate pair-bin side condition: {e}",
-                            rule.name
-                        )
-                    }),
-                )
-            } else {
-                // The pair window is the two-instruction sequence starting at
-                // the first lo-half data-processing op (the probe's constant
-                // materializations are I64Const pseudo-ops, never Adds/Subs/
-                // And/Orr/Eor, so the first match is the rule window).
-                let i = baseline
-                    .iter()
-                    .position(|o| {
-                        matches!(
-                            o,
-                            ArmOp::Adds { .. }
-                                | ArmOp::Subs { .. }
-                                | ArmOp::And { .. }
-                                | ArmOp::Orr { .. }
-                                | ArmOp::Eor { .. }
-                        )
-                    })
-                    .unwrap_or_else(|| panic!("{}: no pair lo-half op in probe output", rule.name));
-                assert!(
-                    baseline.len() >= i + 2,
-                    "{}: probe output too short for a pair window",
-                    rule.name
-                );
-                let (rd_lo, rn_lo, rm_lo) = match &baseline[i] {
-                    ArmOp::Adds {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Subs {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::And {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rd, *rn, *rm),
-                    other => panic!("{}: unexpected lo-half op {other:?}", rule.name),
-                };
-                let (rd_hi, rn_hi, rm_hi) = match &baseline[i + 1] {
-                    ArmOp::Adc {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Sbc {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::And {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Orr {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }
-                    | ArmOp::Eor {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    } => (*rd, *rn, *rm),
-                    other => panic!("{}: unexpected hi-half op {other:?}", rule.name),
-                };
-                (
-                    baseline[i..i + 2].to_vec(),
-                    crate::sel_dsl::i64_pair_rule(
-                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
-                    )
-                    .unwrap_or_else(|| panic!("{}: pair dispatch missing", rule.name))
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{}: selector-chosen registers violate a pair side \
-                                 condition: {e}",
-                            rule.name
-                        )
-                    }),
-                )
-            };
-            assert_eq!(
-                window, rule_ops,
-                "{}: the hand-written emission window does not equal the \
-                 generated rule's output for the same registers",
-                rule.name
-            );
-        }
-        // Five binary pair rules + i64.eqz + increment 4's ten binary
-        // I64SetCond comparison rules + VCR-ISA-001 wave-2's nine
-        // single-pseudo-op i64 shapes (clz/ctz/popcnt/mul/shl/shr_u/shr_s/
-        // rotl/rotr).
-        assert_eq!(probed, 25, "unexpected i64 pair rule count");
-    }
-
-    /// VCR-SEL-001 increment 2 (#242): the #258 imm-fold comparison peephole
-    /// (`cmp a, #C` / `cmn a, #-C`) is OUTSIDE the reg-reg rule's shape — the
-    /// delegation must skip it and stay byte-identical with the flag ON.
-    #[test]
-    fn sel_dsl_cmp_imm_fold_path_stays_handwritten_and_byte_identical_242() {
+    fn cmp_imm_fold_residual_path_stays_handwritten_258() {
         use synth_core::WasmOp;
         for (c, opv) in [(5i32, WasmOp::I32Eq), (-7i32, WasmOp::I32LtS)] {
             let ops = vec![WasmOp::LocalGet(0), WasmOp::I32Const(c), opv];
 
-            let mut handwritten = InstructionSelector::new(vec![]);
-            handwritten.set_sel_dsl(false);
-            let baseline: Vec<ArmOp> = handwritten
+            let emitted: Vec<ArmOp> = InstructionSelector::new(vec![])
                 .select_with_stack(&ops, 1)
-                .expect("hand-written fold path failed")
+                .expect("imm-fold comparison probe failed")
                 .into_iter()
                 .map(|i| i.op)
                 .collect();
 
-            let mut dsl = InstructionSelector::new(vec![]);
-            dsl.set_sel_dsl(true);
-            let generated: Vec<ArmOp> = dsl
-                .select_with_stack(&ops, 1)
-                .expect("fold path with flag ON failed")
-                .into_iter()
-                .map(|i| i.op)
-                .collect();
-
-            assert_eq!(
-                baseline, generated,
-                "imm-fold comparison path must stay byte-identical under SYNTH_SEL_DSL=1"
-            );
-            // The fold actually fired (imm cmp/cmn present, no reg-reg Cmp).
+            // The fold actually fired (imm cmp/cmn present)...
             assert!(
-                baseline.iter().any(|o| matches!(
+                emitted.iter().any(|o| matches!(
                     o,
                     ArmOp::Cmp {
                         op2: Operand2::Imm(_),
@@ -18744,6 +18022,18 @@ mod tests {
                     }
                 )),
                 "probe did not exercise the imm-fold path"
+            );
+            // ...and the reg-reg rule shape did NOT (no reg-reg Cmp), i.e.
+            // the probe really took the residual hand-written emission.
+            assert!(
+                !emitted.iter().any(|o| matches!(
+                    o,
+                    ArmOp::Cmp {
+                        op2: Operand2::Reg(_),
+                        ..
+                    }
+                )),
+                "imm-fold probe unexpectedly took the reg-reg rule path"
             );
         }
     }
