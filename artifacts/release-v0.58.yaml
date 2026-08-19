@@ -146,7 +146,26 @@ artifacts:
       `select_with_stack`). An arm that is dead on one path and live on the
       other is NOT deletable yet; say which those are rather than deleting them
       and discovering it downstream. That set is the input to RQ-58-SPLIT.
-    status: proposed
+      LANDED (v0.58): all 36 flag-guarded sites deleted (21 select_default +
+      15 select_with_stack; one op/group per commit), each commit gated on a
+      688-row corpus byte-identity manifest (156 scripts/repro fixtures x 4
+      configs — m4f/m4 relocatable, m4f self-contained, r5 relocatable —
+      declines pinned too) against the pre-deletion origin/main baseline plus
+      the 10 frozen anchors. BYTE-IDENTICAL THROUGHOUT — no finding of the
+      "flip does not cover what it claims" class surfaced. The SYNTH_SEL_DSL
+      lever and the four mirror-pin tests retired as vacuous in the final
+      functional commit; the #258 imm-fold holdout re-pinned as
+      cmp_imm_fold_residual_path_stays_handwritten_258. Selector code region
+      18,582 -> 17,897 (-685), absorbing wildcards 63 -> 56 (-7), whole file
+      29,839 -> 28,495; ratchet re-banked. RESIDUAL (the RQ-58-SPLIT input,
+      measured not guessed): select_with_stack's i32 add/sub/mul/and/or/xor
+      arms (hand-written imm-fold shapes, never DSL-wired), its i32.rotl arm,
+      and its i32-comparison imm-fold (#258 cmp/cmn) fallback emission;
+      select_default's blind-Cmp i32 comparison + i32.eqz arms and its
+      fixed-pair i64 mul/shl/shr_u/shr_s/rotl/rotr/clz/ctz/popcnt arms
+      (production-unreachable via compile paths — select_with_stack matches
+      those ops before its fallthrough — but live via the pub select() API).
+    status: implemented
     release: v0.58
     tags: [north-star, subtraction, vcr-sel-001, byte-identical]
     links:

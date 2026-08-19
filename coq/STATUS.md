@@ -600,10 +600,11 @@ The Rocq suite proves things in two very different places, and #73's
 measurable if they are counted separately:
 
 - **DSL-served** — the op's *shipped* lowering is a `sel_dsl` rule with a
-  1:1 Qed theorem in `VcrSelRules.v`, register-polymorphic, mirror-pinned
-  byte-identical to the hand-written arm(s) (`SYNTH_SEL_DSL`, **default ON**
-  since the increment-1..4 flip — opt-out `SYNTH_NO_SEL_DSL=1`). These proofs
-  are about the code that ships — and now, by default, the code that DOES ship.
+  1:1 Qed theorem in `VcrSelRules.v`, register-polymorphic, and since
+  RQ-58-RETIRE (v0.58) the ONLY lowering for the op: the hand-written arms
+  the rules had mirrored byte-identically were deleted, along with the
+  `SYNTH_SEL_DSL`/`SYNTH_NO_SEL_DSL` lever. These proofs are about the code
+  that ships — now the only code there is.
 - **model-only** — the op is proven only against `compile_wasm_to_arm`
   (Compilation.v), the fixed-register model that diverges from the shipped
   Rust selector in documented ways (#73). Evidence about a model, not the
@@ -655,9 +656,9 @@ additionally gates FPU ops behind the #369/GI-FPU work.
 
 **Retirement criterion (#73):** a `compile_wasm_to_arm` arm may be deleted
 (and its Correctness* theorem retired) once its family is DSL-served — the
-DSL theorem is strictly stronger (register-polymorphic, mirror-pinned to
-the shipped bytes). The model-only column is the shrinking measure; report
-it per release.
+DSL theorem is strictly stronger (register-polymorphic, and since v0.58 the
+rule IS the shipped lowering, no mirror in between). The model-only column
+is the shrinking measure; report it per release.
 
 ## Phase History
 
