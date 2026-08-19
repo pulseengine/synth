@@ -6962,39 +6962,21 @@ impl InstructionSelector {
                 }]
             }
 
-            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub.
-            // VCR-SEL-001 increment 3 (#242): the i64 pair arms delegate to
-            // the Rocq-proved pair rules behind SYNTH_SEL_DSL (default OFF),
-            // byte-identical by construction — the fixed R0:R1 += R2:R3
-            // in-place shape satisfies all three pair aliasing side
-            // conditions (rd_hi≠rd_lo, rd_lo≠rn_hi, rd_lo≠rm_hi), so the
-            // Err arm is unreachable here but stays loud, never silent.
-            I64Add => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i64_add(
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R0,
-                        Reg::R1,
-                        Reg::R2,
-                        Reg::R3,
-                    )
-                    .map_err(synth_core::Error::synthesis)?
-                } else {
-                    vec![
-                        ArmOp::Adds {
-                            rd: Reg::R0,
-                            rn: Reg::R0,
-                            op2: Operand2::Reg(Reg::R2),
-                        },
-                        ArmOp::Adc {
-                            rd: Reg::R1,
-                            rn: Reg::R1,
-                            op2: Operand2::Reg(Reg::R3),
-                        },
-                    ]
-                }
-            }
+            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub — the
+            // Rocq-proved pair rules are the only path (RQ-58-RETIRE). The
+            // fixed R0:R1 += R2:R3 in-place shape satisfies all three pair
+            // aliasing side conditions (rd_hi≠rd_lo, rd_lo≠rn_hi,
+            // rd_lo≠rm_hi), so the Err arm is unreachable here but stays
+            // loud, never silent.
+            I64Add => crate::sel_dsl::generated::rule_i64_add(
+                Reg::R0,
+                Reg::R1,
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+            )
+            .map_err(synth_core::Error::synthesis)?,
 
             I64Sub => {
                 if self.sel_dsl {
@@ -15957,44 +15939,18 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the ADDS+ADC pair comes from the
-                    // generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned). The pair
-                    // aliasing side conditions hold by construction here:
+                    // The ADDS+ADC pair comes from the generated Rocq-proved
+                    // rule — the only path (RQ-58-RETIRE). The pair aliasing
+                    // side conditions hold by construction here:
                     // alloc_consecutive_pair avoids every operand half and a
                     // consecutive pair never self-aliases.
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::generated::rule_i64_add(
-                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
-                        // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
+                    let rule_ops = crate::sel_dsl::generated::rule_i64_add(
+                        dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Adds {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-
-                        // ADC dst_hi, a_hi, b_hi  (adds with carry)
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Adc {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
