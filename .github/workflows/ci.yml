@@ -1537,8 +1537,42 @@ jobs:
         run: cargo test -p synth-cli --features verify --test fact_spec_div_494
       - name: Run verify rule-inventory non-vacuity gate (#935 decline denominator)
         run: cargo test -p synth-cli --features verify --test verify_report_935
+      # #1000 (RQ-58-SHIPVERIFY): the capable half of the banner-ordering gate
+      # — a verify-capable binary must still print the strategy banner AND end
+      # in a real verdict. (The missing-capability half runs in the plain
+      # workspace test job, where the test binary is built without `verify`.)
+      - name: Run verify banner/verdict gate (#1000, verify half)
+        run: cargo test -p synth-cli --features verify --test verify_banner_1000
+      # #1000 red leg — keep the released-artifact smoke gate falsifiable on
+      # every push, not just at authoring time: against a binary built WITHOUT
+      # the `verify` feature, scripts/release_verify_smoke.sh (the script
+      # release.yml runs against each packaged tarball) must FAIL, and fail
+      # for exactly the capability reason. A gate whose red direction is not
+      # exercised goes vacuous silently — this repo has shipped that class.
+      - name: Build synth WITHOUT verify (#1000 red-leg binary)
+        run: cargo build -p synth-cli
+      - name: Red leg — release smoke gate must fail on a verify-less binary
+        run: |
+          set -euo pipefail
+          if bash scripts/release_verify_smoke.sh target/debug/synth \
+              > /tmp/smoke_red.log 2>&1; then
+            echo "VACUOUS GATE: release_verify_smoke.sh passed against a binary built without the verify feature" >&2
+            cat /tmp/smoke_red.log >&2
+            exit 1
+          fi
+          grep -q 'built without the `verify` feature' /tmp/smoke_red.log || {
+            echo "release_verify_smoke.sh failed for the WRONG reason:" >&2
+            cat /tmp/smoke_red.log >&2
+            exit 1
+          }
+          echo "red leg OK: smoke gate fails with the capability error on a verify-less binary"
       - name: Build synth (verify feature)
         run: cargo build -p synth-cli --features verify
+      # #1000 green leg — the same script release.yml runs against the
+      # packaged tarballs, here against the freshly built verify binary so a
+      # pre-tag push catches script/CLI drift instead of the release run.
+      - name: Green leg — release smoke gate passes on the verify binary
+        run: bash scripts/release_verify_smoke.sh target/debug/synth
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"

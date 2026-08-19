@@ -30,13 +30,17 @@ env:
 
 jobs:
   # ── Cross-platform binary builds ──────────────────────────────────────
-  # synth-cli builds with `--features riscv` only (the workspace default).
-  # The `verify` feature is intentionally NOT enabled here. Historically it
-  # pulled z3-sys (vendored C++ Z3 build — slow, network-hungry); since #553
-  # it is pure Rust (ordeal engine), so enabling it is now feasible but is a
-  # deliberate follow-up decision, not a build constraint. The CLI degrades
-  # gracefully without it (`synth verify` fails loudly with "rebuild with
-  # --features verify").
+  # synth-cli builds with the workspace default (`riscv`) PLUS `verify`
+  # (#1000, RQ-58-SHIPVERIFY): every released tarball can run `synth verify`
+  # to a real verdict. Historically `verify` pulled z3-sys (vendored C++ Z3
+  # build — slow, network-hungry); since #553 it is pure Rust (ordeal
+  # engine, re-measured for v0.58: `cargo tree -p synth-cli --features
+  # verify` has 0 z3 nodes — Z3 remains a separate `synth-verify/z3-solver`
+  # opt-in that never ships here). The smoke step below is the non-vacuity
+  # gate: it extracts the just-packaged tarball and asserts `synth verify`
+  # reaches a verdict, so dropping this feature flag reds the release run
+  # instead of silently regressing the artifact to help-text-only
+  # (the 0.55.0/0.57.0 state issue #1000 reported).
   build-binaries:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -79,11 +83,11 @@ jobs:
 
       - name: Build synth (native)
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p synth-cli
+        run: cargo build --release --target ${{ matrix.target }} -p synth-cli --features verify
 
       - name: Build synth (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p synth-cli
+        run: cross build --release --target ${{ matrix.target }} -p synth-cli --features verify
 
       - name: Strip binary
         if: ${{ !matrix.cross }}
@@ -106,6 +110,38 @@ jobs:
           cp README.md LICENSE staging/ 2>/dev/null || true
           tar -czf "$ARCHIVE" -C staging .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      # ── #1000 non-vacuity gate: the TARBALL can `synth verify` ──────────
+      # Extracts the archive packaged above (the artifact a user downloads,
+      # not the loose build output) and asserts `synth verify` runs to a
+      # REAL verdict on a module the same binary just compiled — exit 0,
+      # the verdict line, and a synth-verify-v1 report with >= 1 verified /
+      # 0 failed rule kinds. Red direction proven at authoring and re-proven
+      # on every push by the fact-spec-oracle CI job's red leg: against a
+      # binary built without `--features verify` the script fails with the
+      # capability error. Without this step, "we ship the feature" regresses
+      # silently to "we ship the help text" — the exact #1000 class.
+      #
+      # Execution per target: linux-x86_64 + both macOS tarballs run natively
+      # (x86_64-apple-darwin under Rosetta 2 on the arm64 macos-14 runner);
+      # the cross-built aarch64-linux tarball runs under qemu-user against
+      # the gcc-aarch64-linux-gnu sysroot — all four tarballs are EXECUTED,
+      # none is exempt.
+      - name: Install qemu-user + aarch64 sysroot (cross smoke)
+        if: matrix.cross
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user gcc-aarch64-linux-gnu
+
+      - name: Smoke-test the packaged tarball runs `synth verify`
+        env:
+          SYNTH_RUNNER: ${{ matrix.cross && 'qemu-aarch64 -L /usr/aarch64-linux-gnu' || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p smoke-extract
+          tar -xzf "$ARCHIVE" -C smoke-extract
+          bash scripts/release_verify_smoke.sh smoke-extract/synth
 
       - uses: actions/upload-artifact@v7
         with:
