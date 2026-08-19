@@ -6911,26 +6911,13 @@ impl InstructionSelector {
             Select => {
                 // WASM select: pops condition, val2, val1 from stack;
                 // pushes val1 if condition != 0, else val2.
-                // In select_default (non-stack mode), we emit:
-                //   CMP rcond, #0
-                //   MOV rd, rval1     (default: pick val1)
-                //   IT EQ; MOVEQ rd, rval2  (override if cond == 0)
+                // CMP rcond, #0; MOV rd, rval1; IT EQ; MOVEQ rd, rval2 —
+                // from the Rocq-proved rule (increment 5, RQ-58-SELDSL),
+                // which carries the rd <> rm side condition (the EQ override
+                // must not read a value the MOV just destroyed) Ok-or-Err.
                 let rcond = self.regs.alloc_reg();
-                vec![
-                    ArmOp::Cmp {
-                        rn: rcond,
-                        op2: Operand2::Imm(0),
-                    },
-                    ArmOp::Mov {
-                        rd,
-                        op2: Operand2::Reg(rn),
-                    },
-                    ArmOp::SelectMove {
-                        rd,
-                        rm,
-                        cond: Condition::EQ,
-                    },
-                ]
+                crate::sel_dsl::generated::rule_i32_select_default(rd, rn, rm, rcond)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             // ===== i64 operations using register pairs on 32-bit ARM =====
@@ -14996,24 +14983,18 @@ impl InstructionSelector {
                         cf.add_instruction();
                         // CMP first, then the single flag-preserving IT;MOV —
                         // `rb` already holds val2's pattern (the EQ result), so
-                        // only the NE override is needed (in-place form).
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: rb,
-                                rm: ra,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // only the NE override is needed (in-place form). Both
+                        // come from the Rocq-proved in-place select rule
+                        // (increment 5, RQ-58-SELDSL).
+                        for rule_op in
+                            crate::sel_dsl::generated::rule_i32_select_inplace(rb, cond_reg, ra)
+                        {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         // Free the two consumed S-registers (home-aware), then
                         // home the selected pattern in a fresh S-register.
                         free_vfp_temp(&mut vfp_used, &vfp_home, s1);
@@ -15073,34 +15054,22 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        // Two IT;MOVs — each is the flag-preserving 0x46xx
-                        // MOV, so the second still sees the CMP's flags.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: blo,
-                                rm: alo,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: bhi,
-                                rm: ahi,
-                                cond: Condition::NE,
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // CMP + two flag-preserving IT;MOVs (the b pair holds
+                        // val2's pattern, only the NE override is needed) —
+                        // from the Rocq-proved in-place i64-pair select rule
+                        // (increment 5, RQ-58-SELDSL), pair side conditions
+                        // Ok-or-Err.
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_select_inplace(
+                            blo, bhi, alo, ahi, cond_reg,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         free_vfp_dtemp(&mut vfp_used, &vfp_home, d1);
                         free_vfp_dtemp(&mut vfp_used, &vfp_home, d2);
                         let dd = alloc_vfp_dtemp(&mut vfp_used)?;
@@ -15179,26 +15148,18 @@ impl InstructionSelector {
                             idx,
                         )?;
                         let hi1 = i64_pair_hi(val1)?;
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: cond_reg,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        // Four IT;MOVs (the flag-preserving 0x46xx MOV — the
-                        // CMP flags survive all four). dst is disjoint from
-                        // both source pairs by construction, so the NE/EQ
-                        // moves never clobber a source half they still need.
-                        for (rd, rm, cond) in [
-                            (dlo, val1, Condition::NE),
-                            (dhi, hi1, Condition::NE),
-                            (dlo, val2, Condition::EQ),
-                            (dhi, hi2, Condition::EQ),
-                        ] {
+                        // CMP + four flag-preserving IT;MOVs — from the
+                        // Rocq-proved i64-pair select rule (increment 5,
+                        // RQ-58-SELDSL). The pair aliasing constraints the
+                        // old comment argued by construction are the rule's
+                        // machine-checked side conditions, Ok-or-Err.
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_select(
+                            dlo, dhi, val1, hi1, val2, hi2, cond_reg,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
                             instructions.push(ArmInstruction {
-                                op: ArmOp::SelectMove { rd, rm, cond },
+                                op: rule_op,
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
@@ -15272,35 +15233,19 @@ impl InstructionSelector {
                     // dst with cond/val1/val2 (cond is already consumed by CMP).
                     // In the in-place case there is NO instruction between the CMP
                     // and the conditional move, so the flags are likewise intact.
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: cond_reg,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-
-                    // cond != 0 → dst = val1
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::SelectMove {
-                            rd: dst,
-                            rm: val1,
-                            cond: Condition::NE,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-
-                    // cond == 0 → dst = val2. Skipped when dst already IS val2
-                    // (in-place): the EQ branch is a no-op move on itself.
-                    if !in_place {
+                    // Emission from the Rocq-proved select rules (increment
+                    // 5, RQ-58-SELDSL): the in-place/fresh-dst choice above
+                    // stays selector-owned as dispatch between the two proven
+                    // forms — the in-place theorem pins the EQ fall-through
+                    // (dst keeps val2) that the elision relies on.
+                    let rule_ops = if in_place {
+                        crate::sel_dsl::generated::rule_i32_select_inplace(dst, cond_reg, val1)
+                    } else {
+                        crate::sel_dsl::generated::rule_i32_select(dst, cond_reg, val1, val2)
+                    };
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::SelectMove {
-                                rd: dst,
-                                rm: val2,
-                                cond: Condition::EQ,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();

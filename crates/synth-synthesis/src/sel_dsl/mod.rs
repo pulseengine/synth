@@ -475,7 +475,7 @@ impl SelRule {
     }
 }
 
-use RegVar::{Rd, RdHi, RdLo, Rm, RmHi, RmLo, Rn, RnHi, RnLo, Rs};
+use RegVar::{Rc, Rd, RdHi, RdLo, Rm, RmHi, RmLo, Rn, RnHi, RnLo, Rs};
 
 /// The three aliasing side conditions every two-instruction i64 pair rule
 /// carries (increment 3 — the #632 lesson made explicit): the low-half
@@ -1618,6 +1618,121 @@ pub const RULES: &[SelRule] = &[
         seq: &[TemplateOp::MovwImm { rd: RdHi, imm16: 0 }],
         delegation: Delegation::SelectWithStack,
         doc: "`i64.extend_i32_u` (in place, rd_lo = rn): rd_hi = 0, low half stays rn",
+    },
+    // ---- increment 5: `select` — CMP #0 + flag-preserving IT;MOV
+    // conditional moves (SelectMove never touches NZCV, so a CMP latched
+    // before the first move governs every move in the sequence). Four
+    // shapes, one per emission form the selectors use; the fresh-dst /
+    // in-place choice stays selector-owned as dispatch between proven
+    // rules. ----
+    SelRule {
+        name: "rule_i32_select",
+        op: WasmOp::Select,
+        params: &[Rd, Rc, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rn,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rm,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (fresh dst): rd = if rc != 0 { rn } else { rm }",
+    },
+    SelRule {
+        name: "rule_i32_select_inplace",
+        op: WasmOp::Select,
+        params: &[Rd, Rc, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rn,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (in place, rd holds val2): rd = if rc != 0 { rn } else { rd }",
+    },
+    SelRule {
+        name: "rule_i64_select",
+        op: WasmOp::Select,
+        params: &[RdLo, RdHi, RnLo, RnHi, RmLo, RmHi, Rc],
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RnLo,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RnHi,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RmLo,
+                cond: CondCode::Eq,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RmHi,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (i64 pair): (rd_hi:rd_lo) = if rc != 0 { rn pair } else { rm pair }",
+    },
+    SelRule {
+        name: "rule_i64_select_inplace",
+        op: WasmOp::Select,
+        params: &[RdLo, RdHi, RnLo, RnHi, Rc],
+        side_conditions: &[
+            SideCondition::NotAlias(RdHi, RdLo),
+            SideCondition::NotAlias(RdLo, RnHi),
+        ],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::SelectMove {
+                rd: RdLo,
+                rm: RnLo,
+                cond: CondCode::Ne,
+            },
+            TemplateOp::SelectMove {
+                rd: RdHi,
+                rm: RnHi,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`select` (i64 pair, in place — rd pair holds val2): NE-override with the rn pair",
+    },
+    SelRule {
+        name: "rule_i32_select_default",
+        op: WasmOp::Select,
+        params: &[Rd, Rn, Rm, Rc],
+        side_conditions: &[SideCondition::NotAlias(Rd, Rm)],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rc, imm: 0 },
+            TemplateOp::MovReg { rd: Rd, rm: Rn },
+            TemplateOp::SelectMove {
+                rd: Rd,
+                rm: Rm,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectDefault,
+        doc: "`select` (select_default shape): MOV rd, rn then EQ-override with rm",
     },
 ];
 

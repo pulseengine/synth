@@ -236,4 +236,19 @@ Definition rule_i64_extend_i32_u (rdlo rdhi rn : arm_reg) : arm_program :=
 Definition rule_i64_extend_i32_u_inplace (rdhi rn : arm_reg) : arm_program :=
   [MOVW rdhi (I32.repr 0)].
 
+Definition rule_i32_select (rd rc rn rm : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rd (Reg rn); MOVEQ rd (Reg rm)].
+
+Definition rule_i32_select_inplace (rd rc rn : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rd (Reg rn)].
+
+Definition rule_i64_select (rdlo rdhi rnlo rnhi rmlo rmhi rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rdlo (Reg rnlo); MOVNE rdhi (Reg rnhi); MOVEQ rdlo (Reg rmlo); MOVEQ rdhi (Reg rmhi)].
+
+Definition rule_i64_select_inplace (rdlo rdhi rnlo rnhi rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOVNE rdlo (Reg rnlo); MOVNE rdhi (Reg rnhi)].
+
+Definition rule_i32_select_default (rd rn rm rc : arm_reg) : arm_program :=
+  [CMP rc (Imm I32.zero); MOV rd (Reg rn); MOVEQ rd (Reg rm)].
+
 End Gen.

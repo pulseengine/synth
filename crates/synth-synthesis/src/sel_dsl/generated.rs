@@ -1194,3 +1194,172 @@ pub fn rule_i64_extend_i32_u_inplace(rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, 
         imm16: 0,
     }])
 }
+
+/// `select` (fresh dst): rd = if rc != 0 { rn } else { rm }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_correct` (Qed).
+pub fn rule_i32_select(rd: Reg, rc: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm: rn,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm,
+            cond: Condition::EQ,
+        },
+    ]
+}
+
+/// `select` (in place, rd holds val2): rd = if rc != 0 { rn } else { rd }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_inplace_correct` (Qed).
+pub fn rule_i32_select_inplace(rd: Reg, rc: Reg, rn: Reg) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm: rn,
+            cond: Condition::NE,
+        },
+    ]
+}
+
+/// `select` (i64 pair): (rd_hi:rd_lo) = if rc != 0 { rn pair } else { rm pair }
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_select_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rn_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rm_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_select(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_select: side condition violated: rd_hi must not alias rd_lo");
+    }
+    if rd_lo == rn_hi {
+        return Err("rule_i64_select: side condition violated: rd_lo must not alias rn_hi");
+    }
+    if rd_lo == rm_hi {
+        return Err("rule_i64_select: side condition violated: rd_lo must not alias rm_hi");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rn_lo,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rn_hi,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rm_lo,
+            cond: Condition::EQ,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rm_hi,
+            cond: Condition::EQ,
+        },
+    ])
+}
+
+/// `select` (i64 pair, in place — rd pair holds val2): NE-override with the rn pair
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_select_inplace_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+///
+/// Side condition: `rd_lo` must not alias `rn_hi` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_select_inplace(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_select_inplace: side condition violated: rd_hi must not alias rd_lo");
+    }
+    if rd_lo == rn_hi {
+        return Err("rule_i64_select_inplace: side condition violated: rd_lo must not alias rn_hi");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SelectMove {
+            rd: rd_lo,
+            rm: rn_lo,
+            cond: Condition::NE,
+        },
+        ArmOp::SelectMove {
+            rd: rd_hi,
+            rm: rn_hi,
+            cond: Condition::NE,
+        },
+    ])
+}
+
+/// `select` (select_default shape): MOV rd, rn then EQ-override with rm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_select_default_correct` (Qed).
+///
+/// Side condition: `rd` must not alias `rm` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i32_select_default(
+    rd: Reg,
+    rn: Reg,
+    rm: Reg,
+    rc: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd == rm {
+        return Err("rule_i32_select_default: side condition violated: rd must not alias rm");
+    }
+    Ok(vec![
+        ArmOp::Cmp {
+            rn: rc,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::Mov {
+            rd,
+            op2: Operand2::Reg(rn),
+        },
+        ArmOp::SelectMove {
+            rd,
+            rm,
+            cond: Condition::EQ,
+        },
+    ])
+}
