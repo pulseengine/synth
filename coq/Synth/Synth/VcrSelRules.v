@@ -1370,6 +1370,7 @@ Qed.
 
 Definition rule_i32_sub_imm := Gen.rule_i32_sub_imm.
 Definition rule_i32_and_imm := Gen.rule_i32_and_imm.
+Definition rule_i32_or_imm := Gen.rule_i32_or_imm.
 
 Theorem rule_i32_sub_imm_correct : forall astate v1 imm rd rn,
   get_reg astate rn = v1 ->
@@ -1391,6 +1392,18 @@ Theorem rule_i32_and_imm_correct : forall astate v1 imm rd rn,
 Proof.
   intros astate v1 imm rd rn HR0.
   unfold rule_i32_and_imm, Gen.rule_i32_and_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
+
+Theorem rule_i32_or_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_or_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.or v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_or_imm, Gen.rule_i32_or_imm; simpl.
   eexists. split; [reflexivity |].
   rewrite get_set_reg_eq. rewrite HR0. reflexivity.
 Qed.

@@ -948,3 +948,14 @@ pub fn rule_i32_and_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
         op2: Operand2::Imm(imm),
     }]
 }
+
+/// `i32.or` (folded const): rd = rn | imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_or_imm_correct` (Qed).
+pub fn rule_i32_or_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Orr {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}
