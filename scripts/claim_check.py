@@ -66,7 +66,11 @@ Derived-status field kinds (under `status_fields:`):
 
   count           len(regex findall) over globs (same engine as count-eq),
                   optionally truncated at a `before:` marker and optionally
-                  counting FILES-with-a-match instead of matches (`unit: files`)
+                  counting FILES-with-a-match instead of matches (`unit: files`).
+                  `before_missing: whole-file` makes the marker per-file-optional
+                  (a file without it counts whole) so one field can measure a
+                  FILE FAMILY — see the RQ-58-SPLIT note at `_region` for why
+                  that opt-in does not reopen the silently-widen hole.
   capture         first regex capture group in one file (e.g. the version)
   distinct-tokens number of DISTINCT capture-group values in one file,
                   optionally truncated at a `before:` marker (e.g. the ops an
@@ -154,15 +158,32 @@ class MeasureError(Exception):
     """A derivation could not be performed as specified — never a silent 0."""
 
 
-def _region(text, marker, where):
+def _region(text, marker, where, missing="error"):
     """Truncate `text` at `marker`, which must occur EXACTLY ONCE.
 
     Absent marker => the derivation would silently widen to the whole file.
     Repeated marker => it would silently truncate at the wrong one, which is the
     FEATURE_MATRIX staleness failure (compare the render to the template, never
-    the template to the code) wearing a different hat. Both are hard errors.
+    the template to the code) wearing a different hat. Both are hard errors —
+    unless the field OPTS IN with `before_missing: whole-file`, which makes an
+    ABSENT marker mean "this whole file is the region". A repeated marker stays
+    a hard error in both modes.
+
+    WHY THE OPT-IN IS SAFE (RQ-58-SPLIT, #242): it exists so one `count` field
+    can measure a FILE FAMILY — the selector's root file (whose test module the
+    marker excludes) PLUS the split-out sibling files (all code, no marker).
+    Without it, a split would either leave the ratchet measuring ONE file (a
+    relocation then reads as a huge fake win — the vacuous-checker class this
+    repo keeps finding) or hard-error on every marker-less sibling. The hole
+    the hard error guards — a mangled marker silently widening the count by the
+    whole test module — is still caught downstream: every consumer of these
+    fields is a slack-free `ratchet` pin whose `value:` must EQUAL the live
+    derivation, so a widening jump of thousands of lines is a loud red, not a
+    silent green.
     """
     n = text.count(marker)
+    if n == 0 and missing == "whole-file":
+        return text
     if n != 1:
         raise MeasureError(
             f"{where}: region marker {marker!r} occurs {n} times, expected "
@@ -171,18 +192,25 @@ def _region(text, marker, where):
     return text.split(marker, 1)[0]
 
 
-def _count(pattern, globs, root, before=None, unit="matches"):
+def _count(pattern, globs, root, before=None, unit="matches", before_missing="error"):
     """Count regex matches (or files-with-a-match) over globs.
 
     `before` restricts each file to the text preceding a unique marker — used to
     measure a source region (e.g. an instruction selector's non-test code)
     without the file's test module, so that adding tests never moves a size
     ceiling and a ledger bump therefore always MEANS something.
+    `before_missing="whole-file"` makes that marker per-file-optional (see
+    `_region` for the safety argument); the default keeps an absent marker a
+    hard error.
     """
     rx = re.compile(pattern, re.MULTILINE)
     globs = [globs] if isinstance(globs, str) else globs
     if unit not in ("matches", "files"):
         raise MeasureError(f"unknown count unit {unit!r} (matches|files)")
+    if before_missing not in ("error", "whole-file"):
+        raise MeasureError(
+            f"unknown before_missing {before_missing!r} (error|whole-file)"
+        )
     total = 0
     matched_any = False
     for g in globs:
@@ -195,7 +223,7 @@ def _count(pattern, globs, root, before=None, unit="matches"):
                 matched_any = True
                 text = p.read_text(errors="ignore")
                 if before is not None:
-                    text = _region(text, before, p.name)
+                    text = _region(text, before, p.name, missing=before_missing)
                 hits = len(rx.findall(text))
                 total += min(hits, 1) if unit == "files" else hits
     return total, matched_any
@@ -236,6 +264,7 @@ def derive_status(spec, root):
                     root,
                     before=f.get("before"),
                     unit=f.get("unit", "matches"),
+                    before_missing=f.get("before_missing", "error"),
                 )
             except MeasureError as e:
                 raise RuntimeError(f"status field {name!r}: {e}") from e

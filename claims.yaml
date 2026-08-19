@@ -232,24 +232,43 @@ status_fields:
   # 18,480). The wildcard pattern is line-anchored on purpose: `Some(_) =>` and
   # a `_ =>` inside comment prose must not count as match arms (regression-
   # tested in scripts/test_claim_check.py).
+  # RQ-58-SPLIT (#242): these four fields measure the selector FAMILY — the
+  # root file PLUS everything under crates/synth-synthesis/src/
+  # instruction_selector/ — summed, not the one hardcoded path they measured
+  # before the split. The single-file version would have let a pure relocation
+  # (move 5,000 lines to a sibling module) collapse the ceiling while the
+  # number of hand-maintained decisions was UNCHANGED: a green gate certifying
+  # progress that did not happen, the exact vacuous-checker class this repo
+  # keeps finding. Family-summed, a relocation inside the family is ±0 by
+  # construction and only DELETION registers as progress. The `_code` fields
+  # use `before_missing: whole-file` because split-out siblings carry no test
+  # module (their whole text IS code); the root file keeps its marker, and a
+  # mangled root marker still reddens loudly because every pin below demands
+  # `value:` EQUAL the live derivation (see _region in scripts/claim_check.py).
   selector_lines_total:
     kind: count
     pattern: '\n'
-    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs',
+           'crates/synth-synthesis/src/instruction_selector/**/*.rs']
   selector_lines_code:
     kind: count
     pattern: '\n'
-    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs',
+           'crates/synth-synthesis/src/instruction_selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
   selector_wildcard_arms_total:
     kind: count
     pattern: '^[ \t]*_ =>'
-    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs',
+           'crates/synth-synthesis/src/instruction_selector/**/*.rs']
   selector_wildcard_arms_code:
     kind: count
     pattern: '^[ \t]*_ =>'
-    glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+    glob: ['crates/synth-synthesis/src/instruction_selector.rs',
+           'crates/synth-synthesis/src/instruction_selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
   # The "generate, don't mirror" inventory, counted in FILES (`unit: files`)
   # because that is the population the plan states and the unit a mirror is
   # retired in. STATIC TEXTUAL CLASSIFICATION, labelled as the heuristic it is
