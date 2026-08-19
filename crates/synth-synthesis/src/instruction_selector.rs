@@ -16646,24 +16646,20 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Rsb {
-                            rd: tmp,
-                            rn: shift_amt,
-                            imm: 32,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::RorReg {
-                            rd: dst,
-                            rn: value,
-                            rm: tmp,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // RSB+ROR from the Rocq-proved rule — the only path
+                    // (increment 5, RQ-58-SELDSL closes the #999 residual:
+                    // the rule existed but was never wired here). Carries the
+                    // `rs <> rn` scratch side condition, Ok-or-Err.
+                    let rule_ops =
+                        crate::sel_dsl::generated::rule_i32_rotl(dst, value, shift_amt, tmp)
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 

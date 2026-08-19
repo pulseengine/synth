@@ -610,7 +610,7 @@ pub const RULES: &[SelRule] = &[
                 rm: Rs,
             },
         ],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.rotl`: rotate left by rm = rotate right by (32 - rm), via scratch rs",
     },
     // ---- increment 2: i32 register shifts + rotr (all tier-A: single
