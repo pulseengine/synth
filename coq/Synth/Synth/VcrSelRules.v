@@ -1329,3 +1329,41 @@ Proof.
   - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
   - apply get_set_reg_eq.
 Qed.
+
+(** ** Increment 5 (RQ-58-SELDSL, #242): dynamic-immediate + move/select tier.
+
+    New in increment 5, rules may be additionally quantified over a DYNAMIC
+    immediate operand [(imm : I32.int)] — the #250/#253 ADDW/SUBW and
+    #209/#248 bitwise-byte folds, and the #258 compare-bound fold, that
+    [select_with_stack] previously hand-emitted next to the reg-reg rule
+    calls. The SELECTOR keeps ownership of the fold GUARD (const range,
+    clean-tail materialization); the rule owns the emission, so the theorem
+    quantifies over every immediate the guard can admit (and more — the
+    model sequence is correct for ALL 32-bit immediates; the encoder's
+    range restriction is enforced upstream by the guard, exactly as the
+    register side conditions are enforced by the allocator).
+
+    Statement style follows increment 3 (value-level T1, no [wstate]): the
+    WASM-side spec function is named directly in the conclusion. For the
+    fused const+op shapes there IS no single WASM instruction — the rule
+    covers the two-instruction [I32Const c; <op>] source sequence after
+    #933 boundary normalization, so the value-level statement over
+    normalized [I32.int] values is the honest one. *)
+
+Definition rule_i32_add_imm := Gen.rule_i32_add_imm.
+
+(** Tier-A single-instruction discharge, immediate operand: same skeleton as
+    [synth_binop_proof_poly] with the second operand hypothesis replaced by
+    the quantified immediate itself ([eval_operand2 (Imm imm)] is [imm]). *)
+
+Theorem rule_i32_add_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_add_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.add v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_add_imm, Gen.rule_i32_add_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.

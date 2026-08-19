@@ -371,7 +371,11 @@ pub enum TemplateOp {
     MovwImm { rd: RegVar, imm16: u16 },
     /// `ArmOp::I64ExtendI32S { rdlo, rdhi, rn }` — sign-extend pseudo-op
     /// (encoder-expanded). Modeled by `I64ExtendI32SPseudo` in the flat model.
-    I64ExtendS { rd_lo: RegVar, rd_hi: RegVar, rn: RegVar },
+    I64ExtendS {
+        rd_lo: RegVar,
+        rd_hi: RegVar,
+        rn: RegVar,
+    },
     /// `ArmOp::I32WrapI64 { rd, rnlo }` — wrap pseudo-op (keeps the low half).
     /// Modeled by `I32WrapI64Pseudo` in the flat model.
     I32Wrap { rd: RegVar, rn_lo: RegVar },
@@ -521,7 +525,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
-        delegation: Delegation::SelectDefault,
+        delegation: Delegation::Both,
         doc: "`i32.add`: rd = rn + rm",
     },
     SelRule {
@@ -1355,6 +1359,21 @@ pub const RULES: &[SelRule] = &[
         }],
         delegation: Delegation::SelectWithStack,
         doc: "`i64.rotr`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-right (shift mod 64)",
+    },
+    // ---- increment 5 (RQ-58-SELDSL, #242): dynamic-immediate ALU rules —
+    // the #250/#253 ADDW/SUBW and #209/#248 bitwise-byte immediate folds
+    // `select_with_stack` previously hand-emitted. The rule is universally
+    // quantified over the immediate (a trailing `imm` parameter); the
+    // SELECTOR keeps dispatch ownership of the fold guard (const range +
+    // clean-tail materialization), the rule owns the emission. ----
+    SelRule {
+        name: "rule_i32_add_imm",
+        op: WasmOp::I32Add,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[TemplateOp::AddImmVar { rd: Rd, rn: Rn }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.add` (folded const): rd = rn + imm",
     },
 ];
 

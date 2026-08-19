@@ -179,4 +179,7 @@ Definition rule_i64_rotl (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
 Definition rule_i64_rotr (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
   [I64RotrPseudo rdlo rdhi rnlo rnhi rmlo].
 
+Definition rule_i32_add_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [ADD rd rn (Imm imm)].
+
 End Gen.

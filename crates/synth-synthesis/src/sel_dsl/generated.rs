@@ -915,3 +915,14 @@ pub fn rule_i64_rotr(
         shift: rm_lo,
     }])
 }
+
+/// `i32.add` (folded const): rd = rn + imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_add_imm_correct` (Qed).
+pub fn rule_i32_add_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Add {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}

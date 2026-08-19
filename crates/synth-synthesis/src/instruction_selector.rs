@@ -11215,14 +11215,23 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Add {
-                            rd: dst,
-                            rn: a,
-                            op2,
-                        },
-                        source_line: Some(idx),
-                    });
+                    // Both emission paths are Rocq-proved rules (increment 5,
+                    // RQ-58-SELDSL): the folded form `rule_i32_add_imm`, the
+                    // reg-reg form `rule_i32_add` — the hand-written
+                    // ArmOp::Add construction is deleted.
+                    let rule_ops = match op2 {
+                        Operand2::Imm(c) => crate::sel_dsl::generated::rule_i32_add_imm(dst, a, c),
+                        Operand2::Reg(b) => crate::sel_dsl::generated::rule_i32_add(dst, a, b),
+                        Operand2::RegShift { .. } => {
+                            unreachable!("i32.add operand2 is Imm or Reg by construction")
+                        }
+                    };
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
