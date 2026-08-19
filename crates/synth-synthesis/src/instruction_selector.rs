@@ -2263,8 +2263,8 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
 
         I8x16Neg | I8x16Splat | I8x16ExtractLaneS(_) | I8x16ExtractLaneU(_) => (1, 1),
         I8x16Add | I8x16Sub | I8x16Eq | I8x16Ne | I8x16LtS | I8x16LtU | I8x16GtS | I8x16GtU
-        | I8x16LeS | I8x16LeU | I8x16GeS | I8x16GeU | I8x16ReplaceLane(_)
-        | I8x16Shuffle(_) | I8x16Swizzle => (2, 1),
+        | I8x16LeS | I8x16LeU | I8x16GeS | I8x16GeU | I8x16ReplaceLane(_) | I8x16Shuffle(_)
+        | I8x16Swizzle => (2, 1),
 
         I16x8Neg | I16x8Splat | I16x8ExtractLaneS(_) | I16x8ExtractLaneU(_) => (1, 1),
         I16x8Add | I16x8Sub | I16x8Mul | I16x8Eq | I16x8Ne | I16x8LtS | I16x8LtU | I16x8GtS
@@ -2649,7 +2649,10 @@ fn try_lower_f32(
                 F32Add => ArmOp::F32Add { sd, sn, sm },
                 F32Sub => ArmOp::F32Sub { sd, sn, sm },
                 F32Mul => ArmOp::F32Mul { sd, sn, sm },
-                _ => ArmOp::F32Div { sd, sn, sm },
+                F32Div => ArmOp::F32Div { sd, sn, sm },
+                // #946: outer arm pins the set; a widened outer arm must be
+                // placed here explicitly, never silently lowered as a divide.
+                _ => unreachable!("outer arm admits only F32Add|F32Sub|F32Mul|F32Div"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -2725,7 +2728,8 @@ fn try_lower_f32(
                 F32Lt => ArmOp::F32Lt { rd, sn, sm },
                 F32Le => ArmOp::F32Le { rd, sn, sm },
                 F32Gt => ArmOp::F32Gt { rd, sn, sm },
-                _ => ArmOp::F32Ge { rd, sn, sm },
+                F32Ge => ArmOp::F32Ge { rd, sn, sm },
+                _ => unreachable!("outer arm admits only the six f32 comparisons"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4501,7 +4505,8 @@ fn try_lower_f64(
                 F64Add => ArmOp::F64Add { dd, dn, dm },
                 F64Sub => ArmOp::F64Sub { dd, dn, dm },
                 F64Mul => ArmOp::F64Mul { dd, dn, dm },
-                _ => ArmOp::F64Div { dd, dn, dm },
+                F64Div => ArmOp::F64Div { dd, dn, dm },
+                _ => unreachable!("outer arm admits only F64Add|F64Sub|F64Mul|F64Div"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4518,7 +4523,8 @@ fn try_lower_f64(
             let arm = match op {
                 F64Abs => ArmOp::F64Abs { dd, dm },
                 F64Neg => ArmOp::F64Neg { dd, dm },
-                _ => ArmOp::F64Sqrt { dd, dm },
+                F64Sqrt => ArmOp::F64Sqrt { dd, dm },
+                _ => unreachable!("outer arm admits only F64Abs|F64Neg|F64Sqrt"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4543,7 +4549,8 @@ fn try_lower_f64(
                 F64Lt => ArmOp::F64Lt { rd, dn, dm },
                 F64Le => ArmOp::F64Le { rd, dn, dm },
                 F64Gt => ArmOp::F64Gt { rd, dn, dm },
-                _ => ArmOp::F64Ge { rd, dn, dm },
+                F64Ge => ArmOp::F64Ge { rd, dn, dm },
+                _ => unreachable!("outer arm admits only the six f64 comparisons"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -4564,7 +4571,8 @@ fn try_lower_f64(
                 F64Ceil => ArmOp::F64Ceil { dd, dm },
                 F64Floor => ArmOp::F64Floor { dd, dm },
                 F64Trunc => ArmOp::F64Trunc { dd, dm },
-                _ => ArmOp::F64Nearest { dd, dm },
+                F64Nearest => ArmOp::F64Nearest { dd, dm },
+                _ => unreachable!("outer arm admits only F64Ceil|F64Floor|F64Trunc|F64Nearest"),
             };
             instructions.push(ArmInstruction {
                 op: arm,
@@ -9307,7 +9315,12 @@ impl InstructionSelector {
             (1, true) => ArmOp::Ldrsb { rd, addr },
             (2, false) => ArmOp::Ldrh { rd, addr },
             (2, true) => ArmOp::Ldrsh { rd, addr },
-            _ => ArmOp::Ldr { rd, addr }, // fallback to word load
+            (4, _) => ArmOp::Ldr { rd, addr },
+            // #946: an unexpected width must not silently become a 4-byte
+            // access — that reads/writes the wrong number of bytes. Loud
+            // internal-bug panic instead (the #615 expand-or-loud-reject
+            // direction; callers only pass 1/2/4).
+            _ => unreachable!("access_size {access_size} is not 1/2/4"),
         };
 
         match self.bounds_check {
@@ -9370,10 +9383,12 @@ impl InstructionSelector {
                 rd: value_reg,
                 addr,
             },
-            _ => ArmOp::Str {
+            4 => ArmOp::Str {
                 rd: value_reg,
                 addr,
             },
+            // #946: see the load twin — never silently widen to a word store.
+            _ => unreachable!("access_size {access_size} is not 1/2/4"),
         };
 
         match self.bounds_check {
@@ -26129,7 +26144,7 @@ mod tests {
     fn test_infer_i64_locals_from_localset() {
         // i64.const → local.set marks that local as i64.
         let ops = vec![WasmOp::I64Const(7), WasmOp::LocalSet(3)];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&3));
     }
 
@@ -26138,7 +26153,7 @@ mod tests {
         // local.tee preserves the value on the stack and stores to local —
         // its width should be inferred from what's on the stack.
         let ops = vec![WasmOp::I64Const(99), WasmOp::LocalTee(2), WasmOp::Drop];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&2));
     }
 
@@ -26146,7 +26161,7 @@ mod tests {
     fn test_infer_i64_locals_does_not_flag_i32_locals() {
         // i32 ops should not produce i64 locals.
         let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0)];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(!i64_locals.contains(&0));
     }
 
@@ -26159,7 +26174,7 @@ mod tests {
             WasmOp::I64Add,
             WasmOp::LocalSet(5),
         ];
-        let i64_locals = infer_i64_locals(&ops, &[], &[]);
+        let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&5));
     }
 
@@ -28042,9 +28057,9 @@ mod tests {
         // must mark the local i64 (8-byte slot, both halves stored) — without
         // the result-type table the hi word was silently dropped.
         let ops = vec![WasmOp::Call(1), WasmOp::LocalSet(0)];
-        let with_table = infer_i64_locals(&ops, &[false, true], &[]);
+        let with_table = infer_i64_locals(&ops, &[false, true], &[], &[], &[]);
         assert!(with_table.contains(&0), "call-fed local inferred i64");
-        let without = infer_i64_locals(&ops, &[], &[]);
+        let without = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(!without.contains(&0), "no table -> conservative i32");
     }
 

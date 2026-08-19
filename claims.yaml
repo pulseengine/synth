@@ -1236,8 +1236,25 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 17897
+        value: 17991
         baseline: 17897
+        waivers:
+          - to: 17991
+            reason: >-
+              RQ-58-WILDCARD (#946): wasm_stack_effect's `_ => (0, 0)`
+              wildcard — which absorbed ~92 WasmOp variants and was hiding an
+              EXECUTED miscompile (if/br_if/br_table conditions,
+              memory.copy/fill operands and call arguments never left the i64
+              width-inference stack; unicorn returned 32/0 where wasmtime
+              returns 1) — was replaced by a fully-enumerated 279-variant
+              match, and infer_i64_locals grew the call-argument pops plus
+              their threading. +94 lines of stated-per-variant decisions in
+              exchange for one silent absorber: exactly the
+              lines-for-exhaustiveness trade this release wants, gated by
+              tests/selector_stack_effect_no_wildcard_946.rs (no catch-all
+              regrowth, every variant named) and the executed
+              i64_width_vstack_946 fixtures. Wildcard ceiling fell 56 -> 55
+              in the same PR.
       # The whole-file figures the release plan and the sibling lanes quote. An
       # unpinned quoted number is the drift class this release is about — but
       # they are `track`, not `down`, and the distinction is deliberate. Both
@@ -1255,7 +1272,10 @@ claims:
         # deletions) and -659 test-module lines (the four mirror-pin tests,
         # vacuous once the hand-written mirror was gone — the
         # VcrSelRulesGenCheck precedent).
-        value: 28495
+        # 28495 -> 28599 (RQ-58-WILDCARD #946): +94 code (the waived
+        # wasm_stack_effect enumeration above) +10 test module (the
+        # threaded infer_i64_locals/compute_local_layout test call sites).
+        value: 28599
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1266,17 +1286,33 @@ claims:
       # condition maps, the sws i64 bitwise/shift/rotate/bit-count group
       # dispatches, the sws i32 shift dispatch); they went with their arms.
       # Banked; the former #992 waiver (to: 63) deleted with the re-bank.
+      # RQ-58-WILDCARD (#946, v0.58): 56 -> 55 — the wasm_stack_effect
+      # wildcard is GONE (LIVE, executed miscompile: see the lines_code
+      # waiver above), replaced by a no-wildcard 279-variant enumeration
+      # whose regrowth guard is tests/selector_stack_effect_no_wildcard_946.rs.
+      # Banked. The remaining 55 are classified in the #946 lane report:
+      # 16 loud guarded-unreachable refinements (8 of them converted from
+      # silent last-variant maps to unreachable!() in the same PR — count-
+      # neutral by design, `_ => unreachable!()` still matches the pin's
+      # regex, and gaming it with a bare-binding arm is exactly what the
+      # tripwire scanners flag), 7 closed-subspace WasmOp walks (only
+      # LocalGet/Set/Tee carry local indices, etc.), 6 dispatch defaults
+      # whose fall-through is handled-elsewhere/loud-decline, 4 lookback
+      # peepholes where the wildcard declines an optimization, 10 internal-
+      # enum arms with meaningful none/false semantics, 3 genuinely total
+      # `index % N` maps, 1 already-loud Err.
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 56
-        baseline: 56
+        value: 55
+        baseline: 55
       - kind: ratchet
         name: selector_wildcard_arms_total
         direction: track
         # 106 -> 91 (RQ-58-RETIRE): the 7 code-region arms above plus 8
         # assertion-helper '_ =>' arms inside the retired mirror-pin tests.
-        value: 91
+        # 91 -> 90 (RQ-58-WILDCARD): the wasm_stack_effect wildcard.
+        value: 90
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

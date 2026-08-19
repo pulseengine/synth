@@ -61,19 +61,13 @@ struct Ctx {
 fn br_if_pops_its_condition() {
     use WasmOp::*;
     // block { i32.const 1; br_if 0 } — the cond must leave the width stack.
-    assert_local0_is_i64(
-        vec![Block, I32Const(1), BrIf(0), End],
-        &Ctx::default(),
-    );
+    assert_local0_is_i64(vec![Block, I32Const(1), BrIf(0), End], &Ctx::default());
 }
 
 #[test]
 fn if_pops_its_condition() {
     use WasmOp::*;
-    assert_local0_is_i64(
-        vec![I32Const(1), If, Nop, End],
-        &Ctx::default(),
-    );
+    assert_local0_is_i64(vec![I32Const(1), If, Nop, End], &Ctx::default());
 }
 
 #[test]
@@ -166,7 +160,10 @@ fn i64_returning_call_still_classifies() {
         &ctx.func_arg_counts,
         &ctx.type_arg_counts,
     );
-    assert!(set.contains(&0), "#311 regression: i64-returning call result");
+    assert!(
+        set.contains(&0),
+        "#311 regression: i64-returning call result"
+    );
 }
 
 /// Straight-line i32 shape: local 0 must NOT be classified i64 (over-widening
@@ -174,13 +171,7 @@ fn i64_returning_call_still_classifies() {
 #[test]
 fn i32_local_stays_i32() {
     use WasmOp::*;
-    let ops = vec![
-        I64Const(9),
-        Drop,
-        I32Const(3),
-        LocalSet(0),
-        LocalGet(0),
-    ];
+    let ops = vec![I64Const(9), Drop, I32Const(3), LocalSet(0), LocalGet(0)];
     let set = infer_i64_locals(&ops, &[], &[], &[], &[]);
     assert!(!set.contains(&0), "i32 local over-widened to i64");
 }

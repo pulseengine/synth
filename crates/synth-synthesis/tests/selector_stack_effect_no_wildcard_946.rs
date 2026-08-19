@@ -246,7 +246,10 @@ fn wasm_op_variant_count_is_pinned() {
 #[test]
 fn wasm_stack_effect_has_no_catch_all_arm() {
     let src = without_comments(SELECTOR_SRC);
-    let body = item_after(&src, "fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {");
+    let body = item_after(
+        &src,
+        "fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {",
+    );
 
     // "Count the needle before AND after": a scan over nothing passes silently.
     assert!(
@@ -269,7 +272,10 @@ fn wasm_stack_effect_has_no_catch_all_arm() {
 #[test]
 fn wasm_stack_effect_names_every_wasm_op_variant() {
     let src = without_comments(SELECTOR_SRC);
-    let body = item_after(&src, "fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {");
+    let body = item_after(
+        &src,
+        "fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {",
+    );
     let variants = wasm_op_variants();
     assert_eq!(variants.len(), WASM_OP_VARIANT_COUNT);
 
