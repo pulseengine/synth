@@ -1566,6 +1566,59 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::SelectWithStack,
         doc: "`i32.ge_u` (folded const): rd = if rn >= imm (unsigned) {1} else {0}",
     },
+    // ---- increment 5: i32<->i64 width conversions. wrap and extend_i32_s
+    // are single pseudo-ops (modeled by I32WrapI64Pseudo /
+    // I64ExtendI32SPseudo); extend_i32_u is the two-instruction
+    // MOV lo + MOVW hi,#0 shape, with an IN-PLACE variant for the
+    // register-coincidence elision (`val == dst_lo` skips the MOV) the
+    // selector performs — the coincidence dispatch stays selector-owned,
+    // each form is its own proven rule. ----
+    SelRule {
+        name: "rule_i32_wrap_i64",
+        op: WasmOp::I32WrapI64,
+        params: &[Rd, RnLo],
+        side_conditions: &[],
+        seq: &[TemplateOp::I32Wrap {
+            rd: Rd,
+            rn_lo: RnLo,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.wrap_i64`: rd = low word of the i64 (high half dropped)",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_s",
+        op: WasmOp::I64ExtendI32S,
+        params: &[RdLo, RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64ExtendS {
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn: Rn,
+        }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_s`: (rd_hi:rd_lo) = sign-extended rn",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_u",
+        op: WasmOp::I64ExtendI32U,
+        params: &[RdLo, RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[
+            TemplateOp::MovReg { rd: RdLo, rm: Rn },
+            TemplateOp::MovwImm { rd: RdHi, imm16: 0 },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_u`: rd_lo = rn, rd_hi = 0",
+    },
+    SelRule {
+        name: "rule_i64_extend_i32_u_inplace",
+        op: WasmOp::I64ExtendI32U,
+        params: &[RdHi, Rn],
+        side_conditions: &[SideCondition::NotAlias(RdHi, Rn)],
+        seq: &[TemplateOp::MovwImm { rd: RdHi, imm16: 0 }],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i64.extend_i32_u` (in place, rd_lo = rn): rd_hi = 0, low half stays rn",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule

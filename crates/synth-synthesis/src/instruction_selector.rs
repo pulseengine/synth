@@ -16070,24 +16070,26 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if val != dst_lo {
+                    // Rocq-proved rules as the only path (increment 5,
+                    // RQ-58-SELDSL): the register-coincidence elision
+                    // (val == dst_lo skips the MOV) stays selector-owned as
+                    // DISPATCH between two proven rules — the in-place form's
+                    // theorem pins the low half under rd_hi <> rn, which is
+                    // exactly what the elision relies on.
+                    let rule_ops = if val != dst_lo {
+                        crate::sel_dsl::generated::rule_i64_extend_i32_u(dst_lo, dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?
+                    } else {
+                        crate::sel_dsl::generated::rule_i64_extend_i32_u_inplace(dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?
+                    };
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Mov {
-                                rd: dst_lo,
-                                op2: Operand2::Reg(val),
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
                     }
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Movw {
-                            rd: dst_hi,
-                            imm16: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
                     stack.push(StackVal::i64(dst_lo));
                 }
 
@@ -16109,15 +16111,19 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I64ExtendI32S {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rn: val,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): rule_i64_extend_i32_s, with the
+                    // rd_hi <> rd_lo pair side condition Ok-or-Err.
+                    let rule_ops =
+                        crate::sel_dsl::generated::rule_i64_extend_i32_s(dst_lo, dst_hi, val)
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i64(dst_lo));
                 }
 
@@ -17249,14 +17255,16 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I32WrapI64 {
-                            rd: dst,
-                            rnlo: src_lo,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // Rocq-proved rule as the only path (increment 5,
+                    // RQ-58-SELDSL): the pseudo-op comes from
+                    // rule_i32_wrap_i64.
+                    for rule_op in crate::sel_dsl::generated::rule_i32_wrap_i64(dst, src_lo) {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 

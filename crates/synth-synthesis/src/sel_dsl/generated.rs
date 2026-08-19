@@ -1130,3 +1130,67 @@ pub fn rule_i32_ge_u_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
         },
     ]
 }
+
+/// `i32.wrap_i64`: rd = low word of the i64 (high half dropped)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_wrap_i64_correct` (Qed).
+pub fn rule_i32_wrap_i64(rd: Reg, rn_lo: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I32WrapI64 { rd, rnlo: rn_lo }]
+}
+
+/// `i64.extend_i32_s`: (rd_hi:rd_lo) = sign-extended rn
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_s(rd_lo: Reg, rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend_i32_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64ExtendI32S {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rn,
+    }])
+}
+
+/// `i64.extend_i32_u`: rd_lo = rn, rd_hi = 0
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_u_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_u(rd_lo: Reg, rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend_i32_u: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![
+        ArmOp::Mov {
+            rd: rd_lo,
+            op2: Operand2::Reg(rn),
+        },
+        ArmOp::Movw {
+            rd: rd_hi,
+            imm16: 0,
+        },
+    ])
+}
+
+/// `i64.extend_i32_u` (in place, rd_lo = rn): rd_hi = 0, low half stays rn
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend_i32_u_inplace_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rn` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend_i32_u_inplace(rd_hi: Reg, rn: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rn {
+        return Err(
+            "rule_i64_extend_i32_u_inplace: side condition violated: rd_hi must not alias rn",
+        );
+    }
+    Ok(vec![ArmOp::Movw {
+        rd: rd_hi,
+        imm16: 0,
+    }])
+}

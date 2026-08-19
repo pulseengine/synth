@@ -1549,3 +1549,78 @@ Theorem rule_i32_ge_u_imm_correct : forall astate v1 imm rd rn,
     exec_program (rule_i32_ge_u_imm rd rn imm) astate = Some astate' /\
     get_reg astate' rd = (if I32.geu v1 imm then I32.one else I32.zero).
 Proof. synth_cmp_imm_proof_poly flags_geu. Qed.
+
+(** ** Increment-5 width conversions. [rule_i32_wrap_i64] and
+    [rule_i64_extend_i32_s] are single-pseudo-op shapes at the same
+    pseudo-op tier as the increment-4 i64 rules ([I32WrapI64Pseudo] /
+    [I64ExtendI32SPseudo]; the sign-extended high half is pinned to the
+    concrete [I32.shrs rn 31] via [i64_extend_s_hi_spec]).
+    [rule_i64_extend_i32_u] is a real two-instruction shape
+    (MOV lo; MOVW hi,#0) with an IN-PLACE variant for the selector's
+    register-coincidence elision ([rd_lo = rn] skips the MOV) — the
+    in-place theorem's conclusion pins the low half of the PRE-state value,
+    which is exactly the property the elision relies on, under the
+    [rdhi <> rn] hypothesis that makes it true. *)
+
+Definition rule_i32_wrap_i64 := Gen.rule_i32_wrap_i64.
+Definition rule_i64_extend_i32_s := Gen.rule_i64_extend_i32_s.
+Definition rule_i64_extend_i32_u := Gen.rule_i64_extend_i32_u.
+Definition rule_i64_extend_i32_u_inplace := Gen.rule_i64_extend_i32_u_inplace.
+
+Theorem rule_i32_wrap_i64_correct : forall astate lo1 rd rnlo,
+  get_reg astate rnlo = lo1 ->
+  exists astate',
+    exec_program (rule_i32_wrap_i64 rd rnlo) astate = Some astate' /\
+    get_reg astate' rd = lo1.
+Proof.
+  intros astate lo1 rd rnlo HR0.
+  unfold rule_i32_wrap_i64, Gen.rule_i32_wrap_i64; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. exact HR0.
+Qed.
+
+Theorem rule_i64_extend_i32_s_correct : forall astate v rdlo rdhi rn,
+  rdhi <> rdlo ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_s rdlo rdhi rn) astate = Some astate' /\
+    get_reg astate' rdlo = v /\
+    get_reg astate' rdhi = I32.shrs v (I32.repr 31).
+Proof.
+  intros astate v rdlo rdhi rn Hdd HR0.
+  unfold rule_i64_extend_i32_s, Gen.rule_i64_extend_i32_s; simpl.
+  rewrite HR0.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - rewrite get_set_reg_eq. apply i64_extend_s_hi_spec.
+Qed.
+
+Theorem rule_i64_extend_i32_u_correct : forall astate v rdlo rdhi rn,
+  rdhi <> rdlo ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_u rdlo rdhi rn) astate = Some astate' /\
+    get_reg astate' rdlo = v /\
+    get_reg astate' rdhi = I32.zero.
+Proof.
+  intros astate v rdlo rdhi rn Hdd HR0.
+  unfold rule_i64_extend_i32_u, Gen.rule_i64_extend_i32_u; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. rewrite get_set_reg_eq. exact HR0.
+  - apply get_set_reg_eq.
+Qed.
+
+Theorem rule_i64_extend_i32_u_inplace_correct : forall astate v rdhi rn,
+  rdhi <> rn ->
+  get_reg astate rn = v ->
+  exists astate',
+    exec_program (rule_i64_extend_i32_u_inplace rdhi rn) astate = Some astate' /\
+    get_reg astate' rn = v /\
+    get_reg astate' rdhi = I32.zero.
+Proof.
+  intros astate v rdhi rn Hdn HR0.
+  unfold rule_i64_extend_i32_u_inplace, Gen.rule_i64_extend_i32_u_inplace; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdn. exact HR0.
+  - apply get_set_reg_eq.
+Qed.

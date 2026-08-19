@@ -224,4 +224,16 @@ Definition rule_i32_ge_s_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
 Definition rule_i32_ge_u_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
   [CMP rn (Imm imm); MOV rd (Imm I32.zero); MOVHS rd (Imm I32.one)].
 
+Definition rule_i32_wrap_i64 (rd rnlo : arm_reg) : arm_program :=
+  [I32WrapI64Pseudo rd rnlo].
+
+Definition rule_i64_extend_i32_s (rdlo rdhi rn : arm_reg) : arm_program :=
+  [I64ExtendI32SPseudo rdlo rdhi rn].
+
+Definition rule_i64_extend_i32_u (rdlo rdhi rn : arm_reg) : arm_program :=
+  [MOV rdlo (Reg rn); MOVW rdhi (I32.repr 0)].
+
+Definition rule_i64_extend_i32_u_inplace (rdhi rn : arm_reg) : arm_program :=
+  [MOVW rdhi (I32.repr 0)].
+
 End Gen.
