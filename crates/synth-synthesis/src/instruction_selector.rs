@@ -6281,17 +6281,7 @@ impl InstructionSelector {
             // coq/Synth/Synth/VcrSelRules.v.
             I32Add => crate::sel_dsl::generated::rule_i32_add(rd, rn, rm),
 
-            I32Sub => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_sub(rd, rn, rm)
-                } else {
-                    vec![ArmOp::Sub {
-                        rd,
-                        rn,
-                        op2: Operand2::Reg(rm),
-                    }]
-                }
-            }
+            I32Sub => crate::sel_dsl::generated::rule_i32_sub(rd, rn, rm),
 
             I32Mul => {
                 if self.sel_dsl {
