@@ -238,7 +238,7 @@ artifacts:
       single item, because it is the gate that hid three of the others.
       Report the inventory even for the ones not converted — an unconverted
       mirror that is NAMED is a known risk; an unnamed one is the next #975.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [north-star, generate-dont-mirror, doc-rot, vcr-isa-001]
     links:
@@ -334,7 +334,7 @@ artifacts:
       gap leaves the next one equally invisible, so BOTH are in scope: the fix,
       red-first with an execution differential, AND an ARM leg for the corpus
       sweep with a declared floor.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [soundness, miscompile, arm, ci-gap, select]
     links:
@@ -413,6 +413,65 @@ artifacts:
       priority: should
       verification-track: static-analysis
       issue: "#938"
+
+  - id: RQ-58-SHIPVERIFY
+    type: system-req
+    title: "Every published synth is built WITHOUT --features verify — the verifier ships in no artifact a user can obtain"
+    description: >
+      #1000, filed from a toolchain-wide CLI survey. `synth verify` exists in the
+      tree and in `--help`, and fails closed with an exemplary message — but the
+      capability is in NO shipped artifact. Reproduced by the reporter on the
+      layer build (0.55.0) AND the current release (0.57.0), whose four platform
+      tarballs all lack the feature.
+      For a compiler whose entire argument is verified code generation, the ASIL-D
+      translation-validation path being unobtainable is the gap worth closing
+      first. It is also uncomfortably on-theme for v0.58: we ship a verifier
+      nobody can run.
+      THE ISSUE'S OWN ESCAPE HATCH IS DEAD, MEASURED. #1000 offers "or, if the Z3
+      dependency makes that undesirable for the default artifact, publish a
+      variant". There is no Z3 dependency. `cargo tree -p synth-cli --features
+      verify` resolves **ZERO** z3 nodes; adding `synth-verify/z3-solver` resolves
+      2. `verify = ["synth-verify"]` and nothing more; `z3-solver = ["z3"]` is a
+      separate opt-in with `optional = true`, and even then links the SYSTEM
+      libz3 rather than bundling (#553). Ordeal (pure Rust QF_BV) has been the
+      default engine since v0.27.0. So this is a release-workflow change, not a
+      trade-off.
+      README.md carried the sentence that kept the escape hatch alive — "the CLI
+      `verify` feature currently also enables the feature-gated Z3 differential
+      oracle (statically linked)" — false since v0.27.0 and corrected alongside
+      this artifact. That sentence is the finding as much as the build flag is:
+      it is the same prose-that-stopped-being-true class the v0.57 cold review
+      kept turning up, and it was load-bearing on a release decision.
+      SCOPE, three parts:
+      (1) Build the released binaries with `--features verify` — all four platform
+      tarballs and the npm channel.
+      (2) NON-VACUITY GATE, the part that matters most: a released-artifact smoke
+      test that actually RUNS `synth verify` on a module synth just compiled, and
+      asserts a verification verdict rather than the capability-missing error.
+      Without it, "we shipped the feature" silently regresses to "we shipped the
+      help text" — exactly the class this release exists to close. Red-first:
+      demonstrate it fails on a binary built WITHOUT the feature.
+      (3) Move the capability check AHEAD of the banner. Today the four
+      `Translation validation:` lines — including `Strategy: Per-rule SMT
+      verification (ASIL D path)` — print BEFORE the tool discovers it cannot
+      verify, so a log-scraper finds the ASIL-D strategy line in a run that
+      verified nothing. Exit code is already correct (1).
+      DELIBERATELY OUT OF SCOPE, named: #1000's items on `synthesize` vs `compile`
+      description overlap, `--format json`, and help-line width. Real, minor, and
+      not this artifact's subject.
+    status: proposed
+    release: v0.58
+    tags: [release-workflow, verification, non-vacuity, doc-rot, tool-friction]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: static-analysis
+      issue: "#1000"
 
   - id: RQ-58-FLAKE
     type: system-req
