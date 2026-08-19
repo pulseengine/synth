@@ -15982,76 +15982,21 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
-                    // (default OFF) the per-half bitwise pair comes from the
-                    // generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned; side
+                    // The per-half bitwise pair comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE; side
                     // conditions hold by construction, see I64Add).
-                    if self.sel_dsl {
-                        let rule_ops = crate::sel_dsl::i64_pair_rule(
-                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
-                        )
-                        .expect("i64 bitwise op has a pair rule")
-                        .map_err(synth_core::Error::synthesis)?;
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                        stack.push(StackVal::i64(dst_lo));
-                        continue;
+                    let rule_ops = crate::sel_dsl::i64_pair_rule(
+                        op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                    )
+                    .expect("i64 bitwise op has a pair rule")
+                    .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     }
-                    let (lo_op, hi_op) = match op {
-                        I64Or => (
-                            ArmOp::Orr {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::Orr {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        I64And => (
-                            ArmOp::And {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::And {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        I64Xor => (
-                            ArmOp::Eor {
-                                rd: dst_lo,
-                                rn: a_lo,
-                                op2: Operand2::Reg(b_lo),
-                            },
-                            ArmOp::Eor {
-                                rd: dst_hi,
-                                rn: a_hi,
-                                op2: Operand2::Reg(b_hi),
-                            },
-                        ),
-                        _ => unreachable!(),
-                    };
-                    instructions.push(ArmInstruction {
-                        op: lo_op,
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-                    instructions.push(ArmInstruction {
-                        op: hi_op,
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
                     stack.push(StackVal::i64(dst_lo));
                 }
 
