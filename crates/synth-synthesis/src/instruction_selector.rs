@@ -6319,18 +6319,10 @@ impl InstructionSelector {
 
             I32Rotr => crate::sel_dsl::generated::rule_i32_rotr(rd, rn, rm),
 
-            // Bit count operations — VCR-SEL-001 increment 4 (#242): behind
-            // SYNTH_SEL_DSL (default OFF) these delegate to the Rocq-proved
-            // rules (clz single-CLZ; ctz the two-instruction RBIT+CLZ
-            // scratch=dest shape; popcnt the pseudo-op), byte-identical by
-            // construction (mirror-pinned per op).
-            I32Clz => {
-                if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_clz(rd, rm)
-                } else {
-                    vec![ArmOp::Clz { rd, rm }]
-                }
-            }
+            // Bit count operations — Rocq-proved rules are the only path
+            // (RQ-58-RETIRE): clz single-CLZ; ctz the two-instruction RBIT+CLZ
+            // scratch=dest shape; popcnt the pseudo-op.
+            I32Clz => crate::sel_dsl::generated::rule_i32_clz(rd, rm),
 
             I32Ctz => {
                 if self.sel_dsl {
