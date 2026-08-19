@@ -16460,39 +16460,15 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    // VCR-SEL-001 (#242): behind SYNTH_SEL_DSL (default ON,
-                    // opt out SYNTH_NO_SEL_DSL) the CMP+SetCond pair comes from
-                    // the generated Rocq-proved rule — byte-identical to the
-                    // hand-written emission below (mirror-pinned). Same holdout
-                    // story as the i32 comparisons: select_with_stack owns the
-                    // materializing lowering, so the rule is wired here only.
-                    let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_eqz_rule(op, dst, a)
-                    } else {
-                        None
-                    };
-                    if let Some(rule_ops) = dsl_ops {
-                        for rule_op in rule_ops {
-                            instructions.push(ArmInstruction {
-                                op: rule_op,
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
-                        }
-                    } else {
+                    // The CMP+SetCond pair comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE).
+                    // select_with_stack owns the materializing lowering, so
+                    // the rule is wired here only.
+                    let rule_ops = crate::sel_dsl::i32_eqz_rule(op, dst, a)
+                        .expect("i32.eqz has a generated rule");
+                    for rule_op in rule_ops {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::Cmp {
-                                rn: a,
-                                op2: Operand2::Imm(0),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::SetCond {
-                                rd: dst,
-                                cond: Condition::EQ,
-                            },
+                            op: rule_op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
