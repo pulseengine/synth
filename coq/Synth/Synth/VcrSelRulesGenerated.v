@@ -182,4 +182,7 @@ Definition rule_i64_rotr (rdlo rdhi rnlo rnhi rmlo : arm_reg) : arm_program :=
 Definition rule_i32_add_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
   [ADD rd rn (Imm imm)].
 
+Definition rule_i32_sub_imm (rd rn : arm_reg) (imm : I32.int) : arm_program :=
+  [SUB rd rn (Imm imm)].
+
 End Gen.

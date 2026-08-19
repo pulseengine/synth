@@ -926,3 +926,14 @@ pub fn rule_i32_add_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
         op2: Operand2::Imm(imm),
     }]
 }
+
+/// `i32.sub` (folded const): rd = rn - imm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_sub_imm_correct` (Qed).
+pub fn rule_i32_sub_imm(rd: Reg, rn: Reg, imm: i32) -> Vec<ArmOp> {
+    vec![ArmOp::Sub {
+        rd,
+        rn,
+        op2: Operand2::Imm(imm),
+    }]
+}

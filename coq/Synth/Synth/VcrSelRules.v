@@ -1367,3 +1367,17 @@ Proof.
   eexists. split; [reflexivity |].
   rewrite get_set_reg_eq. rewrite HR0. reflexivity.
 Qed.
+
+Definition rule_i32_sub_imm := Gen.rule_i32_sub_imm.
+
+Theorem rule_i32_sub_imm_correct : forall astate v1 imm rd rn,
+  get_reg astate rn = v1 ->
+  exists astate',
+    exec_program (rule_i32_sub_imm rd rn imm) astate = Some astate' /\
+    get_reg astate' rd = I32.sub v1 imm.
+Proof.
+  intros astate v1 imm rd rn HR0.
+  unfold rule_i32_sub_imm, Gen.rule_i32_sub_imm; simpl.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. rewrite HR0. reflexivity.
+Qed.
