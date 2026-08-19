@@ -17016,36 +17016,15 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // VCR-ISA-001 wave-2 (v0.45): behind SYNTH_SEL_DSL the
-                    // single i64 rotate pseudo-op comes from the generated
-                    // Rocq-proved rule — byte-identical (mirror-pinned;
+                    // The single i64 rotate pseudo-op comes from the generated
+                    // Rocq-proved rule — the only path (RQ-58-RETIRE;
                     // `rd_hi <> rd_lo` holds by construction).
-                    let arm_op = if self.sel_dsl {
-                        crate::sel_dsl::i64_rot_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo)
-                            .expect("i64 rotate op dispatch")
-                            .map_err(synth_core::Error::synthesis)?
-                            .into_iter()
-                            .next()
-                            .expect("i64 rotate rule emits one op")
-                    } else {
-                        match op {
-                            I64Rotl => ArmOp::I64Rotl {
-                                rdlo: dst_lo,
-                                rdhi: dst_hi,
-                                rnlo: a_lo,
-                                rnhi: a_hi,
-                                shift: b_lo,
-                            },
-                            I64Rotr => ArmOp::I64Rotr {
-                                rdlo: dst_lo,
-                                rdhi: dst_hi,
-                                rnlo: a_lo,
-                                rnhi: a_hi,
-                                shift: b_lo,
-                            },
-                            _ => unreachable!(),
-                        }
-                    };
+                    let arm_op = crate::sel_dsl::i64_rot_rule(op, dst_lo, dst_hi, a_lo, a_hi, b_lo)
+                        .expect("i64 rotate op dispatch")
+                        .map_err(synth_core::Error::synthesis)?
+                        .into_iter()
+                        .next()
+                        .expect("i64 rotate rule emits one op");
                     instructions.push(ArmInstruction {
                         op: arm_op,
                         source_line: Some(idx),
