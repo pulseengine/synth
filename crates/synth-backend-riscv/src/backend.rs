@@ -743,7 +743,12 @@ mod tests {
         ];
         let f = b.compile_function("ldsafe", &ops, &cfg).unwrap();
         // Look for at least one branch-opcode (0x63) instruction in the bytes.
-        let has_branch_opcode = f.code.chunks_exact(4).any(|w| (w[0] & 0x7F) == 0x63);
+        let has_branch_opcode = f
+            .code
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|w| (w[0] & 0x7F) == 0x63);
         assert!(
             has_branch_opcode,
             "expected at least one BRANCH-opcode (0x63) word in: {:?}",

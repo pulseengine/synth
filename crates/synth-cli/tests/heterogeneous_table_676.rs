@@ -81,8 +81,10 @@ fn test_676_heterogeneous_table_compiles_with_sidecar() {
             .unwrap_or_else(|| panic!("{target}: .synth.table_type_ids section missing (#676)"));
         let data = sidecar.data().expect("sidecar data");
         let ids: Vec<u32> = data
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&w| u32::from_le_bytes(w))
             .collect();
         assert_eq!(
             ids,

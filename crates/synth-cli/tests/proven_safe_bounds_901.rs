@@ -115,8 +115,10 @@ struct Compiled {
 impl Compiled {
     fn udf_count(&self) -> usize {
         self.probe
-            .chunks_exact(2)
-            .filter(|c| u16::from_le_bytes([c[0], c[1]]) == UDF0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|&&c| u16::from_le_bytes(c) == UDF0)
             .count()
     }
 }

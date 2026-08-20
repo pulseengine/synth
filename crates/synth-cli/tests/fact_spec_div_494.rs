@@ -213,8 +213,10 @@ impl Compiled {
             .funcs
             .get(func)
             .unwrap_or_else(|| panic!("symbol '{func}' missing from symtab"));
-        code.chunks_exact(2)
-            .filter(|c| u16::from_le_bytes([c[0], c[1]]) == hw)
+        code.as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|&&c| u16::from_le_bytes(c) == hw)
             .count()
     }
 }

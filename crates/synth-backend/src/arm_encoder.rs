@@ -9222,8 +9222,10 @@ mod tests {
             "expected MOVW + CMP + BLO + UDF + MOV + LDR + BLX (7 words): {bytes:02x?}"
         );
         let words: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&w| u32::from_le_bytes(w))
             .collect();
         // #642 bounds guard: MOVW r12, #4; CMP r0, r12; BLO +1; UDF
         assert_eq!(words[0], 0xE300_C004, "MOVW r12,#4: {:#010x}", words[0]);
@@ -9247,8 +9249,10 @@ mod tests {
         // The bug: a single NOP word. Must never come back.
         assert!(
             !bytes
-                .chunks_exact(4)
-                .any(|w| w == 0xE1A0_0000u32.to_le_bytes()),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|&w| w == 0xE1A0_0000u32.to_le_bytes()),
             "call_indirect must not contain a NOP (#594): {bytes:02x?}"
         );
 
@@ -9486,8 +9490,10 @@ mod tests {
             })
             .unwrap();
         let words: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&w| u32::from_le_bytes(w))
             .collect();
         assert_eq!(words[0], 0xE300_C029, "MOVW r12,#41: {:#010x}", words[0]);
         assert_eq!(words[1], 0xE151_000C, "CMP r1,r12: {:#010x}", words[1]);
@@ -9575,8 +9581,10 @@ mod tests {
         let blx_at = without.len() - 4;
         assert_eq!(&with[..blx_at], &without[..blx_at], "shared prefix");
         let words: Vec<u32> = with[blx_at..]
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&w| u32::from_le_bytes(w))
             .collect();
         assert_eq!(words[0], 0xE35C_0000, "CMP r12,#0: {:#010x}", words[0]);
         assert_eq!(words[1], 0x1A00_0000, "BNE +1 insn: {:#010x}", words[1]);
@@ -9660,8 +9668,10 @@ mod tests {
         let guard_end = 16;
         assert_eq!(&with[..guard_end], &without[..guard_end], "shared guard");
         let words: Vec<u32> = with[guard_end..guard_end + 24]
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&w| u32::from_le_bytes(w))
             .collect();
         assert_eq!(
             words[0], 0xE1A0_C101,

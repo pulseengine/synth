@@ -71,8 +71,10 @@ fn global_slots(path: &str) -> Vec<i32> {
         .expect(".data present")
         .data()
         .expect(".data bytes");
-    data.chunks_exact(4)
-        .map(|w| i32::from_le_bytes(w.try_into().unwrap()))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&w| i32::from_le_bytes(w))
         .collect()
 }
 

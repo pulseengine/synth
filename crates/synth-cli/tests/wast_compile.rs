@@ -726,8 +726,10 @@ fn relocatable_conditional_branch_targets_instruction_boundary_202() {
     // byte offset, distinguishing 16- from 32-bit Thumb-2 (top 5 bits of the
     // first halfword are 0b11101/0b11110/0b11111 for 32-bit).
     let hw: Vec<u16> = text
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     let mut boundaries: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut branches: Vec<(i32, i32)> = Vec::new(); // (byte_addr, halfword imm)
