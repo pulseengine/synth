@@ -14,10 +14,8 @@ pub fn lift_string<M: Memory>(mem: &M, ptr: u32, len: u32, opts: &AbiOptions) ->
                 return Err(AbiError::InvalidUtf16);
             }
 
-            let utf16: Vec<u16> = data
-                .chunks_exact(2)
-                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                .collect();
+            let (pairs, _rest) = data.as_chunks::<2>();
+            let utf16: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
 
             String::from_utf16(&utf16).map_err(|_| AbiError::InvalidUtf16)
         }

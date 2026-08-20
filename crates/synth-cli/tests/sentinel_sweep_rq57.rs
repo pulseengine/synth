@@ -85,8 +85,10 @@ fn disasm_words(obj: &std::path::Path) -> Vec<String> {
         .data()
         .expect("read .text")
         .to_vec();
-    text.chunks_exact(4)
-        .map(|w| format!("{:08x}", u32::from_le_bytes([w[0], w[1], w[2], w[3]])))
+    text.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&w| format!("{:08x}", u32::from_le_bytes(w)))
         .collect()
 }
 

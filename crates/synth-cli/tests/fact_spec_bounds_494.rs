@@ -189,8 +189,10 @@ impl Compiled {
     /// Count aligned 16-bit words equal to `hw` in a function's region.
     fn halfword_count(&self, func: &str, hw: u16) -> usize {
         self.func(func)
-            .chunks_exact(2)
-            .filter(|c| u16::from_le_bytes([c[0], c[1]]) == hw)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|&&c| u16::from_le_bytes(c) == hw)
             .count()
     }
 }

@@ -2292,7 +2292,9 @@ mod tests {
         // (0x2000 | rd<<8 → LE bytes [0x00, 0x20+rd]) somewhere in the body.
         let has_movs_zero = declared
             .code
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .any(|h| h[0] == 0x00 && (0x20..=0x27).contains(&h[1]));
         assert!(
             has_movs_zero,
