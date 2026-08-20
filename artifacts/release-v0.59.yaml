@@ -1,0 +1,397 @@
+# =============================================================================
+# v0.59 — "REACH"
+# =============================================================================
+#
+# THE THEME. v0.58 corrected the North Star's STRATEGY (a rule is done when the
+# arm it replaces is deleted) and proved the correction with numbers: the
+# selector shrank while verified rules grew, for the first time in the epic.
+# v0.59 applies the same discipline to the OTHER half of epic #242 — the
+# register allocator — and the diagnosis is already done.
+#
+# The colouring allocator is NOT blocked on soundness. `graph_alloc.rs` (2,157
+# lines, VCR-DEC-001, flag-gated `SYNTH_GRAPH_ALLOC=1`) has run three
+# increments. Increments 2 (joins, v0.53) and 3 (calls, v0.54) BOTH returned
+# DO NOT FLIP, and both for the same reason, stated in VCR-REACH-001:
+#
+#   "Every function the colourer emits is VCR-RA-003-clean,
+#    validate_cfg_rewrite-clean and (since v0.54) clean under the ABI
+#    observable contract; it simply DECLINES too often to dominate the
+#    greedy allocator."
+#
+# The limiting factor is REACH, not correctness. The v0.54 decline histogram
+# over the 633-function ARM repro corpus (relocatable path):
+#
+#   unmodeled-op          175   (47 % of all declines)
+#   single-block           73
+#   identity-colouring     31
+#   call-indirect-pseudo   17
+#   unreachable-block      11
+#   numeric-branch         10
+#
+# And a per-function census of WHICH ops force the decline — the complete set,
+# not merely the first blocker — attributes 167 of those 175 to ONE coherent
+# family: the i64 register-pair pseudo-ops (`I64Const` 96 functions,
+# `I32WrapI64` 61, `I64Shl` 51, `I64Ldr` 36, `I64ShrU` 28, `I64Str` 28, ...).
+#
+# THE CROSS-SUBSYSTEM OBSERVATION that makes this the highest-leverage move on
+# the board: the SAME op family is the blocker in the WCET model. #936 priced
+# `I64Const`/`I64Ldr`/`I64Str` and its own honest residual named `I64Sub`,
+# `I64ExtendI32S`/`I64ExtendI32U` and `I32WrapI64` as STILL UNPRICED — so a
+# function that narrows an i64 read to i32 (`i64.load` + `i32.wrap_i64`, a
+# plausible OS shape) still loud-declines a bound. One op-model widening is
+# aimed at both.
+#
+# WHAT WOULD FALSIFY THE THEME: if widening the op model to the i64 pseudo-op
+# family does NOT move the decline histogram materially, then `unmodeled-op`
+# was never the real limit and the census attributing 167/175 to one family was
+# wrong. That is a finding, and it outranks the increment.
+#
+# SEQUENCING NOTE: the two ARM soundness lanes go FIRST and are not negotiable.
+# Both are executed, trivially-reachable miscompiles live in 0.58.0. The user
+# chose to fold them into this release rather than cut v0.58.1, so they lead
+# the hub and land before any roadmap work.
+#
+# =============================================================================
+
+metadata:
+  project: synth
+  release: v0.59
+  theme: "REACH — the colourer is sound everywhere it fires; make it fire"
+
+requirements:
+  - id: RQ-59-WARALIAS
+    type: system-req
+    title: "ARM: local.set/local.tee CLOBBERS an earlier local.get of the same local"
+    description: >
+      #989. On ARM `local.get $x` pushes the local's HOME REGISTER onto the
+      operand stack; a later `local.set`/`local.tee` of the SAME local writes
+      that home register directly, destroying the value the earlier `local.get`
+      pushed. Wrong value for every argument downstream.
+
+      RV32 ALREADY HAS THE GUARD (`snapshot_aliases`) and its fixture comment
+      says so in as many words — "Without it these miscompile (the get reads
+      the post-write value)". ARM has no equivalent. So this is a cross-backend
+      PARITY gap with a known-good reference implementation, not a design
+      question.
+
+      No register pressure, no i64, no spill, no exotic shape is required to
+      reach it. RED-FIRST: land the execution differential (unicorn vs
+      wasmtime) BEFORE the fix so the red is on the record, per the #973
+      template. Check whether the RV32 guard's own coverage is non-vacuous
+      while you are there — a guard nobody can observe firing is the defect
+      class this project keeps finding.
+    status: proposed
+    release: v0.59
+    tags: [soundness, arm, war-aliasing, cross-backend-parity, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#989"
+
+  - id: RQ-59-ZEROINIT
+    type: system-req
+    title: "ARM: a local written on only ONE arm of a br_if is never zero-initialised"
+    description: >
+      #990. WASM mandates every non-parameter local starts at zero. On ARM a
+      local written on only ONE path of a `br_if` gets a frame slot that is
+      never initialised, and the merge point reads it — the function returns
+      whatever was on the stack below SP. Information disclosure, not just a
+      wrong answer.
+
+      This is the PLAIN-LOCAL half of a class already half-fixed: #970 fixed
+      the conditionally-written PARAMETER half (count_params counted only
+      params read-before-written), and #457 covered read-before-write
+      zero-init. Neither covers a plain local written on one arm.
+
+      NOTE THE INTERACTION with #970's own finding: zero-init is gated on the
+      first access being a READ, and here the first access is the WRITE — so
+      zero-init does not rescue it. Any fix must not regress #970's fixture.
+      RED-FIRST with an executed differential.
+    status: proposed
+    release: v0.59
+    tags: [soundness, arm, zero-init, info-disclosure, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#990"
+
+  - id: RQ-59-REACH
+    type: system-req
+    title: "VCR-REACH-001: widen the shared op model to the i64 register-pair pseudo-ops"
+    description: >
+      THE HEADLINE. Increment 4 of VCR-DEC-001. `unmodeled-op` is 47 % of all
+      colourer declines (175 of 633 functions), and a per-function census
+      attributes 167 of those 175 to ONE family — the i64 register-pair
+      pseudo-ops: `I64Const` (96 functions), `I32WrapI64` (61), `I64Shl` (51),
+      `I64Ldr` (36), `I64ShrU` (28), `I64Str` (28) and siblings.
+
+      Widen the SHARED op model (the one `graph_alloc` and the validators both
+      read) to cover that family, so the colourer stops declining on it.
+
+      THE GATE IS NOT "it compiles". It is the DECLINE HISTOGRAM: re-run the
+      633-function ARM repro corpus and report the full before/after
+      distribution, not just the total. Every function the colourer newly
+      emits must stay VCR-RA-003-clean, `validate_cfg_rewrite`-clean and clean
+      under the ABI observable contract — those are the acceptance oracles the
+      whole endgame is built against, and widening reach must not buy coverage
+      with soundness.
+
+      FLAG STAYS OFF. This increment does not flip anything; with
+      `SYNTH_GRAPH_ALLOC` unset the shipping path must remain byte-for-byte
+      identical (the GOLDEN trick — frozen fixtures bit-identical). A decline
+      that cannot be handled still returns None and falls back, never
+      hard-fails.
+
+      FALSIFIABLE: if the histogram does not move materially, `unmodeled-op`
+      was not the real limit and the 167/175 census was wrong. Report that as
+      the finding; it outranks the increment.
+    status: proposed
+    release: v0.59
+    tags: [north-star, vcr-dec-001, allocator, reach, decline-histogram]
+    links:
+      - type: derives-from
+        target: VCR-REACH-001
+      - type: refines
+        target: VCR-DEC-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#242"
+
+  - id: RQ-59-MEASURE
+    type: system-req
+    title: "Greedy vs colourer, measured — the FLIP / DO-NOT-FLIP verdict for increment 4"
+    description: >
+      Increments 2 and 3 each ended in an explicit DO NOT FLIP with a stated
+      reason. Increment 4 must end the same way: a VERDICT, backed by numbers,
+      not an impression.
+
+      After RQ-59-REACH, measure the colourer against the shipping greedy
+      allocator on the same corpus: functions attempted vs declined (full
+      histogram), spill counts, frame traffic, and instruction counts. State
+      plainly whether the colourer now DOMINATES greedy on the functions it
+      covers, and if not, which bucket is the new limiting factor.
+
+      ATTRIBUTION NEEDS A BASELINE (v0.56 lesson, measured 88 -> 14 -> 5): run
+      the comparison against the SHIPPING path on the same host in the same
+      pass, never against remembered numbers. A regression that also
+      reproduces with the flag off is not this increment's regression.
+
+      DO NOT FLIP THE DEFAULT IN THIS RELEASE regardless of the verdict — the
+      arc is spike -> measure -> flip-when-dominates -> Rocq-mechanize ->
+      retire greedy, and flipping is its own gated step with silicon evidence.
+    status: proposed
+    release: v0.59
+    tags: [north-star, measurement, allocator, verdict]
+    links:
+      - type: derives-from
+        target: VCR-DEC-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#242"
+
+  - id: RQ-59-WCETI64
+    type: system-req
+    title: "Price the i64 residual ops the WCET model still declines on"
+    description: >
+      SAME OP FAMILY, DIFFERENT SUBSYSTEM — which is why it rides with
+      RQ-59-REACH rather than waiting.
+
+      #936 priced `I64Const`/`I64Ldr`/`I64Str` in the WCET model and recorded
+      an HONEST RESIDUAL: `I64Sub` (a saturating trunc-sat conversion
+      sequence), `I64ExtendI32S`/`I64ExtendI32U`, and `I32WrapI64` are ALSO
+      real direct-selector emissions with NO price. Measured consequence: a
+      function that narrows an i64 read to i32 (`i64.load` + `i32.wrap_i64` —
+      a plausible OS shape) still LOUD-DECLINES a bound, now on `I32WrapI64`
+      instead of `I64Ldr`.
+
+      Price them the way #936 did and NOT the way it first tried: size each
+      from the REAL Thumb-2 encoder's own byte length per instance
+      (`straightline_expansion_real`), never a hand-mirrored predicate. #936
+      tried an exact hand mirror of `i64_effective_base`'s offset-fold
+      threshold first and found it UNSOUND at authoring, because the
+      address-materialization ADD can need its own MOVW for a large offset,
+      which only the real encoder's output reflects.
+
+      Remember `scan_for_decline` reports only the FIRST decline per function,
+      so the residual set must be re-derived after each op is priced, not
+      assumed from the previous run.
+
+      Gate: the bound must stay SOUND (>= actual) on the unicorn cross-check,
+      and `.text` must be unchanged — the sidecar is byte-invisible.
+    status: proposed
+    release: v0.59
+    tags: [wcet, i64, decline-honesty, soundness]
+    links:
+      - type: derives-from
+        target: VCR-WCET-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#936"
+
+  - id: RQ-59-CRSWEEP
+    type: system-req
+    title: "The requirements board advertises 11 critical/high findings that are not open"
+    description: >
+      `artifacts/code-review-findings.yaml` carries 11 artifacts at status
+      `proposed` labelled critical (CR-C1..C5) or high (CR-H2..H8). SPOT-CHECKED
+      2026-08-20 against HEAD, three are demonstrably ALREADY FIXED:
+
+        CR-C1 "division by zero not trapped" — the div-by-zero trap idiom
+              exists in the selector; #494 phase 2b elides it ONLY under a
+              proven divisor-nonzero fact. CLAUDE.md records all four i32
+              div/rem trap guards discharged (#73).
+        CR-C4/C5 "allocator wraps through R10/R11" — `ALLOCATABLE_POOL = 9`,
+              the pool is R0-R8; R10 (memory size) and R11 (memory base) are
+              not allocatable.
+        CR-H3 "no callee-saved preservation" — `abi_contract.rs` exists and
+              VCR-VER-004 (ABI observable-contract validator) is `implemented`.
+
+      This is the SAME defect class the last six releases kept finding, one
+      level up: a record that is locally coherent, looks rigorous, and stopped
+      being true. A board claiming eleven open criticals it does not have is
+      not a cosmetic problem — it makes the release-readiness query, which
+      v0.58 just started relying on, untrustworthy.
+
+      Do the whole set, not the three spot-checked. For EACH: reproduce against
+      the current binary, then either close with the evidence and the shipping
+      ref, or keep it open with a precise "remaining:" note. TRUST THE BINARY
+      OVER THE TRACKER — an entry saying `proposed` is not evidence a defect
+      exists, exactly as `implemented` was not evidence one was fixed.
+    status: proposed
+    release: v0.59
+    tags: [traceability, stale-record, verify-dont-assume]
+    links:
+      - type: derives-from
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: static-analysis
+
+  - id: RQ-59-MINORHOLD
+    type: system-req
+    title: "Enforce the 0.x-minor dependency hold instead of commenting it"
+    description: >
+      #965. The hold is DOCUMENTED and not ENFORCED; auto-merge has been
+      disabled BY HAND three times (#938, #997, #998). `object` 0.39 -> 0.40 is
+      the fresh specimen: semver called it minor (major = 0) and it broke 16
+      call sites across THREE unrelated newtype surfaces — `Rel::r_type()` ->
+      `elf::RelocationType`, the `RelocationFlags::Elf { r_type }`
+      DESTRUCTURING sites (which no `.r_type(` search finds, because it is a
+      struct pattern), and `st_bind()`/`st_type()` -> `SymbolBind`/`SymbolType`
+      — in the crate the ELF differentials read symtabs with. Without the hand
+      disable that lands on main red.
+
+      The enforcement must gate on CI, not on a maintainer's read of the diff.
+      A method note from fixing #938 is the reason: the sweep was asserted
+      complete from a grep and was WRONG TWICE (2 sites -> 6 -> 16). A grep is
+      a hypothesis about where a change lands; the compiler is the oracle.
+
+      Prior art to honour: the ordeal 0.9 -> 0.12 bump auto-merged as "minor"
+      and hung Test + Z3 for 4-6 hours across days. Solver and
+      binary-format deps deserve the full suite green, including the separate
+      `--features z3-solver` path, before merge.
+
+      RED-FIRST: the gate must be shown REFUSING a 0.x-minor bump, not merely
+      present. A gate that cannot fail is indistinguishable from one that
+      passes.
+    status: proposed
+    release: v0.59
+    tags: [ci, dependencies, gate-potency, enforcement]
+    links:
+      - type: derives-from
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: static-analysis
+      issue: "#965"
+
+  - id: RQ-59-FRESHNESS
+    type: system-req
+    title: "48 of 58 compile-then-parse sites still cannot notice a stale artifact"
+    description: >
+      RQ-58-FLAKE's stated residual. Its survey found 58 compile-then-parse
+      sites across 34 files, and the shape is sharp: EXIT STATUS is checked at
+      all 58, but FRESHNESS at only 7. The loud direction is covered almost
+      everywhere and the silent one almost nowhere — a stale-but-valid artifact
+      read as fresh does not fail, it re-confirms the previous run's digest as
+      this run's evidence.
+
+      v0.58 converted 10, deliberately including all 9 sites in
+      `frozen_codegen_bytes.rs` because those SHA-256 anchors are what every
+      other byte gate leans on. The remaining 48 are NAMED in #1006 with the
+      reason each was left: several split the compile and the read into
+      separate helpers taking a `&str` path, so no scan can attribute a read to
+      its compile, and refactoring ~30 gate files without a per-file oracle is
+      the failure mode this project exists to prevent.
+
+      So this is not a sweep — convert in batches WITH a per-batch oracle, and
+      state what remains. Reuse `artifact_guard::compile_artifact`. The
+      sensitivity demonstration that matters is the SILENT one: plant a valid
+      ELF, prove the counterfactual (it parses and carries `.text`, so the old
+      shape WOULD have passed), then fail the compile and require the harness
+      to refuse and leave nothing behind.
+    status: proposed
+    release: v0.59
+    tags: [harness, stale-artifact, silent-direction, class-fix]
+    links:
+      - type: derives-from
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: static-analysis
+      issue: "#977"
+
+  - id: RQ-59-SUBTRACT
+    type: system-req
+    title: "Keep the ratchet falling — the v0.58 thesis does not get one release"
+    description: >
+      v0.58 made the selector shrink for the first time (code region 18,480 ->
+      17,961; wildcards 62 -> 55; rules 50 -> 74). The failure mode this
+      guards against is a metric that moves once and is then quietly abandoned
+      — the exact shape of VCR-SEL-001 reaching 50 rules at v0.45.0 and sitting
+      flat for twelve releases while the file grew.
+
+      So every release from here carries a subtraction obligation. For v0.59:
+      more Rocq-proved DSL rules with the hand-written arms DELETED (never
+      added alongside), and/or the next SPLIT unit.
+
+      RQ-58-SPLIT stated its boundary precisely and that boundary is the input:
+      helpers are NOT partitioned by path-exclusivity (bounds-check generators
+      are genuinely shared; `pop_call_args` and the spill machinery are
+      direct-path-only today but stay in the core), and the 10,621-line test
+      module stays in the parent.
+
+      GATES UNCHANGED: byte-identical across all 10 frozen anchors per moved
+      unit; the family-aware ratchet means relocation earns ZERO credit, so
+      only real deletion moves the ceiling. A deletion that moves emitted bytes
+      without an oracle proving the new bytes correct is REFUSED, not explained.
+    status: proposed
+    release: v0.59
+    tags: [north-star, subtraction, ratchet, selector]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: VCR-SEL-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
