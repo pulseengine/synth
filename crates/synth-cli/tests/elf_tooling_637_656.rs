@@ -68,7 +68,7 @@ fn module_with_internal_helper(export: &str, mul: u32) -> String {
 }
 
 /// Parsed symtab entry: (name, st_value, binding, type, defined).
-type SymEntry = (String, u32, u8, u8, bool);
+type SymEntry = (String, u32, elf::SymbolBind, elf::SymbolType, bool);
 
 fn read_symbols(bytes: &[u8]) -> (Vec<SymEntry>, u32) {
     let header = elf::FileHeader32::<Endianness>::parse(bytes).expect("valid ELF32");
@@ -182,7 +182,7 @@ fn relocations_reindexed_consistently_656() {
     assert_eq!(rels.len(), 1, "one internal BL call site");
     let rel = &rels[0];
     assert_eq!(
-        rel.r_type(endian),
+        rel.r_type(endian).0,
         10, // R_ARM_THM_CALL (object's elf module names it R_ARM_THM_PC22)
         "Thumb BL uses R_ARM_THM_CALL (#167)"
     );

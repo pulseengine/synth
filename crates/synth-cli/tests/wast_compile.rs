@@ -448,7 +448,7 @@ fn compile_internal_call_is_linkable_167() {
     for section in elf.sections() {
         for (_off, reloc) in section.relocations() {
             if let object::RelocationFlags::Elf { r_type } = reloc.flags()
-                && r_type == R_ARM_THM_CALL
+                && r_type.0 == R_ARM_THM_CALL
             {
                 thm_call_relocs += 1;
             }
@@ -855,7 +855,7 @@ fn compile_standalone_internal_call_resolves_bl_170() {
     for section in elf.sections() {
         for (_off, reloc) in section.relocations() {
             if let object::RelocationFlags::Elf { r_type } = reloc.flags()
-                && r_type == R_ARM_THM_CALL
+                && r_type.0 == R_ARM_THM_CALL
             {
                 thm_call_relocs += 1;
             }

@@ -8917,7 +8917,7 @@ mod tests {
                 .expect("rel section")
                 .expect("has rel entries");
             for rel in rels {
-                match rel.r_type(endian) {
+                match rel.r_type(endian).0 {
                     R_ARM_ABS32 => abs32 += 1,
                     R_ARM_MOVW_ABS_NC | R_ARM_MOVT_ABS => movw_movt += 1,
                     _ => {}
