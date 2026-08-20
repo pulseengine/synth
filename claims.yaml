@@ -1255,9 +1255,24 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18134
+        value: 18291
         baseline: 17897
         waivers:
+          - to: 18291
+            reason: >-
+              MERGE OF TWO INDEPENDENTLY-WAIVED GROWTHS. RQ-59-WARALIAS (#989)
+              measured 17,961 -> 18,134 (+173) and RQ-59-ZEROINIT (#990)
+              measured 17,961 -> 18,118 (+157); both were correct against the
+              v0.58 base and NEITHER is correct once both land. The deltas
+              compose exactly (17,961 + 173 + 157 = 18,291), re-derived from
+              the merged tree rather than carried over from either branch.
+              The gate caught this: a waiver is bound to its value, so two
+              waived growths do not silently authorise their sum. Both
+              underlying growths are the ARM soundness fixes this release
+              leads with — a WAR home-register snapshot guard and a
+              domination-precise zero-init classifier — each gated by an
+              executed unicorn-vs-wasmtime differential that was RED before
+              the fix.
           - to: 18118
             reason: >-
               RQ-59-ZEROINIT (#990): the shared `read_before_write_locals`
@@ -1359,7 +1374,7 @@ claims:
         # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
         # snapshot_home_reg_aliases WAR guard + its four call sites (see the
         # lines_code waiver); zero test-module movement.
-        value: 28755
+        value: 28912
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
