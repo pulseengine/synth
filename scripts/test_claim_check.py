@@ -227,6 +227,70 @@ class RegionAndCounting(unittest.TestCase):
         n, _ = _count(r"\n", ["f.rs"], self.root, before="#[cfg(test)]\nmod tests")
         self.assertEqual(n, 2)
 
+    # -- RQ-58-SPLIT (#242): the family measurement --------------------------
+    # One `count` field summing a root file (marker-truncated) and split-out
+    # sibling files (no marker => whole file counts). The point of the tests:
+    # a pure RELOCATION inside the family is ±0, a DELETION anywhere in the
+    # family still falls, and the opt-in does not loosen the default.
+
+    def test_whole_file_optin_counts_a_markerless_file_whole(self):
+        self.assertEqual(
+            _region("a\nb\n", "MARK", "f", missing="whole-file"), "a\nb\n"
+        )
+
+    def test_whole_file_optin_still_truncates_when_the_marker_is_present(self):
+        self.assertEqual(
+            _region("a\nMARK\nb\n", "MARK", "f", missing="whole-file"), "a\n"
+        )
+
+    def test_whole_file_optin_keeps_a_repeated_marker_a_hard_error(self):
+        with self.assertRaises(MeasureError):
+            _region("a\nMARK\nb\nMARK\n", "MARK", "f", missing="whole-file")
+
+    def test_absent_marker_stays_an_error_without_the_optin(self):
+        self.write("root.rs", "code\n#[cfg(test)]\nmod tests {\ntest\n")
+        self.write("sibling.rs", "code\ncode\n")
+        with self.assertRaises(MeasureError):
+            _count(r"\n", ["*.rs"], self.root, before="#[cfg(test)]\nmod tests")
+
+    def test_unknown_before_missing_is_an_error(self):
+        self.write("a.rs", "x\n")
+        with self.assertRaises(MeasureError):
+            _count(r"x", ["*.rs"], self.root, before="M", before_missing="ignore")
+
+    def _family(self):
+        return _count(
+            r"\n",
+            ["root.rs", "family/**/*.rs"],
+            self.root,
+            before="#[cfg(test)]\nmod tests",
+            before_missing="whole-file",
+        )[0]
+
+    def test_family_sums_root_region_plus_whole_siblings(self):
+        self.write("root.rs", "a\nb\n#[cfg(test)]\nmod tests {\nt\nt\n")
+        (self.root / "family").mkdir()
+        self.write("family/sib.rs", "c\nd\ne\n")
+        self.assertEqual(self._family(), 5)  # 2 root code + 3 sibling
+
+    def test_family_is_invariant_under_pure_relocation(self):
+        self.write("root.rs", "a\nb\nc\nd\n#[cfg(test)]\nmod tests {\nt\n")
+        (self.root / "family").mkdir()
+        self.write("family/sib.rs", "")
+        before = self._family()
+        # move two code lines root -> sibling; delete nothing
+        self.write("root.rs", "a\nb\n#[cfg(test)]\nmod tests {\nt\n")
+        self.write("family/sib.rs", "c\nd\n")
+        self.assertEqual(self._family(), before)
+
+    def test_family_still_falls_when_a_sibling_line_is_deleted(self):
+        self.write("root.rs", "a\nb\n#[cfg(test)]\nmod tests {\nt\n")
+        (self.root / "family").mkdir()
+        self.write("family/sib.rs", "c\nd\n")
+        before = self._family()
+        self.write("family/sib.rs", "c\n")
+        self.assertEqual(self._family(), before - 1)
+
     def test_unit_files_counts_files_not_matches(self):
         self.write("a.rs", "mirror mirror mirror\n")
         self.write("b.rs", "mirror\n")

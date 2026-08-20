@@ -265,3 +265,44 @@ kills 18 of the 38 (5 failures + 13 errors); a separate mutant of the
 `SYNTH-SUBTRACTION-PINS-DECLARED` pins the population at 7 plus both CI step
 commands, so deleting a single ceiling — or unwiring the step — is red rather
 than a cheap way to go green.
+
+## 6. RQ-58-SPLIT — the FAMILY redefinition, landed BEFORE the first move
+
+RQ-58-SPLIT splits `instruction_selector.rs` along the #197 two-selector seam.
+Under the original single-file derivation that split would have been the gate's
+own defect: relocating 5,000 lines to a sibling module collapses a ceiling that
+is supposed to measure hand-maintained DECISIONS, certifying subtraction that
+never happened. So the derivation was redefined FIRST, in its own commit, before
+any code moved:
+
+* the four `selector_*` fields now glob the FAMILY — the root file plus
+  `crates/synth-synthesis/src/instruction_selector/**/*.rs` — summed;
+* the `_code` fields carry `before_missing: whole-file`: split-out siblings have
+  no test module, so their whole text is code. The root file keeps its unique
+  `#[cfg(test)]\nmod tests` marker; a MANGLED root marker cannot silently widen
+  the count because every pin's `value:` must EQUAL the live derivation, so a
+  jump by the whole test module is a loud red (see `_region` in
+  `scripts/claim_check.py`).
+
+Red-first, on the real tree (2026-08-20, this branch): a 5-line probe file
+`instruction_selector/probe.rs` — no change to the root file at all —
+
+```
+selector_lines_code             17917     17897     +20  must FALL   1
+selector_lines_total            28538         —       —  tracked     0
+FAIL SYNTH-SUBTRACTION-SELECTOR
+    ratchet 'selector_lines_code' MOVED the WRONG way: derived 17917 !=
+    ledger value 17912 ...
+    tracked number 'selector_lines_total' MOVED: derived 28538 != ledger
+    value 28533 ...                                                    (rc=1)
+```
+
+so a sibling file IS measured — the family glob is live, not decorative.
+Reverted: rc=0, all 49 green, every pinned value unchanged (the family of one
+file derives the same numbers as the single-file version, ±0 by construction).
+
+Relocation-invariance and deletion-sensitivity are unit-tested
+(`test_family_is_invariant_under_pure_relocation`,
+`test_family_still_falls_when_a_sibling_line_is_deleted`,
+`scripts/test_claim_check.py`, 46 tests), and the move commits that follow
+carry the measured ±0 evidence on the real split.
