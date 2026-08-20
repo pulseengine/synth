@@ -1255,9 +1255,21 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 17912
+        value: 17938
         baseline: 17897
         waivers:
+          - to: 17938
+            reason: >-
+              RQ-58-SPLIT (#242): pure relocation of the pattern-match /
+              fallback path (`select()` + `select_default`, 2,503 lines
+              moved verbatim) out of the monolith into
+              instruction_selector/select_default.rs. The +26 is module
+              plumbing only — the sibling's module doc header,
+              `use super::*;`, the `impl InstructionSelector` wrapper, and
+              the parent's `mod select_default;` declaration — zero new
+              lowering decisions, byte-identity gated (10/10 frozen
+              anchors). The family glob (b37994da) counts the sibling, so
+              the relocation itself reads as ±0.
           - to: 17912
             reason: >-
               RQ-58-WILDCARD (#946): wasm_stack_effect's `_ => (0, 0)`
@@ -1301,7 +1313,10 @@ claims:
         # 28599 -> 28533 (RQ-58-SELDSL): -79 code (24 new rules deleted the
         # imm-fold/conversion/select hand-written emissions) +13 test module
         # (the reworked #258 fold pin asserts each half separately).
-        value: 28533
+        # 28533 -> 28559 (RQ-58-SPLIT unit 1): +26 module plumbing for the
+        # select_default.rs relocation (see the lines_code waiver above);
+        # the 2,503 moved lines themselves are ±0 under the family glob.
+        value: 28559
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1461,9 +1476,21 @@ claims:
       - kind: ratchet
         name: mirror_marker_files
         direction: down
-        value: 58
+        value: 59
         baseline: 57
         waivers:
+          - to: 59
+            reason: >-
+              RQ-58-SPLIT (#242) unit 1: the select_default.rs relocation
+              moved three existing comment lines that contain the word
+              "mirror" (the f32 trunc-guard doc's "Mirrors the
+              execution-oracle'd guard in try_lower_f32", a retired-lever
+              retirement record, and a "mirroring the RISC-V backend" prose
+              note) into a second file; the parent still matches through its
+              remaining occurrences, so the FILE count rises by one while
+              the obligation population is unchanged — the heuristic's
+              documented over-count class under a pure relocation. No new
+              text says "mirror"; mirror_obligation_files did not move.
           - to: 58
             reason: >-
               RQ-58-MIRRORS collapsed the three byte-equivalent count_params
