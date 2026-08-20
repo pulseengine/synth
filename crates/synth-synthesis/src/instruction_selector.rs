@@ -1696,30 +1696,184 @@ struct LocalLayout {
     spill_area_reserved: bool,
 }
 
-/// #457: the non-param locals whose FIRST access (in op order) is a read
-/// (`local.get`). WASM zero-initializes non-param locals, so such a read must
-/// observe 0 — the prologue zeroes their frame slots explicitly. A local whose
-/// first access is a write is skipped (its first access overwrites the slot
-/// before any read), keeping every function without read-before-write locals
-/// byte-identical. This is the same op-order first-access rule the RV32
-/// promotion zero-init (#472) and `count_params` use. `pub` because the RV32
-/// selector drives its frame-slot zero-init from the same set.
+/// #457/#990: the non-param locals with a read NOT DOMINATED by an earlier
+/// write. WASM zero-initializes non-param locals, so such a read must observe
+/// 0 — the prologue zeroes their frame slots explicitly.
+///
+/// The pre-#990 rule was LINEAR op order: a local whose first access was a
+/// write was skipped. But "write before read in op order" is not "write
+/// before read in EXECUTION order" — a `local.set` on one arm of a `br_if`
+/// (or an `if` without else, or one `br_table` arm) precedes the merge-point
+/// `local.get` linearly while the branch jumps PAST it, so the read hit an
+/// UNINITIALISED frame slot: previous-frame stack bytes returned to the
+/// caller (#990, the plain-local sibling of #970's conditionally-written
+/// param). Executed evidence: `brif_local_zeroinit_990_{arm,riscv}
+/// _differential.py` (both backends leak the harness's 0xDEADBEEF poison).
+///
+/// The rule is now DOMINATION, tracked with a scope stack — the same
+/// structural argument `compute_local_promotion` documents for its depth-0
+/// gate, generalized to nesting:
+///
+/// * a write recorded in some open scope dominates every later op in that
+///   scope and in scopes nested inside it: within one construct body the ops
+///   between the write and a later same-scope read are straight-line-or-
+///   forward-branching, so any path reaching the read passed the write (a
+///   `br`/`br_if`/`br_table` can only exit ENCLOSING scopes, never jump into
+///   the region between them; a `loop` back-edge re-runs the write before
+///   the read);
+/// * at `End`, a construct's writes survive into the parent scope exactly
+///   when falling through the construct's body is the only way to arrive
+///   after it — an untargeted `block`/`if` (no branch names its label, so
+///   its End cannot be jumped to), a `loop` bottom (loop labels are at the
+///   HEAD; reaching the End means the final iteration fell through the whole
+///   body), and, for `if`/`else`, the INTERSECTION of the two arms' writes
+///   (both paths wrote the local). Everything else is discarded: code after
+///   a br-targeted construct is also reachable via branches that left BEFORE
+///   the write, and a then-arm write alone is skipped when the condition is
+///   false.
+///
+/// The propagation cases matter for more than code size: an over-eager
+/// zero-init ahead of a straight-line dominating store is a DEAD STORE in
+/// the same straight-line segment, which the VCR-RA-003 spill-slot holder
+/// model (`alloc_validator.rs`, both backends) rightly refuses as an
+/// unconsumed-owner overwrite — the first draft of this fix tripped it on
+/// RV32 (`guard_same_block`). Precision here keeps the validator strict
+/// instead of teaching it an exemption. Where the walk still
+/// over-approximates (a write under a `br_if` read back only under the same
+/// condition, say), zeroing a non-param local at entry is exactly the
+/// wasm-mandated initial state — a false positive costs bytes, a false
+/// negative is #990 — and every such residual zero-init sits in a different
+/// straight-line segment from the conditional store (the branch that makes
+/// the store conditional is the segment break), so it never re-creates the
+/// dead-store shape. `pub` because the RV32 selector drives its frame-slot
+/// zero-init from the same set (measured RED there too before #990).
 pub fn read_before_write_locals(
     wasm_ops: &[WasmOp],
     num_params: u32,
 ) -> std::collections::BTreeSet<u32> {
     use std::collections::BTreeSet;
-    let mut seen: BTreeSet<u32> = BTreeSet::new();
+
+    // Pre-scan: which construct instances (by open order) are the target of
+    // any `br`/`br_if`/`br_table`? A branch names its target by RELATIVE
+    // depth: 0 = innermost open construct. Depths that walk past the
+    // outermost construct target the function label (return) — no construct.
+    let mut targeted: Vec<bool> = Vec::new();
+    {
+        let mut open: Vec<usize> = Vec::new(); // construct ids, innermost last
+        let mark = |open: &Vec<usize>, targeted: &mut Vec<bool>, depth: u32| {
+            let d = depth as usize;
+            if d < open.len() {
+                targeted[open[open.len() - 1 - d]] = true;
+            }
+        };
+        for op in wasm_ops {
+            match op {
+                WasmOp::Block | WasmOp::Loop | WasmOp::If => {
+                    open.push(targeted.len());
+                    targeted.push(false);
+                }
+                WasmOp::End => {
+                    open.pop();
+                }
+                WasmOp::Br(d) | WasmOp::BrIf(d) => mark(&open, &mut targeted, *d),
+                WasmOp::BrTable { targets, default } => {
+                    for d in targets {
+                        mark(&open, &mut targeted, *d);
+                    }
+                    mark(&open, &mut targeted, *default);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[derive(PartialEq)]
+    enum Kind {
+        Func,
+        Block,
+        Loop,
+        If,
+    }
+    struct Scope {
+        kind: Kind,
+        id: usize, // index into `targeted`; unused for Func
+        writes: BTreeSet<u32>,
+        // Set at `Else`: the then-arm's writes, kept for the intersection.
+        then_writes: Option<BTreeSet<u32>>,
+    }
+
     let mut rbw: BTreeSet<u32> = BTreeSet::new();
+    let mut scopes: Vec<Scope> = vec![Scope {
+        kind: Kind::Func,
+        id: usize::MAX,
+        writes: BTreeSet::new(),
+        then_writes: None,
+    }];
+    let mut next_id = 0usize;
     for op in wasm_ops {
         match op {
+            WasmOp::Block | WasmOp::Loop | WasmOp::If => {
+                let kind = if matches!(op, WasmOp::Block) {
+                    Kind::Block
+                } else if matches!(op, WasmOp::Loop) {
+                    Kind::Loop
+                } else {
+                    Kind::If
+                };
+                scopes.push(Scope {
+                    kind,
+                    id: next_id,
+                    writes: BTreeSet::new(),
+                    then_writes: None,
+                });
+                next_id += 1;
+            }
+            WasmOp::Else => {
+                if let Some(top) = scopes.last_mut() {
+                    // The then-arm's writes do not dominate the else-arm;
+                    // remember them for the End intersection.
+                    top.then_writes = Some(std::mem::take(&mut top.writes));
+                }
+            }
+            WasmOp::End => {
+                // The function's own trailing End keeps the base scope.
+                if scopes.len() > 1 {
+                    let done = scopes.pop().expect("len checked");
+                    let branch_lands_here = targeted.get(done.id).copied().unwrap_or(false);
+                    let survives: Option<BTreeSet<u32>> = match done.kind {
+                        // Loop labels are at the HEAD: reaching the End means
+                        // the final iteration fell through the whole body,
+                        // past every top-level write.
+                        Kind::Loop => Some(done.writes),
+                        // A branch to this construct jumps straight to this
+                        // End, skipping any write.
+                        _ if branch_lands_here => None,
+                        Kind::Block => Some(done.writes),
+                        Kind::If => match done.then_writes {
+                            // if/else: only a local BOTH arms wrote is
+                            // written on every path.
+                            Some(then_w) => {
+                                Some(then_w.intersection(&done.writes).copied().collect())
+                            }
+                            // if without else: the then-arm is conditional.
+                            None => None,
+                        },
+                        Kind::Func => None, // unreachable: base scope never pops
+                    };
+                    if let (Some(set), Some(parent)) = (survives, scopes.last_mut()) {
+                        parent.writes.extend(set);
+                    }
+                }
+            }
             WasmOp::LocalGet(idx) if *idx >= num_params => {
-                if seen.insert(*idx) {
+                if !scopes.iter().any(|s| s.writes.contains(idx)) {
                     rbw.insert(*idx);
                 }
             }
             WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) if *idx >= num_params => {
-                seen.insert(*idx);
+                if let Some(top) = scopes.last_mut() {
+                    top.writes.insert(*idx);
+                }
             }
             _ => {}
         }

@@ -156,9 +156,13 @@ MIN_COMPILED = 144
 #          local still on the operand stack. `war_set` returns 200 for every
 #          input; `get_set_get_param_no_alias` never reads its argument at all.
 #          RV32 has the protection (`snapshot_aliases`), ARM does not.
-#   #990 — a local written on only ONE arm of a `br_if` is never zero-inited, so
-#          the merge reads uninitialised stack. Provable, not inferred: the
-#          returned values are this harness's 0xDEADBEEF poison +/- 1.
+#   #990 — FIXED (v0.59): a local written on only ONE arm of a `br_if` was
+#          never zero-inited, so the merge read uninitialised stack (the
+#          returned values were this harness's 0xDEADBEEF poison +/- 1). The
+#          `provenance_branches_396.wat:decide` entry was deleted when the
+#          `read_before_write_locals` domination fix made it pass — the
+#          dedicated oracle is brif_local_zeroinit_990_{arm,riscv}
+#          _differential.py.
 #
 # BOTH DIRECTIONS ARE RED. An entry that starts passing must be deleted (that is
 # how a fix records itself), and a mismatch NOT on this list fails the job. The

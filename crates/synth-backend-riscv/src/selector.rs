@@ -486,13 +486,17 @@ fn select_attempt(
             });
         }
     }
-    // #457: zero-init the FRAME slot of every read-before-write non-param
-    // local (wasm mandates non-param locals read 0 before their first write).
-    // These were previously misclassified as params by `count_params` — with
-    // the declared-count cap (#457) they land in `local_offsets`, and a
-    // `sw zero, off(sp)` at entry makes the mandated 0 observable. Write-first
-    // locals are skipped (their first access overwrites the slot), so every
-    // function without read-before-write frame locals is byte-identical. An
+    // #457/#990: zero-init the FRAME slot of every non-param local with a
+    // read not dominated by a write (wasm mandates non-param locals read 0
+    // before their first write — and #990 measured that "write first in op
+    // order" is not domination: a `local.set` on one arm of a `br_if` left
+    // the skipping path reading an uninitialised slot on RV32 exactly as on
+    // ARM, the classifier being shared). These were previously misclassified
+    // as params by `count_params` — with the declared-count cap (#457) they
+    // land in `local_offsets`, and a `sw zero, off(sp)` at entry makes the
+    // mandated 0 observable. Dominated-write locals are skipped (their write
+    // executes before any read on every path), so every function without
+    // such locals is byte-identical. An
     // i64 local zeroes both words of its 8-byte slot. The stores sit before
     // the body like the promoted zero-inits; `preserve_callee_saved` opens the
     // frame around them (a local slot forces `local_bytes > 0`).

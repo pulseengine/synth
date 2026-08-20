@@ -1258,6 +1258,21 @@ claims:
         value: 18134
         baseline: 17897
         waivers:
+          - to: 18118
+            reason: >-
+              RQ-59-ZEROINIT (#990): the shared `read_before_write_locals`
+              zero-init classifier's LINEAR first-access rule was an EXECUTED
+              info-disclosure miscompile — a `local.set` on one arm of a
+              `br_if`/`if`/`br_table` suppressed the #457 zero-init without
+              dominating the merge-point read, so the skipping path returned
+              previous-frame stack bytes (measured: 0xDEADBEEF poison on ARM
+              AND RV32, brif_local_zeroinit_990_{arm,riscv}_differential.py,
+              22/34 -> 34/34). The +157 is the domination walk that replaces
+              it (branch-target pre-scan + scope-stack with block/loop/if-
+              intersection propagation, precision the VCR-RA-003 holder model
+              itself demanded — the coarse draft tripped SpillSlotAliased on
+              RV32) plus its doc contract. Soundness fix, not a new lowering
+              decision; oracle-gated red-first per the #973 template.
           - to: 17961
             reason: >-
               RQ-58-SPLIT (#242) unit 2: pure relocation of the direct /
@@ -1373,15 +1388,30 @@ claims:
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 55
+        value: 56
         baseline: 55
+        waivers:
+          - to: 56
+            reason: >-
+              RQ-59-ZEROINIT (#990): `read_before_write_locals` now walks the
+              op stream TWICE (a branch-target pre-scan must complete before
+              domination can be decided — a construct's targetedness may be
+              established by a `br` after the read), and each walk carries one
+              `_ => {}` over the closed control/local-access subspace
+              (Block/Loop/If/Else/End/Br/BrIf/BrTable/LocalGet/Set/Tee are the
+              only variants that can affect scoping or locals — the same
+              closed-subspace class as the 7 existing WasmOp walks in the 55
+              classification). Net +1: the function had one such wildcard
+              before, now two.
       - kind: ratchet
         name: selector_wildcard_arms_total
         direction: track
         # 106 -> 91 (RQ-58-RETIRE): the 7 code-region arms above plus 8
         # assertion-helper '_ =>' arms inside the retired mirror-pin tests.
         # 91 -> 90 (RQ-58-WILDCARD): the wasm_stack_effect wildcard.
-        value: 90
+        # 90 -> 91 (RQ-59-ZEROINIT #990): the second closed-subspace walk in
+        # read_before_write_locals (waived above).
+        value: 91
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

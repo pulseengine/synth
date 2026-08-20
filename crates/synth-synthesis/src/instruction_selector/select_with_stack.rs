@@ -243,14 +243,17 @@ impl InstructionSelector {
             });
         }
 
-        // #457: WASM zero-initializes non-param locals, so a local READ before
-        // any write must observe 0 — not the caller garbage the old param-count
-        // inference exposed (the local was homed in a parameter register), and
-        // not stale frame memory. Zero the frame slot of every read-before-write
-        // local once at entry; an i64 local zeroes both words of its 8-byte
-        // slot. Write-first locals are untouched (their first access overwrites
-        // the slot), so functions without read-before-write locals keep a
-        // byte-identical prologue. R4 is a safe scratch: it is pushed above, no
+        // #457/#990: WASM zero-initializes non-param locals, so a local read
+        // NOT DOMINATED by a write must observe 0 — not the caller garbage the
+        // old param-count inference exposed (the local was homed in a parameter
+        // register), and not stale frame memory (#990: a `local.set` on one arm
+        // of a `br_if` precedes the merge-point read in op order but the branch
+        // jumps past it — the pre-#990 linear rule leaked previous-frame stack
+        // bytes there). Zero the frame slot of every such local once at entry;
+        // an i64 local zeroes both words of its 8-byte slot. Locals whose
+        // defining write dominates every read (the straight-line common case)
+        // are untouched, so those functions keep a byte-identical prologue.
+        // R4 is a safe scratch: it is pushed above, no
         // body value lives in it yet, and a promoted local homed in R4 is
         // write-before-read by construction (`compute_local_promotion` declines
         // read-first locals).

@@ -2275,6 +2275,62 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
+  brif-local-zeroinit-990-oracle:
+    name: "br_if-local zero-init oracle (#990, Thumb-2 + RV32)"
+    # #990 (RQ-59-ZEROINIT): the PLAIN-LOCAL half of the #970 class. A
+    # non-param local written on only ONE arm of a `br_if` (or an `if` without
+    # else, or one `br_table` arm) was never zero-initialised: the shared
+    # `read_before_write_locals` classifier walked the op stream in LINEAR
+    # order, so the conditionally-skipped write suppressed the #457 zero-init
+    # even though it does not dominate the merge-point read. The skipping path
+    # returned previous-frame stack bytes — information disclosure. Both
+    # harnesses POISON every stack word below the entry SP (0xDEADBEEF) and
+    # every unused argument register (0xFEEDFACE), the #970 evidence pattern.
+    #
+    # Measured RED on 32c7e195 (the unfixed v0.58 tree): 22/34 on EACH
+    # backend, 9 memory-poison leaks each — the classifier is SHARED, so the
+    # same 12 vectors leak on both. GREEN after the domination fix: 34/34, 0
+    # leaks, and the fixture's guard exports pin the shapes the fix must not
+    # change (straight-line write-then-read, #457 read-before-write, #970's
+    # conditionally-written param). The two oracles are INDEPENDENT evidence
+    # per backend, per the #970 two-leg precedent.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run #990 br_if-local zero-init execution oracle (ARM Thumb-2)"
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/brif_local_zeroinit_990_arm_differential.py
+      - name: "Run #990 br_if-local zero-init execution oracle (RV32)"
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/brif_local_zeroinit_990_riscv_differential.py
+      # #910: close the job with what it EXECUTED. Both oracles must report, so
+      # deleting or skipping either leaves the ledger short and reds the job.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
     # VCR-ORACLE-001 (#242, #676): a HETEROGENEOUS funcref table (mixed
