@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **#989 (RQ-59-WARALIAS): ARM `local.set`/`local.tee` clobbered an earlier
+  `local.get` of the same local still on the operand stack (WAR aliasing).**
+  `local.get` of a register-homed local (param in r0-r3, promoted local in
+  r4-r8) pushed the HOME register by reference; a later write to the same
+  local destroyed the pushed value — `war_set` returned 200 for every input.
+  Fixed on BOTH ARM lowering paths, gated by a new executed unicorn-vs-wasmtime
+  differential (`war_aliasing_989_arm_differential.py`, 110 wrong vectors → 0,
+  wired in CI) landed RED-FIRST before the fix:
+  - direct selector (`select_with_stack`, the `--relocatable`/production
+    path): new `snapshot_home_reg_aliases` guard — the ARM analogue of RV32's
+    #472 `snapshot_aliases` — copies still-live aliases to a fresh temp before
+    the home register is overwritten (i64 pairs snapshotted as consecutive
+    pairs, defence in depth);
+  - optimized IR path (self-contained straight-line functions): the same WAR
+    shape now LOUD-DECLINES to the direct selector (#500/#188-style honest
+    degradation), and a `local.set` of a PARAMETER — whose write the IR
+    lowering silently DROPPED (`swap_two_params` returned p0−p1 instead of
+    p1−p0) — declines likewise instead of miscompiling.
+  The four #989 entries left `KNOWN_ARM_MISMATCHES` (the sweep's
+  both-direction ratchet records the fix); all 10 frozen anchors are
+  byte-identical — no frozen fixture carries the WAR shape.
+
 ## [0.58.0] - 2026-08-20
 
 **Delete the thing you replaced.**

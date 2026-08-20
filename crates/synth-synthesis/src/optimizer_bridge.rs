@@ -1246,6 +1246,21 @@ impl OptimizerBridge {
         // documents the invariant rather than masking a real bug.
         let mut slot_stack: Vec<u32> = Vec::new();
 
+        // #989: vreg -> local index for every vreg that ALIASES a local's home
+        // register in `ir_to_arm`'s by-reference model (a `Load`'s dest maps to
+        // the param/local register itself, and a `TeeStore`'s dest maps to the
+        // home register it just wrote — neither is a copy). A later
+        // `local.set`/`local.tee` of the SAME local writes that home register,
+        // so any such vreg still on `slot_stack` at that point would silently
+        // hold the POST-write value (the get→set→use WAR hazard: `war_tee`
+        // returned 300 for every input on this path, executed in #989). This
+        // path has no snapshot machinery, so the WAR shape DECLINES loudly to
+        // the direct selector (which has `snapshot_home_reg_aliases`) — the
+        // same honest-degradation contract as the #500 if/else and #188 local-
+        // call declines.
+        let mut local_alias_origin: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::new();
+
         // Analyze which LocalGets should produce i64 values (using 2 register slots)
         let i64_local_gets = Self::analyze_i64_local_gets(wasm_ops);
 
@@ -1548,10 +1563,15 @@ impl OptimizerBridge {
                 // Memory and locals
                 // For i64 LocalGets, we use I64Load which produces 2 register slots
                 WasmOp::LocalGet(idx) => {
+                    // #989: the dest vreg(s) alias the local's home register
+                    // in `ir_to_arm` (no copy) — record the origin so a later
+                    // write to this local can detect the WAR shape.
+                    local_alias_origin.insert(inst_id as u32, *idx);
                     if i64_local_gets.contains(&wasm_idx) {
                         // i64 LocalGet pushes (lo, hi) onto slot_stack.
                         let lo = inst_id as u32;
                         let hi = (inst_id + 1) as u32;
+                        local_alias_origin.insert(hi, *idx);
                         let opcode = Opcode::I64Load {
                             dest_lo: OptReg(lo),
                             dest_hi: OptReg(hi),
@@ -1587,6 +1607,21 @@ impl OptimizerBridge {
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
                         )
                     })?;
+                    // #989: an EARLIER `local.get` (or tee) of this same local
+                    // is still live on the operand stack — the Store would
+                    // overwrite the home register that entry aliases. Decline
+                    // to the direct selector, which snapshots the alias.
+                    if slot_stack
+                        .iter()
+                        .any(|v| local_alias_origin.get(v) == Some(idx))
+                    {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "optimized path: local.set {idx} while an earlier \
+                             local.get of the same local is live on the operand \
+                             stack (WAR aliasing, #989) — declining to the \
+                             direct selector"
+                        )));
+                    }
                     Opcode::Store {
                         src: OptReg(src),
                         addr: *idx,
@@ -2361,6 +2396,24 @@ impl OptimizerBridge {
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
                         )
                     })?;
+                    // #989: same WAR decline as LocalSet — the TeeStore writes
+                    // the home register any still-live earlier get aliases.
+                    // (The tee's own value was just popped, so it is not on
+                    // the scanned stack; it is re-pushed as the fresh dest.)
+                    if slot_stack
+                        .iter()
+                        .any(|v| local_alias_origin.get(v) == Some(idx))
+                    {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "optimized path: local.tee {idx} while an earlier \
+                             local.get of the same local is live on the operand \
+                             stack (WAR aliasing, #989) — declining to the \
+                             direct selector"
+                        )));
+                    }
+                    // The dest vreg maps to the home register in `ir_to_arm`'s
+                    // TeeStore lowering — it is an alias too (#989).
+                    local_alias_origin.insert(inst_id as u32, *idx);
                     Opcode::TeeStore {
                         dest: OptReg(inst_id as u32),
                         src: OptReg(src_v),
@@ -3984,8 +4037,23 @@ impl OptimizerBridge {
                             });
                         }
                         local_to_reg.insert(*addr, local_reg);
+                    } else {
+                        // #989: a `Store` to a PARAM used to fall through here
+                        // with NO instruction — the write was silently DROPPED
+                        // and every later read of the param returned the stale
+                        // incoming value (`swap_two_params` returned p0-p1
+                        // instead of p1-p0, executed). Emitting the mov here
+                        // would be wrong too: earlier `Load`s of the param
+                        // alias its home register by reference, so the write
+                        // would clobber them (the WAR hazard). Decline to the
+                        // direct selector, which homes the param and snapshots
+                        // aliases (`snapshot_home_reg_aliases`).
+                        return Err(synth_core::Error::synthesis(format!(
+                            "optimized path: local.set of param {addr} is not \
+                             modeled (the write was silently dropped pre-#989) \
+                             — declining to the direct selector"
+                        )));
                     }
-                    // For param locals (addr < num_params), value stays in param register
                     // Mark source vreg as dead (unless it's a local vreg)
                     if !local_vregs.contains(&src.0) {
                         dead_vregs.insert(src.0);

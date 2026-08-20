@@ -166,10 +166,10 @@ MIN_COMPILED = 144
 # mismatch is suppressed, never skipped, so the debt cannot buy slack in the
 # floor.
 KNOWN_ARM_MISMATCHES = {
-    ("rv32_local_promotion_472.wat", "war_set"): 989,
-    ("rv32_local_promotion_472.wat", "war_tee"): 989,
-    ("aarch64_param_homing_851.wat", "get_set_get_param_no_alias"): 989,
-    ("aarch64_param_homing_851.wat", "tee_param_no_alias"): 989,
+    # #989 (WAR aliasing) carried 4 entries here; fixed by RQ-59-WARALIAS
+    # (snapshot_home_reg_aliases in select_with_stack + the optimized-path
+    # WAR/param-store declines), so per the both-direction ratchet the
+    # entries are deleted — that deletion IS how the fix records itself.
     ("provenance_branches_396.wat", "decide"): 990,
 }
 
