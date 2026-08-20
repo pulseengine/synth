@@ -136,6 +136,59 @@ requirements:
       Widen the SHARED op model (the one `graph_alloc` and the validators both
       read) to cover that family, so the colourer stops declining on it.
 
+      *** PREMISE CORRECTED 2026-08-20, BEFORE ANY LANE RAN. ***
+
+      The scope above was written from VCR-REACH-001's description, which
+      presents increment 4 as future work. THE CODE DISAGREES, and the code is
+      the oracle. `pair_effect` EXISTS at `liveness.rs:4366` and already models
+      `I64Const`, `I64Ldr` and `I64Str`; `graph_alloc.rs` carries `pair_effect`,
+      `pair_early_clobber` and `pair_low_reg_only` behind explicit "INCREMENT 4"
+      comments, one of which records the outcome: "increment 4's model moved 114
+      relocatable functions out of `unmodeled-op`, and 96 of them landed straight
+      in `single-block` until this condition was widened."
+
+      So the i64 register-pair widening — the thing this artifact was written to
+      do — HAS ALREADY LANDED. The roadmap artifact is stale, which is the same
+      class RQ-59-CRSWEEP exists for, hitting the North Star's own record.
+
+      MEASURED ON CURRENT MAIN (158-file `scripts/repro` corpus, `--relocatable`,
+      `SYNTH_GRAPH_ALLOC=1 SYNTH_GRAPH_ALLOC_STATS=1`):
+
+        identity-colouring   72
+        unmodeled-op         65
+        single-block         65
+        call-indirect-pseudo 17
+        unreachable-block    16
+        numeric-branch       13
+
+      NOT directly comparable to the roadmap's v0.54 figures — that census was
+      over 633 FUNCTIONS on a different corpus, this is 158 FILES — so read the
+      RANK, not the magnitudes. Two things changed that matter:
+
+      (1) `unmodeled-op` is no longer the dominant bucket. It was 47 % of all
+          declines; it is now roughly level with `single-block`.
+      (2) `identity-colouring` is now the LARGEST bucket, and it is NOT A REACH
+          FAILURE AT ALL. Read `graph_alloc.rs`: it means the colourer produced
+          a rewrite IDENTICAL to its input and handed the function to the
+          shipping pass, which "may still find a segment-local win we did not".
+          That is the colourer SUCCEEDING with no improvement available.
+          Counting it beside `unmodeled-op` conflates "I cannot handle this"
+          with "I handled it and there was nothing to do".
+
+      THE LANE'S JOB IS THEREFORE DIFFERENT FROM THE PARAGRAPH ABOVE:
+        a. Re-derive the per-function census on the SAME corpus the roadmap used,
+           so the before/after is apples-to-apples. State which corpus.
+        b. SEPARATE genuine reach failures from `identity-colouring` successes in
+           every number you report. A histogram that mixes them cannot answer
+           "is the colourer limited?".
+        c. Find what ACTUALLY forces the remaining `unmodeled-op` declines — the
+           complete blocker set per function, not the first blocker — and report
+           it BEFORE widening anything.
+        d. Only then widen, and only what the census names.
+      If (c) shows the residue is a long tail with no dominant family, say so.
+      That is a finding and it outranks the increment — it would mean reach is no
+      longer the limiting factor and the endgame's next step is elsewhere.
+
       THE GATE IS NOT "it compiles". It is the DECLINE HISTOGRAM: re-run the
       633-function ARM repro corpus and report the full before/after
       distribution, not just the total. Every function the colourer newly
