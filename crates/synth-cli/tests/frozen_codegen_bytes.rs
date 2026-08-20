@@ -42,6 +42,8 @@ use std::process::Command;
 use object::{Object, ObjectSection};
 use sha2::{Digest, Sha256};
 
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -71,9 +73,9 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
 fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
-    let elf = format!("/tmp/frozenbytes_{backend}_{wasm}.elf");
-    let out = Command::new(synth())
-        .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+    let elf = artifact_guard::unique_artifact(&format!("frozenbytes_{backend}_{wasm}"), "elf");
+    let mut cmd = Command::new(synth());
+    cmd.env_remove("SYNTH_NO_CMP_SELECT_FUSE")
         .env_remove("SYNTH_NO_LOCAL_PROMOTE")
         .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
         .env_remove("SYNTH_NO_STACK_FWD")
@@ -90,22 +92,15 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
             "compile",
             path.to_str().unwrap(),
             "-o",
-            &elf,
+            elf.to_str().unwrap(),
             "-b",
             backend,
             "--target",
             target,
             "--all-exports",
             "--relocatable",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed for {wasm} ({backend}/{target}): {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let bytes = std::fs::read(&elf).expect("read elf");
+        ]);
+    let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj
         .section_by_name(".text")
@@ -301,9 +296,9 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
-        let elf = format!("/tmp/frozen_nofwd_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
+        let elf = artifact_guard::unique_artifact(&format!("frozen_nofwd_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_NO_STACK_FWD", "1")
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
@@ -317,18 +312,15 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
                 "compile",
                 fixture(wasm).to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "arm",
                 "--target",
                 "cortex-m4",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -395,9 +387,9 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
-        let elf = format!("/tmp/frozen_nospillrealloc_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
+        let elf = artifact_guard::unique_artifact(&format!("frozen_nospillrealloc_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
@@ -411,18 +403,15 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
                 "compile",
                 fixture(wasm).to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "arm",
                 "--target",
                 "cortex-m4",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -484,9 +473,9 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
-        let elf = format!("/tmp/frozen_nocse_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
+        let elf = artifact_guard::unique_artifact(&format!("frozen_nocse_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_CONST_CSE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
             .env("SYNTH_UXTH_FOLD", "0")
@@ -500,18 +489,15 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
                 "compile",
                 fixture(wasm).to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "arm",
                 "--target",
                 "cortex-m4",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -573,9 +559,9 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
-        let elf = format!("/tmp/frozen_nodfe_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
+        let elf = artifact_guard::unique_artifact(&format!("frozen_nodfe_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_DEAD_FRAME_ELIM", "0")
             .env_remove("SYNTH_UXTH_FOLD")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
@@ -589,18 +575,15 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
                 "compile",
                 fixture(wasm).to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "arm",
                 "--target",
                 "cortex-m4",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -651,9 +634,9 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
         314usize,
     )];
     for &(wasm, golden, golden_len) in &old {
-        let elf = format!("/tmp/frozen_nouxth_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_SHIFT_MASK_ELIDE", "0")
+        let elf = artifact_guard::unique_artifact(&format!("frozen_nouxth_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_SHIFT_MASK_ELIDE", "0")
             .env("SYNTH_UXTH_FOLD", "0")
             .env_remove("SYNTH_DEAD_FRAME_ELIM")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
@@ -667,18 +650,15 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
                 "compile",
                 fixture(wasm).to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "arm",
                 "--target",
                 "cortex-m4",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -796,30 +776,30 @@ fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
     ];
     for &(wasm, golden, golden_len) in &cases {
         let path = fixture(wasm);
-        let elf = format!("/tmp/frozenbytes_rv32_shiftfold_off_{wasm}.elf");
+        let elf = artifact_guard::unique_artifact(
+            &format!("frozenbytes_rv32_shiftfold_off_{wasm}"),
+            "elf",
+        );
         // COMPOSITION (#601 promo flip): local promotion is default-on but
         // byte-neutral on these fixtures; pin it off anyway so the rollback
         // stays an exact pre-flip composition, not a byte-neutrality bet.
-        let out = Command::new(synth())
-            .env("SYNTH_RV_LOCAL_PROMO", "0")
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_RV_LOCAL_PROMO", "0")
             .env_remove("SYNTH_RV_CMP_SELECT")
             .env("SYNTH_RV_SHIFT_FOLD", "0")
             .args([
                 "compile",
                 path.to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "riscv",
                 "--target",
                 "rv32imac",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -877,29 +857,27 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
     ];
     for &(wasm, golden, golden_len) in &cases {
         let path = fixture(wasm);
-        let elf = format!("/tmp/frozenbytes_rv32_cmpsel_off_{wasm}.elf");
+        let elf =
+            artifact_guard::unique_artifact(&format!("frozenbytes_rv32_cmpsel_off_{wasm}"), "elf");
         // COMPOSITION (#601 promo flip): see the shift-fold hatch — promo is
         // pinned off so the rollback composition stays exact.
-        let out = Command::new(synth())
-            .env("SYNTH_RV_LOCAL_PROMO", "0")
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_RV_LOCAL_PROMO", "0")
             .env("SYNTH_RV_CMP_SELECT", "0")
             .env("SYNTH_RV_SHIFT_FOLD", "0")
             .args([
                 "compile",
                 path.to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "riscv",
                 "--target",
                 "rv32imac",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
@@ -955,27 +933,25 @@ fn frozen_fixtures_rv32_local_promo_escape_hatch_is_noop() {
     ];
     for &(wasm, golden, golden_len) in &cases {
         let path = fixture(wasm);
-        let elf = format!("/tmp/frozenbytes_rv32_promo_off_{wasm}.elf");
-        let out = Command::new(synth())
-            .env("SYNTH_RV_LOCAL_PROMO", "0")
+        let elf =
+            artifact_guard::unique_artifact(&format!("frozenbytes_rv32_promo_off_{wasm}"), "elf");
+        let mut cmd = Command::new(synth());
+        cmd.env("SYNTH_RV_LOCAL_PROMO", "0")
             .env_remove("SYNTH_RV_CMP_SELECT")
             .env_remove("SYNTH_RV_SHIFT_FOLD")
             .args([
                 "compile",
                 path.to_str().unwrap(),
                 "-o",
-                &elf,
+                elf.to_str().unwrap(),
                 "-b",
                 "riscv",
                 "--target",
                 "rv32imac",
                 "--all-exports",
                 "--relocatable",
-            ])
-            .output()
-            .expect("run synth");
-        assert!(out.status.success(), "compile failed for {wasm}");
-        let bytes = std::fs::read(&elf).expect("read elf");
+            ]);
+        let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
         let data = obj
             .section_by_name(".text")
