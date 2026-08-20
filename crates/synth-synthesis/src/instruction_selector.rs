@@ -1037,6 +1037,116 @@ fn spill_deepest_reg(
     Ok(true)
 }
 
+/// #989 — the ARM analogue of the RV32 selector's `snapshot_aliases` (#472):
+/// before a `local.set`/`local.tee` overwrites a register-homed local's HOME
+/// register `target` (a param in r0-r3 or a #390-promoted local in r4-r8),
+/// copy any operand-stack entry that still ALIASES `target` — pushed by an
+/// EARLIER `local.get` of the same local, which aliases the home register
+/// by reference rather than copying — into a fresh temp, and rewrite those
+/// entries to the temp. Without this, the `mov target, val` destroys the
+/// earlier value (the get→set→use WAR hazard): `war_set` returned 200 for
+/// EVERY input (44 wrong vectors across 4 exports, executed in #989).
+///
+/// `skip` is the operand-stack index NOT to rewrite — `local.tee`'s own kept
+/// top IS the value being written and stays aliased to its producer. Fires
+/// only when an alias is present, so code without the WAR shape emits nothing
+/// and stays byte-identical.
+///
+/// The aliased entries are still ON the stack during allocation, so the
+/// allocators cannot return `target` itself; `reserved` must carry the
+/// just-popped/peeked `val` (plus the live params) so the temp cannot land on
+/// the value about to be written either. The spill fallback inside the
+/// allocators is sound here: spilling an ALIASED entry stores `target`'s
+/// current (pre-write) value — exactly the value the entry needs — and the
+/// entry stops aliasing.
+///
+/// i64 defence in depth (RV32 checks pair halves too): an i64 entry whose
+/// pair overlaps `target` (lo == target or hi == target) is snapshotted as a
+/// whole pair into a fresh CONSECUTIVE pair — ARM i64 stack entries derive
+/// hi = lo+1 (`i64_pair_hi`), so rewriting one half alone is unrepresentable.
+fn snapshot_home_reg_aliases(
+    target: Reg,
+    skip: Option<usize>,
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    line: usize,
+) -> Result<()> {
+    let overlaps = |v: &StackVal| -> bool {
+        if let StackVal::Reg { reg, is_i64 } = v {
+            *reg == target || (*is_i64 && i64_pair_hi(*reg).is_ok_and(|hi| hi == target))
+        } else {
+            false // spilled/VFP entries hold no core register
+        }
+    };
+    let aliased = |stack: &[StackVal], wide: bool| -> bool {
+        stack
+            .iter()
+            .enumerate()
+            .any(|(i, v)| Some(i) != skip && v.is_i64() == wide && overlaps(v))
+    };
+    if aliased(stack, false) {
+        let tmp = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, line)?;
+        instructions.push(ArmInstruction {
+            op: ArmOp::Mov {
+                rd: tmp,
+                op2: Operand2::Reg(target),
+            },
+            source_line: Some(line),
+        });
+        for (i, v) in stack.iter_mut().enumerate() {
+            if Some(i) != skip
+                && let StackVal::Reg { reg, is_i64: false } = v
+                && *reg == target
+            {
+                *reg = tmp;
+            }
+        }
+    }
+    // The allocator's spill fallback may itself de-alias entries (see above),
+    // so re-check after every pair allocation rather than trusting the first
+    // scan — a dead snapshot MOV for an entry that just got spilled would be
+    // harmless but is refused on principle (emit only what is still needed).
+    while aliased(stack, true) {
+        let (new_lo, new_hi) =
+            alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], reserved, line)?;
+        let mut found = None;
+        for (i, v) in stack.iter().enumerate() {
+            if Some(i) != skip
+                && let StackVal::Reg { reg, is_i64: true } = v
+                && overlaps(v)
+            {
+                found = Some(*reg);
+                break;
+            }
+        }
+        let Some(old_lo) = found else {
+            break; // the pair allocation's spill fallback de-aliased everything
+        };
+        let old_hi = i64_pair_hi(old_lo)?;
+        for (rd, rs) in [(new_lo, old_lo), (new_hi, old_hi)] {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                },
+                source_line: Some(line),
+            });
+        }
+        for (i, v) in stack.iter_mut().enumerate() {
+            if Some(i) != skip
+                && let StackVal::Reg { reg, is_i64: true } = v
+                && *reg == old_lo
+            {
+                *reg = new_lo;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reconcile one if-result position between the two arms (#313): make the
 /// else-arm's result register(s) hold the SAME value the then-arm's do, by
 /// emitting `MOV R_then, R_else` (i64: lo and hi) on the ELSE path when the two

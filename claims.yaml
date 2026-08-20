@@ -1255,7 +1255,7 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 17961
+        value: 18134
         baseline: 17897
         waivers:
           - to: 17961
@@ -1299,6 +1299,20 @@ claims:
               the hand-written imm-fold/conversion/select emissions, each
               byte-identity-gated — the residual 15 above baseline is the
               #946 enumeration, still justified as stated above.
+          - to: 18134
+            reason: >-
+              RQ-59-WARALIAS (#989): the executed local.set/local.tee WAR
+              miscompile — `local.get` of a register-homed local pushed the
+              HOME register by reference, and a later write to the SAME
+              local destroyed it (war_set returned 200 for every input, 44
+              wrong vectors across 4 exports). +173 lines are the
+              `snapshot_home_reg_aliases` guard (the ARM analogue of RV32's
+              #472 `snapshot_aliases`) plus its four call sites in the
+              LocalSet/LocalTee register-homed arms — new SOUNDNESS
+              decisions, zero wildcards, gated by the executed
+              war_aliasing_989_arm_differential (110 wrong vectors -> 0,
+              both ARM legs) and the corpus sweep's both-direction ratchet
+              (the four #989 KNOWN_ARM_MISMATCHES entries deleted).
       # The whole-file figures the release plan and the sibling lanes quote. An
       # unpinned quoted number is the drift class this release is about — but
       # they are `track`, not `down`, and the distinction is deliberate. Both
@@ -1327,7 +1341,10 @@ claims:
         # the 2,503 moved lines themselves are ±0 under the family glob.
         # 28559 -> 28582 (RQ-58-SPLIT unit 2): +23 module plumbing for the
         # select_with_stack.rs relocation; the 7,754 moved lines are ±0.
-        value: 28582
+        # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
+        # snapshot_home_reg_aliases WAR guard + its four call sites (see the
+        # lines_code waiver); zero test-module movement.
+        value: 28755
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

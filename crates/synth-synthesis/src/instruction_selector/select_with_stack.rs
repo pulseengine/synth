@@ -5174,6 +5174,22 @@ impl InstructionSelector {
                     } else if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
+                            // #989: an EARLIER `local.get` of this same param
+                            // pushed `target` by reference — copy any such
+                            // still-live stack entry out before the overwrite
+                            // destroys it (the get→set→use WAR hazard).
+                            let mut rsv = live_params.clone();
+                            rsv.push(val);
+                            snapshot_home_reg_aliases(
+                                target,
+                                None,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &rsv,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Mov {
                                     rd: target,
@@ -5193,6 +5209,21 @@ impl InstructionSelector {
                         // only elides a redundant self-move. Checked before
                         // `layout.locals` so the dead frame slot is never written.
                         if val != target {
+                            // #989: same WAR snapshot as the param arm —
+                            // `local.get` of a promoted local aliases r4..r8
+                            // by reference.
+                            let mut rsv = live_params.clone();
+                            rsv.push(val);
+                            snapshot_home_reg_aliases(
+                                target,
+                                None,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &rsv,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Mov {
                                     rd: target,
@@ -5293,6 +5324,23 @@ impl InstructionSelector {
                     } else if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
+                            // #989: snapshot earlier `local.get` aliases of this
+                            // param's home register before overwriting it. The
+                            // tee's own kept top is SKIPPED — it is the value
+                            // being written and stays aliased to its producer.
+                            let mut rsv = live_params.clone();
+                            rsv.push(val);
+                            let top_idx = stack.len() - 1;
+                            snapshot_home_reg_aliases(
+                                target,
+                                Some(top_idx),
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &rsv,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Mov {
                                     rd: target,
@@ -5310,6 +5358,21 @@ impl InstructionSelector {
                         // later `local.get` both see the same value from independent
                         // homes. Reserved like LocalSet, so `val != target`.
                         if val != target {
+                            // #989: same WAR snapshot as the param arm, top
+                            // skipped (tee semantics).
+                            let mut rsv = live_params.clone();
+                            rsv.push(val);
+                            let top_idx = stack.len() - 1;
+                            snapshot_home_reg_aliases(
+                                target,
+                                Some(top_idx),
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &rsv,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Mov {
                                     rd: target,
