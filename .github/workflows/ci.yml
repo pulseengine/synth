@@ -3624,6 +3624,8 @@ jobs:
         run: pip install wasmtime unicorn pyelftools capstone
       - name: "#973 i64-cmp select execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/select_i64cmp_973_arm_differential.py
+      - name: "#989 local.set/tee WAR-aliasing execution differential (both ARM legs)"
+        run: python scripts/oracle_run.py scripts/repro/war_aliasing_989_arm_differential.py
       - name: "ARM corpus sweep — compile census + execution differential (#973)"
         run: python scripts/oracle_run.py scripts/repro/arm_corpus_sweep_973.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
@@ -3636,7 +3638,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 3
 
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-6)
