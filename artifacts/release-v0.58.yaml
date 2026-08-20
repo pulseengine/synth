@@ -282,7 +282,7 @@ artifacts:
       stands. That is a real finding about the DSL's expressiveness and should
       be reported as such — with the specific construct that defeats it —
       rather than quietly reducing the target from 20.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [north-star, vcr-sel-001, rocq, subtraction]
     links:
@@ -509,7 +509,7 @@ artifacts:
       fixture a process-scoped temp path if the collision hypothesis holds.
       That converts a confusing flake into a precise message and closes the
       silent direction at the same time.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [flake, stale-artifact, harness, silent-direction]
     links:
