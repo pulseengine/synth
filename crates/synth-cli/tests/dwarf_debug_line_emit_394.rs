@@ -377,7 +377,7 @@ fn rel_debug_relocations_shift_addresses_to_correct_line_394() {
         // R_ARM_ABS32 against __synth_text_base.
         match reloc.flags() {
             object::RelocationFlags::Elf { r_type } => assert_eq!(
-                r_type, R_ARM_ABS32,
+                r_type.0, R_ARM_ABS32,
                 "{sec_name} reloc must be R_ARM_ABS32, got r_type={r_type}"
             ),
             other => panic!("{sec_name} reloc has non-ELF flags: {other:?}"),
@@ -432,7 +432,7 @@ fn rel_debug_relocations_shift_addresses_to_correct_line_394() {
         for (offset, reloc) in &relocs {
             match reloc.flags() {
                 object::RelocationFlags::Elf { r_type } => assert_eq!(
-                    r_type, R_ARM_ABS32,
+                    r_type.0, R_ARM_ABS32,
                     ".debug_info reloc must be R_ARM_ABS32, got r_type={r_type}"
                 ),
                 other => panic!(".debug_info reloc has non-ELF flags: {other:?}"),
