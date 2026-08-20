@@ -25,11 +25,22 @@
 //! must never fire) is owned by `scripts/repro/i32_shift_mask_682_differential.py`
 //! — re-run green with the flag ON at land time, and red-tested against a
 //! force-elide of a >= 32 case (10 rows red, both paths).
+//!
+//! RQ-58-FLAKE (#977): this file was the one that kept reading a non-ELF. Its
+//! output path was derived from `(fixture, relocatable, flag)` alone, and its
+//! two `#[test]` fns walk the SAME corpus with the SAME flag values on parallel
+//! libtest threads — so both wrote and read one `/tmp` file, and `synth
+//! compile` truncates on open. Every compile now goes through
+//! `artifact_guard`, which gives each call its own path and refuses to hand
+//! back bytes it did not just watch the compiler produce. The guards are
+//! observed firing by the `artifact_guard_*` tests at the bottom.
 
 use std::collections::BTreeMap;
 use std::process::Command;
 
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
+
+mod artifact_guard;
 
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
@@ -63,11 +74,17 @@ const VARIANTS: &[(&str, bool)] = &[("relocatable", true), ("default", false)];
 /// the same symtab the `.py` differentials read — `st_size` is not populated.
 fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTreeMap<String, u64>) {
     let path = fixture(wasm);
-    let elf = format!(
-        "/tmp/shift_mask_elide_686_{}_{}_{}.o",
-        wasm.replace('.', "_"),
-        relocatable,
-        elide.unwrap_or("unset")
+    // #977: unique PER CALL, not per (fixture, flag) — the two #[test] fns below
+    // request identical triples on parallel libtest threads, and a shared path
+    // means one thread parses what the other is mid-way through truncating.
+    let elf = artifact_guard::unique_artifact(
+        &format!(
+            "shift_mask_elide_686_{}_{}_{}",
+            wasm.replace('.', "_"),
+            relocatable,
+            elide.unwrap_or("unset")
+        ),
+        "o",
     );
     let mut cmd = Command::new(synth());
     cmd.env_remove("SYNTH_SHIFT_MASK_ELIDE");
@@ -78,7 +95,7 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
         "compile",
         path.to_str().unwrap(),
         "-o",
-        &elf,
+        elf.to_str().unwrap(),
         "-b",
         "arm",
         "--target",
@@ -88,13 +105,11 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
     if relocatable {
         cmd.arg("--relocatable");
     }
-    let out = cmd.output().expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed for {wasm} (relocatable={relocatable}): {}",
-        String::from_utf8_lossy(&out.stderr)
+    let bytes = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &elf,
+        &format!("{wasm} (relocatable={relocatable}, elide={elide:?})"),
     );
-    let bytes = std::fs::read(&elf).expect("read elf");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj.section_by_name(".text").expect(".text");
     let data = text.data().expect("read .text").to_vec();
@@ -203,5 +218,171 @@ fn shift_mask_elide_686_per_function_no_grow_and_gust_mix_recovers() {
          ({} -> {} B)",
         off_bytes.len(),
         on_bytes.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RQ-58-FLAKE (#977) — the guard, observed firing.
+//
+// A guard nobody watched fire is not a guard, so the bad states are constructed
+// deliberately here rather than described. These run in the same binary as the
+// gates above, so CI re-observes them on every commit.
+// ---------------------------------------------------------------------------
+
+/// Build a command that is *guaranteed* to fail the compile without producing
+/// an object: a nonexistent input. (`synth compile` exits 1 and writes nothing.)
+fn failing_compile(out: &std::path::Path) -> Command {
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        "/nonexistent/rq58-flake-977-there-is-no-such-module.wat",
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+    ]);
+    cmd
+}
+
+/// A command that compiles a real fixture successfully — used to mint a genuine
+/// ELF to pre-plant as "the previous run's object".
+fn good_compile(out: &std::path::Path) -> Command {
+    let mut cmd = Command::new(synth());
+    cmd.env_remove("SYNTH_SHIFT_MASK_ELIDE");
+    cmd.args([
+        "compile",
+        fixture("i32_shift_mask_682.wat").to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+        "--relocatable",
+    ]);
+    cmd
+}
+
+/// LOUD direction. A bad compile must report as a bad compile — at the compile,
+/// with the compiler's own stderr — and never as `Could not read file magic`
+/// twenty lines later in a parser.
+#[test]
+fn artifact_guard_reports_a_failed_compile_as_a_failed_compile() {
+    let out = artifact_guard::unique_artifact("guard_failed_compile", "o");
+    let err = artifact_guard::compile_artifact(&mut failing_compile(&out), &out)
+        .expect_err("a compile of a nonexistent module must not yield bytes");
+
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the failure must name the compile as the failure, got: {err}"
+    );
+    assert!(
+        err.contains("Failed to read input file"),
+        "the compiler's OWN stderr must travel with the failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "the parser must never be the one to complain, got: {err}"
+    );
+}
+
+/// SILENT direction — the one that matters.
+///
+/// Pre-plant a genuine, parseable ELF at the output path (the previous run's
+/// object), then fail the compile. The pre-#977 shape — `fs::read` the path and
+/// `File::parse` it — would have parsed those stale bytes and PASSED the gate on
+/// evidence this invocation never produced. That is the v0.56 trap with the sign
+/// flipped, and it is a false green rather than a noisy red.
+///
+/// The guard must REFUSE, and must leave nothing at the path for anyone to pick
+/// up afterwards.
+#[test]
+fn artifact_guard_refuses_a_stale_artifact_instead_of_passing_on_it() {
+    // A real, whole ELF — produced by a compile we know succeeded.
+    let src = artifact_guard::unique_artifact("guard_stale_source", "o");
+    let good_bytes = artifact_guard::compile_artifact_or_panic(
+        &mut good_compile(&src),
+        &src,
+        "minting the stale artifact",
+    );
+    let _ = std::fs::remove_file(&src);
+    let stale = artifact_guard::unique_artifact("guard_stale_planted", "o");
+    std::fs::write(&stale, &good_bytes).expect("plant the stale artifact");
+
+    // Establish the counterfactual: these bytes ARE a valid ELF with a .text,
+    // i.e. an unguarded compile-then-parse would have sailed straight through.
+    let planted = std::fs::read(&stale).expect("read planted");
+    let obj = object::File::parse(&*planted).expect("the planted artifact is a valid ELF");
+    assert!(
+        obj.section_by_name(".text").is_some(),
+        "the planted artifact must be substantial enough to fool an unguarded gate"
+    );
+
+    // Now the compile fails while that stale object is sitting at the path.
+    let err = artifact_guard::compile_artifact(&mut failing_compile(&stale), &stale)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !std::path::Path::new(&stale).exists(),
+        "the stale artifact must have been removed BEFORE the compile ran — \
+         leaving it there is how a later reader picks up the wrong object"
+    );
+}
+
+/// The empty-file case, shown against the exact historical symptom: the same
+/// zero bytes that make `object` say `Could not read file magic` are reported by
+/// the guard as an empty artifact, before any parser sees them.
+#[test]
+fn artifact_guard_reports_an_empty_artifact_precisely() {
+    let out = artifact_guard::unique_artifact("guard_empty", "o");
+    std::fs::write(&out, b"").expect("create empty");
+
+    // This is verbatim what #960/#974/#977 reported, from the unguarded shape.
+    let unguarded = object::File::parse(&*std::fs::read(&out).unwrap())
+        .expect_err("empty bytes are not an ELF");
+    assert!(
+        format!("{unguarded}").contains("Could not read file magic"),
+        "sanity: the historical symptom is the empty-file parse, got: {unguarded}"
+    );
+
+    let err = artifact_guard::read_artifact(&out).expect_err("an empty artifact must be refused");
+    assert!(
+        err.contains("EMPTY"),
+        "the guard must name emptiness, got: {err}"
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+/// And the missing-file case: no artifact means no parse, with the path named.
+#[test]
+fn artifact_guard_reports_a_missing_artifact_precisely() {
+    let out = artifact_guard::unique_artifact("guard_missing", "o");
+    let err = artifact_guard::read_artifact(&out).expect_err("a missing artifact must be refused");
+    assert!(
+        err.contains("was NOT created by this invocation"),
+        "the guard must say the artifact is absent, got: {err}"
+    );
+}
+
+/// The collision itself: two calls that describe the SAME compile must still get
+/// different paths. This is what makes the two `#[test]` fns above unable to
+/// race, on any runner, however the scheduler interleaves them.
+#[test]
+fn artifact_guard_paths_are_unique_per_call() {
+    let a = artifact_guard::unique_artifact("shift_mask_elide_686_same_tag", "o");
+    let b = artifact_guard::unique_artifact("shift_mask_elide_686_same_tag", "o");
+    assert_ne!(
+        a, b,
+        "identical descriptions must NOT map to one path — that is #977"
     );
 }

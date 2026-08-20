@@ -382,7 +382,7 @@ artifacts:
       Worth stating because it is the general lesson: a decline that is too
       conservative is INVISIBLE. Nothing reds, no test fails, the tool quietly
       checks less than it could while its stated reason drifts from the truth.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [verification, decline-honesty, wiring, arm-semantics]
     links:

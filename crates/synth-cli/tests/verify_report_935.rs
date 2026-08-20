@@ -9,8 +9,11 @@
 //! that only ever prints zeros for declines.
 //!
 //! Non-vacuity contract enforced here:
-//! - the fixture has KNOWN declines (`i32.const`, `local.get`, `i32.shl`) and
-//!   the report must SHOW them, with non-zero counts and machine reasons;
+//! - the fixture has KNOWN declines (`i32.const`, `local.get`) and the report
+//!   must SHOW them, with non-zero counts and machine reasons;
+//! - `i32.shl` must be VERIFIED, not declined (#981): its lowering is routed
+//!   to the #975-modelled register-shift ops, so a reappearing
+//!   `immediate-shift-encoding` decline is a wiring regression;
 //! - the summary denominator must equal verified + failed + unknown + declined;
 //! - declined register-operations must name the Rocq theorem they defer to
 //!   (the #933 join key: a decline is only covered if that theorem is Qed).
@@ -25,7 +28,8 @@ fn synth() -> &'static str {
 }
 
 /// Fixture with a deliberately known op census in the exported function:
-/// 4× i32.const, 2× local.get, 1× i32.shl, plus SMT-verifiable and/add/sub.
+/// 4× i32.const, 2× local.get (declined), plus SMT-verifiable
+/// and/add/sub/shl (`i32.shl` verified since #981).
 const FIXTURE_WAT: &str = r#"(module
   (func (export "mix") (param i32 i32) (result i32)
     local.get 0
@@ -153,9 +157,14 @@ fn declines_are_reported_with_counts_reasons_and_rocq_join_keys() {
     assert_eq!(lget["rocq_theorem"], "local_get_correct");
     assert_eq!(lget["count"], 2);
 
+    // #981: i32.shl is no longer declined — the shift rules are routed to the
+    // #975-modelled `Rm<7:0>` register-shift ops and SMT-verified against the
+    // SHIPPED sel_dsl lowering (AND #31 + LSL (reg)). This assertion is the
+    // red-first gate: on the pre-#981 wiring it fails with
+    // status == "declined", reason == "immediate-shift-encoding".
     let shl = find("I32Shl");
-    assert_eq!(shl["status"], "declined");
-    assert_eq!(shl["reason"], "immediate-shift-encoding");
+    assert_eq!(shl["status"], "verified");
+    assert_eq!(shl["smt_rule"], "i32.shl → AND #31 + LSL (reg)");
 
     // The SMT half still runs and reports — verified rules are in the SAME
     // inventory (one object, one denominator).

@@ -2261,8 +2261,10 @@ struct VerifyRuleRecord {
     /// Human-readable SMT rule name when SMT ran (e.g. "i32.and → AND").
     #[serde(skip_serializing_if = "Option::is_none")]
     smt_rule: Option<String>,
-    /// Machine decline reason: "register-operation" |
-    /// "immediate-shift-encoding" | "unmodeled-op".
+    /// Machine decline reason: "register-operation" | "unmodeled-op".
+    /// ("immediate-shift-encoding" was RETIRED in #981: the five shift/rotate
+    /// rules are now routed to the #975-modelled register-shift ops and
+    /// SMT-verified, so the reason no longer has a population.)
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
     /// The Rocq theorem this decline defers to, when one exists
@@ -2300,15 +2302,6 @@ fn wasm_op_variant_name(op: &WasmOp) -> String {
 /// - `register-operation`: not computational — the whole-op contract is the
 ///   per-rule Rocq theorem named here (the #933 class: a decline is only
 ///   covered if that theorem is Qed).
-/// - `immediate-shift-encoding`: the selector emits immediate-shift forms.
-///   The stated reason USED to be "SMT modeling of the variable-shift
-///   register encoding is an open gap". That gap CLOSED in #975, which
-///   modelled `LslReg`/`LsrReg`/`AsrReg`/`RorReg` faithfully as `Rm<7:0>`
-///   (ARMv7-M A7.7.68/70/12/117) and moved five shift/rotate lowerings from
-///   `Invalid` to `Verified`. The decline that remains is therefore a WIRING
-///   residual — these rules are not yet routed to the modelled ops — not a
-///   modelling gap. Tracked; do not cite the old reason. The named theorem is
-///   the existence-only (T2) Rocq obligation.
 /// - `unmodeled-op`: no SMT rule and no per-rule theorem wired here — an
 ///   honest coverage gap, never silently omitted from the report.
 #[cfg(feature = "verify")]
@@ -2321,11 +2314,6 @@ fn declined_rule_info(op: &WasmOp) -> (&'static str, Option<&'static str>) {
         WasmOp::LocalTee(_) => ("register-operation", Some("local_tee_correct")),
         WasmOp::GlobalGet(_) => ("register-operation", Some("global_get_correct")),
         WasmOp::GlobalSet(_) => ("register-operation", Some("global_set_correct")),
-        WasmOp::I32Shl => ("immediate-shift-encoding", Some("i32_shl_executes")),
-        WasmOp::I32ShrS => ("immediate-shift-encoding", Some("i32_shrs_executes")),
-        WasmOp::I32ShrU => ("immediate-shift-encoding", Some("i32_shru_executes")),
-        WasmOp::I32Rotl => ("immediate-shift-encoding", Some("i32_rotl_executes")),
-        WasmOp::I32Rotr => ("immediate-shift-encoding", Some("i32_rotr_executes")),
         _ => ("unmodeled-op", None),
     }
 }
@@ -2340,6 +2328,7 @@ fn declined_rule_info(op: &WasmOp) -> (&'static str, Option<&'static str>) {
 #[cfg(feature = "verify")]
 fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVerifyReport> {
     use std::collections::HashMap;
+    use synth_synthesis::sel_dsl::generated as sel_rules;
     use synth_synthesis::{ArmOp, Condition, Operand2, Pattern, Reg, Replacement, SynthesisRule};
 
     println!("\nRunning translation validation for '{}'...", func_name);
@@ -2678,10 +2667,86 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<FunctionVeri
                     registers: 1,
                 },
             }),
-            // Shift ops use immediate shift values in the instruction selector.
-            // NOTE (#975): the register-shift ops ARE modelled now (Rm<7:0>,
-            // ARMv7-M A7.7.68/70/12/117) — what remains is a WIRING residual,
-            // not the modelling gap the previous comment claimed.
+            // Register-amount shifts and rotates (#981): ROUTED to the ops
+            // #975 modelled (`LslReg`/`LsrReg`/`AsrReg`/`RorReg` as `Rm<7:0>`,
+            // ARMv7-M A7.7.68/70/12/117). The sequences are taken from the
+            // SHIPPED `sel_dsl::generated` rule table — the single source the
+            // Rocq model is generated from (#667) and the only lowering path
+            // for these ops — instantiated at this harness's fixed register
+            // shape (rd=R0, rn=R0 value, rm=R1 amount, rs=R2 scratch), never
+            // hand-mirrored. The `expect`s are on the table's own `rs != rn`
+            // side condition, which the fixed shape satisfies by construction.
+            WasmOp::I32Shl => Some(SynthesisRule {
+                name: "i32.shl → AND #31 + LSL (reg)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Shl),
+                replacement: Replacement::ArmSequence(
+                    sel_rules::rule_i32_shl(Reg::R0, Reg::R0, Reg::R1, Reg::R2)
+                        .expect("side condition rs != rn holds for the fixed R0/R1/R2 shape"),
+                ),
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 6,
+                    registers: 3,
+                },
+            }),
+            WasmOp::I32ShrS => Some(SynthesisRule {
+                name: "i32.shr_s → AND #31 + ASR (reg)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32ShrS),
+                replacement: Replacement::ArmSequence(
+                    sel_rules::rule_i32_shr_s(Reg::R0, Reg::R0, Reg::R1, Reg::R2)
+                        .expect("side condition rs != rn holds for the fixed R0/R1/R2 shape"),
+                ),
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 6,
+                    registers: 3,
+                },
+            }),
+            WasmOp::I32ShrU => Some(SynthesisRule {
+                name: "i32.shr_u → AND #31 + LSR (reg)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32ShrU),
+                replacement: Replacement::ArmSequence(
+                    sel_rules::rule_i32_shr_u(Reg::R0, Reg::R0, Reg::R1, Reg::R2)
+                        .expect("side condition rs != rn holds for the fixed R0/R1/R2 shape"),
+                ),
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 6,
+                    registers: 3,
+                },
+            }),
+            WasmOp::I32Rotl => Some(SynthesisRule {
+                name: "i32.rotl → RSB #32 + ROR (reg)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Rotl),
+                replacement: Replacement::ArmSequence(
+                    sel_rules::rule_i32_rotl(Reg::R0, Reg::R0, Reg::R1, Reg::R2)
+                        .expect("side condition rs != rn holds for the fixed R0/R1/R2 shape"),
+                ),
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 6,
+                    registers: 3,
+                },
+            }),
+            WasmOp::I32Rotr => Some(SynthesisRule {
+                name: "i32.rotr → ROR (reg)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Rotr),
+                replacement: Replacement::ArmSequence(sel_rules::rule_i32_rotr(
+                    Reg::R0,
+                    Reg::R0,
+                    Reg::R1,
+                )),
+                cost: synth_synthesis::Cost {
+                    cycles: 1,
+                    code_size: 4,
+                    registers: 2,
+                },
+            }),
             // LocalGet/LocalSet/Const are register operations, not computational.
             // #935: neither class is silently skipped any more — every
             // unmatched kind lands in the report as a decline with a machine
