@@ -317,7 +317,7 @@ artifacts:
       SCOPE HONESTY: this is the lane most likely to be partially completed. A
       half-finished split with a stated boundary is acceptable; an unstated one
       is not.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [structure, two-selector, byte-identical, readability]
     links:
@@ -413,7 +413,7 @@ artifacts:
       hides unhandled match sites. Either land it with that evidence or pin
       `object` with a stated reason. #965 (make the hold enforce) is the
       companion and should land first or alongside.
-    status: proposed
+    status: implemented
     release: v0.58
     tags: [dependencies, breaking, 0x-minor, differentials]
     links:
