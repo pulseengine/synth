@@ -1255,9 +1255,18 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 17938
+        value: 17961
         baseline: 17897
         waivers:
+          - to: 17961
+            reason: >-
+              RQ-58-SPLIT (#242) unit 2: pure relocation of the direct /
+              production path (`select_with_stack`, 7,754 lines moved with
+              ZERO token changes) into
+              instruction_selector/select_with_stack.rs. The +23 is module
+              plumbing only (sibling doc header, `use super::*;`, impl
+              wrapper, parent `mod` decl) — zero new lowering decisions,
+              byte-identity gated (10/10 frozen anchors).
           - to: 17938
             reason: >-
               RQ-58-SPLIT (#242): pure relocation of the pattern-match /
@@ -1316,7 +1325,9 @@ claims:
         # 28533 -> 28559 (RQ-58-SPLIT unit 1): +26 module plumbing for the
         # select_default.rs relocation (see the lines_code waiver above);
         # the 2,503 moved lines themselves are ±0 under the family glob.
-        value: 28559
+        # 28559 -> 28582 (RQ-58-SPLIT unit 2): +23 module plumbing for the
+        # select_with_stack.rs relocation; the 7,754 moved lines are ±0.
+        value: 28582
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1476,9 +1487,19 @@ claims:
       - kind: ratchet
         name: mirror_marker_files
         direction: down
-        value: 59
+        value: 60
         baseline: 57
         waivers:
+          - to: 60
+            reason: >-
+              RQ-58-SPLIT (#242) unit 2: the select_with_stack.rs relocation
+              moved five existing "mirror(s|ing)" prose comment lines into a
+              second file (F64Load/store doc, two Return-arm cross-refs, a
+              GlobalGet guard cross-ref, a bounds-helper note); the parent
+              still matches through its remaining occurrences, so the FILE
+              count rises by one under a pure relocation while the
+              obligation population is unchanged — the heuristic's
+              documented over-count class. No new text says "mirror".
           - to: 59
             reason: >-
               RQ-58-SPLIT (#242) unit 1: the select_default.rs relocation
@@ -1505,8 +1526,24 @@ claims:
       - kind: ratchet
         name: mirror_obligation_files
         direction: down
-        value: 23
+        value: 24
         baseline: 23
+        waivers:
+          - to: 24
+            reason: >-
+              RQ-58-SPLIT (#242) unit 2: one existing obligation-pattern
+              line — `select_with_stack`'s "must match the area
+              `compute_local_layout` reserved above" (frame-layout
+              agreement between the shared core's layout computation and
+              the direct path's epilogue) — moved verbatim into
+              instruction_selector/select_with_stack.rs, whose parent
+              still matches through its own remaining obligation lines.
+              The FILE count rises by one under a pure relocation; the
+              obligation POPULATION is unchanged — the split made an
+              existing cross-layer agreement visible as a cross-FILE one,
+              which is the honest reading (it is now a real keep-in-sync
+              seam between two files and a candidate for RQ-58-MIRRORS to
+              retire by construction). No new obligation text was written.
 
   # ---------------------------------------------------------------------------
   # Trusted base — the axioms the Rocq suite rests on, re-counted, never
