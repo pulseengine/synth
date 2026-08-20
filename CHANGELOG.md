@@ -7,6 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-08-20
+
+**Delete the thing you replaced.**
+
+A rule is not done when it is proven. It is done when the hand-written arm it
+replaces is **deleted**. That correction is the whole release, and it came from
+measuring what the previous fifteen releases actually produced rather than what
+they claimed.
+
+From v0.42.0 to v0.57.0 the instruction selector grew **24,909 → 29,616 lines**
+— 5,515 added against 808 deleted, a ratio of 6.8:1 — while the count of
+Rocq-verified selection rules went 40 → 50 and then sat **flat for twelve
+releases**. Nothing was wrong with any individual rule. The verified path was
+being built *alongside* the unverified one, and the unverified one was winning
+on volume, because "replace" was asserted and never measured.
+
+So the metric is now subtraction, and it is pinned in CI so it can go the wrong
+way. This is the first release in the epic's history where the selector
+**shrank while the verified rule count grew**.
+
+| | v0.57.0 | v0.58.0 |
+|---|---|---|
+| Rocq-verified selection rules | 50 | **74** |
+| …each with a 1:1 correctness theorem | 50 | **74** |
+| Rocq `Qed` (whole suite) | 592 | **617** |
+| selector, non-test region | 18,480 | **17,961** |
+| selector wildcard arms, non-test | 62 | **55** |
+| selector, total lines | 29,616 | **28,582** |
+
+### Added
+
+- **The subtraction ratchet (#991).** Seven directed pins in `claims.yaml`:
+  selector line count and wildcard count are **ceilings that must fall**, the
+  verified-rule count is a **floor that must rise**, and mixed populations are
+  tracked without a direction. Each carries a value that must *equal* the live
+  derivation — there is no "current + slack" to hide in, so every movement of a
+  pinned number is a visible diff in the PR that caused it. Adding a
+  hand-written lowering without deleting one now turns the gate red. When a lane
+  legitimately needs growth, the ceiling moves via a `waivers:` entry bound to
+  the new value with a written reason — permission for one growth, never
+  standing.
+
+- **`synth verify` ships in released artifacts (#1000, #1002).** Every published
+  binary was built *without* `--features verify`, so the verifier this project
+  is named for could not be run by anyone who installed it. It is now in the
+  released artifacts, gated by a smoke test that runs `synth verify` on a module
+  compiled by the binary **extracted from each release tarball** and asserts a
+  non-vacuous result (`verified >= 1 && failed == 0`).
+
+- **24 further Rocq-proved selection rules, 50 → 74 (#242, #1004).** Dynamic
+  immediate folds, width conversions and the select family — each one deleting
+  the hand-written emission it supersedes, which is the point. The DSL gained a
+  dynamic-immediate parameter class to express shapes previously called
+  inexpressible, and the ARM model gained `flags_set_reg` so that "IT;MOV
+  preserves flags" is machine-checked rather than assumed.
+
+### Fixed
+
+- **A selector wildcard was a live, executed miscompile (#946, #1003).**
+  `wasm_stack_effect`'s trailing `_ => (0, 0)` silently claimed that unhandled
+  operations neither consume nor produce stack values. This was not a latent
+  hole: it mis-modelled reachable i64 width operations, so the virtual stack
+  drifted and the wrong register was read.
+
+- **ARM `select` on an i64 comparison returned the then-arm unconditionally
+  (#973, #992).** Landed red-first — the unicorn-vs-wasmtime execution
+  differential went in *before* the fix, on the record at 264/360. The same lane
+  found an ARM leg of the corpus CI that had never compiled at all.
+
+- **A differential read a non-ELF — and the silent direction read a stale one
+  (#977, #1006).** Two `#[test]` functions in one binary computed the same
+  `/tmp` output path and ran on parallel threads against a `File::create` that
+  truncates before writing, so a reader could land mid-write. Reproduced 10/48,
+  then 0/48 after. The loud failure was the lesser half: one step away is
+  reading a **stale but valid** ELF and passing, re-confirming the previous
+  run's digest as this run's evidence. A survey found the class is sharp — of 58
+  compile-then-parse sites, exit status is checked at all 58, but freshness at
+  only 7. Ten sites were converted, chosen to include every site in
+  `frozen_codegen_bytes.rs`, whose SHA-256 anchors every other byte gate leans on.
+
+- **`object` 0.39 → 0.40 (#938, #1008).** A 0.x-minor that broke 16 call sites
+  across three unrelated newtype surfaces — relocation types, a
+  `RelocationFlags::Elf { r_type }` destructuring pattern that no method-call
+  search finds, and symbol bind/type — in the crate the ELF differentials read
+  symtabs with.
+
+### Changed
+
+- **The hand-written arms the proved rules replaced are gone (#242, #999).**
+  −1,312 lines (345 insertions against 1,657 deletions), **byte-identical**
+  across all frozen anchors: the proved rules were already the shipped lowering
+  path for their covered operations, so deleting the superseded arms had to
+  change nothing, and did not. The arms that are *not* yet deletable — reachable
+  on one selector path but not the other — were measured and stated rather than
+  deleted and discovered downstream.
+
+- **Generate, don't mirror (#242, #993).** `check_generated_fresh` byte-compares
+  the rendered FEATURE_MATRIX against its *template*, which proves the render is
+  faithful to the template and never that the template is faithful to the
+  **code**. The aarch64 decline list cost the most under that blind spot: it
+  went stale twice, and at v0.57 still named a capability that release had
+  shipped. It is now derived by probing the real selector for every `WasmOp`
+  representative, with the test asserting that none falls through a wildcard.
+
+- **`synth verify` no longer declines the shift rules (#981, #1005).** The
+  stated reason — that SMT modelling of the variable-shift register encoding was
+  an open gap — became false in v0.57 and the wiring was left behind. All five
+  shift/rotate rules are now checked, instantiated from the same generated table
+  the Rocq model is emitted from rather than hand-mirrored. Declines on the
+  shared fixture fell 7 → 2, and the `immediate-shift-encoding` reason is
+  retired outright. Sensitivity was proven rather than assumed: 20 perturbations
+  all flip to Invalid, including an extra `UXTB` appended to a correct lowering
+  — the exact shape that returned a false *Verified* in v0.57.
+
+- **The selector is split along the seam that already existed (#197, #1009).**
+  `select_default` and `select_with_stack` now live in named modules; this lane
+  moved 10,298 lines out, taking the root file 28,533 → 18,284. Both moves are pure relocations — every line
+  in the new modules that is not in the original is a doc comment or
+  `use super::*;`, with one exception: `select_default` gained `pub(super)`
+  because its caller left the module. Byte-identical across all ten frozen
+  anchors, per unit. The ratchet was made family-aware *first*, so the
+  relocation earned no credit for the lines it moved.
+
+  The headers now state what was previously archaeological: `arm_backend.rs`
+  calls `select_with_stack` exclusively — it is the production path, the one
+  `--relocatable` forces — and `select_default` is the legacy blind path
+  reachable in full only through the `pub fn select()` API used by tests and
+  benchmarks. A shipped scanner had claimed the opposite direction, and nothing
+  in 28,000 interleaved lines contradicted it.
+
+
 ## [0.57.0] - 2026-08-14
 
 **The checkers were the defects.**
