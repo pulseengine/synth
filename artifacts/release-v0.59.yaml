@@ -435,7 +435,31 @@ requirements:
       unit; the family-aware ratchet means relocation earns ZERO credit, so
       only real deletion moves the ceiling. A deletion that moves emitted bytes
       without an oracle proving the new bytes correct is REFUSED, not explained.
-    status: proposed
+
+      LANDED (v0.59): VCR-SEL-001 increment 6 — SIX new Rocq-proved rules
+      (74 -> 80, all Qed on the generated model), each with its hand-written
+      emission DELETED, never alongside: the sign-extension family
+      (i32.extend8_s/16_s via new SXTB/SXTH model instructions with
+      DEFINED — not axiomatized — semantics; i64.extend8/16/32_s via new
+      narrow pseudo-ops; axiom count unchanged at 93) plus rule_i64_const,
+      the first rule over a dynamic i64 immediate (new imm64 DSL concept).
+      select_default's I64ExtendI32S / I32WrapI64 hand constructions
+      delegated to their increment-5 rules; I64ExtendI32U delegation
+      REFUSED on byte-identity (its rule lowers to the MOV+MOVW pair, the
+      sd path emits the single pseudo — different bytes, no oracle, arm
+      stays, refusal documented at the arm). Ratchet: code region
+      18,291 -> 18,278, wildcards 56 -> 55 (the family match's
+      `_ => unreachable!()` went with its arm), rules floor 74 -> 80,
+      all banked. Evidence: the prior corpus had ZERO extendN_s coverage —
+      sign_extend_family.wat ADDED FIRST, then a 704-row corpus manifest
+      (176 fixtures x 4 configs, declines pinned with reasons) identical
+      to the pre-deletion baseline per deletion commit; 10/10 frozen
+      anchors; #973 ARM corpus sweep PASS (2,502 emulated vectors, 0
+      mismatches, incl. the new fixture). Residual: the tracked coq/*.ml
+      extraction snapshots were found stale since #697 and refreshed;
+      they have no consumer and no freshness gate — wiring one is a
+      policy call left to the hub.
+    status: implemented
     release: v0.59
     tags: [north-star, subtraction, ratchet, selector]
     links:
