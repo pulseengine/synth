@@ -2146,3 +2146,47 @@ claims:
         text: "[![Rust-test line coverage]"
       - kind: verbatim
         text: "It understates the testing that exists and is not a completeness measure"
+
+  # ---------------------------------------------------------------------------
+  # #965 RQ-59-MINORHOLD — the 0.x-minor dependency hold is ENFORCED, not
+  # commented. Auto-merge was hand-disabled four times (#938, ordeal 0.9->0.12,
+  # #997, #998) because the hold only skipped its own enable step and posted a
+  # comment; #938 sat three days with auto-merge ENABLED and two hold comments.
+  # The pins below hold the workflow's enforcement claim to its mechanics: the
+  # hold path actively disables auto-merge, ASSERTS the resulting state, labels
+  # without a swallowed failure, and delegates classification to the single
+  # tested script (fail-closed, exact-match enable condition). Weakening any of
+  # these is a visible claims.yaml diff, not a silent regression.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-DEPENDABOT-MINORHOLD-ENFORCED-965
+    doc: .github/workflows/dependabot-auto-merge.yml
+    text: "The hold's success criterion is \"auto-merge is off\","
+    evidence:
+      - kind: count-eq                       # the hold DISABLES, not just skips
+        pattern: 'gh pr merge --disable-auto'
+        glob: ['.github/workflows/dependabot-auto-merge.yml']
+        expect: 1
+      - kind: count-eq                       # ...and ASSERTS the resulting state
+        pattern: 'autoMergeRequest'
+        glob: ['.github/workflows/dependabot-auto-merge.yml']
+        expect: 2
+      - kind: count-eq                       # single classifier source, invoked
+        pattern: 'python3 scripts/dependabot_minor_hold\.py'
+        glob: ['.github/workflows/dependabot-auto-merge.yml']
+        expect: 1
+      - kind: count-eq                       # enable fires ONLY on the exact
+        pattern: "decision == 'automerge'"   # automerge output (fail-closed:
+        glob: ['.github/workflows/dependabot-auto-merge.yml']
+        expect: 1                            # empty/crashed classifier -> hold)
+      - kind: count-eq                       # the #965 silent-label defect
+        pattern: 'add-label.*\|\| true'      # stays dead: no swallowed label
+        glob: ['.github/workflows/dependabot-auto-merge.yml']
+        expect: 0
+      - kind: file-exists
+        path: scripts/dependabot_minor_hold.py
+      - kind: file-exists
+        path: scripts/test_dependabot_minor_hold.py
+      - kind: count-eq                       # potency test wired in the
+        pattern: 'test_dependabot_minor_hold\.py'  # required Claim Check job
+        glob: ['.github/workflows/ci.yml']
+        expect: 1

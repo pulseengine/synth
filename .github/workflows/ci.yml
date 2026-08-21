@@ -225,6 +225,21 @@ jobs:
       # authoring: stubbing check_ratchet to return no failures kills 18 of 32.
       - name: Unit-test the claim-check engine itself (RQ-58-METRIC, #242)
         run: python3 scripts/test_claim_check.py
+      # #965 RQ-59-MINORHOLD: the dependabot 0.x-minor hold classifier is a
+      # NEW checker, and new checkers are new defect surfaces (five releases
+      # running found the defect in checking machinery). Table-driven potency
+      # test — breaking 0.x-minors (the #938 `object` and ordeal specimens),
+      # 0.0.x, majors, prereleases, downgrades, unparseable/empty metadata
+      # (the pre-#965 fail-open hole) and grouped updates must HOLD; 0.x
+      # patches and >=1.0 minors must AUTOMERGE, because a gate that blocks
+      # everything is as useless as one that blocks nothing.
+      # Mutation-verified at authoring: 5/5 seeded classifier mutations red
+      # the suite (transcript in the RQ-59-MINORHOLD PR). Lives in the
+      # already-REQUIRED claim-check job for the standing reason: a brand-new
+      # job is not a required context on main, so it could sit red blocking
+      # nothing.
+      - name: Unit-test the dependabot 0.x-minor hold classifier (RQ-59-MINORHOLD, #965)
+        run: python3 scripts/test_dependabot_minor_hold.py
       # #867: coverage OF the ISA semantics model. Re-derives
       # artifacts/model-coverage.json (static heuristic, documented in the
       # script) and fails if the committed artifact is stale or hand-edited;
