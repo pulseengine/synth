@@ -80,7 +80,7 @@ requirements:
       template. Check whether the RV32 guard's own coverage is non-vacuous
       while you are there — a guard nobody can observe firing is the defect
       class this project keeps finding.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, arm, war-aliasing, cross-backend-parity, fix-first]
     links:
@@ -111,7 +111,7 @@ requirements:
       first access being a READ, and here the first access is the WRITE — so
       zero-init does not rescue it. Any fix must not regress #970's fixture.
       RED-FIRST with an executed differential.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, arm, zero-init, info-disclosure, fix-first]
     links:
