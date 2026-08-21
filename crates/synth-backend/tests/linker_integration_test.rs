@@ -127,7 +127,12 @@ fn test_linker_script_file_generation() {
     // Test writing to file
     let generator = LinkerScriptGenerator::new_stm32();
 
-    let temp_file = "/tmp/test_linker.ld";
+    // #977 RQ-59-FRESHNESS: per-process-unique path + remove-first, so the
+    // read below can only ever see THIS invocation's output (a fixed /tmp
+    // path re-reads a previous run's script if generate_to_file regresses).
+    let temp_file = std::env::temp_dir().join(format!("test_linker_{}.ld", std::process::id()));
+    let temp_file = temp_file.to_str().unwrap();
+    let _ = std::fs::remove_file(temp_file);
     generator
         .generate_to_file(temp_file)
         .expect("Failed to write");
