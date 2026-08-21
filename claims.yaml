@@ -1255,9 +1255,39 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18134
+        value: 18291
         baseline: 17897
         waivers:
+          - to: 18291
+            reason: >-
+              MERGE OF TWO INDEPENDENTLY-WAIVED GROWTHS. RQ-59-WARALIAS (#989)
+              measured 17,961 -> 18,134 (+173) and RQ-59-ZEROINIT (#990)
+              measured 17,961 -> 18,118 (+157); both were correct against the
+              v0.58 base and NEITHER is correct once both land. The deltas
+              compose exactly (17,961 + 173 + 157 = 18,291), re-derived from
+              the merged tree rather than carried over from either branch.
+              The gate caught this: a waiver is bound to its value, so two
+              waived growths do not silently authorise their sum. Both
+              underlying growths are the ARM soundness fixes this release
+              leads with — a WAR home-register snapshot guard and a
+              domination-precise zero-init classifier — each gated by an
+              executed unicorn-vs-wasmtime differential that was RED before
+              the fix.
+          - to: 18118
+            reason: >-
+              RQ-59-ZEROINIT (#990): the shared `read_before_write_locals`
+              zero-init classifier's LINEAR first-access rule was an EXECUTED
+              info-disclosure miscompile — a `local.set` on one arm of a
+              `br_if`/`if`/`br_table` suppressed the #457 zero-init without
+              dominating the merge-point read, so the skipping path returned
+              previous-frame stack bytes (measured: 0xDEADBEEF poison on ARM
+              AND RV32, brif_local_zeroinit_990_{arm,riscv}_differential.py,
+              22/34 -> 34/34). The +157 is the domination walk that replaces
+              it (branch-target pre-scan + scope-stack with block/loop/if-
+              intersection propagation, precision the VCR-RA-003 holder model
+              itself demanded — the coarse draft tripped SpillSlotAliased on
+              RV32) plus its doc contract. Soundness fix, not a new lowering
+              decision; oracle-gated red-first per the #973 template.
           - to: 17961
             reason: >-
               RQ-58-SPLIT (#242) unit 2: pure relocation of the direct /
@@ -1344,7 +1374,7 @@ claims:
         # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
         # snapshot_home_reg_aliases WAR guard + its four call sites (see the
         # lines_code waiver); zero test-module movement.
-        value: 28755
+        value: 28912
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1373,15 +1403,30 @@ claims:
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 55
+        value: 56
         baseline: 55
+        waivers:
+          - to: 56
+            reason: >-
+              RQ-59-ZEROINIT (#990): `read_before_write_locals` now walks the
+              op stream TWICE (a branch-target pre-scan must complete before
+              domination can be decided — a construct's targetedness may be
+              established by a `br` after the read), and each walk carries one
+              `_ => {}` over the closed control/local-access subspace
+              (Block/Loop/If/Else/End/Br/BrIf/BrTable/LocalGet/Set/Tee are the
+              only variants that can affect scoping or locals — the same
+              closed-subspace class as the 7 existing WasmOp walks in the 55
+              classification). Net +1: the function had one such wildcard
+              before, now two.
       - kind: ratchet
         name: selector_wildcard_arms_total
         direction: track
         # 106 -> 91 (RQ-58-RETIRE): the 7 code-region arms above plus 8
         # assertion-helper '_ =>' arms inside the retired mirror-pin tests.
         # 91 -> 90 (RQ-58-WILDCARD): the wasm_stack_effect wildcard.
-        value: 90
+        # 90 -> 91 (RQ-59-ZEROINIT #990): the second closed-subspace walk in
+        # read_before_write_locals (waived above).
+        value: 91
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

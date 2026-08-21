@@ -196,9 +196,21 @@ surface" class:
 3. **A ratio cannot notice a deleted condition** — removing one removes its gap
    row and the percentage *improves*. So the floors are counts.
 
-Declared floors = the **CI platform's** measured baseline, no slack:
-`decisions ≥ 22`, `conditions ≥ 130`, `proved ≥ 57`, `fully-proved decisions ≥ 4`,
-and `dead ≤ 50`.
+Declared floors = the **CI platform's** measured baseline, no slack. As first
+measured for this lane: `decisions ≥ 22`, `conditions ≥ 130`, `proved ≥ 57`,
+`fully-proved decisions ≥ 4`, and `dead ≤ 50`.
+
+> **Re-stated in v0.59 (RQ-59-ZEROINIT / witness#208):** the #990 PR proved the
+> decision/full counts are partly a function of BINARY LAYOUT — unrelated
+> linked code moved them 26→21 / 6→3 on CI (and the opposite direction on
+> macOS) while the instrument-side manifests carried a byte-for-byte identical
+> branch population for every scored function. The deletion-sensitive check now
+> lives on that stable surface (`BRANCH_POPULATION` in `scripts/mcdc_gate.py`,
+> exact per-function branch counts), and the reconstruction floors were
+> re-derived from the #990 branch's ubuntu measurement (`decisions ≥ 21`,
+> `fully-proved ≥ 3`; conditions/proved/dead unchanged) with the full evidence
+> written at the site. See the mcdc_gate.py header block and
+> pulseengine/witness#208 before moving any of these numbers again.
 
 **Dead is ceilinged, not ignored.** 50 scored conditions are never
 evaluated — 40 of them in `is_straight_line`, whose match arms cover RV32

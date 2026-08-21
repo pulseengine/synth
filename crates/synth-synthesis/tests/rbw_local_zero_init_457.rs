@@ -128,3 +128,174 @@ fn read_before_write_locals_classification_457() {
     let tee = vec![LocalTee(1), LocalGet(1), End];
     assert!(!read_before_write_locals(&tee, 0).contains(&1));
 }
+
+/// #990: "write before read in op order" is NOT domination. A write on a
+/// conditionally-skipped path must not suppress the zero-init of a later
+/// merge-point read — the executed leak is pinned by
+/// `scripts/repro/brif_local_zeroinit_990_{arm,riscv}_differential.py`; these
+/// pin the classifier arithmetic per shape.
+#[test]
+fn conditional_write_does_not_dominate_990() {
+    use WasmOp::*;
+    // THE #990 shape: block { br_if; set } get — the br_if jumps past the set.
+    let brif = vec![
+        Block,
+        LocalGet(0),
+        BrIf(0),
+        I32Const(10),
+        LocalSet(1),
+        End,
+        LocalGet(1),
+        End,
+    ];
+    assert!(
+        read_before_write_locals(&brif, 1).contains(&1),
+        "a write on the br_if-not-taken arm does not dominate the merge read"
+    );
+
+    // `if` without else: the only write sits in the then-arm.
+    let if_no_else = vec![
+        LocalGet(0),
+        If,
+        I32Const(7),
+        LocalSet(1),
+        End,
+        LocalGet(1),
+        End,
+    ];
+    assert!(read_before_write_locals(&if_no_else, 1).contains(&1));
+
+    // A then-arm write does not dominate the ELSE arm.
+    let else_read = vec![
+        LocalGet(0),
+        If,
+        I32Const(7),
+        LocalSet(1),
+        Else,
+        LocalGet(1),
+        LocalSet(2),
+        End,
+        LocalGet(2),
+        End,
+    ];
+    let rbw = read_before_write_locals(&else_read, 1);
+    assert!(
+        rbw.contains(&1),
+        "then-arm write must not dominate the else-arm read"
+    );
+    assert!(
+        rbw.contains(&2),
+        "an else-arm write is skipped when the then-arm runs — not dominating either"
+    );
+
+    // A block that IS a branch target does not let its writes dominate what
+    // follows — the branch lands at its End, skipping them.
+    let targeted_block = vec![
+        Block,
+        LocalGet(0),
+        BrIf(0),
+        I32Const(3),
+        LocalSet(1),
+        End,
+        LocalGet(1),
+        End,
+    ];
+    assert!(read_before_write_locals(&targeted_block, 1).contains(&1));
+}
+
+/// #990: the shapes where the write DOES dominate stay out of the set — the
+/// byte-identity half of the fix (the common straight-line case must not
+/// grow a zero-init).
+#[test]
+fn dominating_write_still_suppresses_zero_init_990() {
+    use WasmOp::*;
+    // Write at function scope, read inside a later block: dominated. And a
+    // write inside an UNTARGETED block (no branch names its label, so its
+    // End cannot be jumped to) dominates a read after the End — fall-through
+    // is the only way there. This precision is what keeps the entry
+    // zero-init from becoming a dead store in the same straight-line segment
+    // as the real store, which VCR-RA-003's holder model rightly refuses.
+    let outer_write = vec![
+        I32Const(3),
+        LocalSet(1),
+        Block,
+        LocalGet(1),
+        LocalSet(2),
+        End,
+        LocalGet(2),
+        End,
+    ];
+    let rbw = read_before_write_locals(&outer_write, 1);
+    assert!(
+        !rbw.contains(&1),
+        "a depth-0 write before the block dominates the read inside it"
+    );
+    assert!(
+        !rbw.contains(&2),
+        "an untargeted block's write dominates the read after its End"
+    );
+
+    // if/else writing the SAME local on both arms: every path writes it, so
+    // the read after the End is dominated (the arms' INTERSECTION survives).
+    let both_arms = vec![
+        LocalGet(0),
+        If,
+        I32Const(5),
+        LocalSet(1),
+        Else,
+        I32Const(7),
+        LocalSet(1),
+        End,
+        LocalGet(1),
+        End,
+    ];
+    assert!(!read_before_write_locals(&both_arms, 1).contains(&1));
+
+    // Write and read within the SAME block, write first: dominated (straight
+    // line within the body; a br_if between them would exit, not re-enter).
+    let same_block = vec![
+        Block,
+        I32Const(5),
+        LocalSet(1),
+        LocalGet(1),
+        Drop,
+        End,
+        I32Const(0),
+        End,
+    ];
+    assert!(!read_before_write_locals(&same_block, 0).contains(&1));
+
+    // Inside a loop, write-then-read in the body: dominated on EVERY
+    // iteration (the back-edge re-runs the write before the read).
+    let loop_body = vec![
+        Block,
+        Loop,
+        I32Const(1),
+        LocalSet(1),
+        LocalGet(1),
+        BrIf(1),
+        Br(0),
+        End,
+        End,
+        I32Const(0),
+        End,
+    ];
+    assert!(!read_before_write_locals(&loop_body, 0).contains(&1));
+
+    // But a loop-body write does NOT dominate a read AFTER the loop (an exit
+    // branch can leave before the write).
+    let after_loop = vec![
+        Block,
+        Loop,
+        LocalGet(0),
+        BrIf(1),
+        I32Const(1),
+        LocalSet(1),
+        Br(0),
+        End,
+        End,
+        LocalGet(1),
+        End,
+    ];
+    assert!(read_before_write_locals(&after_loop, 1).contains(&1));
+}

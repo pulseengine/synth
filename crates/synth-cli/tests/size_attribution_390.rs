@@ -142,8 +142,22 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 // PASSED on the new bytes (gust_poll return + post-call state struct vs
 // wasmtime, in default and both lever opt-outs), alongside the full
 // trap-semantics oracle set and the #494 bounds differential.
+// RE-PINNED for the #990 zero-init domination fix (RQ-59-ZEROINIT, v0.59):
+// gust_poll 696→700 (+4). A SOUNDNESS COST, deliberately paid: the shared
+// `read_before_write_locals` classifier no longer lets a conditionally-skipped
+// `local.set` (one arm of a br_if/if) suppress the #457 zero-init — gust_poll
+// carries one such local, whose frame slot now gets the wasm-mandated entry
+// zero. Measured by capstone diff of the old/new gust_poll: the ONLY content
+// change is `movs r2,#0; str.w r2,[sp,#0x24]` in the prologue (223→225
+// insns); every other diff line is branch-target renumbering from the 6-byte
+// shift (net +4 after one branch narrows). func_0/func_1/gust_mix are
+// byte-IDENTICAL. Execution UNCHANGED — re-pinned only after
+// gust_spill_fwd_390_differential.py PASSED on the new bytes (gust_poll
+// return + post-call state struct vs wasmtime, in default and both lever
+// opt-outs) and the #990 leak oracle went 22/34 -> 34/34 on each backend
+// (brif_local_zeroinit_990_{arm,riscv}_differential.py).
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 696),
+    ("gust_poll", 700),
     ("gust_mix", 32),
     ("func_0", 380),
     ("func_1", 60),
