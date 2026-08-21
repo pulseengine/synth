@@ -7614,7 +7614,7 @@ fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
         vec![func_name.to_string()],
         code.to_vec(),
         Vec::new(),
-    )]))
+    )])?)
 }
 
 /// #546: emit a multi-function `EM_AARCH64` ELF64 (`ET_REL`) object exposing one
@@ -7648,10 +7648,14 @@ fn build_multi_func_aarch64_elf(
     if let Some(table) = substrate.table.clone() {
         a64_funcs.push(table);
     }
+    // #1013: a relocation against a symbol the object does not place (a
+    // retained function calling a loud-declined one) is a CLEAN refusal —
+    // `Err` here propagates to the #952-style non-zero exit with the reason
+    // naming the declined symbol, never a panic/exit-101.
     Ok(build_relocatable_object_with_data(
         &a64_funcs,
         &substrate.globals,
-    ))
+    )?)
 }
 
 /// Build a simple ELF with just the code section (for quick testing)
