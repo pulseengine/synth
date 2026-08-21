@@ -1,9 +1,10 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-08-21 (RQ-59-SUBTRACT #242 increment 6: 5 new rule
+**Last Updated: 2026-08-21 (RQ-59-SUBTRACT #242 increment 6: 6 new rule
 theorems (the sign-extension family — i32.extend8_s/16_s via new SXTB/SXTH
 model instructions, i64.extend8/16/32_s via new narrow pseudo-ops, semantics
-DEFINED via I32 shifts, no new axiom): recount 623 Qed / 2 Admitted,
+DEFINED via I32 shifts, no new axiom — plus rule_i64_const over the new
+dynamic-i64-immediate concept): recount 623 Qed / 2 Admitted,
 +2 admit., crude `grep "Qed\."` over `coq/Synth/**/*.v` — same method
 as prior recounts; the 2026-07-17 VCR-WASM-001 phase 3 note: +6 vs the prior 585 are the six i64 arithmetic/bitwise
 executor-level refinement theorems in `WasmCertBridge.v`
