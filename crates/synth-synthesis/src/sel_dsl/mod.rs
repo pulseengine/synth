@@ -1624,7 +1624,7 @@ pub const RULES: &[SelRule] = &[
             rd: Rd,
             rn_lo: RnLo,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i32.wrap_i64`: rd = low word of the i64 (high half dropped)",
     },
     SelRule {
@@ -1637,7 +1637,7 @@ pub const RULES: &[SelRule] = &[
             rd_hi: RdHi,
             rn: Rn,
         }],
-        delegation: Delegation::SelectWithStack,
+        delegation: Delegation::Both,
         doc: "`i64.extend_i32_s`: (rd_hi:rd_lo) = sign-extended rn",
     },
     SelRule {

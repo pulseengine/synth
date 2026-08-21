@@ -791,12 +791,16 @@ impl InstructionSelector {
                 }]
             }
 
+            // Rocq-proved increment-5 rule as the only path (RQ-59-SUBTRACT:
+            // the hand-written pseudo-op construction is deleted; the fixed
+            // (R0, R1, R0) shape satisfies rd_hi <> rd_lo). NOT so for
+            // I64ExtendI32U below: its rule lowers to the two-instruction
+            // MOV + MOVW form select_with_stack ships, while this path emits
+            // the single I64ExtendI32U pseudo — different bytes, so
+            // delegation is REFUSED there and the hand-written arm stays.
             I64ExtendI32S => {
-                vec![ArmOp::I64ExtendI32S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rn: Reg::R0,
-                }]
+                crate::sel_dsl::generated::rule_i64_extend_i32_s(Reg::R0, Reg::R1, Reg::R0)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             I64ExtendI32U => {
@@ -807,13 +811,8 @@ impl InstructionSelector {
                 }]
             }
 
-            I32WrapI64 => {
-                // Just take the low 32 bits (R0) — effectively a no-op if result is in R0
-                vec![ArmOp::I32WrapI64 {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                }]
-            }
+            // Rocq-proved increment-5 rule as the only path (RQ-59-SUBTRACT).
+            I32WrapI64 => crate::sel_dsl::generated::rule_i32_wrap_i64(Reg::R0, Reg::R0),
 
             // Narrow i64 sign-extends — Rocq-proved rules, the only path
             // (increment 6, RQ-59-SUBTRACT). The fixed (R0, R1, R0) shape

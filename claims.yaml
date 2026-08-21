@@ -1255,13 +1255,13 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18279
+        value: 18278
         baseline: 17897
         waivers:
-          - to: 18279
+          - to: 18278
             reason: >-
               RQ-59-SUBTRACT (#242, increment 6): the residual above baseline
-              FELL 18,291 -> 18,279 (-12) — the sign-extension family's five
+              FELL 18,291 -> 18,278 (-13) — the sign-extension family's five
               hand-written emissions (sws I32Extend8S/16S Sxtb/Sxth pushes,
               the sws I64Extend{8,16,32}S construction match incl. its
               `_ => unreachable!()`, sd's five fixed-register vec arms) were
@@ -1274,6 +1274,11 @@ claims:
               The residual above baseline it carries forward is the two
               waived v0.59 soundness growths (#989 WAR guard, #990
               domination walk) minus this fall, re-derived from the tree.
+              The final -1 is the same lane delegating select_default's
+              I64ExtendI32S / I32WrapI64 hand-written pseudo constructions
+              to their existing increment-5 rules (structurally identical
+              ArmOp values; I64ExtendI32U REFUSED — its rule lowers to the
+              MOV+MOVW pair, different bytes, hand-written arm stays).
           - to: 18291
             reason: >-
               MERGE OF TWO INDEPENDENTLY-WAIVED GROWTHS. RQ-59-WARALIAS (#989)
@@ -1390,10 +1395,11 @@ claims:
         # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
         # snapshot_home_reg_aliases WAR guard + its four call sites (see the
         # lines_code waiver); zero test-module movement.
-        # 28912 -> 28900 (RQ-59-SUBTRACT increment 6): -12 code (the
-        # sign-extension family arm deletions, see the lines_code waiver);
+        # 28912 -> 28899 (RQ-59-SUBTRACT increment 6): -13 code (the
+        # sign-extension family arm deletions + the select_default
+        # width-conversion delegation, see the lines_code waiver);
         # zero test-module movement.
-        value: 28900
+        value: 28899
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
