@@ -3917,6 +3917,17 @@ pub fn apply_range_coloring(
     instrs: &[ArmInstruction],
     assignment: &BTreeMap<usize, Reg>,
 ) -> Option<Vec<ArmInstruction>> {
+    // Census mode (`SYNTH_GRAPH_ALLOC_STATS`, stderr only): a refused rewrite
+    // still returns `None`, but the scan CONTINUES so the report names EVERY
+    // refused op, not the first one hit — first-blocker-only reporting is the
+    // #936 `scan_for_decline` trap, and the RQ-59-REACH census needs the
+    // complete set to attribute a decline to a family. Each entry is annotated
+    // with its cause: an op [`rewrite_expressible`] can express at all but
+    // refused under THESE maps is an RMW whose use-side and def-side ranges
+    // were coloured differently (`/rmw-colour-mismatch`); one it cannot
+    // express under any maps is a rewriter coverage gap (`/no-rewrite-arm`).
+    let census = std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok();
+    let mut refused: BTreeMap<String, usize> = BTreeMap::new();
     let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → open vreg id
     let mut next_vreg = 0usize;
     let mut out = Vec::with_capacity(instrs.len());
@@ -3945,12 +3956,50 @@ pub fn apply_range_coloring(
             current.insert(*r, vreg);
             def_map.insert(*r, *assignment.get(&vreg)?);
         }
-        out.push(ArmInstruction {
-            op: rewrite_op(&ins.op, &use_map, &def_map)?,
-            source_line: ins.source_line,
-        });
+        match rewrite_op(&ins.op, &use_map, &def_map) {
+            Some(op) => out.push(ArmInstruction {
+                op,
+                source_line: ins.source_line,
+            }),
+            None if census => {
+                let s = format!("{:?}", ins.op);
+                let name = s.split([' ', '{', '(']).next().unwrap_or("");
+                let cause = if rewrite_expressible(&ins.op) {
+                    "rmw-colour-mismatch"
+                } else {
+                    "no-rewrite-arm"
+                };
+                *refused.entry(format!("{name}/{cause}")).or_insert(0) += 1;
+            }
+            None => return None,
+        }
+    }
+    if !refused.is_empty() {
+        let listing = refused
+            .iter()
+            .map(|(k, v)| format!("{k} x{v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("[graph-alloc] rewrite-refused complete set: {listing}");
+        return None;
     }
     Some(out)
+}
+
+/// Census/diagnostics helper (RQ-59-REACH): can [`rewrite_op`] express `op` at
+/// all? Tested under the IDENTITY rename, with the maps built from `op`'s own
+/// [`reg_effect`], so `false` names a REWRITER coverage gap (an op the effect
+/// model handles but `rewrite_op`'s match does not), never a colouring
+/// conflict — identity maps cannot trip the RMW same-register check. Pure;
+/// intended for the flag-gated pass's decline diagnostics, so a "did nothing"
+/// on such a function is never mistaken for "nothing to do".
+pub fn rewrite_expressible(op: &ArmOp) -> bool {
+    let Some(eff) = reg_effect(op) else {
+        return false;
+    };
+    let use_map: BTreeMap<Reg, Reg> = eff.uses.iter().map(|r| (*r, *r)).collect();
+    let def_map: BTreeMap<Reg, Reg> = eff.defs.iter().map(|r| (*r, *r)).collect();
+    rewrite_op(op, &use_map, &def_map).is_some()
 }
 
 /// Why [`validate_segment_rewrite`] rejected an `(original, rewritten)` pair.
@@ -13749,6 +13798,29 @@ mod tests {
                 imm16: 2
             }
         );
+    }
+
+    #[test]
+    fn rewrite_expressible_distinguishes_coverage_from_colouring() {
+        // Expressible: an RMW op under the IDENTITY rename — the same op the
+        // mismatch test above shows REFUSING a split assignment. Together they
+        // pin the diagnostic distinction the RQ-59-REACH census relies on: a
+        // refusal under actual maps with `rewrite_expressible == true` is an
+        // RMW colour mismatch, never a rewriter coverage gap.
+        assert!(rewrite_expressible(&ArmOp::Movt {
+            rd: Reg::R0,
+            imm16: 2
+        }));
+        assert!(rewrite_expressible(&ArmOp::SelectMove {
+            rd: Reg::R0,
+            rm: Reg::R1,
+            cond: Condition::EQ,
+        }));
+        // Not expressible: no `reg_effect` at all (a call is modeled by
+        // `call_effect`, deliberately not by `reg_effect`).
+        assert!(!rewrite_expressible(&ArmOp::Bl {
+            label: "func_1".into()
+        }));
     }
 
     #[test]

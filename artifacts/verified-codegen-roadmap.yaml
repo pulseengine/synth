@@ -2560,7 +2560,37 @@ artifacts:
            op carrying one is DECLINED by name, not guessed at.
       An op that fails a check keeps its decline and the decline is RENAMED so
       the residual stays actionable — the decline MOVES, it is never deleted.
-    status: proposed
+
+      IMPLEMENTED (v0.58, PR #917) — the paragraph above is the plan it shipped
+      to: `liveness::pair_effect` + `pair_early_clobber` + `pair_low_reg_only`
+      landed, applied 316 -> 411, and 114 relocatable functions moved out of
+      `unmodeled-op`.
+
+      MEASURED OUTCOME (v0.59 census, RQ-59-REACH — the re-derived per-function
+      histogram over the same corpus family, now 159 ARM-compilable fixtures /
+      697 functions, `--relocatable` cortex-m4; the v0.54 run was 633 functions
+      of the same growing corpus): the colourer now HANDLES 524 of 697
+      functions (75 %) — 455 rewritten + 69 `identity-colouring`, which is a
+      SUCCESS (a validated rewrite identical to the input), not a reach
+      failure. Genuine reach failures: 173 (single-block 71, unmodeled-op 54,
+      call-indirect-pseudo 17, unreachable-block 15, numeric-branch 10,
+      i64-16bit-form-high-reg 6). The COMPLETE per-function blocker census for
+      the 54 residual `unmodeled-op` functions (gathered by the now-permanent
+      flag-gated complete-set diagnostics, not first-blocker-only) is a LONG
+      TAIL: 15 distinct ops, every function blocked by exactly ONE op, largest
+      family 7 functions (`I64DivS`, `I64Rotl`); the largest mechanism group
+      is the i64 software div/rem loops at 19 functions (11 % of reach
+      failures). Per this artifact's own falsifiability clause, that residue
+      does NOT name a next op-model widening — the op model is no longer the
+      limiting factor. What the census names instead: 49 of the 71
+      `single-block` declines are `apply_range_coloring` refusing an RMW whose
+      use-side and def-side ranges were coloured apart (`Movt` 28 functions /
+      `SelectMove` 26, zero rewriter-coverage gaps), and 22 are
+      `DefClobbersEquation` trace-validator rejects — so the next reach
+      increment is an RMW TIE/COALESCE constraint in the colouring (the def
+      range of a read-modify-write op must receive its use range's colour),
+      not a wider `pair_effect`.
+    status: implemented
     tags: [codegen, register-allocation, graph-colouring, reach, i64, track-a]
     links:
       - type: derives-from
