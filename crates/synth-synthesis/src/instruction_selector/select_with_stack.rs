@@ -6681,11 +6681,18 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sxtb { rd: dst, rm: src },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // SXTB from the Rocq-proved rule — the only path
+                    // (increment 6, RQ-59-SUBTRACT: the hand-written
+                    // ArmOp::Sxtb construction is deleted).
+                    let rule_ops = crate::sel_dsl::i32_extend_rule(op, dst, src)
+                        .expect("i32.extend8_s has a generated rule");
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -6710,11 +6717,18 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sxth { rd: dst, rm: src },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // SXTH from the Rocq-proved rule — the only path
+                    // (increment 6, RQ-59-SUBTRACT: the hand-written
+                    // ArmOp::Sxth construction is deleted).
+                    let rule_ops = crate::sel_dsl::i32_extend_rule(op, dst, src)
+                        .expect("i32.extend16_s has a generated rule");
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -7076,29 +7090,23 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let arm_op = match op {
-                        I64Extend8S => ArmOp::I64Extend8S {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rnlo: src_lo,
-                        },
-                        I64Extend16S => ArmOp::I64Extend16S {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rnlo: src_lo,
-                        },
-                        I64Extend32S => ArmOp::I64Extend32S {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            rnlo: src_lo,
-                        },
-                        _ => unreachable!(),
-                    };
-                    instructions.push(ArmInstruction {
-                        op: arm_op,
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // The narrow sign-extension pseudo-op comes from the
+                    // Rocq-proved rule — the only path (increment 6,
+                    // RQ-59-SUBTRACT: the hand-written ArmOp::I64Extend{8,16,32}S
+                    // construction match, wildcard included, is deleted).
+                    // Carries the rd_hi <> rd_lo side condition Ok-or-Err;
+                    // alloc_consecutive_pair satisfies it by construction.
+                    let rule_ops =
+                        crate::sel_dsl::i64_extend_narrow_rule(op, dst_lo, dst_hi, src_lo)
+                            .expect("narrow i64 sign-extend op has a generated rule")
+                            .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i64(dst_lo));
                 }
 

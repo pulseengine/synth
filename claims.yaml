@@ -1255,9 +1255,25 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18291
+        value: 18279
         baseline: 17897
         waivers:
+          - to: 18279
+            reason: >-
+              RQ-59-SUBTRACT (#242, increment 6): the residual above baseline
+              FELL 18,291 -> 18,279 (-12) — the sign-extension family's five
+              hand-written emissions (sws I32Extend8S/16S Sxtb/Sxth pushes,
+              the sws I64Extend{8,16,32}S construction match incl. its
+              `_ => unreachable!()`, sd's five fixed-register vec arms) were
+              deleted in favour of the five new Rocq-proved rules, costing
+              +21 lines of rule-delegation scaffolding against -33 deleted.
+              Byte-identity gated: 704-row corpus manifest (176 fixtures x 4
+              configs incl. pinned declines, sign_extend_family.wat ADDED
+              first because the prior corpus had zero extendN_s coverage)
+              identical to the pre-deletion baseline; 10/10 frozen anchors.
+              The residual above baseline it carries forward is the two
+              waived v0.59 soundness growths (#989 WAR guard, #990
+              domination walk) minus this fall, re-derived from the tree.
           - to: 18291
             reason: >-
               MERGE OF TWO INDEPENDENTLY-WAIVED GROWTHS. RQ-59-WARALIAS (#989)
@@ -1374,7 +1390,10 @@ claims:
         # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
         # snapshot_home_reg_aliases WAR guard + its four call sites (see the
         # lines_code waiver); zero test-module movement.
-        value: 28912
+        # 28912 -> 28900 (RQ-59-SUBTRACT increment 6): -12 code (the
+        # sign-extension family arm deletions, see the lines_code waiver);
+        # zero test-module movement.
+        value: 28900
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1400,10 +1419,14 @@ claims:
       # peepholes where the wildcard declines an optimization, 10 internal-
       # enum arms with meaningful none/false semantics, 3 genuinely total
       # `index % N` maps, 1 already-loud Err.
+      # RQ-59-SUBTRACT (increment 6): 56 -> 55 — the `_ => unreachable!()`
+      # inside the deleted sws I64Extend{8,16,32}S construction match went
+      # with its arm (the same class as RETIRE's seven). The ZEROINIT +1
+      # (waived below) still stands; the two movements compose to 55.
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 56
+        value: 55
         baseline: 55
         waivers:
           - to: 56
@@ -1426,7 +1449,9 @@ claims:
         # 91 -> 90 (RQ-58-WILDCARD): the wasm_stack_effect wildcard.
         # 90 -> 91 (RQ-59-ZEROINIT #990): the second closed-subspace walk in
         # read_before_write_locals (waived above).
-        value: 91
+        # 91 -> 90 (RQ-59-SUBTRACT increment 6): the sws I64Extend family
+        # match's `_ => unreachable!()` went with its deleted arm.
+        value: 90
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

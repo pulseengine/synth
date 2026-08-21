@@ -663,15 +663,10 @@ impl InstructionSelector {
                 seq
             }
 
-            // Sign extension operations
-            I32Extend8S => {
-                // Sign-extend byte: SXTB Rd, Rm
-                vec![ArmOp::Sxtb { rd, rm }]
-            }
-            I32Extend16S => {
-                // Sign-extend halfword: SXTH Rd, Rm
-                vec![ArmOp::Sxth { rd, rm }]
-            }
+            // Sign extension operations — Rocq-proved rules, the only path
+            // (increment 6, RQ-59-SUBTRACT)
+            I32Extend8S => crate::sel_dsl::generated::rule_i32_extend8_s(rd, rm),
+            I32Extend16S => crate::sel_dsl::generated::rule_i32_extend16_s(rd, rm),
 
             // Comparison: equal to zero (unary)
             I32Eqz => vec![ArmOp::Cmp {
@@ -820,28 +815,13 @@ impl InstructionSelector {
                 }]
             }
 
-            I64Extend8S => {
-                vec![ArmOp::I64Extend8S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
-            }
-
-            I64Extend16S => {
-                vec![ArmOp::I64Extend16S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
-            }
-
-            I64Extend32S => {
-                vec![ArmOp::I64Extend32S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
+            // Narrow i64 sign-extends — Rocq-proved rules, the only path
+            // (increment 6, RQ-59-SUBTRACT). The fixed (R0, R1, R0) shape
+            // satisfies the rd_hi <> rd_lo side condition.
+            I64Extend8S | I64Extend16S | I64Extend32S => {
+                crate::sel_dsl::i64_extend_narrow_rule(wasm_op, Reg::R0, Reg::R1, Reg::R0)
+                    .expect("narrow i64 sign-extend op has a generated rule")
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub — the
