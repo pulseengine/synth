@@ -1431,3 +1431,20 @@ pub fn rule_i64_extend32_s(rd_lo: Reg, rd_hi: Reg, rn_lo: Reg) -> Result<Vec<Arm
         rnlo: rn_lo,
     }])
 }
+
+/// `i64.const`: (rd_hi:rd_lo) = the 64-bit constant, halves split by the encoder
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_const_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_const(rd_lo: Reg, rd_hi: Reg, value: i64) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_const: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Const {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        value,
+    }])
+}

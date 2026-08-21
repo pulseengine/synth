@@ -266,4 +266,7 @@ Definition rule_i64_extend16_s (rdlo rdhi rnlo : arm_reg) : arm_program :=
 Definition rule_i64_extend32_s (rdlo rdhi rnlo : arm_reg) : arm_program :=
   [I64Extend32SPseudo rdlo rdhi rnlo].
 
+Definition rule_i64_const (rdlo rdhi : arm_reg) (v : I64.int) : arm_program :=
+  [I64ConstPseudo rdlo rdhi v].
+
 End Gen.

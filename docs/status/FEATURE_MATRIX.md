@@ -64,10 +64,10 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 
 | Track | Derived count(s) | What it covers |
 |-------|------------------|----------------|
-| Rocq proof suite | 622 Qed / 2 Admitted (+2 `admit.` tactics) | T1 result-correspondence for all i32 and i64 selection; T2 existence-only for float/SIMD; trusted base: 93 Axiom/Parameter declarations |
-| Verified selector DSL (VCR-SEL-001) | 79 rules / 79 Qed (1:1, + 7 pilot Qed) | The Rocq-proved rules ARE the shipped lowering path for their covered ops; model generated from the shipped rule table (#667), so selector drift breaks the matching proof |
+| Rocq proof suite | 623 Qed / 2 Admitted (+2 `admit.` tactics) | T1 result-correspondence for all i32 and i64 selection; T2 existence-only for float/SIMD; trusted base: 93 Axiom/Parameter declarations |
+| Verified selector DSL (VCR-SEL-001) | 80 rules / 80 Qed (1:1, + 7 pilot Qed) | The Rocq-proved rules ARE the shipped lowering path for their covered ops; model generated from the shipped rule table (#667), so selector drift breaks the matching proof |
 | Sail/ASL ISA bridge (VCR-ISA-001) | 92 Qed | `coq/Synth/ARM/SailArmBridge.v` |
-| ISA-model basis (#867) | 79/79 rule theorems stated against the SIMPLIFIED `ArmSemantics.v` model (0 against the Sail-derived one) · 5 assumed simplified→Sail obligations (`ArmRefinement.v`) · 72 simplified-model axioms | The counted #682-class trusted base — "covered" ≠ "faithful": a Qed against a simplified model is only as good as that model; see `coq/STATUS.md` |
+| ISA-model basis (#867) | 80/80 rule theorems stated against the SIMPLIFIED `ArmSemantics.v` model (0 against the Sail-derived one) · 5 assumed simplified→Sail obligations (`ArmRefinement.v`) · 72 simplified-model axioms | The counted #682-class trusted base — "covered" ≠ "faithful": a Qed against a simplified model is only as good as that model; see `coq/STATUS.md` |
 | Model coverage (#867 phase 2) | 26 bridge-validated / 73 simplified-only / 4 UNCOVERED modelled `arm_instr` behaviours | The uncovered complement = candidate list for the next silent miscompile (`artifacts/model-coverage.json`, static heuristic labelled as one; complement is an under-approximation) |
 | WasmCert-Coq source anchor (VCR-WASM-001) | 104 Qed | `coq/Synth/WASM/WasmCertBridge.v` — i32 (19 ops) + i64 (22 ops) integer fragments refined against pinned WasmCert-Coq rules |
 | Kani (bounded model checking) | 18 harnesses | ARM encoder properties |

@@ -1927,3 +1927,29 @@ Proof.
   - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
   - apply get_set_reg_eq.
 Qed.
+
+(** ** Increment-6 `i64.const` (RQ-59-SUBTRACT, #242).
+
+    One pseudo-op over the rule's universally quantified 64-bit immediate
+    — the first rule with an [(v : I64.int)] binder. Results are pinned
+    to the WASM-spec halves via the [i64_const_lo_spec]/[i64_const_hi_spec]
+    result-correspondence axioms ([lo_of_i64]/[hi_of_i64]), the same tier
+    as the other i64 pseudo-op theorems. *)
+
+Definition rule_i64_const := Gen.rule_i64_const.
+
+Theorem rule_i64_const_correct : forall astate v rdlo rdhi,
+  rdhi <> rdlo ->
+  exists astate',
+    exec_program (rule_i64_const rdlo rdhi v) astate = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 v /\
+    get_reg astate' rdhi = hi_of_i64 v.
+Proof.
+  intros astate v rdlo rdhi Hdd.
+  unfold rule_i64_const, Gen.rule_i64_const.
+  cbn [exec_program exec_instr].
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. rewrite get_set_reg_eq.
+    apply i64_const_lo_spec.
+  - rewrite get_set_reg_eq. apply i64_const_hi_spec.
+Qed.

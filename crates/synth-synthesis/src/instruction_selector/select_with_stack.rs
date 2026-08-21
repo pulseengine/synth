@@ -5743,15 +5743,19 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I64Const {
-                            rdlo: dst_lo,
-                            rdhi: dst_hi,
-                            value: *val,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // The I64Const pseudo comes from the Rocq-proved rule —
+                    // the only path (increment 6, RQ-59-SUBTRACT). Carries
+                    // the rd_hi <> rd_lo side condition Ok-or-Err; the
+                    // consecutive pair satisfies it by construction.
+                    let rule_ops = crate::sel_dsl::generated::rule_i64_const(dst_lo, dst_hi, *val)
+                        .map_err(synth_core::Error::synthesis)?;
+                    for rule_op in rule_ops {
+                        instructions.push(ArmInstruction {
+                            op: rule_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     // Push only the lo register; hi is derived via i64_pair_hi
                     stack.push(StackVal::i64(dst_lo));
                 }

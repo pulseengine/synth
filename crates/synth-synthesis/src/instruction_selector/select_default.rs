@@ -783,13 +783,9 @@ impl InstructionSelector {
 
             // ===== i64 operations using register pairs on 32-bit ARM =====
             // Convention: i64 operand 1 in (R0,R1), operand 2 in (R2,R3), result in (R0,R1)
-            I64Const(val) => {
-                vec![ArmOp::I64Const {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    value: *val,
-                }]
-            }
+            // Rocq-proved increment-6 rule as the only path (RQ-59-SUBTRACT).
+            I64Const(val) => crate::sel_dsl::generated::rule_i64_const(Reg::R0, Reg::R1, *val)
+                .map_err(synth_core::Error::synthesis)?,
 
             // Rocq-proved increment-5 rule as the only path (RQ-59-SUBTRACT:
             // the hand-written pseudo-op construction is deleted; the fixed

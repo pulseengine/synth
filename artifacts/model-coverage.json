@@ -907,7 +907,8 @@
           "bridge_theorems": [],
           "name": "I64ConstPseudo",
           "proof_layer_refs": [
-            "coq/Synth/Synth/Compilation.v"
+            "coq/Synth/Synth/Compilation.v",
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
           ],
           "tier": "simplified-only"
         },
