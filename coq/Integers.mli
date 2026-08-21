@@ -102,7 +102,11 @@ module I64 :
 
   val mul : int -> int -> int
 
+  val coq_and : int -> int -> int
+
   val coq_or : int -> int -> int
+
+  val xor : int -> int -> int
 
   val shl : int -> int -> int
 

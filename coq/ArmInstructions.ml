@@ -68,6 +68,8 @@ type arm_instr =
 | CLZ of arm_reg * arm_reg
 | RBIT of arm_reg * arm_reg
 | POPCNT of arm_reg * arm_reg
+| SXTB of arm_reg * arm_reg
+| SXTH of arm_reg * arm_reg
 | LDR of arm_reg * arm_reg * int
 | STR of arm_reg * arm_reg * int
 | UDF of int
@@ -122,6 +124,9 @@ type arm_instr =
 | I64ExtendI32SPseudo of arm_reg * arm_reg * arm_reg
 | I64ExtendI32UPseudo of arm_reg * arm_reg * arm_reg
 | I32WrapI64Pseudo of arm_reg * arm_reg
+| I64Extend8SPseudo of arm_reg * arm_reg * arm_reg
+| I64Extend16SPseudo of arm_reg * arm_reg * arm_reg
+| I64Extend32SPseudo of arm_reg * arm_reg * arm_reg
 | I64LoadPseudo of arm_reg * arm_reg * arm_reg * int
 | I64StorePseudo of arm_reg * arm_reg * arm_reg * int
 

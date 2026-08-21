@@ -301,6 +301,23 @@ let update_flags_arith result c v =
   { flag_n = (compute_n_flag result); flag_z = (compute_z_flag result);
     flag_c = c; flag_v = v }
 
+(** val sxtb_val : I32.int -> I32.int **)
+
+let sxtb_val v =
+  I32.shrs
+    (I32.shl v
+      (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->1+2*p)
+        1))))))
+    (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->1+2*p) 1)))))
+
+(** val sxth_val : I32.int -> I32.int **)
+
+let sxth_val v =
+  I32.shrs
+    (I32.shl v
+      (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) 1))))))
+    (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) 1)))))
+
 (** val exec_instr : arm_instr -> arm_state -> arm_state option **)
 
 let exec_instr i s =
@@ -500,6 +517,8 @@ let exec_instr i s =
   | RBIT (rd, rm) -> let v = get_reg s rm in Some (set_reg s rd (I32.rbit v))
   | POPCNT (rd, rm) ->
     let v = get_reg s rm in Some (set_reg s rd (I32.popcnt v))
+  | SXTB (rd, rm) -> let v = get_reg s rm in Some (set_reg s rd (sxtb_val v))
+  | SXTH (rd, rm) -> let v = get_reg s rm in Some (set_reg s rd (sxth_val v))
   | LDR (rd, rn, offset) ->
     let base = get_reg s rn in
     let addr = I32.add base (I32.repr offset) in
@@ -710,6 +729,27 @@ let exec_instr i s =
     let v = get_reg s rn in Some (set_reg (set_reg s rdlo v) rdhi I32.zero)
   | I32WrapI64Pseudo (rd, rnlo) ->
     let v = get_reg s rnlo in Some (set_reg s rd v)
+  | I64Extend8SPseudo (rdlo, rdhi, rnlo) ->
+    let v = sxtb_val (get_reg s rnlo) in
+    Some
+    (set_reg (set_reg s rdlo v) rdhi
+      (I32.shrs v
+        (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+          ((fun p->1+2*p) 1)))))))
+  | I64Extend16SPseudo (rdlo, rdhi, rnlo) ->
+    let v = sxth_val (get_reg s rnlo) in
+    Some
+    (set_reg (set_reg s rdlo v) rdhi
+      (I32.shrs v
+        (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+          ((fun p->1+2*p) 1)))))))
+  | I64Extend32SPseudo (rdlo, rdhi, rnlo) ->
+    let v = get_reg s rnlo in
+    Some
+    (set_reg (set_reg s rdlo v) rdhi
+      (I32.shrs v
+        (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+          ((fun p->1+2*p) 1)))))))
   | I64LoadPseudo (rdlo, rdhi, addr, offset) ->
     let base = get_reg s addr in
     let a = I32.signed (I32.add base (I32.repr offset)) in
