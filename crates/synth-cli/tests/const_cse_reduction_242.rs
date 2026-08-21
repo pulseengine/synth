@@ -54,6 +54,12 @@ use std::process::Command;
 use object::read::elf::ElfFile32;
 use object::{Object, ObjectSection};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 /// Golden FNV-1a-64 of the OPT-OUT (`SYNTH_CONST_CSE=0`) optimized-path `.text`
 /// for `const_cse.wat`. Captured against the pre-const-CSE tree (stash-compare
 /// verified) and UNCHANGED by the default-on flip — the opt-out path is the
@@ -81,29 +87,28 @@ fn fixture() -> std::path::PathBuf {
 /// Compile the const-CSE fixture via the optimized path. `cse = true` is the
 /// SHIPPED DEFAULT (env removed so a stray opt-out can't skew a gate);
 /// `cse = false` is the `SYNTH_CONST_CSE=0` opt-out. Returns the raw ELF bytes.
-fn compile(out: &str, cse: bool) -> Vec<u8> {
+fn compile(tag: &str, cse: bool) -> Vec<u8> {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "elf");
     let mut cmd = Command::new(synth());
     if cse {
         cmd.env_remove("SYNTH_CONST_CSE");
     } else {
         cmd.env("SYNTH_CONST_CSE", "0");
     }
-    let status = cmd
-        .args([
-            "compile",
-            fixture().to_str().unwrap(),
-            "-o",
-            out,
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .status()
-        .expect("run synth compile");
-    assert!(status.success(), "synth compile failed (cse={cse})");
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        fixture().to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, &format!("const_cse.wat (cse={cse})"))
 }
 
 /// Map every named section to its bytes.
@@ -135,32 +140,30 @@ fn func_text_len(elf: &[u8], name: &str) -> usize {
 /// Compile an arbitrary repo-relative fixture via the optimized path.
 /// `cse` semantics as in [`compile`]: `true` = shipped default, `false` = the
 /// `=0` opt-out.
-fn compile_fixture(rel: &str, out: &str, cse: bool) -> Vec<u8> {
+fn compile_fixture(rel: &str, tag: &str, cse: bool) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel);
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let out = artifact_guard::unique_artifact(tag, "elf");
     let mut cmd = Command::new(synth());
     if cse {
         cmd.env_remove("SYNTH_CONST_CSE");
     } else {
         cmd.env("SYNTH_CONST_CSE", "0");
     }
-    let status = cmd
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "-o",
-            out,
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .status()
-        .expect("run synth compile");
-    assert!(status.success(), "synth compile failed ({rel}, cse={cse})");
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        path.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, &format!("{rel} (cse={cse})"))
 }
 
 /// Every function symbol → its `.text` byte size.
@@ -183,16 +186,8 @@ fn func_sizes(elf: &[u8]) -> HashMap<String, usize> {
 /// (#242) win-recovery invariant: NO function grows under the default. Returns
 /// `(off, on)` size maps for per-function asserts.
 fn corpus_offon(rel: &str, tag: &str) -> (HashMap<String, usize>, HashMap<String, usize>) {
-    let off = func_sizes(&compile_fixture(
-        rel,
-        &format!("/tmp/cse_{tag}_off.elf"),
-        false,
-    ));
-    let on = func_sizes(&compile_fixture(
-        rel,
-        &format!("/tmp/cse_{tag}_on.elf"),
-        true,
-    ));
+    let off = func_sizes(&compile_fixture(rel, &format!("cse_{tag}_off"), false));
+    let on = func_sizes(&compile_fixture(rel, &format!("cse_{tag}_on"), true));
     for (name, &off_len) in &off {
         let on_len = *on.get(name).unwrap_or(&off_len);
         assert!(
@@ -267,7 +262,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// passes leaking into the opt-out path.
 #[test]
 fn const_cse_escape_hatch_restores_old_bytes_242() {
-    let off = compile("/tmp/const_cse_off.elf", false);
+    let off = compile("const_cse_off", false);
     let text = sections(&off).remove(".text").expect(".text present");
     assert_eq!(
         text.len(),
@@ -289,7 +284,7 @@ fn const_cse_escape_hatch_restores_old_bytes_242() {
 /// bytes). An accidental change to the default lowering fails loud here.
 #[test]
 fn const_cse_default_matches_flip_golden_242() {
-    let on = compile("/tmp/const_cse_def.elf", true);
+    let on = compile("const_cse_def", true);
     let text = sections(&on).remove(".text").expect(".text present");
     assert_eq!(
         (text.len(), fnv1a64(&text)),
@@ -305,8 +300,8 @@ fn const_cse_default_matches_flip_golden_242() {
 /// reads retargeted by the post-hoc passes.
 #[test]
 fn const_cse_on_shrinks_headroom_function_242() {
-    let off = compile("/tmp/const_cse_red_off.elf", false);
-    let on = compile("/tmp/const_cse_red_on.elf", true);
+    let off = compile("const_cse_red_off", false);
+    let on = compile("const_cse_red_on", true);
 
     let off_len = func_text_len(&off, "large3");
     let on_len = func_text_len(&on, "large3");

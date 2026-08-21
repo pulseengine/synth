@@ -101,6 +101,17 @@ pub fn read_artifact(path: &Path) -> Result<Vec<u8>, String> {
 /// `cmd` must already carry `-o <out>`. The path is removed first, so a stale
 /// artifact from an earlier run can never be mistaken for this one's output.
 pub fn compile_artifact(cmd: &mut Command, out: &Path) -> Result<Vec<u8>, String> {
+    compile_artifact_with_output(cmd, out).map(|(bytes, _)| bytes)
+}
+
+/// [`compile_artifact`], additionally handing back the process
+/// [`std::process::Output`] for gates that assert on the compiler's own
+/// stderr (e.g. `SYNTH_SPILL_REPORT` stats). Same guard, same order — this is
+/// the one implementation; [`compile_artifact`] delegates here.
+pub fn compile_artifact_with_output(
+    cmd: &mut Command,
+    out: &Path,
+) -> Result<(Vec<u8>, std::process::Output), String> {
     // (0) Freshness: whatever is there now is not ours.
     let _ = std::fs::remove_file(out);
 
@@ -119,7 +130,7 @@ pub fn compile_artifact(cmd: &mut Command, out: &Path) -> Result<Vec<u8>, String
     }
 
     // (2)+(3) It must exist and be non-empty before anything parses it.
-    read_artifact(out)
+    read_artifact(out).map(|bytes| (bytes, output))
 }
 
 /// [`compile_artifact`], panicking with `ctx` prefixed — the ergonomic form for

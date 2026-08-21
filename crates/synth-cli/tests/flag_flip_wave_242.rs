@@ -42,6 +42,12 @@ use std::process::Command;
 
 use object::{Object, ObjectSymbol, SymbolKind};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -56,7 +62,10 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// Compile `rel` with `flag` either at the shipped default (env removed so a
 /// stray opt-out in the test environment can't skew the gate) or the `=0`
 /// opt-out (pre-flip bytes). `backend_args` selects ARM path / RV32.
-fn compile(rel: &str, out: &str, flag: &str, default_on: bool, backend_args: &[&str]) -> Vec<u8> {
+fn compile(rel: &str, tag: &str, flag: &str, default_on: bool, backend_args: &[&str]) -> Vec<u8> {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "o");
     let mut cmd = Command::new(synth());
     // #601 promo flip: local promotion is default-on now; pin it OFF in both
     // arms so this gate keeps isolating its own lever against the same
@@ -68,18 +77,19 @@ fn compile(rel: &str, out: &str, flag: &str, default_on: bool, backend_args: &[&
     } else {
         cmd.env(flag, "0");
     }
-    let out_status = cmd
-        .args(["compile", fixture(rel).to_str().unwrap(), "-o", out])
-        .args(backend_args)
-        .args(["--all-exports"])
-        .output()
-        .expect("run synth compile");
-    assert!(
-        out_status.status.success(),
-        "synth compile failed ({rel}, {flag} default_on={default_on}): {}",
-        String::from_utf8_lossy(&out_status.stderr)
-    );
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        fixture(rel).to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ])
+    .args(backend_args)
+    .args(["--all-exports"]);
+    artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &out,
+        &format!("{rel} ({flag} default_on={default_on})"),
+    )
 }
 
 /// Every function symbol → its `.text` byte size (ELF symtab, not disasm
@@ -107,14 +117,14 @@ fn assert_no_grow(flag: &str, corpus: &[&str], configs: &[(&str, &[&str])], min_
         for (mode, args) in configs {
             let off = func_sizes(&compile(
                 rel,
-                &format!("/tmp/ffw242_{flag}_{tag}_{mode}_off.o"),
+                &format!("ffw242_{flag}_{tag}_{mode}_off"),
                 flag,
                 false,
                 args,
             ));
             let on = func_sizes(&compile(
                 rel,
-                &format!("/tmp/ffw242_{flag}_{tag}_{mode}_on.o"),
+                &format!("ffw242_{flag}_{tag}_{mode}_on"),
                 flag,
                 true,
                 args,
