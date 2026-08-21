@@ -27,6 +27,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 fn synth() -> &'static str {
@@ -54,7 +58,9 @@ fn per_function_sizes(wasm: &[u8], tag: &str, target: &str, fact_spec: bool) -> 
     let dir = std::env::temp_dir().join("parity_benchmark_735");
     std::fs::create_dir_all(&dir).expect("mk tempdir");
     let input = dir.join(format!("{tag}.wasm"));
-    let elf = dir.join(format!("{tag}.o"));
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale object at a fixed path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(&format!("parity735_{tag}"), "o");
     std::fs::write(&input, wasm).expect("write wasm");
 
     let mut cmd = Command::new(synth());
@@ -74,12 +80,9 @@ fn per_function_sizes(wasm: &[u8], tag: &str, target: &str, fact_spec: bool) -> 
     } else {
         cmd.env_remove("SYNTH_FACT_SPEC");
     }
-    let out = cmd.output().expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile of '{tag}' failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+        .unwrap_or_else(|e| panic!("synth compile of '{tag}' failed: {e}"));
+    let _ = std::fs::remove_file(&elf);
     if fact_spec {
         // Non-vacuity: the 14 B pin is only meaningful if BOTH clamp elisions
         // were actually certificate-admitted (a solver-less binary would
@@ -92,7 +95,6 @@ fn per_function_sizes(wasm: &[u8], tag: &str, target: &str, fact_spec: bool) -> 
         );
     }
 
-    let bytes = std::fs::read(&elf).expect("read elf");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj.section_by_name(".text").expect(".text");
     let end = text.address() + text.size();

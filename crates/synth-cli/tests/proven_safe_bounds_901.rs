@@ -31,6 +31,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use synth_core::proven_safe::hex_sha256;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. The elision
+// ATTESTATION sidecar derives its path from the elf path, so a unique elf
+// path makes the sidecar fresh-by-construction too.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -129,7 +135,10 @@ impl Compiled {
 fn compile(tag: &str, software_bounds: bool, verdicts: Option<Option<&str>>) -> Compiled {
     let d = dir();
     let input = d.join(format!("{tag}.wasm"));
-    let elf = d.join(format!("{tag}.elf"));
+    // #977: unique per call + remove-first + status/exists/non-empty guards;
+    // the attestation sidecar path derives from the elf path, so it is fresh
+    // by construction as well.
+    let elf = artifact_guard::unique_artifact(&format!("psb901_{tag}"), "elf");
     std::fs::write(&input, fixture_wasm()).expect("write wasm");
 
     let mut cmd = Command::new(synth());
@@ -161,15 +170,13 @@ fn compile(tag: &str, software_bounds: bool, verdicts: Option<Option<&str>>) -> 
     cmd.env_remove("SYNTH_FACT_SPEC");
     cmd.env_remove("SYNTH_FACT_SPEC_FORCE_ADMIT");
 
-    let out = cmd.output().expect("run synth");
-    assert!(
-        out.status.success(),
-        "compile '{tag}' FAILED (a verdict file must never turn a good compile \
-         into a failed one): {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let bytes = std::fs::read(&elf).expect("read elf");
+    let (bytes, out) =
+        artifact_guard::compile_artifact_with_output(&mut cmd, &elf).unwrap_or_else(|e| {
+            panic!(
+                "compile '{tag}' FAILED (a verdict file must never turn a good \
+                 compile into a failed one): {e}"
+            )
+        });
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let sec = obj.section_by_name(".text").expect(".text");
     let text = sec.data().expect("read .text").to_vec();
@@ -202,6 +209,9 @@ fn compile(tag: &str, software_bounds: bool, verdicts: Option<Option<&str>>) -> 
     let attestation = std::fs::read_to_string(&att_path)
         .ok()
         .map(|s| serde_json::from_str(&s).expect("attestation is valid JSON"));
+    // Per-call unique names would otherwise accumulate on a long-lived runner.
+    let _ = std::fs::remove_file(&elf);
+    let _ = std::fs::remove_file(&att_path);
 
     Compiled {
         text,
@@ -527,8 +537,10 @@ fn non_arm_backends_attest_zero_elisions_901() {
     std::fs::write(&json, safe_accesses(&module_hash(), 65536, PROVEN)).expect("write");
 
     for (backend, target) in [("riscv", "rv32imac"), ("aarch64", "cortex-a53")] {
-        let run = |with_verdicts: bool, tag: &str| -> (Vec<u8>, String) {
-            let elf = d.join(format!("xback_{backend}_{tag}.elf"));
+        let run = |with_verdicts: bool, tag: &str| -> (Vec<u8>, String, PathBuf) {
+            // #977: unique per call; the sidecar derives from the elf path.
+            let elf =
+                artifact_guard::unique_artifact(&format!("psb901_xback_{backend}_{tag}"), "elf");
             let mut cmd = Command::new(synth());
             cmd.args([
                 "compile",
@@ -546,19 +558,16 @@ fn non_arm_backends_attest_zero_elisions_901() {
             if with_verdicts {
                 cmd.args(["--proven-safe", json.to_str().unwrap()]);
             }
-            let out = cmd.output().expect("run synth");
-            assert!(
-                out.status.success(),
-                "{backend} compile failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+                .unwrap_or_else(|e| panic!("{backend} compile failed: {e}"));
             (
-                std::fs::read(&elf).expect("read elf"),
+                bytes,
                 String::from_utf8_lossy(&out.stderr).into_owned(),
+                elf,
             )
         };
-        let (base, _) = run(false, "base");
-        let (with, stderr) = run(true, "with");
+        let (base, _, _) = run(false, "base");
+        let (with, stderr, with_elf) = run(true, "with");
 
         assert_eq!(
             base, with,
@@ -571,7 +580,7 @@ fn non_arm_backends_attest_zero_elisions_901() {
         );
         let att: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(synth_core::proven_safe::ElisionAttestation::sidecar_path(
-                &d.join(format!("xback_{backend}_with.elf")),
+                &with_elf,
             ))
             .expect("attestation written"),
         )
@@ -733,32 +742,32 @@ fn fact_spec_specialization_refuses_the_scry_marks_901() {
 
     let d = dir();
     let input = d.join("factspec.wasm");
-    let elf = d.join("factspec.elf");
+    // #977: unique per call; the sidecar derives from the elf path.
+    let elf = artifact_guard::unique_artifact("psb901_factspec", "elf");
     let json = d.join("factspec.safe-accesses.json");
     std::fs::write(&input, &wasm).expect("write wasm");
     std::fs::write(&json, safe_accesses(&hex_sha256(&wasm), 65536, PROVEN)).expect("write");
 
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            input.to_str().unwrap(),
-            "-o",
-            elf.to_str().unwrap(),
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-            "--safety-bounds",
-            "software",
-            "--proven-safe",
-            json.to_str().unwrap(),
-        ])
-        .env("SYNTH_FACT_SPEC", "1")
-        .env_remove("SYNTH_FACT_SPEC_FORCE_ADMIT")
-        .output()
-        .expect("run synth");
-    assert!(out.status.success());
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        input.to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+        "--safety-bounds",
+        "software",
+        "--proven-safe",
+        json.to_str().unwrap(),
+    ])
+    .env("SYNTH_FACT_SPEC", "1")
+    .env_remove("SYNTH_FACT_SPEC_FORCE_ADMIT");
+    let (_elf_bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+        .unwrap_or_else(|e| panic!("factspec compile failed: {e}"));
     let stderr = String::from_utf8_lossy(&out.stderr);
     // NON-VACUITY FIRST: the pass must actually specialize this function,
     // otherwise the refusal below is never exercised and this test asserts

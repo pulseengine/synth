@@ -20,6 +20,10 @@
 
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 use object::{Object, ObjectSection};
 
 fn synth() -> &'static str {
@@ -36,9 +40,11 @@ fn fixture() -> std::path::PathBuf {
 /// or forced off, and return the `.text` bytes. Panics if the compile fails — a
 /// FAILED promotion-on compile is exactly the #474 regression this guards.
 fn text_bytes(promotion_off: bool) -> Vec<u8> {
-    let elf = format!(
-        "/tmp/pef_474_{}.elf",
-        if promotion_off { "off" } else { "on" }
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(
+        &format!("pef_474_{}", if promotion_off { "off" } else { "on" }),
+        "elf",
     );
     let mut cmd = Command::new(synth());
     if promotion_off {
@@ -46,27 +52,25 @@ fn text_bytes(promotion_off: bool) -> Vec<u8> {
     } else {
         cmd.env_remove("SYNTH_NO_LOCAL_PROMOTE");
     }
-    let out = cmd
-        .args([
-            "compile",
-            fixture().to_str().unwrap(),
-            "-o",
-            &elf,
-            "--target",
-            "cortex-m4",
-            "--relocatable",
-            "--all-exports",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "#474 REGRESSION: promotion-{} compile FAILED — promotion turned a \
-         compilable function into a skipped one. stderr:\n{}",
-        if promotion_off { "off" } else { "on" },
-        String::from_utf8_lossy(&out.stderr)
+    cmd.args([
+        "compile",
+        fixture().to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "--target",
+        "cortex-m4",
+        "--relocatable",
+        "--all-exports",
+    ]);
+    let bytes = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &elf,
+        &format!(
+            "#474 REGRESSION: promotion-{} compile — promotion must never turn \
+             a compilable function into a skipped one",
+            if promotion_off { "off" } else { "on" }
+        ),
     );
-    let bytes = std::fs::read(&elf).expect("read elf");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     obj.section_by_name(".text")
         .expect(".text section")
