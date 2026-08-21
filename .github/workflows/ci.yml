@@ -3758,6 +3758,8 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/wcet_phase5_778_masked_loop_soundness.py
       - name: WCET phase-6 I64Const/I64Ldr/I64Str leaf soundness (#936)
         run: python scripts/oracle_run.py scripts/repro/wcet_phase6_936_i64_leaf_soundness.py
+      - name: WCET phase-7 I32WrapI64/I64ExtendI32S/U conversion soundness (RQ-59-WCETI64, #936)
+        run: python scripts/oracle_run.py scripts/repro/wcet_phase7_936_i64_conv_soundness.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -3768,7 +3770,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 5
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
 
   mcdc-structural-coverage:
     name: MC/DC structural coverage over synth's decision logic (RQ-57-MCDC, #912)

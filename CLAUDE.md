@@ -321,15 +321,23 @@ frozen and oracle-gated every step:
   `ADD` can need its own `MOVW` for a large offset, which only the real
   encoder's own output reflects) — the same drift class `op_mnemonic`'s "no
   second source of truth to forget to update" already guards against
-  elsewhere in this file. HONEST RESIDUAL: `scan_for_decline` reports only the
-  FIRST decline per function, and the #936 audit found `I64Sub` (a saturating
-  trunc-sat conversion sequence), `I64ExtendI32S`/`I64ExtendI32U`, and
-  `I32WrapI64` are ALSO real direct-selector emissions with no price — a
-  function that narrows an i64 read to i32 (`i64.load` + `i32.wrap_i64`, a
-  plausible OS shape) still declines, now on `I32WrapI64` instead of `I64Ldr`
-  (measured); NOT priced by this lane. Gated by `wcet_bound_gate.rs` (leaf +
-  cascade-composition cases) and the `wcet_phase6_936_i64_leaf_soundness.py`
-  unicorn cross-check.
+  elsewhere in this file. The #936 audit's HONEST RESIDUAL —
+  `scan_for_decline` reports only the FIRST decline per function, and
+  `I64Sub` (a saturating trunc-sat conversion sequence),
+  `I64ExtendI32S`/`I64ExtendI32U`, and `I32WrapI64` were ALSO real
+  direct-selector emissions with no price — was closed by RQ-59-WCETI64
+  (v0.59): all four are priced by the same real-encoder mechanism (measured
+  per op, decline scan re-run after each; nothing new surfaced behind any of
+  them), so the narrowing shape (`i64.load` + `i32.wrap_i64`) and the
+  widen-store shape (`i64.extend_i32_s` + `i64.store`) now BOUND. `I64Sub`'s
+  only real emission (the f64 trunc-sat decompose) cannot even compile on a
+  sound core — priced so a future integer-path emission is covered, not
+  latent. Still-loud declines, measured: `memory.size`/`memory.grow`
+  (`unmodeled-op`), i64 software div/rem (`looped-expansion`, deliberate).
+  Gated by `wcet_bound_gate.rs` (leaf + cascade-composition + converted
+  narrow shape + still-declines pins) and the
+  `wcet_phase6_936_i64_leaf_soundness.py` +
+  `wcet_phase7_936_i64_conv_soundness.py` unicorn cross-checks.
 - **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
   `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
   cost-gate was deleted outright (PR #322, differential bit-identical); the
