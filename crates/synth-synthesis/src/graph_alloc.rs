@@ -105,6 +105,14 @@ fn abi_gate(orig: &[ArmInstruction], new: Vec<ArmInstruction>) -> Option<Vec<Arm
     }
 }
 
+/// The `ArmOp` variant name, derived from `Debug` rather than a match table
+/// (the same no-second-source-of-truth choice as `wcet::op_mnemonic`): a new
+/// variant gets a correct census name for free, and nothing can drift.
+fn variant_name(op: &crate::rules::ArmOp) -> String {
+    let s = format!("{op:?}");
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
 /// Is `SYNTH_GRAPH_ALLOC` enabled? Any value other than `0` turns the spike on;
 /// unset or `0` keeps the shipping path (byte-identical).
 pub fn enabled() -> bool {
@@ -155,8 +163,25 @@ fn reallocate_straight_line(
         }
     }
 
-    let ranges = straight_line_value_ranges(instrs)?;
+    // Diagnostics only (flag-gated, stderr): increment 1 declines SILENTLY, so
+    // every straight-line function it refuses surfaces downstream as an opaque
+    // `single-block` — the RQ-59-REACH census found that bucket had quietly
+    // become the LARGEST reach failure while carrying no sub-reason at all.
+    // Name the reason at each post-prescan decline point so the histogram can
+    // say WHAT limits increment 1 (spill? validator? no ranges?), the same
+    // "never mistake 'did nothing' for 'nothing to do'" rule as `decline()`.
+    let sub = |reason: &str| {
+        if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+            eprintln!("[graph-alloc] increment-1 declined: {reason}");
+        }
+    };
+
+    let Some(ranges) = straight_line_value_ranges(instrs) else {
+        sub("no-value-ranges");
+        return None;
+    };
     if ranges.is_empty() {
+        sub("no-value-ranges");
         return None;
     }
 
@@ -222,13 +247,17 @@ fn reallocate_straight_line(
 
     // Spill cost: occurrence count per range (1 per def + 1 per use event),
     // replayed with the same vreg numbering `straight_line_value_ranges` uses.
-    let costs = occurrence_costs(instrs)?;
+    let Some(costs) = occurrence_costs(instrs) else {
+        sub("no-occurrence-costs");
+        return None;
+    };
 
     let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &costs);
     if !spilled.is_empty() {
         // Spill code insertion is increment 2+ (reuse the Belady machinery).
         // For now a function that does not fit the pool declines to the shipping
         // path — which HAS spill support.
+        sub("needs-spill");
         return None;
     }
     for (v, c) in &coloring {
@@ -242,7 +271,10 @@ fn reallocate_straight_line(
         for m in nbrs {
             match (assignment.get(n), assignment.get(m)) {
                 (Some(a), Some(b)) if a != b => {}
-                _ => return None,
+                _ => {
+                    sub("edge-recheck");
+                    return None;
+                }
             }
         }
     }
@@ -255,13 +287,27 @@ fn reallocate_straight_line(
     // segment_validator` in liveness.rs: it shows validate_segment_rewrite
     // rejects a value-flow-breaking merge-rename and accepts the identity — the
     // exact Err/Ok this match discharges to decline/accept).
-    let new = apply_range_coloring(instrs, &assignment)?;
+    let Some(new) = apply_range_coloring(instrs, &assignment) else {
+        // In stats mode `apply_range_coloring` itself prints the COMPLETE set
+        // of refused ops with causes (rmw-colour-mismatch / no-rewrite-arm)
+        // just before this decline line.
+        sub("apply-colouring");
+        return None;
+    };
     match validate_segment_rewrite(instrs, &new) {
         // TWO instruments, on different axes: the backward name-equation trace
         // check, and the forward ABI value contract (VCR-VER-004). Both must
         // hold.
         Ok(()) => abi_gate(instrs, new),
-        Err(_) => None,
+        Err(v) => {
+            // Include the violation VARIANT (not the full payload) so the
+            // census can split "shape outside the validated class" from a
+            // genuine equation failure.
+            let s = format!("{v:?}");
+            let variant = s.split([' ', '{', '(']).next().unwrap_or("");
+            sub(&format!("trace-validator-reject/{variant}"));
+            None
+        }
     }
 }
 
@@ -454,6 +500,23 @@ mod joins {
         }
     }
 
+    /// The `unmodeled-op` admission predicate, in ONE place: an interior
+    /// (non-terminator, non-label, non-`bx`) instruction that NONE of the three
+    /// shared effect definitions ([`reg_effect`] / [`call_effect`] /
+    /// [`pair_effect`]) models. [`build_cfg`] declines on the FIRST hit; the
+    /// STATS path re-scans the whole stream with this SAME predicate so the
+    /// decline census names the COMPLETE blocker set per function — the
+    /// first-blocker-only trap is the one `scan_for_decline` fell into (#936:
+    /// three unpriced ops hid behind the first decline for a release).
+    fn is_unmodeled(ins: &ArmInstruction) -> bool {
+        matches!(classify(&ins.op), Term::Ret | Term::Fall)
+            && !matches!(ins.op, ArmOp::Label { .. })
+            && !matches!(ins.op, ArmOp::Bx { .. })
+            && reg_effect(&ins.op).is_none()
+            && call_effect(&ins.op).is_none()
+            && pair_effect(&ins.op).is_none()
+    }
+
     /// The label-form CFG of `instrs`, or `None` to decline. Sound by
     /// construction: a `Some` is a COMPLETE CFG (every block reachable from the
     /// entry, every terminator modeled), never a partial guess.
@@ -469,18 +532,29 @@ mod joins {
                 Term::No(why) => return Err(why),
                 Term::Uncond(_) | Term::Cond(_) => {}
                 Term::Ret | Term::Fall => {
-                    if !matches!(ins.op, ArmOp::Label { .. })
-                        && !matches!(ins.op, ArmOp::Bx { .. })
-                        && reg_effect(&ins.op).is_none()
-                        // INCREMENT 3: a call has no `reg_effect` (deliberately —
-                        // the shipping pipeline depends on that `None`), but it
-                        // DOES have a modeled AAPCS `call_effect`.
-                        && call_effect(&ins.op).is_none()
-                        // INCREMENT 4 (VCR-REACH-001): likewise for the i64
-                        // register-PAIR pseudo-ops — no `reg_effect` by design,
-                        // a modeled `pair_effect` read off the two encoders.
-                        && pair_effect(&ins.op).is_none()
-                    {
+                    // INCREMENT 3 modeled calls (`call_effect`), INCREMENT 4 the
+                    // i64 register-pair pseudo-ops (`pair_effect`) — both are
+                    // deliberate non-`reg_effect` definitions the shipping
+                    // pipeline never sees. The single predicate lives in
+                    // [`is_unmodeled`].
+                    if is_unmodeled(ins) {
+                        // Diagnostics only (flag-gated, stderr): name the
+                        // COMPLETE blocker set, not just this first hit, so the
+                        // census stays actionable — a widening judged from the
+                        // first blocker alone under-counts every op hiding
+                        // behind it (the #936 `scan_for_decline` class).
+                        if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                            let mut set: BTreeMap<String, usize> = BTreeMap::new();
+                            for blocked in instrs.iter().filter(|i| is_unmodeled(i)) {
+                                *set.entry(variant_name(&blocked.op)).or_insert(0) += 1;
+                            }
+                            let listing = set
+                                .iter()
+                                .map(|(k, v)| format!("{k} x{v}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            eprintln!("[graph-alloc] unmodeled-op complete blocker set: {listing}");
+                        }
                         return Err("unmodeled-op");
                     }
                 }

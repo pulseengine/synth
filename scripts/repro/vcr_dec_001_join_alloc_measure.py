@@ -125,10 +125,28 @@ def wcet_bounds(elf):
     return bounds, declined
 
 
+def parse_set(listing):
+    """`Op xN, Op xN` → {op: n} (the complete-set diagnostic line format)."""
+    out = {}
+    for part in listing.split(", "):
+        if part:
+            name, _, n = part.rpartition(" x")
+            out[name] = out.get(name, 0) + int(n)
+    return out
+
+
 def measure(synth, relocatable):
     rows, errors = [], []
     applied_total = 0
     declines = {}
+    # RQ-59-REACH: the census must never report FIRST blockers only (the #936
+    # `scan_for_decline` trap). The pass emits COMPLETE-set diagnostics; this
+    # pairs each set line with the decline that follows it:
+    #   unmodeled_sets  — per declined function, EVERY op no effect fn models;
+    #   inc1_subs       — why increment 1 refused a `single-block` function;
+    #   refused_sets    — per apply-colouring decline, EVERY op `rewrite_op`
+    #                     refused, annotated rmw-colour-mismatch/no-rewrite-arm.
+    unmodeled_sets, inc1_subs, refused_sets = [], {}, []
     with tempfile.TemporaryDirectory() as td_off, tempfile.TemporaryDirectory() as td_on:
         for src in corpus():
             r_off, elf_off = compile_one(synth, src, td_off, relocatable, False)
@@ -142,10 +160,24 @@ def measure(synth, relocatable):
                 continue
             stderr_on = r_on.stderr.decode(errors="replace")
             applied_total += stderr_on.count("whole-function colouring APPLIED")
+            pending_unmodeled = pending_refused = pending_sub = None
             for line in stderr_on.splitlines():
-                if "join colouring DECLINED:" in line:
+                if "unmodeled-op complete blocker set:" in line:
+                    pending_unmodeled = parse_set(line.split("set:", 1)[1].strip())
+                elif "rewrite-refused complete set:" in line:
+                    pending_refused = parse_set(line.split("set:", 1)[1].strip())
+                elif "increment-1 declined:" in line:
+                    pending_sub = line.split("declined:", 1)[1].strip()
+                elif "join colouring DECLINED:" in line:
                     reason = line.rsplit(":", 1)[1].strip()
                     declines[reason] = declines.get(reason, 0) + 1
+                    if reason == "unmodeled-op" and pending_unmodeled:
+                        unmodeled_sets.append(pending_unmodeled)
+                    if reason == "single-block" and pending_sub:
+                        inc1_subs[pending_sub] = inc1_subs.get(pending_sub, 0) + 1
+                        if pending_sub == "apply-colouring" and pending_refused:
+                            refused_sets.append(pending_refused)
+                    pending_unmodeled = pending_refused = pending_sub = None
             s_off, s_on = func_sizes(elf_off), func_sizes(elf_on)
             w_off, d_off = wcet_bounds(elf_off)
             w_on, d_on = wcet_bounds(elf_on)
@@ -160,7 +192,39 @@ def measure(synth, relocatable):
                     "cycles_off": cyc_off,
                     "cycles_on": cyc_on,
                 })
-    return rows, applied_total, declines, errors
+    census = {"unmodeled_sets": unmodeled_sets, "inc1_subs": inc1_subs,
+              "refused_sets": refused_sets}
+    return rows, applied_total, declines, errors, census
+
+
+def census_report(census):
+    """The RQ-59-REACH separation: identity-colouring is a SUCCESS (a validated
+    identity rewrite), so the report prints reach failures apart from it, and
+    every blocker aggregation is over COMPLETE per-function sets."""
+    def agg(sets):
+        by_fn, by_occ = {}, {}
+        for s in sets:
+            for op, n in s.items():
+                by_fn[op] = by_fn.get(op, 0) + 1
+                by_occ[op] = by_occ.get(op, 0) + n
+        return by_fn, by_occ
+
+    if census["unmodeled_sets"]:
+        by_fn, by_occ = agg(census["unmodeled_sets"])
+        print("unmodeled-op COMPLETE blocker sets "
+              f"({len(census['unmodeled_sets'])} functions):")
+        for op, v in sorted(by_fn.items(), key=lambda kv: -kv[1]):
+            print(f"    {op:<26} functions {v:>4}  occurrences {by_occ[op]:>5}")
+    if census["inc1_subs"]:
+        print("single-block sub-reasons (increment-1 refusals):")
+        for k, v in sorted(census["inc1_subs"].items(), key=lambda kv: -kv[1]):
+            print(f"    {k:<40} {v}")
+    if census["refused_sets"]:
+        by_fn, by_occ = agg(census["refused_sets"])
+        print("apply-colouring COMPLETE refused sets "
+              f"({len(census['refused_sets'])} functions):")
+        for op, v in sorted(by_fn.items(), key=lambda kv: -kv[1]):
+            print(f"    {op:<40} functions {v:>4}  occurrences {by_occ[op]:>5}")
 
 
 def report(tag, rows, applied, declines, errors):
@@ -190,8 +254,15 @@ def report(tag, rows, applied, declines, errors):
           f"{len(rows) - len(changed)} unchanged")
     print(f"cycles : {len(cyc_shrank)} shrank, {len(cyc_grew)} grew")
     if declines:
-        print("decline reasons (flag-on):")
-        for k, v in sorted(declines.items(), key=lambda kv: -kv[1]):
+        # RQ-59-REACH separation: `identity-colouring` is the colourer
+        # SUCCEEDING with nothing to improve (a validated identity rewrite
+        # handed to the shipping pass), NOT a reach failure — mixing it into
+        # the histogram made the top "decline" bucket look like a limit.
+        ident = declines.get("identity-colouring", 0)
+        fails = {k: v for k, v in declines.items() if k != "identity-colouring"}
+        print(f"identity-colouring (SUCCESS, nothing to improve): {ident}")
+        print(f"reach failures (flag-on): {sum(fails.values())}")
+        for k, v in sorted(fails.items(), key=lambda kv: -kv[1]):
             print(f"    {k:<26} {v}")
     if changed:
         print("per-function changes:")
@@ -227,9 +298,11 @@ def main():
     for tag, reloc in (("relocatable / label-form branches (fully in scope)", True),
                        ("self-contained / pre-resolved numeric branches "
                         "(branches out of scope; calls in scope)", False)):
-        rows, applied, declines, errors = measure(synth, reloc)
-        summary["relocatable" if reloc else "self_contained"] = report(
-            tag, rows, applied, declines, errors)
+        rows, applied, declines, errors, census = measure(synth, reloc)
+        summ = report(tag, rows, applied, declines, errors)
+        census_report(census)
+        summ["census"] = census
+        summary["relocatable" if reloc else "self_contained"] = summ
     if out_json:
         Path(out_json).write_text(json.dumps(summary, indent=2))
         print(f"\nwrote {out_json}")
