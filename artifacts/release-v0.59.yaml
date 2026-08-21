@@ -242,7 +242,7 @@ requirements:
       DO NOT FLIP THE DEFAULT IN THIS RELEASE regardless of the verdict — the
       arc is spike -> measure -> flip-when-dominates -> Rocq-mechanize ->
       retire greedy, and flipping is its own gated step with silicon evidence.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [north-star, measurement, allocator, verdict]
     links:
@@ -283,7 +283,7 @@ requirements:
 
       Gate: the bound must stay SOUND (>= actual) on the unicorn cross-check,
       and `.text` must be unchanged — the sidecar is byte-invisible.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [wcet, i64, decline-honesty, soundness]
     links:
