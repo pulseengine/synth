@@ -30,6 +30,12 @@ use std::process::Command;
 
 use object::{Object, ObjectSection};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -45,9 +51,14 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// path is eligible, the one the #496 decline and its reversal act on) and
 /// return the `.text` bytes.
 fn default_path_text(wasm: &str, spill_on_exhaust: bool) -> Vec<u8> {
-    let elf = format!(
-        "/tmp/vcr_ver_001_{}_{wasm}.elf",
-        if spill_on_exhaust { "on" } else { "off" }
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(
+        &format!(
+            "vcr_ver_001_{}_{wasm}",
+            if spill_on_exhaust { "on" } else { "off" }
+        ),
+        "elf",
     );
     let mut cmd = Command::new(synth());
     if spill_on_exhaust {
@@ -55,24 +66,20 @@ fn default_path_text(wasm: &str, spill_on_exhaust: bool) -> Vec<u8> {
     } else {
         cmd.env_remove("SYNTH_SPILL_ON_EXHAUST");
     }
-    let out = cmd
-        .args([
-            "compile",
-            fixture(wasm).to_str().unwrap(),
-            "-o",
-            &elf,
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed for {wasm}: {}",
-        String::from_utf8_lossy(&out.stderr)
+    cmd.args([
+        "compile",
+        fixture(wasm).to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    let bin = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &elf,
+        &format!("{wasm} (spill_on_exhaust={spill_on_exhaust})"),
     );
-    let bin = std::fs::read(&elf).expect("read ELF");
     let obj = object::File::parse(&*bin).expect("parse ELF");
     obj.section_by_name(".text")
         .expect(".text")

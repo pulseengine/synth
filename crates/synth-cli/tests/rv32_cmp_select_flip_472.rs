@@ -34,6 +34,12 @@ use std::process::Command;
 
 use object::{Object, ObjectSymbol, SymbolKind};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -49,7 +55,10 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// `default_on` = the shipped default (env var removed so a stray opt-out in
 /// the test environment can't skew the gate); `false` = the
 /// `SYNTH_RV_CMP_SELECT=0` opt-out (pre-flip bytes).
-fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
+fn compile(rel: &str, tag: &str, default_on: bool) -> Vec<u8> {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "o");
     let mut cmd = Command::new(synth());
     // #601 promo flip: default-on now — pin OFF in both arms (see module doc).
     cmd.env("SYNTH_RV_LOCAL_PROMO", "0");
@@ -61,27 +70,23 @@ fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
     } else {
         cmd.env("SYNTH_RV_CMP_SELECT", "0");
     }
-    let out_status = cmd
-        .args([
-            "compile",
-            fixture(rel).to_str().unwrap(),
-            "-o",
-            out,
-            "-b",
-            "riscv",
-            "--target",
-            "rv32imac",
-            "--all-exports",
-            "--relocatable",
-        ])
-        .output()
-        .expect("run synth compile");
-    assert!(
-        out_status.status.success(),
-        "synth compile failed ({rel}, default_on={default_on}): {}",
-        String::from_utf8_lossy(&out_status.stderr)
-    );
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        fixture(rel).to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "riscv",
+        "--target",
+        "rv32imac",
+        "--all-exports",
+        "--relocatable",
+    ]);
+    artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &out,
+        &format!("{rel} (default_on={default_on})"),
+    )
 }
 
 /// Every function symbol → its `.text` byte size (ELF .symtab, not disasm
@@ -119,8 +124,8 @@ fn rv32_cmp_select_no_grow_corpus_472() {
     let mut fired = 0usize;
     for rel in corpus {
         let tag = Path::new(rel).file_stem().unwrap().to_str().unwrap();
-        let off = func_sizes(&compile(rel, &format!("/tmp/rvcs472_{tag}_off.o"), false));
-        let on = func_sizes(&compile(rel, &format!("/tmp/rvcs472_{tag}_on.o"), true));
+        let off = func_sizes(&compile(rel, &format!("rvcs472_{tag}_off"), false));
+        let on = func_sizes(&compile(rel, &format!("rvcs472_{tag}_on"), true));
         for (name, &o) in &off {
             let n = *on.get(name).unwrap_or(&o);
             assert!(

@@ -22,6 +22,10 @@ use std::process::Command;
 use object::read::elf::ElfFile32;
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -34,28 +38,21 @@ fn fixture() -> PathBuf {
 
 #[test]
 fn cabi_arena_realloc_emits_undefined_symbol_and_reloc_418() {
-    let out = "/tmp/cabi_arena_realloc_418.o";
-    let status = Command::new(synth())
-        .args([
-            "compile",
-            fixture().to_str().unwrap(),
-            "--target",
-            "cortex-m4",
-            "--native-pointer-abi",
-            "--all-exports",
-            "--relocatable",
-            "-o",
-            out,
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        status.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-
-    let data = std::fs::read(out).expect("read .o");
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let out = artifact_guard::unique_artifact("cabi_arena_realloc_418", "o");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        fixture().to_str().unwrap(),
+        "--target",
+        "cortex-m4",
+        "--native-pointer-abi",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let data = artifact_guard::compile_bytes_or_panic(&mut cmd, &out, "cabi_arena_realloc.wat");
     let obj = ElfFile32::<object::Endianness>::parse(&*data).expect("parse ELF");
 
     // (1) `__cabi_arena_realloc` is present as an UNDEFINED symbol — left for the

@@ -46,6 +46,12 @@
 use object::{Object, ObjectSection};
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -69,12 +75,15 @@ fn compile_text(
     extra: &[&str],
 ) -> Vec<u8> {
     let path = fixture(fixture_name);
-    let elf = format!("/tmp/volseg543_p2_{out_tag}.elf");
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(&format!("volseg543_p2_{out_tag}"), "elf");
+    let elf_str = elf.to_str().unwrap();
     let mut args = vec![
         "compile",
         path.to_str().unwrap(),
         "-o",
-        &elf,
+        elf_str,
         "-b",
         "arm",
         "--target",
@@ -88,14 +97,8 @@ fn compile_text(
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.args(&args).output().expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed (tag={out_tag}): exit={:?} stderr={}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let bytes = std::fs::read(&elf).expect("read elf");
+    cmd.args(&args);
+    let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, &format!("tag={out_tag}"));
     let obj = object::File::parse(&*bytes).expect("parse elf");
     obj.section_by_name(".text")
         .expect("fixture must have a .text section")

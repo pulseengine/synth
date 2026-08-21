@@ -20,6 +20,10 @@
 use object::{Object, ObjectSection};
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -95,7 +99,9 @@ fn compile(wasm: &[u8], tag: &str, fact_spec: bool) -> (Vec<u8>, String) {
     let dir = std::env::temp_dir().join("fact_spec_494");
     std::fs::create_dir_all(&dir).expect("mk tempdir");
     let input = dir.join(format!("{tag}.wasm"));
-    let elf = dir.join(format!("{tag}.elf"));
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(&format!("fact_spec_494_{tag}"), "elf");
     std::fs::write(&input, wasm).expect("write wasm");
     let mut cmd = Command::new(synth());
     cmd.args([
@@ -114,13 +120,9 @@ fn compile(wasm: &[u8], tag: &str, fact_spec: bool) -> (Vec<u8>, String) {
     } else {
         cmd.env_remove("SYNTH_FACT_SPEC");
     }
-    let out = cmd.output().expect("run synth");
-    assert!(
-        out.status.success(),
-        "compile of '{tag}' failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let bytes = std::fs::read(&elf).expect("read elf");
+    let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+        .unwrap_or_else(|e| panic!("compile of '{tag}' failed: {e}"));
+    let _ = std::fs::remove_file(&elf);
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj
         .section_by_name(".text")

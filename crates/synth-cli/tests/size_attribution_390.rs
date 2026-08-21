@@ -27,6 +27,10 @@ use std::process::Command;
 
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -40,28 +44,22 @@ fn fixture() -> std::path::PathBuf {
 /// Compile gust_kernel on the DEFAULT optimized path (no `--relocatable`) and
 /// return per-function `.text` sizes by symbol name (sorted-address deltas).
 fn per_function_sizes() -> BTreeMap<String, u64> {
-    let elf = "/tmp/size_attribution_390_gate.o";
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            fixture().to_str().unwrap(),
-            "-o",
-            elf,
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let bytes = std::fs::read(elf).expect("read elf");
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact("size_attribution_390_gate", "o");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        fixture().to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, "gust_kernel.wasm");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj.section_by_name(".text").expect(".text");
     let end = text.address() + text.size();

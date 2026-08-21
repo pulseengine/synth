@@ -38,6 +38,12 @@ use std::process::Command;
 
 use object::{Object, ObjectSymbol, SymbolKind};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -55,7 +61,10 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// the gate; `false` = the `=0` opt-out, pre-flip bytes); every other lever
 /// env var is removed so both arms run the shipped defaults and the gate
 /// isolates the promotion lever.
-fn compile(rel: &str, out: &str, promo_on: bool) -> Vec<u8> {
+fn compile(rel: &str, tag: &str, promo_on: bool) -> Vec<u8> {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "o");
     let mut cmd = Command::new(synth());
     cmd.env_remove("SYNTH_RV_CMP_SELECT");
     cmd.env_remove("SYNTH_RV_SHIFT_FOLD");
@@ -65,35 +74,27 @@ fn compile(rel: &str, out: &str, promo_on: bool) -> Vec<u8> {
     } else {
         cmd.env("SYNTH_RV_LOCAL_PROMO", "0");
     }
-    let out_status = cmd
-        .args([
-            "compile",
-            fixture(rel).to_str().unwrap(),
-            "-o",
-            out,
-            "-b",
-            "riscv",
-            "--target",
-            "rv32imac",
-            "--all-exports",
-            "--relocatable",
-            // #952: `gust_kernel.wasm`'s `gust_poll` export already declines
-            // on RV32 (unrelated pre-existing gap: `GlobalGet` unsupported in
-            // the RV32 skeleton) in BOTH arms of this corpus sweep. Since
-            // v0.57 that exits non-zero by default; this gate compares
-            // per-function BYTE SIZES across the arms and is unaffected by a
-            // function absent from both, so the partial object is exactly
-            // what it wants.
-            "--allow-skipped-exports",
-        ])
-        .output()
-        .expect("run synth compile");
-    assert!(
-        out_status.status.success(),
-        "synth compile failed ({rel}, promo_on={promo_on}): {}",
-        String::from_utf8_lossy(&out_status.stderr)
-    );
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        fixture(rel).to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "riscv",
+        "--target",
+        "rv32imac",
+        "--all-exports",
+        "--relocatable",
+        // #952: `gust_kernel.wasm`'s `gust_poll` export already declines
+        // on RV32 (unrelated pre-existing gap: `GlobalGet` unsupported in
+        // the RV32 skeleton) in BOTH arms of this corpus sweep. Since
+        // v0.57 that exits non-zero by default; this gate compares
+        // per-function BYTE SIZES across the arms and is unaffected by a
+        // function absent from both, so the partial object is exactly
+        // what it wants.
+        "--allow-skipped-exports",
+    ]);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, &format!("{rel} (promo_on={promo_on})"))
 }
 
 /// Every function symbol → its `.text` byte size (ELF .symtab, not disasm
@@ -129,8 +130,8 @@ fn rv32_local_promo_no_grow_corpus_472() {
     let mut fired = 0usize;
     for rel in corpus {
         let tag = Path::new(rel).file_stem().unwrap().to_str().unwrap();
-        let off = func_sizes(&compile(rel, &format!("/tmp/rvlp472_{tag}_off.o"), false));
-        let on = func_sizes(&compile(rel, &format!("/tmp/rvlp472_{tag}_on.o"), true));
+        let off = func_sizes(&compile(rel, &format!("rvlp472_{tag}_off"), false));
+        let on = func_sizes(&compile(rel, &format!("rvlp472_{tag}_on"), true));
         // The flag may not change WHICH functions compile — a promoted-only
         // function would dodge the size comparison entirely.
         let mut off_names: Vec<&String> = off.keys().collect();

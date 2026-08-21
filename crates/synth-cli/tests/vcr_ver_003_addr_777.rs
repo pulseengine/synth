@@ -25,6 +25,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -48,38 +52,38 @@ fn gale_overlapping_segments_compile_clean() {
         "missing gale fixture {}",
         fixture.display()
     );
-    let out = std::env::temp_dir().join("vcr_ver_003_gale.o");
-    let output = Command::new(synth())
-        .args([
-            "compile",
-            fixture.to_str().unwrap(),
-            "--target",
-            "cortex-m3",
-            "--all-exports",
-            "--relocatable",
-            "--native-pointer-abi",
-            "--shadow-stack-size",
-            "2048",
-            "-o",
-            out.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run synth");
-
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let out = artifact_guard::unique_artifact("vcr_ver_003_gale", "o");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        fixture.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--all-exports",
+        "--relocatable",
+        "--native-pointer-abi",
+        "--shadow-stack-size",
+        "2048",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let (bytes, output) = artifact_guard::compile_artifact_with_output(&mut cmd, &out)
+        .unwrap_or_else(|e| {
+            panic!(
+                "gale module must compile clean under the shipped .rposition() \
+                 retargeting — VCR-VER-003 rejected it, which means the \
+                 overlapping segments resolved to the WRONG segment (the #757 \
+                 miscompile has regressed): {e}"
+            )
+        });
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "gale module must compile clean under the shipped .rposition() \
-         retargeting — VCR-VER-003 rejected it, which means the overlapping \
-         segments resolved to the WRONG segment (the #757 miscompile has \
-         regressed):\n{stderr}"
-    );
     // Sanity: the validator must NOT have fired on the correct path.
     assert!(
         !stderr.contains("VCR-VER-003"),
         "VCR-VER-003 must be silent on the runtime-correct resolution:\n{stderr}"
     );
-    assert!(out.exists(), "expected a relocatable .o output");
+    assert!(!bytes.is_empty(), "expected a relocatable .o output");
     let _ = std::fs::remove_file(&out);
 }
 
@@ -94,6 +98,37 @@ fn wat_file(name: &str, wat: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, wat).expect("write wat");
     p
+}
+
+/// #977: the guarded READ-BACK form — compile and hand back the object bytes
+/// proven to be this invocation's output (unique path + remove-first +
+/// status/exists/non-empty via `artifact_guard`), plus combined stdout+stderr.
+/// [`compile`] below stays for the tests that only assert on the process
+/// output (refusals and validator diagnostics) and never read the artifact.
+fn compile_read(input: &std::path::Path, tag: &str, extra: &[&str]) -> (Vec<u8>, String) {
+    let out = artifact_guard::unique_artifact(tag, "o");
+    let mut args = vec![
+        "compile",
+        input.to_str().unwrap(),
+        "--all-exports",
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    match artifact_guard::compile_artifact_with_output(&mut cmd, &out) {
+        Ok((bytes, output)) => {
+            let _ = std::fs::remove_file(&out);
+            let all = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            (bytes, all)
+        }
+        Err(e) => panic!("{tag}: {e}"),
+    }
 }
 
 fn compile(input: &std::path::Path, out_name: &str, extra: &[&str]) -> std::process::Output {
@@ -236,11 +271,12 @@ fn span_straddle_module_selfcontained_rom_image_validates() {
     );
 }
 
-/// Read a named section's bytes out of an ELF object on disk.
-fn section_bytes(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+/// Read a named section's bytes out of an ELF object already in memory
+/// (#977: the bytes come from `compile_read`, never from a path a previous
+/// run may have populated).
+fn section_from_bytes(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     use object::{Object, ObjectSection};
-    let bytes = std::fs::read(path).expect("read object");
-    let obj = object::File::parse(&*bytes).expect("parse object");
+    let obj = object::File::parse(bytes).expect("parse object");
     obj.section_by_name(name)
         .map(|s| s.data().expect("section data").to_vec())
 }
@@ -259,16 +295,7 @@ fn rv32_nonzero_data_segment_ships_wasm_data_records() {
   (data (i32.const 16) "\01\02\03\04")
   (func (export "get") (result i32) i32.const 16 i32.load))"#;
     let fixture = wat_file("rv32_data_777.wat", wat);
-    let out_path = std::env::temp_dir()
-        .join("synth_vcr_ver_003_ph2")
-        .join("rv32_data_777.o");
-    let out = compile(&fixture, "rv32_data_777.o", &["-b", "riscv"]);
-    let all = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "RV32 compile stays green:\n{all}");
+    let (obj_bytes, all) = compile_read(&fixture, "rv32_data_777", &["-b", "riscv"]);
     assert!(
         !all.contains("read as 0x00"),
         "the silent-drop warning must be gone — the data SHIPS now (#798):\n{all}"
@@ -278,8 +305,8 @@ fn rv32_nonzero_data_segment_ships_wasm_data_records() {
         "the shipping info line names the segment count:\n{all}"
     );
     // The object carries the record verbatim: off=16, len=4, bytes 01020304.
-    let records =
-        section_bytes(&out_path, ".wasm_data").expect("the object must ship a .wasm_data section");
+    let records = section_from_bytes(&obj_bytes, ".wasm_data")
+        .expect("the object must ship a .wasm_data section");
     assert_eq!(
         records,
         [16u32.to_le_bytes(), 4u32.to_le_bytes()]
@@ -305,21 +332,12 @@ fn rv32_zero_overwritten_data_ships_both_records_in_order() {
   (data (i32.const 16) "\00\00\00\00")
   (func (export "get") (result i32) i32.const 16 i32.load))"#;
     let fixture = wat_file("rv32_zero_777.wat", wat);
-    let out_path = std::env::temp_dir()
-        .join("synth_vcr_ver_003_ph2")
-        .join("rv32_zero_777.o");
-    let out = compile(&fixture, "rv32_zero_777.o", &["-b", "riscv"]);
-    let all = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "RV32 compile stays green:\n{all}");
+    let (obj_bytes, all) = compile_read(&fixture, "rv32_zero_777", &["-b", "riscv"]);
     assert!(
         !all.contains("VCR-VER-003"),
         "the read-back gate must be silent on a correct pack:\n{all}"
     );
-    let records = section_bytes(&out_path, ".wasm_data").expect(".wasm_data present");
+    let records = section_from_bytes(&obj_bytes, ".wasm_data").expect(".wasm_data present");
     let mut expect = Vec::new();
     for seg in [[1u8, 2, 3, 4], [0u8, 0, 0, 0]] {
         expect.extend_from_slice(&16u32.to_le_bytes());
@@ -342,13 +360,9 @@ fn rv32_data_free_module_has_no_wasm_data_section() {
   (memory 1)
   (func (export "get") (result i32) i32.const 16 i32.load))"#;
     let fixture = wat_file("rv32_nodata_798.wat", wat);
-    let out_path = std::env::temp_dir()
-        .join("synth_vcr_ver_003_ph2")
-        .join("rv32_nodata_798.o");
-    let out = compile(&fixture, "rv32_nodata_798.o", &["-b", "riscv"]);
-    assert!(out.status.success());
+    let (obj_bytes, _all) = compile_read(&fixture, "rv32_nodata_798", &["-b", "riscv"]);
     assert!(
-        section_bytes(&out_path, ".wasm_data").is_none(),
+        section_from_bytes(&obj_bytes, ".wasm_data").is_none(),
         "no segments => no .wasm_data section (byte-identical layout)"
     );
 }
@@ -377,5 +391,71 @@ fn rv32_segment_past_memory_is_refused() {
     assert!(
         all.contains("instantiation would trap"),
         "the refusal names the reason:\n{all}"
+    );
+}
+
+/// #977 RQ-59-FRESHNESS — the SILENT-direction demonstration for the
+/// validator/attestation batch (vcr_ver_003_addr_777, proven_safe_bounds_901,
+/// size_attribution_390, parity_benchmark_735,
+/// promotion_exhaustion_fallback_474, wsc_facts_ingestion_494 — all now
+/// compile through `artifact_guard`).
+///
+/// Prove the counterfactual: a planted VALID RV32 object (minted by this
+/// file's own compile shape) parses and carries the `.wasm_data` section the
+/// read-back gates assert on — so the pre-conversion path-based `fs::read` +
+/// `File::parse` WOULD have re-confirmed last run's records as this run's
+/// evidence. Then fail the compile at that path and require refusal AND an
+/// empty path. For a validator gate a stale read is worse than a crash: it
+/// re-certifies the served-image check on an object this run never produced.
+#[test]
+fn freshness_guard_refuses_stale_validator_artifact_977() {
+    // 1. Mint a genuine object with this batch's own compile shape.
+    let wat = r#"(module
+  (memory 1)
+  (data (i32.const 16) "\01\02\03\04")
+  (func (export "get") (result i32) i32.const 16 i32.load))"#;
+    let fixture = wat_file("freshness_demo_977.wat", wat);
+    let (good, _all) = compile_read(&fixture, "freshness_demo_977", &["-b", "riscv"]);
+
+    // 2. Plant it, and prove the OLD shape would have passed on it.
+    let planted_at = artifact_guard::unique_artifact("vcr_ver_003_stale_planted", "o");
+    std::fs::write(&planted_at, &good).expect("plant the stale artifact");
+    let stale = std::fs::read(&planted_at).expect("read planted");
+    assert!(
+        section_from_bytes(&stale, ".wasm_data").is_some(),
+        "the planted artifact must carry .wasm_data — substantial enough to \
+         fool an unguarded read-back gate"
+    );
+
+    // 3. A FAILING compile aimed at that exact path (nonexistent input).
+    let missing = std::env::temp_dir()
+        .join("synth_vcr_ver_003_ph2")
+        .join("does_not_exist_977.wat");
+    let _ = std::fs::remove_file(&missing);
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        missing.to_str().unwrap(),
+        "--all-exports",
+        "-o",
+        planted_at.to_str().unwrap(),
+        "-b",
+        "riscv",
+    ]);
+    let err = artifact_guard::compile_artifact(&mut cmd, &planted_at)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+
+    // 4. The refusal names the compile, not the parser — and nothing is left.
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !planted_at.exists(),
+        "the stale artifact must be GONE — left in place, a later reader picks it up"
     );
 }

@@ -27,6 +27,10 @@ use object::elf;
 use object::read::elf::{FileHeader, SectionHeader, Sym};
 use object::{Endianness, Object, ObjectSection};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -36,24 +40,22 @@ fn compile(dir: &std::path::Path, name: &str, wat: &str) -> PathBuf {
     let src = dir.join(format!("{name}.wat"));
     std::fs::write(&src, wat).unwrap();
     let out = dir.join(format!("{name}.o"));
-    let status = Command::new(synth())
-        .args([
-            "compile",
-            src.to_str().unwrap(),
-            "-t",
-            "cortex-m3",
-            "--all-exports",
-            "--relocatable",
-            "-o",
-            out.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        status.status.success(),
-        "synth compile failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
+    // #977: remove-first + status/exists/non-empty via artifact_guard — the
+    // callers (and the co-link test's real linker) consume this path, so the
+    // artifact must be proven to be THIS invocation's output before it is
+    // returned. The artifact stays in place for them.
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        src.to_str().unwrap(),
+        "-t",
+        "cortex-m3",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    artifact_guard::compile_artifact_or_panic(&mut cmd, &out, name);
     out
 }
 

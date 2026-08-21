@@ -26,6 +26,10 @@
 use object::{Object, ObjectSection};
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -129,30 +133,30 @@ fn compile_text(wasm: &[u8], tag: &str) -> Vec<u8> {
     let dir = std::env::temp_dir().join("wsc_facts_494");
     std::fs::create_dir_all(&dir).expect("mk tempdir");
     let input = dir.join(format!("{tag}.wasm"));
-    let elf = dir.join(format!("{tag}.elf"));
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed path must never be parsed as this run's.
+    let elf = artifact_guard::unique_artifact(&format!("wsc494_{tag}"), "elf");
     std::fs::write(&input, wasm).expect("write wasm");
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            input.to_str().unwrap(),
-            "-o",
-            elf.to_str().unwrap(),
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "#494 fail-safe violated: compile of '{tag}' failed (exit={:?}) — a \
-         wsc.facts section must NEVER change a compilation outcome.\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        input.to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    let bytes = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &elf,
+        &format!(
+            "#494 fail-safe violated: compile of '{tag}' — a wsc.facts \
+             section must NEVER change a compilation outcome"
+        ),
     );
-    let bytes = std::fs::read(&elf).expect("read elf");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     obj.section_by_name(".text")
         .expect("fixture must have a .text section")

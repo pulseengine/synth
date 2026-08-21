@@ -54,6 +54,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -68,34 +74,36 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// `true` = the shipped DEFAULT (env var removed so a stray `=0` in the test
 /// environment can't skew the gate), `false` = the `SYNTH_SPILL_REALLOC=0`
 /// opt-out (pre-flip bytes). Returns (ELF bytes, stderr).
-fn compile(rel: &str, out: &str, flag: bool) -> (Vec<u8>, String) {
+fn compile(rel: &str, tag: &str, flag: bool) -> (Vec<u8>, String) {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "elf");
     let mut cmd = Command::new(synth());
     if flag {
         cmd.env_remove("SYNTH_SPILL_REALLOC");
     } else {
         cmd.env("SYNTH_SPILL_REALLOC", "0");
     }
-    let output = cmd
-        .env("SYNTH_SPILL_REPORT", "1")
+    cmd.env("SYNTH_SPILL_REPORT", "1")
         .env("SYNTH_FUSE_STATS", "1")
         .args([
             "compile",
             fixture(rel).to_str().unwrap(),
             "-o",
-            out,
+            out.to_str().unwrap(),
             "-b",
             "arm",
             "--target",
             "cortex-m4",
             "--all-exports",
-        ])
-        .output()
-        .expect("run synth compile");
-    assert!(output.status.success(), "synth compile failed ({rel})");
-    (
-        std::fs::read(out).expect("read ELF"),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
+        ]);
+    match artifact_guard::compile_artifact_with_output(&mut cmd, &out) {
+        Ok((bytes, output)) => {
+            let _ = std::fs::remove_file(&out);
+            (bytes, String::from_utf8_lossy(&output.stderr).into_owned())
+        }
+        Err(e) => panic!("{rel} (flag={flag}): {e}"),
+    }
 }
 
 /// Every function symbol → its `.text` byte size.
@@ -177,16 +185,8 @@ fn forwarded_total(stderr: &str) -> usize {
 #[test]
 fn spill_realloc_no_grow_and_fires_on_flight_seam_242() {
     // flight_seam — the firing fixture.
-    let (off_elf, _) = compile(
-        "scripts/repro/flight_seam.wat",
-        "/tmp/sr242_fs_off.elf",
-        false,
-    );
-    let (on_elf, on_err) = compile(
-        "scripts/repro/flight_seam.wat",
-        "/tmp/sr242_fs_on.elf",
-        true,
-    );
+    let (off_elf, _) = compile("scripts/repro/flight_seam.wat", "sr242_fs_off", false);
+    let (on_elf, on_err) = compile("scripts/repro/flight_seam.wat", "sr242_fs_on", true);
     let (off, on) = (func_sizes(&off_elf), func_sizes(&on_elf));
     for (name, &o) in &off {
         let n = *on.get(name).unwrap_or(&o);
@@ -219,12 +219,12 @@ fn spill_realloc_no_grow_and_fires_on_flight_seam_242() {
     // slots are never read anywhere in the function.
     let (ff_off_elf, ff_off_err) = compile(
         "scripts/repro/flat_flight/flat_flight.loom.wasm",
-        "/tmp/sr242_ff_off.elf",
+        "sr242_ff_off",
         false,
     );
     let (ff_on_elf, ff_on_err) = compile(
         "scripts/repro/flat_flight/flat_flight.loom.wasm",
-        "/tmp/sr242_ff_on.elf",
+        "sr242_ff_on",
         true,
     );
     let (ff_off, ff_on) = (func_sizes(&ff_off_elf), func_sizes(&ff_on_elf));
@@ -284,7 +284,7 @@ fn spill_realloc_no_grow_and_fires_on_flight_seam_242() {
 fn spill_report_shows_flat_flight_headroom_242() {
     let (_, stderr) = compile(
         "scripts/repro/flat_flight/flat_flight.loom.wasm",
-        "/tmp/sr242_ff_rep.elf",
+        "sr242_ff_rep",
         false,
     );
     let reports = parse_reports(&stderr);

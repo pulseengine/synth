@@ -38,6 +38,12 @@ use std::process::Command;
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 use sha2::{Digest, Sha256};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. A stale read
+// in a flip gate does not fail, it re-confirms last run's golden as this
+// run's evidence.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -60,7 +66,10 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// the default goldens below are byte-identical under const-CSE (its
 /// size-guarded passes find nothing left on the folded shape), so this gate
 /// keeps pinning the TRUE shipped default.
-fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
+fn compile(rel: &str, tag: &str, default_on: bool) -> Vec<u8> {
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed /tmp path must never be parsed as this run's.
+    let out = artifact_guard::unique_artifact(tag, "elf");
     let mut cmd = Command::new(synth());
     if default_on {
         cmd.env_remove("SYNTH_CONST_CSE");
@@ -69,26 +78,22 @@ fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
         cmd.env("SYNTH_CONST_CSE", "0");
         cmd.env("SYNTH_BASE_CSE", "0");
     }
-    let out_status = cmd
-        .args([
-            "compile",
-            fixture(rel).to_str().unwrap(),
-            "-o",
-            out,
-            "-b",
-            "arm",
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-        ])
-        .output()
-        .expect("run synth compile");
-    assert!(
-        out_status.status.success(),
-        "synth compile failed ({rel}, default_on={default_on}): {}",
-        String::from_utf8_lossy(&out_status.stderr)
-    );
-    std::fs::read(out).expect("read ELF")
+    cmd.args([
+        "compile",
+        fixture(rel).to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &out,
+        &format!("{rel} (default_on={default_on})"),
+    )
 }
 
 fn text_bytes(elf: &[u8]) -> Vec<u8> {
@@ -170,13 +175,13 @@ const GOLDENS: [(&str, &str, usize, &str, usize); 2] = [
 fn base_cse_escape_hatch_restores_old_bytes_468() {
     for &(rel, on_sha, on_len, off_sha, off_len) in &GOLDENS {
         let tag = Path::new(rel).file_stem().unwrap().to_str().unwrap();
-        let on = text_bytes(&compile(rel, &format!("/tmp/bcse468_{tag}_on.elf"), true));
+        let on = text_bytes(&compile(rel, &format!("bcse468_{tag}_on"), true));
         assert_eq!(
             (on.len(), sha256_hex(&on).as_str()),
             (on_len, on_sha),
             "{rel}: shipped DEFAULT .text drifted from the flip golden"
         );
-        let off = text_bytes(&compile(rel, &format!("/tmp/bcse468_{tag}_off.elf"), false));
+        let off = text_bytes(&compile(rel, &format!("bcse468_{tag}_off"), false));
         assert_eq!(
             (off.len(), sha256_hex(&off).as_str()),
             (off_len, off_sha),
@@ -209,8 +214,8 @@ fn base_cse_no_grow_corpus_468() {
             "ng_{}",
             Path::new(rel).file_stem().unwrap().to_str().unwrap()
         );
-        let off = func_sizes(&compile(rel, &format!("/tmp/bcse468_{tag}_off.elf"), false));
-        let on = func_sizes(&compile(rel, &format!("/tmp/bcse468_{tag}_on.elf"), true));
+        let off = func_sizes(&compile(rel, &format!("bcse468_{tag}_off"), false));
+        let on = func_sizes(&compile(rel, &format!("bcse468_{tag}_on"), true));
         for (name, &o) in &off {
             let n = *on.get(name).unwrap_or(&o);
             assert!(
@@ -225,5 +230,69 @@ fn base_cse_no_grow_corpus_468() {
     assert!(
         fired >= 2,
         "non-vacuity: base-CSE must shrink at least the two firing fixtures, saw {fired} shrinking function(s)"
+    );
+}
+
+/// #977 RQ-59-FRESHNESS — the SILENT-direction demonstration for the flip-gate
+/// batch (base_cse_flip_468, const_cse_reduction_242, flag_flip_wave_242,
+/// spill_realloc_242, rv32_*_flip_472, volatile_segment_*_543,
+/// vcr_ver_001_gate_242 — all now compile through `artifact_guard`).
+///
+/// The counterfactual, proven not asserted: plant a VALID ELF (minted by this
+/// file's own compile shape) at the output path, show it parses and carries a
+/// `.text` — i.e. the pre-conversion `fs::read` + `File::parse` shape WOULD
+/// have passed a flip gate on last run's bytes — then fail the compile at that
+/// same path and require the guard to refuse AND to leave nothing behind. A
+/// stale read in a flip gate is worse than a crash: `off == on` re-confirms
+/// the previous run's golden as this run's rollback evidence.
+#[test]
+fn freshness_guard_refuses_stale_flip_artifact_977() {
+    // 1. Mint a genuine ELF with this batch's own compile shape.
+    let good = compile(
+        "scripts/repro/redundant_base_materialization.wat",
+        "bcse468_fresh_demo",
+        true,
+    );
+
+    // 2. Plant it, and prove the OLD shape would have passed on it.
+    let planted_at = artifact_guard::unique_artifact("bcse468_stale_planted", "elf");
+    std::fs::write(&planted_at, &good).expect("plant the stale artifact");
+    let stale_bytes = std::fs::read(&planted_at).expect("read planted");
+    let obj = object::File::parse(&*stale_bytes).expect("planted artifact is a valid ELF");
+    assert!(
+        obj.section_by_name(".text").is_some(),
+        "the planted artifact must carry .text — substantial enough to fool an unguarded flip gate"
+    );
+
+    // 3. A FAILING compile aimed at that exact path (nonexistent input).
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        fixture("scripts/repro/does_not_exist_977.wat")
+            .to_str()
+            .unwrap(),
+        "-o",
+        planted_at.to_str().unwrap(),
+        "-b",
+        "arm",
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+    ]);
+    let err = artifact_guard::compile_artifact(&mut cmd, &planted_at)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+
+    // 4. The refusal names the compile, not the parser — and nothing is left.
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !planted_at.exists(),
+        "the stale artifact must be GONE — left in place, a later reader picks it up"
     );
 }
