@@ -448,3 +448,93 @@ requirements:
       priority: should
       verification-track: differential
       issue: "#242"
+
+  - id: RQ-59-A64PANIC
+    type: system-req
+    title: "aarch64 ELF builder PANICS (exit 101) where ARM and RISC-V decline cleanly"
+    description: >
+      #1013. The aarch64 ELF builder PANICS — exit 101 with a RUST_BACKTRACE
+      note — when a retained function holds a relocation against a function the
+      backend legitimately declined. The DECISION is right: it must not ship an
+      unrelocated placeholder. The MECHANISM is wrong: a panic is not a decline.
+
+      This is a cross-backend PARITY gap with a known-good reference, the same
+      shape as RQ-59-WARALIAS: ARM and RISC-V already do the right thing on the
+      IDENTICAL module (clean exit 1, machine-readable reason). So the fix is to
+      make aarch64 refuse the way its siblings already refuse, not to invent a
+      policy.
+
+      PROVENANCE, which is why it earns a slot in a release it was not planned
+      for: it is the ONLY panic across a corpus of 805 REAL-WORLD wasm modules
+      (toolchain output and wasm.directory components, not spec fixtures) —
+      the other 787 aarch64 refusals were clean. One unhandled path in an
+      otherwise honest frontier.
+
+      RED-FIRST: the repro is a 4.7 KB real-world `httparse` fixture with 5
+      functions, already named in #1013 and present at
+      `loom/tests/corpus/httparse.wasm`. Land a test that FAILS on the panic
+      (asserting a clean non-zero exit and a reason string, NOT merely
+      "does not crash") before the fix. A test that only asserts absence of a
+      panic passes for the wrong reasons the moment the code path moves.
+
+      SCOPE DISCIPLINE: fix the mechanism, not the surrounding aarch64 gaps.
+      #1017 ranks import dispatch (~121 modules) and active data segments (44)
+      far above this one module — those are a v0.60 capability push, not this.
+    status: proposed
+    release: v0.59
+    tags: [soundness, aarch64, panic, cross-backend-parity, real-world-corpus]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1013"
+
+  - id: RQ-59-PARTIALCENSUS
+    type: system-req
+    title: "Measure how much of the real-world decline rate is one-function-blocks-the-module"
+    description: >
+      #1017 surfaced a POLICY question synth has never answered, and asked it
+      without assuming the answer: when a module has one unsupported function,
+      should synth emit the functions that DID compile plus a machine-readable
+      manifest of what was skipped, or keep refusing the whole module?
+
+      Its own framing is worth preserving verbatim, because it names the fork:
+      "I can see the argument that a partially-compiled object must never ship
+      for a safety target — in which case the answer is 'no, by design', and
+      that is worth stating explicitly somewhere, because from outside it
+      currently looks like a capability gap when it is a policy."
+
+      THE DECISION IS DEFERRED PENDING MEASUREMENT (maintainer's call,
+      2026-08-21). This artifact is the measurement, NOT the feature.
+
+      WHAT TO MEASURE, and why the existing number is not enough: #1017 reports
+      ~151 of arm's 265 declines are of the form "N of M functions were skipped"
+      versus ~6 genuine feature refusals — but states plainly that this covers
+      only the TOP-12 decline reasons and is therefore a LOWER BOUND. Re-derive
+      it over the FULL decline set, per module:
+        a. how many modules decline solely because of one-function-blocks-module,
+        b. what fraction of FUNCTIONS in those modules compiled successfully,
+        c. the distribution — is it one bad function in hundreds, or half the
+           module? The policy answer differs sharply between those.
+        d. how many are components (of 101 pulled from wasm.directory, 101
+           declined, 88 for import dispatch) versus plain modules.
+
+      REPORT THE NUMBERS AND STOP. Do not implement `--allow-partial`. The
+      output of this artifact is the census that lets the policy question be
+      answered on evidence rather than intuition — and if the census shows the
+      one-function case is a small minority, the honest answer is that the
+      refusal is policy and should be DOCUMENTED as such rather than softened.
+    status: proposed
+    release: v0.59
+    tags: [measurement, real-world-corpus, policy, decline-honesty]
+    links:
+      - type: derives-from
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: static-analysis
+      issue: "#1017"
