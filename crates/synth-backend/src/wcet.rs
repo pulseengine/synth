@@ -298,7 +298,40 @@ fn op_cost(op: &ArmOp) -> OpCost {
         // byte length for THIS instance, not the (non-covering, `_ => 2`)
         // synth-synthesis byte-size estimator [`straightline_expansion`]
         // above uses.
-        I64Const { .. } | I64Ldr { .. } | I64Str { .. } => match straightline_expansion_real(op) {
+        //
+        // RQ-59-WCETI64 (#936 residual): `I64Sub`, `I64ExtendI32S`,
+        // `I64ExtendI32U` and `I32WrapI64` — the four ops #936's own audit
+        // named as real emissions with no price — join the same
+        // real-encoder-priced arm. Each `encode_thumb` expansion is a FIXED
+        // sequence of already-priced 1-cycle primitives with NO internal
+        // runtime loop and NO SP motion:
+        //   - I64Sub: `SUBS` (16-bit) + `SBC.W` (32-bit) = 6 B;
+        //   - I64ExtendI32S: optional `MOV` + `ASR.W rdhi, rdlo, #31` = 4-6 B;
+        //   - I64ExtendI32U: optional `MOV` + `MOV/MOV.W rdhi, #0` = 2-6 B;
+        //   - I32WrapI64: `NOP` (rd == rnlo) or `MOV` = 2 B.
+        // Reachability, MEASURED per op (decline scan re-run after each, since
+        // `scan_for_decline` reports only the FIRST decline per function):
+        //   - I32WrapI64 (rule_i32_wrap_i64) and I64ExtendI32S
+        //     (rule_i64_extend_i32_s) are live pseudo-ops on the
+        //     direct/relocatable selector — pricing them flips the #936
+        //     "narrow an i64 read to i32" OS shape from declined to bounded;
+        //   - I64ExtendI32U's pseudo was already retired from the direct path
+        //     by RQ-58-SELDSL (rule_i64_extend_i32_u emits raw Mov/Movw
+        //     primitives), so `i64.extend_i32_u` bounded BEFORE this change —
+        //     priced belt-and-braces for the `select_default` fallback arm
+        //     that still emits the pseudo;
+        //   - I64Sub's only real emission is inside
+        //     `lower_i64_trunc_sat_from_f64` (the saturating trunc-sat
+        //     decompose), whose stream leads with scalar-f64 VFP ops and is
+        //     only compilable on a double-precision-FPU target (GI-FPU-002 →
+        //     cortex-m7dp), which `sound_core_class` declines
+        //     `unsupported-core` before any op scan — so pricing it moves no
+        //     decline today; it is priced so a future integer-path emission
+        //     is covered rather than latent.
+        I64Const { .. }
+        | I64Ldr { .. }
+        | I64Str { .. }
+        | I32WrapI64 { .. } => match straightline_expansion_real(op) {
             Some(c) => Cycles(c),
             None => Unmodeled,
         },
@@ -358,8 +391,7 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | I64GeS { .. }
         | I64GeU { .. }
         | I64ExtendI32S { .. }
-        | I64ExtendI32U { .. }
-        | I32WrapI64 { .. } => Unmodeled,
+        | I64ExtendI32U { .. } => Unmodeled,
 
         // === all F32/F64 scalar VFP + all MVE vector: not on the sound integer path ===
         F32Add { .. }
