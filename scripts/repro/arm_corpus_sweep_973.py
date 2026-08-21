@@ -174,7 +174,6 @@ KNOWN_ARM_MISMATCHES = {
     # (snapshot_home_reg_aliases in select_with_stack + the optimized-path
     # WAR/param-store declines), so per the both-direction ratchet the
     # entries are deleted — that deletion IS how the fix records itself.
-    ("provenance_branches_396.wat", "decide"): 990,
 }
 
 # Phase B floor on COMPARISONS, not on emulator entries. `# ci-checks:
