@@ -2631,6 +2631,87 @@ artifacts:
         `shrink_callee_saved_saves`, which is LEAF-ONLY, so a modest byte delta
         with a large reach delta is the EXPECTED result, not a failure.
 
+  - id: VCR-MEASURE-004
+    type: sw-req
+    title: "VCR-DEC-001 increment 4: MEASURE — greedy vs colourer, the explicit flip verdict (RQ-59-MEASURE)"
+    description: >
+      VERDICT (v0.59, RQ-59-MEASURE): DO NOT FLIP. The colourer WINS ON NET but
+      does NOT DOMINATE, and the arc's flip step requires domination plus gale
+      silicon evidence. Increments 2 (joins) and 3 (calls) each ended in a
+      stated verdict; this is increment 4's.
+
+      NUMBERS (measured 2026-08-21 on this branch, greedy baseline re-run in
+      the SAME pass on the SAME host — never remembered numbers; instrument
+      `scripts/repro/vcr_dec_001_join_alloc_measure.py`, which this lane
+      extended with capstone-based per-function instruction/width/frame-traffic
+      metrics). Relocatable corpus, 159 fixtures / 697 functions, flag-off ->
+      flag-on: applied 455 + identity-colouring 69 (75 % handled, the
+      RQ-59-REACH census re-confirmed to the function); bytes 45,190 -> 45,068
+      (-122, -0.27 %); sound wcet bound 29,612 -> 29,576 (-36 over the 517
+      functions bounded on both sides); instruction count 14,317 -> 14,286
+      (-31); wide 32-bit encodings 8,278 -> 8,248 (-30); push/pop breadth
+      6,316 -> 6,244 regs (-72); total frame allocation (SUB sp) UNCHANGED at
+      16,688 B — the colourer adds no spill slots; but FRAME TRAFFIC
+      ([sp,#imm] loads/stores, ALL of which the encoder emits wide) 1,287 ->
+      1,309 (+22). Self-contained half: bytes -144, insns -32, wcet -20, frame
+      traffic +18. Distribution: 33 functions shrank, 7 GREW, 657 unchanged;
+      cycle bounds 16 shrank, 1 grew.
+
+      THE MECHANISM IS ONE MECHANISM WITH TWO SIGNS, confirmed at the
+      mnemonic level: the colourer's low-register bias (a) narrows encodings —
+      `cmp.w`/`moveq.w`/`movne.w` become 16-bit forms once operands stay in
+      r0-r7 — and trims callee-saved push/pop breadth, which is where the -122
+      B comes from; and (b) raises pressure in the low pool, so a value the
+      greedy allocator kept cached in a spare high/callee-saved register
+      (r7/r8) is instead RE-FETCHED from its always-wide [sp,#imm] frame slot.
+      gust_poll is the canonical instance: mov 32 -> 27 (-5) traded for ldr.w
+      38 -> 44 (+6), frame traffic 51 -> 58, +10 B on a 700 B function.
+      Instruction count and byte size move in OPPOSITE directions on the tail
+      (sum_below: equal counts, +4 B) — a verdict quoting only one metric
+      would be misleading, which is why the instrument now reports both.
+
+      THE REGRESSION TAIL IS BOUNDED AND FULLY ATTRIBUTED — all 7 growers are
+      the (b) class: gust_poll +10 B (+1.4 %, +7 frame reloads, one dead
+      `movw #3` a downstream fold no longer matches, identity `mov rN, rN`
+      call-moves left unelided), hp64 +8 B (+4.3 %, 2 movs -> 2 ldr.w + one
+      re-materialized `movw #0`; also the only cycle-bound regression, +3 cyc
+      = +1.2 %), sum_below +4 B (2 movs -> 2 ldr.w), gale_k_msgq_put_decide
+      +4 B (+1 ldr.w), gpio_set/gpio_clear/gpio_toggle +2 B each (param
+      reloaded from frame instead of a live register copy). Worst absolute
+      +10 B, worst relative +4.3 %, total tail +32 B against -154 B of wins.
+
+      WHY NOT FLIP, MECHANICALLY: the Chaitin occurrence-count cost metric
+      prices every use at 1, blind to whether realizing it costs a 2-byte
+      register copy or a 4-byte frame reload. Named levers for increment 5+,
+      in the order the numbers rank them: (1) the RMW tie/coalesce constraint
+      RQ-59-REACH already named (49 single-block declines); (2) a width- and
+      copy-aware cost bias so a live register copy is preferred over a
+      [sp,#imm] reload when a spare register exists; (3) downstream cleanups —
+      identity-move elision and the dead-`movw`-before-shifted-immediate
+      sweep — which would neutralize part of the tail on their own.
+    status: implemented
+    tags: [codegen, register-allocation, graph-colouring, measurement, verdict, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-DEC-001
+      - type: refines
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        The verdict is reproducible from the instrument alone:
+        `python3 scripts/repro/vcr_dec_001_join_alloc_measure.py <synth>` on
+        the same corpus re-derives every number above (the instruction/width/
+        frame-traffic block requires python capstone and degrades to the
+        byte/wcet report without it). `SYNTH_GRAPH_ALLOC` stays OFF by
+        default; flag-off output stays byte-identical (frozen anchors 10/10,
+        `cargo test -p synth-cli --test frozen_codegen_bytes`). The flip
+        itself remains gated on domination + gale silicon evidence, per the
+        VCR-DEC-001 arc.
+
   - id: VCR-DEC-002
     type: sw-req
     title: "Decision: spill-reduction leapfrogs greedy heuristics — optimal-because-tiny + SSA-chordal + proof-carrying facts (gale #209)"
