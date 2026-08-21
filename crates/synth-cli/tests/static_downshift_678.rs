@@ -14,6 +14,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. The readers
+// below take BYTES, not a path, so no read can outlive its compile.
+mod artifact_guard;
+
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
 fn synth() -> &'static str {
@@ -47,9 +52,31 @@ fn compile(fixture: &str, extra: &[&str], out: &str) -> std::process::Output {
         .expect("run synth")
 }
 
-fn bss_size(path: &str) -> u64 {
-    let data = std::fs::read(path).expect("read .o");
-    let obj = object::File::parse(&*data).expect("parse ELF");
+/// #977: the guarded READ-BACK form — compile and hand back the object bytes
+/// proven to be this invocation's output. [`compile`] above stays for the
+/// straddle refusal test, which never reads an artifact.
+fn compile_read(fixture: &str, extra: &[&str], tag: &str) -> Vec<u8> {
+    let fx = repro(fixture);
+    let out = artifact_guard::unique_artifact(tag, "o");
+    let mut args = vec![
+        "compile",
+        fx.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--native-pointer-abi",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, tag)
+}
+
+fn bss_size(data: &[u8]) -> u64 {
+    let obj = object::File::parse(data).expect("parse ELF");
     obj.sections()
         .find(|s| s.name() == Ok(".bss"))
         .expect(".bss present")
@@ -58,9 +85,8 @@ fn bss_size(path: &str) -> u64 {
 
 /// The in-place REL addend of the (unique) `__synth_wasm_data` R_ARM_ABS32 reloc
 /// whose in-place literal word is non-zero — i.e. the down-shifted static addend.
-fn max_wasm_data_addend(path: &str) -> u32 {
-    let bytes = std::fs::read(path).expect("read .o");
-    let obj = object::File::parse(&*bytes).expect("parse ELF");
+fn max_wasm_data_addend(bytes: &[u8]) -> u32 {
+    let obj = object::File::parse(bytes).expect("parse ELF");
     let text = obj.section_by_name(".text").expect(".text");
     let text_data = text.data().expect("text data");
     let mut best = 0u32;
@@ -83,23 +109,18 @@ fn max_wasm_data_addend(path: &str) -> u32 {
 /// shrinks to `budget + tail`.
 #[test]
 fn bss_static_downshifts_678() {
-    let out = compile(
+    let bytes = compile_read(
         "mem678_bss.wat",
         &["--shadow-stack-size", "512"],
-        "/tmp/mem678_bss_test.o",
-    );
-    assert!(
-        out.status.success(),
-        "layer-2 must COMPILE the bss-static node (was refused): {}",
-        String::from_utf8_lossy(&out.stderr)
+        "mem678_bss_test",
     );
     assert_eq!(
-        max_wasm_data_addend("/tmp/mem678_bss_test.o"),
+        max_wasm_data_addend(&bytes),
         576,
         "static at 4160 must rebase to 4160 - (4096-512) = 576"
     );
     // budget 512 + static tail (used_extent 4168 - sp_init 4096 = 72) = 584.
-    assert_eq!(bss_size("/tmp/mem678_bss_test.o"), 584);
+    assert_eq!(bss_size(&bytes), 584);
 }
 
 /// Mixed geometry: a `(data)` segment (retargeted to `.data`) AND a BSS static at
@@ -107,18 +128,13 @@ fn bss_static_downshifts_678() {
 /// `.data`, only the residual BSS reloc is rebased (4200 - 3584 = 616).
 #[test]
 fn buffer_plus_bss_downshifts_678() {
-    let out = compile(
+    let bytes = compile_read(
         "mem678_buf.wat",
         &["--shadow-stack-size", "512"],
-        "/tmp/mem678_buf_test.o",
-    );
-    assert!(
-        out.status.success(),
-        "layer-2 must COMPILE the buffer node: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "mem678_buf_test",
     );
     assert_eq!(
-        max_wasm_data_addend("/tmp/mem678_buf_test.o"),
+        max_wasm_data_addend(&bytes),
         616,
         "bss static at 4200 must rebase to 616; the data-seg read stays in .data"
     );
@@ -147,8 +163,7 @@ fn straddling_static_refused_678() {
 /// reservation and no static is rebased (byte-identical to pre-#678).
 #[test]
 fn no_flag_leaves_statics_inline_678() {
-    let out = compile("mem678_buf.wat", &[], "/tmp/mem678_buf_noflag.o");
-    assert!(out.status.success());
+    let bytes = compile_read("mem678_buf.wat", &[], "mem678_buf_noflag");
     // Un-shifted: the bss static keeps its full wasm addend 4200.
-    assert_eq!(max_wasm_data_addend("/tmp/mem678_buf_noflag.o"), 4200);
+    assert_eq!(max_wasm_data_addend(&bytes), 4200);
 }

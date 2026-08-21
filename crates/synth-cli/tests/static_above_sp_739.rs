@@ -17,6 +17,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. The readers
+// below take BYTES, not a path, so no read can outlive its compile.
+mod artifact_guard;
+
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
 fn synth() -> &'static str {
@@ -50,14 +55,36 @@ fn compile(fixture: &str, extra: &[&str], out: &str) -> std::process::Output {
         .expect("run synth")
 }
 
+/// #977: the guarded READ-BACK form — compile and hand back the object bytes
+/// proven to be this invocation's output. [`compile`] above stays for the
+/// flag-honesty refusal test, which never reads an artifact.
+fn compile_read(fixture: &str, extra: &[&str], tag: &str) -> Vec<u8> {
+    let fx = repro(fixture);
+    let out = artifact_guard::unique_artifact(tag, "o");
+    let mut args = vec![
+        "compile",
+        fx.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--native-pointer-abi",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, tag)
+}
+
 fn parse<'a>(bytes: &'a [u8]) -> object::File<'a> {
     object::File::parse(bytes).expect("parse ELF")
 }
 
 /// All in-place REL addends of `__synth_wasm_data` R_ARM_ABS32 relocs.
-fn wasm_data_addends(path: &str) -> Vec<u32> {
-    let bytes = std::fs::read(path).expect("read .o");
-    let obj = parse(&bytes);
+fn wasm_data_addends(bytes: &[u8]) -> Vec<u32> {
+    let obj = parse(bytes);
     let text = obj.section_by_name(".text").expect(".text");
     let text_data = text.data().expect("text data");
     let mut addends = Vec::new();
@@ -73,9 +100,8 @@ fn wasm_data_addends(path: &str) -> Vec<u32> {
     addends
 }
 
-fn bss_size(path: &str) -> u64 {
-    let bytes = std::fs::read(path).expect("read .o");
-    let obj = parse(&bytes);
+fn bss_size(bytes: &[u8]) -> u64 {
+    let obj = parse(bytes);
     obj.sections()
         .find(|s| s.name() == Ok(".bss"))
         .expect(".bss present")
@@ -85,9 +111,8 @@ fn bss_size(path: &str) -> u64 {
 /// TRUE if `.text` contains an un-relocated MOVW/MOVT pair (same rd)
 /// materializing a constant in `[lo, hi)` — the baked-offset signature the
 /// #739 miscompile shipped (`movw ip,#0xC; movt ip,#0x10` = 0x10000C).
-fn has_baked_pair_in_window(path: &str, lo: u32, hi: u32) -> bool {
-    let bytes = std::fs::read(path).expect("read .o");
-    let obj = parse(&bytes);
+fn has_baked_pair_in_window(bytes: &[u8], lo: u32, hi: u32) -> bool {
+    let obj = parse(bytes);
     let text = obj.section_by_name(".text").expect(".text");
     let code = text.data().expect("text data");
     let reloc_offsets: Vec<u64> = text.relocations().map(|(off, _)| off).collect();
@@ -128,23 +153,18 @@ const BUDGET: u32 = 2048;
 /// #678 shrink down-shifts it to `budget + 12 = 2060`.
 #[test]
 fn above_sp_static_relocates_and_downshifts_739() {
-    let out = compile(
+    let bytes = compile_read(
         "mem739_above_sp.wat",
         &["--shadow-stack-size", "2048"],
-        "/tmp/mem739_shrunk_test.o",
+        "mem739_shrunk_test",
     );
-    assert!(
-        out.status.success(),
-        "must compile: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let addends = wasm_data_addends("/tmp/mem739_shrunk_test.o");
+    let addends = wasm_data_addends(&bytes);
     assert!(
         addends.contains(&(BUDGET + (BSS_STATIC - SP_INIT))),
         "above-SP static must down-shift to budget + 12 = 2060, got addends {addends:?}"
     );
     // Reservation = budget + above-SP tail — nowhere near the 1 MiB page.
-    let bss = bss_size("/tmp/mem739_shrunk_test.o");
+    let bss = bss_size(&bytes);
     assert!(
         (BUDGET as u64..=(BUDGET + 4096) as u64).contains(&bss),
         ".bss must be the shrunk reservation, got {bss}"
@@ -153,7 +173,7 @@ fn above_sp_static_relocates_and_downshifts_739() {
     // materialize a static-region address (post-shrink window starts at the
     // budget — anything at/above it is un-rebased).
     assert!(
-        !has_baked_pair_in_window("/tmp/mem739_shrunk_test.o", BUDGET, LINMEM),
+        !has_baked_pair_in_window(&bytes, BUDGET, LINMEM),
         "un-relocated baked static-region MOVW/MOVT pair survived the shrink"
     );
 }
@@ -164,19 +184,14 @@ fn above_sp_static_relocates_and_downshifts_739() {
 /// region anywhere.
 #[test]
 fn above_sp_static_relocates_without_shrink_739() {
-    let out = compile("mem739_above_sp.wat", &[], "/tmp/mem739_noshrink_test.o");
-    assert!(
-        out.status.success(),
-        "must compile: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let addends = wasm_data_addends("/tmp/mem739_noshrink_test.o");
+    let bytes = compile_read("mem739_above_sp.wat", &[], "mem739_noshrink_test");
+    let addends = wasm_data_addends(&bytes);
     assert!(
         addends.contains(&BSS_STATIC),
         "above-SP static must relocate as __synth_wasm_data + 0x10000C, got {addends:?}"
     );
     assert!(
-        !has_baked_pair_in_window("/tmp/mem739_noshrink_test.o", SP_INIT, LINMEM),
+        !has_baked_pair_in_window(&bytes, SP_INIT, LINMEM),
         "un-relocated baked static-region MOVW/MOVT pair in the un-shrunk object"
     );
 }
@@ -223,33 +238,32 @@ fn i64_static_offset_relocates_746() {
     i32.wrap_i64))"#,
     )
     .unwrap();
-    let obj = dir.join("i64_above_sp.o");
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            wat.to_str().unwrap(),
-            "--target",
-            "cortex-m3",
-            "--native-pointer-abi",
-            "--all-exports",
-            "--relocatable",
-            "-o",
-            obj.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "i64 static-region access must compile (relocated, #746): {}",
-        String::from_utf8_lossy(&out.stderr)
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let obj = artifact_guard::unique_artifact("mem746_i64_above_sp", "o");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        wat.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--native-pointer-abi",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        obj.to_str().unwrap(),
+    ]);
+    let bytes = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &obj,
+        "i64 static-region access must compile (relocated, #746)",
     );
-    let addends = wasm_data_addends(obj.to_str().unwrap());
+    let addends = wasm_data_addends(&bytes);
     assert!(
         addends.contains(&1_048_584),
         "i64 static must relocate as __synth_wasm_data + 0x100008, got {addends:?}"
     );
     assert!(
-        !has_baked_pair_in_window(obj.to_str().unwrap(), SP_INIT, LINMEM),
+        !has_baked_pair_in_window(&bytes, SP_INIT, LINMEM),
         "un-relocated baked static-region MOVW/MOVT pair in the i64 object"
     );
 }
@@ -262,30 +276,84 @@ fn i64_static_offset_relocates_746() {
 /// fails (all 7 functions loud-decline, nothing to emit).
 #[test]
 fn wide_static_relocates_and_downshifts_746() {
-    let out = compile(
+    let bytes = compile_read(
         "mem746_wide_static.wat",
         &["--shadow-stack-size", "2048"],
-        "/tmp/mem746_shrunk_test.o",
+        "mem746_shrunk_test",
     );
-    assert!(
-        out.status.success(),
-        "must compile: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let addends = wasm_data_addends("/tmp/mem746_shrunk_test.o");
+    let addends = wasm_data_addends(&bytes);
     for want in [BUDGET + 16, BUDGET + 24] {
         assert!(
             addends.contains(&want),
             "above-SP i64 static must down-shift to {want}, got addends {addends:?}"
         );
     }
-    let bss = bss_size("/tmp/mem746_shrunk_test.o");
+    let bss = bss_size(&bytes);
     assert!(
         (BUDGET as u64..=(BUDGET + 4096) as u64).contains(&bss),
         ".bss must be the shrunk reservation, got {bss}"
     );
     assert!(
-        !has_baked_pair_in_window("/tmp/mem746_shrunk_test.o", BUDGET, LINMEM),
+        !has_baked_pair_in_window(&bytes, BUDGET, LINMEM),
         "un-relocated baked static-region MOVW/MOVT pair survived the shrink"
+    );
+}
+
+/// #977 RQ-59-FRESHNESS — the SILENT-direction demonstration for the
+/// helper-split batch (static_above_sp_739, static_downshift_678,
+/// multi_sp_rebase_707 — the guard is now THREADED through: readers take
+/// bytes handed back by the guarded compile, so no read can be attributed to
+/// anything but its own compile).
+///
+/// Prove the counterfactual: a planted VALID object (minted by this file's
+/// own compile shape) parses and carries the `__synth_wasm_data` reloc
+/// addends these gates assert on — so the pre-conversion path-based readers
+/// WOULD have re-confirmed last run's relocation evidence as this run's.
+/// Then fail the compile at that path and require the guard to refuse AND to
+/// leave nothing behind.
+#[test]
+fn freshness_guard_refuses_stale_reloc_artifact_977() {
+    // 1. Mint a genuine object with this batch's own compile shape.
+    let good = compile_read("mem739_above_sp.wat", &[], "mem739_fresh_demo");
+
+    // 2. Plant it, and prove the OLD shape would have passed on it.
+    let planted_at = artifact_guard::unique_artifact("mem739_stale_planted", "o");
+    std::fs::write(&planted_at, &good).expect("plant the stale artifact");
+    let stale = std::fs::read(&planted_at).expect("read planted");
+    assert!(
+        wasm_data_addends(&stale).contains(&BSS_STATIC),
+        "the planted artifact must carry the asserted reloc addend — \
+         substantial enough to fool an unguarded path-based reader"
+    );
+
+    // 3. A FAILING compile aimed at that exact path (nonexistent input).
+    let missing = repro("does_not_exist_977.wat");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        missing.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--native-pointer-abi",
+        "--all-exports",
+        "--relocatable",
+        "-o",
+        planted_at.to_str().unwrap(),
+    ]);
+    let err = artifact_guard::compile_artifact(&mut cmd, &planted_at)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+
+    // 4. The refusal names the compile, not the parser — and nothing is left.
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !planted_at.exists(),
+        "the stale artifact must be GONE — left in place, a later reader picks it up"
     );
 }

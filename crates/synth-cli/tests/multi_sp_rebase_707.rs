@@ -19,6 +19,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. The readers
+// below take BYTES, not a path, so no read can outlive its compile.
+mod artifact_guard;
+
 use object::{Object, ObjectSection};
 
 fn synth() -> &'static str {
@@ -31,8 +36,10 @@ fn fixture() -> PathBuf {
         .join("scripts/repro/mem707_multi_sp.wat")
 }
 
-fn compile(extra: &[&str], out: &str) -> std::process::Output {
+fn compile(extra: &[&str], tag: &str) -> Vec<u8> {
     let fx = fixture();
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let out = artifact_guard::unique_artifact(tag, "o");
     let mut args = vec![
         "compile",
         fx.to_str().unwrap(),
@@ -42,18 +49,16 @@ fn compile(extra: &[&str], out: &str) -> std::process::Output {
         "--all-exports",
         "--relocatable",
         "-o",
-        out,
+        out.to_str().unwrap(),
     ];
     args.extend_from_slice(extra);
-    Command::new(synth())
-        .args(&args)
-        .output()
-        .expect("run synth")
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &out, tag)
 }
 
-fn bss_size(path: &str) -> u64 {
-    let data = std::fs::read(path).expect("read .o");
-    let obj = object::File::parse(&*data).expect("parse ELF");
+fn bss_size(data: &[u8]) -> u64 {
+    let obj = object::File::parse(data).expect("parse ELF");
     obj.sections()
         .find(|s| s.name() == Ok(".bss"))
         .expect(".bss present")
@@ -63,9 +68,8 @@ fn bss_size(path: &str) -> u64 {
 /// The materialized global slots in `.data`, decoded as little-endian i32 words.
 /// The fixture has three mutable SP globals + one immutable constant ⇒ four
 /// 4-byte slots (slots 0..2 = sp0/sp1/sp2, slot 3 = the immutable `$konst`).
-fn global_slots(path: &str) -> Vec<i32> {
-    let bytes = std::fs::read(path).expect("read .o");
-    let obj = object::File::parse(&*bytes).expect("parse ELF");
+fn global_slots(bytes: &[u8]) -> Vec<i32> {
+    let obj = object::File::parse(bytes).expect("parse ELF");
     let data = obj
         .section_by_name(".data")
         .expect(".data present")
@@ -83,34 +87,28 @@ fn global_slots(path: &str) -> Vec<i32> {
 /// co-rebases all three to the budget and shrinks the reservation.
 #[test]
 fn all_aliased_sp_globals_rebase_707() {
-    let out = compile(&["--shadow-stack-size", "512"], "/tmp/mem707_test.o");
-    assert!(
-        out.status.success(),
-        "#707: the 3-SP fused node must now COMPILE (was refused): {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let bytes = compile(&["--shadow-stack-size", "512"], "mem707_test");
     // Every MUTABLE global whose init == sp_init (the three SP globals) re-bases
     // to 512; the immutable `$konst` (slot 3) — which merely COINCIDES with
     // sp_init — must stay 4096. Re-basing it would corrupt a program constant.
     assert_eq!(
-        global_slots("/tmp/mem707_test.o"),
+        global_slots(&bytes),
         vec![512, 512, 512, 4096],
         "the three mutable SP globals co-rebase; the immutable constant is untouched"
     );
     // Reservation shrinks 4096 → budget 512 (no static tail above sp_init).
-    assert_eq!(bss_size("/tmp/mem707_test.o"), 512);
+    assert_eq!(bss_size(&bytes), 512);
 }
 
 /// Opt-in / frozen-safe: WITHOUT the flag the same node keeps all three SP slots
 /// at their declared top and the full reservation (byte-identical to pre-#707).
 #[test]
 fn no_flag_leaves_multi_sp_full_707() {
-    let out = compile(&[], "/tmp/mem707_noflag_test.o");
-    assert!(out.status.success());
+    let bytes = compile(&[], "mem707_noflag_test");
     assert_eq!(
-        global_slots("/tmp/mem707_noflag_test.o"),
+        global_slots(&bytes),
         vec![4096, 4096, 4096, 4096],
         "no flag must leave every slot at its declared value"
     );
-    assert_eq!(bss_size("/tmp/mem707_noflag_test.o"), 4096);
+    assert_eq!(bss_size(&bytes), 4096);
 }
