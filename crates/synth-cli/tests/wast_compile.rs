@@ -17,6 +17,12 @@ use std::process::Command;
 ///
 /// `CARGO_BIN_EXE_<name>` is the thing Cargo actually sets for integration
 /// tests, and it is layout-independent by construction.
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`. Unique-per-
+// call output paths + the guarded read close the stale-artifact direction
+// (this file's .exists() checks only ever covered the missing-file half).
+mod artifact_guard;
+
 fn synth_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_synth"))
 }
@@ -35,47 +41,30 @@ fn wast_dir() -> PathBuf {
 }
 
 /// Compile a single WAST file and assert success
-fn compile_wast(wast_file: &Path) -> PathBuf {
+fn compile_wast(wast_file: &Path) -> Vec<u8> {
     let stem = wast_file.file_stem().unwrap().to_str().unwrap();
-    let output = std::env::temp_dir().join(format!("synth_test_{}.elf", stem));
+    // #977: unique per call + remove-first + status/exists/non-empty guards —
+    // a stale ELF at a fixed path must never be parsed as this run's.
+    let output = artifact_guard::unique_artifact(&format!("synth_test_{stem}"), "elf");
 
-    let result = Command::new(synth_binary())
-        .args([
-            "compile",
-            wast_file.to_str().unwrap(),
-            "--all-exports",
-            "--cortex-m",
-            "-o",
-            output.to_str().unwrap(),
-        ])
-        .output()
-        .expect("Failed to run synth binary");
-
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    let stderr = String::from_utf8_lossy(&result.stderr);
-
-    assert!(
-        result.status.success(),
-        "synth compile failed for {}:\nstdout: {}\nstderr: {}",
-        wast_file.display(),
-        stdout,
-        stderr,
-    );
-
-    // Verify the output file exists and looks like an ELF
-    assert!(
-        output.exists(),
-        "Output ELF not created: {}",
-        output.display()
-    );
-    let data = std::fs::read(&output).unwrap();
+    let mut cmd = Command::new(synth_binary());
+    cmd.args([
+        "compile",
+        wast_file.to_str().unwrap(),
+        "--all-exports",
+        "--cortex-m",
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+    let data =
+        artifact_guard::compile_bytes_or_panic(&mut cmd, &output, &wast_file.display().to_string());
     assert!(data.len() > 52, "ELF file too small: {} bytes", data.len());
     assert_eq!(&data[0..4], b"\x7fELF", "Not a valid ELF file");
 
     // Check it's ARM (e_machine = 0x28 = 40)
     assert_eq!(data[18], 0x28, "Not an ARM ELF (e_machine)");
 
-    output
+    data
 }
 
 // --- Individual WAST file compile tests ---
@@ -206,7 +195,7 @@ fn compile_import_call_produces_relocatable_elf() {
 
     assert!(wat.exists(), "import_call.wat not found: {}", wat.display());
 
-    let output = std::env::temp_dir().join("synth_test_import_call.o");
+    let output = artifact_guard::unique_artifact("synth_test_import_call", "o");
 
     let result = Command::new(synth_binary())
         .args([
@@ -229,7 +218,7 @@ fn compile_import_call_produces_relocatable_elf() {
         stderr,
     );
 
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
 
     // ELF magic
     assert_eq!(&data[0..4], b"\x7fELF", "Not a valid ELF file");
@@ -298,7 +287,7 @@ fn compile_import_call_produces_relocatable_elf() {
 fn compile_with_relocatable_flag_forces_et_rel() {
     let wast_file = wast_dir().join("i32_arithmetic.wast");
     assert!(wast_file.exists(), "i32_arithmetic.wast missing");
-    let output = std::env::temp_dir().join("synth_test_relocatable.o");
+    let output = artifact_guard::unique_artifact("synth_test_relocatable", "o");
 
     let result = Command::new(synth_binary())
         .args([
@@ -323,7 +312,7 @@ fn compile_with_relocatable_flag_forces_et_rel() {
     );
     assert!(output.exists(), "output not created");
 
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(&data[0..4], b"\x7fELF", "not an ELF");
     // ET_REL == 1
     let e_type = u16::from_le_bytes([data[16], data[17]]);
@@ -340,7 +329,7 @@ fn compile_with_relocatable_flag_forces_et_rel() {
 #[test]
 fn compile_without_relocatable_flag_produces_et_exec_for_no_imports() {
     let wast_file = wast_dir().join("i32_arithmetic.wast");
-    let output = std::env::temp_dir().join("synth_test_no_relocatable.elf");
+    let output = artifact_guard::unique_artifact("synth_test_no_relocatable", "elf");
 
     let result = Command::new(synth_binary())
         .args([
@@ -359,7 +348,7 @@ fn compile_without_relocatable_flag_produces_et_exec_for_no_imports() {
         "default compile (no --relocatable) failed: stderr={}",
         String::from_utf8_lossy(&result.stderr),
     );
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
     let e_type = u16::from_le_bytes([data[16], data[17]]);
     assert_eq!(
         e_type, 2,
@@ -410,7 +399,7 @@ fn compile_internal_call_is_linkable_167() {
         wat.display()
     );
 
-    let output = std::env::temp_dir().join("synth_test_internal_call.o");
+    let output = artifact_guard::unique_artifact("synth_test_internal_call", "o");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -431,7 +420,7 @@ fn compile_internal_call_is_linkable_167() {
         String::from_utf8_lossy(&result.stderr),
     );
 
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
     let elf = object::File::parse(&*data).expect("parse ARM ELF object");
 
     // A `func_0` symbol must be defined so internal `BL func_0` resolves.
@@ -499,7 +488,7 @@ fn compile_import_call_uses_field_name_173() {
         wat.display()
     );
 
-    let output = std::env::temp_dir().join("synth_test_import_field_name.o");
+    let output = artifact_guard::unique_artifact("synth_test_import_field_name", "o");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -520,7 +509,7 @@ fn compile_import_call_uses_field_name_173() {
         String::from_utf8_lossy(&result.stderr),
     );
 
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
     let elf = object::File::parse(&*data).expect("parse ARM ELF object");
 
     // The import's field name must be an UNDEFINED symbol the host resolves.
@@ -570,7 +559,7 @@ fn pointer_deref_optimized_uses_address_operand_178_180() {
         .join("ptr_deref.wat");
     assert!(wat.exists(), "ptr_deref.wat not found: {}", wat.display());
 
-    let out = std::env::temp_dir().join("synth_ptr_opt.o");
+    let out = artifact_guard::unique_artifact("synth_ptr_opt", "o");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -589,7 +578,7 @@ fn pointer_deref_optimized_uses_address_operand_178_180() {
         "compile failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let data = std::fs::read(&out).unwrap();
+    let data = artifact_guard::read_artifact(&out).unwrap_or_else(|e| panic!("{e}"));
     let elf = object::File::parse(&*data).expect("parse ELF");
     let text = elf
         .section_by_name(".text")
@@ -634,7 +623,7 @@ fn relocatable_pointer_deref_uses_fp_base_197() {
         .join("ptr_deref.wat");
     assert!(wat.exists(), "ptr_deref.wat not found: {}", wat.display());
 
-    let out = std::env::temp_dir().join("synth_ptr_rel_197.o");
+    let out = artifact_guard::unique_artifact("synth_ptr_rel_197", "o");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -653,7 +642,7 @@ fn relocatable_pointer_deref_uses_fp_base_197() {
         "relocatable compile failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let data = std::fs::read(&out).unwrap();
+    let data = artifact_guard::read_artifact(&out).unwrap_or_else(|e| panic!("{e}"));
     let elf = object::File::parse(&*data).expect("parse ELF");
     let text = elf
         .section_by_name(".text")
@@ -694,7 +683,7 @@ fn relocatable_conditional_branch_targets_instruction_boundary_202() {
         .join("branch_over_32bit.wat");
     assert!(wat.exists(), "fixture not found: {}", wat.display());
 
-    let out = std::env::temp_dir().join("synth_br32_202.o");
+    let out = artifact_guard::unique_artifact("synth_br32_202", "o");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -713,7 +702,7 @@ fn relocatable_conditional_branch_targets_instruction_boundary_202() {
         "compile failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let data = std::fs::read(&out).unwrap();
+    let data = artifact_guard::read_artifact(&out).unwrap_or_else(|e| panic!("{e}"));
     let elf = object::File::parse(&*data).expect("parse ELF");
     let text = elf
         .section_by_name(".text")
@@ -816,7 +805,7 @@ fn compile_standalone_internal_call_resolves_bl_170() {
         wat.display()
     );
 
-    let output = std::env::temp_dir().join("synth_test_standalone_internal_call.elf");
+    let output = artifact_guard::unique_artifact("synth_test_standalone_internal_call", "elf");
     let result = Command::new(synth_binary())
         .args([
             "compile",
@@ -837,7 +826,7 @@ fn compile_standalone_internal_call_resolves_bl_170() {
         String::from_utf8_lossy(&result.stderr),
     );
 
-    let data = std::fs::read(&output).unwrap();
+    let data = artifact_guard::read_artifact(&output).unwrap_or_else(|e| panic!("{e}"));
 
     // No linker is involved: this must be a standalone executable (ET_EXEC = 2),
     // NOT a relocatable object (ET_REL = 1).
@@ -927,4 +916,62 @@ fn compile_standalone_internal_call_resolves_bl_170() {
     );
 
     let _ = std::fs::remove_file(&output);
+}
+
+/// #977 RQ-59-FRESHNESS — the SILENT-direction demonstration for the
+/// conformance batch (this file's helper + its nine inline sites).
+///
+/// This file's historical `.exists()` checks only ever covered the
+/// missing-file half. Prove the OTHER half: a planted VALID ELF (minted by
+/// this file's own compile shape) passes every structural check the old
+/// shape ran — parses, ARM e_machine, ELF magic — so a stale artifact WOULD
+/// have re-confirmed a previous run's conformance as this run's. Then fail
+/// the compile at that path and require the guard to refuse AND to leave
+/// nothing behind.
+#[test]
+fn freshness_guard_refuses_stale_conformance_artifact_977() {
+    // 1. Mint genuine bytes with this file's own (guarded) compile shape.
+    let good = compile_wast(&wast_dir().join("i32_arithmetic.wast"));
+
+    // 2. Plant them, and prove the OLD shape would have passed on them.
+    let planted_at = artifact_guard::unique_artifact("wast_stale_planted", "elf");
+    std::fs::write(&planted_at, &good).expect("plant the stale artifact");
+    let stale = std::fs::read(&planted_at).expect("read planted");
+    assert_eq!(
+        &stale[0..4],
+        b"\x7fELF",
+        "planted artifact passes the magic check"
+    );
+    assert_eq!(
+        stale[18], 0x28,
+        "planted artifact passes the ARM e_machine check"
+    );
+
+    // 3. A FAILING compile aimed at that exact path (nonexistent input).
+    let missing = wast_dir().join("does_not_exist_977.wast");
+    let mut cmd = Command::new(synth_binary());
+    cmd.args([
+        "compile",
+        missing.to_str().unwrap(),
+        "--all-exports",
+        "--cortex-m",
+        "-o",
+        planted_at.to_str().unwrap(),
+    ]);
+    let err = artifact_guard::compile_artifact(&mut cmd, &planted_at)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+
+    // 4. The refusal names the compile, not the parser — and nothing is left.
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !planted_at.exists(),
+        "the stale artifact must be GONE — left in place, a later reader picks it up"
+    );
 }
