@@ -206,7 +206,7 @@ requirements:
       FALSIFIABLE: if the histogram does not move materially, `unmodeled-op`
       was not the real limit and the 167/175 census was wrong. Report that as
       the finding; it outranks the increment.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [north-star, vcr-dec-001, allocator, reach, decline-histogram]
     links:
@@ -362,7 +362,7 @@ requirements:
       RED-FIRST: the gate must be shown REFUSING a 0.x-minor bump, not merely
       present. A gate that cannot fail is indistinguishable from one that
       passes.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [ci, dependencies, gate-potency, enforcement]
     links:
