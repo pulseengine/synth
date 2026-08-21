@@ -64,7 +64,10 @@ fn workdir(tag: &str) -> PathBuf {
 /// A function body whose `br_table` has `n` targets — above the aarch64
 /// compare-chain threshold (16) it is loud-declined (VCR-A64-CF-001).
 fn br_table_body(n: usize) -> String {
-    let targets = (0..n).map(|k| format!("$b{k}")).collect::<Vec<_>>().join(" ");
+    let targets = (0..n)
+        .map(|k| format!("$b{k}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let opens = (0..n)
         .rev()
         .map(|k| format!("(block $b{k}"))
@@ -74,9 +77,7 @@ fn br_table_body(n: usize) -> String {
         .map(|k| format!(") (return (i32.const {k}))"))
         .collect::<Vec<_>>()
         .join("\n    ");
-    format!(
-        "{opens}\n      (br_table {targets} (local.get 0))\n    {closes}\n    (i32.const 99)"
-    )
+    format!("{opens}\n      (br_table {targets} (local.get 0))\n    {closes}\n    (i32.const 99)")
 }
 
 /// gale's #1013 shape, minimized: `$jump` (wasm index 0, so symbol `func_0`)
@@ -108,6 +109,9 @@ fn compile(dir: &std::path::Path, wat: &str, out_name: &str, extra: &[&str]) -> 
     let src = dir.join("m.wat");
     std::fs::write(&src, wat).expect("write wat");
     let obj = dir.join(out_name);
+    // The temp workdir persists across runs — a stale object from an earlier
+    // run would make the "no partial object left behind" assertion vacuous.
+    let _ = std::fs::remove_file(&obj);
     let mut c = Command::new(synth());
     c.args([
         "compile",
@@ -209,5 +213,8 @@ fn decline_without_dangling_reloc_still_exits_zero() {
         !err.contains("panicked at"),
         "control compile panicked.\nstderr:\n{err}"
     );
-    assert!(dir.join("ctrl.o").exists(), "control object was not emitted");
+    assert!(
+        dir.join("ctrl.o").exists(),
+        "control object was not emitted"
+    );
 }

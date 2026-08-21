@@ -402,7 +402,7 @@ impl Backend for AArch64Backend {
         if let Some(table) = substrate.table {
             elf_funcs.push(table);
         }
-        let elf = elf::build_relocatable_object_with_data(&elf_funcs, &substrate.globals);
+        let elf = elf::build_relocatable_object_with_data(&elf_funcs, &substrate.globals)?;
         Ok(CompilationResult {
             functions,
             elf: Some(elf),
