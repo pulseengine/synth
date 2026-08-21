@@ -1826,3 +1826,104 @@ Proof.
     eexists. split; [reflexivity |].
     rewrite get_set_reg_eq. rewrite get_reg_set_flags. exact HRn.
 Qed.
+
+(** ** Increment-6 sign-extension family (RQ-59-SUBTRACT, #242).
+
+    [rule_i32_extend8_s] / [rule_i32_extend16_s] are single REAL
+    instructions (SXTB/SXTH); the three narrow i64 forms are single
+    pseudo-ops at the same modeling tier as the increment-3 pair
+    pseudo-ops (encoder-expanded SXTB/SXTH/MOV + ASR #31, the pseudo
+    reading the operand low half before either destination write).
+    Results are stated CONCRETELY via the I32 shift primitives
+    ([shl] then [shrs]) — the WASM-spec shape of extendN_s — and the
+    semantics are Definitions, not axioms: no new axiom joins the
+    trusted base for this family. *)
+
+Definition rule_i32_extend8_s := Gen.rule_i32_extend8_s.
+Definition rule_i32_extend16_s := Gen.rule_i32_extend16_s.
+Definition rule_i64_extend8_s := Gen.rule_i64_extend8_s.
+Definition rule_i64_extend16_s := Gen.rule_i64_extend16_s.
+Definition rule_i64_extend32_s := Gen.rule_i64_extend32_s.
+
+Theorem rule_i32_extend8_s_correct : forall astate v rd rm,
+  get_reg astate rm = v ->
+  exists astate',
+    exec_program (rule_i32_extend8_s rd rm) astate = Some astate' /\
+    get_reg astate' rd = I32.shrs (I32.shl v (I32.repr 24)) (I32.repr 24).
+Proof.
+  intros astate v rd rm HR.
+  unfold rule_i32_extend8_s, Gen.rule_i32_extend8_s.
+  cbn [exec_program exec_instr].
+  rewrite HR.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. unfold sxtb_val. reflexivity.
+Qed.
+
+Theorem rule_i32_extend16_s_correct : forall astate v rd rm,
+  get_reg astate rm = v ->
+  exists astate',
+    exec_program (rule_i32_extend16_s rd rm) astate = Some astate' /\
+    get_reg astate' rd = I32.shrs (I32.shl v (I32.repr 16)) (I32.repr 16).
+Proof.
+  intros astate v rd rm HR.
+  unfold rule_i32_extend16_s, Gen.rule_i32_extend16_s.
+  cbn [exec_program exec_instr].
+  rewrite HR.
+  eexists. split; [reflexivity |].
+  rewrite get_set_reg_eq. unfold sxth_val. reflexivity.
+Qed.
+
+Theorem rule_i64_extend8_s_correct : forall astate v rdlo rdhi rnlo,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = v ->
+  exists astate',
+    exec_program (rule_i64_extend8_s rdlo rdhi rnlo) astate = Some astate' /\
+    get_reg astate' rdlo = I32.shrs (I32.shl v (I32.repr 24)) (I32.repr 24) /\
+    get_reg astate' rdhi =
+      I32.shrs (I32.shrs (I32.shl v (I32.repr 24)) (I32.repr 24)) (I32.repr 31).
+Proof.
+  intros astate v rdlo rdhi rnlo Hdd HR.
+  unfold rule_i64_extend8_s, Gen.rule_i64_extend8_s.
+  cbn [exec_program exec_instr].
+  rewrite HR.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. rewrite get_set_reg_eq.
+    unfold sxtb_val. reflexivity.
+  - rewrite get_set_reg_eq. unfold sxtb_val. reflexivity.
+Qed.
+
+Theorem rule_i64_extend16_s_correct : forall astate v rdlo rdhi rnlo,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = v ->
+  exists astate',
+    exec_program (rule_i64_extend16_s rdlo rdhi rnlo) astate = Some astate' /\
+    get_reg astate' rdlo = I32.shrs (I32.shl v (I32.repr 16)) (I32.repr 16) /\
+    get_reg astate' rdhi =
+      I32.shrs (I32.shrs (I32.shl v (I32.repr 16)) (I32.repr 16)) (I32.repr 31).
+Proof.
+  intros astate v rdlo rdhi rnlo Hdd HR.
+  unfold rule_i64_extend16_s, Gen.rule_i64_extend16_s.
+  cbn [exec_program exec_instr].
+  rewrite HR.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. rewrite get_set_reg_eq.
+    unfold sxth_val. reflexivity.
+  - rewrite get_set_reg_eq. unfold sxth_val. reflexivity.
+Qed.
+
+Theorem rule_i64_extend32_s_correct : forall astate v rdlo rdhi rnlo,
+  rdhi <> rdlo ->
+  get_reg astate rnlo = v ->
+  exists astate',
+    exec_program (rule_i64_extend32_s rdlo rdhi rnlo) astate = Some astate' /\
+    get_reg astate' rdlo = v /\
+    get_reg astate' rdhi = I32.shrs v (I32.repr 31).
+Proof.
+  intros astate v rdlo rdhi rnlo Hdd HR.
+  unfold rule_i64_extend32_s, Gen.rule_i64_extend32_s.
+  cbn [exec_program exec_instr].
+  rewrite HR.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by exact Hdd. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
+Qed.

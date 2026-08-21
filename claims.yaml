@@ -743,12 +743,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "617 Qed / 2 Admitted"
+    text: "622 Qed / 2 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 617
+        expect: 622
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -756,16 +756,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "617 Qed / 2 Admitted"
+    text: "622 Qed / 2 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '617 Qed / 2 Admitted'
+        pattern: '622 Qed / 2 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 617
+        expect: 622
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -1023,7 +1023,7 @@ claims:
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: CLAUDE.md
-    text: "increments 1–5 shipped **default-on**"
+    text: "increments 1–6 shipped **default-on**"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -1094,10 +1094,10 @@ claims:
     evidence:
       - kind: verbatim                       # "covered" != "faithful" must stay in the doc
         text: '**"covered" ≠ "faithful"**'
-      - kind: count-eq                       # all 74 rule theorems conclude via the simplified executor
+      - kind: count-eq                       # all 79 rule theorems conclude via the simplified executor
         pattern: 'exec_program \(rule_'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
-        expect: 74
+        expect: 79
       - kind: count-same                     # rule theorems == simplified-basis conclusions,
         legs:                                # 1:1 — a future Sail-basis rule theorem breaks
           - name: rule-correct-theorems      # this pair and forces reclassification HERE
@@ -1199,14 +1199,14 @@ claims:
 
   - id: SYNTH-SEL-DSL-COVERAGE-STATUS-MD
     doc: coq/STATUS.md
-    text: "**54 (35%)**"                     # DSL-served column total, per-op-family table (#667)
+    text: "**59 (38%)**"                     # DSL-served column total, per-op-family table (#667)
     evidence:
       - kind: count-eq
         pattern: '^rule_'
         glob: ['coq/vcr_sel_rules.manifest']
-        expect: 74
+        expect: 79
       - kind: verbatim
-        text: "**74 Qed / 0 Admitted**"
+        text: "**79 Qed / 0 Admitted**"
 
   # ===========================================================================
   # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC.
@@ -1447,8 +1447,12 @@ claims:
         # +5 select shapes (fresh/in-place i32, pair/in-place i64,
         # select_default) — each landed WITH the deletion of the hand-written
         # emission it supersedes, byte-identity-gated. Banked.
-        value: 74
-        baseline: 74
+        # 74 -> 79 (RQ-59-SUBTRACT, increment 6): the sign-extension family —
+        # i32.extend8_s/16_s (SXTB/SXTH), i64.extend8/16/32_s (narrow
+        # pseudo-ops) — each landed WITH the deletion of the hand-written
+        # emission it supersedes, byte-identity-gated. Banked.
+        value: 79
+        baseline: 79
 
   # ---------------------------------------------------------------------------
   # "Generate, don't mirror" — the rot class this repo keeps paying for, now

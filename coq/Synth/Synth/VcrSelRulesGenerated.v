@@ -251,4 +251,19 @@ Definition rule_i64_select_inplace (rdlo rdhi rnlo rnhi rc : arm_reg) : arm_prog
 Definition rule_i32_select_default (rd rn rm rc : arm_reg) : arm_program :=
   [CMP rc (Imm I32.zero); MOV rd (Reg rn); MOVEQ rd (Reg rm)].
 
+Definition rule_i32_extend8_s (rd rm : arm_reg) : arm_program :=
+  [SXTB rd rm].
+
+Definition rule_i32_extend16_s (rd rm : arm_reg) : arm_program :=
+  [SXTH rd rm].
+
+Definition rule_i64_extend8_s (rdlo rdhi rnlo : arm_reg) : arm_program :=
+  [I64Extend8SPseudo rdlo rdhi rnlo].
+
+Definition rule_i64_extend16_s (rdlo rdhi rnlo : arm_reg) : arm_program :=
+  [I64Extend16SPseudo rdlo rdhi rnlo].
+
+Definition rule_i64_extend32_s (rdlo rdhi rnlo : arm_reg) : arm_program :=
+  [I64Extend32SPseudo rdlo rdhi rnlo].
+
 End Gen.

@@ -482,6 +482,22 @@
         },
         {
           "bridge_theorems": [],
+          "name": "SXTB",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "SXTH",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
           "name": "LDR",
           "proof_layer_refs": [
             "coq/Synth/Synth/Compilation.v"
@@ -923,6 +939,30 @@
         },
         {
           "bridge_theorems": [],
+          "name": "I64Extend8SPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64Extend16SPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
+          "name": "I64Extend32SPseudo",
+          "proof_layer_refs": [
+            "coq/Synth/Synth/VcrSelRulesGenerated.v"
+          ],
+          "tier": "simplified-only"
+        },
+        {
+          "bridge_theorems": [],
           "name": "I64LoadPseudo",
           "proof_layer_refs": [
             "coq/Synth/Synth/Compilation.v"
@@ -940,8 +980,8 @@
       ],
       "summary": {
         "bridge-validated": 26,
-        "simplified-only": 68,
-        "total": 98,
+        "simplified-only": 73,
+        "total": 103,
         "uncovered": 4
       },
       "universe": "arm_instr constructors (coq/Synth/ARM/ArmInstructions.v)"

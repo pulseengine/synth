@@ -410,6 +410,26 @@ pub enum TemplateOp {
         rn_lo: RegVar,
         rn_hi: RegVar,
     },
+    /// `ArmOp::Sxtb { rd, rm }` — sign-extend the low byte (increment 6).
+    /// Modeled by the flat model's `SXTB` constructor. No side conditions:
+    /// a single instruction that reads `rm` then writes `rd`.
+    Sxtb { rd: RegVar, rm: RegVar },
+    /// `ArmOp::Sxth { rd, rm }` — sign-extend the low halfword (increment 6).
+    /// Modeled by the flat model's `SXTH` constructor.
+    Sxth { rd: RegVar, rm: RegVar },
+    /// The single-pseudo-op narrow i64 in-register sign-extension shapes
+    /// (`I64Extend8S` / `I64Extend16S` / `I64Extend32S`, increment 6). One
+    /// ArmOp whose encoder expansion reads the operand LOW half before
+    /// writing the (lo, hi) destination pair, so the only aliasing
+    /// constraint is `rd_hi <> rd_lo` (the high write must not destroy the
+    /// low result word). Modeled by the corresponding
+    /// `I64Extend{8,16,32}SPseudo` constructor in the flat ARM model.
+    I64ExtendNarrowS {
+        kind: I64NarrowKind,
+        rd_lo: RegVar,
+        rd_hi: RegVar,
+        rn_lo: RegVar,
+    },
 }
 
 /// The binary i64 register-pair pseudo-op families that share the
@@ -429,6 +449,18 @@ pub enum I64CountKind {
     Clz,
     Ctz,
     Popcnt,
+}
+
+/// The narrow i64 in-register sign-extension pseudo-op families that share
+/// the [`TemplateOp::I64ExtendNarrowS`] shape (increment 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I64NarrowKind {
+    /// `i64.extend8_s` — sign-extend the low byte of the low half.
+    N8,
+    /// `i64.extend16_s` — sign-extend the low halfword of the low half.
+    N16,
+    /// `i64.extend32_s` — sign-fill the high half from the low half.
+    N32,
 }
 
 /// One declarative lowering rule: `op → parameterized ARM sequence`.
@@ -1744,6 +1776,71 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::SelectDefault,
         doc: "`select` (select_default shape): MOV rd, rn then EQ-override with rm",
     },
+    // ---- increment 6 (RQ-59-SUBTRACT): the sign-extension family. The
+    // i32 forms are single real instructions (SXTB/SXTH); the i64 narrow
+    // forms are single pseudo-ops (encoder-expanded SXTB/SXTH/MOV + ASR #31)
+    // whose only aliasing constraint is `rd_hi <> rd_lo`. Each rule landed
+    // WITH the deletion of the hand-written emission it supersedes. ----
+    SelRule {
+        name: "rule_i32_extend8_s",
+        op: WasmOp::I32Extend8S,
+        params: &[Rd, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::Sxtb { rd: Rd, rm: Rm }],
+        delegation: Delegation::Both,
+        doc: "`i32.extend8_s`: rd = sign-extension of rm's low byte",
+    },
+    SelRule {
+        name: "rule_i32_extend16_s",
+        op: WasmOp::I32Extend16S,
+        params: &[Rd, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::Sxth { rd: Rd, rm: Rm }],
+        delegation: Delegation::Both,
+        doc: "`i32.extend16_s`: rd = sign-extension of rm's low halfword",
+    },
+    SelRule {
+        name: "rule_i64_extend8_s",
+        op: WasmOp::I64Extend8S,
+        params: &[RdLo, RdHi, RnLo],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64ExtendNarrowS {
+            kind: I64NarrowKind::N8,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.extend8_s`: rd_lo = sign-extended low byte of rn_lo, rd_hi = sign fill",
+    },
+    SelRule {
+        name: "rule_i64_extend16_s",
+        op: WasmOp::I64Extend16S,
+        params: &[RdLo, RdHi, RnLo],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64ExtendNarrowS {
+            kind: I64NarrowKind::N16,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.extend16_s`: rd_lo = sign-extended low halfword of rn_lo, rd_hi = sign fill",
+    },
+    SelRule {
+        name: "rule_i64_extend32_s",
+        op: WasmOp::I64Extend32S,
+        params: &[RdLo, RdHi, RnLo],
+        side_conditions: &[SideCondition::NotAlias(RdHi, RdLo)],
+        seq: &[TemplateOp::I64ExtendNarrowS {
+            kind: I64NarrowKind::N32,
+            rd_lo: RdLo,
+            rd_hi: RdHi,
+            rn_lo: RnLo,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.extend32_s`: rd_lo = rn_lo, rd_hi = sign fill (rn_lo >>s 31)",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule
@@ -1954,6 +2051,41 @@ pub fn i64_rot_rule(
     Some(match op {
         WasmOp::I64Rotl => generated::rule_i64_rotl(rd_lo, rd_hi, rn_lo, rn_hi, shift),
         WasmOp::I64Rotr => generated::rule_i64_rotr(rd_lo, rd_hi, rn_lo, rn_hi, shift),
+        _ => return None,
+    })
+}
+
+/// Dispatch an i32 narrow sign-extension op (`i32.extend8_s/extend16_s`) to
+/// its generated Rocq-proved rule (increment 6). Same contract as
+/// [`i32_unary_rule`]: `None` for ops outside the family; no side conditions
+/// (a single SXTB/SXTH that reads `rm` then writes `rd`).
+pub fn i32_extend_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rm: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Extend8S => generated::rule_i32_extend8_s(rd, rm),
+        WasmOp::I32Extend16S => generated::rule_i32_extend16_s(rd, rm),
+        _ => return None,
+    })
+}
+
+/// Dispatch a narrow i64 in-register sign-extension op
+/// (`i64.extend8_s/extend16_s/extend32_s`) to its generated Rocq-proved
+/// single-pseudo-op rule (increment 6). Each carries the single
+/// `rd_hi <> rd_lo` side condition (the high write must not destroy the low
+/// result word); violation is a loud `Err`.
+pub fn i64_extend_narrow_rule(
+    op: &WasmOp,
+    rd_lo: crate::rules::Reg,
+    rd_hi: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+) -> Option<Result<Vec<crate::rules::ArmOp>, &'static str>> {
+    Some(match op {
+        WasmOp::I64Extend8S => generated::rule_i64_extend8_s(rd_lo, rd_hi, rn_lo),
+        WasmOp::I64Extend16S => generated::rule_i64_extend16_s(rd_lo, rd_hi, rn_lo),
+        WasmOp::I64Extend32S => generated::rule_i64_extend32_s(rd_lo, rd_hi, rn_lo),
         _ => return None,
     })
 }
@@ -2253,6 +2385,34 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
                 field("rd", rd),
                 field("rm", rm),
                 cond.rust_name()
+            )
+        }
+        // ---- increment 6 shapes ----
+        TemplateOp::Sxtb { rd, rm } => {
+            // Short literal: rustfmt keeps it on one line (struct_lit_width).
+            format!("ArmOp::Sxtb {{ {}, {} }}", field("rd", rd), field("rm", rm))
+        }
+        TemplateOp::Sxth { rd, rm } => {
+            format!("ArmOp::Sxth {{ {}, {} }}", field("rd", rd), field("rm", rm))
+        }
+        TemplateOp::I64ExtendNarrowS {
+            kind,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+        } => {
+            let ctor = match kind {
+                I64NarrowKind::N8 => "I64Extend8S",
+                I64NarrowKind::N16 => "I64Extend16S",
+                I64NarrowKind::N32 => "I64Extend32S",
+            };
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::{ctor} {{\n{fld}{},\n{fld}{},\n{fld}{},\n{ind}}}",
+                field("rdlo", rd_lo),
+                field("rdhi", rd_hi),
+                field("rnlo", rn_lo)
             )
         }
     }
@@ -2599,6 +2759,22 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
         }
         TemplateOp::SelectMove { rd, rm, cond } => {
             vec![format!("{} {} (Reg {})", cond.coq_movcc(), r(rd), r(rm))]
+        }
+        // ---- increment 6 shapes: the sign-extension family. ----
+        TemplateOp::Sxtb { rd, rm } => vec![format!("SXTB {} {}", r(rd), r(rm))],
+        TemplateOp::Sxth { rd, rm } => vec![format!("SXTH {} {}", r(rd), r(rm))],
+        TemplateOp::I64ExtendNarrowS {
+            kind,
+            rd_lo,
+            rd_hi,
+            rn_lo,
+        } => {
+            let ctor = match kind {
+                I64NarrowKind::N8 => "I64Extend8SPseudo",
+                I64NarrowKind::N16 => "I64Extend16SPseudo",
+                I64NarrowKind::N32 => "I64Extend32SPseudo",
+            };
+            vec![format!("{ctor} {} {} {}", r(rd_lo), r(rd_hi), r(rn_lo))]
         }
     }
 }
