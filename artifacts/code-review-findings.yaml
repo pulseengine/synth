@@ -9,6 +9,13 @@
 # Each finding traces to STPA hazards, losses, and constraints.
 #
 # Format: rivet generic-yaml
+#
+# 2026-08-21 RQ-59-CRSWEEP (#242): all 11 findings re-verified against the
+# CURRENT binary at HEAD 0d18991c (compile + disasm + unit gates + execution
+# differentials, evidence inline per artifact). 10 are FIXED (status:
+# verified). 1 is STILL REAL: CR-H7 — the i32.popcnt encoder expansion
+# clobbers R11 (linear-memory base) on BOTH Thumb-2 and A32; confirmed by a
+# unicorn-vs-wasmtime execution differential (expected 1242, got 0x20020008).
 
 artifacts:
   # =========================================================================
@@ -25,7 +32,18 @@ artifacts:
       (implementation-defined behavior on Cortex-M). The instruction_selector.rs
       path correctly emits the trap guard, creating an inconsistency between
       two synthesis paths for the same operation.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): compiled
+      `(i32.div_u (local.get 0) (local.get 1))` and the i32.div_s twin with
+      `synth compile --cortex-m`; disasm shows `cmp r1,#0; bne +0; udf #0`
+      before UDIV, and SDIV additionally carries the INT_MIN/-1 overflow guard
+      (`movw/movt r12,#0x80000000; cmp; cmn.w r1,#1; udf #1`). The finding's
+      "rules.rs synthesis path" no longer exists — rules.rs today holds the
+      ArmOp definitions, not an emission path; both live selectors emit the
+      guard, and #494 phase 2b elides it ONLY under a certificate-discharged
+      `UNSAT(P ∧ divisor == 0)` fact. All four i32 div/rem trap guards are
+      Rocq-discharged against `exec_program_br` (#73).
+    status: verified
     tags: [critical, wasm-spec, division, trap, rules-rs]
     links:
       - type: verifies
@@ -54,7 +72,16 @@ artifacts:
       value of 256 is silently encoded as 0, producing RSB Rd, Rn, #0 instead
       of RSB Rd, Rn, #256. The caller receives no error and the generated code
       computes wrong results for any RSB with immediate > 255.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): the Thumb-2
+      RSB arm gates the immediate through `try_thumb_expand_imm` and returns
+      Err for non-representable values (#681 audit; the #253/#255 masking
+      class), and the A32 arm equally Errs for imm > 0xFF (#378 class). Unit
+      gate `test_rsb_and_imm_thumb_expand_gate_681` (arm_encoder.rs) pins both
+      Err paths plus clang-byte-identical encodings for the representable
+      imm 32 that real codegen emits — run green at HEAD
+      (`cargo test -p synth-backend --lib 681`).
+    status: verified
     tags: [critical, arm-encoding, truncation, immediate]
     links:
       - type: verifies
@@ -83,7 +110,15 @@ artifacts:
       of 260 is silently encoded as 4 (260 & 0xFF = 4), causing the load to
       access memory at a completely wrong address. This produces silent data
       corruption with no compile-time or runtime error.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): LDRSB/LDRH
+      (and LDRSH) lower to Thumb-2 imm12 forms guarded by `check_ldst_imm12`
+      — no 8-bit mask remains. Binary evidence: `i32.load16_u offset=260` →
+      `ldrh.w r4, [r12, #0x104]` (the full 260, not 4) alongside
+      `ldrsb.w r5, [r12, #0x104]`; `offset=8000` compiles to a full-address
+      MOVW/MOVT materialization with a zero-offset load. Out-of-range imm12
+      values Err loudly instead of truncating.
+    status: verified
     tags: [critical, arm-encoding, truncation, offset]
     links:
       - type: verifies
@@ -112,7 +147,16 @@ artifacts:
       WebAssembly linear memory size for bounds checks. Writing to R10 corrupts
       the bounds check comparison value, causing bounds checks to use a wrong
       memory size for all subsequent memory accesses.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): the
+      allocator pool is `ALLOCATABLE_REGS` = R0–R8 (`index % 9`) with a
+      contract assert (instruction_selector.rs `index_to_reg`), and
+      `ALLOCATABLE_POOL = 9` in liveness.rs. Binary evidence: a 13-live-value
+      expression (`--no-optimize`, 13 loads summed) SPILLS to an SP frame
+      (`sub.w sp, sp, #0x40` + `str/ldr [sp, #..]`) — no write to R9, R10, or
+      R11 anywhere in the function. R10/R11 cannot be allocated; exhaustion
+      spills (VCR-RA-001, default-on since v0.24.0) instead of wrapping.
+    status: verified
     tags: [critical, register-allocation, memory-safety]
     links:
       - type: verifies
@@ -141,7 +185,14 @@ artifacts:
       Overwriting R11 with a temporary value causes all subsequent memory
       operations to read/write at a completely wrong memory location,
       potentially corrupting arbitrary system memory.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): same
+      evidence as CR-C4 — the pool is R0–R8 only, R11 is never allocatable,
+      and the 13-live-value pressure repro spills to the SP frame with zero
+      R9–R11 writes. (NOTE: R11 CAN still be corrupted by the i32.popcnt
+      pseudo-op EXPANSION — that is CR-H7, which this sweep confirmed still
+      real; it is an encoder-expansion defect, not an allocator one.)
+    status: verified
     tags: [critical, register-allocation, memory-safety]
     links:
       - type: verifies
@@ -172,7 +223,17 @@ artifacts:
       (address < memory_size) but reads 3 bytes past the linear memory end.
       The _access_size parameter is declared in the function signature but
       never used in the computation.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c):
+      `software_bounds_guard` computes `k = offset + access_size` and uses the
+      wrap-exact two-trap shape against `mem_size - k` (#166 found the old
+      wrapping-ADD shape red; #752 pinned exactness). Binary evidence
+      (`--safety-bounds software`, i32.load): `sub.w r12, r10, #0x4;
+      cmp r10, r12; bhs +0; udf #0; cmp r0, r12; bls +0; udf #0` — the 4-byte
+      access width is in the bound. The mask profile's
+      `mask_effective_address` equally clamps to `size - access_size`
+      (the #640 final-byte rule).
+    status: verified
     tags: [high, memory-safety, bounds-checking]
     links:
       - type: verifies
@@ -202,11 +263,23 @@ artifacts:
       starting at the 5th temporary), those registers are clobbered without
       being saved. If the function is called from another compiled function
       or from the runtime, the caller's values in those registers are lost.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): both
+      selector paths emit callee-saved prologue/epilogue pairs — the direct
+      selector a fixed `PUSH {R4-R8, LR}` (select_with_stack.rs), the
+      optimized path a liveness-trimmed used-set (liveness.rs callee-saved
+      trim). Every repro compiled in this sweep shows matched push/pop
+      (e.g. `push {r4, lr} … pop {r4, pc}`,
+      `push.w {r4-r8, lr} … pop.w {r4-r8, pc}`). The ABI observable-contract
+      validator (abi_contract.rs; roadmap entry in the traces-to link below)
+      gates callee-saved preservation per compilation.
+    status: verified
     tags: [high, calling-convention, register-preservation]
     links:
       - type: verifies
         target: FR-005
+      - type: traces-to
+        target: VCR-VER-004
       - type: traces-to
         target: H-CODE-5
       - type: traces-to
@@ -231,7 +304,16 @@ artifacts:
       8-byte aligned. STRD/LDRD instructions require 8-byte alignment and
       will fault. Cortex-M hardware exception entry also assumes 8-byte
       aligned SP.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): the direct
+      selector pushes an even 6-register set and rounds the local frame to 8
+      bytes ("AAPCS requires 8-byte aligned SP at call sites",
+      select_with_stack.rs); the optimized path's callee-saved trim pads the
+      save list "with the lowest unused one if the total (incl. LR/PC) would
+      be odd" (liveness.rs). Observed across sweep repros: pushes of 2, 4,
+      and 6 registers (all even) and `sub sp, #0x40` (8-byte-multiple)
+      frames.
+    status: verified
     tags: [high, calling-convention, stack-alignment, aapcs]
     links:
       - type: verifies
@@ -259,7 +341,15 @@ artifacts:
       division appears in the middle of a function (followed by more
       operations), POP {PC} causes the function to return immediately after
       the division, skipping all subsequent instructions.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): the
+      expansion now ends `POP {R4-R7}` (0xBCF0, comment "NO PC — inline code
+      continues"); no 0xBDF0 remains anywhere in arm_encoder.rs. Binary
+      evidence: `(i64.add (i64.div_u …) (i64.const 7))` compiled --cortex-m
+      shows `pop {r4-r7}` (bcf0) mid-function followed by the ADD/ADC and the
+      single real epilogue `pop.w {r4-r8, pc}`. The #610 fixed-ABI wrapper
+      marshals operands/results around the core.
+    status: verified
     tags: [high, arm-encoding, control-flow, i64-division]
     links:
       - type: verifies
@@ -288,6 +378,29 @@ artifacts:
       compiled function. After i32.popcnt executes, R11 contains garbage,
       and all subsequent LDR/STR [R11, ...] memory accesses use the wrong
       base address, reading from or writing to arbitrary memory.
+
+      CONFIRMED STILL REAL 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c) — the
+      ONLY one of the 11 findings still live, and it EXECUTES. Both the
+      Thumb-2 i32 Popcnt expansion ("We need a second scratch register. Use
+      R11.", six R11 writes) and the A32 transcription (#615, which
+      deliberately mirrors "the Thumb-2 arm's register contract (R11 + R12 as
+      scratch)") still clobber R11 unsaved. REPRO:
+      `(i32.store (i32.const 0) (i32.const 1234))` then
+      `(i32.add (i32.popcnt (local.get 0)) (i32.load (i32.const 0)))`,
+      compiled `--cortex-m`: f materializes R11 = 0x20000100 at entry, the
+      popcnt expansion's last R11 write is `lsr.w r11, r5, #16`, and the
+      following `ldr.w r6, [r11]` reads through the garbage base. EXECUTION
+      DIFFERENTIAL (unicorn vs wasmtime): f(0xFF) = 1242 expected, 0x20020008
+      observed (popcnt(0xFF)=8 plus the word at address 0 — the vector
+      table's initial-SP — because R11 ended as r5>>16 = 0). R11 also LEAKS
+      to the caller (it is not in the pushed set), so every later [R11]
+      access in the whole call chain is wrong too. i64.popcnt is NOT affected
+      (R3/R4/R5/R12, pushed). Reachable from BOTH selector paths — the
+      Rocq-proved rule_i32_popcnt emits the ArmOp::Popcnt pseudo-op whose
+      ENCODER EXPANSION is the defect; the proof is stated at pseudo-op tier,
+      above the expansion. remaining: rework the expansion to avoid R11
+      (fix-strategy options below still apply), gated by this repro as an
+      execution differential. Filed as issue #1021.
     status: proposed
     tags: [high, arm-encoding, register-clobber, memory-safety]
     links:
@@ -318,7 +431,16 @@ artifacts:
       either a wrong register comparison or an invalid instruction encoding.
       Since I64Eqz delegates to I64SetCondZ, all i64.eqz operations are
       affected when the result register is a high register.
-    status: proposed
+
+      RE-VERIFIED FIXED 2026-08-21 (RQ-59-CRSWEEP, HEAD 0d18991c): the
+      I64SetCondZ arm branches on `rd_bits < 8` and takes CMP.W
+      (0xF1B0 | rd) plus MOV.W (0xF04F) for high registers — the code
+      comment cites this exact finding ("This was H-CODE-9", hardened with
+      the #311 SetCond fix). Unit gate
+      `test_encode_i64setcond_high_reg_uses_mov_w_311` asserts rd=R8 yields
+      two MOV.W and a CMP.W with no transmuted 16-bit forms — run green at
+      HEAD (`cargo test -p synth-backend --lib setcond_high_reg`).
+    status: verified
     tags: [high, arm-encoding, register-encoding, i64]
     links:
       - type: verifies
