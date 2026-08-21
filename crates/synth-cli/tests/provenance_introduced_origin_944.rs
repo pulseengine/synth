@@ -29,6 +29,10 @@
 use serde_json::Value;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -53,32 +57,29 @@ const VERIFIED_ORIGINS: &[&str] = &[
 #[test]
 fn introduced_branches_carry_verified_origins_944() {
     let path = fixture("provenance_introduced_944.wat");
-    let out = "/tmp/prov_introduced_944.elf";
-    let sidecar = "/tmp/prov_introduced_944.elf.provenance.json";
-    let _ = std::fs::remove_file(sidecar);
+    // #977: unique per call; the provenance sidecar derives its path from the
+    // elf path, so it is fresh by construction as well.
+    let out = artifact_guard::unique_artifact("prov_introduced_944", "elf");
+    let sidecar = format!("{}.provenance.json", out.display());
 
-    let res = Command::new(synth())
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "-o",
-            out,
-            "--target",
-            "cortex-m3",
-            "--all-exports",
-            "--relocatable",
-            "--emit-provenance",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        res.status.success(),
-        "synth compile failed: {}",
-        String::from_utf8_lossy(&res.stderr)
-    );
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        path.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--target",
+        "cortex-m3",
+        "--all-exports",
+        "--relocatable",
+        "--emit-provenance",
+    ]);
+    artifact_guard::compile_artifact_or_panic(&mut cmd, &out, "provenance_introduced_944.wat");
 
-    let map: Value =
-        serde_json::from_slice(&std::fs::read(sidecar).expect("sidecar written")).expect("json");
+    let sidecar_bytes = std::fs::read(&sidecar).expect("sidecar written");
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&sidecar);
+    let map: Value = serde_json::from_slice(&sidecar_bytes).expect("json");
     assert_eq!(map["schema"], "synth-provenance-v1");
     let funcs = map["functions"].as_array().expect("functions");
 

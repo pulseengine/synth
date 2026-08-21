@@ -19,6 +19,10 @@ use std::process::Command;
 
 use object::{Object, ObjectSection, ObjectSymbol};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -34,27 +38,21 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// return the parsed object bytes.
 fn compile(wasm: &str, target: &str) -> Vec<u8> {
     let path = fixture(wasm);
-    let elf = format!("/tmp/hetero676_{target}_{wasm}.o");
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "-o",
-            &elf,
-            "--target",
-            target,
-            "--all-exports",
-            "--relocatable",
-            "--no-optimize",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        out.status.success(),
-        "synth compile failed for {wasm} ({target}): {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    std::fs::read(&elf).expect("read object")
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let elf = artifact_guard::unique_artifact(&format!("hetero676_{target}_{wasm}"), "o");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        path.to_str().unwrap(),
+        "-o",
+        elf.to_str().unwrap(),
+        "--target",
+        target,
+        "--all-exports",
+        "--relocatable",
+        "--no-optimize",
+    ]);
+    artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, &format!("{wasm} ({target})"))
 }
 
 /// #676: the heterogeneous fixture compiles (no decline) and the object

@@ -15,6 +15,10 @@ use std::process::Command;
 use object::read::elf::ElfFile32;
 use object::{Object, ObjectSymbol};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -30,15 +34,30 @@ fn e_type(data: &[u8]) -> u16 {
     u16::from_le_bytes([data[16], data[17]])
 }
 
-fn compile(args: &[&str], out: &str) -> std::process::Output {
+/// #977: guarded — compile and return (bytes proven to be THIS invocation's
+/// output, process Output for the log assertions).
+fn compile(args: &[&str], tag: &str) -> (Vec<u8>, std::process::Output) {
+    let out = artifact_guard::unique_artifact(tag, "elf");
     let mut cmd = Command::new(synth());
     cmd.args(["compile", fixture().to_str().unwrap()])
         .args(args)
-        .args(["--target", "cortex-m3", "--all-exports", "-o", out])
+        .args([
+            "--target",
+            "cortex-m3",
+            "--all-exports",
+            "-o",
+            out.to_str().unwrap(),
+        ])
         // The binding log line is part of the asserted surface below;
         // INFO-level tracing is off by default in a non-TTY test run.
         .env("RUST_LOG", "info");
-    cmd.output().expect("run synth")
+    match artifact_guard::compile_artifact_with_output(&mut cmd, &out) {
+        Ok((bytes, output)) => {
+            let _ = std::fs::remove_file(&out);
+            (bytes, output)
+        }
+        Err(e) => panic!("{tag}: {e}"),
+    }
 }
 
 fn has_undefined_arena(data: &[u8]) -> bool {
@@ -51,13 +70,7 @@ fn has_undefined_arena(data: &[u8]) -> bool {
 /// an executable image with no `__cabi_arena_realloc` seam left.
 #[test]
 fn self_contained_binds_arena_import_418() {
-    let out = "/tmp/cabi_arena_bind_418_default.elf";
-    let r = compile(&[], out);
-    assert!(
-        r.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
+    let (data, r) = compile(&[], "cabi418_default");
     // tracing INFO may land on either stream depending on subscriber config.
     let logs = format!(
         "{}{}",
@@ -68,7 +81,6 @@ fn self_contained_binds_arena_import_418() {
         logs.contains("#418: bound env::__cabi_arena_realloc"),
         "expected the #418 binding log line, got: {logs}"
     );
-    let data = std::fs::read(out).unwrap();
     assert_eq!(
         e_type(&data),
         2,
@@ -84,14 +96,7 @@ fn self_contained_binds_arena_import_418() {
 /// external symbol (the embedder seam), byte-compatible with the old behavior.
 #[test]
 fn opt_out_restores_external_seam_418() {
-    let out = "/tmp/cabi_arena_bind_418_optout.elf";
-    let r = compile(&["--no-bind-cabi-arena"], out);
-    assert!(
-        r.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
-    let data = std::fs::read(out).unwrap();
+    let (data, _r) = compile(&["--no-bind-cabi-arena"], "cabi418_optout");
     assert_eq!(
         e_type(&data),
         1,
@@ -107,14 +112,7 @@ fn opt_out_restores_external_seam_418() {
 /// TCB provides, the linker binds — no in-image allocator.
 #[test]
 fn relocatable_keeps_tcb_seam_418() {
-    let out = "/tmp/cabi_arena_bind_418_reloc.elf";
-    let r = compile(&["--relocatable"], out);
-    assert!(
-        r.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
-    let data = std::fs::read(out).unwrap();
+    let (data, _r) = compile(&["--relocatable"], "cabi418_reloc");
     assert_eq!(e_type(&data), 1);
     assert!(
         has_undefined_arena(&data),
@@ -161,18 +159,20 @@ fn other_imports_keep_host_seam_418() {
         local.get 0 local.get 1 local.get 2 local.get 3 call $a))"#;
     let path = std::env::temp_dir().join("cabi_arena_bind_418_mixed.wat");
     std::fs::write(&path, wat).unwrap();
-    let out = "/tmp/cabi_arena_bind_418_mixed.elf";
-    let r = Command::new(synth())
-        .args(["compile", path.to_str().unwrap()])
-        .args(["--target", "cortex-m3", "--all-exports", "-o", out])
-        .output()
-        .expect("run synth");
-    assert!(
-        r.status.success(),
-        "mixed-import module must still compile (host-linked): {}",
-        String::from_utf8_lossy(&r.stderr)
+    let out = artifact_guard::unique_artifact("cabi418_mixed", "elf");
+    let mut cmd = Command::new(synth());
+    cmd.args(["compile", path.to_str().unwrap()]).args([
+        "--target",
+        "cortex-m3",
+        "--all-exports",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let data = artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &out,
+        "mixed-import module must still compile (host-linked)",
     );
-    let data = std::fs::read(out).unwrap();
     assert_eq!(e_type(&data), 1, "mixed imports keep the ET_REL host seam");
     assert!(
         has_undefined_arena(&data),

@@ -31,6 +31,10 @@ use std::process::Command;
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -73,6 +77,32 @@ fn compile(input: &std::path::Path, extra: &[&str]) -> std::process::Output {
         .expect("run synth")
 }
 
+/// #977: the guarded READ-BACK form — compile and hand back the object bytes
+/// proven to be this invocation's output (unique path + remove-first +
+/// status/exists/non-empty via `artifact_guard`). [`compile`] above stays for
+/// the refusal tests, which never read an artifact.
+fn compile_read(input: &std::path::Path, extra: &[&str]) -> Vec<u8> {
+    let out = artifact_guard::unique_artifact(
+        &format!("mem406_{}", input.file_stem().unwrap().to_str().unwrap()),
+        "o",
+    );
+    let mut args = vec![
+        "compile",
+        input.to_str().unwrap(),
+        "--all-exports",
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    artifact_guard::compile_bytes_or_panic(
+        &mut cmd,
+        &out,
+        input.file_stem().unwrap().to_str().unwrap(),
+    )
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
@@ -101,16 +131,10 @@ fn assert_refused(out: &std::process::Output, must_mention: &[&str], ctx: &str) 
 /// placed. (Execution equivalence is the python differential's job.)
 #[test]
 fn two_memories_relocatable_green() {
-    let out = compile(
+    let bytes = compile_read(
         &two_mem_fixture(),
         &["--relocatable", "--target", "cortex-m3"],
     );
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let bytes = std::fs::read(
-        std::env::temp_dir()
-            .join("synth_mem406_tests/mem406_multi_memory_relocatabletargetcortexm3.o"),
-    )
-    .expect("read object");
     let obj = object::File::parse(&*bytes).expect("parse ELF");
 
     // Memory 1's region: PROGBITS (has an init segment), exactly 3 pages,
@@ -154,12 +178,7 @@ fn three_memories_relocatable_green() {
         (i32.store $b (local.get $p) (i32.load $c offset=8 (local.get $p)))
         (i32.load $b (local.get $p))))"#;
     let f = wat_file("three_mem.wat", wat);
-    let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let bytes = std::fs::read(
-        std::env::temp_dir().join("synth_mem406_tests/three_mem_relocatabletargetcortexm3.o"),
-    )
-    .expect("read object");
+    let bytes = compile_read(&f, &["--relocatable", "--target", "cortex-m3"]);
     let obj = object::File::parse(&*bytes).expect("parse ELF");
 
     let mem1 = obj
@@ -375,5 +394,71 @@ fn segment_overflowing_memory_k_refuses() {
         &out,
         &["multi-memory", "#406", "overflows"],
         "overflowing segment",
+    );
+}
+
+/// #977 RQ-59-FRESHNESS — the SILENT-direction demonstration for the
+/// structure/linkability batch (multi_memory_406, dwarf_debug_line_emit_394,
+/// elf_tooling_637_656, heterogeneous_table_676, cabi_arena_bind_418,
+/// cabi_arena_realloc_linkability_418, call_indirect_275_selfcontained,
+/// async_intrinsics_gate, provenance_* — all now compile through
+/// `artifact_guard`).
+///
+/// Prove the counterfactual: a planted VALID relocatable object (minted by
+/// this file's own compile shape) parses and carries the `.synth.wasm_mem_1`
+/// section this file's gates assert on — so the pre-conversion path-based
+/// `fs::read` + `File::parse` WOULD have re-confirmed last run's structure as
+/// this run's evidence. Then fail the compile at that path and require the
+/// guard to refuse AND to leave nothing behind.
+#[test]
+fn freshness_guard_refuses_stale_structure_artifact_977() {
+    // 1. Mint a genuine object with this batch's own compile shape.
+    let good = compile_read(
+        &two_mem_fixture(),
+        &["--relocatable", "--target", "cortex-m3"],
+    );
+
+    // 2. Plant it, and prove the OLD shape would have passed on it.
+    let planted_at = artifact_guard::unique_artifact("mem406_stale_planted", "o");
+    std::fs::write(&planted_at, &good).expect("plant the stale artifact");
+    let stale = std::fs::read(&planted_at).expect("read planted");
+    let obj = object::File::parse(&*stale).expect("planted artifact is a valid ELF");
+    assert!(
+        obj.section_by_name(".synth.wasm_mem_1").is_some(),
+        "the planted artifact must carry the asserted section — substantial \
+         enough to fool an unguarded structure gate"
+    );
+
+    // 3. A FAILING compile aimed at that exact path (nonexistent input).
+    let missing = std::env::temp_dir()
+        .join("synth_mem406_tests")
+        .join("does_not_exist_977.wat");
+    let _ = std::fs::remove_file(&missing);
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        missing.to_str().unwrap(),
+        "--all-exports",
+        "-o",
+        planted_at.to_str().unwrap(),
+        "--relocatable",
+        "--target",
+        "cortex-m3",
+    ]);
+    let err = artifact_guard::compile_artifact(&mut cmd, &planted_at)
+        .expect_err("REFUSAL REQUIRED: a failed compile must not return last run's bytes");
+
+    // 4. The refusal names the compile, not the parser — and nothing is left.
+    assert!(
+        err.contains("synth compile FAILED"),
+        "the refusal must name the compile failure, got: {err}"
+    );
+    assert!(
+        !err.contains("file magic"),
+        "and must not surface as a parse error, got: {err}"
+    );
+    assert!(
+        !planted_at.exists(),
+        "the stale artifact must be GONE — left in place, a later reader picks it up"
     );
 }

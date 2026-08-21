@@ -29,6 +29,10 @@
 use serde_json::Value;
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -43,33 +47,29 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// Compile the fixture with fusion + provenance on; return the parsed map.
 fn compile_and_parse_provenance(fix: &str, out_stem: &str) -> Value {
     let path = fixture(fix);
-    let out = format!("/tmp/{out_stem}.elf");
-    let sidecar = format!("/tmp/{out_stem}.elf.provenance.json");
-    let _ = std::fs::remove_file(&sidecar);
+    // #977: unique per call; the provenance sidecar derives its path from the
+    // elf path, so it is fresh by construction as well.
+    let out = artifact_guard::unique_artifact(out_stem, "elf");
+    let sidecar = format!("{}.provenance.json", out.display());
 
-    let res = Command::new(synth())
-        .env("SYNTH_CMP_SELECT_FUSE", "1")
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "-o",
-            &out,
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-            "--relocatable",
-            "--emit-provenance",
-        ])
-        .output()
-        .expect("run synth");
-    assert!(
-        res.status.success(),
-        "synth compile failed for {fix}: {}",
-        String::from_utf8_lossy(&res.stderr)
-    );
+    let mut cmd = Command::new(synth());
+    cmd.env("SYNTH_CMP_SELECT_FUSE", "1").args([
+        "compile",
+        path.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+        "--relocatable",
+        "--emit-provenance",
+    ]);
+    artifact_guard::compile_artifact_or_panic(&mut cmd, &out, fix);
 
     let bytes = std::fs::read(&sidecar)
         .unwrap_or_else(|e| panic!("provenance sidecar {sidecar} not written: {e}"));
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&sidecar);
     serde_json::from_slice(&bytes).expect("sidecar is valid JSON")
 }
 

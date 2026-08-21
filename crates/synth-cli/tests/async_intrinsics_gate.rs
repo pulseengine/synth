@@ -16,6 +16,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 /// Locate the `synth` binary the way every other CLI test does.
 ///
 /// This used to walk two parents up from `current_exe()` and append `synth`,
@@ -55,30 +59,24 @@ fn fixture(name: &str) -> PathBuf {
 fn error_context_family_is_lowered_and_emits_field_name_symbol() {
     let wat = fixture("async_error_context.wat");
     assert!(wat.exists(), "fixture missing: {}", wat.display());
-    let out = std::env::temp_dir().join("synth_async_ec.o");
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let out = artifact_guard::unique_artifact("synth_async_ec", "o");
 
-    let result = Command::new(synth_binary())
-        .args([
-            "compile",
-            wat.to_str().unwrap(),
-            "--no-optimize",
-            "--relocatable",
-            "-o",
-            out.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run synth");
-
-    assert!(
-        result.status.success(),
-        "error-context should compile; stderr={}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let mut cmd = Command::new(synth_binary());
+    cmd.args([
+        "compile",
+        wat.to_str().unwrap(),
+        "--no-optimize",
+        "--relocatable",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let data =
+        artifact_guard::compile_bytes_or_panic(&mut cmd, &out, "error-context should compile");
 
     // The field-name `error-context.drop` must appear as the BL target symbol
     // in the ELF (the host-link contract). We scan the raw bytes for the
     // symbol string — the relocatable path records it as an UNDEF symbol.
-    let data = std::fs::read(&out).unwrap();
     assert_eq!(&data[0..4], b"\x7fELF", "not an ELF");
     let sym = b"error-context.drop";
     assert!(

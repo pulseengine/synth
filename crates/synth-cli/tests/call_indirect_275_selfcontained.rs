@@ -26,6 +26,10 @@ use std::process::Command;
 
 use object::{Object, ObjectSymbol};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -48,25 +52,21 @@ fn has_symbol(bytes: &[u8], name: &str) -> bool {
 #[test]
 fn test_275_selfcontained_call_indirect_emits() {
     let path = fixture();
-    let elf = "/tmp/ci275_selfcontained.elf";
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "--cortex-m",
-            "--target",
-            "cortex-m3",
-            "-o",
-            elf,
-        ])
-        .output()
-        .expect("run synth");
-
-    assert!(
-        out.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let elf = artifact_guard::unique_artifact("ci275_selfcontained", "elf");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        path.to_str().unwrap(),
+        "--cortex-m",
+        "--target",
+        "cortex-m3",
+        "-o",
+        elf.to_str().unwrap(),
+    ]);
+    let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+        .unwrap_or_else(|e| panic!("compile failed: {e}"));
+    let _ = std::fs::remove_file(&elf);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -78,7 +78,6 @@ fn test_275_selfcontained_call_indirect_emits() {
         "the flash funcref table must be emitted (diagnostic missing), got:\n{stdout}\n{stderr}"
     );
 
-    let bytes = std::fs::read(elf).expect("read elf");
     for f in ["entry", "func_1", "func_2", "func_3"] {
         assert!(
             has_symbol(&bytes, f),
@@ -93,33 +92,30 @@ fn test_275_selfcontained_call_indirect_emits() {
 #[test]
 fn test_275_selfcontained_a32_still_declines_loudly() {
     let path = fixture();
-    let elf = "/tmp/ci275_selfcontained_r5.elf";
-    let out = Command::new(synth())
-        .args([
-            "compile",
-            path.to_str().unwrap(),
-            "--target",
-            "cortex-r5",
-            // #952: `entry` is this fixture's SOLE export, and it is the
-            // function this test expects to be loud-skipped (the residual
-            // A32 #275 decline). Since v0.57 a declined REQUESTED export
-            // exits non-zero by default; this test wants the partial object
-            // (to inspect its symtab below), which is exactly the opt-in
-            // `--allow-skipped-exports` case, not a regression.
-            "--allow-skipped-exports",
-            "-o",
-            elf,
-        ])
-        .output()
-        .expect("run synth");
+    // #977: unique per call + remove-first + status/exists/non-empty guards.
+    let elf = artifact_guard::unique_artifact("ci275_selfcontained_r5", "elf");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        path.to_str().unwrap(),
+        "--target",
+        "cortex-r5",
+        // #952: `entry` is this fixture's SOLE export, and it is the
+        // function this test expects to be loud-skipped (the residual
+        // A32 #275 decline). Since v0.57 a declined REQUESTED export
+        // exits non-zero by default; this test wants the partial object
+        // (to inspect its symtab below), which is exactly the opt-in
+        // `--allow-skipped-exports` case, not a regression.
+        "--allow-skipped-exports",
+        "-o",
+        elf.to_str().unwrap(),
+    ]);
 
     // The overall compile still succeeds (skip-and-continue), but the decline
     // is LOUD — the diagnostic names #275.
-    assert!(
-        out.status.success(),
-        "compile should skip-and-continue: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+        .unwrap_or_else(|e| panic!("compile should skip-and-continue: {e}"));
+    let _ = std::fs::remove_file(&elf);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("skipping function 'entry'"),
@@ -133,7 +129,6 @@ fn test_275_selfcontained_a32_still_declines_loudly() {
         stderr.contains("were skipped"),
         "the skip must be surfaced in the summary count, got:\n{stderr}"
     );
-    let bytes = std::fs::read(elf).expect("read elf");
     assert!(
         !has_symbol(&bytes, "entry"),
         "`entry` must NOT be emitted on the A32 self-contained path — a \
@@ -225,32 +220,28 @@ fn test_275_skipped_table_target_fails_loudly() {
 fn test_275_relocatable_call_indirect_untouched() {
     let path = fixture();
     for target in ["cortex-m3", "cortex-r5"] {
-        let elf = format!("/tmp/ci275_reloc_{target}.o");
-        let out = Command::new(synth())
-            .args([
-                "compile",
-                path.to_str().unwrap(),
-                "--target",
-                target,
-                "--all-exports",
-                "--relocatable",
-                "--no-optimize",
-                "-o",
-                &elf,
-            ])
-            .output()
-            .expect("run synth");
-        assert!(
-            out.status.success(),
-            "relocatable compile failed ({target}): {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        // #977: unique per call + remove-first + status/exists/non-empty guards.
+        let elf = artifact_guard::unique_artifact(&format!("ci275_reloc_{target}"), "o");
+        let mut cmd = Command::new(synth());
+        cmd.args([
+            "compile",
+            path.to_str().unwrap(),
+            "--target",
+            target,
+            "--all-exports",
+            "--relocatable",
+            "--no-optimize",
+            "-o",
+            elf.to_str().unwrap(),
+        ]);
+        let (bytes, out) = artifact_guard::compile_artifact_with_output(&mut cmd, &elf)
+            .unwrap_or_else(|e| panic!("relocatable compile failed ({target}): {e}"));
+        let _ = std::fs::remove_file(&elf);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("skipping function 'entry'"),
             "relocatable path must NOT decline entry ({target}):\n{stderr}"
         );
-        let bytes = std::fs::read(&elf).expect("read object");
         assert!(
             has_symbol(&bytes, "entry"),
             "relocatable path must still emit `entry` with its dispatch ({target}) — #275 \

@@ -36,6 +36,10 @@ use gimli::{EndianSlice, LittleEndian, SectionId};
 use object::read::elf::ElfFile32;
 use object::{Object, ObjectSection, ObjectSymbol};
 
+// #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
+// proven to be THIS invocation's output — see `artifact_guard`.
+mod artifact_guard;
+
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
@@ -63,16 +67,16 @@ fn compile(wasm: &Path, out: &str, debug_line: bool) -> Vec<u8> {
     if debug_line {
         args.push("--debug-line");
     }
-    let r = Command::new(synth())
-        .args(&args)
-        .output()
-        .expect("run synth");
-    assert!(
-        r.status.success(),
-        "compile failed (debug_line={debug_line}): {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
-    std::fs::read(out).expect("read .o")
+    // #977: remove-first + status/exists/non-empty via artifact_guard — a
+    // stale object at this fixed path must never be parsed as this run's.
+    // The artifact stays in place (the llvm-dwarfdump oracle reads the path).
+    let mut cmd = Command::new(synth());
+    cmd.args(&args);
+    artifact_guard::compile_artifact_or_panic(
+        &mut cmd,
+        Path::new(out),
+        &format!("debug_line={debug_line}"),
+    )
 }
 
 /// ORACLE D — the `--debug-line` HONEST-FAIL contract (#383 / VCR-DBG-001 PR C).
@@ -91,27 +95,23 @@ fn debug_line_is_a_loud_noop_on_self_contained_build_394() {
     // gust_kernel imports nothing, so WITHOUT `--relocatable` synth emits a
     // self-contained executable image (not an ET_REL object).
     let wasm = repro("gust_kernel.wasm");
-    let out = "/tmp/dbg394_selfcontained.elf";
-    let r = Command::new(synth())
-        .args([
-            "compile",
-            wasm.to_str().unwrap(),
-            "--target",
-            "cortex-m4",
-            "--all-exports",
-            "--debug-line",
-            "-o",
-            out,
-        ])
-        .output()
-        .expect("run synth");
-
-    // (1) it still compiles — the flag is a no-op, not an error.
-    assert!(
-        r.status.success(),
-        "self-contained --debug-line must still compile: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
+    let out = artifact_guard::unique_artifact("dbg394_selfcontained", "elf");
+    let mut cmd = Command::new(synth());
+    cmd.args([
+        "compile",
+        wasm.to_str().unwrap(),
+        "--target",
+        "cortex-m4",
+        "--all-exports",
+        "--debug-line",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    // (1) it still compiles — the flag is a no-op, not an error. #977: the
+    // guard also proves the image read below is THIS invocation's output.
+    let (elf, r) = artifact_guard::compile_artifact_with_output(&mut cmd, &out)
+        .unwrap_or_else(|e| panic!("self-contained --debug-line must still compile: {e}"));
+    let _ = std::fs::remove_file(&out);
 
     // (2) it WARNS loudly (honest-fail), naming the relocatable-object path as
     // the way to actually get DWARF — never silent. The CLI's tracing subscriber
@@ -126,7 +126,6 @@ fn debug_line_is_a_loud_noop_on_self_contained_build_394() {
 
     // (3) the emitted image is a standalone EXECUTABLE (confirms we exercised the
     // self-contained path, not ET_REL) and carries ZERO `.debug_*` sections.
-    let elf = std::fs::read(out).expect("read elf");
     let obj = ElfFile32::<object::Endianness>::parse(&*elf).expect("parse ELF");
     assert_eq!(
         obj.kind(),
