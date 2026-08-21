@@ -1,10 +1,29 @@
-# Auto-merge safe Dependabot updates so patch/minor dep bumps never require
-# hand-gating (they were consuming the maintenance loop one-at-a-time — each
-# merge moved main, staling the next). MAJOR bumps of any dep are HELD for
-# manual review (the ordeal 0.9->0.12 major bump silently broke synth-verify at
-# merge; wasm-tooling majors corrupted Cargo.lock). Auto-merge only enables the
-# merge — GitHub still requires every branch-protection gate to pass first, so
-# a broken bump cannot land.
+# Auto-merge safe Dependabot updates so patch/true-minor dep bumps never
+# require hand-gating (they were consuming the maintenance loop one-at-a-time —
+# each merge moved main, staling the next). BREAKING-CLASS bumps — majors,
+# 0.x-minors (for a 0.x crate the MINOR is the de-facto major), and 0.0.x
+# bumps of any kind — are HELD: auto-merge is actively DISABLED and the job
+# ASSERTS it is off. The hold's success criterion is "auto-merge is off",
+# never "a comment was posted" (#965: the pre-enforcement hold skipped its own
+# enable step but left an already-enabled auto-merge armed on #938, and its
+# `|| true` label silently failed — auto-merge had to be hand-disabled four
+# times: #938, ordeal 0.9->0.12, #997, #998).
+#
+# The classifier is scripts/dependabot_minor_hold.py — a single tested source
+# (table-driven scripts/test_dependabot_minor_hold.py runs in the required
+# Claim Check job), FAIL-CLOSED: anything it cannot parse holds, and the
+# enable step fires only on the exact output `decision=automerge`, so a
+# crashed classifier (empty output) also lands on the hold path. The old
+# inline shell classifier failed OPEN when fetch-metadata returned an empty
+# previous-version (`case "" in 0.*)` matched nothing -> hold=false).
+#
+# A hold is a delay, never a block: merge a held bump BY HAND once the FULL
+# suite is green — branch protection requires all 9 contexts including
+# "Z3 Verification" (the separate `--features z3-solver` path; the ordeal
+# 0.9->0.12 damage only showed there) — the discriminator is CI, not a
+# maintainer's read of the diff. Auto-merge, where enabled, still requires
+# every branch-protection gate to pass first, so a broken compatible bump
+# cannot land either.
 name: Dependabot Auto-Merge
 on: pull_request_target
 permissions:
@@ -15,59 +34,65 @@ jobs:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
+      # pull_request_target: this checks out the BASE ref (github.sha on the
+      # base branch), NEVER the PR head — the classifier script that runs
+      # below is always main's copy, not the PR's.
+      - uses: actions/checkout@v7
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@v3
-      # A 0.x MINOR bump is BREAKING by semver convention (for 0.x the MINOR
-      # component is the de-facto major), but Dependabot reports it as
-      # `semver-minor` because the major component is still 0. That gap bit synth
-      # TWICE on the SAME dep: ordeal 0.9->0.12 (added `BvTerm::Urem`, broke every
-      # exhaustive match) and again 0.9->0.16 (#864 — landed with NO CI run and
-      # left `main` uncompilable). So: HOLD when the previous version is 0.x and
-      # the minor component changed.
-      - name: Classify 0.x-minor as breaking (hold)
-        id: zerox
+      - name: Classify the bump (cargo compatibility rule, fail-closed)
+        id: classify
         env:
           # Via env (never interpolated into the script body): this is a
           # pull_request_target workflow with contents:write, so no
-          # ${{ }} expansion inside `run:`.
+          # ${{ }} expansion inside `run:`. The script sanitizes what it
+          # echoes back, so a hostile version string cannot inject extra
+          # GITHUB_OUTPUT lines.
           PREV_VERSION: ${{ steps.meta.outputs.previous-version }}
           NEW_VERSION: ${{ steps.meta.outputs.new-version }}
-          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
         run: |
-          hold=false
-          if [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
-            case "$PREV_VERSION" in
-              0.*)
-                pm=$(printf '%s' "$PREV_VERSION" | cut -d. -f2)
-                nm=$(printf '%s' "$NEW_VERSION" | cut -d. -f2)
-                [ "$pm" != "$nm" ] && hold=true
-                ;;
-            esac
-          fi
-          echo "hold=$hold" >> "$GITHUB_OUTPUT"
-          echo "0.x-minor hold=$hold ($PREV_VERSION -> $NEW_VERSION)"
-      - name: Enable auto-merge for patch + true-minor updates
-        if: (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') && steps.zerox.outputs.hold != 'true'
+          python3 scripts/dependabot_minor_hold.py \
+            --prev "$PREV_VERSION" --new "$NEW_VERSION" --deps-json "$DEPS_JSON" \
+            | tee -a "$GITHUB_OUTPUT"
+      - name: Enable auto-merge (compatible patch + >=1.0-minor upgrades only)
+        if: steps.classify.outputs.decision == 'automerge'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Comment + label held 0.x-minor bumps
-        if: steps.zerox.outputs.hold == 'true'
+      # ENFORCED HOLD (#965). Everything that is not exactly `automerge` —
+      # including an empty decision from a crashed classifier — lands here.
+      # Ordered so the enforcement comes first and is ASSERTED before any
+      # reporting: a hold that only skips its own enable step is vacuous when
+      # auto-merge was enabled by an earlier run, a re-pushed branch, or a
+      # hand click (#938 sat for three days with auto-merge ENABLED and two
+      # hold comments posted).
+      - name: HOLD — disable auto-merge and ASSERT it is off
+        if: steps.classify.outputs.decision != 'automerge'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PREV_VERSION: ${{ steps.meta.outputs.previous-version }}
-          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
+          CLASS: ${{ steps.classify.outputs.class }}
+          REASON: ${{ steps.classify.outputs.reason }}
         run: |
-          gh pr edit "$PR_URL" --add-label "major-bump-hold" 2>/dev/null || true
-          gh pr comment "$PR_URL" --body "🔒 **0.x MINOR bump — held for manual review.** \`$PREV_VERSION\` → \`$NEW_VERSION\`: for a 0.x crate the MINOR component is the de-facto major, so this is BREAKING even though Dependabot labels it \`semver-minor\`. This gap broke synth twice on \`ordeal\` (0.9→0.12 added \`BvTerm::Urem\`, breaking every exhaustive match; 0.9→0.16 in #864 landed with no CI run and left main uncompilable). Build EVERY affected feature set (incl. \`--features z3-solver\`) and run the full \`synth-verify\` suite before merging."
-      - name: Comment + label major updates for manual review
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        run: |
-          gh pr edit "$PR_URL" --add-label "major-bump-hold" 2>/dev/null || true
-          gh pr comment "$PR_URL" --body "🔒 **Major version bump — held for manual review.** Not auto-merged: a major bump of a load-bearing dep (solver/wasm-tooling/proof) can break the build at merge (ordeal 0.9→0.12 added an enum variant; wasm-tooling majors corrupted Cargo.lock). Review the changelog + build the affected feature sets before merging."
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Nonzero here usually means auto-merge was not enabled; the ASSERT
+          # below is the gate, so this step's own exit is informational.
+          gh pr merge --disable-auto "$PR_URL" \
+            || echo "disable-auto returned nonzero (auto-merge likely not enabled); asserting actual state"
+          state="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest')"
+          if [ "$state" != "null" ] && [ -n "$state" ]; then
+            echo "::error::HOLD DID NOT STICK — auto-merge is still enabled: $state"
+            exit 1
+          fi
+          echo "hold enforced: auto-merge confirmed OFF (class=$CLASS)"
+          # No '|| true': the label is the hold's durable, queryable marker;
+          # if labelling fails the job goes RED instead of pretending (#965
+          # defect 2 — the label silently failed because it did not exist).
+          gh pr edit "$PR_URL" --add-label "major-bump-hold"
+          gh pr comment "$PR_URL" --body-file - <<EOF
+          🔒 **HELD — not auto-mergeable** (class: \`$CLASS\`). $REASON
+
+          Auto-merge has been actively **disabled and asserted off** by the hold gate (#965). For a 0.x crate the MINOR component is the de-facto major (and for 0.0.x, the patch): \`ordeal\` 0.9→0.12 auto-merged as "minor" and hung Test+Z3 for days; \`object\` 0.39→0.40 (#938) broke 16 call sites across three unrelated newtype surfaces. Merge this BY HAND only once the **FULL suite is green, including the separate \`--features z3-solver\` path** (required context "Z3 Verification") — the discriminator is CI, not a read of the diff.
+          EOF
