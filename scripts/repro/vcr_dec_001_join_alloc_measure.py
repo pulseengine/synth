@@ -125,6 +125,92 @@ def wcet_bounds(elf):
     return bounds, declined
 
 
+def insn_metrics(elf):
+    """RQ-59-MEASURE: per-function INSTRUCTION metrics — count, wide (32-bit)
+    encodings, and FRAME TRAFFIC (loads/stores whose base is SP — the direct
+    path's frame addressing) — because bytes and instruction count can move in OPPOSITE
+    directions: the colourer's rewrites can turn a narrow 16-bit op into a wide
+    32-bit one (e.g. an SP-relative `ldr` of a high register must be `ldr.w`),
+    so a verdict quoting only one of the two would be misleading.
+
+    Optional: requires capstone; returns {} when it is not installed (the
+    byte/wcet halves of this report do not depend on it). Same-host, same-pass
+    on BOTH sides, so the host-dependence caveat that rules out `synth disasm`
+    text differentials does not arise."""
+    try:
+        import capstone
+    except ImportError:
+        return {}
+    from elftools.elf.elffile import ELFFile
+    from elftools.elf.sections import SymbolTableSection
+    md = capstone.Cs(capstone.CS_ARCH_ARM,
+                     capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
+    md.detail = True
+    md.skipdata = True  # literal pools inside a symbol's span must not truncate
+    out = {}
+    with open(elf, "rb") as fh:
+        ef = ELFFile(fh)
+        secs = list(ef.iter_sections())
+        funcs = {}
+        for sec in secs:
+            if not isinstance(sec, SymbolTableSection):
+                continue
+            for sym in sec.iter_symbols():
+                if sym["st_info"]["type"] != "STT_FUNC" or not sym["st_size"]:
+                    continue
+                # st_shndx pins the DEFINING section: in an ET_REL object every
+                # section has sh_addr == 0, so a spanning-address search alone
+                # would silently disassemble the first section that fits.
+                key = (sym["st_value"], sym["st_size"], sym["st_shndx"])
+                prev = funcs.get(key)
+                if prev is None or (prev.startswith("func_") and
+                                    not sym.name.startswith("func_")):
+                    funcs[key] = sym.name
+        for (vaddr, size, shndx), name in funcs.items():
+            addr = vaddr & ~1  # strip the Thumb bit
+            if not isinstance(shndx, int):
+                continue
+            sec = secs[shndx]
+            base = sec["sh_addr"]
+            if (sec["sh_type"] == "SHT_NOBITS"
+                    or not (sec["sh_flags"] & 0x4)  # SHF_EXECINSTR
+                    or addr < base or addr + size > base + sec["sh_size"]):
+                continue
+            body = sec.data()[addr - base: addr - base + size]
+            m = {"insns": 0, "wide": 0, "frame_ld": 0, "frame_st": 0,
+                 "wide_frame": 0, "pushpop_regs": 0, "sp_sub": 0}
+            for ins in md.disasm(body, addr):
+                if ins.mnemonic == ".byte":  # skipdata placeholder (literal pool)
+                    continue
+                m["insns"] += 1
+                if ins.size == 4:
+                    m["wide"] += 1
+                mn = ins.mnemonic
+                if mn.startswith(("push", "pop")):
+                    m["pushpop_regs"] += len(ins.operands)
+                if mn.startswith("sub") and ins.op_str.startswith("sp,"):
+                    ops = ins.operands
+                    if ops and ops[-1].type == capstone.arm.ARM_OP_IMM:
+                        m["sp_sub"] += ops[-1].imm
+                is_ld = mn.startswith(("ldr", "ldm", "ldrd"))
+                is_st = mn.startswith(("str", "stm", "strd"))
+                if is_ld or is_st:
+                    for op in ins.operands:
+                        if op.type != capstone.arm.ARM_OP_MEM:
+                            continue
+                        # The direct path's frame is SP-relative
+                        # (`ldr rd,[sp,#off]`, select_with_stack). R11/R9/R10
+                        # are the linmem/globals/memsize bases and R7 is
+                        # allocatable, so ONLY an SP base is frame traffic.
+                        base_reg = ins.reg_name(op.mem.base) or ""
+                        if base_reg == "sp":
+                            m["frame_ld" if is_ld else "frame_st"] += 1
+                            if ins.size == 4:
+                                m["wide_frame"] += 1
+            out[name] = m
+    return out
+
+
 def parse_set(listing):
     """`Op xN, Op xN` → {op: n} (the complete-set diagnostic line format)."""
     out = {}
@@ -181,17 +267,22 @@ def measure(synth, relocatable):
             s_off, s_on = func_sizes(elf_off), func_sizes(elf_on)
             w_off, d_off = wcet_bounds(elf_off)
             w_on, d_on = wcet_bounds(elf_on)
+            m_off, m_on = insn_metrics(elf_off), insn_metrics(elf_on)
             for name in sorted(set(s_off) & set(s_on)):
                 cyc_off = w_off.get(name)
                 cyc_on = w_on.get(name)
-                rows.append({
+                row = {
                     "fixture": src.name,
                     "func": name,
                     "bytes_off": s_off[name],
                     "bytes_on": s_on[name],
                     "cycles_off": cyc_off,
                     "cycles_on": cyc_on,
-                })
+                }
+                if name in m_off and name in m_on:
+                    row["insn_off"] = m_off[name]
+                    row["insn_on"] = m_on[name]
+                rows.append(row)
     census = {"unmodeled_sets": unmodeled_sets, "inc1_subs": inc1_subs,
               "refused_sets": refused_sets}
     return rows, applied_total, declines, errors, census
@@ -253,6 +344,28 @@ def report(tag, rows, applied, declines, errors):
     print(f"bytes  : {len(shrank)} shrank, {len(grew)} grew, "
           f"{len(rows) - len(changed)} unchanged")
     print(f"cycles : {len(cyc_shrank)} shrank, {len(cyc_grew)} grew")
+    # RQ-59-MEASURE: instruction-level aggregates (capstone-optional) — count
+    # and size can move in OPPOSITE directions (narrow movs traded for wide
+    # ldr.w), so the verdict must quote both.
+    im = [r for r in rows if "insn_off" in r]
+    if im:
+        def tot(side, key):
+            return sum(r[side][key] for r in im)
+        print(f"insns  off={tot('insn_off', 'insns')}  on={tot('insn_on', 'insns')}  "
+              f"delta={tot('insn_on', 'insns') - tot('insn_off', 'insns'):+d}   "
+              f"[{len(im)}/{len(rows)} functions disassembled]")
+        print(f"wide (32-bit) encodings   : off={tot('insn_off', 'wide')}  "
+              f"on={tot('insn_on', 'wide')}  "
+              f"delta={tot('insn_on', 'wide') - tot('insn_off', 'wide'):+d}")
+        ft_off = tot('insn_off', 'frame_ld') + tot('insn_off', 'frame_st')
+        ft_on = tot('insn_on', 'frame_ld') + tot('insn_on', 'frame_st')
+        print(f"frame traffic ([sp,#..] ld/st): off={ft_off}  on={ft_on}  "
+              f"delta={ft_on - ft_off:+d}  "
+              f"(wide: {tot('insn_off', 'wide_frame')} -> {tot('insn_on', 'wide_frame')})")
+        print(f"push/pop breadth (regs)   : off={tot('insn_off', 'pushpop_regs')}  "
+              f"on={tot('insn_on', 'pushpop_regs')}")
+        print(f"frame size (SUB sp bytes) : off={tot('insn_off', 'sp_sub')}  "
+              f"on={tot('insn_on', 'sp_sub')}")
     if declines:
         # RQ-59-REACH separation: `identity-colouring` is the colourer
         # SUCCEEDING with nothing to improve (a validated identity rewrite
@@ -271,9 +384,17 @@ def report(tag, rows, applied, declines, errors):
             if r["cycles_off"] is not None and r["cycles_on"] is not None:
                 dc = f"  cyc {r['cycles_off']}->{r['cycles_on']} " \
                      f"({r['cycles_on'] - r['cycles_off']:+d})"
+            di = ""
+            if "insn_off" in r:
+                io, ion = r["insn_off"], r["insn_on"]
+                fo = io["frame_ld"] + io["frame_st"]
+                fn_ = ion["frame_ld"] + ion["frame_st"]
+                di = f"  insn {io['insns']}->{ion['insns']} " \
+                     f"wide {io['wide']}->{ion['wide']} " \
+                     f"frame {fo}->{fn_}"
             print(f"    {r['fixture']:<34} {r['func']:<24} "
                   f"{r['bytes_off']:>4} -> {r['bytes_on']:>4} "
-                  f"({r['bytes_on'] - r['bytes_off']:+d}){dc}")
+                  f"({r['bytes_on'] - r['bytes_off']:+d}){dc}{di}")
     for e in errors:
         print(f"  ERROR {e}")
     return {"functions": len(rows), "applied": applied,
