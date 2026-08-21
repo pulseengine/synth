@@ -135,7 +135,10 @@ fn straightline_expansion(op: &ArmOp) -> u64 {
 /// practice; a caller declines `Unmodeled` rather than trusting an un-costed
 /// op. Reuses the SAME pinned `STRAIGHTLINE_CEIL_PER_HALFWORD` ceiling and the
 /// same per-instruction-≤-ceiling argument (I64Const/I64Ldr/I64Str expand to
-/// only MOVW/MOVT/LDR/STR/ADD.W, all already priced well under the ceiling).
+/// only MOVW/MOVT/LDR/STR/ADD.W; the RQ-59-WCETI64 four — I64Sub,
+/// I64ExtendI32S/U, I32WrapI64 — to only SUBS/SBC.W/MOV/MOV.W/ASR.W/NOP: all
+/// 1-cycle-class primitives already priced well under the ceiling, with no
+/// internal branch, loop, or SP motion).
 fn straightline_expansion_real(op: &ArmOp) -> Option<u64> {
     let bytes = crate::arm_encoder::ArmEncoder::new_thumb2()
         .encode(op)
@@ -325,13 +328,18 @@ fn op_cost(op: &ArmOp) -> OpCost {
         //     decompose), whose stream leads with scalar-f64 VFP ops and is
         //     only compilable on a double-precision-FPU target (GI-FPU-002 →
         //     cortex-m7dp), which `sound_core_class` declines
-        //     `unsupported-core` before any op scan — so pricing it moves no
-        //     decline today; it is priced so a future integer-path emission
-        //     is covered rather than latent.
+        //     `unsupported-core` before any op scan (measured: the trunc-sat
+        //     fixture does not even COMPILE on cortex-m4 — "no functions
+        //     compiled successfully") — so pricing it moves no decline today;
+        //     it is priced so a future integer-path emission is covered
+        //     rather than latent.
         I64Const { .. }
         | I64Ldr { .. }
         | I64Str { .. }
-        | I32WrapI64 { .. } => match straightline_expansion_real(op) {
+        | I32WrapI64 { .. }
+        | I64ExtendI32S { .. }
+        | I64ExtendI32U { .. }
+        | I64Sub { .. } => match straightline_expansion_real(op) {
             Some(c) => Cycles(c),
             None => Unmodeled,
         },
@@ -362,20 +370,19 @@ fn op_cost(op: &ArmOp) -> OpCost {
         // === i64 pseudo binops/compares: mostly lowered to 32-bit pairs =====
         // === upstream — NOT a blanket "never in stream" claim (#936 audit) ===
         // I64Const/I64Ldr/I64Str were priced above, out of this bucket, once
-        // #936 found them REAL on the direct/relocatable selector. Auditing
-        // the rest during that fix found `I64Sub` (a saturating trunc-sat
-        // conversion sequence), `I64ExtendI32S`/`I64ExtendI32U`, and
-        // `I32WrapI64` are ALSO real direct-selector emissions with real
-        // `encode_thumb` support — reachable, just not exercised by ANY
-        // function's FIRST decline on the #936 gale composite (gale's 9
-        // unmodeled-op declines were exhaustively I64Const/I64Str), and not
-        // priced by this lane — a scoped follow-up, not a doc claim to repeat
-        // here. `I64Add`/`I64And`/`I64Or`/`I64Xor`/`I64Eqz`/`I64Eq`/`I64Ne`/
-        // `I64Lt*`/`I64Le*`/`I64Gt*`/`I64Ge*` have NO real emission site in
-        // `instruction_selector.rs` today (checked at the same time) — for
-        // THOSE the original claim holds.
+        // #936 found them REAL on the direct/relocatable selector; the #936
+        // audit's four residual real emissions (`I64Sub`,
+        // `I64ExtendI32S`/`I64ExtendI32U`, `I32WrapI64`) followed in
+        // RQ-59-WCETI64 (see the priced arm above). What REMAINS here is
+        // exactly the set with NO real emission site in
+        // `instruction_selector.rs` today (checked in the #936 audit and
+        // re-checked by RQ-59-WCETI64): `I64Add`/`I64And`/`I64Or`/`I64Xor`/
+        // `I64Eqz`/`I64Eq`/`I64Ne`/`I64Lt*`/`I64Le*`/`I64Gt*`/`I64Ge*` — the
+        // selector expands those WASM ops to 32-bit primitives before the
+        // WCET pass sees them (measured: `i64.lt_s`/`i64.eqz`/`i64.sub`
+        // fixtures all bound WITHOUT touching these pseudo arms). Unmodeled =
+        // belt-and-braces decline, not a live decline surface.
         I64Add { .. }
-        | I64Sub { .. }
         | I64And { .. }
         | I64Or { .. }
         | I64Xor { .. }
@@ -389,9 +396,7 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | I64GtS { .. }
         | I64GtU { .. }
         | I64GeS { .. }
-        | I64GeU { .. }
-        | I64ExtendI32S { .. }
-        | I64ExtendI32U { .. } => Unmodeled,
+        | I64GeU { .. } => Unmodeled,
 
         // === all F32/F64 scalar VFP + all MVE vector: not on the sound integer path ===
         F32Add { .. }
@@ -1075,6 +1080,108 @@ mod tests {
         })];
         match function_wcet("l_frame", &instrs, "cortex-m4") {
             WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 20),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    // RQ-59-WCETI64 (#936 residual) — the audit's remaining four real
+    // direct-selector emissions are PRICED by the same real-encoder
+    // mechanism. Expected cycles = `(real encoder byte-length / 2) ×
+    // STRAIGHTLINE_CEIL_PER_HALFWORD` (= 5), with the byte length taken from
+    // `encode_thumb`'s actual output per shape — both the aliased
+    // (register-reuse) and non-aliased forms are pinned because the encoder
+    // emits DIFFERENT byte lengths for them (the exact per-instance
+    // sensitivity a hand-mirrored size predicate would have gotten wrong).
+
+    #[test]
+    fn i32_wrap_i64_aliased_is_bounded() {
+        // rd == rnlo: a genuine 16-bit NOP -> 2 bytes -> (2/2)*5 = 5 cycles.
+        let instrs = vec![insn(ArmOp::I32WrapI64 {
+            rd: Reg::R0,
+            rnlo: Reg::R0,
+        })];
+        match function_wcet("w_alias", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 5),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i32_wrap_i64_move_is_bounded() {
+        // rd != rnlo: a 16-bit MOV -> 2 bytes -> 5 cycles.
+        let instrs = vec![insn(ArmOp::I32WrapI64 {
+            rd: Reg::R0,
+            rnlo: Reg::R2,
+        })];
+        match function_wcet("w_mov", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 5),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_extend_i32_s_aliased_is_bounded() {
+        // rdlo == rn: no MOV, just ASR.W rdhi, rdlo, #31 -> 4 bytes -> 10.
+        let instrs = vec![insn(ArmOp::I64ExtendI32S {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R0,
+        })];
+        match function_wcet("es_alias", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 10),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_extend_i32_s_move_is_bounded() {
+        // rdlo != rn: 16-bit MOV + 32-bit ASR.W -> 6 bytes -> 15.
+        let instrs = vec![insn(ArmOp::I64ExtendI32S {
+            rdlo: Reg::R2,
+            rdhi: Reg::R3,
+            rn: Reg::R0,
+        })];
+        match function_wcet("es_mov", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 15),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_extend_i32_u_is_bounded() {
+        // rdlo == rn, low rdhi: just the 16-bit `MOVS rdhi, #0` zero-fill ->
+        // 2 bytes -> 5. (The direct selector itself emits raw Mov/Movw via
+        // rule_i64_extend_i32_u since RQ-58-SELDSL — this pseudo remains
+        // live only on the `select_default` fallback path; priced
+        // belt-and-braces so a stream carrying it bounds rather than
+        // silently declining.)
+        let instrs = vec![insn(ArmOp::I64ExtendI32U {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R0,
+        })];
+        match function_wcet("eu", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 5),
+            other => panic!("expected bounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_sub_is_bounded() {
+        // SUBS (16-bit) + SBC.W (32-bit) -> 6 bytes -> 15. Today's only real
+        // emission is inside the f64 trunc-sat decompose (unreachable on a
+        // sound core: cortex-m4 cannot even compile it); priced so a future
+        // integer-path emission is covered rather than latent.
+        let instrs = vec![insn(ArmOp::I64Sub {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        })];
+        match function_wcet("sb", &instrs, "cortex-m4") {
+            WcetFunction::Bounded { cycles, .. } => assert_eq!(cycles, 15),
             other => panic!("expected bounded, got {other:?}"),
         }
     }

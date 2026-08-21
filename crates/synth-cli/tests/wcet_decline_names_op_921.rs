@@ -26,7 +26,7 @@ fn synth_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_synth"))
 }
 
-/// `i32.wrap_i64` lowers to `ArmOp::I32WrapI64`, which `op_cost` deliberately
+/// `memory.size` lowers to `ArmOp::MemorySize`, which `op_cost` deliberately
 /// leaves unclassified — the shortest local reproduction of gale's decline.
 ///
 /// #936 RETARGET: this test originally reproduced the decline via `i64.load`
@@ -34,27 +34,29 @@ fn synth_binary() -> PathBuf {
 /// `unmodeled-op` declines on a real `gust:os` composite resolved to exactly
 /// those two opcode FAMILIES), so `i64.load` no longer declines — exactly the
 /// "good problem" this test's own non-vacuity check was written to catch (see
-/// below). Retargeted at `i32.wrap_i64`, which the #936 audit confirmed is
-/// STILL a real direct-selector emission (`instruction_selector.rs`) with NO
-/// cycle-model price.
+/// below), and the test moved to `i32.wrap_i64`.
 ///
-/// Note that `i64.add`, `i64.ge_s` and `i64.extend_i32_u` do NOT reproduce it:
-/// the selector expands those before the WCET pass sees them. That asymmetry is
-/// exactly why naming the op matters — the reason string alone cannot
-/// distinguish which of the unclassified family a given function tripped over.
+/// RQ-59-WCETI64 RETARGET (second time, same rule): pricing the #936 audit's
+/// residual four (`I32WrapI64`, `I64ExtendI32S`/`I64ExtendI32U`, `I64Sub`)
+/// un-declined `i32.wrap_i64` too. Retargeted at `memory.size` — measured
+/// STILL a live `unmodeled-op op=MemorySize` decline on the direct/relocatable
+/// selector (probed alongside `f32.add`, which does not COMPILE on cortex-m4,
+/// and the i64 binops/compares, which the selector expands to priced 32-bit
+/// primitives before the WCET pass sees them). That asymmetry is exactly why
+/// naming the op matters — the reason string alone cannot distinguish which of
+/// the unclassified family a given function tripped over.
 const FIXTURE: &str = r#"(module
   (memory 1)
-  (func (export "f") (param i64) (result i32)
-    local.get 0
-    i32.wrap_i64))
+  (func (export "f") (result i32)
+    memory.size))
 "#;
 
 #[test]
 fn unmodeled_op_decline_names_the_op_and_offset() {
     let dir = std::env::temp_dir().join("synth-wcet-921");
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let wat = dir.join("i32_wrap_i64.wat");
-    let obj = dir.join("i32_wrap_i64.o");
+    let wat = dir.join("memory_size.wat");
+    let obj = dir.join("memory_size.o");
     std::fs::write(&wat, FIXTURE).expect("write fixture");
 
     let out = Command::new(synth_binary())
@@ -89,24 +91,25 @@ fn unmodeled_op_decline_names_the_op_and_offset() {
         .collect();
 
     // NON-VACUITY: if the fixture ever stops declining (a good thing — it would
-    // mean the cycle model grew to cover `I32WrapI64`), this test must FAIL
+    // mean the cycle model grew to cover `MemorySize`), this test must FAIL
     // rather than pass over an empty set. A green assertion about no records is
     // the exact shape #890/#910 exist to reject. (#936: this is exactly what
-    // happened to the ORIGINAL `i64.load` fixture — retargeted here, not
-    // deleted; see the FIXTURE doc comment above.)
+    // happened to the ORIGINAL `i64.load` fixture, and RQ-59-WCETI64 repeated
+    // it on the `i32.wrap_i64` retarget — retargeted again, not deleted; see
+    // the FIXTURE doc comment above.)
     assert!(
         !declined.is_empty(),
-        "fixture no longer declines — if `I32WrapI64` is now costed, retarget \
+        "fixture no longer declines — if `MemorySize` is now costed, retarget \
          this test at another unclassified op rather than deleting the assertion"
     );
 
     let d = declined
         .iter()
         .find(|f| f["reason"] == "unmodeled-op")
-        .expect("the i32.wrap_i64 fixture declines `unmodeled-op`");
+        .expect("the memory.size fixture declines `unmodeled-op`");
 
     assert_eq!(
-        d["op"], "I32WrapI64",
+        d["op"], "MemorySize",
         "the decline must NAME the op (#921); got {d}"
     );
     assert!(

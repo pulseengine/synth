@@ -659,13 +659,18 @@ fn assert_sp_motion_loop_bounded(report: &Value, name: &str, cycles: u64) {
 // them in `coverage()` (`estimator_encoder_agreement.rs`), a claim that
 // file's own doc says it cannot prove exhaustively going forward.
 //
-// HONEST RESIDUAL: `scan_for_decline` reports only the FIRST decline per
-// function, so pricing these three does not mean every i64-touching function
-// now bounds — `I64Sub`, `I64ExtendI32S`/`I64ExtendI32U`, and `I32WrapI64`
-// are ALSO real direct-selector emissions with no price (found during this
-// audit, not priced here — scoped follow-up). A function that narrows an
-// i64 read to i32 (`i64.load` + `i32.wrap_i64`) still declines, now on
-// `I32WrapI64` rather than `I64Ldr`.
+// RQ-59-WCETI64 closed the #936 audit's residual: `I32WrapI64`,
+// `I64ExtendI32S`, `I64ExtendI32U`, and `I64Sub` are priced by the SAME
+// real-encoder mechanism (measured per op with the decline scan re-run after
+// each, since `scan_for_decline` reports only the FIRST decline per
+// function — nothing new surfaced behind any of the four). The narrow shape
+// that this section previously pinned as STILL-declining
+// (`i64.load` + `i32.wrap_i64`, declining on `I32WrapI64` after `I64Ldr`
+// priced) now BOUNDS — see `i32_wrap_i64_after_priced_i64_ops_now_bounds`.
+// The `unmodeled-op` decline class itself stays alive and loud for genuinely
+// unpriced ops (`memory_size_still_declines_unmodeled_op` below pins one),
+// and the deliberate declines (i64 software div/rem `looped-expansion`,
+// loops, calls, recursion, unsupported cores) are untouched.
 //
 // Cycle literals below are sized from the REAL Thumb-2 encoder's own byte
 // length for each instance (`straightline_expansion_real`, NOT the
@@ -753,16 +758,14 @@ fn i64_ldr_cascade_composes_to_bounded() {
     );
 }
 
-/// HONEST RESIDUAL, measured not asserted: pricing I64Const/I64Ldr/I64Str
-/// does NOT mean every i64-touching function now bounds. `scan_for_decline`
-/// reports only the FIRST decline, and `i32.wrap_i64` (narrowing an i64 read
-/// to i32 — a plausible OS shape) still lowers to the unpriced `I32WrapI64`
-/// pseudo-op. This function's i64.load and i64.const/i64.add all price fine;
-/// it declines on the wrap at the end, proving the fix is scoped to exactly
-/// the two (three, with I64Ldr) opcode families it claims and not a general
-/// "i64 is now bounded" claim.
+/// RQ-59-WCETI64 (#936 residual): the EXACT fixture this gate previously
+/// pinned as the honest residual — an i64 read narrowed to i32, the plausible
+/// OS shape — CONVERTS from `declined unmodeled-op op=I32WrapI64` to bounded
+/// now that `I32WrapI64` is priced (real-encoder byte length: a 2 B
+/// `MOV`/`NOP`). The decline was converted, not deleted: see
+/// `memory_size_still_declines_unmodeled_op` for the still-live decline class.
 #[test]
-fn i32_wrap_i64_after_priced_i64_ops_still_declines() {
+fn i32_wrap_i64_after_priced_i64_ops_now_bounds() {
     let wat = r#"
         (module
           (memory 1)
@@ -770,11 +773,97 @@ fn i32_wrap_i64_after_priced_i64_ops_still_declines() {
             local.get 0 i64.load i64.const 3 i64.add i32.wrap_i64))
     "#;
     let report = compile_wcet_relocatable(wat, "cortex-m4");
-    let f = func(&report, "narrow");
+    assert_bounded(&report, "narrow", 80);
+}
+
+/// RQ-59-WCETI64 leaf: `i32.wrap_i64` alone (i64 param, low word out).
+/// `ArmOp::I32WrapI64` prices from the real encoder's own byte length for the
+/// instance (2 B — a 16-bit `MOV`, or a genuine `NOP` when rd == rnlo).
+#[test]
+fn i32_wrap_i64_relocatable_leaf_is_bounded() {
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "w") (param i64) (result i32)
+            local.get 0
+            i32.wrap_i64))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "w", 28);
+}
+
+/// RQ-59-WCETI64 leaf: `i64.extend_i32_s` lowers (via the Rocq-proved
+/// `rule_i64_extend_i32_s`) to the `ArmOp::I64ExtendI32S` pseudo — optional
+/// 16-bit `MOV` + 32-bit `ASR.W rdhi, rdlo, #31`, 4-6 B from the real encoder.
+#[test]
+fn i64_extend_i32_s_relocatable_leaf_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "es") (param i32) (result i64)
+            local.get 0
+            i64.extend_i32_s))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "es", 39);
+}
+
+/// RQ-59-WCETI64 control: `i64.extend_i32_u` bounded BEFORE this change —
+/// RQ-58-SELDSL's `rule_i64_extend_i32_u` emits raw `Mov`/`Movw` primitives
+/// (already priced), so the `ArmOp::I64ExtendI32U` pseudo never reaches the
+/// direct-selector stream. Its price is belt-and-braces for the
+/// `select_default` fallback arm that still emits the pseudo. This pin proves
+/// the claim "bounded before" stays true (16 cycles, unchanged from v0.58).
+#[test]
+fn i64_extend_i32_u_relocatable_leaf_is_bounded() {
+    let wat = r#"
+        (module
+          (func (export "eu") (param i32) (result i64)
+            local.get 0
+            i64.extend_i32_u))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "eu", 16);
+}
+
+/// RQ-59-WCETI64 composite: widen-then-store (`i64.extend_i32_s` +
+/// `i64.store`) — the second measured OS shape that declined on
+/// `I64ExtendI32S` before this change (behind the already-priced `I64Str`).
+#[test]
+fn i64_extend_i32_s_store_composite_is_bounded() {
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "ws") (param i32 i32)
+            local.get 0
+            local.get 1
+            i64.extend_i32_s
+            i64.store))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    assert_bounded(&report, "ws", 67);
+}
+
+/// HONEST RESIDUAL, measured not asserted (the #936 discipline, kept):
+/// pricing the four RQ-59-WCETI64 ops does NOT mean `unmodeled-op` went away
+/// as a class. `memory.size` lowers to the unpriced `ArmOp::MemorySize`
+/// pseudo and still LOUD-declines, naming the op (#921 schema). This is the
+/// non-vacuity pin that the decline machinery this fix narrows is still
+/// alive — if THIS ever bounds, the model grew again and this test must
+/// retarget, not delete (same rule as `wcet_decline_names_op_921.rs`).
+#[test]
+fn memory_size_still_declines_unmodeled_op() {
+    let wat = r#"
+        (module
+          (memory 1)
+          (func (export "ms") (result i32)
+            memory.size))
+    "#;
+    let report = compile_wcet_relocatable(wat, "cortex-m4");
+    let f = func(&report, "ms");
     assert_eq!(
         f.get("status").and_then(Value::as_str),
         Some("declined"),
-        "narrow: expected declined (I32WrapI64 unpriced), got {f}"
+        "ms: expected declined (MemorySize unpriced), got {f}"
     );
     assert_eq!(
         f.get("reason").and_then(Value::as_str),
@@ -782,9 +871,8 @@ fn i32_wrap_i64_after_priced_i64_ops_still_declines() {
     );
     assert_eq!(
         f.get("op").and_then(Value::as_str),
-        Some("I32WrapI64"),
-        "narrow: expected the residual decline to name I32WrapI64 (the i64.load/ \
-         i64.const/i64.add ahead of it all price now); got {f}"
+        Some("MemorySize"),
+        "ms: the decline must NAME the op (#921); got {f}"
     );
 }
 

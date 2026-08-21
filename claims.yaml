@@ -1716,16 +1716,21 @@ claims:
         pattern: 'let frames = \(cert\.max_depth as u128\)\.saturating_add\(1\);'
         glob: ['crates/synth-backend/src/wcet_compose.rs']
         expect: 1
-      # #936 — I64Const/I64Ldr/I64Str are PRICED (bounded), not declined
-      # `Unmodeled`. Sound-critical because it is sized from the REAL Thumb-2
-      # encoder's own byte length for the instance (`straightline_expansion_real`),
-      # NOT the synth-synthesis byte-size estimator's `_ => 2` default (which does
-      # not cover these ops and would silently under-count) and NOT a hand-mirrored
-      # predicate (a naive "offset>0xFFF costs 2 extra ADD.W" mirror was proven
-      # WRONG at authoring — the address-materialization ADD itself can need its
-      # own MOVW for a large offset, which only calling the real encoder catches).
+      # #936 + RQ-59-WCETI64 — the direct-selector i64 pseudo-ops with real
+      # emissions (I64Const/I64Ldr/I64Str, then the #936 audit's residual four:
+      # I32WrapI64/I64ExtendI32S/I64ExtendI32U/I64Sub) are PRICED (bounded),
+      # not declined `Unmodeled`. Sound-critical because each is sized from the
+      # REAL Thumb-2 encoder's own byte length for the instance
+      # (`straightline_expansion_real`), NOT the synth-synthesis byte-size
+      # estimator's `_ => 2` default (which does not cover these ops and would
+      # silently under-count) and NOT a hand-mirrored predicate (a naive
+      # "offset>0xFFF costs 2 extra ADD.W" mirror was proven WRONG at #936
+      # authoring — the address-materialization ADD itself can need its own
+      # MOVW for a large offset, which only calling the real encoder catches).
+      # The pattern enumerates ALL SEVEN variants of the priced arm, `\s*`
+      # format-tolerant: dropping any one out of the arm reddens this pin.
       - kind: count-eq
-        pattern: 'I64Const \{ \.\. \} \| I64Ldr \{ \.\. \} \| I64Str \{ \.\. \} => match straightline_expansion_real'
+        pattern: '(?s)I64Const \{ \.\. \}\s*\| I64Ldr \{ \.\. \}\s*\| I64Str \{ \.\. \}\s*\| I32WrapI64 \{ \.\. \}\s*\| I64ExtendI32S \{ \.\. \}\s*\| I64ExtendI32U \{ \.\. \}\s*\| I64Sub \{ \.\. \} => match straightline_expansion_real'
         glob: ['crates/synth-backend/src/wcet.rs']
         expect: 1
       - kind: count-eq
