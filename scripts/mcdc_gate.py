@@ -130,15 +130,50 @@ SCORED_PREFIXES = (
 # Witness-version invariance was verified separately (0.28.0 and 0.42.0 give
 # identical numbers on the same host), so the tool is not what moves these.
 #
-# ci-checks: mcdc scored decisions >= 22
+# RQ-59-ZEROINIT (#990) RE-STATEMENT, with the evidence that forced it — read
+# before touching these numbers again. The #990 PR added ~100 lines of UNSCORED
+# code to a crate linked into the harness wasm (the zero-init classifier in
+# synth-synthesis, pulled in via the RV32 selector). ZERO scored-function
+# source changed, the 56 rows did not change — and on this exact platform the
+# scored table went 26 dec/6 full -> 21 dec/3 full (validate_final_allocation
+# 7->4, validate_served_image 2->0, count_params closure 1->0,
+# validate_reloc_resolutions 2->1 and its full-credit gone, build_options full
+# 1->0, sp_slot_load swapped for sp_slot_store, spanned GAINED 2). On macOS,
+# same source pair, same rustc 1.96.1, same witness 0.42.0, the delta had the
+# OPPOSITE sign (17->22, full 7->7). The DISCRIMINATING measurement: the
+# instrument-side manifests of the two builds carry an IDENTICAL branch
+# population for every scored function (175 branches, per-function counts
+# byte-for-byte equal). So no condition was deleted and none became
+# unreachable — witness's REPORT-side decision reconstruction (how branches
+# group into decisions) is a function of binary layout, not only of source.
+# Filed upstream: pulseengine/witness#208 (family: #198, #179).
+#
+# Consequence, and the honest split enforced below:
+#   * The DELETION-SENSITIVE check — the reason this gate counts instead of
+#     ratios — now lives on the STABLE surface: BRANCH_POPULATION pins the
+#     instrument-side branch count of every scored function EXACTLY. A deleted
+#     condition drops its function's count deterministically at opt-level 0;
+#     an unrelated-layout shift provably does not (that is the #990 A/B).
+#   * The decision/full floors below still bite (a row-set or harness
+#     regression that stops driving outcomes shows up here) but they measure
+#     witness's layout-sensitive reconstruction and are re-derived
+#     2026-08-21 from the #990 branch (ubuntu-latest, rustc 1.96.1, witness
+#     0.42.0, 56 rows: 21 dec / 139 cond / 62 proved / 3 full / 48 dead).
+#     They may move again on an unrelated-code PR until witness#208 is fixed;
+#     when they move, the manifest pins are what says whether anything real
+#     was lost — 26->21 here was reconstruction noise over an unchanged
+#     branch population, which is why this is a re-statement WITH evidence
+#     and not a floor lowered to go green.
+#
+# ci-checks: mcdc scored decisions >= 21
 # ci-checks: mcdc scored conditions >= 130
 # ci-checks: mcdc scored conditions proved >= 57
-# ci-checks: mcdc fully-proved decisions >= 4
+# ci-checks: mcdc fully-proved decisions >= 3
 # ci-checks: mcdc dead conditions <= 50
-FLOOR_DECISIONS = 22
+FLOOR_DECISIONS = 21
 FLOOR_CONDITIONS = 130
 FLOOR_PROVED = 57
-FLOOR_FULL_MCDC_DECISIONS = 4
+FLOOR_FULL_MCDC_DECISIONS = 3
 # DEAD is CEILINGED, not ignored. 50 scored conditions are never evaluated —
 # 40 of them in `is_straight_line`, whose match arms cover RV32 opcodes the row
 # set does not construct. (This is the one count that is IDENTICAL on both
@@ -147,6 +182,46 @@ FLOOR_FULL_MCDC_DECISIONS = 4
 # segment barriers would raise `dead`, lower nothing else, and pass. It is also
 # a third potency surface — mutation (a) moved dead 50 -> 52.
 CEILING_DEAD = 50
+
+# ───────────────────────────────────────────────────────────────────────────
+# THE STABLE, DELETION-SENSITIVE SURFACE (witness#208 / #990): the
+# instrument-side branch population per scored function, pinned EXACTLY.
+#
+# At opt-level 0 the branches witness instruments in a function are a
+# deterministic image of that function's own source conditions — the #990 A/B
+# measured them byte-for-byte identical across a build whose report-side
+# decision counts moved 26->21. So THIS table is what notices a deleted (or
+# added) condition in a gated predicate; the report-side floors above notice
+# a run that stopped driving outcomes. EXACT, not a floor, in claims.yaml's
+# value-must-EQUAL spirit: an added condition is also a diff someone must
+# look at (it needs rows), and slack is where drift hides.
+#
+# Derived from the manifest (demangled `function_name` over SCORED_PREFIXES),
+# rustc 1.96.1 / witness 0.42.0. On mismatch the gate prints a REPIN block;
+# repin ONLY with the diff in hand — a count that moved without a source
+# change to that function is witness#208 territory, not a repin.
+BRANCH_POPULATION = {
+    "synth_backend_riscv::alloc_validator::is_ret": 4,
+    "synth_backend_riscv::alloc_validator::is_saved_by_pass": 1,
+    "synth_backend_riscv::alloc_validator::is_straight_line": 52,
+    "synth_backend_riscv::alloc_validator::sp_slot_load": 2,
+    "synth_backend_riscv::alloc_validator::sp_slot_store": 2,
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32::_$u7b$$u7b$closure$u7d$$u7d$": 2,
+    "synth_backend_riscv::backend::build_options": 8,
+    "synth_backend_riscv::backend::compile_function_with_opts": 9,
+    "synth_backend_riscv::backend::effective_num_params": 1,
+    "synth_backend_riscv::backend::ensure_supported_target": 4,
+    "synth_core::static_data_addr::resolve_owner": 4,
+    "synth_core::static_data_addr::resolve_owner::_$u7b$$u7b$closure$u7d$$u7d$": 2,
+    "synth_core::static_data_addr::runtime_image": 3,
+    "synth_core::static_data_addr::validate_reloc_resolutions": 8,
+    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 13,
+    "synth_core::static_data_addr::validate_served_image": 5,
+    "synth_core::static_data_addr::validate_served_image::_$u7b$$u7b$closure$u7d$$u7d$": 1,
+    "synth_core::wasm_op::count_params_heuristic": 5,
+    "synth_core::wasm_op::count_params_heuristic::_$u7b$$u7b$closure$u7d$$u7d$": 2,
+}
 
 
 def demangle(sym: str) -> str:
@@ -192,6 +267,33 @@ def main() -> int:
         print(f"note: unexpected report schema {report.get('schema')!r}", file=sys.stderr)
 
     branch_fn = {b["id"]: demangle(b.get("function_name", "")) for b in manifest["branches"]}
+
+    # The stable surface first (witness#208 / #990): the instrument-side
+    # branch population per scored function, compared EXACTLY against
+    # BRANCH_POPULATION. This is the deletion-sensitive check; the
+    # report-side floors below measure witness's layout-sensitive decision
+    # reconstruction on top of it.
+    pop: dict[str, int] = {}
+    for fn in branch_fn.values():
+        if fn.startswith(SCORED_PREFIXES):
+            pop[fn] = pop.get(fn, 0) + 1
+    pop_fails = []
+    for fn in sorted(set(BRANCH_POPULATION) | set(pop)):
+        want, got = BRANCH_POPULATION.get(fn), pop.get(fn, 0)
+        if want is None:
+            pop_fails.append(f"UNPINNED scored function in manifest: {fn} ({got} branches)")
+        elif got != want:
+            pop_fails.append(f"branch population moved: {fn} = {got} (pinned {want})")
+    if pop_fails:
+        print("BRANCH POPULATION (instrument-side, the stable surface) — MISMATCH:")
+        for f in pop_fails:
+            print(f"  {f}")
+        print("\nREPIN block (paste over BRANCH_POPULATION ONLY if the diff shows a")
+        print("source change to these functions — an unmoved source means")
+        print("witness#208, not a repin):")
+        for fn in sorted(pop):
+            print(f'    "{fn}": {pop[fn]},')
+        print()
 
     # A decision belongs to a function when its conditions' branches do. A
     # decision straddling two functions (inlining) is attributed to the one
@@ -259,7 +361,7 @@ def main() -> int:
         print("  (none)")
     print()
 
-    fails = []
+    fails = list(pop_fails)
     if tot["decisions"] < FLOOR_DECISIONS:
         fails.append(f"scored decisions {tot['decisions']} < floor {FLOOR_DECISIONS}")
     if conditions < FLOOR_CONDITIONS:
@@ -277,9 +379,12 @@ def main() -> int:
         for f in fails:
             print(f"FAIL: {f}")
         print()
-        print("A DROP in `scored conditions` means a condition was deleted from a")
-        print("gated predicate — that is the case a ratio-only floor cannot see, and")
-        print("it is why this gate counts. Do not lower a floor to go green.")
+        print("A branch-population mismatch means a condition was deleted from (or")
+        print("added to) a gated predicate — the case a ratio cannot see. A floor")
+        print("miss WITHOUT a population mismatch is witness's layout-sensitive")
+        print("decision reconstruction moving under you (witness#208): diagnose with")
+        print("the manifest diff before touching any number, and never lower a floor")
+        print("to go green.")
         return 1
     for f in fails:
         print(f"(report-only) would FAIL: {f}")

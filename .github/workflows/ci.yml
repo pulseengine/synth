@@ -3875,3 +3875,7 @@ jobs:
             target/mcdc/report.txt
             target/mcdc/report.json
             target/mcdc/rollup.txt
+            # witness#208/#990: the manifest is the attribution map AND the
+            # stable branch-population surface — without it the inventory
+            # behind a floor movement cannot be audited from the artifact.
+            target/mcdc/instrumented.wasm.witness.json
