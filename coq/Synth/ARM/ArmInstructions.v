@@ -131,6 +131,12 @@ Inductive arm_instr : Type :=
   | RBIT : arm_reg -> arm_reg -> arm_instr    (* Reverse bits *)
   | POPCNT : arm_reg -> arm_reg -> arm_instr  (* Population count *)
 
+  (* Sign extension (VCR-SEL-001 increment 6): SXTB/SXTH rd, rm —
+     rd = sign-extension of rm's low byte / halfword. Mirrors
+     ArmOp::Sxtb / ArmOp::Sxth (synth-backend/src/arm_encoder.rs). *)
+  | SXTB : arm_reg -> arm_reg -> arm_instr    (* Sign-extend byte *)
+  | SXTH : arm_reg -> arm_reg -> arm_instr    (* Sign-extend halfword *)
+
   (* Memory operations *)
   | LDR : arm_reg -> arm_reg -> Z -> arm_instr   (* Load register *)
   | STR : arm_reg -> arm_reg -> Z -> arm_instr   (* Store register *)
@@ -243,6 +249,16 @@ Inductive arm_instr : Type :=
   | I64ExtendI32UPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
   | I32WrapI64Pseudo    : arm_reg -> arm_reg -> arm_instr
         (* I32WrapI64Pseudo rd rnlo — keeps low half, drops high half *)
+
+  (* Narrow in-register sign extension on an i64 pair (VCR-SEL-001
+     increment 6): i64.extend8_s / extend16_s / extend32_s. One pseudo-op
+     reads the operand LOW half, writes rdlo = sign-extended narrow value
+     and rdhi = sign fill (rdlo >>s 31). Mirrors ArmOp::I64Extend{8,16,32}S
+     (encoder expansion: SXTB/SXTH/MOV then ASR #31). *)
+  | I64Extend8SPseudo  : arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64Extend8SPseudo rdlo rdhi rnlo *)
+  | I64Extend16SPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64Extend32SPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
 
   (* Memory: 8-byte load/store *)
   | I64LoadPseudo  : arm_reg -> arm_reg -> arm_reg -> Z -> arm_instr

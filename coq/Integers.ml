@@ -62,7 +62,7 @@ module I32 =
   let divs x y =
     if Z.eqb y 0
     then None
-    else if (&&) (Z.eqb x min_signed) (Z.eqb y ((~-) 1))
+    else if (&&) (Z.eqb (signed x) min_signed) (Z.eqb (signed y) ((~-) 1))
          then None
          else Some (repr (Z.div (signed x) (signed y)))
 
@@ -275,10 +275,20 @@ module I64 =
   let mul x y =
     repr (Z.mul x y)
 
+  (** val coq_and : int -> int -> int **)
+
+  let coq_and x y =
+    repr (Z.coq_land x y)
+
   (** val coq_or : int -> int -> int **)
 
   let coq_or x y =
     repr (Z.coq_lor x y)
+
+  (** val xor : int -> int -> int **)
+
+  let xor x y =
+    repr (Z.coq_lxor x y)
 
   (** val shl : int -> int -> int **)
 

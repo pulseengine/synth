@@ -78,7 +78,7 @@ let pop2_i64 s =
 
 let exec_wasm_instr i s =
   match i with
-  | I32Const n -> Some (push_value (VI32 n) s)
+  | I32Const n -> Some (push_value (VI32 (I32.repr n)) s)
   | I64Const n -> Some (push_value (VI64 n) s)
   | I32Add ->
     (match pop2_i32 s with
@@ -297,6 +297,48 @@ let exec_wasm_instr i s =
      | Some p ->
        let v,s' = p in
        let result = I32.popcnt v in Some (push_value (VI32 result) s')
+     | None -> None)
+  | I64Add ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.add v1 v2 in Some (push_value (VI64 result) s')
+     | None -> None)
+  | I64Sub ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.sub v1 v2 in Some (push_value (VI64 result) s')
+     | None -> None)
+  | I64Mul ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.mul v1 v2 in Some (push_value (VI64 result) s')
+     | None -> None)
+  | I64And ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.coq_and v1 v2 in Some (push_value (VI64 result) s')
+     | None -> None)
+  | I64Or ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.coq_or v1 v2 in Some (push_value (VI64 result) s')
+     | None -> None)
+  | I64Xor ->
+    (match pop2_i64 s with
+     | Some p ->
+       let p0,s' = p in
+       let v1,v2 = p0 in
+       let result = I64.xor v1 v2 in Some (push_value (VI64 result) s')
      | None -> None)
   | I64Shl ->
     (match pop2_i64 s with

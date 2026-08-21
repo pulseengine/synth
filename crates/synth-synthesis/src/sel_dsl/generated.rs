@@ -1366,3 +1366,85 @@ pub fn rule_i32_select_default(
         },
     ])
 }
+
+/// `i32.extend8_s`: rd = sign-extension of rm's low byte
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_extend8_s_correct` (Qed).
+pub fn rule_i32_extend8_s(rd: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::Sxtb { rd, rm }]
+}
+
+/// `i32.extend16_s`: rd = sign-extension of rm's low halfword
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_extend16_s_correct` (Qed).
+pub fn rule_i32_extend16_s(rd: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::Sxth { rd, rm }]
+}
+
+/// `i64.extend8_s`: rd_lo = sign-extended low byte of rn_lo, rd_hi = sign fill
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend8_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend8_s(rd_lo: Reg, rd_hi: Reg, rn_lo: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend8_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Extend8S {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rnlo: rn_lo,
+    }])
+}
+
+/// `i64.extend16_s`: rd_lo = sign-extended low halfword of rn_lo, rd_hi = sign fill
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend16_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend16_s(rd_lo: Reg, rd_hi: Reg, rn_lo: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend16_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Extend16S {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rnlo: rn_lo,
+    }])
+}
+
+/// `i64.extend32_s`: rd_lo = rn_lo, rd_hi = sign fill (rn_lo >>s 31)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_extend32_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_extend32_s(rd_lo: Reg, rd_hi: Reg, rn_lo: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_extend32_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Extend32S {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rnlo: rn_lo,
+    }])
+}
+
+/// `i64.const`: (rd_hi:rd_lo) = the 64-bit constant, halves split by the encoder
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_const_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_const(rd_lo: Reg, rd_hi: Reg, value: i64) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_const: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Const {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        value,
+    }])
+}

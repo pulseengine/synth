@@ -436,6 +436,18 @@ Proof.
   intros. unfold update_flags_arith. reflexivity.
 Qed.
 
+(** ** Narrow sign extension (VCR-SEL-001 increment 6)
+
+    DEFINED, not axiomatized: sign extension of the low byte / halfword is
+    expressed with the I32 shift primitives ([shl] then [shrs]) — the
+    WASM-spec shape of [i32.extend8_s] / [i32.extend16_s]. No new axiom
+    joins the trusted base for these. *)
+Definition sxtb_val (v : I32.int) : I32.int :=
+  I32.shrs (I32.shl v (I32.repr 24)) (I32.repr 24).
+
+Definition sxth_val (v : I32.int) : I32.int :=
+  I32.shrs (I32.shl v (I32.repr 16)) (I32.repr 16).
+
 (** ** Instruction Semantics *)
 
 (** Execute a single ARM instruction *)
@@ -750,6 +762,15 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
   | POPCNT rd rm =>
       let v := get_reg s rm in
       Some (set_reg s rd (I32.popcnt v))
+
+  (* Sign extension (VCR-SEL-001 increment 6) — defined via I32 shifts *)
+  | SXTB rd rm =>
+      let v := get_reg s rm in
+      Some (set_reg s rd (sxtb_val v))
+
+  | SXTH rd rm =>
+      let v := get_reg s rm in
+      Some (set_reg s rd (sxth_val v))
 
   (* Memory operations *)
   | LDR rd rn offset =>
@@ -1084,6 +1105,23 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       (* Keeps low half in rd; drops high half *)
       let v := get_reg s rnlo in
       Some (set_reg s rd v)
+
+  (* Narrow in-register sign extension on an i64 pair (increment 6).
+     The pseudo-op reads the operand low half BEFORE writing either
+     destination register, matching the encoder expansion order
+     (SXTB/SXTH/MOV rdlo first, then ASR rdhi #31) in every aliasing
+     case. High fill is the concrete [I32.shrs _ 31] — no axiom. *)
+  | I64Extend8SPseudo rdlo rdhi rnlo =>
+      let v := sxtb_val (get_reg s rnlo) in
+      Some (set_reg (set_reg s rdlo v) rdhi (I32.shrs v (I32.repr 31)))
+
+  | I64Extend16SPseudo rdlo rdhi rnlo =>
+      let v := sxth_val (get_reg s rnlo) in
+      Some (set_reg (set_reg s rdlo v) rdhi (I32.shrs v (I32.repr 31)))
+
+  | I64Extend32SPseudo rdlo rdhi rnlo =>
+      let v := get_reg s rnlo in
+      Some (set_reg (set_reg s rdlo v) rdhi (I32.shrs v (I32.repr 31)))
 
   | I64LoadPseudo rdlo rdhi addr offset =>
       let base := get_reg s addr in

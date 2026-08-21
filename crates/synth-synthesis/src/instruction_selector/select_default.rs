@@ -663,15 +663,10 @@ impl InstructionSelector {
                 seq
             }
 
-            // Sign extension operations
-            I32Extend8S => {
-                // Sign-extend byte: SXTB Rd, Rm
-                vec![ArmOp::Sxtb { rd, rm }]
-            }
-            I32Extend16S => {
-                // Sign-extend halfword: SXTH Rd, Rm
-                vec![ArmOp::Sxth { rd, rm }]
-            }
+            // Sign extension operations — Rocq-proved rules, the only path
+            // (increment 6, RQ-59-SUBTRACT)
+            I32Extend8S => crate::sel_dsl::generated::rule_i32_extend8_s(rd, rm),
+            I32Extend16S => crate::sel_dsl::generated::rule_i32_extend16_s(rd, rm),
 
             // Comparison: equal to zero (unary)
             I32Eqz => vec![ArmOp::Cmp {
@@ -788,20 +783,20 @@ impl InstructionSelector {
 
             // ===== i64 operations using register pairs on 32-bit ARM =====
             // Convention: i64 operand 1 in (R0,R1), operand 2 in (R2,R3), result in (R0,R1)
-            I64Const(val) => {
-                vec![ArmOp::I64Const {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    value: *val,
-                }]
-            }
+            // Rocq-proved increment-6 rule as the only path (RQ-59-SUBTRACT).
+            I64Const(val) => crate::sel_dsl::generated::rule_i64_const(Reg::R0, Reg::R1, *val)
+                .map_err(synth_core::Error::synthesis)?,
 
+            // Rocq-proved increment-5 rule as the only path (RQ-59-SUBTRACT:
+            // the hand-written pseudo-op construction is deleted; the fixed
+            // (R0, R1, R0) shape satisfies rd_hi <> rd_lo). NOT so for
+            // I64ExtendI32U below: its rule lowers to the two-instruction
+            // MOV + MOVW form select_with_stack ships, while this path emits
+            // the single I64ExtendI32U pseudo — different bytes, so
+            // delegation is REFUSED there and the hand-written arm stays.
             I64ExtendI32S => {
-                vec![ArmOp::I64ExtendI32S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rn: Reg::R0,
-                }]
+                crate::sel_dsl::generated::rule_i64_extend_i32_s(Reg::R0, Reg::R1, Reg::R0)
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             I64ExtendI32U => {
@@ -812,36 +807,16 @@ impl InstructionSelector {
                 }]
             }
 
-            I32WrapI64 => {
-                // Just take the low 32 bits (R0) — effectively a no-op if result is in R0
-                vec![ArmOp::I32WrapI64 {
-                    rd: Reg::R0,
-                    rnlo: Reg::R0,
-                }]
-            }
+            // Rocq-proved increment-5 rule as the only path (RQ-59-SUBTRACT).
+            I32WrapI64 => crate::sel_dsl::generated::rule_i32_wrap_i64(Reg::R0, Reg::R0),
 
-            I64Extend8S => {
-                vec![ArmOp::I64Extend8S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
-            }
-
-            I64Extend16S => {
-                vec![ArmOp::I64Extend16S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
-            }
-
-            I64Extend32S => {
-                vec![ArmOp::I64Extend32S {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    rnlo: Reg::R0,
-                }]
+            // Narrow i64 sign-extends — Rocq-proved rules, the only path
+            // (increment 6, RQ-59-SUBTRACT). The fixed (R0, R1, R0) shape
+            // satisfies the rd_hi <> rd_lo side condition.
+            I64Extend8S | I64Extend16S | I64Extend32S => {
+                crate::sel_dsl::i64_extend_narrow_rule(wasm_op, Reg::R0, Reg::R1, Reg::R0)
+                    .expect("narrow i64 sign-extend op has a generated rule")
+                    .map_err(synth_core::Error::synthesis)?
             }
 
             // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub — the

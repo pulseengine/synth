@@ -14,7 +14,7 @@ let compile_wasm_to_arm = function
        ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
        ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
        1)))))))))))))))
-  then (MOVW (R0, n))::[]
+  then (MOVW (R0, (I32.repr (I32.unsigned n))))::[]
   else (MOVW (R0,
          (I32.repr
            (Z.coq_land (I32.unsigned n) ((fun p->1+2*p) ((fun p->1+2*p)

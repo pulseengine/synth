@@ -743,12 +743,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "617 Qed / 2 Admitted"
+    text: "623 Qed / 2 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 617
+        expect: 623
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -756,16 +756,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "617 Qed / 2 Admitted"
+    text: "623 Qed / 2 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '617 Qed / 2 Admitted'
+        pattern: '623 Qed / 2 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 617
+        expect: 623
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -1023,7 +1023,7 @@ claims:
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: CLAUDE.md
-    text: "increments 1–5 shipped **default-on**"
+    text: "increments 1–6 shipped **default-on**"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
@@ -1094,10 +1094,10 @@ claims:
     evidence:
       - kind: verbatim                       # "covered" != "faithful" must stay in the doc
         text: '**"covered" ≠ "faithful"**'
-      - kind: count-eq                       # all 74 rule theorems conclude via the simplified executor
+      - kind: count-eq                       # all 80 rule theorems conclude via the simplified executor
         pattern: 'exec_program \(rule_'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
-        expect: 74
+        expect: 80
       - kind: count-same                     # rule theorems == simplified-basis conclusions,
         legs:                                # 1:1 — a future Sail-basis rule theorem breaks
           - name: rule-correct-theorems      # this pair and forces reclassification HERE
@@ -1199,14 +1199,14 @@ claims:
 
   - id: SYNTH-SEL-DSL-COVERAGE-STATUS-MD
     doc: coq/STATUS.md
-    text: "**54 (35%)**"                     # DSL-served column total, per-op-family table (#667)
+    text: "**60 (39%)**"                     # DSL-served column total, per-op-family table (#667)
     evidence:
       - kind: count-eq
         pattern: '^rule_'
         glob: ['coq/vcr_sel_rules.manifest']
-        expect: 74
+        expect: 80
       - kind: verbatim
-        text: "**74 Qed / 0 Admitted**"
+        text: "**80 Qed / 0 Admitted**"
 
   # ===========================================================================
   # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC.
@@ -1255,9 +1255,30 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18291
+        value: 18278
         baseline: 17897
         waivers:
+          - to: 18278
+            reason: >-
+              RQ-59-SUBTRACT (#242, increment 6): the residual above baseline
+              FELL 18,291 -> 18,278 (-13) — the sign-extension family's five
+              hand-written emissions (sws I32Extend8S/16S Sxtb/Sxth pushes,
+              the sws I64Extend{8,16,32}S construction match incl. its
+              `_ => unreachable!()`, sd's five fixed-register vec arms) were
+              deleted in favour of the five new Rocq-proved rules, costing
+              +21 lines of rule-delegation scaffolding against -33 deleted.
+              Byte-identity gated: 704-row corpus manifest (176 fixtures x 4
+              configs incl. pinned declines, sign_extend_family.wat ADDED
+              first because the prior corpus had zero extendN_s coverage)
+              identical to the pre-deletion baseline; 10/10 frozen anchors.
+              The residual above baseline it carries forward is the two
+              waived v0.59 soundness growths (#989 WAR guard, #990
+              domination walk) minus this fall, re-derived from the tree.
+              The final -1 is the same lane delegating select_default's
+              I64ExtendI32S / I32WrapI64 hand-written pseudo constructions
+              to their existing increment-5 rules (structurally identical
+              ArmOp values; I64ExtendI32U REFUSED — its rule lowers to the
+              MOV+MOVW pair, different bytes, hand-written arm stays).
           - to: 18291
             reason: >-
               MERGE OF TWO INDEPENDENTLY-WAIVED GROWTHS. RQ-59-WARALIAS (#989)
@@ -1374,7 +1395,11 @@ claims:
         # 28582 -> 28755 (RQ-59-WARALIAS #989): +173 code, all in the
         # snapshot_home_reg_aliases WAR guard + its four call sites (see the
         # lines_code waiver); zero test-module movement.
-        value: 28912
+        # 28912 -> 28899 (RQ-59-SUBTRACT increment 6): -13 code (the
+        # sign-extension family arm deletions + the select_default
+        # width-conversion delegation, see the lines_code waiver);
+        # zero test-module movement.
+        value: 28899
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1400,10 +1425,14 @@ claims:
       # peepholes where the wildcard declines an optimization, 10 internal-
       # enum arms with meaningful none/false semantics, 3 genuinely total
       # `index % N` maps, 1 already-loud Err.
+      # RQ-59-SUBTRACT (increment 6): 56 -> 55 — the `_ => unreachable!()`
+      # inside the deleted sws I64Extend{8,16,32}S construction match went
+      # with its arm (the same class as RETIRE's seven). The ZEROINIT +1
+      # (waived below) still stands; the two movements compose to 55.
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 56
+        value: 55
         baseline: 55
         waivers:
           - to: 56
@@ -1426,7 +1455,9 @@ claims:
         # 91 -> 90 (RQ-58-WILDCARD): the wasm_stack_effect wildcard.
         # 90 -> 91 (RQ-59-ZEROINIT #990): the second closed-subspace walk in
         # read_before_write_locals (waived above).
-        value: 91
+        # 91 -> 90 (RQ-59-SUBTRACT increment 6): the sws I64Extend family
+        # match's `_ => unreachable!()` went with its deleted arm.
+        value: 90
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -1447,8 +1478,16 @@ claims:
         # +5 select shapes (fresh/in-place i32, pair/in-place i64,
         # select_default) — each landed WITH the deletion of the hand-written
         # emission it supersedes, byte-identity-gated. Banked.
-        value: 74
-        baseline: 74
+        # 74 -> 79 (RQ-59-SUBTRACT, increment 6): the sign-extension family —
+        # i32.extend8_s/16_s (SXTB/SXTH), i64.extend8/16/32_s (narrow
+        # pseudo-ops) — each landed WITH the deletion of the hand-written
+        # emission it supersedes, byte-identity-gated. Banked.
+        # 79 -> 80 (RQ-59-SUBTRACT, increment 6): rule_i64_const — the first
+        # rule over a dynamic i64 immediate parameter — landed WITH the
+        # deletion of both selectors' hand-written ArmOp::I64Const
+        # constructions, byte-identity-gated. Banked.
+        value: 80
+        baseline: 80
 
   # ---------------------------------------------------------------------------
   # "Generate, don't mirror" — the rot class this repo keeps paying for, now
