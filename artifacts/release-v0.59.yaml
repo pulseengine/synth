@@ -399,7 +399,7 @@ requirements:
       ELF, prove the counterfactual (it parses and carries `.text`, so the old
       shape WOULD have passed), then fail the compile and require the harness
       to refuse and leave nothing behind.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [harness, stale-artifact, silent-direction, class-fix]
     links:
