@@ -3837,6 +3837,13 @@ jobs:
       # MC/DC run vacuous while still printing a number.
       - name: Row-driver sanity gate (host)
         run: cargo test -p synth-mcdc-harness
+      # witness#208/#990: the BRANCH_POPULATION check is a NEW checker born of
+      # a checker defect — it ships with its own committed potency tests
+      # (drop/grow/unpinned red-and-name-the-function, REPIN guard text,
+      # exact-match green, unscored-noise green), same rule as
+      # scripts/test_claim_check.py for the RQ-58-METRIC ratchet.
+      - name: BRANCH_POPULATION checker unit tests (witness#208 potency)
+        run: python3 scripts/test_mcdc_gate.py
       # Invoked through `bash`, not as `./…`: scripts/ is mode 644 in this repo
       # (cf. scripts/oracle_run.py), so an `exec` form exits 126 on a fresh
       # checkout even though it runs fine locally after a `chmod`.
