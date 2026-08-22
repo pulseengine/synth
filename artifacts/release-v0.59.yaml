@@ -562,3 +562,98 @@ requirements:
       priority: should
       verification-track: static-analysis
       issue: "#1017"
+
+  - id: RQ-59-POPCNT
+    type: system-req
+    title: "i32.popcnt clobbers R11 — the linear-memory base — and R11 leaks to the caller"
+    description: >
+      #1021, found by RQ-59-CRSWEEP as CR-H7: the ONLY one of eleven
+      critical/high code-review findings still live, and it EXECUTES. A
+      memory-safety miscompile shipped in v0.58.0.
+
+      The Thumb-2 i32 Popcnt expansion takes R11 as a second scratch — its own
+      comment says "We need a second scratch register. Use R11." — with six R11
+      writes. R11 is the WASM LINEAR MEMORY BASE, materialized at entry and
+      relied on by every subsequent LDR/STR. The A32 transcription (#615)
+      deliberately mirrors "the Thumb-2 arm's register contract (R11 + R12 as
+      scratch)" and inherits the same defect.
+
+      EXECUTED, not inferred (unicorn vs wasmtime, --cortex-m):
+        (i32.store (i32.const 0) (i32.const 1234)) then
+        (i32.add (i32.popcnt (local.get 0)) (i32.load (i32.const 0)))
+        f(0xFF) expected 1242, OBSERVED 0x20020008 — popcnt(0xFF)=8 plus the
+        word at ADDRESS 0 (the vector table's initial SP), because R11 ended as
+        r5>>16 = 0.
+
+      WORSE THAN A WRONG ANSWER IN ONE FUNCTION: R11 is not in the pushed set,
+      so it LEAKS TO THE CALLER and every later [R11] access in the whole call
+      chain reads through the garbage base. Reachable from BOTH selector paths.
+      i64.popcnt is NOT affected (R3/R4/R5/R12, all pushed) — that asymmetry is
+      a useful control, and a fix should explain why i64 got it right.
+
+      RED-FIRST with the repro above as an execution differential. Rework the
+      expansion to avoid R11 entirely; do not "save and restore" R11 around the
+      expansion without arguing why that is safe on every path including the
+      trap edges.
+
+      SCOPE NOTE: the maintainer chose to fold this into v0.59 rather than cut a
+      v0.58.1 patch (2026-08-21). The precedent for the other choice was
+      v0.56.2, cut mid-v0.57 for the ARM identity-mask OOB (#959).
+    status: proposed
+    release: v0.59
+    tags: [soundness, memory-safety, arm, a32, popcnt, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1021"
+
+  - id: RQ-59-TIERCENSUS
+    type: system-req
+    title: "Census: which Rocq-proved rules sit above an unproven encoder expansion?"
+    description: >
+      The architectural finding behind #1021, and it is bigger than the instance.
+
+      `rule_i32_popcnt` IS Rocq-proved. It emits the `ArmOp::Popcnt` PSEUDO-OP,
+      and the defect lives in that pseudo-op's ENCODER EXPANSION. The proof is
+      stated at PSEUDO-OP TIER, ABOVE the expansion — so a genuine proof sits
+      above a defective lowering and cannot see it. The verified path certifies
+      "the selector emits Popcnt correctly" while the thing Popcnt BECOMES
+      destroys the memory base.
+
+      This is the same shape as v0.57's `ArmSemantics::encode_op` silently
+      no-oping 87 of 222 ops (a Rocq-proved rotl rule "validated" by a model
+      executing neither instruction), one layer lower: there the MODEL did not
+      reach the instructions; here the PROOF does not reach the expansion.
+
+      MEASURE THE GAP — this artifact is a census, NOT a fix (maintainer's call,
+      2026-08-21; the fix is a v0.60 program):
+        a. Of the 80 rules in the VCR-SEL-001 manifest, how many emit a
+           PSEUDO-OP rather than real encodable instructions?
+        b. For each such rule, is the expansion itself proved, byte-oracled by a
+           frozen anchor, or covered by an execution differential — or is it
+           unguarded?
+        c. Report the UNGUARDED set explicitly. That number is the real size of
+           the gap and it is currently unknown.
+        d. Note which pseudo-ops use registers outside the pushed set as scratch
+           — #1021's mechanism — since that is the subset that can corrupt state
+           beyond its own result.
+
+      REPORT AND STOP. Do not rework the tier boundary here. A census that finds
+      the unguarded set is SMALL is as valuable as one that finds it large — it
+      would mean #1021 is close to a one-off rather than a systemic hole, and
+      that changes how v0.60 should be scoped.
+    status: proposed
+    release: v0.59
+    tags: [verification, proof-tier, census, vcr-sel-001]
+    links:
+      - type: derives-from
+        target: NFR-002
+    fields:
+      req-type: process
+      priority: should
+      verification-track: static-analysis
+      issue: "#1021"
