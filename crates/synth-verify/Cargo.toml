@@ -42,7 +42,7 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.58.0", optional = 
 # CHANGELOG-called-out) and adds opt-in `cadical`/`cert-bundle` features
 # (unused here); 0.18 is benches/BMC corpus + internal solver split, with the
 # core certified solve path unchanged (verified by this repo's #997 lane).
-ordeal = "=0.18.0"
+ordeal = "=0.19.0"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
