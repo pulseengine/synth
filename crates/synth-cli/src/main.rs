@@ -1813,6 +1813,9 @@ fn compile_command(
             // conditionally for the SBOM, so the tables never reached the config.
             let module = decode_wasm_module(&wasm_bytes)
                 .context("Failed to decode WASM module (signature tables)")?;
+            // RQ-59-STARTFN (#1046): the single-function path drops a start
+            // function exactly like the module path — refuse it here too.
+            refuse_dropped_start_function(module.start_function)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
             call_indirect_guards = module.call_indirect_guards();
@@ -3027,6 +3030,43 @@ fn reachable_from_exports(
     reachable
 }
 
+/// RQ-59-STARTFN (#1046): refuse a module that declares a `(start ...)`
+/// function — NO synth backend invokes it. The decoder previously had no
+/// `StartSection` arm at all: the section was discarded outright, the module
+/// compiled, exited 0, printed no warning, and the start function was not
+/// even in the object (reachability walks exports only). WASM Core §4.5.5
+/// runs the start function at instantiation, before any export is callable —
+/// wasmtime returns 42 on the filed repro, synth-compiled code returned 0.
+/// Third silent drop of the same shape in one session (#1041 data segments,
+/// #1046 this, #1048 i64-shift operand): synth accepted input, discarded part
+/// of its semantics, and reported success. A loud decline costs a build
+/// failure; a silent drop costs a wrong answer arbitrarily far from its
+/// cause. Same refusal shape as aarch64's #851 data-segment guard and the
+/// ARM relocatable #1041 guard.
+///
+/// Deliberately NO escape hatch (unlike #1041's `--embedder-data-init`): the
+/// embedder cannot honor this contract — the start function's CODE is not in
+/// the artifact, so there is nothing an embedder could call. Invoking it
+/// (the self-contained Reset_Handler calling it before any export; an
+/// exported init hook on the relocatable contract) is capability work, not
+/// this fix.
+fn refuse_dropped_start_function(start_function: Option<u32>) -> Result<()> {
+    if let Some(idx) = start_function {
+        anyhow::bail!(
+            "module declares a start function (function index {idx}), but no \
+             synth backend invokes it — the (start ...) section's \
+             instantiation-time initialization (WASM Core §4.5.5: it runs \
+             before any export is callable) would silently never run, and \
+             every export would read state the start function was supposed to \
+             establish; refusing (#1046). Start-function invocation is a \
+             documented capability follow-on; until it lands, remove the \
+             (start ...) section and perform the initialization through an \
+             export your embedder calls first."
+        );
+    }
+    Ok(())
+}
+
 /// Compile all exported functions (plus their reachable internal callees, #235)
 /// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
@@ -3166,6 +3206,11 @@ fn compile_all_exports(
             }
             match decode_wasm_module(&wasm_bytes) {
                 Ok(module) => {
+                    // RQ-59-STARTFN (#1046): a WAST-embedded module carrying
+                    // a (start ...) declaration is dropped the same way —
+                    // refuse the whole compile rather than silently merge
+                    // exports whose init never runs.
+                    refuse_dropped_start_function(module.start_function)?;
                     let export_count = module
                         .functions
                         .iter()
@@ -3312,6 +3357,10 @@ fn compile_all_exports(
         };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+        // RQ-59-STARTFN (#1046): refuse a (start ...) module on every backend
+        // this path serves (ARM Thumb-2/A32, RISC-V, AArch64) — none invokes
+        // the start function, and until #1046 it was silently discarded.
+        refuse_dropped_start_function(module.start_function)?;
         sbom_wasm_bytes = Some(wasm_bytes);
 
         // #642: call_indirect guard inputs — computed while the module is
