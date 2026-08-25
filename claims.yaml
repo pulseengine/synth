@@ -690,6 +690,30 @@ claims:
   # the heuristic's distinctive local, so a backend re-growing a private copy
   # reddens rather than quietly re-triplicating.
   # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # COMPLIANCE ENVELOPE — what the DEFAULT configuration does and does not do.
+  # Added after the wasm2c-performance findings (Narayan, UT Austin) showed
+  # competitors' numbers flattered by undisclosed non-compliance. The lesson is
+  # not "they cheated" — it is that a compliance envelope stated only in a
+  # maintainer's head becomes a comparison that misleads in one's own favour.
+  # synth's default emits NO out-of-bounds trap; that is a deliberate bare-metal
+  # mode, and it must be stated wherever performance or "verified" claims live.
+  # This pin exists so the default cannot change silently: it asserts BOTH that
+  # the default is None AND that the doc says so.
+  # ===========================================================================
+  - id: SYNTH-SAFETY-BOUNDS-DEFAULT-ENVELOPE
+    doc: CLAUDE.md
+    text: "--safety-bounds"
+    evidence:
+      - kind: count-eq                       # the default really is None
+        pattern: 'safety_bounds: SafetyBounds::None'
+        glob: ['crates/synth-core/src/backend.rs']
+        expect: 1
+      - kind: count-min                      # and the doc states the envelope
+        pattern: 'no out-of-bounds trap'
+        glob: ['CLAUDE.md']
+        min: 1
+
   - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
     doc: crates/synth-core/src/wasm_op.rs
     text: "pub fn count_params_heuristic"

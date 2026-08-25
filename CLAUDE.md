@@ -408,6 +408,72 @@ dead-frame-elim, uxth-fold. The gale #209 numbers that motivated Track A
 historical — flat_flight sits at its Belady optimum (frame traffic 0) since
 v0.24.0. See the README "Roadmap — North Star" section for the full table.
 
+## Compliance envelope (state this before any performance comparison)
+
+**In its default embedded configuration synth emits no out-of-bounds trap.** An
+OOB linear-memory access reads or writes whatever sits at `R11 + addr`.
+Spec-conformant OOB trapping requires `--safety-bounds software|mask|mpu` on
+ARM/RV32, and is unconditional on AArch64 (v0.52 #865). The default
+(`SafetyBounds::None`, `synth-core/src/backend.rs`) is a deliberate bare-metal
+choice — "fastest, unsafe", relying on MPU/PMP or a trusted module — not an
+oversight. It is pinned by `SYNTH-SAFETY-BOUNDS-DEFAULT-ENVELOPE` in
+`claims.yaml` so it cannot change silently.
+
+Why this section exists: the 2026 wasm2c-performance findings (Narayan, UT
+Austin) showed several AOT wasm compilers posting numbers flattered by
+undisclosed non-compliance — aWsm lowering i32/i64 accesses to typed LLVM
+pointers so LLVM assumes no-alias (illegal under wasm's untyped linear memory),
+and per that talk WAMR and Wasmer trading away the dead-load trap obligation.
+The failure mode is not dishonesty; it is that an unstated envelope turns every
+comparison into flattery. So:
+
+- **Never publish a cross-compiler benchmark without a compliance column** —
+  bounds-check mode, trap-preservation status, and which spec categories each
+  configuration passes. Where a competitor's status is unverified, write
+  "unverified" rather than repeating a claim.
+- **Publish the acceptance rate as the denominator, and as a feature.** Measured
+  on 805 real modules (#1017): ARM 66 %, RV32 14 %, AArch64 1.6 %. Perf numbers
+  describe the accepted subset only. Loud-decline-over-silent-miscompile is the
+  actual differentiator against systems that accept everything and are quietly
+  wrong on some of it — disclosed, selection bias becomes a soundness story;
+  undisclosed, it is the same flattery.
+- **Report WCET claims separately from throughput.** synth is the only system in
+  this comparison space emitting a sound cycle bound; mixing "fast" and
+  "bounded" invites exactly the confusion that makes fast/slow-path
+  optimizations look like wins (see VCR-VER-002 and the Track D note on
+  loop-versioning).
+
+## Trap preservation — the rule, written down while it is free
+
+The WebAssembly spec traps an out-of-bounds load as an effect of EXECUTING the
+instruction, not as a property of its result: a load whose value is dead still
+traps if its address is out of bounds. wasm2c pays real performance (inline-asm
+optimization barriers, forced register materialization, lost load+op fusion) to
+stay on the right side of this.
+
+synth is compliant today **by not having the optimizations that would break it**,
+which is a fragile reason to be right:
+
+- DCE removes only instructions in UNREACHABLE blocks — never executed, no trap
+  lost.
+- CSE explicitly refuses `MemLoad`/`MemStore` (`synth-opt/src/lib.rs`: "there is
+  no alias analysis for linear memory; any MemStore can invalidate any address").
+- The one load elimination that exists — peephole store-to-load forwarding — is
+  trap-preserving because the same-address, same-width store executes
+  immediately before: if the address were OOB the store faults first.
+
+**THE RULE, for any future alias-aware CSE/LICM in synth-opt or loom:** a
+wasm-level linear-memory load may be removed only if (a) it is dominated by a
+same-address same-width access, or (b) its address is proven in-bounds by a
+certified fact. Anything else drops a trap and is the wasm2c-force-read class.
+Widening the peephole (different widths, an intervening instruction, forwarding
+across a guard) leaves the legitimate class — flag it in review. This obligation
+belongs to `VCR-VER-002`, which is still `proposed`.
+
+Note the distinction that matters: `--proven-safe` / fact-spec elisions remove
+the GUARD on an access PROVEN in bounds, fail-closed. That is categorically
+different from eliding the trap of a possibly-OOB access, and it is legitimate.
+
 ## Conventions
 
 - Rust edition 2024, MSRV 1.88
