@@ -504,7 +504,18 @@ requirements:
       SCOPE DISCIPLINE: fix the mechanism, not the surrounding aarch64 gaps.
       #1017 ranks import dispatch (~121 modules) and active data segments (44)
       far above this one module — those are a v0.60 capability push, not this.
-    status: proposed
+
+      MEASURED CORRECTION (lane finding vs. #1013's table): neither sibling
+      actually exits 1 on the identical module. ARM COMPILES the wide br_table
+      outright (exit 0, func_0 placed); RISC-V declines func_0 but emits the
+      object with `synth_func_0` as an UNDEFINED symbol and the relocation
+      retained — loud at link time, never a silent hole (exit 0). aarch64
+      cannot express undefined externals in its ELF builder yet (#1017-adjacent
+      v0.60 scope), so the landed fix matches aarch64's OWN known-good refusal
+      shape (the #851 active-data-segment decline): BackendError instead of
+      panic, clean exit 1, reason naming the dangling symbol and the #851
+      unrelocated-placeholder class, no partial object left behind.
+    status: implemented
     release: v0.59
     tags: [soundness, aarch64, panic, cross-backend-parity, real-world-corpus]
     links:
