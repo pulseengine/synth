@@ -49,8 +49,17 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-SKIP_WARN_RE = re.compile(r"warning: (\d+) of (\d+) functions were skipped")
+SKIP_WARN_RE = re.compile(
+    r"warning: (\d+) of (\d+) functions were skipped \(not in output\): (.+)"
+)
 SKIP_REASON_RE = re.compile(r"warning: skipping function '[^']+': (.+)")
+# #952 refusal names WHICH exports were skipped and out of how many total
+# exports — the numerator/denominator of the prune-then-compile question.
+EXPORT_SKIP_RE = re.compile(
+    r"(\d+) of (\d+) requested export\(s\) were skipped \(not in the "
+    r"output object\): (.+?)\. Exiting non-zero",
+    re.S,
+)
 # Wrapper prefixes stripped iteratively so the ROOT cause aggregates, not the
 # layer it was reported through.
 REASON_PREFIXES = (
@@ -119,6 +128,50 @@ def is_component(data):
     return data[6] == 1
 
 
+def _uleb(data, i):
+    v = s = 0
+    while True:
+        b = data[i]
+        i += 1
+        v |= (b & 0x7F) << s
+        if not b & 0x80:
+            return v, i
+        s += 7
+
+
+def has_active_data(data):
+    """Does this CORE module carry an ACTIVE data segment?  Flags #1041
+    entanglement: ARM `--relocatable` currently drops active data segments
+    silently (exit 0, no bytes, no symbol), so an ACCEPT verdict on such a
+    module is an accept of an object whose data is missing — the verdict is
+    real, but 'success' must not be read as 'complete image'."""
+    if is_component(data):
+        return None  # component layout differs; not the #1041 shape
+    i = 8
+    try:
+        while i < len(data):
+            sec_id = data[i]
+            i += 1
+            size, i = _uleb(data, i)
+            if sec_id == 11:  # data section
+                j = i
+                count, j = _uleb(data, j)
+                for _ in range(count):
+                    flags, j = _uleb(data, j)
+                    if flags in (0, 2):  # active (memidx 0 / explicit)
+                        return True
+                    if flags == 1:  # passive: [len][bytes]
+                        n, j = _uleb(data, j)
+                        j += n
+                    else:
+                        return None  # unknown encoding: don't guess
+                return False
+            i += size
+    except IndexError:
+        return None
+    return False
+
+
 def run_synth(synth, module, backend, extra, timeout):
     with tempfile.NamedTemporaryFile(suffix=".o") as tmp:
         cmd = [
@@ -149,7 +202,19 @@ def skip_reasons(stderr):
     )
 
 
-def classify(synth, module, backend, timeout):
+def _names(csv_names):
+    return [n.strip() for n in csv_names.strip().split(",") if n.strip()]
+
+
+def _export_skip(err):
+    """Parse the #952 refusal: (exports_skipped, total_exports, names)."""
+    m = EXPORT_SKIP_RE.search(err)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), _names(m.group(3))
+
+
+def classify(synth, module, backend, timeout, component=False):
     rc, err = run_synth(synth, module, backend, [], timeout)
     if rc is None:
         return {"verdict": "TIMEOUT", "reason": "timeout"}
@@ -169,6 +234,8 @@ def classify(synth, module, backend, timeout):
     # Non-zero: is the SOLE blocker per-function skips?
     if "no functions compiled successfully" in err:
         # Per-function skips took every function — same class, fraction 0.
+        # Every real export is in that set, so there is nothing to prune
+        # down to.
         return {
             "verdict": "DECLINE_SKIP_ONLY",
             "skipped": skipped or None,
@@ -176,6 +243,7 @@ def classify(synth, module, backend, timeout):
             "fraction_compiled": 0.0,
             "reason": "all functions skipped (nothing to emit)",
             "skip_reasons": dict(skip_reasons(err)),
+            "prune_class": "entry-poisoned",
         }
     rc2, err2 = run_synth(
         synth, module, backend, ["--allow-skipped-exports"], timeout
@@ -184,17 +252,165 @@ def classify(synth, module, backend, timeout):
         m2 = SKIP_WARN_RE.search(err2)
         if m2:
             s2, t2 = int(m2.group(1)), int(m2.group(2))
-            return {
+            skipped_names = _names(m2.group(3))
+            rec = {
                 "verdict": "DECLINE_SKIP_ONLY",
                 "skipped": s2,
                 "total": t2,
                 "fraction_compiled": (t2 - s2) / t2,
                 "skip_reasons": dict(skip_reasons(err2)),
             }
+            # Prune-then-compile (DO-178C dead-code-removal shape): the #952
+            # refusal on the PLAIN run names which EXPORTS were skipped.  If
+            # every skipped function is itself a skipped export, requesting
+            # only the surviving exports is a FULL compile — no partial
+            # object, no manifest ambiguity.  If internal reachability
+            # helpers were also skipped, attribution needs a call graph and
+            # this census reports it unresolved rather than guessing.
+            es = _export_skip(err)
+            if es:
+                e_skipped, e_total, e_names = es
+                rec["exports_skipped"] = e_skipped
+                rec["exports_total"] = e_total
+                rec["prune_converts_to_full"] = set(skipped_names) <= set(
+                    e_names
+                )
+                if not component:
+                    rec["prune_class"] = prune_reachability(
+                        module, skipped_names, set(e_names), timeout
+                    )
+            return rec
         # Declined plain but clean with the flag and no skip warning: should
         # not happen; surface it rather than misfile it.
         return {"verdict": "ANOMALY", "reason": first_error_line(err)}
     return {"verdict": "DECLINE_MODULE_LEVEL", "reason": first_error_line(err)}
+
+
+# One wat identifier/index token, shared by every call-graph regex below.
+# Identifiers may be plain ($name) or QUOTED with arbitrary content including
+# spaces ($"#func31 dummy") — wasm-tools emits the quoted form for names that
+# are not valid plain identifiers.
+_TOK = r'\$"[^"\\]*(?:\\.[^"\\]*)*"|\$[^\s()]+|\d+'
+CALL_RE = re.compile(rf"\b(?:call|return_call)[ \t]+({_TOK})")
+# ref.func'd functions can be invoked from ANYWHERE via call_ref / a funcref
+# table, so they join the global indirect-target set, not one caller's edges.
+REF_FUNC_RE = re.compile(rf"\bref\.func[ \t]+({_TOK})")
+FUNC_HDR_RE = re.compile(rf"^\s*\(func (?:({_TOK}) )?(?:\(@name [^)]*\) )?\(;(\d+);\)")
+IMPORT_FUNC_RE = re.compile(
+    rf"^\s*\(import .*\(func (?:({_TOK}) )?(?:\(@name [^)]*\) )?\(;(\d+);\)"
+)
+ELEM_FUNC_RE = re.compile(rf"\(elem\b[^)]*?\bfunc((?:[ \t]+(?:{_TOK}))+)\)")
+ELEM_TOK_RE = re.compile(_TOK)
+EXPORT_FUNC_RE = re.compile(rf'\(export "((?:[^"\\]|\\.)*)" \(func ({_TOK})\)')
+
+
+def prune_reachability(module, skipped_names, skipped_export_names, timeout):
+    """DO-178C prune-then-compile attribution for a CORE module: from the
+    surviving real exports, is any skipped function still reachable?  Uses
+    `wasm-tools print` text; call_indirect is over-approximated by treating
+    EVERY element-segment (and ref.func'd) function as a call target from any
+    function that performs an indirect call — so 'unreachable' is sound and
+    'reachable' may be pessimistic.  Skipped names arrive in synth's own
+    naming: a real export name, or 'func_N' with N the function INDEX.
+    Returns one of:
+      'prunable'        — no skipped function reachable from any surviving
+                          export: requesting only the surviving exports is a
+                          FULL compile.
+      'poisoned-reachable' — some surviving export (transitively) needs a
+                          skipped function; pruning exports cannot help
+                          without dropping that export too.
+      'entry-poisoned'  — every real export was itself skipped; nothing
+                          survives to prune down to.
+      None              — analysis unavailable (wasm-tools missing/failed,
+                          name mapping incomplete): reported unresolved, not
+                          guessed.
+    """
+    try:
+        proc = subprocess.run(
+            ["wasm-tools", "print", str(module)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    name_to_idx = {}
+    calls = {}  # idx -> set of callee tokens ($name or int)
+    elem_targets = set()
+    indirect_callers = set()
+    exports = {}  # export name -> idx token
+    cur = None
+    for line in proc.stdout.splitlines():
+        im = IMPORT_FUNC_RE.match(line)
+        if im:
+            if im.group(1):
+                name_to_idx[im.group(1)] = int(im.group(2))
+            continue  # imports have no body; keep cur on the last defined fn
+        h = FUNC_HDR_RE.match(line)
+        if h:
+            idx = int(h.group(2))
+            if h.group(1):
+                name_to_idx[h.group(1)] = idx
+            cur = idx
+            calls.setdefault(cur, set())
+        for m in EXPORT_FUNC_RE.finditer(line):
+            exports[m.group(1)] = m.group(2)
+        for m in ELEM_FUNC_RE.finditer(line):
+            for tok in ELEM_TOK_RE.findall(m.group(1)):
+                elem_targets.add(tok)
+        for m in REF_FUNC_RE.finditer(line):
+            elem_targets.add(m.group(1))
+        if cur is not None:
+            if "call_indirect" in line or "call_ref" in line:
+                indirect_callers.add(cur)
+            for m in CALL_RE.finditer(line):
+                calls[cur].add(m.group(1))
+    def resolve(tok):
+        if tok.startswith("$"):
+            return name_to_idx.get(tok)
+        return int(tok)
+    # Map synth's skipped names to indices.
+    skipped_idx = set()
+    for n in skipped_names:
+        if n in exports:
+            i = resolve(exports[n])
+        elif re.fullmatch(r"func_(\d+)", n):
+            i = int(n.split("_")[1])
+        else:
+            i = None
+        if i is None:
+            return None  # mapping incomplete: refuse to guess
+        skipped_idx.add(i)
+    surviving = [
+        resolve(tok)
+        for name, tok in exports.items()
+        if name not in skipped_export_names
+    ]
+    if any(s is None for s in surviving):
+        return None
+    if not surviving:
+        return "entry-poisoned"
+    elem_idx = {resolve(t) for t in elem_targets}
+    if None in elem_idx:
+        return None
+    seen = set()
+    work = list(surviving)
+    while work:
+        i = work.pop()
+        if i in seen:
+            continue
+        seen.add(i)
+        if i in skipped_idx:
+            return "poisoned-reachable"
+        nxt = {resolve(t) for t in calls.get(i, ())}
+        if None in nxt:
+            return None
+        if i in indirect_callers:
+            nxt |= elem_idx
+        work.extend(nxt)
+    return "prunable"
 
 
 def bin_label(frac):
@@ -242,6 +458,42 @@ def report_stratum(name, rows):
             f"(mean {sum(fracs) / len(fracs):.2f} — reported for completeness; "
             f"the histogram is the number that decides)"
         )
+    # Prune-then-compile (DO-178C dead-code-removal shape): per skip-only
+    # decline, is every skipped function UNREACHABLE from the surviving real
+    # exports (conservative call graph; call_indirect over-approximated by
+    # the full indirect-target set)?  'prunable' means requesting only the
+    # surviving exports is a FULL compile — no partial object at all.
+    if skip_only:
+        pc = Counter(str(r.get("prune_class")) for r in skip_only)
+        print(
+            "  prune-then-compile attribution (conservative call graph):"
+        )
+        legend = {
+            "prunable": "no skipped fn reachable from surviving exports "
+            "-> prune = FULL compile",
+            "poisoned-reachable": "a surviving export needs a skipped fn "
+            "-> prune alone cannot help",
+            "entry-poisoned": "every real export itself skipped -> nothing "
+            "to prune down to",
+            "None": "unresolved (component / wasm-tools unavailable / "
+            "name mapping incomplete)",
+        }
+        for k, n in pc.most_common():
+            print(f"    {k:20s} {n:4d}  {legend.get(k, '')}")
+    # #1041: an ARM --relocatable ACCEPT of a module with ACTIVE data
+    # segments ships an object whose data bytes were silently dropped.
+    accepts_with_data = [
+        r
+        for r in rows
+        if r["verdict"].startswith("ACCEPT") and r.get("active_data") is True
+    ]
+    if accepts_with_data:
+        print(
+            f"  #1041 entanglement: {len(accepts_with_data)} ACCEPT(s) carry "
+            f"ACTIVE data segments — on ARM --relocatable those bytes are "
+            f"currently DROPPED silently; 'accept' here means the functions "
+            f"compiled, NOT that the image is complete"
+        )
     mod_reasons = Counter(
         r.get("reason", "?") for r in rows if r["verdict"] == "DECLINE_MODULE_LEVEL"
     )
@@ -282,12 +534,19 @@ def main():
 
     rows = []
     for path, data, digest in modules:
-        rec = classify(args.synth, path, args.backend, args.timeout)
+        rec = classify(
+            args.synth,
+            path,
+            args.backend,
+            args.timeout,
+            component=is_component(data),
+        )
         rec.update(
             path=str(path),
             sha256=digest[:16],
             size=len(data),
             component=is_component(data),
+            active_data=has_active_data(data),
         )
         rows.append(rec)
         frac = rec.get("fraction_compiled")
@@ -299,9 +558,16 @@ def main():
 
     core = [r for r in rows if not r["component"]]
     comp = [r for r in rows if r["component"]]
+    try:
+        ver = subprocess.run(
+            [args.synth, "--version"], capture_output=True, text=True
+        ).stdout.strip()
+    except OSError:
+        ver = "?"
     print(
         f"\n=== census: {len(rows)} unique modules "
-        f"({len(core)} core, {len(comp)} components), backend={args.backend} ==="
+        f"({len(core)} core, {len(comp)} components), backend={args.backend}, "
+        f"synth={ver} ==="
     )
     report_stratum("core modules", core)
     if comp:

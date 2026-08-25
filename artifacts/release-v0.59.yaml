@@ -562,6 +562,49 @@ requirements:
       answered on evidence rather than intuition — and if the census shows the
       one-function case is a small minority, the honest answer is that the
       refusal is policy and should be DOCUMENTED as such rather than softened.
+
+      CENSUS RESULT (2026-08-25, scripts/repro/partial_census_1017.py, synth
+      main @ v0.58.0-26-ge2102518, backend=arm, --all-exports --relocatable).
+      CORPUS: 307 unique modules (sha256-dedup, 489 MB; 183 core + 124
+      components), every *.wasm in the org's own repos on this machine — the
+      org-repo stratum of #1017's 805; the wasm.directory components are NOT
+      in it, and per-module verdicts are on CURRENT MAIN, not v0.58.0 (e.g.
+      loom's httparse.wasm, arm rc=1 in #1017, is ACCEPT_FULL today).
+        a. Skip-only share is even HIGHER than #1017's top-12 lower bound:
+           50 of 56 hard declines (89%; core 34/38, components 16/18) have
+           NO module-level blocker — the sole cause is per-function skips.
+        b/c. But "one bad function in hundreds" is FALSE on this corpus: the
+           median skip-only decline compiles 77% of its requested functions
+           (core; components 75%), histogram core 4x(25-50] 9x(50-75]
+           20x(75-90] 1x(90-100) — unimodal around "a quarter of the module
+           fails", never a single-function tail. The skips are SYSTEMATIC
+           (top core causes: AAPCS i64/f64 register-pair call args 27 mod /
+           179 fn; f64/f32 FPU target policy 117+ fn; i64/f64 stack args 59
+           fn; i64 imm12 offset 54 fn; LdrSym Thumb-only 44 fn; register
+           exhaustion 62 fn; plus three defect classes: rule_i32_rotl side
+           condition, VCR-RA JoinValueNotAvailable, encode_operand2 rotated
+           immediates). One function is not blocking the module; dozens are,
+           sharing a few root causes.
+        d. Components (org-built): 106/124 ACCEPT on arm — import dispatch
+           does NOT dominate this stratum (that was aarch64-specific).
+      PRUNE-THEN-COMPILE (DO-178C shape, conservative call graph incl.
+      indirect-target over-approximation): converts only 2 of 34 core
+      skip-only declines to FULL compiles; 14 are entry-poisoned (the sole
+      real export, usually _start, itself declines) and 18 have a surviving
+      export that reaches a skipped function. Components unresolved (16).
+      ALSO MEASURED: synth ALREADY ships exit-0 partial objects when only
+      internal helpers decline — 125 of 307 modules (41%) are
+      ACCEPT_INTERNAL_SKIPS (median 93% of functions present); #952 gates
+      EXPORTS only. And 77 of 249 accepts carry active data segments that
+      ARM --relocatable currently DROPS silently (#1041): ACCEPT here means
+      "functions compiled", not "image complete".
+      WHAT THIS CORPUS CANNOT SUPPORT: the 805-module distribution, the
+      wasm.directory component stratum, and v0.58.0-exact verdicts.
+      RECOMMENDATION: keep the refusal, document it as policy (it is already
+      policy at export granularity and already NOT policy for internals);
+      the evidence-backed lever is the short systematic-cause list above,
+      not --allow-partial (which would ship objects missing ~a quarter of
+      their functions) and not prune tooling (2/34 today).
     status: proposed
     release: v0.59
     tags: [measurement, real-world-corpus, policy, decline-honesty]
