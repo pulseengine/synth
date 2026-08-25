@@ -428,14 +428,17 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // CLZ, RBIT are always 32-bit Thumb-2
         ArmOp::Clz { .. } | ArmOp::Rbit { .. } => 4,
         // Popcnt: the encoder expands it to a fixed bit-twiddle sequence using
-        // r11/r12 scratch (arm_encoder.rs). 84 bytes for the body, +2 for the
-        // leading 16-bit `MOV rd, rm` when rd != rm. #498: previously absent
-        // from the estimator (fell to `_ => 2`), an 82/84-byte under-estimate.
+        // r12 as the ONLY scratch (arm_encoder.rs; #1021 removed the R11
+        // borrow — R11 is the linear-memory base — by taking the SWAR masks
+        // as ThumbExpandImm modified immediates). 15 wide instructions =
+        // 60 bytes for the body, +2 for the leading 16-bit `MOV rd, rm` when
+        // rd != rm. #498: previously absent from the estimator (fell to
+        // `_ => 2`), a large under-estimate.
         ArmOp::Popcnt { rd, rm } => {
             if reg_num(rd) != reg_num(rm) {
-                86
+                62
             } else {
-                84
+                60
             }
         }
         // ADDS/SUBS with a register operand: 16-bit only when rd, rn, rm are all
