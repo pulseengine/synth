@@ -125,6 +125,60 @@ public claim; when a proof/rule landed, bump doc + ledger together.
 allocator-robust infrastructure — correctness from construction, not an
 ever-growing pile of locally-correct patches.**
 
+> **EXTENSION (v0.60, researched 2026-08-25 — the goal was right and too narrow).**
+> Two invariants, both earned rather than asserted:
+>
+> 1. **Derive what you check against from the artifact you ship.** No
+>    hand-written mirror of a shipped thing. This was invented locally three
+>    times before anyone named it — the generated Rocq model (#667), real-encoder
+>    WCET pricing (#936), the family-aware ratchets (RQ-58-METRIC) — and the
+>    external literature says the same failure recurs everywhere it is violated.
+>    Crocus (ASPLOS 2024) verified ISLE lowering rules against HAND-WRITTEN
+>    instruction specs; Arrival (OOPSLA2 2025) then found an `sdiv`
+>    miscompilation Crocus had **erroneously verified**, because the hand spec was
+>    wrong — and fixed the class by deriving 93 % of specs from Arm's
+>    authoritative machine-readable ISA. synth's own #1021 is the same shape one
+>    tier down: `rule_i32_popcnt` was genuinely proved, but `ArmSemantics`
+>    executes `POPCNT` atomically (`set_reg s rd (I32.popcnt v)`), so the R11
+>    clobber in its ENCODER EXPANSION was unrepresentable in the model. An atomic
+>    model of a multi-instruction expansion is not a missing feature; it is a
+>    silent claim that the expansion is scratch-free.
+>
+> 2. **Reach is part of correctness.** A proof about input we refuse is worth
+>    nothing. Measured on 805 REAL-WORLD modules (#1017 — toolchain output and
+>    wasm.directory components, not spec fixtures): ARM accepts **531/805
+>    (66 %)**, RISC-V **113 (14 %)**, AArch64 **13 (1.6 %)**. A verified compiler
+>    that accepts 1.6 % of real AArch64 input is verified about almost nothing.
+>    The ranked blockers are all WELL-TRODDEN ELSEWHERE and closable WITHOUT
+>    spending the trust story: AArch64 import dispatch (~121 modules, and 88 of
+>    101 real components) is the Wasker/wasm2c undefined-symbol pattern, which IS
+>    synth's own ARM `--relocatable` design ported; multi-memory (124 modules)
+>    became a **Wasm 3.0 standard on 2025-09-17**, so declining it is no longer
+>    "we only do standardized wasm".
+>
+> **What the research also says NOT to do**, recorded so it is not re-litigated:
+> the search strategy is not where allocator quality lives. LLVM moved to greedy
+> in 2011 and WebKit recently replaced Air's IRC graph colouring with a greedy
+> allocator at similar quality and much higher speed; both converged on cost
+> model, coalescing/hints and splitting as the real levers. synth's own
+> RQ-59-MEASURE verdict found the same thing independently — the regression tail
+> traced to the **cost metric** (which prices a 2-byte register copy and a 4-byte
+> frame reload identically), not to the algorithm. So VCR-DEC-001's remaining
+> increments target the cost model and the tied-operand handling, NOT a better
+> search. Also ruled out with reasons: porting regalloc2's backtracking engine
+> (its wins are pressure-at-scale wins), ILP/SMT in the compile path (trusted-base
+> cost), SSA-chordal (optimizes the non-binding constraint; synth is not SSA),
+> ML-guided eviction (non-deterministic quality, antithetical to a proof-carrying
+> compiler), a full bare-metal WASI (nobody has one; a ~10-function BSP archive is
+> the practice), and competing with WAMR on feature breadth. The moat is the two
+> artifacts DAL-A certification actually consumes — proven functional correctness
+> and sound timing bounds — which no surveyed system produces.
+>
+> **Strategic note:** no safety-certified wasm runtime exists. synth's structural
+> advantage is having NO RUNTIME TO CERTIFY — the CompCert-shaped story that
+> DO-333 (the DO-178C formal-methods supplement) already tells authorities how to
+> consume.
+
 > **CORRECTION (v0.58, measured — the goal is right, the strategy was not).**
 > A rule is NOT done when it is proven. It is done when the hand-written arm it
 > replaces is **DELETED**. Measured v0.42.0 → v0.57.0: `instruction_selector.rs`

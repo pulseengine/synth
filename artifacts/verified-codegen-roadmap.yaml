@@ -4365,3 +4365,212 @@ artifacts:
         across all 16 frames ≤ 752 cyc (entry-independent, the mask soundness
         empirically confirmed). claims.yaml pins the (max_depth+1) frame fold;
         claim_check green. Frozen anchors 10/10 untouched.
+
+  - id: VCR-TIER-001
+    type: decision
+    title: "Close the pseudo-op tier boundary — the expansion is part of the lowering"
+    description: >
+      #1021 shipped a memory-safety miscompile THROUGH a Rocq-proved rule.
+      `rule_i32_popcnt` is genuinely proved; it emits the `ArmOp::Popcnt`
+      pseudo-op; the defect was in that pseudo-op's ENCODER EXPANSION, which took
+      R11 (the linear-memory base) as scratch and leaked the corruption across
+      the call boundary. `ArmSemantics` executes `POPCNT` atomically
+      (`set_reg s rd (I32.popcnt v)` — writes rd only), so the clobber was
+      unrepresentable in the model.
+
+      PRIOR ART, researched 2026-08-25. CompCert has EXACTLY this architecture:
+      `Asm` pseudo-ops (`Pallocframe`, `Pbtbl`, load-constant) expanded by
+      UNVERIFIED OCaml, proofs stopping above. Its mitigation is that every
+      pseudo-op's semantics sets its scratch registers to `Vundef` — forcing the
+      verified pipeline to treat them as dead — while the correspondence
+      "the expansion touches only the declared temporaries" stays TRUSTED and
+      hand-audited (Monniaux & Boulme, arXiv:2201.10280, list it as a TCB item).
+      CakeML is the only compiler with no tier gap at all (proof to bytes over
+      L3/ASL-derived ISA models) at a decade-plus cost. Cranelift answers the
+      question BELOW its modeled-instruction tier with validation, not proof:
+      differential fuzzing plus regalloc2's symbolic checker.
+
+      So the industry position is: declare the contract, and validate it. synth
+      declared nothing — an atomic model of a multi-instruction expansion is a
+      SILENT claim that the expansion is scratch-free.
+
+      INCREMENTS, cheapest first, each standing alone:
+        1. CANARY GATE (1-2 days, no SMT, no model change). Execute every
+           pseudo-op expansion under unicorn with all non-contract registers
+           canaried (R11 = 0xB11B11B1); assert every register outside
+           `{rd} + declared-scratch` is unchanged and memory untouched. Reuses
+           the existing `wcet_*_soundness.py` harness shape and the real-encoder
+           expansion enumeration the WCET pricing already walks. It fails RED on
+           the shipped Popcnt expansion as written — i.e. it is red-first by
+           construction against a defect we have already fixed, which makes it a
+           potency test as well as a guard.
+        2. RESERVED-REGISTER WRITE TRIPWIRE in the emitter: any emitted
+           instruction whose writes-set intersects a globally reserved register
+           hard-errors unless whitelisted. LLVM's reserved-register concept,
+           ENFORCED rather than conventional.
+        3. BYTE-DERIVED CLOBBER CONTRACT per pseudo-op x operand shape, pinned in
+           `claims.yaml`, asserting the actual writes-set (decoded from the real
+           encoder's own bytes) is a subset of the declared contract — AND that
+           the contract is declared in `ArmSemantics.v`. This is #936's doctrine
+           ("size it from the real encoder's own bytes, no second source of
+           truth") applied to register effects instead of cycle counts.
+        4. CompCert-ize the model: pseudo-op semantics havoc their declared
+           scratch set. With (3) keeping the declaration honest against the
+           bytes, this gives CompCert's architecture with CompCert's remaining
+           hole closed by a mechanical gate.
+        5. Opportunistically, extend "generate, don't mirror" (#667) one tier
+           down: for fixed expansions, GENERATE the Rocq lowering as the real
+           instruction sequence and restate the rule proof about the expanded
+           sequence under per-instruction semantics. Then an R11 write is IN the
+           model and breaks the proof. Arrival (OOPSLA2 2025) is the evidence
+           this direction scales — and the evidence that hand-written
+           instruction specs are themselves a defect surface: it found an `sdiv`
+           miscompilation that Crocus had ERRONEOUSLY VERIFIED against a wrong
+           hand spec.
+
+      NOT ADOPTED, with reasons: CakeML-style full re-architecture (right
+      mechanism, decade cost); Alive2/Souper (LLVM-IR-shaped; Souper archived
+      read-only 2025-10-30); Islaris/Iris footprint proofs (a second proof stack
+      for a property increment 3 checks concretely in milliseconds); per-compile
+      SMT translation validation of expansions (CI-time gate covers the same
+      evidence at zero compile cost for fixed expansions).
+    status: proposed
+    tags: [north-star, proof-tier, pseudo-op, derive-dont-mirror]
+    links:
+      - type: derives-from
+        target: VCR-SEL-001
+    fields:
+      priority: must
+      issue: "#1021"
+
+  - id: VCR-REACH-002
+    type: decision
+    title: "Reach is part of correctness — 1.6% AArch64 acceptance on real modules"
+    description: >
+      Measured on 805 REAL-WORLD wasm modules (#1017 — toolchain output plus
+      wasm.directory components, NOT spec fixtures): ARM 531/805 (66 %),
+      RISC-V 113 (14 %), AArch64 13 (1.6 %). A proof about input the compiler
+      REFUSES is worth nothing, so acceptance belongs in the North Star beside
+      correctness.
+
+      RANKED BLOCKERS, and the research finding that none needs invention:
+        ~121 modules  AArch64 import dispatch (#851) — and 88 of 101 real
+                      components, because every real component imports WASI.
+                      The established no-runtime AOT pattern is LINK-TIME SYMBOL
+                      BINDING: mangle `module.name` to a symbol, emit an
+                      undefined symbol plus relocation per import, let the linker
+                      dispatch. Two independent implementations converge on it
+                      (wasm2c's extern declarations; Wasker's deliberately
+                      unresolved WASI symbols) — and it IS synth's own ARM
+                      `--relocatable` design (undefined `func_N` +
+                      `R_ARM_THM_CALL`) generalized to imports. This is porting a
+                      proven-out design, not research.
+        124 modules   multi-memory (#406). Became a **Wasm 3.0 standard on
+                      2025-09-17**, so declining it is no longer "we only do
+                      standardized wasm". Static layout suits synth's model:
+                      per-memory base + bound, `memory.grow` on secondaries
+                      bounded by the declared max or loudly declined. Binaryen's
+                      `--multimemory-lowering` is the DIFFERENTIAL ORACLE for a
+                      native implementation, NOT the shipped path — an unverified
+                      third-party transform in front of the proofs would spend
+                      the trust story.
+         44 modules   AArch64 active data segments (#851).
+          1 module    the #1013 AArch64 ELF panic.
+
+      COMPONENT PRE-COMPOSITION multiplies the first item's yield at near-zero
+      backend and proof cost: WASI-Virt encapsulates a component inside a
+      virtualizing component that IMPLEMENTS its WASI imports (deny-by-default),
+      leaving a residual import set that is empty or tiny before synth's backend
+      ever runs.
+
+      NOT ADOPTED: a full bare-metal WASI (nobody has one — WAMR's own MCU answer
+      is a ~3.7 KiB builtin-libc subset; real practice is the handful of
+      preview1 functions modules actually reach); component-model async /
+      WASI 0.3; GC / relaxed-SIMD / threads; competing with WAMR on breadth.
+      The moat is the two artifacts DAL-A certification consumes — proven
+      functional correctness and sound timing bounds — which no surveyed system
+      produces, and no safety-certified wasm runtime exists at all.
+    status: proposed
+    tags: [north-star, reach, real-world-corpus, aarch64, imports]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      priority: must
+      issue: "#1017"
+
+  - id: VCR-RA-011
+    type: decision
+    title: "The allocator's remaining wins are the cost model and tied operands, not a better search"
+    description: >
+      RQ-59-MEASURE's verdict (increment 4): the colourer WINS ON NET BUT DOES
+      NOT DOMINATE — `.text` -122 B, instructions -31, push/pop -72 registers,
+      but frame traffic +22 and 7 functions grew. Named root cause: the Chaitin
+      OCCURRENCE-COUNT cost metric prices a 2-byte register copy and a 4-byte
+      frame reload IDENTICALLY, and every SP-relative access this encoder emits
+      is wide (1,287 of 1,287).
+
+      EXTERNAL CONFIRMATION, researched 2026-08-25: two shipped systems converged
+      on the same conclusion from the opposite direction. LLVM moved to a greedy
+      allocator in 2011; WebKit recently REPLACED Air's IRC graph colouring with
+      a greedy allocator at similar code quality and much higher speed. The
+      lesson both draw is that the SEARCH STRATEGY is not where quality lives —
+      the cost model, coalescing/hints and live-range splitting are. synth
+      measured this independently before reading it.
+
+      WHAT TO DO, ranked:
+        1. MERGE TIED USE/DEF WEBS at interference-graph construction. 49 of the
+           71 `single-block` declines are `apply_range_coloring` refusing an RMW
+           whose use/def ranges were coloured apart (`Movt` 28 functions,
+           `SelectMove` 26). In EVERY production allocator a tied use/def
+           coloured apart is a REPAIRABLE event, never a refusal — LLVM's
+           TwoAddressInstructionPass inserts a repair copy pre-RA and ties the
+           operands; regalloc2 forces the tied input to the output's allocation
+           and schedules a fixup move it then merges away. And `Movt` is not a
+           PREFERENCE but a RESTRICTION: its def semantically reads the same
+           architectural register, so use and def are one value's range and must
+           get one allocation. Merging the webs makes `rmw-colour-mismatch`
+           UNREPRESENTABLE rather than declinable — the same move as
+           generate-don't-mirror. Watch regalloc2's two documented corner cases
+           (other-input ranges extended to the After point; move priority for
+           reused-input moves) — both were "written in fuzzbug failures" and may
+           relate to the 22 `DefClobbersEquation` rejects.
+        2. REPLACE OCCURRENCE COUNTS WITH REAL-ENCODER BYTE COSTS: copy = 2 B,
+           wide reload/store = 4 B plus memory cycles, weighted 10^loop_depth,
+           normalized by live-range length. Adopt Fried et al.'s hint-breaking
+           threshold (CC 2023, "Register Allocation for Compressed ISAs in LLVM"
+           — literally this problem, including Thumb-2 two-address forms): break
+           a copy-elimination hint only if it buys at least 2 compressed
+           instructions (>= 4 bytes) against one added copy (2 bytes). Their
+           result: -1.93 % geomean text size, up to -6.52 %, whole-compile only
+           1.3 % slower. This is #936's pricing doctrine again — ask the encoder,
+           never a mirror.
+        3. REMATERIALIZATION as a spill alternative for constants (re-MOVW
+           instead of a wide reload) — regalloc3 promotes this to first class and
+           Thumb-2's cost structure suits it.
+        4. ONLY IF 1-3 still do not dominate: bounded per-function optimal search
+           with encoded bytes as the objective and the existing rewrite validator
+           as acceptance oracle. Precedent at exactly this register count: SDCC
+           ships Krause's tree-decomposition DP (CC 2013) as its DEFAULT
+           allocator for Z80/HC08/S08/STM8, bounded by `--max-allocs-per-node`;
+           Appel & George's PLDI 2001 paper is titled "Optimal Spilling for CISC
+           Machines with FEW REGISTERS". synth's regime (697 functions,
+           <= 200 instructions, AOT, 8 allocatable registers) is the one where
+           this is tractable.
+
+      NOT ADOPTED: porting regalloc2's backtracking/splitting engine (its wins
+      are pressure-at-scale wins); ILP or SMT solvers in the compile path
+      (trusted-base cost — use bounded DP); SSA-chordal colouring (optimizes the
+      non-binding constraint, and synth is not SSA); ML-guided eviction
+      (non-deterministic quality, antithetical to a proof-carrying compiler);
+      and GLOBAL low-register bias — that is LLVM's crude mechanism and its
+      downside (low-pool pressure causing wide reloads) is precisely what
+      increment 4 measured. The bias must be per-site and byte-priced.
+    status: proposed
+    tags: [north-star, allocator, cost-model, tied-operands, vcr-dec-001]
+    links:
+      - type: refines
+        target: VCR-DEC-001
+    fields:
+      priority: must
+      issue: "#242"
