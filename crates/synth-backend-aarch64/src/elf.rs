@@ -10,7 +10,7 @@
 //! (#851). The object is host-linkable on arm64 ELF targets and its `.text` is
 //! directly runnable under a native or emulated A64 core once relocated.
 
-use synth_core::backend::{CodeRelocation, RelocKind};
+use synth_core::backend::{BackendError, CodeRelocation, RelocKind};
 
 /// R_AARCH64_CALL26 — the ELF relocation type for a `bl` 26-bit call site.
 const R_AARCH64_CALL26: u32 = 283;
@@ -91,7 +91,10 @@ fn push_u64(v: &mut Vec<u8>, x: u64) {
 /// GLOBAL `STT_FUNC` in `.text`, plus a `.rela.text` for any call relocations.
 /// Data-free shorthand for [`build_relocatable_object_with_data`] — a module
 /// with no globals emits byte-identical output to the pre-lane-L3 builder.
-pub fn build_relocatable_object(functions: &[ElfFunction]) -> Vec<u8> {
+///
+/// #1013: `Err` (never a panic) when a relocation targets a symbol this object
+/// does not place — see [`build_relocatable_object_with_data`].
+pub fn build_relocatable_object(functions: &[ElfFunction]) -> Result<Vec<u8>, BackendError> {
     build_relocatable_object_with_data(functions, &DataBlob::default())
 }
 
@@ -103,7 +106,21 @@ pub fn build_relocatable_object(functions: &[ElfFunction]) -> Vec<u8> {
 /// that order. An EMPTY `DataBlob` reproduces the previous layout exactly, so
 /// every module without globals stays byte-identical (the frozen-anchor
 /// contract).
-pub fn build_relocatable_object_with_data(functions: &[ElfFunction], data: &DataBlob) -> Vec<u8> {
+///
+/// # Errors (#1013)
+///
+/// A relocation targeting a symbol this object does not place is `Err`, never
+/// a panic: it is REACHABLE from ordinary input (a retained function calling a
+/// function the backend loud-declined, e.g. VCR-A64-CF-001's `br_table`
+/// threshold — gale's `httparse` corpus repro), so it must surface as the
+/// #952-style clean refusal (exit 1, reason naming the symbol), not exit 101
+/// with a `RUST_BACKTRACE` note that reads as an internal bug. The DECISION is
+/// unchanged — an unrelocated `bl #0`/`adrp #0` placeholder is the
+/// silent-miscompile class and never ships.
+pub fn build_relocatable_object_with_data(
+    functions: &[ElfFunction],
+    data: &DataBlob,
+) -> Result<Vec<u8>, BackendError> {
     // --- .text: concatenated bodies; record each function's .text offset. ---
     let mut text: Vec<u8> = Vec::new();
     let mut func_off: Vec<u64> = Vec::new();
@@ -180,20 +197,29 @@ pub fn build_relocatable_object_with_data(functions: &[ElfFunction], data: &Data
                      (#851): only the four AArch64 kinds are expressible"
                 ),
             };
-            // A relocation against a symbol this object does not place is an
-            // INTERNAL BUG, and silently dropping it ships the unrelocated
-            // placeholder: `bl #0` branches to itself, `adrp #0` addresses the
-            // WRONG page (a silent miscompile, not a link error). Panic — the
-            // defensive-panic convention for backend invariants.
-            let sidx = *sym_index.get(&r.symbol).unwrap_or_else(|| {
-                panic!(
+            // A relocation against a symbol this object does not place: silently
+            // dropping it would ship the unrelocated placeholder — `bl #0`
+            // branches to itself, `adrp #0` addresses the WRONG page (a silent
+            // miscompile, not a link error). This is NOT an internal invariant
+            // (#1013): it is reachable from ordinary input whenever a retained
+            // function calls a function the backend loud-declined (gale's
+            // httparse corpus repro: a VCR-A64-CF-001 `br_table` decline of
+            // `func_0`, called by `parse`). Refuse via `Err` — the #952 clean
+            // non-zero exit with a reason naming the symbol — never a panic,
+            // which reads as a synth bug and exits 101. (True sibling parity —
+            // RISC-V keeps the reloc against an UNDEFINED `synth_func_N` symbol,
+            // loud at link time — needs undefined-external support in this
+            // builder, which is #1017/v0.60 import-dispatch-adjacent scope.)
+            let Some(&sidx) = sym_index.get(&r.symbol) else {
+                return Err(BackendError::CompilationFailed(format!(
                     "aarch64 ELF builder: relocation at .text+{} targets symbol \
                      '{}', which this object does not place — refusing to ship an \
-                     unrelocated placeholder (#851)",
+                     unrelocated placeholder (#851). The symbol was declined \
+                     earlier; see the preceding warning (#1013).",
                     func_off[i] + r.offset as u64,
                     r.symbol
-                )
-            });
+                )));
+            };
             let r_offset = func_off[i] + r.offset as u64;
             let r_info = ((sidx as u64) << 32) | (r_type as u64);
             push_u64(&mut rela, r_offset);
@@ -367,7 +393,7 @@ pub fn build_relocatable_object_with_data(functions: &[ElfFunction], data: &Data
         );
     }
 
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -387,7 +413,8 @@ mod tests {
                 vec![0x62, 0, 4, 0x4B, 0xC0, 0x03, 0x5F, 0xD6],
                 vec![],
             ),
-        ]);
+        ])
+        .expect("elf build");
         // ELF magic + class64 + LSB.
         assert_eq!(&obj[0..4], &[0x7F, b'E', b'L', b'F']);
         assert_eq!(obj[4], 2); // ELFCLASS64
@@ -417,7 +444,8 @@ mod tests {
                     kind: RelocKind::AArch64Call26,
                 }],
             ),
-        ]);
+        ])
+        .expect("elf build");
         // e_shnum = 6 (adds .rela.text).
         assert_eq!(u16::from_le_bytes([obj[60], obj[61]]), 6);
         let s = String::from_utf8_lossy(&obj);
@@ -474,7 +502,8 @@ mod tests {
                 vec![],
             )],
             &blob,
-        );
+        )
+        .expect("elf build");
         let secs = sections(&obj);
         let data = secs
             .iter()
@@ -514,13 +543,13 @@ mod tests {
             )]
         };
         assert_eq!(
-            build_relocatable_object(&f()),
-            build_relocatable_object_with_data(&f(), &DataBlob::default())
+            build_relocatable_object(&f()).expect("elf build"),
+            build_relocatable_object_with_data(&f(), &DataBlob::default()).expect("elf build")
         );
         assert_eq!(
             u16::from_le_bytes([
-                build_relocatable_object(&f())[60],
-                build_relocatable_object(&f())[61]
+                build_relocatable_object(&f()).expect("elf build")[60],
+                build_relocatable_object(&f()).expect("elf build")[61]
             ]),
             5,
             "no .data / no .rela.text → the original 5-section layout"
@@ -545,7 +574,8 @@ mod tests {
                 }],
                 is_object: true,
             },
-        ]);
+        ])
+        .expect("elf build");
         let secs = sections(&obj);
         let rela = secs.iter().find(|s| s.0 == ".rela.text").unwrap();
         let r_info = u64::from_le_bytes(obj[rela.3 + 8..rela.3 + 16].try_into().unwrap());
@@ -593,7 +623,8 @@ mod tests {
                 bytes: vec![0; 8],
                 symbols: vec![("__synth_globals".into(), 0)],
             },
-        );
+        )
+        .expect("elf build");
         let secs = sections(&obj);
         let rela = secs.iter().find(|s| s.0 == ".rela.text").unwrap();
         let ty = |i: usize| {
@@ -605,5 +636,31 @@ mod tests {
         };
         assert_eq!(ty(0), R_AARCH64_ADR_PREL_PG_HI21);
         assert_eq!(ty(1), R_AARCH64_ADD_ABS_LO12_NC);
+    }
+
+    /// #1013: a relocation against a symbol this object does not place — the
+    /// gale corpus shape, a retained function calling a loud-declined one —
+    /// must be `Err` (a clean refusal the CLI turns into exit 1), NEVER a
+    /// panic (exit 101, reads as a synth bug). The message must name the
+    /// dangling symbol and the #851 class so the refusal is actionable.
+    #[test]
+    fn dangling_reloc_symbol_is_err_not_panic() {
+        let err = build_relocatable_object(&[ElfFunction::code(
+            vec!["func_1".into(), "parse".into()],
+            vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6], // bl #0 ; ret
+            vec![CodeRelocation {
+                offset: 0,
+                symbol: "func_0".into(), // declined — not placed in this object
+                kind: RelocKind::AArch64Call26,
+            }],
+        )])
+        .expect_err("a dangling relocation must refuse, not build");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("targets symbol 'func_0'")
+                && msg.contains("does not place")
+                && msg.contains("#851"),
+            "refusal must name the dangling symbol and the #851 class: {msg}"
+        );
     }
 }
