@@ -77,7 +77,15 @@ def main() -> int:
     # branches → invariant 4 declines to NotAttempted, but invariants 1-3 still
     # run and a false-positive Violation would hard-error the compile). A false
     # positive on EITHER path reds this gate.
-    for path_name, extra_args in (("relocatable", ["--relocatable"]), ("default", [])):
+    # RQ-59-DATASEG (#1041): control_step.wasm carries an active data segment;
+    # the plain relocatable path now refuses it, and a refused compile would
+    # VACUOUSLY read as "validator silent" here. Acknowledge the embedder
+    # contract explicitly (bytes identical — the flag only suppresses the
+    # refusal) so the validator actually runs on the fixture.
+    for path_name, extra_args in (
+        ("relocatable", ["--relocatable", "--embedder-data-init"]),
+        ("default", []),
+    ):
         for fx in BRANCHY_FIXTURES:
             path = REPRO / fx
             if not path.exists():

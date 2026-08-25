@@ -2705,8 +2705,14 @@ jobs:
         run: pip install wasmtime unicorn pyelftools
       - name: Run control-step oracle
         run: |
+          # RQ-59-DATASEG (#1041): control_step.wasm carries an active data
+          # segment; the plain relocatable path now refuses it. This oracle's
+          # harness maps memory itself, so it acknowledges the embedder
+          # contract explicitly (bytes identical — the flag only suppresses
+          # the refusal).
           ./target/debug/synth compile scripts/repro/control_step.wasm \
-            -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable
+            -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable \
+            --embedder-data-init
           python scripts/oracle_run.py scripts/repro/control_step_differential.py /tmp/cs.elf
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them

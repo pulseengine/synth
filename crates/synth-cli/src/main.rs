@@ -5002,6 +5002,7 @@ fn find_baked_static_movw_movt(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
@@ -8856,6 +8857,7 @@ mod tests {
             &[],
             &[],
             linear_memory_bytes,
+            false, // RQ-59-DATASEG (#1041): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
@@ -8965,6 +8967,7 @@ mod tests {
             &[],
             &[],
             131_072,
+            false, // RQ-59-DATASEG (#1041): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
@@ -9062,6 +9065,7 @@ mod tests {
             &[],
             &data_segments,
             131_072,
+            false, // RQ-59-DATASEG (#1041): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
