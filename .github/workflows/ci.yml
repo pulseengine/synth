@@ -3406,6 +3406,8 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/i64_popcnt_632_differential.py
       - name: i64 shr_u/shr_s single-function path differential (#599)
         run: python scripts/oracle_run.py scripts/repro/i64_shr_599_differential.py
+      - name: i64 expansion operand-clobber differential (#1048, 3 legs incl. A32)
+        run: python scripts/oracle_run.py scripts/repro/i64_operand_clobber_1048_differential.py
       - name: i64 high-register zero-fill differential (#916)
         run: |
           set -euo pipefail
