@@ -29,6 +29,14 @@ fn fixture() -> PathBuf {
         .join("scripts/repro/cabi_arena_bind.wat")
 }
 
+// RQ-59-DATASEG (#1041): the ET_REL paths (`--no-bind-cabi-arena`,
+// `--relocatable`) now REFUSE a module carrying active data segments they do
+// not materialize, unless the embedder contract is explicitly acknowledged.
+// The two seam tests below model exactly that contract (the TCB/host links
+// and instantiates the module), so they pass `--embedder-data-init`; the
+// DEFAULT refusal on this same fixture is asserted by
+// `relocatable_dataseg_refuses_1041` so the frontier itself stays covered.
+
 /// ELF e_type from the raw header (1 = ET_REL, 2 = ET_EXEC).
 fn e_type(data: &[u8]) -> u16 {
     u16::from_le_bytes([data[16], data[17]])
@@ -96,7 +104,10 @@ fn self_contained_binds_arena_import_418() {
 /// external symbol (the embedder seam), byte-compatible with the old behavior.
 #[test]
 fn opt_out_restores_external_seam_418() {
-    let (data, _r) = compile(&["--no-bind-cabi-arena"], "cabi418_optout");
+    let (data, _r) = compile(
+        &["--no-bind-cabi-arena", "--embedder-data-init"],
+        "cabi418_optout",
+    );
     assert_eq!(
         e_type(&data),
         1,
@@ -112,11 +123,41 @@ fn opt_out_restores_external_seam_418() {
 /// TCB provides, the linker binds — no in-image allocator.
 #[test]
 fn relocatable_keeps_tcb_seam_418() {
-    let (data, _r) = compile(&["--relocatable"], "cabi418_reloc");
+    let (data, _r) = compile(&["--relocatable", "--embedder-data-init"], "cabi418_reloc");
     assert_eq!(e_type(&data), 1);
     assert!(
         has_undefined_arena(&data),
         "--relocatable must keep the undefined TCB-bound symbol (#420 contract)"
+    );
+}
+
+/// RQ-59-DATASEG (#1041): the FULL fixture (wasm-ld layout incl. its active
+/// data segment) must REFUSE loudly on the relocatable path — the previous
+/// behaviour (exit 0, none of the segment's bytes in the object, no warning)
+/// is the filed silent-drop bug.
+#[test]
+fn relocatable_dataseg_refuses_1041() {
+    let out = artifact_guard::unique_artifact("cabi418_dataseg_refusal", "elf");
+    let r = Command::new(synth())
+        .args(["compile", fixture().to_str().unwrap()])
+        .args([
+            "--relocatable",
+            "--target",
+            "cortex-m3",
+            "--all-exports",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run synth");
+    assert!(
+        !r.status.success(),
+        "data-carrying fixture must refuse on --relocatable (#1041), got exit 0"
+    );
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        err.contains("active data segment") && err.contains("#1041"),
+        "refusal must name the active data segments and #1041, got: {err}"
     );
 }
 

@@ -341,6 +341,22 @@ enum Commands {
         #[arg(long)]
         relocatable: bool,
 
+        /// RQ-59-DATASEG (#1041): declare that the EMBEDDER populates memory
+        /// 0's active data segments at instantiation (from the wasm module it
+        /// already holds), so the ARM relocatable object may ship WITHOUT
+        /// them. Without this flag a data-carrying module now REFUSES on the
+        /// plain relocatable path — the object carries none of the
+        /// initializer bytes and no record of them, so every load from the
+        /// initialized region would silently read whatever the target memory
+        /// holds (the gale#278 `0xFF` class). The `--native-pointer-abi`
+        /// geometry is unaffected (it ships the region as `.data` and never
+        /// needs this flag). Emitted bytes are identical with or without the
+        /// flag; it only converts the refusal back into the documented
+        /// embedder contract, explicitly acknowledged (the #952
+        /// `--allow-skipped-exports` shape).
+        #[arg(long)]
+        embedder_data_init: bool,
+
         /// #237: native-pointer ABI for host-pointer drop-ins. Emits wasm function
         /// statics as a base-independent `.data` section (`__synth_wasm_data`,
         /// MOVW/MOVT-relocated), so a `linmem base = 0` native-pointer trampoline
@@ -682,6 +698,7 @@ fn main() -> Result<()> {
             link,
             builtins,
             relocatable,
+            embedder_data_init,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom,
@@ -771,6 +788,7 @@ fn main() -> Result<()> {
                 verify,
                 &target_spec,
                 relocatable,
+                embedder_data_init,
                 native_pointer_abi,
                 no_bind_cabi_arena,
                 sbom_path,
@@ -1615,6 +1633,9 @@ fn compile_command(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
+    // memory 0's active data segments; suppresses the relocatable-path refusal.
+    embedder_data_init: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep the arena import an external symbol.
     no_bind_cabi_arena: bool,
@@ -1703,6 +1724,7 @@ fn compile_command(
             verify,
             target_spec,
             relocatable,
+            embedder_data_init,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom_path,
@@ -3042,6 +3064,9 @@ fn compile_all_exports(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
+    // memory 0's active data segments; suppresses the relocatable-path refusal.
+    embedder_data_init: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep a sole `env::__cabi_arena_realloc`
     // import an external symbol instead of binding it in-image.
@@ -4441,6 +4466,22 @@ fn compile_all_exports(
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs, &all_imports, &rv_wasm_data)?
     } else if has_external_relocations || relocatable {
+        // RQ-59-DATASEG (#1041): a memory-0 segment with a NON-CONST offset
+        // was legacy-dropped at decode (absent from all_data_segments); the
+        // recorded reason is its only trace. Same silent-uninitialized class
+        // as the const-offset guard inside build_relocatable_elf — refuse it
+        // the way the aarch64 arm above does (#851). `--embedder-data-init`
+        // covers it too: the embedder instantiates the module and evaluates
+        // the offset expression itself.
+        if let Some(reason) = &default_memory_nonconst_data
+            && !embedder_data_init
+        {
+            anyhow::bail!(
+                "arm relocatable: {reason} — refusing to ship the region \
+                 uninitialized (#1041); pass --embedder-data-init if your \
+                 embedder populates the segments at instantiation"
+            );
+        }
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
             info!(
@@ -4455,6 +4496,7 @@ fn compile_all_exports(
             &all_imports,
             &all_data_segments,
             all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+            embedder_data_init,
             // #237: used-extent sizing + globals slots, native-pointer ABI only.
             if native_pointer_abi {
                 Some(NativeGlobalsLayout {
@@ -4965,6 +5007,11 @@ fn build_relocatable_elf(
     imports: &[ImportEntry],
     data_segments: &[(u32, Vec<u8>)],
     linear_memory_bytes: u32,
+    // RQ-59-DATASEG (#1041): `--embedder-data-init` — the caller declared the
+    // embedder populates memory 0's active data segments at instantiation, so
+    // the un-materialized-segments refusal below is suppressed (bytes
+    // identical either way).
+    embedder_data_init: bool,
     native_globals: Option<NativeGlobalsLayout>,
     // VCR-DBG-001 step 4 (#394): the input wasm's parsed `.debug_line` (rows +
     // code_base). `None` ⇒ `--debug-line` off OR the input carried no DWARF ⇒
@@ -5042,6 +5089,39 @@ fn build_relocatable_elf(
         .flat_map(|f| &f.relocations)
         .any(|r| r.symbol == "__synth_wasm_data" || r.symbol == "__synth_globals");
     let emit_wasm_data = needs_wasm_data && linear_memory_bytes > 0;
+    // RQ-59-DATASEG (#1041): when no `__synth_wasm_data` region is emitted,
+    // this builder used to accept a module carrying active data segments,
+    // ship NONE of the initializer bytes, emit no data symbol, print no
+    // warning, and exit 0 — every static initialized by a data segment then
+    // reads whatever the target memory happens to contain (0xFF on unwritten
+    // flash; gale#278's `state(0) == 255`). ARM was the only backend that
+    // neither ships the data nor says it did not: RV32 ships `.wasm_data`
+    // records (#798) and aarch64 refuses loudly (#851). Refuse the same way
+    // aarch64 does. Shipping the data on this path (the RISC-V-style
+    // records-placed-by-linker-script reference) is v0.60 capability work
+    // (VCR-REACH-002), not this guard. The `--native-pointer-abi` path is
+    // untouched: it carries `__synth_wasm_data` relocations, so
+    // `emit_wasm_data` is true there and the segments ship as PROGBITS
+    // `.data` exactly as before. `--embedder-data-init` converts the refusal
+    // back into the (now explicitly acknowledged) embedder contract: the
+    // integrator populates memory 0 from the module they instantiate —
+    // emitted bytes are identical either way.
+    if !data_segments.is_empty() && !emit_wasm_data && !embedder_data_init {
+        anyhow::bail!(
+            "module carries {} active data segment(s), but the ARM relocatable \
+             object does not materialize data segments on this path (no code \
+             references a __synth_wasm_data region, so no data section is \
+             emitted) — a load from the initialized region would silently read \
+             whatever the target memory holds at runtime; refusing (#1041). \
+             Compile self-contained (drop --relocatable; the multi-function \
+             Cortex-M image ships the segments and copies them at reset, #758), \
+             use --native-pointer-abi (the region ships as .data), or pass \
+             --embedder-data-init to declare that your embedder populates the \
+             segments at instantiation. Relocatable data-segment init in the \
+             object itself is a documented follow-on (VCR-REACH-002).",
+            data_segments.len()
+        );
+    }
     // #739: `--shadow-stack-size` on a module whose generated code carries NO
     // `__synth_wasm_data`/`__synth_globals` relocation would silently skip
     // BOTH the region emission and the shrink (`native_layout` = None below).

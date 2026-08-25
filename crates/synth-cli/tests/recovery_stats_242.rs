@@ -34,6 +34,7 @@ fn recovery_stats(wasm: &str) -> String {
             "--target",
             "cortex-m4",
             "--relocatable",
+            "--embedder-data-init",
             "--all-exports",
         ])
         .output()
@@ -103,6 +104,7 @@ fn shadow_peak(wasm: &str) -> Option<u32> {
             "--target",
             "cortex-m4",
             "--relocatable",
+            "--embedder-data-init",
             "--all-exports",
         ])
         .output()

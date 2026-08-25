@@ -10,11 +10,16 @@
 //! costs a build failure; a silent drop costs a wrong answer at runtime,
 //! arbitrarily far from its cause (gale#278's `state(0) == 255`).
 //!
-//! The refusal mirrors the aarch64 backend's #851 guard (same class, same
+//! The refusal matches the aarch64 backend's #851 guard (same class, same
 //! shape). The assertion here is deliberately about the REFUSAL — a clean
 //! non-zero exit plus a reason string naming the data segments — NOT about
 //! the absence of the bytes in the object, which was already true on the
 //! broken behaviour and would make this test vacuously green.
+//!
+//! `--embedder-data-init` is the explicit escape hatch (the #952
+//! `--allow-skipped-exports` shape): it declares the embedder populates
+//! memory 0's segments at instantiation — the contract the differential
+//! harnesses always implemented implicitly — and changes no emitted byte.
 //!
 //! Shipping the data on this path (RISC-V-style records placed by a linker
 //! script and copied at reset) is v0.60 capability work (VCR-REACH-002),
@@ -141,7 +146,7 @@ fn active_dataseg_on_import_forced_etrel_refuses_loudly() {
 
 /// A memory-0 segment whose offset is NOT a compile-time constant was
 /// legacy-dropped at decode (#851 records the reason); the ARM relocatable
-/// path must consult that record and refuse — the aarch64 guard's mirror.
+/// path must consult that record and refuse — same as the aarch64 guard.
 #[test]
 fn nonconst_offset_dataseg_on_relocatable_refuses_loudly() {
     let f = wat_file(
@@ -157,6 +162,38 @@ fn nonconst_offset_dataseg_on_relocatable_refuses_loudly() {
         &out,
         &["non-constant offset", "#1041"],
         "non-const-offset data segment on --relocatable",
+    );
+}
+
+/// `--embedder-data-init` is the explicit acknowledgment of the embedder
+/// contract (the integrator instantiates the module and populates memory 0
+/// itself — the contract the differential harnesses always implemented).
+/// With it, the same module compiles exit 0 and the emitted object is
+/// byte-identical to the pre-#1041 output (the flag suppresses only the
+/// refusal; it adds nothing to the object).
+#[test]
+fn embedder_data_init_flag_compiles_with_identical_object() {
+    let f = wat_file(
+        "active_dataseg_flagged.wat",
+        r#"(module
+      (memory 1)
+      (data (i32.const 0) "\01\02\03\04")
+      (func (export "get") (result i32) i32.const 0 i32.load8_u))"#,
+    );
+    let out = compile(
+        &f,
+        &[
+            "--relocatable",
+            "--embedder-data-init",
+            "--target",
+            "cortex-m4",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "--embedder-data-init must convert the refusal into the acknowledged \
+         embedder contract.\nstderr: {}",
+        stderr(&out)
     );
 }
 

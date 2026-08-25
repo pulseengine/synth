@@ -150,7 +150,17 @@ fn assert_no_grow(flag: &str, corpus: &[&str], configs: &[(&str, &[&str])], min_
 }
 
 const ARM_OPT: &[&str] = &["-b", "arm", "--target", "cortex-m4"];
-const ARM_RELOC: &[&str] = &["-b", "arm", "--target", "cortex-m4", "--relocatable"];
+// RQ-59-DATASEG (#1041): `--embedder-data-init` — the corpus carries
+// data-segment fixtures; the flag suppresses only the new refusal, bytes
+// identical.
+const ARM_RELOC: &[&str] = &[
+    "-b",
+    "arm",
+    "--target",
+    "cortex-m4",
+    "--relocatable",
+    "--embedder-data-init",
+];
 const RV32: &[&str] = &["-b", "riscv", "--target", "rv32imac", "--relocatable"];
 
 /// `SYNTH_RV_SHIFT_FOLD` — RV32 corpus. At flip time: 6 fixtures here held 9

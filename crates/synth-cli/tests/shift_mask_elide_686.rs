@@ -103,7 +103,10 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
         "--all-exports",
     ]);
     if relocatable {
-        cmd.arg("--relocatable");
+        // RQ-59-DATASEG (#1041): the corpus carries data-segment fixtures;
+        // this harness only reads codegen bytes/stats (bytes are identical
+        // with the flag — it suppresses the new refusal only).
+        cmd.args(["--relocatable", "--embedder-data-init"]);
     }
     let bytes = artifact_guard::compile_bytes_or_panic(
         &mut cmd,
@@ -262,6 +265,7 @@ fn good_compile(out: &std::path::Path) -> Command {
         "cortex-m4",
         "--all-exports",
         "--relocatable",
+        "--embedder-data-init",
     ]);
     cmd
 }
