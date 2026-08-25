@@ -91,10 +91,14 @@ fn brif_displacement_resolves_past_popcnt_body() {
     real_offsets.push(cur);
 
     // The popcnt is genuinely large — this is the whole point (a 2-byte
-    // mis-estimate would have been off by ~84).
+    // mis-estimate would have been off by ~58). #1021 shrank the expansion
+    // 84 -> 60 bytes (the R11-clobbering second scratch was eliminated via
+    // ThumbExpandImm masks, execution-differential-gated), so the floor is 50,
+    // still an order of magnitude past the old `_ => 2` default this test
+    // exists to catch.
     let popcnt_len = enc.encode(&arm[popcnt_idx]).unwrap().len();
     assert!(
-        popcnt_len > 80,
+        popcnt_len > 50,
         "popcnt expansion should be large (got {popcnt_len}) — otherwise this \
          fixture would not exercise the drift"
     );

@@ -330,6 +330,17 @@ impl ArmEncoder {
         fn dp_reg(b: &mut Vec<u8>, base: u32, rd: u32, rn: u32, rm: u32) {
             w(b, base | (rn << 16) | (rd << 12) | rm);
         }
+        /// Data-processing with an immediate-shifted register operand:
+        /// `<op> rd, rn, rm, <LSL|LSR|ASR> #imm` — the A32 barrel shifter
+        /// folds a shift into the second operand for free. #1021 uses this to
+        /// run the popcnt SWAR fold on R12 alone (no second scratch, so R11 —
+        /// the linear-memory base — is never touched).
+        fn dp_reg_shift(b: &mut Vec<u8>, base: u32, rd: u32, rn: u32, rm: u32, ty: u32, imm: u32) {
+            w(
+                b,
+                base | (rn << 16) | (rd << 12) | ((imm & 0x1F) << 7) | (ty << 5) | rm,
+            );
+        }
         /// ORR rd, rd, rm, LSR #31 — the carry-propagation idiom of the
         /// shift-subtract division loop (bring rm's MSB into rd's bit 0).
         fn orr_lsr31(b: &mut Vec<u8>, rd: u32, rm: u32) {
@@ -1167,37 +1178,48 @@ impl ArmEncoder {
             }
 
             // Popcnt (i32): bit-twiddle expansion (no native A32 popcount),
-            // mirroring the Thumb-2 arm's register contract (R11 + R12 as
-            // scratch, shift-add fold, final AND #0x3F).
+            // mirroring the Thumb-2 arm's #1021 register contract: R12 is the
+            // ONLY scratch. The previous transcription copied the old Thumb
+            // contract's R11 borrow — but R11 is the linear-memory base on
+            // this path too, so it inherited the same live miscompile. A32
+            // has no ThumbExpandImm for 0xXYXYXYXY masks, so instead the
+            // barrel shifter folds each shift into the mask AND itself
+            // (`AND R12, R12, rd, LSR #n`), and step 2 recovers `x & C` from
+            // one term via `x - (((x >> 2) & C) << 2) = x & C` — the second
+            // temp disappears algebraically. Straight-line, no PUSH/POP,
+            // nothing to skip on a trap edge.
             ArmOp::Popcnt { rd, rm } => {
                 let rd_b = reg_to_bits(rd);
+                // Defensive (#1021), same contract as the Thumb-2 arm.
+                if rd_b >= 11 {
+                    return Err(synth_core::Error::synthesis(
+                        "Popcnt destination must be R0-R10: R11 is the linear-memory \
+                         base and R12 is the expansion's scratch (#1021)",
+                    ));
+                }
                 if rd != rm {
                     w(&mut b, 0xE1A0_0000 | (rd_b << 12) | reg_to_bits(rm)); // MOV rd, rm
                 }
                 // x = x - ((x >> 1) & 0x55555555)
                 movw(&mut b, 12, 0x5555);
                 movt(&mut b, 12, 0x5555);
-                shift_imm(&mut b, LSR, 11, rd_b, 1);
-                dp_reg(&mut b, 0xE000_0000, 11, 11, 12); // AND R11, R11, R12
-                dp_reg(&mut b, 0xE040_0000, rd_b, rd_b, 11); // SUB rd, rd, R11
-                // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+                dp_reg_shift(&mut b, 0xE000_0000, 12, 12, rd_b, LSR, 1); // AND R12, R12, rd, LSR #1
+                dp_reg(&mut b, 0xE040_0000, rd_b, rd_b, 12); //             SUB rd, rd, R12
+                // x = (x & 0x33333333) + ((x >> 2) & 0x33333333), one temp:
+                //   R12 = (x >> 2) & C; x - (R12 << 2) = x & C; then + R12.
                 movw(&mut b, 12, 0x3333);
                 movt(&mut b, 12, 0x3333);
-                dp_reg(&mut b, 0xE000_0000, 11, rd_b, 12); // AND R11, rd, R12
-                shift_imm(&mut b, LSR, rd_b, rd_b, 2);
-                dp_reg(&mut b, 0xE000_0000, rd_b, rd_b, 12); // AND rd, rd, R12
-                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11); // ADD rd, rd, R11
+                dp_reg_shift(&mut b, 0xE000_0000, 12, 12, rd_b, LSR, 2); // AND R12, R12, rd, LSR #2
+                dp_reg_shift(&mut b, 0xE040_0000, rd_b, rd_b, 12, LSL, 2); // SUB rd, rd, R12, LSL #2
+                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 12); //              ADD rd, rd, R12
                 // x = (x + (x >> 4)) & 0x0F0F0F0F
-                shift_imm(&mut b, LSR, 11, rd_b, 4);
-                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11); // ADD rd, rd, R11
+                dp_reg_shift(&mut b, 0xE080_0000, rd_b, rd_b, rd_b, LSR, 4); // ADD rd, rd, rd, LSR #4
                 movw(&mut b, 12, 0x0F0F);
                 movt(&mut b, 12, 0x0F0F);
                 dp_reg(&mut b, 0xE000_0000, rd_b, rd_b, 12); // AND rd, rd, R12
                 // x += x >> 8; x += x >> 16; x &= 0x3F
-                shift_imm(&mut b, LSR, 11, rd_b, 8);
-                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11);
-                shift_imm(&mut b, LSR, 11, rd_b, 16);
-                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11);
+                dp_reg_shift(&mut b, 0xE080_0000, rd_b, rd_b, rd_b, LSR, 8);
+                dp_reg_shift(&mut b, 0xE080_0000, rd_b, rd_b, rd_b, LSR, 16);
                 w(&mut b, 0xE200_003F | (rd_b << 16) | (rd_b << 12)); // AND rd, rd, #63
             }
 
@@ -5512,123 +5534,91 @@ impl ArmEncoder {
             // x = x + (x >> 16);
             // return x & 0x3F;
             //
-            // Uses rd as working register and R12 as scratch for constants
+            // #1021: R12 (IP, never allocatable) is the ONLY scratch. The
+            // previous expansion borrowed R11 as a second temp — but R11 is
+            // the WASM linear-memory base, materialized at entry and read by
+            // every later LDR/STR, and it is NOT in the pushed set, so the
+            // clobber leaked to the CALLER too (a live memory-safety
+            // miscompile: loads through `base = x >> 16`). The second temp is
+            // eliminated the way the healthy i64.popcnt discipline implies —
+            // never touch an unsaved register — but without its PUSH/POP
+            // wrapper: the SWAR masks 0x55555555 / 0x33333333 / 0x0F0F0F0F
+            // are all `0xXYXYXYXY` ThumbExpandImm modified immediates, so
+            // each AND takes its mask from the instruction itself and R12
+            // alone carries every intermediate. Straight-line, no branches,
+            // no stack traffic — nothing to skip on a trap edge.
             ArmOp::Popcnt { rd, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                // Defensive (#1021): rd = R11/R12/SP/PC would silently
+                // corrupt the linear-memory base, the expansion's own
+                // scratch, or the stack. The selector never assigns them
+                // (pool R0-R8); refuse loudly if that ever changes.
+                if rd_bits >= 11 {
+                    return Err(synth_core::Error::synthesis(
+                        "Popcnt destination must be R0-R10: R11 is the linear-memory \
+                         base and R12 is the expansion's scratch (#1021)",
+                    ));
+                }
                 let mut bytes = Vec::new();
 
                 // First, move rm to rd if they're different
                 if rd != rm {
-                    let rd_bits = reg_to_bits(rd) as u16;
                     let rm_bits = reg_to_bits(rm) as u16;
                     // MOV Rd, Rm (16-bit): 0100 0110 D Rm Rd[2:0]
-                    let d_bit = (rd_bits >> 3) & 1;
-                    let mov_instr: u16 = 0x4600 | (d_bit << 7) | (rm_bits << 3) | (rd_bits & 0x7);
+                    let d_bit = ((rd_bits as u16) >> 3) & 1;
+                    let mov_instr: u16 =
+                        0x4600 | (d_bit << 7) | (rm_bits << 3) | ((rd_bits as u16) & 0x7);
                     bytes.extend_from_slice(&mov_instr.to_le_bytes());
                 }
 
                 // Step 1: x = x - ((x >> 1) & 0x55555555)
-                // Load 0x55555555 into R12
-                bytes.extend_from_slice(&self.encode_thumb32_movw_raw(12, 0x5555)?);
-                bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, 0x5555)?);
-
-                // R12_temp = rd >> 1
-                // We need a second scratch register. Use R11.
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 1)?);
-
-                // R11 = R11 & R12 (R11 = (x >> 1) & 0x55555555)
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(11, 11, 12)?);
-
-                // rd = rd - R11
-                bytes.extend_from_slice(&self.encode_thumb32_sub_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    11,
-                )?);
+                // R12 = rd >> 1
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(12, rd_bits, 1)?);
+                // R12 = R12 & 0x55555555 (modified immediate, no constant reg)
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(12, 12, 0x5555_5555)?);
+                // rd = rd - R12
+                bytes.extend_from_slice(&self.encode_thumb32_sub_reg_raw(rd_bits, rd_bits, 12)?);
 
                 // Step 2: x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
-                // Load 0x33333333 into R12
-                bytes.extend_from_slice(&self.encode_thumb32_movw_raw(12, 0x3333)?);
-                bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, 0x3333)?);
-
-                // R11 = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
-                    11,
-                    reg_to_bits(rd),
+                // R12 = rd & 0x33333333
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(
                     12,
+                    rd_bits,
+                    0x3333_3333,
                 )?);
-
                 // rd = rd >> 2
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    2,
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(rd_bits, rd_bits, 2)?);
+                // rd = rd & 0x33333333
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(
+                    rd_bits,
+                    rd_bits,
+                    0x3333_3333,
                 )?);
-
-                // rd = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    12,
-                )?);
-
-                // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    11,
-                )?);
+                // rd = rd + R12
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(rd_bits, rd_bits, 12)?);
 
                 // Step 3: x = (x + (x >> 4)) & 0x0F0F0F0F
-                // R11 = rd >> 4
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 4)?);
-
-                // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    11,
-                )?);
-
-                // Load 0x0F0F0F0F into R12
-                bytes.extend_from_slice(&self.encode_thumb32_movw_raw(12, 0x0F0F)?);
-                bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, 0x0F0F)?);
-
-                // rd = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    12,
+                // R12 = rd >> 4
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(12, rd_bits, 4)?);
+                // rd = rd + R12
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(rd_bits, rd_bits, 12)?);
+                // rd = rd & 0x0F0F0F0F
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(
+                    rd_bits,
+                    rd_bits,
+                    0x0F0F_0F0F,
                 )?);
 
                 // Step 4: x = x + (x >> 8)
-                // R11 = rd >> 8
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 8)?);
-
-                // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    11,
-                )?);
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(12, rd_bits, 8)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(rd_bits, rd_bits, 12)?);
 
                 // Step 5: x = x + (x >> 16)
-                // R11 = rd >> 16
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 16)?);
-
-                // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    11,
-                )?);
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(12, rd_bits, 16)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(rd_bits, rd_bits, 12)?);
 
                 // Step 6: return x & 0x3F
-                // AND with 0x3F (small immediate, can use BIC or AND with immediate)
-                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(
-                    reg_to_bits(rd),
-                    reg_to_bits(rd),
-                    0x3F,
-                )?);
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(rd_bits, rd_bits, 0x3F)?);
 
                 Ok(bytes)
             }
@@ -8135,18 +8125,6 @@ impl ArmEncoder {
 
         let hw1: u16 = 0xEA4F;
         let hw2: u16 = ((imm3 << 12) | (rd << 8) | (imm2 << 6) | (0b01 << 4) | rm) as u16;
-
-        let mut bytes = hw1.to_le_bytes().to_vec();
-        bytes.extend_from_slice(&hw2.to_le_bytes());
-        Ok(bytes)
-    }
-
-    /// Encode Thumb-2 32-bit AND (register) - raw version
-    fn encode_thumb32_and_reg_raw(&self, rd: u32, rn: u32, rm: u32) -> Result<Vec<u8>> {
-        // AND.W Rd, Rn, Rm
-        // EA00 Rn | 0 Rd 00 00 Rm
-        let hw1: u16 = (0xEA00 | rn) as u16;
-        let hw2: u16 = ((rd << 8) | rm) as u16;
 
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
