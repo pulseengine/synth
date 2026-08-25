@@ -4367,7 +4367,7 @@ artifacts:
         claim_check green. Frozen anchors 10/10 untouched.
 
   - id: VCR-TIER-001
-    type: decision
+    type: sw-req
     title: "Close the pseudo-op tier boundary — the expansion is part of the lowering"
     description: >
       #1021 shipped a memory-safety miscompile THROUGH a Rocq-proved rule.
@@ -4438,13 +4438,15 @@ artifacts:
     tags: [north-star, proof-tier, pseudo-op, derive-dont-mirror]
     links:
       - type: derives-from
+        target: VCR-001
+      - type: refines
         target: VCR-SEL-001
     fields:
       priority: must
       issue: "#1021"
 
   - id: VCR-REACH-002
-    type: decision
+    type: sw-req
     title: "Reach is part of correctness — 1.6% AArch64 acceptance on real modules"
     description: >
       Measured on 805 REAL-WORLD wasm modules (#1017 — toolchain output plus
@@ -4500,7 +4502,7 @@ artifacts:
       issue: "#1017"
 
   - id: VCR-RA-011
-    type: decision
+    type: sw-req
     title: "The allocator's remaining wins are the cost model and tied operands, not a better search"
     description: >
       RQ-59-MEASURE's verdict (increment 4): the colourer WINS ON NET BUT DOES
@@ -4569,6 +4571,8 @@ artifacts:
     status: proposed
     tags: [north-star, allocator, cost-model, tied-operands, vcr-dec-001]
     links:
+      - type: derives-from
+        target: VCR-001
       - type: refines
         target: VCR-DEC-001
     fields:
