@@ -143,7 +143,14 @@ SP_INIT = STACK_BASE + STACK_SIZE // 2
 
 # Operand valuations. r4 doubles as the shift-amount register in the dump's
 # instances, so the sets cover small / large / zero shift paths and the
-# negative-high-limb paths the i64 diamonds branch on.
+# negative-high-limb paths the i64 diamonds branch on. The large amount is
+# DELIBERATELY not a fixed point of `& 63` (0x67 = 103 -> 39): the i64
+# variable-shift expansions mask the amount register IN PLACE, and a
+# fixed-point valuation (7, 39, 0) would make that undeclared write invisible
+# to the net-state diff — the first census run missed it exactly that way
+# (the capstone static column still flagged it, which is why both views run).
+# The write is a REAL, executed miscompile when the amount is a register-homed
+# local re-read after the shift: filed as #1048 from this census.
 INPUT_SETS = [
     {
         "r0": 0x11111111, "r1": 0x22222222, "r2": 0x33333333, "r3": 0x44444444,
@@ -152,7 +159,7 @@ INPUT_SETS = [
     },
     {
         "r0": 0xFFFFFFFF, "r1": 0x80000000, "r2": 0x80000001, "r3": 0xFFFFFFFF,
-        "r4": 39, "r5": 0x0000FFFF, "r6": 0x1, "r7": 0x2, "r8": 0xDEADBEEF,
+        "r4": 0x67, "r5": 0x0000FFFF, "r6": 0x1, "r7": 0x2, "r8": 0xDEADBEEF,
     },
     {
         "r0": 0, "r1": 0, "r2": 0, "r3": 0, "r4": 0, "r5": 0, "r6": 0,
