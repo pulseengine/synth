@@ -610,7 +610,7 @@ requirements:
       SCOPE NOTE: the maintainer chose to fold this into v0.59 rather than cut a
       v0.58.1 patch (2026-08-21). The precedent for the other choice was
       v0.56.2, cut mid-v0.57 for the ARM identity-mask OOB (#959).
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, memory-safety, arm, a32, popcnt, fix-first]
     links:
@@ -707,6 +707,48 @@ requirements:
     status: implemented
     release: v0.59
     tags: [soundness, arm, relocatable, data-segments, honest-frontier, fix-first]
+  - id: RQ-59-I64SHIFT
+    type: system-req
+    title: "i64 variable shifts CLOBBER their own shift-amount operand — both selectors, executed"
+    description: >
+      #1048, found by the RQ-59-TIERCENSUS measurement (#1047) — the census that
+      was scoped to COUNT, not to hunt. It executed every rule-emitted encoder
+      expansion under unicorn and diffed the register state, and this fell out.
+
+      The Thumb-2 and A32 expansions of `ArmOp::I64Shl` / `I64ShrU` / `I64ShrS`
+      open by masking the shift amount IN PLACE (`& 63`) and writing `amt-32`
+      into the amount's HOME HIGH REGISTER. Re-read the amount after the shift
+      and you get a mangled value. Executed on main, both selectors, with and
+      without `--relocatable`:
+
+        (func (export "f") (param $x i64) (param $amt i64) (result i64)
+          local.get $x  local.get $amt  i64.shl
+          local.get $amt  i64.add)      ;; read the amount AGAIN
+
+        amt=3   -> 11                    correct 11               (control)
+        amt=35  -> 47244640291           correct 34359738403      MISMATCH
+        amt=64  -> 1                     correct 65               MISMATCH
+        amt=67  -> 11                    correct 75               MISMATCH
+        amt=127 -> 9223372169998762047   correct 9223372036854775935  MISMATCH
+
+      SAME CLASS AS #1021, DIFFERENT REGISTER TIER. #1021 clobbered a RESERVED
+      GLOBAL (R11, the linear-memory base); this clobbers the CALLER'S OWN
+      OPERAND. That is why TIERCENSUS's reserved-register subset was `{Popcnt}`
+      and still did not bound the risk — the operand tier was outside what that
+      subset measures.
+
+      THE OBSERVATION THAT MATTERS MOST: the wired `i64_shr_599` differential
+      PASSES on the very binary where this miscompiles. The existing oracle is
+      structurally blind to the class, which is precisely the argument for
+      VCR-TIER-001's canary gate (v0.60) — a guard that would have caught BOTH
+      #1021 and this one.
+
+      RED-FIRST with the repro above as an execution differential asserting the
+      VALUE. Fix all three shift expansions on BOTH backends. Then say why
+      `i64_shr_599` could not see it, and whether the fix makes it able to.
+    status: proposed
+    release: v0.59
+    tags: [soundness, i64, operand-clobber, arm, a32, fix-first]
     links:
       - type: derives-from
         target: BR-001
@@ -715,3 +757,48 @@ requirements:
       priority: must
       verification-track: differential
       issue: "#1041"
+      issue: "#1048"
+
+  - id: RQ-59-STARTFN
+    type: system-req
+    title: "All three backends SILENTLY DROP the (start) function — no decoder arm at all"
+    description: >
+      #1046, found by the RQ-59-DATASEG class check (#1049) while looking for
+      siblings of the data-segment silent drop.
+
+      The decoder has NO `Payload::StartSection` arm. A module's `(start f)`
+      is discarded outright: wasmtime returns 42 on the repro, synth-compiled
+      code returns 0, exit 0, no warning — on ARM, RISC-V AND AArch64.
+
+      THIRD SILENT-DROP OF THE SAME SHAPE found in one session, after #1041
+      (ARM relocatable discarding active data segments) and alongside #1048.
+      Synth accepts the input, discards part of its semantics, and reports
+      success. That is the one behaviour the honest-frontier philosophy exists
+      to prevent: a loud decline costs a build failure, a silent drop costs a
+      wrong answer arbitrarily far from its cause.
+
+      MINIMUM: refuse loudly, the way aarch64 already refuses active data
+      segments (#851) and the way #1049 made ARM refuse them. Implementing
+      start-function invocation is a capability question and NOT this artifact.
+
+      RED-FIRST: the test must assert a non-zero exit and a reason naming the
+      start section — NOT the absence of a call, which passes today on the
+      broken behaviour.
+
+      WHILE THERE: the DATASEG lane reported two softer same-class observations
+      it did not file — non-zero global initializers and active element-segment
+      table images also never reach the plain-relocatable object, though both
+      are arguably inside the documented R9/R11 embedder contract. Determine
+      which side of the contract each falls on and say so; if either is outside
+      it, that is a fourth silent drop and it outranks this fix.
+    status: proposed
+    release: v0.59
+    tags: [soundness, silent-drop, start-section, all-backends, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1046"
