@@ -50,6 +50,31 @@ from collections import Counter
 from pathlib import Path
 
 SKIP_WARN_RE = re.compile(r"warning: (\d+) of (\d+) functions were skipped")
+SKIP_REASON_RE = re.compile(r"warning: skipping function '[^']+': (.+)")
+# Wrapper prefixes stripped iteratively so the ROOT cause aggregates, not the
+# layer it was reported through.
+REASON_PREFIXES = (
+    "backend 'arm' failed: ",
+    "backend 'riscv' failed: ",
+    "backend 'aarch64' failed: ",
+    "compilation failed: ",
+    "ARM encoding failed: ",
+    "Synthesis failed: ",
+    "Compilation failed: ",
+)
+
+
+def normalize_reason(reason):
+    changed = True
+    while changed:
+        changed = False
+        for p in REASON_PREFIXES:
+            if reason.startswith(p):
+                reason = reason[len(p):]
+                changed = True
+    # Collapse per-instance specifics (indices, offsets) so reasons bucket.
+    reason = re.sub(r"\b\d+\b", "N", reason)
+    return reason.strip()[:160]
 EXCLUDE_PARTS = {"target", ".git", "node_modules", "worktrees", ".claude"}
 
 # Histogram bins for fraction-of-functions-compiled, chosen so the two poles
@@ -117,6 +142,13 @@ def first_error_line(stderr):
     return (tail[-1].strip()[:200]) if tail else "(empty stderr)"
 
 
+def skip_reasons(stderr):
+    return Counter(
+        normalize_reason(m.group(1))
+        for m in SKIP_REASON_RE.finditer(stderr)
+    )
+
+
 def classify(synth, module, backend, timeout):
     rc, err = run_synth(synth, module, backend, [], timeout)
     if rc is None:
@@ -131,6 +163,7 @@ def classify(synth, module, backend, timeout):
                 "skipped": skipped,
                 "total": total,
                 "fraction_compiled": (total - skipped) / total,
+                "skip_reasons": dict(skip_reasons(err)),
             }
         return {"verdict": "ACCEPT_FULL"}
     # Non-zero: is the SOLE blocker per-function skips?
@@ -142,6 +175,7 @@ def classify(synth, module, backend, timeout):
             "total": total,
             "fraction_compiled": 0.0,
             "reason": "all functions skipped (nothing to emit)",
+            "skip_reasons": dict(skip_reasons(err)),
         }
     rc2, err2 = run_synth(
         synth, module, backend, ["--allow-skipped-exports"], timeout
@@ -155,6 +189,7 @@ def classify(synth, module, backend, timeout):
                 "skipped": s2,
                 "total": t2,
                 "fraction_compiled": (t2 - s2) / t2,
+                "skip_reasons": dict(skip_reasons(err2)),
             }
         # Declined plain but clean with the flag and no skip warning: should
         # not happen; surface it rather than misfile it.
@@ -214,6 +249,21 @@ def report_stratum(name, rows):
         print("  module-level decline reasons (top 10):")
         for reason, n in mod_reasons.most_common(10):
             print(f"    {n:4d}  {reason}")
+    # Aggregate per-FUNCTION skip reasons over the skip-only declines — the
+    # "full decline set" #1017's top-12 lower bound could not see.  Counted in
+    # (modules affected, functions skipped) pairs so one huge module cannot
+    # masquerade as a corpus-wide cause.
+    fn_reasons = Counter()
+    fn_mods = Counter()
+    for r in skip_only:
+        for reason, n in r.get("skip_reasons", {}).items():
+            fn_reasons[reason] += n
+            fn_mods[reason] += 1
+    if fn_reasons:
+        print("  per-function skip reasons in skip-only declines")
+        print("  (modules affected / functions skipped):")
+        for reason, n in fn_reasons.most_common(15):
+            print(f"    {fn_mods[reason]:4d} mod / {n:5d} fn  {reason}")
 
 
 def main():
