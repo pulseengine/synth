@@ -324,7 +324,7 @@ requirements:
       ref, or keep it open with a precise "remaining:" note. TRUST THE BINARY
       OVER THE TRACKER — an entry saying `proposed` is not evidence a defect
       exists, exactly as `implemented` was not evidence one was fixed.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [traceability, stale-record, verify-dont-assume]
     links:
