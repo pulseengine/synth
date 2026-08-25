@@ -446,7 +446,7 @@ pub enum ArmOp {
         rn_lo: Reg,
         rn_hi: Reg,
         rm_lo: Reg,
-        rm_hi: Reg, // used as temp
+        rm_hi: Reg, // amount hi limb — READ-ONLY since #1048 (semantically dead, WASM masks mod 64)
     },
 
     /// i64 arithmetic shift right: sign-extending shift
@@ -456,7 +456,7 @@ pub enum ArmOp {
         rn_lo: Reg,
         rn_hi: Reg,
         rm_lo: Reg,
-        rm_hi: Reg, // used as temp
+        rm_hi: Reg, // amount hi limb — READ-ONLY since #1048 (semantically dead, WASM masks mod 64)
     },
 
     /// i64 logical shift right: zero-extending shift
@@ -466,7 +466,7 @@ pub enum ArmOp {
         rn_lo: Reg,
         rn_hi: Reg,
         rm_lo: Reg,
-        rm_hi: Reg, // used as temp
+        rm_hi: Reg, // amount hi limb — READ-ONLY since #1048 (semantically dead, WASM masks mod 64)
     },
 
     // Conditional move: MOV{cond} rd, rm - only executes if condition is true

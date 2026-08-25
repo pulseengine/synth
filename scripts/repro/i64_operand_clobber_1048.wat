@@ -27,4 +27,12 @@
   (func (export "ctz_reread") (param $x i64) (result i64)
     (i64.add (i64.ctz (local.get $x)) (local.get $x)))
   (func (export "popcnt_reread") (param $x i64) (result i64)
-    (i64.add (i64.popcnt (local.get $x)) (local.get $x))))
+    (i64.add (i64.popcnt (local.get $x)) (local.get $x)))
+  ;; #610 fixed-ABI wrapper family (div/rem, rotl/rotr): the wrapper
+  ;; saves/restores R0-R3, so operand re-reads must already hold — pinned
+  ;; here so a future wrapper regression is caught by execution, not by
+  ;; nobody
+  (func (export "div_u_reread") (param $x i64) (param $amt i64) (result i64)
+    (i64.add (i64.div_u (local.get $x) (local.get $amt)) (local.get $amt)))
+  (func (export "rotl_reread") (param $x i64) (param $amt i64) (result i64)
+    (i64.add (i64.rotl (local.get $x) (local.get $amt)) (local.get $amt))))

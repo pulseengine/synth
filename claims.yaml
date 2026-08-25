@@ -1255,9 +1255,23 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18278
+        value: 18288
         baseline: 17897
         waivers:
+          - to: 18288
+            reason: >-
+              RQ-59-I64SHIFT (#1048): +10 lines in select_default — the
+              i64.clz/ctz/popcnt arm now emits its own explicit
+              `Movw R1, #0` result-hi zero (plus the comment saying why),
+              because the encoder expansions' implicit `MOV rnhi, #0` was
+              DELETED: it was aimed at the result's high half but wrote the
+              OPERAND's home high register, an executed miscompile on the
+              direct selector (clz_reread(0xDEADBEEF00000001) returned 0x1 —
+              hi limb wiped; i64_operand_clobber_1048_differential.py, 54/105
+              vectors red before, 105/105 green after, 3 legs incl. A32).
+              Soundness fix moving a hidden write to an explicit selector op,
+              not a new lowering decision; the Rocq/SMT pseudo-op models
+              always specified the rd-only behavior the bytes now have.
           - to: 18278
             reason: >-
               RQ-59-SUBTRACT (#242, increment 6): the residual above baseline
@@ -1399,7 +1413,11 @@ claims:
         # sign-extension family arm deletions + the select_default
         # width-conversion delegation, see the lines_code waiver);
         # zero test-module movement.
-        value: 28899
+        # 28899 -> 28909 (RQ-59-I64SHIFT #1048): +10 code — select_default's
+        # explicit i64 bit-count result-hi zero, replacing the encoder
+        # expansions' operand-clobbering implicit `MOV rnhi, #0` (see the
+        # lines_code waiver); zero test-module movement.
+        value: 28909
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

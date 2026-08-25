@@ -213,22 +213,24 @@ fn red_632_popcnt_result_in_restore_set_fails() {
         };
         let code = thumb_bytes(&pseudo);
 
-        // The shipped tail (12 bytes): ADD.W R12,R4,R5; POP; MOV rd,R12;
-        // MOV.W rnhi,#0. Pin it so this test screams if the encoder changes.
-        let tail: Vec<u8> = [0xEB04u16, 0x0C05, 0xBC38, 0x4660, 0xF04F, 0x0100]
+        // The shipped tail (8 bytes): ADD.W R12,R4,R5; POP; MOV rd,R12.
+        // (#1048 removed the trailing `MOV.W rnhi,#0` — it wrote the
+        // OPERAND's home high register.) Pin it so this test screams if the
+        // encoder changes.
+        let tail: Vec<u8> = [0xEB04u16, 0x0C05, 0xBC38, 0x4660]
             .iter()
             .flat_map(|hw| hw.to_le_bytes())
             .collect();
         assert_eq!(
-            &code[code.len() - 12..],
+            &code[code.len() - 8..],
             &tail[..],
             "shipped popcnt tail changed — update the #632 red-shape splice"
         );
 
         // The #632 shape: ADDS R5,R4,R5 (0x1965); POP {R3,R4,R5}; MOV R0,R5
-        // (0x4628); MOV.W R1,#0.
-        let mut buggy = code[..code.len() - 12].to_vec();
-        for hw in [0x1965u16, 0xBC38, 0x4628, 0xF04F, 0x0100] {
+        // (0x4628).
+        let mut buggy = code[..code.len() - 8].to_vec();
+        for hw in [0x1965u16, 0xBC38, 0x4628] {
             buggy.extend_from_slice(&hw.to_le_bytes());
         }
 
@@ -342,9 +344,11 @@ fn red_916_transmuted_zero_fill_fails() {
         };
         let code = thumb_bytes(&pseudo);
 
-        // The FIXED tail (10 bytes): B .done (0xE003, widened); LSR.W R7,R1,R3;
-        // MOV.W R8,#0. Pinned so this test screams if the encoder changes.
-        let fixed: Vec<u8> = [0xE003u16, 0xFA21, 0xF703, 0xF04F, 0x0800]
+        // The FIXED tail (10 bytes): B .done (0xE003, widened); LSR.W
+        // R7,R1,R12 (#1048: the n-32 scratch moved from the amount's home
+        // high register R3 to R12); MOV.W R8,#0. Pinned so this test screams
+        // if the encoder changes.
+        let fixed: Vec<u8> = [0xE003u16, 0xFA21, 0xF70C, 0xF04F, 0x0800]
             .iter()
             .flat_map(|hw| hw.to_le_bytes())
             .collect();
@@ -356,10 +360,14 @@ fn red_916_transmuted_zero_fill_fails() {
 
         // The #916 shape: the narrow B (0xE002) and the transmuted 0x2800.
         let mut buggy = code[..code.len() - 10].to_vec();
-        for hw in [0xE002u16, 0xFA21, 0xF703, 0x2800] {
+        for hw in [0xE002u16, 0xFA21, 0xF70C, 0x2800] {
             buggy.extend_from_slice(&hw.to_le_bytes());
         }
-        assert_eq!(buggy.len(), 38, "pre-#916 expansion was 38 bytes");
+        assert_eq!(
+            buggy.len(),
+            46,
+            "post-#1048 high-reg expansion is 48 bytes; the splice trims 2"
+        );
 
         match validate_expansion(&synth_core::WasmOp::I64ShrU, &pseudo, &buggy) {
             Err(ExpansionError::Counterexample {

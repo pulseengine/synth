@@ -10,20 +10,20 @@
 //! fixed for `I64SetCond` / `I64SetCondZ` (emit the 32-bit `MOV.W`, T2
 //! `F04F 0000 | rd<<8 | imm8`, whenever `rd >= R8`).
 //!
-//! ## Scope — the issue named 2 sites; there are FIVE
+//! ## Scope — the issue named 2 sites; there were FIVE (now THREE, #1048)
 //!
 //! | op | register zeroed | reachable via |
 //! |----|-----------------|---------------|
 //! | `I64Shl`         | `rd_lo` (large-shift arm) | `i64.shl`, n >= 32 |
 //! | `I64ShrU`        | `rd_hi` (large-shift arm) | `i64.shr_u`, n >= 32 |
-//! | `I64Clz`         | `rnhi` (high-word clear)  | `i64.clz`, ALWAYS |
-//! | `I64Ctz`         | `rnhi` (high-word clear)  | `i64.ctz`, ALWAYS |
 //! | `I64ExtendI32U`  | `rdhi` (high-word clear)  | `i64.extend_i32_u`, ALWAYS |
 //!
-//! The two shift sites are *conditionally* wrong (only the `n >= 32` path
-//! reaches the MOV). The other three are **unconditionally** wrong for a high
-//! destination — every `i64.clz` / `i64.ctz` / `i64.extend_i32_u` whose high
-//! half lands in R8 returns a value whose upper 32 bits are garbage.
+//! `I64Clz` / `I64Ctz` USED to be zero-fill sites (`rnhi` high-word clear) —
+//! #1048 removed those clears entirely: they were aimed at the RESULT's high
+//! half but wrote the OPERAND's home high register, a real executed
+//! miscompile on the direct selector. The callers now emit their own
+//! explicit hi-zero op, and the expansions write nothing but `rd` — this
+//! file pins the ABSENCE of the write.
 //!
 //! ## Why this is not a one-liner: instruction SIZE
 //!
@@ -31,14 +31,11 @@
 //! has to be settled **per site by decoding the branch imm**, not by eyeballing
 //! the comments:
 //!
-//! * `I64Shl` / `I64ShrU`: `B .done` (`0xE002`) targets halfword 19 = the END
-//!   of the expansion, which is PAST the MOV at halfword 18. Widening the MOV
-//!   moves `.done` → the displacement MUST become `0xE003`. `BPL .large`
-//!   (`0xD50A`) targets halfword 16, BEFORE the MOV, so it is unaffected.
-//! * `I64Clz` / `I64Ctz`: `B .done` targets byte 22 / 30, which IS THE MOV's
-//!   OWN ADDRESS (the branch jumps *to* the final instruction, not past it).
-//!   Widening an instruction does not move its own address → no displacement
-//!   change. `BEQ` targets 14 / 18, before the MOV → unaffected.
+//! * `I64Shl` / `I64ShrU` (post-#1048 R12-only layout): `B .done` (`0xE002`)
+//!   targets halfword 23 = the END of the expansion, PAST the MOV at
+//!   halfword 22. Widening the MOV moves `.done` → the displacement MUST
+//!   become `0xE003`. `BPL .large` (`0xD50E`) targets halfword 20, BEFORE
+//!   the MOV, so it is unaffected.
 //! * `I64ExtendI32U`: no branches at all.
 //!
 //! `assert_branches_still_land` below re-derives those targets from the emitted
@@ -175,28 +172,46 @@ fn i64_shr_u_zero_fills_a_high_rd_hi() {
     assert_zero_fill("I64ShrU{rd_hi=R8}", &bytes, 8);
 }
 
+/// #1048: the Clz/Ctz expansions must NOT write their operand's high
+/// register at all — the pre-#1048 trailing `MOV rnhi, #0` destroyed the
+/// caller's operand. Pin the absence: no MOVS-imm or MOV.W-imm tail, fixed
+/// register-independent length.
 #[test]
-fn i64_clz_zero_fills_a_high_high_word() {
-    // i64.clz returns i64 — the high word is ALWAYS cleared, so a high `rnhi`
-    // is unconditionally miscompiled (no `n >= 32` precondition needed).
-    let op = ArmOp::I64Clz {
-        rd: Reg::R0,
-        rnlo: Reg::R1,
-        rnhi: Reg::R8,
-    };
-    let bytes = thumb(&op);
-    assert_zero_fill("I64Clz{rnhi=R8}", &bytes, 8);
+fn i64_clz_does_not_write_its_operand_high_word() {
+    for rnhi in [Reg::R2, Reg::R8] {
+        let bytes = thumb(&ArmOp::I64Clz {
+            rd: Reg::R0,
+            rnlo: Reg::R1,
+            rnhi,
+        });
+        assert_eq!(bytes.len(), 22, "I64Clz: register-independent length");
+        let hw = halfwords(&bytes);
+        let tail = *hw.last().unwrap();
+        assert!(
+            (tail & 0xF800) != 0x2000 && hw[hw.len() - 2] != 0xF04F,
+            "I64Clz{{rnhi={rnhi:?}}}: expansion must not end in a zero-fill — \
+             the operand's high register is the caller's (#1048): {hw:04X?}"
+        );
+    }
 }
 
 #[test]
-fn i64_ctz_zero_fills_a_high_high_word() {
-    let op = ArmOp::I64Ctz {
-        rd: Reg::R0,
-        rnlo: Reg::R1,
-        rnhi: Reg::R8,
-    };
-    let bytes = thumb(&op);
-    assert_zero_fill("I64Ctz{rnhi=R8}", &bytes, 8);
+fn i64_ctz_does_not_write_its_operand_high_word() {
+    for rnhi in [Reg::R2, Reg::R8] {
+        let bytes = thumb(&ArmOp::I64Ctz {
+            rd: Reg::R0,
+            rnlo: Reg::R1,
+            rnhi,
+        });
+        assert_eq!(bytes.len(), 30, "I64Ctz: register-independent length");
+        let hw = halfwords(&bytes);
+        let tail = *hw.last().unwrap();
+        assert!(
+            (tail & 0xF800) != 0x2000 && hw[hw.len() - 2] != 0xF04F,
+            "I64Ctz{{rnhi={rnhi:?}}}: expansion must not end in a zero-fill — \
+             the operand's high register is the caller's (#1048): {hw:04X?}"
+        );
+    }
 }
 
 #[test]
@@ -218,7 +233,7 @@ fn i64_extend_i32_u_zero_fills_a_high_rdhi() {
 
 #[test]
 fn i64_shl_branches_land_for_both_low_and_high_destinations() {
-    for (rd_lo, tail_hw) in [(Reg::R6, 19usize), (Reg::R8, 20usize)] {
+    for (rd_lo, tail_hw) in [(Reg::R6, 23usize), (Reg::R8, 24usize)] {
         let bytes = thumb(&ArmOp::I64Shl {
             rd_lo,
             rd_hi: Reg::R7,
@@ -227,12 +242,13 @@ fn i64_shl_branches_land_for_both_low_and_high_destinations() {
             rm_lo: Reg::R2,
             rm_hi: Reg::R3,
         });
-        // BPL .large at halfword 4 → halfword 16 (before the MOV, never moves).
-        // B .done at halfword 15 → the END of the expansion (PAST the MOV).
+        // Post-#1048 layout: BPL .large at halfword 4 → halfword 20 (before
+        // the MOV, never moves). B .done at halfword 19 → the END of the
+        // expansion (PAST the MOV).
         assert_branches_still_land(
             &format!("I64Shl{{rd_lo={rd_lo:?}}}"),
             &bytes,
-            &[(4, 16), (15, tail_hw)],
+            &[(4, 20), (19, tail_hw)],
         );
         assert_eq!(
             bytes.len(),
@@ -244,7 +260,7 @@ fn i64_shl_branches_land_for_both_low_and_high_destinations() {
 
 #[test]
 fn i64_shr_u_branches_land_for_both_low_and_high_destinations() {
-    for (rd_hi, tail_hw) in [(Reg::R6, 19usize), (Reg::R8, 20usize)] {
+    for (rd_hi, tail_hw) in [(Reg::R6, 23usize), (Reg::R8, 24usize)] {
         let bytes = thumb(&ArmOp::I64ShrU {
             rd_lo: Reg::R7,
             rd_hi,
@@ -256,7 +272,7 @@ fn i64_shr_u_branches_land_for_both_low_and_high_destinations() {
         assert_branches_still_land(
             &format!("I64ShrU{{rd_hi={rd_hi:?}}}"),
             &bytes,
-            &[(4, 16), (15, tail_hw)],
+            &[(4, 20), (19, tail_hw)],
         );
         assert_eq!(
             bytes.len(),
@@ -268,16 +284,17 @@ fn i64_shr_u_branches_land_for_both_low_and_high_destinations() {
 
 #[test]
 fn i64_clz_ctz_branches_target_the_final_mov_itself() {
-    // The discriminating fact vs Shl/ShrU: here `B .done` jumps TO the final
-    // MOV, so widening it in place cannot move the target. Pinned so a future
-    // restructuring that moves `.done` past the MOV is caught.
+    // Post-#1048 there is NO final MOV: `B .done` targets the END of the
+    // expansion (offset 22 / 30 = past-the-end = the next instruction).
+    // Pinned so a future restructuring that grows the expansion without
+    // recomputing the displacement is caught.
     for rnhi in [Reg::R2, Reg::R8] {
         let clz = thumb(&ArmOp::I64Clz {
             rd: Reg::R0,
             rnlo: Reg::R1,
             rnhi,
         });
-        // BEQ@2 → hw 7 (byte 14); B@5 → hw 11 (byte 22) = the MOV.
+        // BEQ@2 → hw 7 (byte 14); B@5 → hw 11 (byte 22) = past-the-end.
         assert_branches_still_land(
             &format!("I64Clz{{rnhi={rnhi:?}}}"),
             &clz,
@@ -289,7 +306,7 @@ fn i64_clz_ctz_branches_target_the_final_mov_itself() {
             rnlo: Reg::R1,
             rnhi,
         });
-        // BEQ@2 → hw 9 (byte 18); B@7 → hw 15 (byte 30) = the MOV.
+        // BEQ@2 → hw 9 (byte 18); B@7 → hw 15 (byte 30) = past-the-end.
         assert_branches_still_land(
             &format!("I64Ctz{{rnhi={rnhi:?}}}"),
             &ctz,
@@ -315,7 +332,7 @@ fn low_register_expansions_are_byte_identical() {
                 rm_lo: Reg::R4,
                 rm_hi: Reg::R5,
             },
-            38,
+            46,
         ),
         (
             "I64ShrU",
@@ -327,7 +344,7 @@ fn low_register_expansions_are_byte_identical() {
                 rm_lo: Reg::R4,
                 rm_hi: Reg::R5,
             },
-            38,
+            46,
         ),
         (
             "I64ShrS",
@@ -339,7 +356,7 @@ fn low_register_expansions_are_byte_identical() {
                 rm_lo: Reg::R4,
                 rm_hi: Reg::R5,
             },
-            40,
+            48,
         ),
         (
             "I64Clz",
@@ -348,7 +365,7 @@ fn low_register_expansions_are_byte_identical() {
                 rnlo: Reg::R1,
                 rnhi: Reg::R2,
             },
-            24,
+            22,
         ),
         (
             "I64Ctz",
@@ -357,7 +374,7 @@ fn low_register_expansions_are_byte_identical() {
                 rnlo: Reg::R1,
                 rnhi: Reg::R2,
             },
-            32,
+            30,
         ),
         (
             "I64ExtendI32U",
@@ -374,8 +391,8 @@ fn low_register_expansions_are_byte_identical() {
         assert_eq!(
             bytes.len(),
             want_len,
-            "{label}: low-register expansion length changed — the #916 fix must \
-             be confined to rd >= R8 so frozen anchors do not move"
+            "{label}: low-register expansion length changed — pinned; it must \
+             not move except with the #1048 execution differential as oracle"
         );
     }
 }
@@ -394,7 +411,7 @@ fn i64_shr_s_has_no_16bit_zero_fill_to_transmute() {
         rm_hi: Reg::R3,
     });
     let hw = halfwords(&bytes);
-    assert_eq!(bytes.len(), 40, "I64ShrS length must be register-invariant");
+    assert_eq!(bytes.len(), 48, "I64ShrS length must be register-invariant");
     assert!(
         !hw.contains(&0x2800),
         "I64ShrS must not contain a transmuted MOVS: {hw:04X?}"

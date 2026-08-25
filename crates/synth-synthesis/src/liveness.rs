@@ -4395,13 +4395,16 @@ pub fn call_effect(op: &ArmOp) -> Option<RegEffect> {
 ///
 /// **The model is read off the ENCODER, not the IR declaration.** These are
 /// pseudo-ops EXPANDED downstream into multi-instruction sequences, the exact
-/// class increment 3 declined `Call`/`CallIndirect` for. The naive
-/// `defs = {rdlo, rdhi}` is WRONG for the shift family: `arm_encoder.rs`'s
-/// `I64Shl` expansion opens with `AND.W rm_lo, rm_lo, #63` (an RMW of the shift
-/// amount) and uses `rm_hi` as a pure scratch temporary — the IR field is even
-/// commented `rm_hi: Reg, // used as temp`. Both are therefore DEFS. Miss them
-/// and a value the colourer parked in the shift amount's register is silently
-/// destroyed, with every dataflow instrument agreeing it is fine.
+/// class increment 3 declined `Call`/`CallIndirect` for. Historically the
+/// naive `defs = {rdlo, rdhi}` was WRONG for the shift family: the pre-#1048
+/// `I64Shl` expansion opened with `AND.W rm_lo, rm_lo, #63` (an RMW of the
+/// shift amount) and used `rm_hi` as scratch — this model listed both as
+/// DEFS, correctly for those bytes. #1048 rewrote the expansions to write
+/// NOTHING but the destination pair (R12-only scratch; enforced by the
+/// expansion validator's operand-preservation assertion), so the defs kept
+/// below are now strictly CONSERVATIVE over-approximations — kept
+/// deliberately: shrinking a def set changes colouring, and that is a
+/// separate, oracle-gated change, not a comment-driven one.
 ///
 /// **What this function cannot express, and where that is handled.** A
 /// `defs`/`uses` [`RegEffect`] is a set pair; it cannot say "these two operands
@@ -4465,16 +4468,13 @@ pub fn pair_effect(op: &ArmOp) -> Option<RegEffect> {
         // MOV rdlo, rn; ASR rdhi, rdlo, #31.
         I64ExtendI32S { rdlo, rdhi, rn } => de(vec![*rdlo, *rdhi], vec![*rn]),
 
-        // THE CLOBBER FAMILY. `rm_lo` is read AND written (`AND.W rm_lo,rm_lo,#63`
-        // masks the shift amount in place) and `rm_hi` is a pure scratch temp
-        // (`SUBS.W rm_hi, rm_lo, #32`, written before it is ever read). Both are
-        // listed as DEFS — that is what makes a web live across the shift
-        // interfere with them, so the colourer structurally cannot home a live
-        // value in a register the expansion destroys. `rm_hi` is ALSO listed as a
-        // use: it is written before read, so the incoming value is genuinely
-        // dead, but listing it keeps that value live INTO the op, which is
-        // strictly more interference and strictly more equations — conservative
-        // in the safe direction on both instruments.
+        // THE (FORMER) CLOBBER FAMILY. Pre-#1048 these expansions masked
+        // `rm_lo` in place and scratched through `rm_hi`; both were real DEFS.
+        // #1048 rewrote them to write only the destination pair (R12-only
+        // scratch), so the amount registers are pure USES in the shipped
+        // bytes. The DEF listing is KEPT as a conservative over-approximation
+        // (strictly more interference, never less), because shrinking a def
+        // set changes colouring and must ride its own execution oracle.
         I64Shl {
             rd_lo,
             rd_hi,

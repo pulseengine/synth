@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 84
+# ci-checks: emulations >= 105
 # #1048: the Thumb-2 and A32 expansions of I64Shl / I64ShrU / I64ShrS opened
 # by masking the shift amount IN PLACE (`AND rm_lo, rm_lo, #63`) and writing
 # `amt-32` into the amount's HOME HIGH REGISTER (`SUBS rm_hi, rm_lo, #32`,
@@ -70,7 +70,14 @@ def ctz64(x):
 
 # WASM reference semantics (i64, shift amounts mod 64).
 def expect(func, args):
-    if func in ("shl_reread", "shr_u_reread", "shr_s_reread", "shl_reread_val"):
+    if func in (
+        "shl_reread",
+        "shr_u_reread",
+        "shr_s_reread",
+        "shl_reread_val",
+        "div_u_reread",
+        "rotl_reread",
+    ):
         x, amt = args
         n = amt & 63
         if func == "shl_reread":
@@ -81,6 +88,12 @@ def expect(func, args):
             back = amt
         elif func == "shr_s_reread":
             r = sext64(x) >> n
+            back = amt
+        elif func == "div_u_reread":
+            r = x // amt
+            back = amt
+        elif func == "rotl_reread":
+            r = ((x << n) | (x >> (64 - n))) & M64 if n else x
             back = amt
         else:  # shl_reread_val
             r = (x << n) & M64
@@ -101,9 +114,15 @@ SHIFT_AMTS = (3, 35, 64, 67, 127)
 COUNT_FUNCS = ("clz_reread", "ctz_reread", "popcnt_reread")
 COUNT_XS = (0x100000005, 0xDEADBEEF00000001, 5)  # hi!=0 twice, hi==0 control
 
-VECTORS = [(f, (8, a)) for f in SHIFT_FUNCS for a in SHIFT_AMTS] + [
-    (f, (x,)) for f in COUNT_FUNCS for x in COUNT_XS
-]
+# The #610 fixed-ABI wrapper family (restores its operands by construction):
+# pinned so a wrapper regression is caught by execution.
+WRAPPER_FUNCS = ("div_u_reread", "rotl_reread")
+
+VECTORS = (
+    [(f, (8, a)) for f in SHIFT_FUNCS for a in SHIFT_AMTS]
+    + [(f, (x,)) for f in COUNT_FUNCS for x in COUNT_XS]
+    + [(f, (1000, a)) for f in WRAPPER_FUNCS for a in (3, 35, 67)]
+)
 
 
 def wasmtime_oracle(func, args):

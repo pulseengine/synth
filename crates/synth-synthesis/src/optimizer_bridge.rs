@@ -493,48 +493,39 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         ArmOp::I64SetCondZ { .. } => 12,
         // I64Mul: MUL(4) + MLA(4) + UMULL(4) + ADD(2) = 14 bytes
         ArmOp::I64Mul { .. } => 14,
-        // I64Shl/ShrU: AND.W(4) + SUBS.W(4) + BPL(2) + small_block(22) + B(2) + large_block(6) - but byte_size = total = 38
+        // I64Shl/ShrU (#1048 R12-only rewrite): AND.W(4) + SUBS.W(4) + BPL(2)
+        // + small_block(28: AND + shift + RSB + shift + ORR + AND + shift) +
+        // B(2) + large_block(4 + zero-fill) = 46.
         // #916: the large block's trailing zero-fill of the OTHER half is the
         // 16-bit `MOVS Rd,#0` only for R0-R7 — a 3-bit Rd field. R8-R12 take
         // the 32-bit `MOV.W` (the encoder used to transmute them into
-        // `CMP r0,#0` and never write the half), so the expansion is 40 bytes
+        // `CMP r0,#0` and never write the half), so the expansion is 48 bytes
         // there and the encoder widens its internal `B .done` to match.
         ArmOp::I64Shl { rd_lo: rd, .. } | ArmOp::I64ShrU { rd_hi: rd, .. } => {
             if reg_num(rd) < 8 {
-                38
+                46
             } else {
-                40
+                48
             }
         }
-        // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
-        ArmOp::I64ShrS { .. } => 40,
+        // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 48
+        ArmOp::I64ShrS { .. } => 48,
         // I64Rotl/Rotr (#610): fixed-ABI wrapper (PUSH r0-r3(2) + 3×STR(12) +
         // 3×POP(6) + 2×MOV(4) + 4×restore(8) = 32) + core (AND(4) + SUBS(4) +
         // BPL(2) + small(30) + B(2) + large(30) = 70) = 102 bytes.
         ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 102,
-        // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) + ADD.W(4) + MOV(2) = 24 bytes
-        // #916: the trailing high-word clear is `MOVS rnhi,#0` (2) only for
-        // R0-R7; R8-R12 take `MOV.W` (4), so 26. Unlike the shifts, no branch
-        // moves — `B .done` targets the clear's OWN address.
-        ArmOp::I64Clz { rnhi, .. } => {
-            if reg_num(rnhi) < 8 {
-                24
-            } else {
-                26
-            }
-        }
-        // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
-        ArmOp::I64Ctz { rnhi, .. } => {
-            if reg_num(rnhi) < 8 {
-                32
-            } else {
-                34
-            }
-        }
+        // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) +
+        // ADD.W(4) = 22 bytes, register-independent (#1048: the trailing
+        // operand-clobbering hi-word clear is gone — callers zero their own
+        // result hi).
+        ArmOp::I64Clz { .. } => 22,
+        // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) +
+        // RBIT.W(4) + CLZ.W(4) + ADD.W(4) = 30 bytes (#1048: no trailing clear).
+        ArmOp::I64Ctz { .. } => 30,
         // I64Popcnt: PUSH/POP + duplicate popcount for lo and hi word (#498:
         // measured 172; #632 result-carry through R12 across the restore pop
-        // + R12-routed marshal + MOV.W hi-clear = +8).
-        ArmOp::I64Popcnt { .. } => 180,
+        // + R12-routed marshal = +4; #1048 removed the MOV.W hi-clear).
+        ArmOp::I64Popcnt { .. } => 176,
         // I64 sign extension: SXTB/SXTH/ASR + ASR.
         ArmOp::I64Extend8S { .. } => 8,
         ArmOp::I64Extend16S { .. } => 8,
@@ -3313,7 +3304,7 @@ impl OptimizerBridge {
         // Known i64 constant values keyed by their `dest_lo` vreg id. Populated
         // when we lower `Opcode::I64Const`; consulted by i64 shift / mask
         // handlers to detect compile-time-constant operands and avoid emitting
-        // the full 38-byte runtime shift sequence.
+        // the full 46-byte runtime shift sequence.
         //
         // Issue #94: when a u64-packed FFI return is split via `i64.shr_u 32`
         // followed by `i32.wrap_i64`, the hi32 field is already in the high
@@ -5409,15 +5400,15 @@ impl OptimizerBridge {
 
                 // i64 count leading zeros (i64 result: lo gets count, hi must be 0).
                 //
-                // The ArmOp::I64Clz encoder writes the count into `rd` AND zeroes
-                // `rnhi` in-place — so `rnhi` doubles as the result's hi half. To
-                // keep the upstream src_hi register intact and avoid clobbering
-                // unrelated AAPCS regs, we copy src_hi into a freshly allocated
-                // callee-saved hi slot and pass that as `rnhi`. After the encoded
-                // sequence, the i64 result lives in (rd_lo, rd_hi).
+                // #1048: the ArmOp::I64Clz expansion writes the count into `rd`
+                // and NOTHING else (matching the Rocq/SMT I64ClzPseudo model) —
+                // the former implicit `MOV rnhi, #0` wrote the OPERAND's home
+                // high register and is gone. The operand hi is passed straight
+                // through as `rnhi` (read-only now), and the result's hi half is
+                // OUR explicit `MOV rd_hi, #0`.
                 //
                 // The IR Opcode only carries a single `dest` vreg (the lo half);
-                // we register dest.0 → rd_lo. The hi-zero is implicit and used by
+                // we register dest.0 → rd_lo. The explicit hi-zero is used by
                 // the function epilogue when this is the i64 return value (see
                 // last_result_vreg_hi_reg below).
                 Opcode::I64Clz {
@@ -5426,20 +5417,20 @@ impl OptimizerBridge {
                     src_hi,
                 } => {
                     let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs)?;
-                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
+                    let rnhi = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
                     let (rd_lo, rd_hi) =
                         alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
-                    if rd_hi != rnhi_src {
-                        arm_instrs.push(ArmOp::Mov {
-                            rd: rd_hi,
-                            op2: Operand2::Reg(rnhi_src),
-                        });
-                    }
                     vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Clz {
                         rd: rd_lo,
                         rnlo,
-                        rnhi: rd_hi,
+                        rnhi,
+                    });
+                    // #1048: explicit result-hi zero (the expansion no longer
+                    // writes any register but rd).
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: rd_hi,
+                        op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
                     last_result_vreg_hi_reg = Some(rd_hi);
@@ -5453,20 +5444,19 @@ impl OptimizerBridge {
                     src_hi,
                 } => {
                     let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs)?;
-                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
+                    let rnhi = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
                     let (rd_lo, rd_hi) =
                         alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
-                    if rd_hi != rnhi_src {
-                        arm_instrs.push(ArmOp::Mov {
-                            rd: rd_hi,
-                            op2: Operand2::Reg(rnhi_src),
-                        });
-                    }
                     vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Ctz {
                         rd: rd_lo,
                         rnlo,
-                        rnhi: rd_hi,
+                        rnhi,
+                    });
+                    // #1048: explicit result-hi zero.
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: rd_hi,
+                        op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
                     last_result_vreg_hi_reg = Some(rd_hi);
@@ -5480,20 +5470,19 @@ impl OptimizerBridge {
                     src_hi,
                 } => {
                     let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs)?;
-                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
+                    let rnhi = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs)?;
                     let (rd_lo, rd_hi) =
                         alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
-                    if rd_hi != rnhi_src {
-                        arm_instrs.push(ArmOp::Mov {
-                            rd: rd_hi,
-                            op2: Operand2::Reg(rnhi_src),
-                        });
-                    }
                     vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Popcnt {
                         rd: rd_lo,
                         rnlo,
-                        rnhi: rd_hi,
+                        rnhi,
+                    });
+                    // #1048: explicit result-hi zero.
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: rd_hi,
+                        op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
                     last_result_vreg_hi_reg = Some(rd_hi);
@@ -5755,9 +5744,9 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs)?;
                     // Issue #94: u64-packed FFI return — `i64.shr_u 32` extracts
                     // the high 32 bits, which are already sitting in `rn_hi`. Skip
-                    // the 38-byte runtime shift sequence; just rename `dest_lo`
+                    // the 46-byte runtime shift sequence; just rename `dest_lo`
                     // onto `rn_hi` and zero `dest_hi`. Total cost: a single
-                    // `mov rd_hi, #0` (2-4 bytes) instead of 38 bytes.
+                    // `mov rd_hi, #0` (2-4 bytes) instead of 46 bytes.
                     //
                     // Per WASM semantics the shift amount is taken modulo 64, so
                     // any constant whose low 6 bits == 32 hits this fast path.
