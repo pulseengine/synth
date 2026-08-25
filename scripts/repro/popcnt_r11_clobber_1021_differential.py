@@ -117,8 +117,17 @@ def encode_thm_bl(pc, target):
     return 0xF000 | (s << 10) | imm10, 0xD000 | (j1 << 13) | (j2 << 11) | imm11
 
 
-def load_elf(path):
-    """(syms, .text bytes with in-module calls resolved, text base addr)."""
+def load_elf(path, thumb):
+    """(syms, .text bytes with in-module calls resolved, text base addr).
+
+    Calls are patched by the EXECUTION MODE of the leg, not by the declared
+    reloc type: synth labels the in-module `bl` R_ARM_THM_CALL (type 10) even
+    on the cortex-r5 (A32) object, where the placeholder is an A32 `BL`
+    word (0xEBxxxxxx) — patching Thumb halfwords into it produced
+    UC_ERR_INSN_INVALID, not a real popcnt finding. (The mislabel itself is a
+    synth ELF-builder quirk worth its own issue; a real linker would build an
+    interwork veneer or mis-patch the same way this harness first did.)
+    """
     e = ELFFile(open(path, "rb"))
     symtab = [s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
     syms = {s.name: s["st_value"] for s in symtab.iter_symbols() if s.name}
@@ -135,15 +144,15 @@ def load_elf(path):
             name = symtab.get_symbol(r["r_info_sym"]).name
             if name not in syms:
                 die(f"reloc names {name!r}, not a defined symbol")
+            if t not in (R_ARM_THM_CALL, R_ARM_THM_JUMP24, R_ARM_CALL):
+                die(f"unexpected reloc type {t}")
             off = r["r_offset"]
-            if t in (R_ARM_THM_CALL, R_ARM_THM_JUMP24):
+            if thumb:
                 hw1, hw2 = encode_thm_bl(CODE + off, CODE + (syms[name] & ~1))
                 struct.pack_into("<HH", text, off, hw1, hw2)
-            elif t == R_ARM_CALL:
-                word = 0xEB000000 | ((((syms[name] - (off + 8)) >> 2) & 0xFFFFFF))
-                struct.pack_into("<I", text, off, word)
             else:
-                die(f"unexpected reloc type {t}")
+                word = 0xEB000000 | ((((syms[name] & ~1) - (off + 8)) >> 2) & 0xFFFFFF)
+                struct.pack_into("<I", text, off, word)
     return syms, bytes(text), base
 
 
@@ -200,7 +209,7 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         for name, target, extra, expect_opt, mode, check_r11 in LEGS:
             obj = compile_leg(td, name, target, extra, expect_opt)
-            syms, text, base = load_elf(obj)
+            syms, text, base = load_elf(obj, thumb=(mode == UC_MODE_THUMB))
             print(f"=== {name} ({target} {' '.join(extra) or 'default'}) ===")
             fails = 0
             for fn in EXPORTS:

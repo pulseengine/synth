@@ -3340,6 +3340,8 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/a32_i64_615.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/a615.o
           python scripts/oracle_run.py scripts/repro/a32_i64_615_differential.py /tmp/a615.o scripts/repro/a32_i64_615.wat
+      - name: i32.popcnt R11 linear-memory-base clobber differential (#1021, Thumb-2 + A32)
+        run: python scripts/oracle_run.py scripts/repro/popcnt_r11_clobber_1021_differential.py
       - name: out-of-range ADD immediate differential (#350)
         run: |
           ./target/debug/synth compile scripts/repro/add_imm_large.wat -o /tmp/ail.elf --target cortex-m4f --all-exports --relocatable
