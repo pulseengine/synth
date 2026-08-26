@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci-status: manual (measurement) — RQ-59-PARTIALCENSUS (#1017) is a CENSUS, scoped by the maintainer to MEASURE and STOP: it re-derives the one-function-blocks-module share over a corpus's full decline set so the --allow-partial decision has a number instead of an intuition. It has no expected values and no verdict, so there is nothing for CI to fail on, and its input is a local real-world corpus CI does not carry. The behaviour it measures — that a declined function declines its whole module — is gated by the wired decline-honesty oracles, not by this report.
 """RQ-59-PARTIALCENSUS (#1017): re-derive the one-function-blocks-module share
 over the FULL decline set of a corpus, per module — not just the top-12 decline
 reasons #1017's lower bound covered.
