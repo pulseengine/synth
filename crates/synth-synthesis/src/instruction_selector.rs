@@ -13343,19 +13343,39 @@ mod tests {
 
         let mut selector = InstructionSelector::new(db.rules().to_vec());
 
+        // #1048: each bit-count lowers to the rule's pseudo-op PLUS the
+        // selector's own explicit `Movw R1, #0` result-hi zero — the encoder
+        // expansion no longer writes any register but rd (the old implicit
+        // hi-clear wrote the OPERAND's home high register).
+        let assert_hi_zero = |op: &ArmOp| {
+            assert!(
+                matches!(
+                    op,
+                    ArmOp::Movw {
+                        rd: Reg::R1,
+                        imm16: 0
+                    }
+                ),
+                "expected the explicit result-hi zero, got {op:?}"
+            );
+        };
+
         let arm_instrs = selector.select(&[WasmOp::I64Clz]).unwrap();
-        assert_eq!(arm_instrs.len(), 1);
+        assert_eq!(arm_instrs.len(), 2);
         assert!(matches!(&arm_instrs[0].op, ArmOp::I64Clz { .. }));
+        assert_hi_zero(&arm_instrs[1].op);
 
         selector.reset();
         let arm_instrs = selector.select(&[WasmOp::I64Ctz]).unwrap();
-        assert_eq!(arm_instrs.len(), 1);
+        assert_eq!(arm_instrs.len(), 2);
         assert!(matches!(&arm_instrs[0].op, ArmOp::I64Ctz { .. }));
+        assert_hi_zero(&arm_instrs[1].op);
 
         selector.reset();
         let arm_instrs = selector.select(&[WasmOp::I64Popcnt]).unwrap();
-        assert_eq!(arm_instrs.len(), 1);
+        assert_eq!(arm_instrs.len(), 2);
         assert!(matches!(&arm_instrs[0].op, ArmOp::I64Popcnt { .. }));
+        assert_hi_zero(&arm_instrs[1].op);
     }
 
     #[test]

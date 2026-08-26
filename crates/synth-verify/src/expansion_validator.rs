@@ -1229,28 +1229,25 @@ fn wasm_reference(op: &WasmOp, a: &I64Pair, b: &I64Pair) -> Option<RefResult> {
             &a.lo.eq(k32(0)),
             &a.hi.eq(k32(0)),
         ]))),
-        // Bit-counting ops produce an i64 whose low limb is the count.
-        I64Clz => pair(I64Pair {
-            lo: a
-                .hi
-                .eq(k32(0))
+        // Bit-counting ops: the pseudo-op's own result is the 32-bit count
+        // in `rd` — nothing else. #1048: the expansions' former trailing
+        // `MOV rnhi, #0` wrote the OPERAND's home high register (a real
+        // executed miscompile on the direct selector); the i64 result's
+        // hi-zero is the CALLER's explicit separate op now, exactly as the
+        // Rocq I64ClzPseudo/I64CtzPseudo/I64PopcntPseudo models always said
+        // (`set_reg s rd` only).
+        I64Clz => word(
+            a.hi.eq(k32(0))
                 .ite(clz32(&a.lo).bvadd(k32(32)), clz32(&a.hi)),
-            hi: k32(0),
-        }),
-        I64Ctz => pair(I64Pair {
-            lo: a
-                .lo
-                .eq(k32(0))
+        ),
+        I64Ctz => word(
+            a.lo.eq(k32(0))
                 .ite(ctz32(&a.hi).bvadd(k32(32)), ctz32(&a.lo)),
-            hi: k32(0),
-        }),
+        ),
         // Two-link chain: the sequence is checked against the HAKMEM fold
         // (structural, fast); the HAKMEM fold is separately PROVED equal to
         // the bit-sum popcount for all inputs (see `popcnt32_hakmem`).
-        I64Popcnt => pair(I64Pair {
-            lo: popcnt32_hakmem(&a.lo).bvadd(popcnt32_hakmem(&a.hi)),
-            hi: k32(0),
-        }),
+        I64Popcnt => word(popcnt32_hakmem(&a.lo).bvadd(popcnt32_hakmem(&a.hi))),
         _ => None,
     }
 }
@@ -1317,9 +1314,11 @@ fn contract_of(pseudo: &ArmOp) -> Option<Contract> {
             rm_hi,
         } => Some(Contract {
             a: (ri(rn_lo), ri(rn_hi)),
-            // rm_hi is a scratch register in the expansion; the amount's
-            // high limb is semantically dead (WASM masks mod 64), so the
-            // contract still seeds it — the expansion may clobber it freely.
+            // #1048: rm_hi is NO LONGER expansion scratch. The pre-#1048
+            // expansion masked rm_lo in place and wrote its scratch traffic
+            // through rm_hi — the amount's home registers — which the
+            // preservation assertion below now REJECTS. Both amount limbs
+            // are seeded and must survive the expansion unchanged.
             b: Some((ri(rm_lo), Some(ri(rm_hi)))),
             result: ContractResult::Pair(ri(rd_lo), ri(rd_hi)),
         }),
@@ -1358,14 +1357,17 @@ fn contract_of(pseudo: &ArmOp) -> Option<Contract> {
             b: None,
             result: ContractResult::Word(ri(rd)),
         }),
-        // The bit-counting expansions leave the count in `rd` and clear the
-        // high limb IN PLACE in `rnhi` — the result pair is (rd, rnhi).
+        // The bit-counting expansions leave the count in `rd` and write
+        // NOTHING else (#1048: the former in-place `rnhi` hi-clear wrote the
+        // operand's home high register and is gone — the caller zeroes its
+        // own result hi). The operand pair must survive unchanged, which the
+        // preservation assertion enforces.
         ArmOp::I64Clz { rd, rnlo, rnhi }
         | ArmOp::I64Ctz { rd, rnlo, rnhi }
         | ArmOp::I64Popcnt { rd, rnlo, rnhi } => Some(Contract {
             a: (ri(rnlo), ri(rnhi)),
             b: None,
-            result: ContractResult::Pair(ri(rd), ri(rnhi)),
+            result: ContractResult::Word(ri(rd)),
         }),
         _ => None,
     }
@@ -1421,7 +1423,7 @@ pub fn validate_expansion(
     execute(&instrs, &mut state)?;
 
     // Assert ¬(wasm == sequence); unsat ⇒ equivalent for all inputs.
-    let differ = match (&reference, &contract.result) {
+    let result_differ = match (&reference, &contract.result) {
         (RefResult::Word(w), ContractResult::Word(rd)) => w.eq(&state.get_reg(*rd)?).not(),
         (RefResult::Pair(w), ContractResult::Pair(rd_lo, rd_hi)) => {
             let got = I64Pair {
@@ -1435,6 +1437,40 @@ pub fn validate_expansion(
                 "result-shape mismatch for {label}"
             )));
         }
+    };
+
+    // #1048 OPERAND PRESERVATION: every seeded operand register that is not
+    // part of the result must come out of the expansion UNCHANGED. This is
+    // the axis every result-only check was blind on: the pre-#1048 shift
+    // expansions masked the amount in place and scratched through its home
+    // high register, computed a CORRECT result, and destroyed the caller's
+    // operand — result-equivalence validated them for years. R12 needs no
+    // exemption here because it is encoder scratch, never allocatable
+    // (#212), and therefore never an operand register.
+    let result_regs: Vec<u8> = match &contract.result {
+        ContractResult::Word(rd) => vec![*rd],
+        ContractResult::Pair(rd_lo, rd_hi) => vec![*rd_lo, *rd_hi],
+    };
+    let mut seeded: Vec<(u8, BV)> =
+        vec![(contract.a.0, a.lo.clone()), (contract.a.1, a.hi.clone())];
+    if let Some((blo, bhi)) = &contract.b {
+        seeded.push((*blo, b.lo.clone()));
+        if let Some(bhi) = bhi {
+            seeded.push((*bhi, b.hi.clone()));
+        }
+    }
+    let mut clobbered: Vec<Bool> = Vec::new();
+    for (reg, initial) in &seeded {
+        if result_regs.contains(reg) {
+            continue;
+        }
+        clobbered.push(state.get_reg(*reg)?.eq(initial).not());
+    }
+    let clobber_refs: Vec<&Bool> = clobbered.iter().collect();
+    let differ = if clobber_refs.is_empty() {
+        result_differ
+    } else {
+        Bool::or(&[&[&result_differ], clobber_refs.as_slice()].concat())
     };
 
     let mut solver = new_solver();
@@ -1825,6 +1861,76 @@ mod tests {
             match validate_expansion(&WasmOp::I64Eqz, &pseudo, &code) {
                 Err(ExpansionError::Counterexample { .. }) => {}
                 other => panic!("expected Counterexample, got {other:?}"),
+            }
+        });
+    }
+
+    /// #1048 negative control: the PRE-#1048 shipped I64Shl expansion —
+    /// which masks the amount IN PLACE (`AND.W R2, R2, #63`) and scratches
+    /// through the amount's home high register R3 — computes a CORRECT
+    /// result but destroys its own operand. The result-only check accepted
+    /// these bytes for years; the operand-preservation assertion must
+    /// reject them. This is the exact byte sequence v0.58.0 shipped for
+    /// (rd, rn) = (R0, R1), rm = (R2, R3).
+    #[test]
+    fn pre_1048_shl_amount_clobber_rejected() {
+        with_verification_context(|| {
+            let code = halfwords(&[
+                0xF002, 0x023F, // AND.W  R2, R2, #63   (amount masked IN PLACE)
+                0xF1B2, 0x0320, // SUBS.W R3, R2, #32   (scratch in amount's hi)
+                0xD50A, //         BPL    .large
+                0xF1C2, 0x0320, // RSB.W  R3, R2, #32
+                0xFA20, 0xF303, // LSR.W  R3, R0, R3
+                0xFA01, 0xF102, // LSL.W  R1, R1, R2
+                0xEA41, 0x0103, // ORR.W  R1, R1, R3
+                0xFA00, 0xF002, // LSL.W  R0, R0, R2
+                0xE002, //         B      .done
+                0xFA00, 0xF103, // .large: LSL.W R1, R0, R3
+                0x2000, //         MOVS   R0, #0
+            ]);
+            let pseudo = ArmOp::I64Shl {
+                rd_lo: Reg::R0,
+                rd_hi: Reg::R1,
+                rn_lo: Reg::R0,
+                rn_hi: Reg::R1,
+                rm_lo: Reg::R2,
+                rm_hi: Reg::R3,
+            };
+            match validate_expansion(&WasmOp::I64Shl, &pseudo, &code) {
+                Err(ExpansionError::Counterexample { .. }) => {}
+                other => {
+                    panic!("pre-#1048 amount-clobbering shl bytes must be rejected, got {other:?}")
+                }
+            }
+        });
+    }
+
+    /// #1048 negative control, sibling class: the PRE-#1048 I64Clz tail
+    /// (`MOVS R1, #0`) zeroes the OPERAND's home high register. The count in
+    /// rd is correct; only the preservation assertion can see the clobber.
+    #[test]
+    fn pre_1048_clz_operand_hi_clear_rejected() {
+        with_verification_context(|| {
+            let code = halfwords(&[
+                0xF1B1, 0x0F00, // CMP.W R1, #0
+                0xD003, //         BEQ .hi_zero
+                0xFAB1, 0xF081, // CLZ.W R0, R1
+                0xE004, //         B .done
+                0xBF00, //         NOP
+                0xFAB0, 0xF080, // .hi_zero: CLZ.W R0, R0
+                0xF100, 0x0020, // ADD.W R0, R0, #32
+                0x2100, //         .done: MOVS R1, #0  (operand hi DESTROYED)
+            ]);
+            let pseudo = ArmOp::I64Clz {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+            };
+            match validate_expansion(&WasmOp::I64Clz, &pseudo, &code) {
+                Err(ExpansionError::Counterexample { .. }) => {}
+                other => panic!(
+                    "pre-#1048 operand-hi-clearing clz bytes must be rejected, got {other:?}"
+                ),
             }
         });
     }

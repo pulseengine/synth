@@ -541,7 +541,11 @@ fn i64_div_declines_with_looped_expansion_reason() {
 // `write_slot_word` and `shift_slots` all refuse to track below SP — so the
 // same `false` is now derived from a checked property.
 //
-// These therefore pin the EXACT pre-existing bounds (3120 / 4702, trip 8,
+// These therefore pin the EXACT pre-existing bounds (3120 / 4612, trip 8,
+// the popcnt figure re-banked 4702 -> 4612 by #1048: the expansion lost its
+// 4-byte operand-clobbering `MOV.W rnhi, #0` tail, so the per-iteration
+// straight-line ceiling fell — the bound moved DOWN with the bytes, exactly
+// the estimator-tracks-encoder property the #498 agreement oracle pins,
 // source `static`): the lane must not silently trade Track D coverage for a
 // decline, in either direction. Flip `may_move_sp` for those ops, or weaken
 // the non-negative-slot guards, and these go red.
@@ -583,7 +587,7 @@ fn proven_loop_containing_i64_popcnt_stays_bounded() {
             local.get 2))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    assert_sp_motion_loop_bounded(&report, "pc", 4702);
+    assert_sp_motion_loop_bounded(&report, "pc", 4612);
 }
 
 /// CONTROL: the same loop shape with an i64 op whose expansion does NOT touch

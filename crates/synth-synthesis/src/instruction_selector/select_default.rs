@@ -919,10 +919,20 @@ impl InstructionSelector {
                     .map_err(synth_core::Error::synthesis)?
             }
 
-            // i64 bit manipulation: single pseudo-op, count into R0.
+            // i64 bit manipulation: single pseudo-op, count into R0. The
+            // result is i64-typed (R0 = count 0..64, R1 = 0); #1048 removed
+            // the expansion's implicit `MOV rnhi, #0` (it wrote the OPERAND's
+            // home high register), so the hi-half zero is OUR explicit op —
+            // mirroring select_with_stack's existing pattern.
             I64Clz | I64Ctz | I64Popcnt => {
-                crate::sel_dsl::i64_unary_count_rule(wasm_op, Reg::R0, Reg::R0, Reg::R1)
-                    .expect("i64 bit-count op has a generated rule")
+                let mut ops =
+                    crate::sel_dsl::i64_unary_count_rule(wasm_op, Reg::R0, Reg::R0, Reg::R1)
+                        .expect("i64 bit-count op has a generated rule");
+                ops.push(ArmOp::Movw {
+                    rd: Reg::R1,
+                    imm16: 0,
+                });
+                ops
             }
 
             // i64 division/remainder
