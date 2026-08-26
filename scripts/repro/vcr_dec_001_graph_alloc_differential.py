@@ -104,8 +104,13 @@ def compile_arm(synth, wasm, extra_env):
     td = tempfile.mkdtemp()
     elf = Path(td) / (wasm + ".elf")
     r = subprocess.run(
+        # RQ-59-DATASEG (#1041): the corpus carries data-segment fixtures; the
+        # plain relocatable path now refuses them. This harness maps memory
+        # itself, so it acknowledges the embedder contract explicitly (bytes
+        # identical — the flag only suppresses the refusal).
         [synth, "compile", str(REPRO / wasm), "-o", str(elf),
-         "-b", "arm", "--target", "cortex-m4", "--all-exports", "--relocatable"],
+         "-b", "arm", "--target", "cortex-m4", "--all-exports", "--relocatable",
+         "--embedder-data-init"],
         capture_output=True, env=env,
     )
     return r, elf

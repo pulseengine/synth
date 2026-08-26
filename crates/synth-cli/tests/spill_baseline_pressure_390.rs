@@ -75,6 +75,7 @@ fn shadow_verdicts(wasm: &str) -> Vec<ShadowVerdict> {
             "cortex-m4",
             "--all-exports",
             "--relocatable",
+            "--embedder-data-init",
         ])
         .output()
         .expect("run synth");

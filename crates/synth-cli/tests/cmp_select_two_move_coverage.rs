@@ -52,6 +52,7 @@ fn fused_count(fix: &str) -> usize {
             "cortex-m4",
             "--all-exports",
             "--relocatable",
+            "--embedder-data-init",
         ])
         .output()
         .expect("run synth");

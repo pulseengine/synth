@@ -61,6 +61,7 @@ fn compile(wasm: &Path, out: &str, debug_line: bool) -> Vec<u8> {
         "cortex-m4",
         "--all-exports",
         "--relocatable",
+        "--embedder-data-init",
         "-o",
         out,
     ];

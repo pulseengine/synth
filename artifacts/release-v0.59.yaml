@@ -668,3 +668,50 @@ requirements:
       priority: should
       verification-track: static-analysis
       issue: "#1021"
+
+  - id: RQ-59-DATASEG
+    type: system-req
+    title: "ARM relocatable path silently drops active data segments — refuse the way aarch64 does"
+    description: >
+      #1041. The Thumb-2/A32 `--relocatable` path (and the import-forced
+      ET_REL path — the same builder) accepted a module carrying active data
+      segments, emitted NONE of the initializer bytes, emitted no data symbol,
+      printed no warning, and exited 0. Every static initialised by a data
+      segment then reads whatever the target memory happens to contain — 0xFF
+      on unwritten flash/RAM. Same fixture, three backends: RV32 ships the
+      bytes as `.wasm_data` records (#798), aarch64 REFUSES LOUDLY (#851),
+      ARM silently dropped. ARM was the only backend that neither ships the
+      data nor says it did not — a loud decline costs a build failure; this
+      cost a wrong answer at runtime, arbitrarily far from its cause. It
+      completely explains gale#278's `state(0) == 255` (0xFF is what you read
+      from memory never written) with no runtime bug required.
+
+      THE FIX (this release): the ARM relocatable object REFUSES a
+      data-carrying module unless the path actually materializes the region
+      (the `--native-pointer-abi` geometry, which ships PROGBITS `.data`,
+      is untouched). The non-const-offset memory-0 segment (legacy-dropped at
+      decode, #851 records the reason) is refused on the same arm, matching
+      aarch64. `--embedder-data-init` is the explicit escape hatch (the #952
+      `--allow-skipped-exports` shape): it declares that the embedder
+      populates memory 0's segments at instantiation — the contract the
+      differential harnesses always implemented implicitly ("the embedder
+      populates its init segments", multi_segment_static_data_differential) —
+      and changes no emitted byte. RED-FIRST: the test asserts a clean
+      non-zero exit AND a reason string naming the data segments — never mere
+      byte absence, which was already true on the broken behaviour.
+
+      SHIPPING the data on this path is deliberately NOT this artifact:
+      RISC-V's sparse `.wasm_data` records placed by the generated linker
+      script and copied at reset are the known-good reference, and that
+      capability work belongs to v0.60 (VCR-REACH-002).
+    status: implemented
+    release: v0.59
+    tags: [soundness, arm, relocatable, data-segments, honest-frontier, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1041"

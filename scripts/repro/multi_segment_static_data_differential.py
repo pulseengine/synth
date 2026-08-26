@@ -86,6 +86,25 @@ def compile_synth(out, extra):
         sys.exit(f"compile failed ({' '.join(extra) or 'self-contained'}): {r.stderr}")
 
 
+def assert_relocatable_refuses_dataseg(tmp):
+    """#1041 red-first, kept live in the harness: the FULL data-carrying module
+    must REFUSE loudly on --relocatable — a silent exit 0 here is the filed bug
+    coming back."""
+    env = {"PATH": "/usr/bin:/bin"}
+    out = str(tmp / "refused.o")
+    cmd = [SYNTH, "compile", str(WAT), "-o", out, "--all-exports",
+           "-b", "arm", "--target", "cortex-m3", "--relocatable"]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if r.returncode == 0:
+        sys.exit("#1041 REGRESSION: --relocatable accepted a data-carrying "
+                 "module with exit 0 (the silent-drop bug)")
+    log = (r.stderr or "") + (r.stdout or "")
+    if "#1041" not in log or "active data segment" not in log:
+        sys.exit(f"#1041: refusal is not loud/precise — expected a reason "
+                 f"naming the active data segments, got: {log[-400:]}")
+    print("=== relocatable refusal (#1041): loud and precise ===")
+
+
 def load_syms(elf):
     f = ELFFile(open(elf, "rb"))
     text = f.get_section_by_name(".text")
@@ -217,8 +236,16 @@ def main():
         "self-contained --cortex-m (zeroed RAM, real reset ROM->RAM copy)",
         SelfContainedRunner(code, base, syms), truth)
 
+    # RQ-59-DATASEG (#1041): the full module must REFUSE on plain
+    # --relocatable (the pre-fix behaviour — exit 0 with none of the segment
+    # bytes in the object — is the filed silent-drop bug). The addressing
+    # check below then compiles with --embedder-data-init: THIS harness is
+    # the embedder ("the embedder populates its init segments" was always its
+    # documented contract — wasm_init_image below), now explicitly
+    # acknowledged. Emitted .text is identical either way.
+    assert_relocatable_refuses_dataseg(tmp)
     rel_o = str(tmp / "rel.o")
-    compile_synth(rel_o, ["--relocatable"])
+    compile_synth(rel_o, ["--relocatable", "--embedder-data-init"])
     _, code, base, syms = load_syms(rel_o)
     rel_fails = run_path(
         "relocatable (memory 0 at R11, embedder-populated init, .text far away)",

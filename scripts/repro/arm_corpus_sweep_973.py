@@ -260,9 +260,18 @@ def to_wasm(wat):
 
 
 def compile_arm(wat, out):
+    # RQ-59-DATASEG (#1041): the plain relocatable path now REFUSES a module
+    # whose active data segments it does not materialize. This sweep is a
+    # CODEGEN-coverage harness whose runners map memory themselves (and whose
+    # phase-B purity rule already excludes data-carrying modules from
+    # execution), so it acknowledges the embedder contract explicitly with
+    # --embedder-data-init to keep the 21 data-carrying fixtures in compile
+    # coverage. The DEFAULT refusal is pinned by
+    # `crates/synth-cli/tests/arm_reloc_dataseg_refusal_1041.rs` and by the
+    # multi_segment_static_data differential's refusal assertion.
     p = subprocess.run(
         [SYNTH, "compile", str(wat), "--target", TARGET, "--relocatable",
-         "--all-exports", "-o", out],
+         "--embedder-data-init", "--all-exports", "-o", out],
         capture_output=True, text=True,
     )
     return p.returncode, (p.stderr or "") + (p.stdout or "")
