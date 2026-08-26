@@ -2172,8 +2172,8 @@ claims:
   # The CAPABILITY pinned here (deliberately not an issue number — a ledger
   # pinned to a closed issue green-confirms a false residual, the v0.53 burn):
   #
-  #   * every wired oracle carries a floor      — count-min 150 declarations
-  #   * the execution population does not shrink — count-min 133 `emulations`
+  #   * every wired oracle carries a floor      — count-min 151 declarations
+  #   * the execution population does not shrink — count-min 147 `emulations`
   #                                                declarations, and the summed
   #                                                floor is ratcheted in CI by
   #                                                --min-emulation-floor
@@ -2187,7 +2187,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910
     doc: scripts/repro/ORACLE_WIRING.md
-    text: "**298,754 emulator entries**"
+    text: "**322,754 emulator entries**"
     evidence:
       - kind: file-exists
         path: scripts/oracle_run.py
@@ -2196,17 +2196,17 @@ claims:
       - kind: count-min                      # every wired oracle declares a floor
         pattern: '^# ci-checks: '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 150
+        min: 151
       - kind: count-min                      # the EXECUTION population, per script
         pattern: '^# ci-checks: emulations >= '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 146
+        min: 147
       - kind: count-max                      # the "nothing can be bound" hatch
         pattern: '^# ci-checks: none'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
         max: 1
       - kind: verbatim                       # the doc carries the per-mode split
-        text: "**146 oracles**"
+        text: "**147 oracles**"
       - kind: verbatim
         text: "Reported per mode and never summed across modes."
       - kind: verbatim                       # the itemized weak-floor list stays
@@ -2227,14 +2227,14 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "**146 oracles assert 298,754 emulator"
+    text: "**147 oracles assert 322,754 emulator"
     evidence:
       - kind: file-exists
         path: scripts/oracle_run.py
       - kind: count-min                      # same population the other two pin
         pattern: '^# ci-checks: emulations >= '
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        min: 146
+        min: 147
 
   # ---------------------------------------------------------------------------
   # #910 — the CI side of the same claim, pinned so the doc's number and the
@@ -2244,12 +2244,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
     doc: .github/workflows/ci.yml
-    text: "--min-emulation-floor 298754"
+    text: "--min-emulation-floor 322754"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
         glob: ['.github/workflows/*.yml']
-        min: 159
+        min: 160
       - kind: count-min                      # per-job measured-evidence ledgers
         pattern: 'oracle_evidence\.py'
         glob: ['.github/workflows/*.yml']

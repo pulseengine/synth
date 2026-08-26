@@ -311,7 +311,7 @@ whole lane is about. So the counter keeps the name of the thing it counts.
 
 | mode | oracles | floor total |
 |---|---|---|
-| `emulations` | **146 oracles** | **298,754 emulator entries** |
+| `emulations` | **147 oracles** | **322,754 emulator entries** |
 | `stdout` | 7 oracles | 460 printed counts |
 | `compiles` | 9 oracles | 43 compilations |
 | `none` | **1 oracle** | — |
@@ -320,7 +320,7 @@ whole lane is about. So the counter keeps the name of the thing it counts.
 compilations and printed counts are three different units; one impressive
 combined figure is precisely the instrument defect #910 is about.
 
-`scripts/oracle_wiring_check.py --min-emulation-floor 298754` enforces the
+`scripts/oracle_wiring_check.py --min-emulation-floor 322754` enforces the
 emulations total, in the **already-required** `Claim Check` job. It shares the
 driver's header parser by import rather than re-implementing the grammar. Pinned
 in `claims.yaml` (`SYNTH-ORACLE-CHECK-FLOORS-910`) so the number here, the
