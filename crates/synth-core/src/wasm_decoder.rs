@@ -422,6 +422,18 @@ pub struct DecodedModule {
     /// ingestion only: NO codegen path consumes these yet, so emitted bytes
     /// are unchanged whether or not a module carries the section.
     pub wsc_facts: Vec<crate::wsc_facts::WscFact>,
+    /// RQ-59-STARTFN (#1046): the module's `(start ...)` function index
+    /// (FULL index space — imports first), when a start section is present.
+    ///
+    /// The decoder previously had NO `Payload::StartSection` arm at all: the
+    /// section fell through the catch-all and was discarded outright, so no
+    /// backend, path, or warning ever mentioned it — the module compiled,
+    /// exited 0, and its instantiation-time initialization (WASM Core §4.5.5:
+    /// the start function runs before any export is callable) silently never
+    /// ran. Recording it lets the compile paths refuse LOUDLY (#851/#1041
+    /// shape) until a backend actually invokes it; invocation is a capability
+    /// follow-on, not part of the #1046 fix.
+    pub start_function: Option<u32>,
 }
 
 impl DecodedModule {
@@ -816,6 +828,9 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // catch alone would miss it.
     let mut type_has_v128: Vec<bool> = Vec::new();
     let mut func_sig_has_v128: Vec<bool> = Vec::new();
+    // RQ-59-STARTFN (#1046): the `(start ...)` function index — previously
+    // there was no StartSection arm and the section was silently discarded.
+    let mut start_function: Option<u32> = None;
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -1328,6 +1343,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 });
                 func_index += 1;
             }
+            // RQ-59-STARTFN (#1046): record the `(start ...)` function. This
+            // arm previously did not exist — the section fell through the
+            // `_ => {}` catch-all and every backend compiled the module as if
+            // its instantiation-time initialization did not exist (exit 0, no
+            // warning, the start function absent from the object). The compile
+            // paths refuse loudly on `Some` until a backend invokes it.
+            Payload::StartSection { func, range: _ } => {
+                start_function = Some(func);
+            }
             Payload::CustomSection(c) => {
                 // #394 Tier-1.x: the wasm `name` custom section.
                 if let wasmparser::KnownCustom::Name(reader) = c.as_known() {
@@ -1403,6 +1427,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         type_result_counts: type_block_arity.iter().map(|&(_p, r)| r as u32).collect(),
         type_signatures,
         wsc_facts: wsc_facts.unwrap_or_default(),
+        start_function,
     })
 }
 
