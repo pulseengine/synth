@@ -3348,6 +3348,14 @@ jobs:
           python scripts/oracle_run.py scripts/repro/a32_i64_615_differential.py /tmp/a615.o scripts/repro/a32_i64_615.wat
       - name: i32.popcnt R11 linear-memory-base clobber differential (#1021, Thumb-2 + A32)
         run: python scripts/oracle_run.py scripts/repro/popcnt_r11_clobber_1021_differential.py
+      - name: pseudo-op expansion scratch-canary gate (VCR-TIER-001, #1021/#1048, Thumb-2 + A32)
+        # Executes every ArmOp expansion the shipped rule table emits under
+        # register canaries and asserts nothing outside the declared scratch
+        # contract moved; runs BOTH committed negative-control fixtures (the
+        # real pre-#1039 and pre-#1054 encoder bytes) and requires them to red
+        # on exactly the pinned registers — the gate proves its own potency on
+        # every run, on both register tiers.
+        run: python scripts/oracle_run.py scripts/repro/expansion_canary_gate_1021.py
       - name: out-of-range ADD immediate differential (#350)
         run: |
           ./target/debug/synth compile scripts/repro/add_imm_large.wat -o /tmp/ail.elf --target cortex-m4f --all-exports --relocatable
