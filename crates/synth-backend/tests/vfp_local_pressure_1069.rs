@@ -38,7 +38,7 @@ use synth_core::target::{FPUPrecision, TargetSpec};
 use synth_synthesis::instruction_selector::VFP_FRAME_HOME_SLOT_EXHAUSTION;
 use synth_synthesis::{ArmOp, InstructionSelector, Reg, RuleDatabase, VfpReg, WasmOp};
 
-/// The fixture shape (mirrors scripts/repro/vfp_local_pressure_1069.wat):
+/// The fixture shape (same as scripts/repro/vfp_local_pressure_1069.wat):
 /// `(param f32) (local f32 x n)` — every local derived from the param, all
 /// consumed in one product tree.
 fn live_f32_ops(n: u32) -> Vec<WasmOp> {
@@ -159,9 +159,10 @@ fn rung_frame_homes_locals_and_pins_no_home_above_s7() {
     let ops = live_f32_ops(14);
     let mut sel = m7dp_selector(false);
     sel.set_vfp_spill_on_exhaustion(true);
+    sel.set_vfp_frame_home_locals(true);
     let instrs = sel
         .select_with_stack(&ops, 1)
-        .expect("live14 must compile with the rung enabled");
+        .expect("live14 must compile with the frame-home rung enabled");
     let stores = instrs
         .iter()
         .filter(|i| matches!(&i.op, ArmOp::F32Store { addr, .. } if addr.base == Reg::SP))
@@ -215,6 +216,7 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
     let ops = live_f32_ops(24);
     let mut rung_only = m7dp_selector(false);
     rung_only.set_vfp_spill_on_exhaustion(true);
+    rung_only.set_vfp_frame_home_locals(true);
     let err = rung_only
         .select_with_stack(&ops, 1)
         .expect_err("24 frame-homed locals must exhaust the default 8-slot pool");
@@ -243,6 +245,7 @@ fn live8d_f64_locals_red_on_base_green_via_rung() {
     // Rung-level: expect D-frame traffic (F64Store/F64Load to [SP,#imm]).
     let mut sel = m7dp_selector(true);
     sel.set_vfp_spill_on_exhaustion(true);
+    sel.set_vfp_frame_home_locals(true);
     let instrs = sel
         .select_with_stack(&ops, 1)
         .expect("live8d must compile with the rung enabled");
@@ -259,6 +262,71 @@ fn live8d_f64_locals_red_on_base_green_via_rung() {
         "expected frame-homed f64 local traffic, got {d_stores} VSTR.64 / \
          {d_loads} VLDR.64 to [SP,#imm]"
     );
+}
+
+#[test]
+fn plain_rung_stays_yesterdays_path_for_shapes_it_already_rescues() {
+    // The rate@0.7.0#tick class: f64 local homes ABOVE the D3 cap that the
+    // PLAIN #881 rung (frame lever off) already rescues. Found empirically at
+    // authoring: the first draft gated frame-homing on the rung flag itself,
+    // and the real falcon `rate.o` moved bytes — rate#tick compiles TODAY via
+    // the plain rung with above-cap homes. The fix is ladder ORDER: the
+    // frame lever is a separate LAST-resort stage the backend tries only
+    // after the plain rung also failed. This test pins all three premises:
+    //  (1) the class is red on the base path (it genuinely needs the rung);
+    //  (2) the plain rung still rescues it BY ITSELF (so the ladder's stage 1
+    //      succeeds and stage 2 is never consulted — yesterday's bytes by
+    //      construction);
+    //  (3) the frame lever WOULD produce different instructions for it — the
+    //      reason the ordering is load-bearing and not a stylistic choice.
+    // 4 f64 local homes (D1..D4 with the param in D0 — D4 sits ABOVE the
+    // D3 cap, but 4 locals alone still fit the base path) plus an 8-deep f64
+    // constant stack: the stack pressure exhausts the base path, and the
+    // plain rung rescues it by spilling STACK values only — homes untouched.
+    let mut ops = Vec::new();
+    for k in 1..=4u32 {
+        ops.push(WasmOp::LocalGet(0));
+        ops.push(WasmOp::F64Const(k as f64 + 0.5));
+        ops.push(WasmOp::F64Mul);
+        ops.push(WasmOp::LocalSet(k));
+    }
+    for k in 0..8 {
+        ops.push(WasmOp::F64Const(k as f64 + 0.25));
+    }
+    for _ in 0..7 {
+        ops.push(WasmOp::F64Mul);
+    }
+    for k in 1..=4u32 {
+        ops.push(WasmOp::LocalGet(k));
+        ops.push(WasmOp::F64Mul);
+    }
+    ops.push(WasmOp::End);
+    let mut base = m7dp_selector(true);
+    let err = base
+        .select_with_stack(&ops, 1)
+        .expect_err("4 homed f64 locals + 8-deep f64 stack must exhaust the base path");
+    assert!(
+        err.to_string().contains("VFP D-register file exhausted"),
+        "base-path Err must be the D-file exhaustion trigger: {err}"
+    );
+    let mut plain = m7dp_selector(true);
+    plain.set_vfp_spill_on_exhaustion(true);
+    let plain_out = plain
+        .select_with_stack(&ops, 1)
+        .expect("the PLAIN #881 rung must still rescue this shape by itself");
+    let mut framed = m7dp_selector(true);
+    framed.set_vfp_spill_on_exhaustion(true);
+    framed.set_vfp_frame_home_locals(true);
+    let framed_out = framed
+        .select_with_stack(&ops, 1)
+        .expect("the frame lever must also compile the shape");
+    assert_ne!(
+        format!("{plain_out:?}"),
+        format!("{framed_out:?}"),
+        "the frame lever changes this shape's instructions — if this ever \
+         becomes equal the ordering premise should be re-examined"
+    );
+    ladder_compile("d5", &ops, true).expect("the ladder must compile the shape");
 }
 
 #[test]

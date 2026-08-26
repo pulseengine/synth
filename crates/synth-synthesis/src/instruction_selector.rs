@@ -589,6 +589,16 @@ struct SpillState {
     /// pass failed with a GI-FPU-002 exhaustion `Err` — every function that
     /// compiles without it keeps byte-identical output by construction.
     vfp_spill_on_exhaustion: bool,
+    /// #1069 (RQ-60-VFPPRESSURE increment 2): when set (implies
+    /// `vfp_spill_on_exhaustion`), a FRESH non-param f32/f64 local whose home
+    /// grant would pin a register above the S7/D3 cap — or whose allocation
+    /// fails — is FRAME-homed from birth instead of raising the exhaustion
+    /// `Err`. Default OFF, and flipped on only by the backend's LAST-resort
+    /// retry after the plain #881 rung ALSO failed with a GI-FPU-002
+    /// exhaustion `Err` — so every function that compiles today, through the
+    /// base path OR through the plain rung, is produced by exactly
+    /// yesterday's path, byte-identical by construction.
+    vfp_frame_home_locals: bool,
     /// Whether `compute_local_layout` actually reserved the spill area this
     /// state hands slots out of (`has_i64 || force_spill_area`). When it did
     /// NOT (an i32-only first pass), `base` is just the end of the frame and
@@ -615,6 +625,7 @@ impl SpillState {
             used: vec![false; slots],
             spill_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
+            vfp_frame_home_locals: false,
             area_reserved: true,
         }
     }
@@ -3019,7 +3030,7 @@ fn try_lower_f32(
             }
             let home = if let Some(&h) = f32_home.get(i) {
                 h
-            } else if spill.vfp_spill_on_exhaustion {
+            } else if spill.vfp_frame_home_locals {
                 // #1069 (rung-only): residence decision for a FRESH non-param
                 // f32 local. Register-home while the grant lands at or below
                 // the S7 cap (identical bytes to the pre-#1069 rung for
@@ -5106,7 +5117,7 @@ fn try_lower_f64(
             }
             let home = if let Some(&h) = f64_home.get(i) {
                 h
-            } else if spill.vfp_spill_on_exhaustion {
+            } else if spill.vfp_frame_home_locals {
                 // #1069 (rung-only): residence decision for a FRESH non-param
                 // f64 local — register-home at or below the D3 cap, otherwise
                 // frame-home from birth (see the f32 twin above).
@@ -5840,6 +5851,11 @@ pub struct InstructionSelector {
     /// before the ops that consume them. Bit-identity is structural, like the
     /// two integer rungs above.
     vfp_spill_on_exhaustion: bool,
+    /// #1069: LAST-resort residence lever for fresh f32/f64 local homes —
+    /// see [`SpillState::vfp_frame_home_locals`]. Set (together with
+    /// `vfp_spill_on_exhaustion`) only by the backend's final VFP retry,
+    /// after the plain #881 rung also exhausted.
+    vfp_frame_home_locals: bool,
     /// VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
     /// in callee-saved registers (r4..r8) instead of frame slots, eliminating
     /// their `ldr/str [sp,#off]` traffic — the structural step toward native
@@ -5936,6 +5952,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
+            vfp_frame_home_locals: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             fact_div_zero_elide: Vec::new(),
@@ -5987,6 +6004,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
+            vfp_frame_home_locals: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             fact_div_zero_elide: Vec::new(),
@@ -6029,6 +6047,18 @@ impl InstructionSelector {
     /// it would change its bytes.
     pub fn set_vfp_spill_on_exhaustion(&mut self, enabled: bool) {
         self.vfp_spill_on_exhaustion = enabled;
+    }
+
+    /// #1069: LAST-resort VFP retry — frame-home fresh f32/f64 locals whose
+    /// register grant would pin above the S7/D3 cap (or fails outright).
+    /// Intended ONLY as the backend's final retry after the plain #881 rung
+    /// ALSO failed with a GI-FPU-002 exhaustion `Err`: any function that
+    /// compiles through base path or plain rung must never see this flag, or
+    /// its bytes would change. Meaningful only together with
+    /// `set_vfp_spill_on_exhaustion(true)` (the pressure guard supplies the
+    /// reload headroom for frame-local `local.get`).
+    pub fn set_vfp_frame_home_locals(&mut self, enabled: bool) {
+        self.vfp_frame_home_locals = enabled;
     }
 
     /// #587 pool-grow recovery rung: size the i64 spill-slot pool. Intended

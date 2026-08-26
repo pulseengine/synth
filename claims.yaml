@@ -1279,9 +1279,34 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18910
+        value: 19192
         baseline: 17897
         waivers:
+          - to: 19192
+            reason: >-
+              RQ-60-VFPPRESSURE increment 2 (#1069): +282 lines — frame-homed
+              overflow f32/f64 locals, the LAST-resort VFP retry. jess's
+              measurement: 60 simultaneously-live f32 on the operand stack
+              compile (#881 rescues them) while 14 in HOMED locals decline,
+              because a home register is pinned for the function's extent and
+              the #881 victim search rightly skips homes. A fresh local whose
+              home grant would pin above the S7/D3 cap now lives in the frame
+              from its first def — but ONLY on a retry taken after the plain
+              #881 rung also failed, so every function that compiles today
+              (base path, plain rung, or grow rung) is produced by exactly
+              yesterday's path: nothing could be deleted in exchange because
+              every existing path is byte-frozen (real-module evidence:
+              falcon rate.o/mixer.o bit-identical main vs branch; rate#tick
+              compiles via the plain rung and moved bytes under the first
+              draft, which is why the last-resort ordering exists and is
+              pinned by plain_rung_stays_yesterdays_path_for_shapes_it_
+              already_rescues). Unlocks attitude@0.7.0#tick,
+              ekf@0.7.0#estimate AND position@0.7.0#tick on cortex-m7dp —
+              5/5 falcon cascade stages, #1069's definition of done. Gated
+              red-first (tests/vfp_local_pressure_1069.rs, incl. the live24
+              substring-is-control-flow pin) and by the
+              vfp_local_pressure_1069_differential.py execution differential
+              (70 emulations bit-identical to wasmtime).
           - to: 18910
             reason: >-
               RQ-60-VFPPRESSURE increment 1 (#1069, #869): +622 lines — the
@@ -1468,7 +1493,11 @@ claims:
         # single-precision targets (see the lines_code waiver) — plus +5 test
         # module (the threaded compute_local_layout aeabi flag at its five
         # test call sites).
-        value: 29556
+        # 29556 -> 29838 (RQ-60-VFPPRESSURE increment 2, #1069): +282 code —
+        # frame-homed overflow f32/f64 locals under the last-resort VFP retry
+        # (see the lines_code waiver); zero test-module movement (the #1069
+        # tests live in crates/synth-backend/tests, outside this family).
+        value: 29838
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

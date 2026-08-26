@@ -308,6 +308,7 @@ impl InstructionSelector {
         let mut spill = SpillState::with_slots(layout.i64_spill_base, self.i64_spill_slots);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
         spill.vfp_spill_on_exhaustion = self.vfp_spill_on_exhaustion;
+        spill.vfp_frame_home_locals = self.vfp_frame_home_locals;
         spill.area_reserved = layout.spill_area_reserved;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
@@ -754,11 +755,19 @@ impl InstructionSelector {
                         // residence; both maps are empty unless the rung
                         // frame-homed a local, so this override is inert for
                         // every pre-#1069 rung compile.
-                        let (window, need_s, need_pairs) = match op {
-                            WasmOp::LocalGet(i) if f32_frame.contains_key(i) => (0, 1, 0),
-                            WasmOp::LocalGet(i) if f64_frame.contains_key(i) => (0, 0, 1),
-                            _ => vfp_op_demand(op),
+                        let frame_local_demand = if let WasmOp::LocalGet(i) = op {
+                            if f32_frame.contains_key(i) {
+                                Some((0, 1, 0))
+                            } else if f64_frame.contains_key(i) {
+                                Some((0, 0, 1))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         };
+                        let (window, need_s, need_pairs) =
+                            frame_local_demand.unwrap_or_else(|| vfp_op_demand(op));
                         if window + need_s + need_pairs > 0 {
                             let lo = stack.len().saturating_sub(window);
                             for pos in lo..stack.len() {

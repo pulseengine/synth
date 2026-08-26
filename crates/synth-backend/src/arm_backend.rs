@@ -477,7 +477,8 @@ fn compile_wasm_to_arm(
                                  param_backing_on_exhaustion: bool,
                                  local_promote: bool,
                                  i64_spill_slots: Option<usize>,
-                                 vfp_spill_on_exhaustion: bool|
+                                 vfp_spill_on_exhaustion: bool,
+                                 vfp_frame_home_locals: bool|
      -> Result<Vec<ArmInstruction>, synth_core::Error> {
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
@@ -574,6 +575,11 @@ fn compile_wasm_to_arm(
         // after an attempt failed with a GI-FPU-002 exhaustion Err — functions
         // that compile without it keep byte-identical output by construction.
         selector.set_vfp_spill_on_exhaustion(vfp_spill_on_exhaustion);
+        // #1069: LAST-resort residence lever — set ONLY by the final VFP
+        // retry below, after the plain #881 rung also exhausted, so every
+        // function that compiles through base path or plain rung is produced
+        // by exactly yesterday's path (byte-identity is structural).
+        selector.set_vfp_frame_home_locals(vfp_frame_home_locals);
         // #587 pool-grow rung: a larger i64 spill-slot pool, set ONLY on the
         // retry after an attempt failed with the slot-pool-exhausted Err —
         // functions that compile with the default pool keep their frame
@@ -615,13 +621,14 @@ fn compile_wasm_to_arm(
         // the result AND which rung produced it (for the #242 measurement below).
         let recovery_ladder = |promote: bool,
                                i64_spill_slots: Option<usize>,
-                               vfp_spill: bool|
+                               vfp_spill: bool,
+                               vfp_frame: bool|
          -> (
             Result<Vec<ArmInstruction>, synth_core::Error>,
             &'static str,
         ) {
             let mut attempt =
-                select_direct_attempt(false, false, promote, i64_spill_slots, vfp_spill);
+                select_direct_attempt(false, false, promote, i64_spill_slots, vfp_spill, vfp_frame);
             let mut rung = "base";
             // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
             // hard-fail is recoverable — retry with spill-on-exhaustion, which
@@ -630,7 +637,14 @@ fn compile_wasm_to_arm(
             if let Err(e) = &attempt
                 && e.to_string().contains(SINGLE_EXHAUSTION)
             {
-                attempt = select_direct_attempt(true, false, promote, i64_spill_slots, vfp_spill);
+                attempt = select_direct_attempt(
+                    true,
+                    false,
+                    promote,
+                    i64_spill_slots,
+                    vfp_spill,
+                    vfp_frame,
+                );
                 rung = "spill";
             }
             // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
@@ -640,7 +654,14 @@ fn compile_wasm_to_arm(
             if let Err(e) = &attempt
                 && e.to_string().contains(PAIR_EXHAUSTION)
             {
-                attempt = select_direct_attempt(true, true, promote, i64_spill_slots, vfp_spill);
+                attempt = select_direct_attempt(
+                    true,
+                    true,
+                    promote,
+                    i64_spill_slots,
+                    vfp_spill,
+                    vfp_frame,
+                );
                 rung = "param-backing";
             }
             (attempt, rung)
@@ -660,13 +681,14 @@ fn compile_wasm_to_arm(
         // #474 promotion-off fallback), parameterized on the pool size so the
         // pool-grow retry below reruns it verbatim.
         let full_sequence = |slots: Option<usize>,
-                             vfp_spill: bool|
+                             vfp_spill: bool,
+                             vfp_frame: bool|
          -> (
             Result<Vec<ArmInstruction>, synth_core::Error>,
             &'static str,
             bool,
         ) {
-            let (mut attempt, mut rung) = recovery_ladder(promote, slots, vfp_spill);
+            let (mut attempt, mut rung) = recovery_ladder(promote, slots, vfp_spill, vfp_frame);
             let mut promotion_dropped = false;
             if promote
                 && attempt
@@ -674,7 +696,7 @@ fn compile_wasm_to_arm(
                     .err()
                     .is_some_and(|e| e.to_string().contains("register exhaustion"))
             {
-                let (rescued, off_rung) = recovery_ladder(false, slots, vfp_spill);
+                let (rescued, off_rung) = recovery_ladder(false, slots, vfp_spill, vfp_frame);
                 if rescued.is_ok() {
                     attempt = rescued;
                     rung = off_rung;
@@ -683,7 +705,7 @@ fn compile_wasm_to_arm(
             }
             (attempt, rung, promotion_dropped)
         };
-        let (mut attempt, mut rung, mut promotion_dropped) = full_sequence(None, false);
+        let (mut attempt, mut rung, mut promotion_dropped) = full_sequence(None, false, false);
         // #587 pool-grow retry (the falcon func_60/func_73 remainder): the fixed
         // 8-slot i64 spill pool can exhaust while spilling is otherwise working —
         // an i64-dense function simply has more values simultaneously live than
@@ -704,7 +726,8 @@ fn compile_wasm_to_arm(
             .is_some_and(|e| e.to_string().contains(SLOT_EXHAUSTION))
         {
             let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
-            let (grown, _, grown_dropped) = full_sequence(Some(depth.saturating_add(4)), false);
+            let (grown, _, grown_dropped) =
+                full_sequence(Some(depth.saturating_add(4)), false, false);
             if grown.is_ok() {
                 attempt = grown;
                 rung = "pool-grow";
@@ -728,42 +751,17 @@ fn compile_wasm_to_arm(
             let msg = e.to_string();
             msg.contains(VFP_S_EXHAUSTION) || msg.contains(VFP_D_EXHAUSTION)
         }) {
-            let (vfp, vfp_rung, vfp_dropped) = full_sequence(None, true);
+            // Stage 1 — the plain #881 rung, exactly yesterday's path
+            // (sequence, pool sizing and all): any function it rescues is
+            // byte-identical to what it shipped yesterday, by construction.
+            let (vfp, vfp_rung, vfp_dropped) = full_sequence(None, true, false);
             let (vfp, vfp_rung, vfp_dropped) = if vfp.as_ref().err().is_some_and(|e| {
                 let msg = e.to_string();
-                // #1069: the frame-homed-local slot demand (a permanent slot
-                // per frame-resident float local, held to function end) is a
-                // third way the shared pool exhausts inside the VFP rung —
-                // its trigger substring is the selector's own pub const, not
-                // a second copy that could drift (the #881 substring-is-
-                // control-flow lesson).
-                msg.contains(SLOT_EXHAUSTION)
-                    || msg.contains("spilling the VFP register file")
-                    || msg.contains(
-                        synth_synthesis::instruction_selector::VFP_FRAME_HOME_SLOT_EXHAUSTION,
-                    )
+                msg.contains(SLOT_EXHAUSTION) || msg.contains("spilling the VFP register file")
             }) {
                 let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
-                // #1069: frame-homed locals hold their slots for the
-                // function's extent, OUTSIDE the operand-stack depth bound —
-                // size the grown pool for both. Distinct `local.set`/
-                // `local.tee` targets over-approximate the frame-homed local
-                // count (integer locals never take a slot from this path);
-                // the selector clamps the request to its cap, and a function
-                // that still exhausts stays an honest loud skip. Grow-retry
-                // only: no function that compiles without it is affected.
-                let local_targets: std::collections::HashSet<u32> = wasm_ops
-                    .iter()
-                    .filter_map(|op| match op {
-                        synth_synthesis::WasmOp::LocalSet(i)
-                        | synth_synthesis::WasmOp::LocalTee(i) => Some(*i),
-                        _ => None,
-                    })
-                    .collect();
-                let (grown, grown_rung, grown_dropped) = full_sequence(
-                    Some(depth.saturating_add(local_targets.len()).saturating_add(4)),
-                    true,
-                );
+                let (grown, grown_rung, grown_dropped) =
+                    full_sequence(Some(depth.saturating_add(4)), true, false);
                 if grown.is_ok() {
                     (grown, grown_rung, grown_dropped)
                 } else {
@@ -779,6 +777,69 @@ fn compile_wasm_to_arm(
                     _ => "vfp-spill+int",
                 };
                 promotion_dropped = vfp_dropped;
+            } else {
+                // Stage 2 (#1069, RQ-60-VFPPRESSURE increment 2) — LAST
+                // resort: the plain rung ALSO failed, i.e. the pressure is
+                // not (only) operand-stack values but PINNED LOCAL HOMES,
+                // which the #881 victim search rightly never touches (a home
+                // lives for the function's extent). Rerun the entire
+                // sequence with frame-homed overflow locals: a fresh
+                // f32/f64 local whose home grant would pin above the S7/D3
+                // cap lives in the frame from its first def. Reached ONLY by
+                // functions that failed every prior escape, so nothing that
+                // compiles today moves a byte.
+                let (fh, fh_rung, fh_dropped) = full_sequence(None, true, true);
+                let (fh, fh_rung, fh_dropped) = if fh.as_ref().err().is_some_and(|e| {
+                    let msg = e.to_string();
+                    // The frame-homed-local slot demand (a PERMANENT slot per
+                    // frame-resident float local) is a third way the shared
+                    // pool exhausts — its trigger substring is the selector's
+                    // own pub const, not a second copy that could drift (the
+                    // #881 substring-is-control-flow lesson, pinned red-first
+                    // by the live24 fixture test).
+                    msg.contains(SLOT_EXHAUSTION)
+                        || msg.contains("spilling the VFP register file")
+                        || msg.contains(
+                            synth_synthesis::instruction_selector::VFP_FRAME_HOME_SLOT_EXHAUSTION,
+                        )
+                }) {
+                    let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
+                    // Frame-homed locals hold their slots for the function's
+                    // extent, OUTSIDE the operand-stack depth bound — size
+                    // the grown pool for both. Distinct `local.set`/
+                    // `local.tee` targets over-approximate the frame-homed
+                    // local count; the selector clamps the request to its
+                    // cap, and a function that still exhausts stays an
+                    // honest loud skip.
+                    let local_targets: std::collections::HashSet<u32> = wasm_ops
+                        .iter()
+                        .filter_map(|op| match op {
+                            synth_synthesis::WasmOp::LocalSet(i)
+                            | synth_synthesis::WasmOp::LocalTee(i) => Some(*i),
+                            _ => None,
+                        })
+                        .collect();
+                    let (grown, grown_rung, grown_dropped) = full_sequence(
+                        Some(depth.saturating_add(local_targets.len()).saturating_add(4)),
+                        true,
+                        true,
+                    );
+                    if grown.is_ok() {
+                        (grown, grown_rung, grown_dropped)
+                    } else {
+                        (fh, fh_rung, fh_dropped)
+                    }
+                } else {
+                    (fh, fh_rung, fh_dropped)
+                };
+                if fh.is_ok() {
+                    attempt = fh;
+                    rung = match fh_rung {
+                        "base" => "vfp-frame-locals",
+                        _ => "vfp-frame-locals+int",
+                    };
+                    promotion_dropped = fh_dropped;
+                }
             }
         }
         // VCR-RA measurement (#242): log which recovery rung produced the result,
