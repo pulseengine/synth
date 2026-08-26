@@ -1203,7 +1203,7 @@ dependencies = [
  "synth-verify",
  "tracing",
  "tracing-subscriber",
- "wasmparser 0.256.0",
+ "wasmparser 0.257.1",
  "wast 257.0.1",
  "wat",
 ]
@@ -1219,7 +1219,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "wasm-encoder 0.256.0",
- "wasmparser 0.256.0",
+ "wasmparser 0.257.1",
  "wat",
 ]
 
@@ -1232,7 +1232,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "wasm-encoder 0.256.0",
- "wasmparser 0.256.0",
+ "wasmparser 0.257.1",
  "wit-component",
  "wit-parser 0.257.1",
 ]
@@ -1275,7 +1275,7 @@ dependencies = [
  "synth-core",
  "synth-opt",
  "thiserror",
- "wasmparser 0.256.0",
+ "wasmparser 0.257.1",
  "wat",
 ]
 
@@ -1603,7 +1603,6 @@ dependencies = [
  "hashbrown",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -1613,8 +1612,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92fc335fb6d48f46bda1d8b26b69e28320c15ac3272208333833d6e217e2b4a"
 dependencies = [
  "bitflags",
+ "hashbrown",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]

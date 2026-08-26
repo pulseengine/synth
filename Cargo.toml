@@ -41,7 +41,7 @@ categories = ["compilers", "embedded", "wasm", "no-std"]
 
 [workspace.dependencies]
 # WebAssembly tooling
-wasmparser = "0.256"
+wasmparser = "0.257"
 wasm-encoder = "0.256"
 wit-parser = "0.257"
 wit-component = "0.256"
