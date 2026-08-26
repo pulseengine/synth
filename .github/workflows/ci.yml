@@ -546,6 +546,76 @@ jobs:
       - name: Check coverage
         run: rivet coverage
 
+  # ---------------------------------------------------------------------------
+  # Rivet Federated Graph — ADVISORY (deliberately NOT in the required set).
+  #
+  # #1012: the required job above validates ONLY the synth-local half (it strips
+  # the externals block), so the entire federated half of the trace graph was
+  # unchecked — six dead `path: /Volumes/Home/...` entries poisoned resolution
+  # for months and nothing noticed. This job owns the federated half: it syncs
+  # the sibling repos and validates every cross-repo traces-to link.
+  #
+  # WHY ADVISORY, stated as the tradeoff it is: resolving the federated graph
+  # makes network access AND seven sibling repos' current heads a CI dependency
+  # (`rivet sync` tracks `ref: main` — rivet has no `sync --locked` mode, so the
+  # committed rivet.lock pins for reproducibility/impact tooling but does not
+  # pin what CI fetches). A sibling deleting an artifact synth links to SHOULD
+  # turn this red — that is a real broken trace — but it must not block synth
+  # merges that didn't cause it, and a GitHub/network hiccup must not deadlock
+  # the queue. So: visible red, non-blocking. Promote to required only if it
+  # stays quiet long enough to earn it (and then only with a lock-pinned sync).
+  #
+  # WHY rivet v0.32.0 HERE while the job above stays on v0.23.0: this is a NEW
+  # pin for a NEW job, not a silent bump of the existing gate — sync/lock and
+  # the broken-cross-ref accounting this job exists to exercise are what
+  # matured after 0.23.0, and the in-tree rivet.lock was written by 0.32.0.
+  # Installed under its OWN --root: both jobs share self-hosted runners, and
+  # ~/.cargo/bin/rivet is shared machine state — clobbering versions would make
+  # the two jobs re-build rivet-cli (HiGHS C++) on alternating runs, the exact
+  # disk-filling failure the binary cache above exists to prevent.
+  # ---------------------------------------------------------------------------
+  rivet-federated:
+    name: Rivet Federated Graph (advisory)
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache rivet-cli 0.32.0 binary
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/rivet-0.32/bin/rivet
+          key: ${{ runner.os }}-rivet-cli-v0.32.0
+      - name: Install rivet 0.32.0 (own root — never clobbers the 0.23.0 at ~/.cargo/bin)
+        run: |
+          if ! ~/.cargo/rivet-0.32/bin/rivet --version 2>/dev/null | grep -q "0.32.0"; then
+            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.32.0 --root ~/.cargo/rivet-0.32 rivet-cli
+          fi
+      - name: Sync externals (network — clones the 7 sibling repos)
+        run: ~/.cargo/rivet-0.32/bin/rivet sync
+      - name: Validate the federated graph
+        # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
+        # under pipefail so the log keeps the full diagnostic list.
+        run: |
+          set -o pipefail
+          ~/.cargo/rivet-0.32/bin/rivet validate 2>&1 | tee /tmp/rivet-federated.txt
+      - name: Non-vacuity guard — resolution must actually have run
+        # The #1012 signature was "FAIL (50 errors, ..., 0 broken cross-refs)":
+        # zero broken cross-refs beside dozens of link errors because rivet
+        # never RESOLVED the graph (dead paths), not because it was clean. A
+        # validator reporting N errors and 0 <thing the errors are about> has
+        # usually not gotten far enough to look. Guard: a resolved graph loads
+        # external artifacts that link back to synth ("Cross-repo backlinks:
+        # N"), and N was 1032 at authoring — if resolution ever silently stops
+        # again, N reads 0 and this step goes red even though validate PASSed.
+        run: |
+          BACKLINKS=$(grep -oE 'Cross-repo backlinks: [0-9]+' /tmp/rivet-federated.txt | grep -oE '[0-9]+' | head -1)
+          echo "Cross-repo backlinks: ${BACKLINKS:-0}"
+          if [ "${BACKLINKS:-0}" -eq 0 ]; then
+            echo "::error::Federated resolution appears NOT to have run (0 cross-repo backlinks loaded) — the #1012 poisoned-resolution signature. A green validate above is vacuous in this state."
+            exit 1
+          fi
+
   bazel:
     name: Bazel Build & Proofs
     # Stays on ubuntu-latest: needs Nix + Bazel + Rocq via Bazel
