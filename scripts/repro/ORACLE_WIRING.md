@@ -88,8 +88,13 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **7 manual** — a ceiling (`count-max`). An eighth needs a conversation, not a
-  commit.
+- **8 manual** — a ceiling (`count-max`). A ninth needs a conversation, not a
+  commit. The eighth (RQ-59-PARTIALCENSUS, `partial_census_1017.py`, #1017) had
+  that conversation: it is a census scoped to MEASURE AND STOP, with no expected
+  value and no verdict for CI to fail on, over a real-world corpus CI does not
+  carry — wiring it would mean inventing an assertion the artifact was scoped
+  not to make. The reasoning, and what would make it the wrong call, is recorded
+  next to the pin in `claims.yaml`.
 - **0 unwired** — a ceiling of zero. Any new un-wired oracle is a **red build**,
   not a silent backlog entry.
 
