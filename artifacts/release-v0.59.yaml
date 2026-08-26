@@ -214,7 +214,15 @@ artifacts:
     release: v0.59
     tags: [north-star, vcr-dec-001, allocator, reach, decline-histogram]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: the reach
+      # widening exists so the from-construction-correct allocator can replace
+      # greedy — the formal-verification-of-synthesis-correctness story, not a
+      # raw performance play. VCR-REACH-001 (sw-req, the reach diagnosis this
+      # increment executes) kept as refines, the file's idiom for "advances
+      # that roadmap item" (see RQ-59-SUBTRACT -> VCR-SEL-001).
       - type: derives-from
+        target: BR-001
+      - type: refines
         target: VCR-REACH-001
       - type: refines
         target: VCR-DEC-001
@@ -250,7 +258,14 @@ artifacts:
     release: v0.59
     tags: [north-star, measurement, allocator, verdict]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-002: the FLIP /
+      # DO-NOT-FLIP verdict is a measured code-quality-dominance question
+      # (instruction count / size vs greedy) — exactly BR-002's "competitive
+      # performance" concern. VCR-DEC-001 (sw-req, the colouring-allocator
+      # program this is increment 4 of) kept as refines.
       - type: derives-from
+        target: BR-002
+      - type: refines
         target: VCR-DEC-001
     fields:
       req-type: functional
@@ -291,7 +306,15 @@ artifacts:
     release: v0.59
     tags: [wcet, i64, decline-honesty, soundness]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: sound
+      # static timing bounds are one of the two artifacts DAL-A certification
+      # consumes (North Star) — squarely "safety-critical qualification".
+      # VCR-WCET-001 is a sys-VERIFICATION measure, so refines (a requirement
+      # refining a verification measure) would invert the V; traces-to is the
+      # honest general link to the WCET machinery this extends.
       - type: derives-from
+        target: BR-001
+      - type: traces-to
         target: VCR-WCET-001
     fields:
       req-type: functional
@@ -332,8 +355,15 @@ artifacts:
     release: v0.59
     tags: [traceability, stale-record, verify-dont-assume]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: a findings
+      # board claiming eleven open criticals it does not have corrupts the
+      # qualification artifacts and the release-readiness query — BR-001's
+      # "generating qualification artifacts, providing traceability". The old
+      # NFR-002 target is DROPPED, not re-typed: board hygiene is evidence
+      # integrity, not the compiler-reliability requirement NFR-002 states;
+      # the overlap in the findings' subject matter is incidental.
       - type: derives-from
-        target: NFR-002
+        target: BR-001
     fields:
       req-type: process
       priority: should
@@ -370,8 +400,14 @@ artifacts:
     release: v0.59
     tags: [ci, dependencies, gate-potency, enforcement]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001 names
+      # "deterministic reproducible builds" and "qualified tool chain
+      # integration" — a CI-enforced hold on 0.x-minor dependency drift is
+      # exactly controlled-toolchain discipline. The old NFR-002 target is
+      # DROPPED, not re-typed: the hold protects the build pipeline from red
+      # main, not synth's runtime reliability, which is what NFR-002 states.
       - type: derives-from
-        target: NFR-002
+        target: BR-001
     fields:
       req-type: process
       priority: should
@@ -407,8 +443,14 @@ artifacts:
     release: v0.59
     tags: [harness, stale-artifact, silent-direction, class-fix]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: a stale
+      # artifact read as fresh re-confirms a previous run's digest as this
+      # run's evidence — it forges verification evidence, and the byte anchors
+      # these sites gate are what the qualification story leans on. The old
+      # NFR-002 target is DROPPED, not re-typed: harness freshness is evidence
+      # integrity, not the product-reliability requirement NFR-002 states.
       - type: derives-from
-        target: NFR-002
+        target: BR-001
     fields:
       req-type: process
       priority: should
@@ -613,7 +655,14 @@ artifacts:
     release: v0.59
     tags: [measurement, real-world-corpus, policy, decline-honesty]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: the policy
+      # fork the measurement informs is stated in safety terms ("a partially-
+      # compiled object must never ship for a safety target"). NFR-002 KEPT as
+      # refines — "handle all valid WebAssembly inputs" is precisely the
+      # requirement whose real-world shortfall this census measures.
       - type: derives-from
+        target: BR-001
+      - type: refines
         target: NFR-002
     fields:
       req-type: process
@@ -708,7 +757,14 @@ artifacts:
     release: v0.59
     tags: [verification, proof-tier, census, vcr-sel-001]
     links:
+      # derives-from must target a stakeholder-req (#1064). BR-001: the census
+      # measures where "formal verification of synthesis correctness" does not
+      # reach (a genuine proof above a defective expansion). NFR-002 KEPT as
+      # refines — the unguarded set is exactly where wrong-code defects like
+      # #1021's R11 clobber hide, which is NFR-002's correctness concern.
       - type: derives-from
+        target: BR-001
+      - type: refines
         target: NFR-002
     fields:
       req-type: process
