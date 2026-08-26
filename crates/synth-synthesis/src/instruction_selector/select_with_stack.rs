@@ -191,6 +191,15 @@ impl InstructionSelector {
                     .is_some_and(|p| p.iter().any(|&f| f))
         });
 
+        // #1069 (RQ-60-VFPPRESSURE increment 1): the AEABI conversion route —
+        // active only on a single-precision FPU target under `--relocatable`
+        // (the linker is what resolves the `__aeabi_*` symbols; see the
+        // rationale block above `is_aeabi_i64_f32_routed_op`). A routed op
+        // emits a `bl`, so the layout must reserve the call machinery's frame
+        // areas exactly as for a wasm call.
+        let aeabi_route = matches!(self.fpu, Some(FPUPrecision::Single)) && self.relocatable;
+        let aeabi_builtin_calls = aeabi_route && wasm_ops.iter().any(is_aeabi_i64_f32_routed_op);
+
         // Compute non-param local layout (offsets + total frame size).
         let layout = compute_local_layout(
             wasm_ops,
@@ -207,6 +216,7 @@ impl InstructionSelector {
             self.spill_on_exhaustion || self.vfp_spill_on_exhaustion,
             self.param_backing_on_exhaustion,
             calls_float_boundary,
+            aeabi_builtin_calls,
             outgoing_arg_bytes,
             self.i64_spill_slots,
         );
@@ -571,17 +581,41 @@ impl InstructionSelector {
             // lowered f64 subset needs DOUBLE-precision VFP (cortex-m7dp);
             // m4f/m7 are single-precision (VCVT.F64/VADD.F64 would be
             // UNDEFINED), and m0/m3/r5 have no FPU — honest-reject all three.
-            let has_f64_op = wasm_ops.iter().any(is_scope_f64_op);
+            // #1069: the i64<->f32 conversion members are in the f64-scope set
+            // only because their m7dp INLINE lowering runs on f64 machinery —
+            // their WASM types carry no f64. When the AEABI route is active
+            // (single-precision + `--relocatable`) they lower through core-
+            // register builtin calls instead, so they no longer force the
+            // decline; every genuinely-f64 op still does.
+            let has_f64_op = wasm_ops
+                .iter()
+                .any(|op| is_scope_f64_op(op) && !(aeabi_route && is_aeabi_i64_f32_routed_op(op)));
             if has_f64_op && !matches!(fpu, Some(FPUPrecision::Double)) {
+                // Name the closable gap precisely: a single-precision decline
+                // whose ONLY f64-scope ops are the routable conversions is one
+                // `--relocatable` (+ AEABI runtime) away from compiling.
+                let only_routable = fpu.is_some()
+                    && !self.relocatable
+                    && !wasm_ops
+                        .iter()
+                        .any(|op| is_scope_f64_op(op) && !is_aeabi_i64_f32_routed_op(op));
                 return Err(synth_core::Error::synthesis(format!(
                     "GI-FPU-002 phase 2: scalar f64 requires a double-precision \
                      FPU target (cortex-m7dp); '{}' {} — refusing to emit f64 \
-                     (declining the function, #369)",
+                     (declining the function, #369){}",
                     self.target_name,
                     if fpu.is_some() {
                         "has a single-precision FPU (f32 only)"
                     } else {
                         "has no FPU"
+                    },
+                    if only_routable {
+                        ". Every f64-scope op here is an i64<->f32 conversion: \
+                         compile with --relocatable to route them through the \
+                         AEABI builtins (__aeabi_l2f/ul2f/f2lz/f2ulz, linked \
+                         from the embedder's runtime — #1069)"
+                    } else {
+                        ""
                     }
                 )));
             }
@@ -736,6 +770,29 @@ impl InstructionSelector {
                         }
                     }
                 }
+            }
+            // #1069 (RQ-60-VFPPRESSURE increment 1): intercept the AEABI-routed
+            // i64<->f32 conversions BEFORE `try_lower_f32` — its arms for these
+            // ops run on DOUBLE-precision machinery (D-temps, VCVT.F64), which
+            // the preamble gate only lets through here when the route is
+            // active. Single-precision + `--relocatable` only; m7dp keeps the
+            // #869 inline lowering byte-identically.
+            if aeabi_route && is_aeabi_i64_f32_routed_op(op) {
+                self.lower_aeabi_i64_f32(
+                    op,
+                    idx,
+                    &mut stack,
+                    &mut next_temp,
+                    &mut instructions,
+                    &mut spill,
+                    &mut vfp_used,
+                    &vfp_home,
+                    &layout,
+                    &local_to_reg,
+                    &live_params,
+                    &mut cf,
+                )?;
+                continue;
             }
             // GI-FPU-002 (#619/#369): intercept in-scope scalar f32 ops (and f32
             // param local.get) before the integer match. Gated on FPU presence;

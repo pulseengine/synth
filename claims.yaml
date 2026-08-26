@@ -1279,10 +1279,29 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18288
+        value: 18907
         baseline: 17897
         waivers:
-          - to: 18288
+          - to: 18907
+            reason: >-
+              RQ-60-VFPPRESSURE increment 1 (#1069, #869): +619 lines — the
+              AEABI builtin route for the six i64/f32-typed conversion family
+              members on SINGLE-precision FPU targets (m4f/m7, --relocatable).
+              A function with NO f64 in its WASM signature was declined for
+              "needing f64" because the #869 inline lowering runs on
+              double-precision machinery; the route (__aeabi_l2f/ul2f/
+              f2lz/f2ulz, base-AAPCS core-register calls, zero VFP pressure)
+              is the one #869's acceptance comment specified and jess #1069
+              measured as the m4f blocker. Growth, not substitution, by
+              design: the m7dp inline path is byte-frozen (anchors + a
+              pre/post cmp on the minimal repro), so nothing could be
+              deleted in exchange — this is new reach on targets where the
+              family had NO lowering at all. Gated red-first
+              (tests/aeabi_i64_float_1069.rs: declined -> routed with named
+              builtin + pinned Udf guard geometry) and by the
+              aeabi_i64_float_1069_differential.py execution differential
+              (unicorn + spec-exact builtin stubs vs wasmtime, trap rows
+              executed).
             reason: >-
               RQ-59-I64SHIFT (#1048): +10 lines in select_default — the
               i64.clz/ctz/popcnt arm now emits its own explicit
@@ -1444,7 +1463,12 @@ claims:
         # assertions in instruction_selector.rs (all past the `#[cfg(test)]
         # mod tests` marker, so the DIRECTED lines_code ceiling correctly does
         # not see them: adding test coverage must never cost a waiver).
-        value: 28929
+        # 28929 -> 29553 (RQ-60-VFPPRESSURE increment 1, #1069): +619 code —
+        # the AEABI builtin route for the i64<->f32 conversion family on
+        # single-precision targets (see the lines_code waiver) — plus +5 test
+        # module (the threaded compute_local_layout aeabi flag at its five
+        # test call sites).
+        value: 29553
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

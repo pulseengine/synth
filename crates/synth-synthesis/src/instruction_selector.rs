@@ -1910,6 +1910,7 @@ fn compute_local_layout(
     force_spill_area: bool,
     force_param_backing: bool,
     force_vfp_area: bool,
+    aeabi_builtin_calls: bool,
     outgoing_arg_bytes: i32,
     i64_spill_slots: usize,
 ) -> LocalLayout {
@@ -1962,9 +1963,17 @@ fn compute_local_layout(
     // caller-saved registers (R0–R3, R12 — at most 5 distinct registers) across
     // each call. Slots are reused across calls (spill/reload is bracketed within
     // a single call), so 5 slots suffice regardless of call count.
+    // #1069: an AEABI-routed i64<->f32 conversion emits a `bl __aeabi_*`, so
+    // it needs the SAME call machinery a wasm call does — the caller-saved
+    // scratch area, param frame-backing, and (with any float) the VFP
+    // call-spill area. The flag is computed by `select_with_stack` (only true
+    // on a single-precision `--relocatable` compile whose op stream contains a
+    // routed op — a shape that previously DECLINED, so no compiling function's
+    // frame changes).
     let has_call = wasm_ops
         .iter()
-        .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }));
+        .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }))
+        || aeabi_builtin_calls;
     let spill_base = if has_call {
         // i64 locals are 8-byte aligned; scratch slots are 4-byte i32 stores so
         // place them after the locals at the current `offset`.
@@ -4631,6 +4640,195 @@ fn lower_f32_convert_i64(
     free_vfp_dtemp(vfp_used, vfp_home, d_s);
     stack.push(StackVal::Float { sreg: sd });
     Ok(true)
+}
+
+// ============================================================================
+// #1069 (RQ-60-VFPPRESSURE increment 1): AEABI runtime-builtin routing for
+// the i64<->f32 conversion family on SINGLE-precision FPU targets (m4f/m7).
+//
+// ARMv7E-M VFP has no 64-bit-integer VCVT in ANY precision; the m7dp lowering
+// (#869) synthesizes the conversions on DOUBLE-precision machinery, which a
+// single-precision FPU cannot execute (VCVT.F64 is UNDEFINED on FPv4-SP). So
+// a function whose WASM signature contains NO f64 anywhere was refused for
+// "needing f64" — a reach failure of synth's own lowering strategy, not of
+// the hardware (jess #1069: the falcon estimator could not be built for the
+// M4 core it is architecturally assigned to).
+//
+// The route here is the one #869's acceptance comment described: the AEABI
+// runtime helpers (`__aeabi_l2f`/`__aeabi_ul2f` for the converts,
+// `__aeabi_f2lz`/`__aeabi_f2ulz` for the truncations). Per the ARM RTABI
+// (IHI0043) they use the BASE-standard AAPCS: i64 argument/result in R0:R1,
+// f32 argument/result BITS in R0 — core registers only, zero VFP pressure.
+// The `bl` gets the same R_ARM_THM_CALL relocation every call gets, so the
+// host linker resolves the symbol from the embedder's runtime (libgcc /
+// compiler-rt / kiln builtins) — which is why the route is gated on
+// `--relocatable` (self-contained images have no linker to satisfy the
+// undefined symbol, and loud-declining there beats an unresolvable `bl #0`).
+//
+// SOUNDNESS (the #633/#666/#709/#665/#642 class): the AEABI helpers are
+// MORE-TOTAL than WASM — `__aeabi_f2lz`/`f2ulz` do not trap, and their
+// behavior on NaN/out-of-range input is not usefully specified. Every call
+// here is therefore fenced so the helper only ever sees input on which the
+// C-style conversion is fully defined:
+//   * trapping truncs: the #709-class f32 domain guard (UDF) runs FIRST;
+//     2^63/-2^63/2^64/-1.0 are all exactly representable in f32, so the
+//     bounds compares are exact (same argument as the f64 guard). The
+//     unsigned form additionally clamps the guarded-in (-1.0, 0.0) residue
+//     to +0.0 — WASM says it truncates to 0, C says a negative-to-unsigned
+//     conversion is undefined, so the value is zeroed BEFORE the call.
+//   * trunc_sat: NaN and both saturation ranges are selected inline
+//     (branch to a constant result); only in-range values reach the helper.
+//   * converts are total; no fence needed.
+// The f64-source/-target family members are NOT routed: their WASM types
+// contain f64, which a single-precision target genuinely cannot represent —
+// they keep the honest phase-2 decline by name.
+// ============================================================================
+
+/// #1069: the six family members routed through AEABI builtins on a
+/// single-precision FPU target under `--relocatable`. Exactly the members
+/// whose WASM value types are i64/f32 only — their f64 was an artifact of the
+/// inline lowering, not of the program.
+fn is_aeabi_i64_f32_routed_op(op: &WasmOp) -> bool {
+    use WasmOp::*;
+    matches!(
+        op,
+        F32ConvertI64S
+            | F32ConvertI64U
+            | I64TruncF32S
+            | I64TruncF32U
+            | I64TruncSatF32S
+            | I64TruncSatF32U
+    )
+}
+
+/// #1069: materialize a 32-bit f32 pattern into a fresh S-temp via ONE
+/// allocator-owned core temp (MOVW/MOVT) + `VMOV Sd, Rt`. The f32 analogue of
+/// [`materialize_f64_const`], and deliberately NOT `ArmOp::F32Const` for the
+/// same reason: the encoder pseudo-op hardcodes scratch registers that can
+/// hold live values (the #615 class).
+#[allow(clippy::too_many_arguments)]
+fn materialize_f32_const(
+    bits: u32,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<VfpReg> {
+    let rt = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    instructions_push_movw(instructions, rt, (bits & 0xFFFF) as u16, idx);
+    if (bits >> 16) != 0 {
+        instructions.push(ArmInstruction {
+            op: ArmOp::Movt {
+                rd: rt,
+                imm16: (bits >> 16) as u16,
+            },
+            source_line: Some(idx),
+        });
+    }
+    let sd = alloc_vfp_temp(vfp_used)?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::F32ReinterpretI32 { sd, rm: rt },
+        source_line: Some(idx),
+    });
+    Ok(sd)
+}
+
+/// #1069: the #709-class i64 domain guard for a SINGLE-precision f32 source —
+/// the f32 analogue of [`emit_i64_trunc_f64_domain_guard`], identical
+/// geometry (upper + lower bound, one UDF each; NaN fails the first ordered
+/// compare). The bounds are exact f32 values (powers of two and -1.0), so no
+/// promote is needed: `x < 2^63 && x >= -2^63` (signed) / `x < 2^64 &&
+/// x > -1.0` (unsigned) over f32 compares captures WASM §4.3.3's non-trapping
+/// set exactly (the nearest f32 neighbours of each bound sit far outside the
+/// open interval, as in the f64 case).
+#[allow(clippy::too_many_arguments)]
+fn emit_i64_trunc_f32_domain_guard(
+    work: VfpReg,
+    signed: bool,
+    idx: usize,
+    vfp_used: &mut [bool; 16],
+    vfp_home: &[bool; 16],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<()> {
+    // 2^63 / -2^63 / 2^64 / -1.0 as exact f32 bit patterns.
+    const POW2_63_F32: u32 = 0x5F00_0000;
+    const NEG_POW2_63_F32: u32 = 0xDF00_0000;
+    const POW2_64_F32: u32 = 0x5F80_0000;
+    const NEG_ONE_F32: u32 = 0xBF80_0000;
+    let (hi, lo) = if signed {
+        (POW2_63_F32, NEG_POW2_63_F32)
+    } else {
+        (POW2_64_F32, NEG_ONE_F32)
+    };
+    let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    let mut emit_guard = |bound: u32, upper: bool| -> Result<()> {
+        let s_bound = materialize_f32_const(
+            bound,
+            idx,
+            vfp_used,
+            stack,
+            next_temp,
+            spill,
+            instructions,
+            reserved,
+        )?;
+        // Upper: x < hi (F32Lt). Lower: x >= -2^63 (F32Ge, signed) or
+        // x > -1.0 (F32Gt, unsigned). All yield rd=0 on NaN.
+        let cmp = if upper {
+            ArmOp::F32Lt {
+                rd,
+                sn: work,
+                sm: s_bound,
+            }
+        } else if signed {
+            ArmOp::F32Ge {
+                rd,
+                sn: work,
+                sm: s_bound,
+            }
+        } else {
+            ArmOp::F32Gt {
+                rd,
+                sn: work,
+                sm: s_bound,
+            }
+        };
+        instructions.push(ArmInstruction {
+            op: cmp,
+            source_line: Some(idx),
+        });
+        instructions.push(ArmInstruction {
+            op: ArmOp::Cmp {
+                rn: rd,
+                op2: Operand2::Imm(0),
+            },
+            source_line: Some(idx),
+        });
+        // Skip the UDF when in-range (rd != 0); else fall through to trap.
+        instructions.push(ArmInstruction {
+            op: ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            source_line: Some(idx),
+        });
+        instructions.push(ArmInstruction {
+            op: ArmOp::Udf { imm: 0 },
+            source_line: Some(idx),
+        });
+        free_vfp_temp(vfp_used, vfp_home, s_bound);
+        Ok(())
+    };
+    emit_guard(hi, true)?; // upper: x < hi (also traps NaN)
+    emit_guard(lo, false)?; // lower: x >= -2^63 (s) / x > -1.0 (u)
+    Ok(())
 }
 
 /// Lower an in-scope scalar f64 op onto the caller-saved D-register file.
@@ -7827,6 +8025,370 @@ impl InstructionSelector {
             });
         }
         Ok(result)
+    }
+
+    /// #1069 (RQ-60-VFPPRESSURE increment 1): lower one AEABI-routed
+    /// i64<->f32 conversion on a SINGLE-precision `--relocatable` target —
+    /// see the module-level block above [`is_aeabi_i64_f32_routed_op`] for
+    /// the route's rationale, gating, and soundness fences. The call scaffold
+    /// is the `Call` arm's, reused piecewise: pop the argument FIRST (so it
+    /// is consumed, not preserved), then #188 integer + #719 VFP caller-saved
+    /// preservation, marshal into the base-AAPCS core registers, `bl`, capture
+    /// the result before any reload can clobber it, restore.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_aeabi_i64_f32(
+        &mut self,
+        op: &WasmOp,
+        idx: usize,
+        stack: &mut Vec<StackVal>,
+        next_temp: &mut u8,
+        instructions: &mut Vec<ArmInstruction>,
+        spill: &mut SpillState,
+        vfp_used: &mut [bool; 16],
+        vfp_home: &[bool; 16],
+        layout: &LocalLayout,
+        local_to_reg: &std::collections::HashMap<u32, Reg>,
+        live_params: &[Reg],
+        cf: &mut ControlFlowManager,
+    ) -> Result<()> {
+        use WasmOp::*;
+        let before = instructions.len();
+        let push_op = |instructions: &mut Vec<ArmInstruction>, op: ArmOp| {
+            instructions.push(ArmInstruction {
+                op,
+                source_line: Some(idx),
+            });
+        };
+        let push_bl = |instructions: &mut Vec<ArmInstruction>, sym: &str| {
+            push_op(
+                instructions,
+                ArmOp::Bl {
+                    label: sym.to_string(),
+                },
+            );
+        };
+        let push_b = |instructions: &mut Vec<ArmInstruction>, label: String| {
+            push_op(instructions, ArmOp::B { label });
+        };
+        // `cmp` writes 0/1 into `rn`; branch to `label` on `cond` over the
+        // `rn != 0` test — the compare/test/branch triplet every fence uses.
+        let push_pred_branch = |instructions: &mut Vec<ArmInstruction>,
+                                cmp: ArmOp,
+                                rn: Reg,
+                                cond: Condition,
+                                label: String| {
+            push_op(instructions, cmp);
+            push_op(
+                instructions,
+                ArmOp::Cmp {
+                    rn,
+                    op2: Operand2::Imm(0),
+                },
+            );
+            push_op(instructions, ArmOp::Bcc { cond, label });
+        };
+        // Emit `r0:r1 = imm64` for a saturation constant (MOVT elided when the
+        // high half-word is zero — both destinations are freshly clobbered).
+        let push_pair_imm64 = |instructions: &mut Vec<ArmInstruction>, val: u64| {
+            for (rd, w) in [(Reg::R0, val as u32), (Reg::R1, (val >> 32) as u32)] {
+                instructions_push_movw(instructions, rd, (w & 0xFFFF) as u16, idx);
+                if (w >> 16) != 0 {
+                    push_op(
+                        instructions,
+                        ArmOp::Movt {
+                            rd,
+                            imm16: (w >> 16) as u16,
+                        },
+                    );
+                }
+            }
+        };
+        if matches!(op, F32ConvertI64S | F32ConvertI64U) {
+            // f32.convert_i64_{s,u} -> __aeabi_l2f / __aeabi_ul2f. TOTAL — no
+            // fence. i64 arg in R0:R1, f32 result BITS in R0 (base AAPCS).
+            let signed = matches!(op, F32ConvertI64S);
+            let lo = pop_operand(stack, next_temp, instructions, spill, live_params, idx)?;
+            let hi = i64_pair_hi(lo)?;
+            let preserved = self.preserve_caller_saved(
+                instructions,
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                idx,
+            )?;
+            let vfp_preserved =
+                preserve_vfp_caller_saved(instructions, stack, vfp_home, layout, idx)?;
+            // Cycle-safe parallel move of the pair into R0:R1.
+            self.emit_arg_moves(
+                instructions,
+                &[lo, hi],
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                spill,
+                idx,
+            )?;
+            push_bl(
+                instructions,
+                if signed {
+                    "__aeabi_l2f"
+                } else {
+                    "__aeabi_ul2f"
+                },
+            );
+            // The f32 result arrives as BITS IN R0 (base AAPCS, not S0).
+            // Capture it into a fresh S-temp BEFORE the integer reloads below
+            // overwrite R0 with a preserved old value. The allocator skips
+            // every still-live S-slot (preserved values stay marked used), so
+            // `restore_vfp_caller_saved` cannot clobber the capture either.
+            let sd = alloc_vfp_temp(vfp_used)?;
+            push_op(instructions, ArmOp::F32ReinterpretI32 { sd, rm: Reg::R0 });
+            for &(reg, off) in &preserved {
+                push_op(
+                    instructions,
+                    ArmOp::Ldr {
+                        rd: reg,
+                        addr: MemAddr::imm(Reg::SP, off),
+                    },
+                );
+            }
+            restore_vfp_caller_saved(instructions, &vfp_preserved, idx);
+            stack.push(StackVal::Float { sreg: sd });
+        } else if matches!(op, I64TruncF32S | I64TruncF32U) {
+            // i64.trunc_f32_{s,u} (TRAPPING, §4.3.3) -> f32 domain guard
+            // (UDF on NaN/out-of-range) + __aeabi_f2lz / __aeabi_f2ulz.
+            let signed = matches!(op, I64TruncF32S);
+            let sm = pop_float(stack)?;
+            // The unsigned form WRITES the operand (the (-1,0)->+0 clamp
+            // below); never mutate a pinned f32 home (a param read later
+            // would see the clamped value) — stage through a copy first,
+            // via a core round-trip (the same dance as the i32 trunc arm).
+            let sm_is_home = vfp_s_index(sm).is_some_and(|s| vfp_home[s]);
+            let work = if !signed && sm_is_home {
+                let rt =
+                    alloc_temp_or_spill(next_temp, stack, instructions, spill, live_params, idx)?;
+                let copy = alloc_vfp_temp(vfp_used)?;
+                push_op(instructions, ArmOp::I32ReinterpretF32 { rd: rt, sm });
+                push_op(instructions, ArmOp::F32ReinterpretI32 { sd: copy, rm: rt });
+                copy
+            } else {
+                sm
+            };
+            emit_i64_trunc_f32_domain_guard(
+                work,
+                signed,
+                idx,
+                vfp_used,
+                vfp_home,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                live_params,
+            )?;
+            if !signed {
+                // Guarded-in residue (-1.0, 0.0) truncates to 0 in WASM but is
+                // UNDEFINED input to the C-style helper — clamp it to +0.0
+                // before the call. `rd` is 1 for work >= 0.0 (post-guard, work
+                // is never NaN); on the fall-through (rd == 0) path rd itself
+                // is the zero pattern VMOV'd over the operand.
+                let s_zero = materialize_f32_const(
+                    0,
+                    idx,
+                    vfp_used,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    live_params,
+                )?;
+                let rd =
+                    alloc_temp_or_spill(next_temp, stack, instructions, spill, live_params, idx)?;
+                let nonneg = self.alloc_label("aeabi_f2ulz_nonneg");
+                push_pred_branch(
+                    instructions,
+                    ArmOp::F32Ge {
+                        rd,
+                        sn: work,
+                        sm: s_zero,
+                    },
+                    rd,
+                    Condition::NE,
+                    nonneg.clone(),
+                );
+                push_op(instructions, ArmOp::F32ReinterpretI32 { sd: work, rm: rd });
+                push_op(instructions, ArmOp::Label { name: nonneg });
+                free_vfp_temp(vfp_used, vfp_home, s_zero);
+            }
+            let preserved = self.preserve_caller_saved(
+                instructions,
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                idx,
+            )?;
+            let vfp_preserved =
+                preserve_vfp_caller_saved(instructions, stack, vfp_home, layout, idx)?;
+            push_op(
+                instructions,
+                ArmOp::I32ReinterpretF32 {
+                    rd: Reg::R0,
+                    sm: work,
+                },
+            );
+            free_vfp_temp(vfp_used, vfp_home, work);
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            push_bl(
+                instructions,
+                if signed {
+                    "__aeabi_f2lz"
+                } else {
+                    "__aeabi_f2ulz"
+                },
+            );
+            // i64 result in R0:R1 — the #311 pair capture + reloads.
+            let result = self.restore_caller_saved(
+                instructions,
+                &preserved,
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                spill,
+                true,
+                idx,
+            )?;
+            restore_vfp_caller_saved(instructions, &vfp_preserved, idx);
+            stack.push(result);
+        } else if matches!(op, I64TruncSatF32S | I64TruncSatF32U) {
+            // i64.trunc_sat_f32_{s,u} (§4.3.2, TOTAL): NaN -> 0, out-of-range
+            // saturates, else truncate. The saturation/NaN cases are selected
+            // INLINE (constant results); only values on which the C-style
+            // conversion is fully defined reach the helper. Preservation
+            // brackets the whole branch tree: every path writes R0:R1 and
+            // joins before the restore.
+            let signed = matches!(op, I64TruncSatF32S);
+            let sm = pop_float(stack)?;
+            let preserved = self.preserve_caller_saved(
+                instructions,
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                idx,
+            )?;
+            let vfp_preserved =
+                preserve_vfp_caller_saved(instructions, stack, vfp_home, layout, idx)?;
+            let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, live_params, idx)?;
+            let l_hi = self.alloc_label("tsat_hi");
+            let l_lo = self.alloc_label("tsat_lo");
+            let l_nan = self.alloc_label("tsat_nan");
+            let l_join = self.alloc_label("tsat_join");
+            // Upper saturation: x >= 2^63 (s) / 2^64 (u). NaN yields rd=0.
+            let s_up = materialize_f32_const(
+                if signed { 0x5F00_0000 } else { 0x5F80_0000 },
+                idx,
+                vfp_used,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                live_params,
+            )?;
+            push_pred_branch(
+                instructions,
+                ArmOp::F32Ge {
+                    rd,
+                    sn: sm,
+                    sm: s_up,
+                },
+                rd,
+                Condition::NE,
+                l_hi.clone(),
+            );
+            free_vfp_temp(vfp_used, vfp_home, s_up);
+            // Lower saturation: x <= -2^63 -> i64::MIN (s; -2^63 itself
+            // truncates to i64::MIN too, so the fold is exact) / x < 0.0 -> 0
+            // (u; covers BOTH the (-1,0) truncate-to-zero residue and the
+            // <= -1.0 saturation — same result by §4.3.2).
+            let s_lo = materialize_f32_const(
+                if signed { 0xDF00_0000 } else { 0 },
+                idx,
+                vfp_used,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                live_params,
+            )?;
+            let low_cmp = if signed {
+                ArmOp::F32Le {
+                    rd,
+                    sn: sm,
+                    sm: s_lo,
+                }
+            } else {
+                ArmOp::F32Lt {
+                    rd,
+                    sn: sm,
+                    sm: s_lo,
+                }
+            };
+            push_pred_branch(instructions, low_cmp, rd, Condition::NE, l_lo.clone());
+            free_vfp_temp(vfp_used, vfp_home, s_lo);
+            // NaN: x != x. Branch to the zero result (§4.3.2: NaN -> 0).
+            push_pred_branch(
+                instructions,
+                ArmOp::F32Eq { rd, sn: sm, sm },
+                rd,
+                Condition::EQ,
+                l_nan.clone(),
+            );
+            // In-range: defined C-style conversion — call the helper.
+            push_op(instructions, ArmOp::I32ReinterpretF32 { rd: Reg::R0, sm });
+            push_bl(
+                instructions,
+                if signed {
+                    "__aeabi_f2lz"
+                } else {
+                    "__aeabi_f2ulz"
+                },
+            );
+            push_b(instructions, l_join.clone());
+            // Saturation arms: constant results straight into R0:R1 (both are
+            // dead here — the call args were consumed, live values preserved).
+            push_op(instructions, ArmOp::Label { name: l_hi });
+            push_pair_imm64(
+                instructions,
+                if signed { i64::MAX as u64 } else { u64::MAX },
+            );
+            push_b(instructions, l_join.clone());
+            push_op(instructions, ArmOp::Label { name: l_lo });
+            push_pair_imm64(instructions, if signed { i64::MIN as u64 } else { 0 });
+            push_b(instructions, l_join.clone());
+            push_op(instructions, ArmOp::Label { name: l_nan });
+            push_pair_imm64(instructions, 0);
+            push_op(instructions, ArmOp::Label { name: l_join });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            let result = self.restore_caller_saved(
+                instructions,
+                &preserved,
+                &stack_live_regs(stack),
+                local_to_reg,
+                layout,
+                spill,
+                true,
+                idx,
+            )?;
+            restore_vfp_caller_saved(instructions, &vfp_preserved, idx);
+            stack.push(result);
+        } else {
+            return Err(synth_core::Error::synthesis(format!(
+                "#1069: lower_aeabi_i64_f32 called on a non-routed op {op:?} \
+                 (compiler bug: caller gate and is_aeabi_i64_f32_routed_op \
+                 disagree)"
+            )));
+        }
+        cf.add_instructions(instructions.len() - before);
+        Ok(())
     }
 
     /// Find a callee-saved register (R4–R8) not currently holding a live value
@@ -15968,6 +16530,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             I64_SPILL_SLOTS,
         );
@@ -15993,6 +16556,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
             false,
             false,
@@ -16025,6 +16589,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
             false,
             false,
@@ -16063,6 +16628,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             I64_SPILL_SLOTS,
         );
@@ -16097,6 +16663,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
             false,
             false,
