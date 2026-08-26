@@ -269,9 +269,19 @@ def compile_arm(wat, out):
     # coverage. The DEFAULT refusal is pinned by
     # `crates/synth-cli/tests/arm_reloc_dataseg_refusal_1041.rs` and by the
     # multi_segment_static_data differential's refusal assertion.
+    # RQ-59-GLOBALINIT (#1052): the plain relocatable path likewise REFUSES
+    # global initializers it does not materialize. The sweep's phase-B runners
+    # map and zero the R9 globals region themselves (they are the embedder for
+    # these objects), and ~25 corpus fixtures carry a nonzero
+    # `$__stack_pointer`-style init, so the sweep acknowledges initializer
+    # evaluation with --embedder-global-init for the same reason it passes
+    # --embedder-data-init. The DEFAULT refusal is pinned by
+    # `crates/synth-cli/tests/arm_reloc_globalinit_refusal_1052.rs` and by the
+    # i64_globals_643 differential's #1052 refusal leg.
     p = subprocess.run(
         [SYNTH, "compile", str(wat), "--target", TARGET, "--relocatable",
-         "--embedder-data-init", "--all-exports", "-o", out],
+         "--embedder-data-init", "--embedder-global-init",
+         "--all-exports", "-o", out],
         capture_output=True, text=True,
     )
     return p.returncode, (p.stderr or "") + (p.stdout or "")

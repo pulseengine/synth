@@ -108,9 +108,17 @@ def compile_arm(synth, wasm, extra_env):
         # plain relocatable path now refuses them. This harness maps memory
         # itself, so it acknowledges the embedder contract explicitly (bytes
         # identical — the flag only suppresses the refusal).
+        # RQ-59-GLOBALINIT (#1052): six fixtures (control_step, flight_seam,
+        # flight_seam_flat, gust_kernel, sret_decide, msgq_put_359) carry
+        # nonzero global initializers, which the plain relocatable path now
+        # also refuses. Same shape, same answer: this harness owns the R9
+        # globals table too, so it acknowledges initializer evaluation
+        # explicitly. Bytes identical either way — section (1) below still
+        # pins every fixture's text against the frozen goldens, so a flag
+        # that moved a byte would redden this oracle, not hide behind it.
         [synth, "compile", str(REPRO / wasm), "-o", str(elf),
          "-b", "arm", "--target", "cortex-m4", "--all-exports", "--relocatable",
-         "--embedder-data-init"],
+         "--embedder-data-init", "--embedder-global-init"],
         capture_output=True, env=env,
     )
     return r, elf

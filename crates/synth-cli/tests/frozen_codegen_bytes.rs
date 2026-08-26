@@ -100,6 +100,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
             "--all-exports",
             "--relocatable",
             "--embedder-data-init",
+            "--embedder-global-init",
         ]);
     let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
     let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -321,6 +322,7 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -413,6 +415,7 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -500,6 +503,7 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -587,6 +591,7 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -663,6 +668,7 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -805,6 +811,7 @@ fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -884,6 +891,7 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");
@@ -959,6 +967,7 @@ fn frozen_fixtures_rv32_local_promo_escape_hatch_is_noop() {
                 "--all-exports",
                 "--relocatable",
                 "--embedder-data-init",
+                "--embedder-global-init",
             ]);
         let bytes = artifact_guard::compile_bytes_or_panic(&mut cmd, &elf, wasm);
         let obj = object::File::parse(&*bytes).expect("parse elf");

@@ -160,6 +160,7 @@ const ARM_RELOC: &[&str] = &[
     "cortex-m4",
     "--relocatable",
     "--embedder-data-init",
+    "--embedder-global-init",
 ];
 const RV32: &[&str] = &["-b", "riscv", "--target", "rv32imac", "--relocatable"];
 

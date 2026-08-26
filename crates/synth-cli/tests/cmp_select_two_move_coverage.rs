@@ -53,6 +53,7 @@ fn fused_count(fix: &str) -> usize {
             "--all-exports",
             "--relocatable",
             "--embedder-data-init",
+            "--embedder-global-init",
         ])
         .output()
         .expect("run synth");

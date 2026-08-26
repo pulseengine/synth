@@ -102,6 +102,13 @@ fn compile(wasm: &str, relocatable: bool, elide: Option<&str>) -> (Vec<u8>, BTre
         "cortex-m4",
         "--all-exports",
     ]);
+    // RQ-59-GLOBALINIT (#1052): gpio_thin_846.loom.wasm declares a nonzero
+    // $__stack_pointer init AND imports mmio functions, so its object is
+    // ET_REL even on the "non-relocatable" arm (imports force it) — the
+    // init-materialization refusal fires on both arms. This harness only
+    // reads codegen bytes/stats (bytes are identical with the flag — it
+    // suppresses the refusal only).
+    cmd.arg("--embedder-global-init");
     if relocatable {
         // RQ-59-DATASEG (#1041): the corpus carries data-segment fixtures;
         // this harness only reads codegen bytes/stats (bytes are identical
@@ -266,6 +273,7 @@ fn good_compile(out: &std::path::Path) -> Command {
         "--all-exports",
         "--relocatable",
         "--embedder-data-init",
+        "--embedder-global-init",
     ]);
     cmd
 }

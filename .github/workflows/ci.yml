@@ -2720,11 +2720,19 @@ jobs:
         run: pip install wasmtime unicorn pyelftools capstone
       - name: Run flight-seam oracle (inlined #212 + flat #215)
         run: |
+          # RQ-59-GLOBALINIT (#1052): the flight_seam modules carry a nonzero
+          # $__stack_pointer initializer; the plain relocatable path now
+          # refuses un-materialized global inits. This oracle's harness maps
+          # the R9 table itself (it is the embedder), so it acknowledges
+          # initializer evaluation explicitly (bytes identical — the flag
+          # only suppresses the refusal).
           ./target/debug/synth compile scripts/repro/flight_seam.wasm \
-            -o /tmp/fs.elf --target cortex-m4 --all-exports --relocatable
+            -o /tmp/fs.elf --target cortex-m4 --all-exports --relocatable \
+            --embedder-global-init
           python scripts/oracle_run.py scripts/repro/flight_seam_differential.py /tmp/fs.elf
           ./target/debug/synth compile scripts/repro/flight_seam_flat.wasm \
-            -o /tmp/fsf.elf --target cortex-m4 --all-exports --relocatable
+            -o /tmp/fsf.elf --target cortex-m4 --all-exports --relocatable \
+            --embedder-global-init
           python scripts/oracle_run.py scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
             scripts/repro/flight_seam_flat.wasm
       # #910: close the job with what it EXECUTED. Asserts every oracle
@@ -2779,10 +2787,11 @@ jobs:
           # segment; the plain relocatable path now refuses it. This oracle's
           # harness maps memory itself, so it acknowledges the embedder
           # contract explicitly (bytes identical — the flag only suppresses
-          # the refusal).
+          # the refusal). RQ-59-GLOBALINIT (#1052): same for its nonzero
+          # $__stack_pointer initializer (the harness maps the R9 table too).
           ./target/debug/synth compile scripts/repro/control_step.wasm \
             -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable \
-            --embedder-data-init
+            --embedder-data-init --embedder-global-init
           python scripts/oracle_run.py scripts/repro/control_step_differential.py /tmp/cs.elf
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
@@ -3444,7 +3453,9 @@ jobs:
           python scripts/oracle_run.py scripts/repro/call_5args_differential.py /tmp/c5.o
       - name: 6/7-argument stack-slot call differential (#359)
         run: |
-          ./target/debug/synth compile scripts/repro/call_6_7args.wat -o /tmp/cm.o --target cortex-m4 --all-exports --relocatable
+          # RQ-59-GLOBALINIT (#1052): the fixture declares a nonzero
+          # $__stack_pointer init; the harness maps the R9 table itself.
+          ./target/debug/synth compile scripts/repro/call_6_7args.wat -o /tmp/cm.o --target cortex-m4 --all-exports --relocatable --embedder-global-init
           python scripts/oracle_run.py scripts/repro/call_6_7args_differential.py /tmp/cm.o
       - name: call_indirect A32 differential (#594, cortex-r5)
         run: |

@@ -36,6 +36,11 @@ fn fixture() -> PathBuf {
 // and instantiates the module), so they pass `--embedder-data-init`; the
 // DEFAULT refusal on this same fixture is asserted by
 // `relocatable_dataseg_refuses_1041` so the frontier itself stays covered.
+// RQ-59-GLOBALINIT (#1052): the same paths now also refuse the fixture's
+// NONZERO global initializers (`$__stack_pointer = 4096`,
+// `__data_end`/`__heap_base`) — the same host-instantiates-the-module
+// contract covers evaluating those, so the seam tests pass
+// `--embedder-global-init` alongside (bytes identical either way).
 
 /// ELF e_type from the raw header (1 = ET_REL, 2 = ET_EXEC).
 fn e_type(data: &[u8]) -> u16 {
@@ -105,7 +110,11 @@ fn self_contained_binds_arena_import_418() {
 #[test]
 fn opt_out_restores_external_seam_418() {
     let (data, _r) = compile(
-        &["--no-bind-cabi-arena", "--embedder-data-init"],
+        &[
+            "--no-bind-cabi-arena",
+            "--embedder-data-init",
+            "--embedder-global-init",
+        ],
         "cabi418_optout",
     );
     assert_eq!(
@@ -123,7 +132,14 @@ fn opt_out_restores_external_seam_418() {
 /// TCB provides, the linker binds — no in-image allocator.
 #[test]
 fn relocatable_keeps_tcb_seam_418() {
-    let (data, _r) = compile(&["--relocatable", "--embedder-data-init"], "cabi418_reloc");
+    let (data, _r) = compile(
+        &[
+            "--relocatable",
+            "--embedder-data-init",
+            "--embedder-global-init",
+        ],
+        "cabi418_reloc",
+    );
     assert_eq!(e_type(&data), 1);
     assert!(
         has_undefined_arena(&data),
