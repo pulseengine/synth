@@ -2,9 +2,10 @@
 # NOTE on home: this lives in scripts/ (with claim_check.py and
 # model_coverage_audit.py — derivation/audit tooling over shipped artifacts),
 # not scripts/repro/ (defect oracles). It is RQ-59-TIERCENSUS's measurement
-# artifact, report-and-stop by scope; the enforcing gate over its findings —
-# asserting the derived UNGUARDED set does not grow — is VCR-TIER-001
-# increment 1, a v0.60 item, and CI wiring belongs to that increment.
+# artifact, report-and-stop by scope. The enforcing gate over its findings is
+# VCR-TIER-001 increment 1, LANDED as scripts/repro/expansion_canary_gate_1021.py
+# (CI-wired): it executes every rule-emitted expansion under canaries and pins
+# the unguarded-clobber set at EMPTY — stronger than "does not grow".
 """RQ-59-TIERCENSUS (#1021) — the proof-tier census, re-derivable.
 
 #1021 shipped a memory-safety miscompile THROUGH a Rocq-proved rule:
@@ -241,8 +242,13 @@ def static_writes(code: bytes, thumb: bool) -> tuple[int, set[str], list[str]]:
     return count, written, mnems
 
 
-def execute(code: bytes, thumb: bool) -> dict:
-    """Run the expansion; union of net register clobbers over the input sets."""
+def execute(code: bytes, thumb: bool, ambient: dict[str, int] | None = None) -> dict:
+    """Run the expansion; union of net register clobbers over the input sets.
+
+    `ambient` overrides the seeded values of the non-operand registers
+    (r9-r12, lr) — the canary gate (scripts/repro/expansion_canary_gate_1021.py,
+    VCR-TIER-001) passes its own distinctive canaries; the census default is
+    AMBIENT."""
     net: set[str] = set()
     mem_writes: set[int] = set()
     sp_ok = True
@@ -252,7 +258,7 @@ def execute(code: bytes, thumb: bool) -> dict:
         mu.mem_map(CODE_BASE & ~0xFFF, 0x2000)
         mu.mem_map(STACK_BASE, STACK_SIZE)
         mu.mem_write(CODE_BASE, bytes(code))
-        seed = {**inputs, **AMBIENT, "sp": SP_INIT}
+        seed = {**inputs, **(AMBIENT if ambient is None else ambient), "sp": SP_INIT}
         for name, val in seed.items():
             mu.reg_write(REGS[name], val)
 
@@ -403,7 +409,16 @@ def main() -> None:
         )
         rec["shapes"].append(inst["shape"])
         rec["outputs"] |= set(inst["outputs"])
-        rec["declared_temps"] |= set(inst["declared_temps"])
+        # VCR-TIER-001: the dump's `scratch_contract` is DERIVED from the
+        # shipped crate's single declaration site
+        # (`synth_backend::arm_encoder::expansion_scratch_contract`); the
+        # `declared_temps` fallback reads dumps generated before that existed
+        # (they carried a hand column mirroring the pre-#1048 operand temps),
+        # and a dump with neither defaults to the STRICTEST contract — {rd}
+        # only, the same silent claim the atomic model makes.
+        rec["declared_temps"] |= set(
+            inst.get("scratch_contract", inst.get("declared_temps", []))
+        )
         for isa, key in (("thumb2", "thumb"), ("a32", "a32")):
             hexs = inst[key]
             if not hexs:
