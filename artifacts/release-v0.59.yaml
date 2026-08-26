@@ -962,7 +962,7 @@ artifacts:
       segments. If a refusal makes that harness unrunnable, say so and follow
       #1049's shape (default refuses; any escape hatch is explicit, and emitted
       bytes identical either way).
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, silent-drop, globals, arm, relocatable, fix-first]
     links:
