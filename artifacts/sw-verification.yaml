@@ -715,3 +715,63 @@ artifacts:
           (br_table_subshape_asymmetry_882 — the three aarch64 residuals pinned
           by name) + crates/synth-backend-aarch64/src/selector.rs unit tests +
           scripts/repro/aarch64_m2_decline_538.py (decline-matrix honesty)
+
+  - id: SWVER-025
+    type: sw-verification
+    title: "AArch64 import dispatch — symtab contract + linked execution differential (VCR-REACH-002 increment 1, #1017)"
+    description: >
+      Verifies VCR-REACH-002 increment 1 (RQ-60-A64IMPORT): an imported
+      function becomes a GLOBAL STT_FUNC SHN_UNDEF symbol under its wasm FIELD
+      name — R_AARCH64_CALL26 at a direct `bl` site, R_AARCH64_JUMP26 at a
+      funcref-table trampoline — the ARM --relocatable #173/#197 contract
+      ported (the wasm2c/Wasker undefined-symbol pattern).
+      CAPABILITY: the differential reads the SYMTAB via pyelftools (never
+      disasm text), then acts as the host linker — places .text, appends its
+      own A64 definitions of the imports, resolves every relocation — and
+      executes under unicorn against wasmtime-FIRST expected values, including
+      the still-must-TRAP out-of-range table dispatches (import dispatch must
+      not loosen the WASM §4.4.8 guards). Externally cross-checked once at
+      authoring by a REAL link (ld.lld against a clang-assembled definition
+      of the imports) and execution of the linked image.
+      DECLINE-HONESTY, both directions: the ELF builder's externals list is an
+      ALLOWLIST carrying exactly the module's import field names — a
+      relocation against a symbol neither placed nor listed (a loud-declined
+      LOCAL callee, gale's httparse shape) keeps the #1013 exit-1 refusal
+      naming the symbol, asserted by the differential's probe and by
+      elf.rs/substrate.rs unit tests (an UNNAMED import also still declines —
+      never fabricate an external).
+      FROZEN-SAFETY: an import-free module passes an empty allowlist and is
+      byte-identical (unit-tested); ARM/RV32 are untouched.
+      FOUND-BY-CENSUS: re-measuring acceptance exposed a LATENT encoder defect
+      — the prologue's `sub sp, sp, #imm12` only debug_asserted its range, so
+      a >=512-slot frame panicked in debug and would mis-encode SP in release;
+      now a loud selector decline with a two-direction regression test.
+      MEASURED (org-repo corpus, 307 unique modules / 489 MB, 124 components —
+      the same corpus as the #1051 census; the 805-module gale corpus is not
+      local): aarch64 acceptance 60/307 (19.5%) -> 67/307 (21.8%), 0
+      regressions, crashes 0 -> 0 (6 intermediate census crashes were the
+      latent frame defect, fixed). First-blocker attribution understates the
+      increment's reach: of the remaining declines, data segments (89) and
+      multi-memory (64) dominate this corpus, but 80/89 resp. 60/64 of those
+      modules ALSO carry function imports — import dispatch pays out again
+      when those two increments land.
+    status: implemented
+    tags: [aarch64, imports, reach, differential, vcr-reach, issue-1017, epic-242]
+    links:
+      - type: verifies
+        target: VCR-REACH-002
+    fields:
+      method: automated-test
+      steps:
+        - run: "cargo test -p synth-backend-aarch64"
+        - differential: >
+            SYNTH=./target/debug/synth python3
+            scripts/repro/aarch64_import_dispatch_1017_differential.py —
+            CI-wired in the aarch64-oracle job (`set -euo pipefail`, non-zero
+            value AND trap counts asserted, RESULT: PASS required;
+            ci-checks: emulations >= 6)
+        - coverage: >
+            symtab contract (2 objects), 6 executed differential cases (4
+            value, 2 trap) vs wasmtime, decline-honesty probe, 7 new unit
+            tests (elf externals x3, selector import-call x2 + frame guard,
+            substrate trampoline x2)
