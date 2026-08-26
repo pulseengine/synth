@@ -1,0 +1,275 @@
+# =============================================================================
+# synth v0.60 — "Derive what you check against"
+#
+# THE THEME, in one sentence: no hand-written mirror of a shipped thing, and a
+# proof about input we refuse is worth nothing.
+#
+# Both halves were EARNED this cycle rather than asserted:
+#
+#   * v0.59 shipped a canary gate (VCR-TIER-001 increment 1) whose immediate
+#     finding was that the census's OWN hand-maintained `declared_temps` column
+#     declared the #1048 miscompile LEGAL — `&[R5]` (rm_hi) for the i64 shifts
+#     and `&[R3]` (rnhi) for the bit-counts are exactly the registers the
+#     defect clobbered. A checker that MIRRORS the defect it exists to catch is
+#     the sharpest possible argument for deriving contracts from one
+#     declaration site beside the shipped artifact.
+#
+#   * The same release found FIVE silent drops of one shape (#1041 data
+#     segments, #1046 the start section, #1052 global initializers, #1048 the
+#     i64 operand clobber, #1021 popcnt/R11) — all exit 0, none caught by an
+#     existing differential. AArch64 refusing LOUDLY on identical input is what
+#     made the class visible.
+#
+# WHAT WOULD FALSIFY THE THEME: if the derived-contract discipline produces no
+# new finding across this release's increments, then "derive, don't mirror" was
+# a tidiness argument rather than a defect-finding one. That is a result, and it
+# outranks the increments.
+#
+# SEQUENCING: VCR-TIER-001 increment 1 is already delivered (PR #1061, stacked
+# on #1054). The reach work (VCR-REACH-002) is the largest single correctness
+# win available and is deliberately NOT gated on the allocator work.
+# =============================================================================
+
+metadata:
+  project: synth
+  release: v0.60
+  theme: "DERIVE WHAT YOU CHECK AGAINST — no hand-written mirror of a shipped thing"
+
+requirements:
+  - id: RQ-60-CANARY
+    type: system-req
+    title: "Canary gate over pseudo-op encoder expansions — the proof stops at the pseudo-op, the machine does not"
+    description: >
+      VCR-TIER-001 increment 1. 52 of the 80 Rocq-proved VCR-SEL-001 rules emit
+      a PSEUDO-OP whose multi-instruction ENCODER EXPANSION the proof never
+      sees. `ArmSemantics` executes e.g. `POPCNT` atomically (writes rd only),
+      so a scratch register borrowed by the expansion is UNREPRESENTABLE in the
+      model. An atomic model of a multi-instruction expansion is a SILENT CLAIM
+      that the expansion is scratch-free — and that claim shipped false twice,
+      on two different register tiers: #1021 (R11, the linear-memory base — a
+      RESERVED GLOBAL, memory corruption) and #1048 (the operand's own home
+      registers — a CALLER OPERAND).
+
+      DELIVERED as PR #1061: `expansion_scratch_contract` in
+      `crates/synth-backend/src/arm_encoder.rs` is the single declaration site;
+      the contract is DECLARED, not derived from observed behaviour, because a
+      contract read off the bytes would rubber-stamp any clobber. The gate
+      executes all 77 rule-emitted instances on BOTH Thumb-2 and A32 under
+      register canaries (R11 = 0xB11B11B1) and asserts nothing outside
+      {results} u {contract} u {R12} moved, SP is restored, memory is confined
+      to the expansion's own red-zone, the bytes decode fully, and NO DECLARED
+      CONTRACT REGISTER GOES UNEXERCISED — so an over-broad contract cannot
+      hollow the gate.
+
+      POTENCY IS RE-PROVEN ON EVERY RUN, not just at authoring: two committed
+      fixtures hold the REAL old encoders' bytes and must red on exactly the
+      pinned registers. Coordinator-verified independently: the pre-#1039
+      fixture reds Popcnt:['r11'] AND the operand tier; the pre-#1054 fixture
+      reds the operand tier ONLY, with Popcnt ABSENT — so the gate discriminates
+      WHICH fix is present rather than merely failing on old bytes. One red from
+      one tier is exactly what the wired `i64_shr_599` differential already had,
+      and it was structurally blind to the class.
+
+      Derived unguarded set: EMPTY, pinned at empty — stronger than the census
+      header's "does not grow".
+    status: proposed
+    release: v0.60
+    tags: [soundness, pseudo-op, encoder-expansion, canary, derive-dont-mirror]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1021"
+
+  - id: RQ-60-CFOBLIG
+    type: system-req
+    title: "The WASM model has no control-flow syntax — 48% of a real object is covered by neither proof half"
+    description: >
+      #1057, measured by gale (fathom) over three verified thin drivers:
+      477 applied rule instances, 22 SMT-verified (4.6%), 226 declined-but-
+      Rocq-Qed, so the UNION is 248/477 = 52% and 229 = 48% is covered by
+      NEITHER half. The 48% is not arithmetic — it is control flow (178
+      instances) and byte-level memory (30). Every arithmetic and comparison
+      rule those objects use is already covered by one half or the other.
+
+      THE CAUSE IS ONE LEVEL DEEPER THAN THE ISSUE COULD SEE, and the
+      coordinator verified it before scoping: gale matched theorem names and
+      found none for `End`/`BrIf`/`Block`/`Br`/`Call`/`Unreachable`/
+      `I32Load8U`/`I32Store8`, and caveated that this might be a naming-scheme
+      artifact. It is not. `Inductive wasm_instr` in
+      `coq/Synth/WASM/WasmInstructions.v` runs from `I32Const` to `Nop` and
+      contains NO control-flow constructor at all, and no sub-word memory form
+      (memory is full-width `I32Load : nat -> wasm_instr` / `I32Store` only).
+      There is no obligation for `BrIf` because THE MODEL HAS NO `BrIf`.
+
+      So increment 1 is a MODEL EXTENSION, not a proof effort — larger up front,
+      and far less exposed to the failure mode this project keeps finding (a
+      proof that is real, a model faithful to what it models, and a machine that
+      still does something else). It is also smaller than the table suggests:
+      the ARM half ALREADY has a branch-taking executor, `exec_program_br`
+      (`coq/Synth/ARM/ArmSemantics.v:1194`), load-bearing for all four #73 i32
+      div/rem trap guards precisely because a trap guard IS a conditional
+      branch. The target semantics for a taken branch are modelled and used in
+      anger; what is missing is a WASM-side `BrIf` to correspond to it.
+
+      SCOPE: `BrIf` FIRST, not all eight kinds — gale's own suggestion, and the
+      subject of three closed miscompiles (#483, #500, #509, #930 were all in
+      this area, which argues these are the rules most worth an obligation).
+
+      THE METRIC IS THE UNION, NOT A THEOREM COUNT. A `BrIf` obligation that
+      does not move gale's 477-instance denominator has not delivered what the
+      issue asked for. Report the post-change number from the Rocq KERNEL
+      (`//coq:verify_proofs` + claim_check), not from a grep over `.v` files —
+      gale's own caveat #2 is that it read Qed/Admitted from source without
+      re-running the kernel, and that gap applies to us too.
+    status: proposed
+    release: v0.60
+    tags: [proof, wasm-model, control-flow, reach, union-metric]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: proof
+      issue: "#1057"
+
+  - id: RQ-60-A64IMPORT
+    type: system-req
+    title: "AArch64 accepts 1.6% of real modules — import dispatch is the top blocker, and synth already implements the pattern"
+    description: >
+      VCR-REACH-002. Measured over 805 REAL-WORLD modules (#1017 — toolchain
+      output and wasm.directory components, not spec fixtures): ARM accepts
+      531/805 (66%), RISC-V 113 (14%), AArch64 13 (1.6%). A verified compiler
+      that accepts 1.6% of real AArch64 input is verified about almost nothing.
+      Reach is part of correctness.
+
+      The top blocker is AArch64 IMPORT DISPATCH — ~121 modules, and 88 of 101
+      real components. This is the Wasker/wasm2c undefined-symbol pattern, and
+      critically IT IS SYNTH'S OWN ARM `--relocatable` DESIGN PORTED (#197:
+      `--relocatable` forces the direct selector `select_with_stack`, which
+      emits direct `func_N` imports as undefined symbols resolved at link).
+      So this is a port of a shipped, proven-in-anger pattern, not a design
+      question — which is exactly why it is the first reach increment.
+
+      SECOND (separate increment, not this one): multi-memory, 124 modules.
+      Declining it stopped being "we only do standardized wasm" when multi-
+      memory became a Wasm 3.0 STANDARD on 2025-09-17.
+
+      HONESTY REQUIREMENT: the acceptance number is the deliverable. Re-run the
+      805-module census after the change and report the new AArch64 figure
+      against the 13/805 baseline. A change that adds a code path without moving
+      the census has not delivered. If some subset cannot be accepted, name the
+      subset and the reason — an honest frontier beats a widened one, and this
+      release has already spent five findings on the cost of a silent decline.
+    status: proposed
+    release: v0.60
+    tags: [reach, aarch64, imports, relocatable, census]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1017"
+
+  - id: RQ-60-RACOST
+    type: system-req
+    title: "The allocator's remaining wins are the cost model and tied operands, not a better search"
+    description: >
+      VCR-RA-011. The research verdict and synth's own measurement agree, and
+      this artifact exists partly to stop the search-algorithm question being
+      re-litigated: LLVM moved to greedy in 2011 and WebKit recently replaced
+      Air's IRC graph colouring with a greedy allocator at similar quality and
+      much higher speed; both converged on COST MODEL, COALESCING/HINTS and
+      SPLITTING as the real levers. RQ-59-MEASURE found the same thing
+      independently — the regression tail traced to the COST METRIC, which
+      prices a 2-byte register copy and a 4-byte frame reload IDENTICALLY.
+
+      TWO CONCRETE INCREMENTS:
+
+      (1) TIED OPERANDS. Merge tied use/def webs so an rmw colour mismatch is
+      UNREPRESENTABLE rather than detected — 49 of 71 single-block declines.
+      Making a defect class unrepresentable is worth more than a check for it,
+      the same argument the canary gate's empty-contract default makes.
+
+      (2) REAL-ENCODER BYTE COSTS. Replace occurrence counts with measured
+      costs: copy = 2B, wide reload = 4B, scaled x10^loop_depth, normalized by
+      live-range length. Fried et al. (CC 2023) has the exact arithmetic. Take
+      the BYTES FROM THE REAL ENCODER, not from a hand-written size table —
+      #936 already established that a hand mirror of the encoder's own offset-
+      fold threshold was UNSOUND at authoring, and this release's theme is that
+      lesson generalized.
+
+      RULED OUT, WITH REASONS, so they are not re-proposed: porting regalloc2's
+      backtracking engine (its wins are pressure-at-scale wins), ILP/SMT in the
+      compile path (trusted-base cost), SSA-chordal (optimizes the non-binding
+      constraint; synth is not SSA), ML-guided eviction (non-deterministic
+      quality, antithetical to a proof-carrying compiler).
+
+      GATE: VCR-RA-003's whole-function validator is the ACCEPTANCE ORACLE —
+      build against it. Byte-changing, so frozen anchors and the execution
+      differentials gate every step; a deletion that moves emitted bytes without
+      an oracle proving the new bytes correct is REFUSED, not explained.
+    status: proposed
+    release: v0.60
+    tags: [allocator, cost-model, tied-operands, measured, byte-changing]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
+
+  - id: RQ-60-ARTIFACTSPLIT
+    type: system-req
+    title: "The per-release artifact file is a single write surface for every parallel lane"
+    description: >
+      #1059, filed after the class caused a real trace-graph corruption during
+      the v0.59 wave. Six lanes appending to `artifacts/release-v0.59.yaml`
+      produce conflicts BY CONSTRUCTION, and the conflict is in a hand-merged
+      TYPED artifact — the worst place for one.
+
+      WHAT IT COST: a "keep both sides" resolution spliced a new artifact INTO a
+      sibling's mapping, between `RQ-59-DATASEG`'s `tags:` and its
+      `links:`/`fields:`, so DATASEG silently LOST its `derives-from BR-001`
+      link and the new artifact inherited it — plus a duplicate `issue:` key.
+      Only the duplicate key was caught, and only because `Rivet Validation` is
+      required. The dropped trace link would have SHIPPED: a requirement reading
+      `implemented` with no link to the business requirement it derives from,
+      inside a release whose readiness is a QUERY over exactly these fields.
+
+      WHY THE CHECK MISSED IT: the resolution was verified with `yaml.safe_load`
+      plus an id count, which reported "16 artifacts, no duplicates, YAML OK".
+      All three statements were true. PyYAML SILENTLY KEEPS THE LAST VALUE on a
+      duplicate key so it cannot see the first defect, and an id count cannot see
+      the second because the ids are unaffected. A permissive parser is not an
+      oracle for a typed schema.
+
+      FIX: one file per requirement (`artifacts/release-v0.60/RQ-60-FOO.yaml`)
+      with the release `metadata:` in its own `_release.yaml` — rivet already
+      scans directories. A lane then CREATES a file and touches nothing another
+      lane touches; the class disappears at the source instead of being handled
+      more carefully each time.
+
+      SMALLER MITIGATIONS if the split is not taken: a duplicate-key-strict YAML
+      check in CI (~8 lines), and a STRUCTURAL assertion that every requirement
+      carries its own `links:`/`fields:` with a non-empty `issue:`. The second is
+      the more valuable — it catches the defect that would have shipped.
+    status: proposed
+    release: v0.60
+    tags: [infrastructure, rivet, parallel-lanes, typed-oracle]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1059"
