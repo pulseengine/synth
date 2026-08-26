@@ -96,9 +96,15 @@ def compile_elf(flag_off, out):
         env["SYNTH_SHIFT_MASK_ELIDE"] = "0"
     else:
         env.pop("SYNTH_SHIFT_MASK_ELIDE", None)  # default = ON
+    # RQ-59-GLOBALINIT (#1052): the loom-emitted module declares a nonzero
+    # $__stack_pointer initializer; the plain relocatable path now refuses
+    # un-materialized global inits. This harness maps the R9 table itself
+    # (it is the embedder), so it acknowledges initializer evaluation
+    # explicitly (bytes identical — the flag only suppresses the refusal).
     subprocess.run(
         [SYNTH, "compile", WASM, "-o", out,
-         "--target", "cortex-m3", "--all-exports", "--relocatable"],
+         "--target", "cortex-m3", "--all-exports", "--relocatable",
+         "--embedder-global-init"],
         env=env, check=True, capture_output=True,
     )
 

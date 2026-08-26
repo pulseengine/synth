@@ -76,6 +76,7 @@ fn shadow_verdicts(wasm: &str) -> Vec<ShadowVerdict> {
             "--all-exports",
             "--relocatable",
             "--embedder-data-init",
+            "--embedder-global-init",
         ])
         .output()
         .expect("run synth");

@@ -5215,6 +5215,25 @@ fn build_relocatable_elf(
             data_segments.len()
         );
     }
+    // #739: `--shadow-stack-size` on a module whose generated code carries NO
+    // `__synth_wasm_data`/`__synth_globals` relocation would silently skip
+    // BOTH the region emission and the shrink (`native_layout` = None below).
+    // The pre-fix #739 fixture hit exactly this: every static access was
+    // BAKED (un-relocated), so the object shipped with its 1 MiB of statics
+    // dropped, the SP global gone, and the flag ignored — vacuously "green".
+    // Refuse loudly instead: the integrator asked to shrink a reservation
+    // that the emitted code never references.
+    if let Some(ng) = &native_globals
+        && ng.shadow_stack_size.is_some()
+        && !emit_wasm_data
+    {
+        anyhow::bail!(
+            "--shadow-stack-size: no __synth_wasm_data/__synth_globals relocation \
+             reaches the native-pointer region (linear memory {linear_memory_bytes} B), \
+             so there is no reservation to shrink — refusing rather than silently \
+             ignoring the flag. VCR-MEM-001/#739."
+        );
+    }
     // RQ-59-GLOBALINIT (#1052): the plain relocatable path accepted
     // `(global (mut i32) (i32.const 42))` + a `global.get` export, emitted an
     // object whose entire text was `push; ldr.w r0,[r9]; pop`, and exited 0 —
@@ -5228,30 +5247,47 @@ fn build_relocatable_elf(
     // other path ships the inits (`--native-pointer-abi` #237, aarch64
     // #851), materializes them at reset (self-contained, #649 — which fixed
     // exactly this class there), or loud-skips (RV32 #643). Refuse the same
-    // way. The predicate is "does the initial VALUE reach the object", not
-    // "which flag was passed": `--native-pointer-abi` WITHOUT a linear
-    // memory emits no `__synth_globals` region either (the object ships an
-    // undefined symbol and no init image), so it refuses too. All-zero
-    // const inits never refuse — a zeroed embedder table IS their correct
-    // initial state (the #643 harness fixture). Float/v128 globals stay the
-    // GI-FPU-001 (#369)/#680 lane: their access loud-skips, so a dropped
-    // init is unobservable through generated code. Materializing the inits
-    // on this path is documented capability follow-on work (v0.60), not
-    // this guard.
+    // way. Placed AFTER the #739 guard so the more specific flag-honesty
+    // refusal keeps its message on the shadow-stack-size shape.
+    //
+    // The predicate is "does the initial VALUE reach the object", per path:
+    //   * plain (R9-table) path — PRESENCE-based, like the #1041 data-segment
+    //     guard: R9 global accesses carry no relocation, so access cannot be
+    //     detected here, and any nonzero/non-const init is refused.
+    //   * --native-pointer-abi with the region emitted — const i32 inits SHIP
+    //     in the `.data` slots (#237); only a non-const init refuses (its
+    //     slot would ship a silent 0, the `_ => 0` in the layout above).
+    //   * --native-pointer-abi with NO region emitted (e.g. no linear
+    //     memory): a `__synth_globals` relocation with no defining region is
+    //     a dropped init behind an undefined symbol — refuse; with NO such
+    //     relocation the object has no globals surface at all, so the
+    //     declared init is INERT (nothing in this object can ever read it)
+    //     and the compile is allowed (the call_5args-shape fixtures).
+    // All-zero const inits never refuse — a zeroed embedder table IS their
+    // correct initial state (the #643 harness fixture). Float/v128 globals
+    // stay the GI-FPU-001 (#369)/#680 lane: their access loud-skips, so a
+    // dropped init is unobservable through generated code. Materializing the
+    // inits on this path is documented capability follow-on work (v0.60),
+    // not this guard.
+    let has_globals_reloc = funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .any(|r| r.symbol == "__synth_globals");
     let native_inits_ship = native_globals.is_some() && emit_wasm_data;
+    let native_inert = native_globals.is_some() && !emit_wasm_data && !has_globals_reloc;
     let dropped_global_inits: Vec<String> = globals
         .iter()
         .filter(|g| !g.float_or_v128)
         .filter_map(|g| match g.init {
             Some(GlobalInit::I32(0)) | Some(GlobalInit::I64(0)) => None,
-            // #237: the `__synth_globals` .data slot carries the const value.
-            Some(GlobalInit::I32(_)) if native_inits_ship => None,
+            // #237: the `__synth_globals` .data slot carries the const value
+            // (ship), or no slot is ever readable (inert).
+            Some(GlobalInit::I32(_)) if native_inits_ship || native_inert => None,
             Some(GlobalInit::I32(v)) => Some(format!("global {} = (i32.const {v})", g.index)),
             Some(GlobalInit::I64(v)) => Some(format!("global {} = (i64.const {v})", g.index)),
             // A non-const integer init expr (e.g. `global.get` of an import):
-            // the value is not statically known, so NO path materializes it —
-            // the native `.data` slot would ship a silent 0 (`_ => 0` in the
-            // layout above).
+            // the value is not statically known, so NO path materializes it.
+            None if native_inert => None,
             None => Some(format!("global {} = non-constant init expr", g.index)),
         })
         .collect();
@@ -5274,25 +5310,6 @@ fn build_relocatable_elf(
              follow-on (v0.60).",
             dropped_global_inits.len(),
             dropped_global_inits.join(", ")
-        );
-    }
-    // #739: `--shadow-stack-size` on a module whose generated code carries NO
-    // `__synth_wasm_data`/`__synth_globals` relocation would silently skip
-    // BOTH the region emission and the shrink (`native_layout` = None below).
-    // The pre-fix #739 fixture hit exactly this: every static access was
-    // BAKED (un-relocated), so the object shipped with its 1 MiB of statics
-    // dropped, the SP global gone, and the flag ignored — vacuously "green".
-    // Refuse loudly instead: the integrator asked to shrink a reservation
-    // that the emitted code never references.
-    if let Some(ng) = &native_globals
-        && ng.shadow_stack_size.is_some()
-        && !emit_wasm_data
-    {
-        anyhow::bail!(
-            "--shadow-stack-size: no __synth_wasm_data/__synth_globals relocation \
-             reaches the native-pointer region (linear memory {linear_memory_bytes} B), \
-             so there is no reservation to shrink — refusing rather than silently \
-             ignoring the flag. VCR-MEM-001/#739."
         );
     }
     // #237 (gale, mutex-on-silicon): under the native-pointer ABI the region

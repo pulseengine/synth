@@ -62,6 +62,7 @@ fn compile(wasm: &Path, out: &str, debug_line: bool) -> Vec<u8> {
         "--all-exports",
         "--relocatable",
         "--embedder-data-init",
+        "--embedder-global-init",
         "-o",
         out,
     ];

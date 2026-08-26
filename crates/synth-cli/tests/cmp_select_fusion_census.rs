@@ -51,6 +51,12 @@ fn census(fix: &str) -> (usize, usize) {
             "--all-exports",
             "--relocatable",
             "--embedder-data-init",
+            // RQ-59-GLOBALINIT (#1052): the census fixtures carry nonzero
+            // stack-pointer globals; this is a codegen-metrics test whose
+            // artifacts are never executed, so acknowledge the embedder
+            // contract (bytes identical either way — the flag only converts
+            // the refusal).
+            "--embedder-global-init",
         ])
         .output()
         .expect("run synth");
