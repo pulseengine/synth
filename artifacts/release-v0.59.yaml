@@ -651,7 +651,7 @@ artifacts:
       the evidence-backed lever is the short systematic-cause list above,
       not --allow-partial (which would ship objects missing ~a quarter of
       their functions) and not prune tooling (2/34 today).
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [measurement, real-world-corpus, policy, decline-honesty]
     links:
