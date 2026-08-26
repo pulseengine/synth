@@ -226,6 +226,8 @@ artifacts:
         target: CM-002
       - type: traces-to
         target: CM-005
+      - type: traces-to
+        target: gale:DELIBERATELY-DANGLING-1012-RED-FIRST
       # A traces-to link to kiln:FR-P3-ASYNC-BUILTINS was removed in #1012:
       # kiln's artifact store has no such id (never did — zero hits in the
       # synced repo), and retargeting to the nearest live kiln P3 artifacts
