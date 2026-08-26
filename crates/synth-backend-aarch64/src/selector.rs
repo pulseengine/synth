@@ -526,6 +526,22 @@ pub fn select_typed_cf_calls(
     } else {
         (num_slots * 8).div_ceil(16) * 16
     };
+    // #1017: the prologue's `sub sp, sp, #frame` / epilogue's `add` carry an
+    // UNSIGNED 12-bit immediate (max 4095, no shift) — a larger frame (>= 512
+    // slot-resident locals) must LOUD-DECLINE here. Without this guard the
+    // encoder's `debug_assert` panics in a debug build and, worse, a release
+    // build encodes imm12 overflow bits into neighbouring fields — a WRONG
+    // SP adjustment, the silent-miscompile class (#180/#185's A64 sibling).
+    // Latent since the prologue landed; first REACHED when #1017 removed the
+    // module-level import declines that had always aborted these modules
+    // earlier (found by the #1017 acceptance census, kiln wasip3 corpus).
+    if frame_size > 0xFFF {
+        return Err(SelectError(format!(
+            "local frame of {num_slots} slots ({frame_size} bytes) exceeds the \
+             prologue's `sub sp, sp, #imm12` range (4095) — loud-declining \
+             rather than emitting a wrong SP adjustment (#1017)"
+        )));
+    }
     // Byte offset of local `idx`'s slot from SP.
     let local_slot_off = |idx: u32| -> u32 { (idx - slot_base) * 8 };
     // Is local `idx` slot-resident (vs a register-resident param in a leaf)?
@@ -3143,6 +3159,28 @@ mod tests {
             w[sites[0].offset as usize / 4],
             enc::bl(0),
             "the site is a `bl` placeholder the CALL26 reloc patches"
+        );
+    }
+
+    /// #1017: a local frame past the `sub sp, sp, #imm12` range (>= 512
+    /// slot-resident locals) LOUD-DECLINES instead of reaching the encoder's
+    /// debug_assert (debug: panic; release: WRONG SP adjustment — the silent-
+    /// miscompile class). Found by the #1017 acceptance census: six kiln
+    /// modules crashed rc=101 once the import declines no longer aborted them
+    /// at module level. The 511-slot frame (4088 -> 4096-byte rounded... 4088
+    /// bytes) still lowers; 512 slots (4096 bytes) must decline.
+    #[test]
+    fn oversized_local_frame_loud_declines_1017() {
+        // 512 non-param locals -> 512 slots -> 4096-byte frame > 4095.
+        let mut ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(511)];
+        ops.push(WasmOp::End);
+        let e = select(&ops, 0).expect_err("4096-byte frame must decline");
+        assert!(e.0.contains("sub sp, sp, #imm12"), "{}", e.0);
+        // One slot fewer (4080-byte frame) still lowers.
+        let ops_ok = vec![WasmOp::I32Const(1), WasmOp::LocalSet(509), WasmOp::End];
+        assert!(
+            select(&ops_ok, 0).is_ok(),
+            "sub-imm12-range frame must lower"
         );
     }
 
