@@ -487,7 +487,7 @@ artifacts:
       real op-mix" cases (#369->#782, #869->v0.52). Run it BEFORE the release,
       not after — a synthetic fixture that goes green while the real op-mix does
       not move is exactly the failure this project keeps finding.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [reach, vfp, fpu, f32, aeabi-builtins, jess, cortex-m7, measured]
     links:
