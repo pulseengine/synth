@@ -7,7 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### The theme: the loud direction was covered, the silent one was not
+
+Five defects of ONE shape, none of them found by an existing differential, all
+of them exit-0. synth accepted the input, discarded part of its semantics, and
+reported success — the single behaviour the honest-frontier philosophy exists to
+prevent, because a loud decline costs a build failure while a silent drop costs a
+wrong answer arbitrarily far from its cause.
+
+| issue | what was silently dropped |
+|---|---|
+| #1041 | ARM `--relocatable` discarded **active data segments** |
+| #1046 | **ALL THREE backends** discarded the `(start)` function — no decoder arm existed |
+| #1052 | ARM `--relocatable` discarded **nonzero global initializers** |
+| #1048 | i64 shift/bit-count expansions **destroyed their own operands** |
+| #1021 | `i32.popcnt` **clobbered R11, the linear-memory base** (memory corruption) |
+
+What made the class visible was **cross-backend divergence in DECLINE
+behaviour**: aarch64 already refused loudly on input ARM accepted and mangled.
+A backend that refuses where another silently proceeds is a bug detector.
+
 ### Fixed
+
+- **#1021 (RQ-59-POPCNT): `i32.popcnt` clobbered R11, the WASM linear-memory
+  base.** The expansion borrowed R11 as scratch. R11 is in no pushed set, so the
+  corruption LEAKED ACROSS THE CALL BOUNDARY to every later memory access —
+  reachable from a single `i32.popcnt` with no unusual shape required. Reworked
+  to R12-only on both backends, with an encoder guard refusing a Popcnt whose
+  destination is R11, and gated by a new execution differential that reads R11
+  back after return (no wired differential on main did that before).
+- **#1048 (RQ-59-I64SHIFT): i64 variable shifts and bit-counts destroyed their
+  own operands.** `I64Shl`/`I64ShrU`/`I64ShrS` masked the shift amount IN PLACE
+  and wrote `amt-32` into the amount's HOME HIGH register; `I64Clz`/`I64Ctz`/
+  `I64Popcnt` cleared the OPERAND's high register with a `MOV rnhi, #0` aimed at
+  the result. Re-reading the operand after the op returned a mangled value
+  (`amt=64` read back `0`, `amt=67` read back `3`). Both selectors, both
+  backends, executed.
+  **The already-wired `i64_shr_599` differential PASSES on the miscompiling
+  binary** — every one of its fixtures consumes the shift result immediately and
+  never re-reads the amount, so the destroyed registers are dead in every vector.
+  The oracle was structurally blind to the class, which is the argument the
+  canary gate below exists to answer.
+- **#1041 (RQ-59-DATASEG), #1046 (RQ-59-STARTFN), #1052 (RQ-59-GLOBALINIT): three
+  silent drops become loud declines.** Each now refuses with a non-zero exit and
+  a reason naming what it declined, matching aarch64's existing house style
+  (#851) — and each ships an explicit embedder escape hatch
+  (`--embedder-data-init`, `--embedder-global-init`) that changes no emitted
+  byte, for embedders that genuinely populate those regions at instantiation.
+  Every test asserts the NON-ZERO EXIT and the reason string, never mere byte
+  absence, which was already true of the broken behaviour.
+- **#1013 (RQ-59-A64PANIC): the AArch64 ELF builder panicked (exit 101)** where
+  ARM and RISC-V decline cleanly. It now refuses with exit 1 and a reason naming
+  the declined symbol — matching the sibling backends rather than inventing a
+  policy.
+- **#990 (RQ-59-ZEROINIT): a local written on only ONE arm of a `br_if` was
+  never zero-initialised**, so it read a stale register instead of the
+  wasm-mandated 0. Domination-precise classification on ARM and RV32.
+
+### Added
+
+- **VCR-TIER-001 increment 1 — the pseudo-op expansion canary gate.** 52 of the
+  80 Rocq-proved selector rules emit a PSEUDO-OP whose multi-instruction ENCODER
+  EXPANSION the proof never sees: `ArmSemantics` executes e.g. `POPCNT`
+  atomically, so a scratch register the expansion borrows is UNREPRESENTABLE in
+  the model. **An atomic model of a multi-instruction expansion is a silent claim
+  that the expansion is scratch-free** — and that claim shipped false twice this
+  release, on two different register tiers (#1021 a reserved global, #1048 a
+  caller operand).
+  The gate executes every rule-emitted variant on both Thumb-2 and A32 under
+  register canaries (R11 = `0xB11B11B1`) and asserts nothing outside
+  `{results} ∪ {declared contract} ∪ {R12}` moved, SP is restored, memory stays
+  in the expansion's own red-zone, and **no declared contract register goes
+  unexercised** — so an over-broad contract cannot hollow it out.
+  Its potency is **re-proven on every CI run**, not merely at authoring: two
+  committed fixtures hold the REAL pre-fix encoder bytes and must red on exactly
+  the pinned registers. The pre-#1039 fixture reds `Popcnt:['r11']` *and* the
+  operand tier; the pre-#1054 fixture reds the operand tier *only*, with Popcnt
+  absent — so the gate discriminates WHICH fix is present rather than merely
+  failing on old bytes.
+- **#1012: synth's rivet trace graph resolves for the first time.** Six externals
+  were declared against `/Volumes/Home/...`, a volume that does not exist; a dead
+  local `path:` takes precedence over the `git:` fallback, so cross-repo links
+  never resolved. `rivet validate` went **FAIL (50 errors, 0 broken cross-refs)
+  -> PASS, exit 0, 1032 cross-repo backlinks**.
+  The diagnostic is the reusable part: **`0 broken cross-refs` beside 50 link
+  errors never meant the graph was clean — it meant resolution never ran.** Of
+  the 12 genuine dangling refs the fix exposed, nine were GitHub issue/PR numbers
+  written where an artifact id belongs. The new federated CI job is deliberately
+  ADVISORY (a required check that cannot run deadlocks every merge) and carries a
+  non-vacuity guard that reds when the backlink count is 0.
+- **#965 (RQ-59-MINORHOLD): the 0.x-minor dependency hold is now ENFORCED**, not
+  merely documented — disable-and-assert, with a fail-closed tested classifier.
+- **#977 (RQ-59-FRESHNESS): stale-artifact freshness coverage 7/58 -> 58/58.**
+  The v0.58 survey found exit status checked at all 58 compile-then-parse sites
+  but freshness at only 7: the loud direction covered almost everywhere, the
+  silent one almost nowhere.
+
+### Changed
+
+- **Six more Rocq-proved selector rules, and every superseded hand-written arm
+  DELETED** (RQ-59-SUBTRACT increment 6): `sel_dsl_rules` **74 -> 80**, suite Qed
+  **617 -> 623**.
+- **The selector GREW this release: `selector_lines_code` 17,961 -> 18,288
+  (+327).** Stating it plainly because v0.58's headline was the opposite and the
+  subtraction ratchet exists precisely so this cannot be quietly omitted. The
+  growth is fix-first soundness work — the #989 WAR guard alone is +173, and the
+  four refusal paths add their own — each movement carrying a `waivers:` entry
+  with a written reason, per the rule that permission is per-growth and never
+  standing. Six rules were still retired into the verified path; the wildcard
+  ceiling held flat at 55.
+- **#242 (RQ-59-MEASURE): increment-4 verdict is DO NOT FLIP.** The graph
+  allocator wins on net (-122 B / -36 cyc / -31 insns) but does not DOMINATE —
+  seven fixtures grew, all through one mechanism. A measured negative result,
+  recorded rather than retried.
+- **#242 (RQ-59-REACH): the census says do NOT widen.** `unmodeled-op` is a long
+  tail, not a blocked frontier; the named blocker is a missing RMW tie
+  (`Movt`/`SelectMove`). Second deliberate negative result of the release.
+- **#936 (RQ-59-WCETI64): the residual four i64 ops are PRICED**, from the real
+  encoder's own bytes rather than a hand-mirrored size table.
+- **#1017 (RQ-59-PARTIALCENSUS): 89% of blocked modules are skip-only, but the
+  median blocked module loses a QUARTER of its functions, not one.** Measurement
+  only, by scope — the `--allow-partial` decision now has a number instead of an
+  intuition.
+- **#1021 (RQ-59-TIERCENSUS): 52 of the 80 proved rules sit above an encoder
+  expansion the proof never sees.** Scoped to COUNT and stop — and the count is
+  the smaller half of what it produced. Executing every rule-emitted expansion
+  under unicorn and diffing register state is how **#1048 fell out of a census
+  that was not hunting for it**, one register tier below the reserved-register
+  subset the census was measuring. It also found that the census's OWN
+  hand-maintained `declared_temps` column DECLARED THE MISCOMPILE LEGAL (`&[R5]`
+  for the shifts, `&[R3]` for the bit-counts — exactly the registers #1048
+  clobbered): a checker that mirrored the defect it existed to catch. That
+  column is deleted; the contract is now derived from a single declaration site
+  beside the encoder.
+- **#242 (RQ-59-CRSWEEP): the deferred code-review findings were re-verified
+  against the current binary rather than closed on age** — 10 stale, and **1
+  CONFIRMED STILL REAL** (CR-H7, which is #1021, the R11 clobber above). The one
+  that survived is the argument for re-verifying rather than time-expiring a
+  backlog.
 
 - **#989 (RQ-59-WARALIAS): ARM `local.set`/`local.tee` clobbered an earlier
   `local.get` of the same local still on the operand stack (WAR aliasing).**
