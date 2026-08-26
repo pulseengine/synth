@@ -951,6 +951,25 @@ jobs:
             python scripts/oracle_run.py scripts/repro/aarch64_call_indirect_851_differential.py | tee ci851.txt
           grep -Eq '^[1-9][0-9]* checks \([1-9][0-9]* trap, [1-9][0-9]* value\)' ci851.txt
           grep -q '^RESULT: PASS' ci851.txt
+      - name: Run RQ-60-A64IMPORT import-dispatch oracle (#1017 — SHN_UNDEF externals, linked + executed)
+        # The #1017 contract end to end: an imported function becomes a GLOBAL
+        # STT_FUNC SHN_UNDEF symbol under its wasm FIELD name, with the CALL26
+        # (direct call) resp. JUMP26 (table trampoline) relocation binding to
+        # it — read from the SYMTAB via pyelftools, never disasm text. The
+        # harness then acts as the host linker (places .text, appends its own
+        # A64 definitions of the imports, resolves every relocation) and runs
+        # the result under unicorn against wasmtime-first expected values,
+        # including the still-must-TRAP out-of-range table cases. DECLINE
+        # HONESTY leg: a loud-declined LOCAL callee must still refuse with the
+        # #1013 exit-1 naming the symbol — the externals allowlist is
+        # imports-only. NON-VACUITY: both value and trap counts asserted
+        # non-zero; `set -euo pipefail` per #890.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py | tee impdisp1017.txt
+          grep -Eq '^executions: [1-9][0-9]* \([1-9][0-9]* value, [1-9][0-9]* trap\)' impdisp1017.txt
+          grep -q '^RESULT: PASS' impdisp1017.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
         # Err(reason). The soundness-critical one is TRAP_TRUNC_I64: A64
