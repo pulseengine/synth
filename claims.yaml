@@ -1413,11 +1413,14 @@ claims:
         # sign-extension family arm deletions + the select_default
         # width-conversion delegation, see the lines_code waiver);
         # zero test-module movement.
-        # 28899 -> 28909 (RQ-59-I64SHIFT #1048): +10 code — select_default's
+        # 28899 -> 28929 (RQ-59-I64SHIFT #1048): +10 code — select_default's
         # explicit i64 bit-count result-hi zero, replacing the encoder
         # expansions' operand-clobbering implicit `MOV rnhi, #0` (see the
-        # lines_code waiver); zero test-module movement.
-        value: 28909
+        # lines_code waiver) — PLUS +20 test module, the #1048 operand-clobber
+        # assertions in instruction_selector.rs (all past the `#[cfg(test)]
+        # mod tests` marker, so the DIRECTED lines_code ceiling correctly does
+        # not see them: adding test coverage must never cost a waiver).
+        value: 28929
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
