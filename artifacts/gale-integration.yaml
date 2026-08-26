@@ -558,8 +558,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-NPA-001
-      - type: traces-to
-        target: gale:354
     fields:
       req-type: functional
       priority: must
@@ -616,8 +614,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-002
-      - type: traces-to
-        target: gale:369
     fields:
       req-type: functional
       priority: must
@@ -706,8 +702,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-002
-      - type: traces-to
-        target: gale:369
     fields:
       req-type: functional
       priority: must
@@ -837,8 +831,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-005
-      - type: traces-to
-        target: gale:372
     fields:
       req-type: functional
       priority: must
@@ -894,8 +886,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-NPA-001
-      - type: traces-to
-        target: gale:359
     fields:
       req-type: functional
       priority: must
@@ -938,8 +928,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-005
-      - type: traces-to
-        target: gale:374
       - type: traces-to
         target: jess:TEST-PIX-013
     fields:
@@ -1012,8 +1000,6 @@ artifacts:
     links:
       - type: derives-from
         target: GI-005
-      - type: traces-to
-        target: gale:382
     fields:
       req-type: functional
       priority: must
