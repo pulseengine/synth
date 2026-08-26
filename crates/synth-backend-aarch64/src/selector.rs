@@ -308,7 +308,6 @@ pub fn select_typed_cf(
         params_f32,
         params_f64,
         block_arity,
-        0,
         &[],
         &[],
         &[],
@@ -333,8 +332,12 @@ pub struct CallSite {
 /// Lower a body, ALSO lowering direct `call` (#851). Same as [`select_typed_cf`]
 /// plus the call-lowering inputs:
 ///
-/// - `num_imports`: functions with full index `< num_imports` are IMPORTS —
-///   calling one is loud-declined in v1 (no import-dispatch ABI yet).
+/// #1017: an IMPORTED callee (full index `< num_imported_funcs`) lowers exactly
+/// like a local call (`bl` + CALL26 against `func_{idx}`); the ELF assembly
+/// rewrites the import's `func_N` symbol to its wasm field name, emitted
+/// `SHN_UNDEF` for the host linker (#173/#197 ported). All marshalling guards
+/// apply to imports identically, so this function no longer takes (or needs)
+/// an import count — the import/local split is the ELF layer's concern.
 /// - `func_arg_counts[idx]`: the callee's AAPCS integer-arg slot count (how many
 ///   values `call` pops off the value stack and marshals into `x0..x7`).
 /// - `func_result_counts[idx]`: the callee's result count (0 = void, 1 = one
@@ -393,7 +396,6 @@ pub fn select_typed_cf_calls(
     params_f32: &[bool],
     params_f64: &[bool],
     block_arity: &[(u8, u8)],
-    num_imports: u32,
     func_arg_counts: &[u32],
     func_result_counts: &[u32],
     func_ret_float: &[bool],
@@ -524,6 +526,22 @@ pub fn select_typed_cf_calls(
     } else {
         (num_slots * 8).div_ceil(16) * 16
     };
+    // #1017: the prologue's `sub sp, sp, #frame` / epilogue's `add` carry an
+    // UNSIGNED 12-bit immediate (max 4095, no shift) — a larger frame (>= 512
+    // slot-resident locals) must LOUD-DECLINE here. Without this guard the
+    // encoder's `debug_assert` panics in a debug build and, worse, a release
+    // build encodes imm12 overflow bits into neighbouring fields — a WRONG
+    // SP adjustment, the silent-miscompile class (#180/#185's A64 sibling).
+    // Latent since the prologue landed; first REACHED when #1017 removed the
+    // module-level import declines that had always aborted these modules
+    // earlier (found by the #1017 acceptance census, kiln wasip3 corpus).
+    if frame_size > 0xFFF {
+        return Err(SelectError(format!(
+            "local frame of {num_slots} slots ({frame_size} bytes) exceeds the \
+             prologue's `sub sp, sp, #imm12` range (4095) — loud-declining \
+             rather than emitting a wrong SP adjustment (#1017)"
+        )));
+    }
     // Byte offset of local `idx`'s slot from SP.
     let local_slot_off = |idx: u32| -> u32 { (idx - slot_base) * 8 };
     // Is local `idx` slot-resident (vs a register-resident param in a leaf)?
@@ -2318,12 +2336,17 @@ pub fn select_typed_cf_calls(
             // no shuffle. Imports, >8 args, and non-{0,1}-result callees decline.
             WasmOp::Call(func_idx) => {
                 let idx = *func_idx;
-                if idx < num_imports {
-                    return Err(SelectError(format!(
-                        "call to imported function {idx} — import dispatch is not \
-                         yet supported for aarch64; loud-declining (#851)"
-                    )));
-                }
+                // #1017 (VCR-REACH-002): a call to an IMPORTED function
+                // (`idx < num_imports`) lowers through the SAME path as a local
+                // call — `bl` + an R_AARCH64_CALL26 relocation. The reloc symbol
+                // is `func_{idx}` here; the ELF assembly rewrites an import's
+                // `func_N` to its wasm FIELD name and emits it `SHN_UNDEF` for
+                // the host linker to resolve (the ARM `--relocatable` #173/#197
+                // contract, ported — the wasm2c/Wasker undefined-symbol
+                // pattern). Every marshalling guard below (≤8 args, ≤1 result,
+                // no float result/args, exact-height stack) applies to imports
+                // identically: the tables are indexed by FULL function index,
+                // imports first.
                 let argc = *func_arg_counts.get(idx as usize).ok_or_else(|| {
                     SelectError(format!("call to function {idx}: unknown arg count"))
                 })?;
@@ -2887,7 +2910,10 @@ mod tests {
     fn sel_calls(
         ops: &[WasmOp],
         num_params: u32,
-        num_imports: u32,
+        // #1017: the lowering no longer branches on the import count (imports
+        // lower like local calls); the parameter is kept so each test still
+        // DOCUMENTS which callees it models as imports.
+        _num_imports: u32,
         arg_counts: &[u32],
         result_counts: &[u32],
     ) -> Result<(Vec<u32>, Vec<CallSite>), SelectError> {
@@ -2897,7 +2923,6 @@ mod tests {
             &[],
             &[],
             &[],
-            num_imports,
             arg_counts,
             result_counts,
             &[],
@@ -2989,7 +3014,6 @@ mod tests {
             &[],
             &[],
             &[],
-            0,
             &[],
             &[],
             &[],
@@ -3075,7 +3099,6 @@ mod tests {
                 &[],
                 &[],
                 &[],
-                0,
                 &[],
                 &[],
                 &[],
@@ -3113,7 +3136,6 @@ mod tests {
             &[],
             &[],
             &[],
-            0,
             &[],
             &[],
             &[],
@@ -3124,10 +3146,65 @@ mod tests {
     }
 
     #[test]
-    fn call_to_import_loud_declines() {
-        // func 0 is an import (num_imports = 1); calling it declines.
+    fn call_to_import_lowers_like_a_local_call_1017() {
+        // func 0 is an import (num_imports = 1). #1017: it lowers through the
+        // SAME `bl` + CALL26 path as a local call — the CallSite records callee
+        // 0, and the ELF assembly later rewrites `func_0` to the import's field
+        // name as an undefined external. (Pre-#1017 this loud-declined.)
         let ops = vec![WasmOp::Call(0), WasmOp::End];
-        assert!(sel_calls(&ops, 0, 1, &[0], &[0]).is_err());
+        let (w, sites) = sel_calls(&ops, 0, 1, &[0], &[0]).expect("import call lowers");
+        assert_eq!(sites.len(), 1, "one call site recorded");
+        assert_eq!(sites[0].callee, 0, "callee is the import's full index");
+        assert_eq!(
+            w[sites[0].offset as usize / 4],
+            enc::bl(0),
+            "the site is a `bl` placeholder the CALL26 reloc patches"
+        );
+    }
+
+    /// #1017: a local frame past the `sub sp, sp, #imm12` range (>= 512
+    /// slot-resident locals) LOUD-DECLINES instead of reaching the encoder's
+    /// debug_assert (debug: panic; release: WRONG SP adjustment — the silent-
+    /// miscompile class). Found by the #1017 acceptance census: six kiln
+    /// modules crashed rc=101 once the import declines no longer aborted them
+    /// at module level. The 511-slot frame (4088 -> 4096-byte rounded... 4088
+    /// bytes) still lowers; 512 slots (4096 bytes) must decline.
+    #[test]
+    fn oversized_local_frame_loud_declines_1017() {
+        // 512 non-param locals -> 512 slots -> 4096-byte frame > 4095.
+        let mut ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(511)];
+        ops.push(WasmOp::End);
+        let e = select(&ops, 0).expect_err("4096-byte frame must decline");
+        assert!(e.0.contains("sub sp, sp, #imm12"), "{}", e.0);
+        // One slot fewer (4080-byte frame) still lowers.
+        let ops_ok = vec![WasmOp::I32Const(1), WasmOp::LocalSet(509), WasmOp::End];
+        assert!(
+            select(&ops_ok, 0).is_ok(),
+            "sub-imm12-range frame must lower"
+        );
+    }
+
+    #[test]
+    fn call_to_import_keeps_the_marshalling_guards_1017() {
+        // The import path must NOT be laxer than the local path: a
+        // float-RESULT import still loud-declines (v0/d0 vs x0 — the
+        // silent-miscompile class the local guard exists for).
+        let ops = vec![WasmOp::Call(0), WasmOp::End];
+        let ctx = ModuleCtx::default();
+        let r = select_typed_cf_calls(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            &[0],
+            &[1],
+            &[true],
+            MemBounds::Unchecked,
+            &ctx,
+        );
+        let e = r.expect_err("float-returning import declines").to_string();
+        assert!(e.contains("float result"), "{e}");
     }
 
     /// #851 lane L3 — a non-leaf function that reads a param now HOMES it into
@@ -3213,7 +3290,6 @@ mod tests {
             &[true, false], // param 0 is f32
             &[],
             &[],
-            0,
             &[0],
             &[0],
             &[false],
@@ -3242,7 +3318,6 @@ mod tests {
             &[true], // param 0 is f32 → lives in s0
             &[],
             &[],
-            0,
             &[0, 1],
             &[0, 1],
             &[false, false],
@@ -3276,7 +3351,6 @@ mod tests {
             &[],
             &[],
             &[],
-            0,
             &[0],    // 0 args
             &[1],    // 1 result
             &[true], // ...which is a float
@@ -3295,7 +3369,6 @@ mod tests {
             &[],
             &[],
             &[],
-            0,
             &[],
             &[],
             &[],
@@ -3389,7 +3462,6 @@ mod tests {
             f32s,
             f64s,
             &[],
-            0,
             &[],
             &[],
             &[],
@@ -5177,7 +5249,6 @@ mod tests {
             &[],
             &[],
             &[],
-            0,
             &[],
             &[],
             &[],

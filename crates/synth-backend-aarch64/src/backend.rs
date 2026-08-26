@@ -99,7 +99,6 @@ impl AArch64Backend {
             &config.current_func_params_f32,
             &config.current_func_params_f64,
             &config.current_func_block_arity,
-            config.num_imports,
             &config.func_arg_counts,
             func_result_counts,
             func_ret_float,
@@ -402,7 +401,29 @@ impl Backend for AArch64Backend {
         if let Some(table) = substrate.table {
             elf_funcs.push(table);
         }
-        let elf = elf::build_relocatable_object_with_data(&elf_funcs, &substrate.globals)?;
+        // #1017 (VCR-REACH-002): rewrite each import call's `func_N` relocation
+        // to the import's wasm FIELD name (ARM's `build_relocatable_elf` #173
+        // rewrite, ported) and hand the field names to the ELF builder as the
+        // undefined-external ALLOWLIST — a `bl fd_write` site becomes an
+        // `SHN_UNDEF` symbol the host linker resolves. An import the module
+        // does not name keeps its `func_N` symbol, which the builder's #1013
+        // guard refuses (never a fabricated external, never a dropped reloc).
+        // The table's import trampolines already carry field names (see
+        // `substrate::plan_table`); the allowlist covers them too. A module
+        // with no function imports passes an empty list — byte-identical.
+        let import_syms = crate::substrate::import_func_symbols(module);
+        for f in &mut elf_funcs {
+            for r in &mut f.relocations {
+                if let Some(rest) = r.symbol.strip_prefix("func_")
+                    && let Ok(i) = rest.parse::<u32>()
+                    && i < module.num_imported_funcs
+                    && let Some(name) = import_syms.get(i as usize).filter(|n| !n.is_empty())
+                {
+                    r.symbol = name.clone();
+                }
+            }
+        }
+        let elf = elf::build_relocatable_object_full(&elf_funcs, &substrate.globals, &import_syms)?;
         Ok(CompilationResult {
             functions,
             elf: Some(elf),

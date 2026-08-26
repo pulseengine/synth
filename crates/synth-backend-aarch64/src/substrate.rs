@@ -119,6 +119,13 @@ pub struct PlanInputs {
     /// Number of imported functions — a table slot pointing at one has no
     /// `func_N` body in this object.
     pub num_imported_funcs: u32,
+    /// #1017 (VCR-REACH-002): each imported function's wasm FIELD name,
+    /// indexed by imported-function index (`0..num_imported_funcs`). A table
+    /// slot holding an import emits its trampoline `b <field>` against this
+    /// UNDEFINED symbol (the ARM #173/#197 relocatable contract, ported); the
+    /// host linker resolves it. An import whose name is missing here still
+    /// loud-declines.
+    pub import_func_symbols: Vec<String>,
     /// Does any compiled function execute `call_indirect`?
     pub uses_call_indirect: bool,
     /// #851 lane L3 — the STRUCTURAL class id per function type, carried here
@@ -127,6 +134,27 @@ pub struct PlanInputs {
     pub type_class_ids: Vec<u32>,
     /// Result count per function type, same rationale.
     pub type_result_counts: Vec<u32>,
+}
+
+/// #1017 (VCR-REACH-002): each imported FUNCTION's wasm field name, indexed by
+/// imported-function index (`0..num_imported_funcs`). The ONE derivation every
+/// aarch64 driver shares — this is both the symbol an import call or table
+/// trampoline relocates against and the allowlist the ELF builder emits as
+/// `SHN_UNDEF` externals. Matches ARM's `build_relocatable_elf` field-name
+/// rewrite (#173): the host defines `fd_write`, not `func_0`. An import the
+/// imports section somehow does not name keeps an EMPTY string, which no
+/// caller ever matches — such a call still refuses at the ELF #1013 guard
+/// rather than fabricating a symbol.
+pub fn import_func_symbols(module: &DecodedModule) -> Vec<String> {
+    let mut v = vec![String::new(); module.num_imported_funcs as usize];
+    for imp in &module.imports {
+        if matches!(imp.kind, synth_core::ImportKind::Function(_))
+            && let Some(slot) = v.get_mut(imp.index as usize)
+        {
+            *slot = imp.name.clone();
+        }
+    }
+    v
 }
 
 impl PlanInputs {
@@ -146,6 +174,7 @@ impl PlanInputs {
             table_sizes: module.table_sizes.clone(),
             elem_segments: module.elem_segments.clone(),
             num_imported_funcs: module.num_imported_funcs,
+            import_func_symbols: import_func_symbols(module),
             uses_call_indirect: false,
             type_class_ids: module.structural_type_class_ids(),
             type_result_counts: module.type_result_counts.clone(),
@@ -343,20 +372,33 @@ fn plan_table(input: &PlanInputs) -> Result<ElfFunction, String> {
         code.extend_from_slice(&class.to_le_bytes());
         match slot {
             Some(f) => {
-                // A slot pointing at an IMPORTED function has no `func_N` body
-                // in this object; import dispatch is declined on this backend,
-                // so a `b func_N` would relocate against a symbol we never
-                // place (and the ELF builder now panics rather than drop it).
-                if *f < input.num_imported_funcs {
-                    return Err(format!(
-                        "table slot {s} holds imported function {f}; import \
-                         dispatch is not supported on aarch64, so the table \
-                         cannot carry a trampoline to it — loud-declining (#851)"
-                    ));
-                }
+                // #1017 (VCR-REACH-002): a slot pointing at an IMPORTED
+                // function has no `func_N` body in this object — its trampoline
+                // branches to the import's wasm FIELD name instead, an
+                // UNDEFINED external the host linker resolves (out-of-range
+                // gets a linker veneer; ET_REL semantics). Same JUMP26 site,
+                // same tail-branch contract; the slot's class id comes from the
+                // import's declared type exactly like a local's. An import the
+                // module does not name still loud-declines — a fabricated
+                // symbol would be the silent-wrong-target class.
+                let symbol = if *f < input.num_imported_funcs {
+                    match input.import_func_symbols.get(*f as usize) {
+                        Some(name) if !name.is_empty() => name.clone(),
+                        _ => {
+                            return Err(format!(
+                                "table slot {s} holds imported function {f}, \
+                                 whose import field name is not available — \
+                                 refusing to fabricate an external symbol \
+                                 (#1017)"
+                            ));
+                        }
+                    }
+                } else {
+                    format!("func_{f}")
+                };
                 relocations.push(CodeRelocation {
                     offset: (s as u32 * TABLE_SLOT_BYTES) + 4,
-                    symbol: format!("func_{f}"),
+                    symbol,
                     kind: RelocKind::AArch64Jump26,
                 });
                 // `b #0` placeholder — the JUMP26 relocation supplies the imm26.
@@ -549,10 +591,44 @@ mod tests {
         assert!(e.contains("no compile-time size"), "{e}");
     }
 
-    /// A slot holding an IMPORTED function declines: this object places no
-    /// `func_N` body for it, so the trampoline could not be relocated.
+    /// #1017: a slot holding an IMPORTED function emits a trampoline `b` whose
+    /// JUMP26 relocation targets the import's FIELD name — the undefined
+    /// external the host linker resolves (pre-#1017 this loud-declined).
     #[test]
-    fn table_slot_holding_an_import_declines() {
+    fn table_slot_holding_an_import_trampolines_to_its_field_name_1017() {
+        let slots = [Some(0u32)];
+        let ids = [1u32];
+        let sizes = [Some(1u32)];
+        let segs = [ElemSegmentInfo {
+            table_index: 0,
+            offset: Some(0),
+            funcs: Some(vec![0]),
+        }];
+        let s = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
+            num_imported_funcs: 1,
+            import_func_symbols: vec!["ext_inc".into()],
+            uses_call_indirect: true,
+            ..base()
+        })
+        .unwrap();
+        let table = s.table.expect("table planned");
+        assert_eq!(table.relocations.len(), 1);
+        assert_eq!(table.relocations[0].symbol, "ext_inc");
+        assert!(matches!(
+            table.relocations[0].kind,
+            RelocKind::AArch64Jump26
+        ));
+        assert_eq!(table.relocations[0].offset, 4, "reloc at slot+4 (the `b`)");
+    }
+
+    /// #1017: an import the module does not NAME still declines — the
+    /// trampoline must never fabricate an external symbol.
+    #[test]
+    fn table_slot_holding_an_unnamed_import_still_declines_1017() {
         let slots = [Some(0u32)];
         let ids = [1u32];
         let sizes = [Some(1u32)];
@@ -572,6 +648,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(e.contains("imported function 0"), "{e}");
+        assert!(e.contains("field name"), "{e}");
     }
 
     /// A table larger than the 12-bit bounds-guard immediate declines.
