@@ -563,8 +563,9 @@ jobs:
           #
           # Floor measured 2026-08-26 under the pinned rivet v0.23.0 with the
           # externals block stripped (this job's own conditions, above):
-          # 463 local artifacts, release-v0.59.yaml's 16 included.
-          ARTIFACT_FLOOR=463
+          # 463 local artifacts, release-v0.59.yaml's 16 included. Re-measured
+          # after #1056 merged RQ-59-GLOBALINIT to main: 464, v0.59's 17 included.
+          ARTIFACT_FLOOR=464
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
