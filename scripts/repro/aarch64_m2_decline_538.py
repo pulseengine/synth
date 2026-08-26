@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 14
+# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 13
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
 Some WASM constructs are DELIBERATELY not lowered on aarch64, and the contract
@@ -107,13 +107,18 @@ DECLINED = [
      '(func (export "f") (param i32) (result i32) '
      '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
      "not statically verifiable"),
-    ("table slot holding an IMPORTED function",
-     '(type $b (func (param i32 i32) (result i32))) '
-     '(import "env" "h" (func $h (type $b))) '
-     '(table 2 funcref) (elem (i32.const 0) $h) '
-     '(func (export "f") (param i32) (result i32) '
-     '(call_indirect (type $b) (i32.const 1) (i32.const 2) (local.get 0)))',
-     "imported function"),
+    # RQ-60-A64IMPORT (#1017): "table slot holding an IMPORTED function" moved
+    # OFF this list — the slot's trampoline now emits `b <field>` against the
+    # import's wasm field name as a GLOBAL/STT_FUNC/SHN_UNDEF external
+    # (R_AARCH64_JUMP26), the ARM #173/#197 contract ported. Deleted because
+    # the replacing capability is VERIFIED WORKING, not merely because the
+    # decline stopped: aarch64_import_dispatch_1017_differential.py (CI-wired,
+    # same job) executes the import-slot dispatch under unicorn against
+    # wasmtime (slot 0 = import -> 42, OOB indices still trap), after checking
+    # the symtab contract via pyelftools. The narrower residual that remains —
+    # an import the module does not NAME still declines (never fabricate a
+    # symbol) — is pinned at unit level in substrate.rs
+    # (`table_slot_holding_an_unnamed_import_still_declines_1017`).
     # The reason is NOT a missing FP store — the encoder has `str s/d` since the
     # v0.54 L2 float load/store increment. It is the SLOT MODEL: `slot_resident`
     # / `local_slot_off` are register-file-agnostic, so a homed v-register param
