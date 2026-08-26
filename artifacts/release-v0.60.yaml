@@ -30,12 +30,17 @@
 # win available and is deliberately NOT gated on the allocator work.
 # =============================================================================
 
-metadata:
-  project: synth
-  release: v0.60
-  theme: "DERIVE WHAT YOU CHECK AGAINST — no hand-written mirror of a shipped thing"
+# RELEASE METADATA — comments, NOT YAML keys.
+# rivet's generic-yaml source format DENIES unknown top-level fields and
+# accepts only `artifacts:`. A `metadata:` key makes rivet SKIP THE WHOLE
+# FILE with a WARN carrying no `ERROR:` prefix, so the required gate stays
+# green because the file is INVISIBLE — that is #1064, which hid all 16
+# v0.59 artifacts from the release-readiness query for the entire release.
+#   project: synth
+#   release: v0.60
+#   theme: "DERIVE WHAT YOU CHECK AGAINST — no hand-written mirror of a shipped thing"
 
-requirements:
+artifacts:
   - id: RQ-60-CANARY
     type: system-req
     title: "Canary gate over pseudo-op encoder expansions — the proof stops at the pseudo-op, the machine does not"
