@@ -53,12 +53,16 @@
 #
 # =============================================================================
 
-metadata:
-  project: synth
-  release: v0.59
-  theme: "REACH — the colourer is sound everywhere it fires; make it fire"
+# project: synth
+# release: v0.59
+# theme: "REACH — the colourer is sound everywhere it fires; make it fire"
+#
+# (Header carried in comments, matching release-v0.56/57/58: rivet's
+# generic-yaml source format accepts ONLY a top-level `artifacts:` key and
+# denies unknown fields — a `metadata:` block makes the whole file invisible
+# to the graph. #1064.)
 
-requirements:
+artifacts:
   - id: RQ-59-WARALIAS
     type: system-req
     title: "ARM: local.set/local.tee CLOBBERS an earlier local.get of the same local"
