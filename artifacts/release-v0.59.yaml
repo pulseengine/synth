@@ -797,7 +797,7 @@ requirements:
       RED-FIRST with the repro above as an execution differential asserting the
       VALUE. Fix all three shift expansions on BOTH backends. Then say why
       `i64_shr_599` could not see it, and whether the fix makes it able to.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, i64, operand-clobber, arm, a32, fix-first]
     links:
