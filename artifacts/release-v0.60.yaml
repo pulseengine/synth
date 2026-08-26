@@ -278,3 +278,74 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1059"
+
+  - id: RQ-60-WCETKEY
+    type: system-req
+    title: "The --wcet-hints seam has no key for internal functions — 7 of 13 loop declines are unaddressable"
+    description: >
+      #1063, measured by gale (fathom) on the E2 dissolved `gust:os` composite
+      (meld 0.48.0 -> loom 1.2.0 -> synth 0.57.0, cortex-m3 --relocatable
+      --native-pointer-abi --emit-wcet), 31 functions, 3 bounded / 28 declined:
+
+        wcet fn names: 31   named = 23   anonymous (func_<N>) = 8
+        named wcet fns that ARE exports:     23 / 23
+        anonymous wcet fns that are exports:  0 /  8
+
+      `synth-wcet-v1` takes its `name` from the EXPORT SECTION and falls back to
+      `func_<index>` for every internal function. `--wcet-hints` keys on the
+      name, so **7 of the 13 `loop` declines cannot be hinted at all** — and
+      `loop` is 13 of 28 declines with 11 `callee-unbounded` cascades behind it,
+      i.e. most of the leverage the hints seam exists to unlock.
+
+      THE PART THAT IS WORSE THAN "NOT HINTABLE": a hint written against
+      `func_22` SILENTLY RETARGETS the moment an edit adds or removes a function
+      earlier in the index space. It still parses, and it still keys onto a
+      function — just not the one the author verified. synth always emits its
+      OWN derived ceiling rather than the raw hint, so the emitted bound stays
+      synth-derived; what a mis-keyed hint corrupts is the OPT-IN, converting a
+      decline for a function whose shape nobody looked at. An index is not an
+      identity.
+
+      THE NAMES ALREADY EXIST AND ARE NOT CONSULTED. gale pre-empted the obvious
+      dismissal: they rebuilt the whole chain with `meld fuse --preserve-names`
+      and got a BYTE-IDENTICAL `.wcet.json` while the name section went from 0 to
+      59 of 68 functions populated. So this is not a missing-input problem on
+      their side — synth carries the names and ignores them.
+
+      THE BLOCKER (their point 1): when the name section is present, use it for
+      functions with no export name, and accept it symmetrically as a
+      `--wcet-hints` key. Keep `func_<index>` strictly as the last resort when
+      there is no name at all.
+
+      THE CAVEAT THEY STATED RATHER THAN LET US DISCOVER, and it must shape the
+      design: those names are v2 Rust mangling carrying a CRATE DISAMBIGUATOR
+      (`Cs942N1ctoMYm_`) which is NOT content-derived — scry measured 43-45% of
+      their function identities churning per build for exactly this reason
+      (scry#123; two-tier fix in scry#137: strip the disambiguator where the
+      result is unique in the module, flag it build-local where it is not). So
+      the name section is BETTER THAN AN INDEX BUT STILL NOT STABLE. Fixing the
+      blocker with a key that churns every build would trade an unaddressable
+      decline for an unreliable one.
+
+      Their point 2 is a SUGGESTION, not a request, and it is the better shape:
+      emit per function the key `--wcet-hints` will actually match on, plus a
+      build-local flag, so consumers join against what synth accepts instead of
+      reconstructing it from mangled symbols. Decide it deliberately.
+
+      KILL-CRITERION (gale's, adopted verbatim): a hints file keyed on the
+      name-section name of one of those seven functions converts its `loop`
+      decline into `hint-verified` — or is rejected with a NAMED reason, which
+      is equally fine. Being ignored because the key never matches is the
+      failure.
+    status: proposed
+    release: v0.60
+    tags: [wcet, hints-seam, function-identity, gale, honest-frontier]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1063"
+
