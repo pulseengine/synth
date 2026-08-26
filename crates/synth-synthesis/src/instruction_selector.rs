@@ -2842,11 +2842,94 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
 /// `Ok(false)` when `op` is not an f32 op (fall through to the integer match),
 /// and `Err` on an honest phase-1 decline (the function loud-skips).
 #[allow(clippy::too_many_arguments)]
+/// #1069 (RQ-60-VFPPRESSURE increment 2): under the #881 VFP spill rung, the
+/// highest S-register index a fresh f32 LOCAL home may pin (S0..S7). A pinned
+/// home lives for the function's extent and is never a spill victim, so homes
+/// above this cap would starve the transient-temp territory the pressure
+/// guard needs — the worst op demand (`vfp_op_demand`: the #869 i64<->float
+/// conversion family) is 4 aligned D-pairs, which is exactly S8..S15. Homes
+/// are granted lowest-free-first, so capping the granted INDEX (not a count)
+/// keeps the invariant positional: under the rung, no pinned local home ever
+/// sits above S7 / D3, and every register above stays reclaimable by
+/// `spill_deepest_vfp`. A fresh local whose grant would land above the cap
+/// (or whose allocation fails outright) is FRAME-HOMED instead — see
+/// `LocalSet` below. Rung-only: the base path keeps the unconditional
+/// register-home + honest exhaustion Err, byte-identical by construction.
+const VFP_HOME_CAP_S: usize = 7;
+/// The D-register twin of [`VFP_HOME_CAP_S`]: fresh f64 local homes may pin
+/// D0..D3; D4..D7 stay temp territory under the rung.
+const VFP_HOME_CAP_D: usize = 3;
+
+/// The #1069 frame-homed-local slot-pool exhaustion message. SUBSTRING IS
+/// CONTROL FLOW (the #881 lesson, pinned by
+/// `vfp_frame_home_slot_exhaustion_message_is_the_grow_trigger` and the
+/// `live24` fixture test): `arm_backend.rs` matches it to rerun the VFP rung
+/// with a grown slot pool sized to include the function's float-local count.
+/// Reword it there and here together or the grow retry silently stops firing.
+pub const VFP_FRAME_HOME_SLOT_EXHAUSTION: &str =
+    "spill-slot pool exhausted while frame-homing a VFP local";
+
+/// Allocate the PERMANENT frame slot for a frame-homed f32/f64 local (#1069):
+/// a slot from the shared spill pool, held for the function's extent (never
+/// freed — the local's value lives there, stores at every `local.set`, loads
+/// at every `local.get`). `Err` is the ladder-recoverable grow trigger above.
+fn alloc_vfp_local_frame_slot(spill: &mut SpillState, is_double: bool) -> Result<i32> {
+    let slot = spill.alloc().ok_or_else(|| {
+        synth_core::Error::synthesis(format!(
+            "#1069: {VFP_FRAME_HOME_SLOT_EXHAUSTION} — more frame-resident \
+             float locals than the pool holds; the backend retries with a \
+             pool sized from the function's local count and this surfaces \
+             only if that also fails"
+        ))
+    })?;
+    vfp_check_slot_range(slot, is_double)?;
+    Ok(slot)
+}
+
+/// Decide the residence of a FRESH non-param f32 local under the #881 rung:
+/// `Some(reg)` = register home granted at or below [`VFP_HOME_CAP_S`] (pin it
+/// exactly as the base path would); `None` = the grant would land above the
+/// cap, or the file is exhausted — the caller frame-homes the local instead.
+/// An above-cap grant is returned to the pool (it was never pinned).
+fn vfp_try_reg_home_s(vfp_used: &mut [bool; 16]) -> Option<VfpReg> {
+    match alloc_vfp_temp(vfp_used) {
+        Ok(h) => {
+            let s = vfp_s_index(h).expect("alloc_vfp_temp yields S registers only");
+            if s <= VFP_HOME_CAP_S {
+                Some(h)
+            } else {
+                vfp_used[s] = false; // ungrant — not pinned, frame-home instead
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// The D-register twin of [`vfp_try_reg_home_s`], capped at [`VFP_HOME_CAP_D`].
+fn vfp_try_reg_home_d(vfp_used: &mut [bool; 16]) -> Option<VfpReg> {
+    match alloc_vfp_dtemp(vfp_used) {
+        Ok(h) => {
+            let d = vfp_d_index(h).expect("alloc_vfp_dtemp yields D registers only");
+            if d <= VFP_HOME_CAP_D {
+                Some(h)
+            } else {
+                vfp_used[2 * d] = false; // ungrant both halves
+                vfp_used[2 * d + 1] = false;
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors try_lower_f64's home/frame threading (#1069)
 fn try_lower_f32(
     op: &WasmOp,
     idx: usize,
     params_f32: &[bool],
     f32_home: &mut std::collections::HashMap<u32, VfpReg>,
+    f32_frame: &mut std::collections::HashMap<u32, i32>,
     vfp_used: &mut [bool; 16],
     vfp_home: &mut [bool; 16],
     stack: &mut Vec<StackVal>,
@@ -2873,6 +2956,22 @@ fn try_lower_f32(
                 // no copy is needed to defend against aliasing.
                 stack.push(StackVal::Float { sreg: home });
                 Ok(true)
+            } else if let Some(&slot) = f32_frame.get(i) {
+                // #1069: FRAME-homed f32 local (rung-only — the map is empty
+                // in every default compile). Load the frame slot into a fresh
+                // S-temp; the pre-op pressure guard's frame-LocalGet demand
+                // (need_s = 1) freed headroom before this op, so allocation
+                // failing here re-raises the honest exhaustion decline.
+                let sd = alloc_vfp_temp(vfp_used)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32Load {
+                        sd,
+                        addr: MemAddr::imm(Reg::SP, slot),
+                    },
+                    source_line: Some(idx),
+                });
+                stack.push(StackVal::Float { sreg: sd });
+                Ok(true)
             } else {
                 // Not a known f32 local — let the integer LocalGet handle it.
                 Ok(false)
@@ -2880,8 +2979,9 @@ fn try_lower_f32(
         }
         LocalSet(i) | LocalTee(i) => {
             let top_is_float = stack.last().and_then(|v| v.as_float()).is_some();
-            let target_is_f32 =
-                f32_home.contains_key(i) || params_f32.get(*i as usize).copied().unwrap_or(false);
+            let target_is_f32 = f32_home.contains_key(i)
+                || f32_frame.contains_key(i)
+                || params_f32.get(*i as usize).copied().unwrap_or(false);
             if !(top_is_float || target_is_f32) {
                 // Not an f32 local — let the integer LocalSet/Tee handle it.
                 return Ok(false);
@@ -2891,8 +2991,66 @@ fn try_lower_f32(
             // per local, pinned as a home so no temp ever reallocates it), and
             // for `local.tee` leave the value on the operand stack.
             let src = pop_float(stack)?;
+            // #1069: FRAME-homed f32 local — the def IS the store. `local.set`
+            // stores `src` to the local's permanent slot; dominance of every
+            // later `local.get`'s load over this store is inherited from wasm's
+            // own def-use semantics (the store sits exactly where wasm writes
+            // the local), which is what makes frame residence sound where a
+            // mid-function eviction of a register home would not be (its
+            // transfer store could sit on one arm of a branch).
+            if let Some(&slot) = f32_frame.get(i) {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32Store {
+                        sd: src,
+                        addr: MemAddr::imm(Reg::SP, slot),
+                    },
+                    source_line: Some(idx),
+                });
+                if matches!(op, LocalTee(_)) {
+                    // Keep the (still register-resident) value on the stack —
+                    // `src` stays allocated until its consumer frees it. A
+                    // pinned home reaching here is a read-only reference,
+                    // exactly like `LocalGet` of that home.
+                    stack.push(StackVal::Float { sreg: src });
+                } else {
+                    free_vfp_temp(vfp_used, vfp_home, src);
+                }
+                return Ok(true);
+            }
             let home = if let Some(&h) = f32_home.get(i) {
                 h
+            } else if spill.vfp_spill_on_exhaustion {
+                // #1069 (rung-only): residence decision for a FRESH non-param
+                // f32 local. Register-home while the grant lands at or below
+                // the S7 cap (identical bytes to the pre-#1069 rung for
+                // shallow functions); above the cap — or on exhaustion —
+                // frame-home the local from birth instead of failing.
+                match vfp_try_reg_home_s(vfp_used) {
+                    Some(h) => {
+                        if let Some(hi) = vfp_s_index(h) {
+                            vfp_home[hi] = true;
+                        }
+                        f32_home.insert(*i, h);
+                        h
+                    }
+                    None => {
+                        let slot = alloc_vfp_local_frame_slot(spill, false)?;
+                        f32_frame.insert(*i, slot);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::F32Store {
+                                sd: src,
+                                addr: MemAddr::imm(Reg::SP, slot),
+                            },
+                            source_line: Some(idx),
+                        });
+                        if matches!(op, LocalTee(_)) {
+                            stack.push(StackVal::Float { sreg: src });
+                        } else {
+                            free_vfp_temp(vfp_used, vfp_home, src);
+                        }
+                        return Ok(true);
+                    }
+                }
             } else {
                 // A fresh non-param f32 local: allocate + pin a home S-register.
                 let h = alloc_vfp_temp(vfp_used)?;
@@ -4845,6 +5003,7 @@ fn try_lower_f64(
     idx: usize,
     params_f64: &[bool],
     f64_home: &mut std::collections::HashMap<u32, VfpReg>,
+    f64_frame: &mut std::collections::HashMap<u32, i32>,
     vfp_used: &mut [bool; 16],
     vfp_home: &mut [bool; 16],
     stack: &mut Vec<StackVal>,
@@ -4901,20 +5060,83 @@ fn try_lower_f64(
                 // writes THROUGH the stable home, so no defensive copy).
                 stack.push(StackVal::Double { dreg: home });
                 Ok(true)
+            } else if let Some(&slot) = f64_frame.get(i) {
+                // #1069: FRAME-homed f64 local (rung-only, see the f32 twin).
+                // The guard's frame-LocalGet demand (need_pairs = 1) freed an
+                // aligned pair before this op.
+                let dd = alloc_vfp_dtemp(vfp_used)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F64Load {
+                        dd,
+                        addr: MemAddr::imm(Reg::SP, slot),
+                    },
+                    source_line: Some(idx),
+                });
+                stack.push(StackVal::Double { dreg: dd });
+                Ok(true)
             } else {
                 Ok(false) // not an f64 local — integer/f32 paths handle it
             }
         }
         LocalSet(i) | LocalTee(i) => {
             let top_is_double = matches!(stack.last(), Some(StackVal::Double { .. }));
-            let target_is_f64 =
-                f64_home.contains_key(i) || params_f64.get(*i as usize).copied().unwrap_or(false);
+            let target_is_f64 = f64_home.contains_key(i)
+                || f64_frame.contains_key(i)
+                || params_f64.get(*i as usize).copied().unwrap_or(false);
             if !(top_is_double || target_is_f64) {
                 return Ok(false); // not an f64 local — fall through
             }
             let src = pop_double(stack)?;
+            // #1069: FRAME-homed f64 local — the def IS the store (dominance
+            // inherited from wasm's own def-use semantics; see the f32 twin).
+            if let Some(&slot) = f64_frame.get(i) {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F64Store {
+                        dd: src,
+                        addr: MemAddr::imm(Reg::SP, slot),
+                    },
+                    source_line: Some(idx),
+                });
+                if matches!(op, LocalTee(_)) {
+                    stack.push(StackVal::Double { dreg: src });
+                } else {
+                    free_vfp_dtemp(vfp_used, vfp_home, src);
+                }
+                return Ok(true);
+            }
             let home = if let Some(&h) = f64_home.get(i) {
                 h
+            } else if spill.vfp_spill_on_exhaustion {
+                // #1069 (rung-only): residence decision for a FRESH non-param
+                // f64 local — register-home at or below the D3 cap, otherwise
+                // frame-home from birth (see the f32 twin above).
+                match vfp_try_reg_home_d(vfp_used) {
+                    Some(h) => {
+                        if let Some(d) = vfp_d_index(h) {
+                            vfp_home[2 * d] = true;
+                            vfp_home[2 * d + 1] = true;
+                        }
+                        f64_home.insert(*i, h);
+                        h
+                    }
+                    None => {
+                        let slot = alloc_vfp_local_frame_slot(spill, true)?;
+                        f64_frame.insert(*i, slot);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::F64Store {
+                                dd: src,
+                                addr: MemAddr::imm(Reg::SP, slot),
+                            },
+                            source_line: Some(idx),
+                        });
+                        if matches!(op, LocalTee(_)) {
+                            stack.push(StackVal::Double { dreg: src });
+                        } else {
+                            free_vfp_dtemp(vfp_used, vfp_home, src);
+                        }
+                        return Ok(true);
+                    }
+                }
             } else {
                 // A fresh non-param f64 local: allocate + pin a home D-register.
                 let h = alloc_vfp_dtemp(vfp_used)?;

@@ -731,11 +731,39 @@ fn compile_wasm_to_arm(
             let (vfp, vfp_rung, vfp_dropped) = full_sequence(None, true);
             let (vfp, vfp_rung, vfp_dropped) = if vfp.as_ref().err().is_some_and(|e| {
                 let msg = e.to_string();
-                msg.contains(SLOT_EXHAUSTION) || msg.contains("spilling the VFP register file")
+                // #1069: the frame-homed-local slot demand (a permanent slot
+                // per frame-resident float local, held to function end) is a
+                // third way the shared pool exhausts inside the VFP rung —
+                // its trigger substring is the selector's own pub const, not
+                // a second copy that could drift (the #881 substring-is-
+                // control-flow lesson).
+                msg.contains(SLOT_EXHAUSTION)
+                    || msg.contains("spilling the VFP register file")
+                    || msg.contains(
+                        synth_synthesis::instruction_selector::VFP_FRAME_HOME_SLOT_EXHAUSTION,
+                    )
             }) {
                 let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
-                let (grown, grown_rung, grown_dropped) =
-                    full_sequence(Some(depth.saturating_add(4)), true);
+                // #1069: frame-homed locals hold their slots for the
+                // function's extent, OUTSIDE the operand-stack depth bound —
+                // size the grown pool for both. Distinct `local.set`/
+                // `local.tee` targets over-approximate the frame-homed local
+                // count (integer locals never take a slot from this path);
+                // the selector clamps the request to its cap, and a function
+                // that still exhausts stays an honest loud skip. Grow-retry
+                // only: no function that compiles without it is affected.
+                let local_targets: std::collections::HashSet<u32> = wasm_ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        synth_synthesis::WasmOp::LocalSet(i)
+                        | synth_synthesis::WasmOp::LocalTee(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect();
+                let (grown, grown_rung, grown_dropped) = full_sequence(
+                    Some(depth.saturating_add(local_targets.len()).saturating_add(4)),
+                    true,
+                );
                 if grown.is_ok() {
                     (grown, grown_rung, grown_dropped)
                 } else {

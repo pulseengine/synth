@@ -1299,6 +1299,16 @@ jobs:
       # reddens the run even when the numeric answer coincides.
       - name: Run AEABI i64<->f32 routing oracle (#1069, m4f)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aeabi_i64_float_1069_differential.py
+      # #1069 (RQ-60-VFPPRESSURE increment 2): VFP pressure from HOMED locals
+      # — jess's 13-ok/14-exhausted wall (attitude#tick / ekf#estimate shape).
+      # Frame-homed overflow locals (rung-only) on cortex-m7dp --relocatable:
+      # live13 negative control (base path), live14/live16 the S-file wall,
+      # live24 the grown-pool composition, live8d the f64/D-file twin — all
+      # nm -> T AND bit-identical to wasmtime under unicorn (a wrong-slot
+      # reload is a plausible wrong float; every local feeds the product, so
+      # any mixup flips result bits).
+      - name: Run frame-homed VFP locals oracle (#1069, m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_local_pressure_1069_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
