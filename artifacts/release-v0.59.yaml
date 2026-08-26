@@ -700,7 +700,7 @@ requirements:
       the unguarded set is SMALL is as valuable as one that finds it large — it
       would mean #1021 is close to a one-off rather than a systemic hole, and
       that changes how v0.60 should be scoped.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [verification, proof-tier, census, vcr-sel-001]
     links:
