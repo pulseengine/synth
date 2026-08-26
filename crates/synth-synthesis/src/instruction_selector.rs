@@ -2848,11 +2848,6 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
     )
 }
 
-/// Lower an in-scope scalar f32 op (or f32-param `local.get`) onto the VFP
-/// register file. Returns `Ok(true)` when it handled `op` (caller `continue`s),
-/// `Ok(false)` when `op` is not an f32 op (fall through to the integer match),
-/// and `Err` on an honest phase-1 decline (the function loud-skips).
-#[allow(clippy::too_many_arguments)]
 /// #1069 (RQ-60-VFPPRESSURE increment 2): under the #881 VFP spill rung, the
 /// highest S-register index a fresh f32 LOCAL home may pin (S0..S7). A pinned
 /// home lives for the function's extent and is never a spill victim, so homes
@@ -2872,11 +2867,12 @@ const VFP_HOME_CAP_S: usize = 7;
 const VFP_HOME_CAP_D: usize = 3;
 
 /// The #1069 frame-homed-local slot-pool exhaustion message. SUBSTRING IS
-/// CONTROL FLOW (the #881 lesson, pinned by
-/// `vfp_frame_home_slot_exhaustion_message_is_the_grow_trigger` and the
-/// `live24` fixture test): `arm_backend.rs` matches it to rerun the VFP rung
-/// with a grown slot pool sized to include the function's float-local count.
-/// Reword it there and here together or the grow retry silently stops firing.
+/// CONTROL FLOW (the #881 lesson, pinned red-first by the `live24` fixture
+/// test `live24_slot_exhaustion_message_still_triggers_the_pool_grow`):
+/// `arm_backend.rs` matches this const directly to rerun the VFP frame stage
+/// with a grown slot pool sized to include the function's float-local count,
+/// so there is no second copy to drift — but a REWORD here still changes the
+/// emitted message, which that test asserts end-to-end.
 pub const VFP_FRAME_HOME_SLOT_EXHAUSTION: &str =
     "spill-slot pool exhausted while frame-homing a VFP local";
 
@@ -2934,7 +2930,11 @@ fn vfp_try_reg_home_d(vfp_used: &mut [bool; 16]) -> Option<VfpReg> {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // mirrors try_lower_f64's home/frame threading (#1069)
+/// Lower an in-scope scalar f32 op (or f32-param `local.get`) onto the VFP
+/// register file. Returns `Ok(true)` when it handled `op` (caller `continue`s),
+/// `Ok(false)` when `op` is not an f32 op (fall through to the integer match),
+/// and `Err` on an honest phase-1 decline (the function loud-skips).
+#[allow(clippy::too_many_arguments)] // home/frame threading, same as try_lower_f64 (#1069)
 fn try_lower_f32(
     op: &WasmOp,
     idx: usize,

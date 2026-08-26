@@ -1279,12 +1279,12 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19192
+        value: 19199
         baseline: 17897
         waivers:
-          - to: 19192
+          - to: 19199
             reason: >-
-              RQ-60-VFPPRESSURE increment 2 (#1069): +282 lines — frame-homed
+              RQ-60-VFPPRESSURE increment 2 (#1069): +289 lines — frame-homed
               overflow f32/f64 locals, the LAST-resort VFP retry. jess's
               measurement: 60 simultaneously-live f32 on the operand stack
               compile (#881 rescues them) while 14 in HOMED locals decline,
@@ -1493,11 +1493,11 @@ claims:
         # single-precision targets (see the lines_code waiver) — plus +5 test
         # module (the threaded compute_local_layout aeabi flag at its five
         # test call sites).
-        # 29556 -> 29838 (RQ-60-VFPPRESSURE increment 2, #1069): +282 code —
+        # 29556 -> 29845 (RQ-60-VFPPRESSURE increment 2, #1069): +289 code —
         # frame-homed overflow f32/f64 locals under the last-resort VFP retry
         # (see the lines_code waiver); zero test-module movement (the #1069
         # tests live in crates/synth-backend/tests, outside this family).
-        value: 29838
+        value: 29845
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

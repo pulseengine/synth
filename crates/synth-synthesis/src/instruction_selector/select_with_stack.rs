@@ -213,7 +213,12 @@ impl InstructionSelector {
             &self.type_arg_counts,
             // #881: the VFP spill rung hands out slots from the same shared
             // pool, so it must force the area exactly like the integer rung.
-            self.spill_on_exhaustion || self.vfp_spill_on_exhaustion,
+            // #1069: the frame-home lever hands out PERMANENT slots from the
+            // same pool — listed here defensively even though the backend
+            // only ever sets it together with the VFP rung flag (a caller
+            // setting it alone would otherwise get slots aliasing the #204
+            // param homes: a silent miscompile, not a decline).
+            self.spill_on_exhaustion || self.vfp_spill_on_exhaustion || self.vfp_frame_home_locals,
             self.param_backing_on_exhaustion,
             calls_float_boundary,
             aeabi_builtin_calls,
@@ -652,11 +657,13 @@ impl InstructionSelector {
         let mut f64_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
         // #1069 (RQ-60-VFPPRESSURE increment 2): FRAME-homed float locals —
         // local index -> permanent [SP,#slot] byte offset. Populated ONLY
-        // under the #881 rung (`vfp_spill_on_exhaustion`), when a fresh local
-        // home would pin a register above the S7/D3 cap (or the file is
-        // already exhausted): the local then lives in the frame from its
+        // under the LAST-resort `vfp_frame_home_locals` lever (set by the
+        // backend after the plain #881 rung also exhausted), when a fresh
+        // local home would pin a register above the S7/D3 cap (or the file
+        // is already exhausted): the local then lives in the frame from its
         // first def, `local.set` stores, `local.get` loads. Empty in every
-        // default compile, so the base path is byte-identical by construction.
+        // default AND every plain-rung compile, so both are byte-identical
+        // by construction.
         let mut f32_frame: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
         let mut f64_frame: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
         if fpu.is_some() {
