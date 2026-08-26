@@ -4706,7 +4706,9 @@ fn is_aeabi_i64_f32_routed_op(op: &WasmOp) -> bool {
 /// [`materialize_f64_const`], and deliberately NOT `ArmOp::F32Const` for the
 /// same reason: the encoder pseudo-op hardcodes scratch registers that can
 /// hold live values (the #615 class).
-#[allow(clippy::too_many_arguments)]
+// `stack` is `&mut Vec` (not a slice) because it is threaded straight into
+// `alloc_temp_or_spill`, which spills by pushing/popping stack entries.
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn materialize_f32_const(
     bits: u32,
     idx: usize,
@@ -4744,7 +4746,8 @@ fn materialize_f32_const(
 /// x > -1.0` (unsigned) over f32 compares captures WASM §4.3.3's non-trapping
 /// set exactly (the nearest f32 neighbours of each bound sit far outside the
 /// open interval, as in the f64 case).
-#[allow(clippy::too_many_arguments)]
+// `stack`: same &mut Vec threading as materialize_f32_const.
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn emit_i64_trunc_f32_domain_guard(
     work: VfpReg,
     signed: bool,

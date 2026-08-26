@@ -1279,12 +1279,12 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 18907
+        value: 18910
         baseline: 17897
         waivers:
-          - to: 18907
+          - to: 18910
             reason: >-
-              RQ-60-VFPPRESSURE increment 1 (#1069, #869): +619 lines — the
+              RQ-60-VFPPRESSURE increment 1 (#1069, #869): +622 lines — the
               AEABI builtin route for the six i64/f32-typed conversion family
               members on SINGLE-precision FPU targets (m4f/m7, --relocatable).
               A function with NO f64 in its WASM signature was declined for
@@ -1463,12 +1463,12 @@ claims:
         # assertions in instruction_selector.rs (all past the `#[cfg(test)]
         # mod tests` marker, so the DIRECTED lines_code ceiling correctly does
         # not see them: adding test coverage must never cost a waiver).
-        # 28929 -> 29553 (RQ-60-VFPPRESSURE increment 1, #1069): +619 code —
+        # 28929 -> 29556 (RQ-60-VFPPRESSURE increment 1, #1069): +622 code —
         # the AEABI builtin route for the i64<->f32 conversion family on
         # single-precision targets (see the lines_code waiver) — plus +5 test
         # module (the threaded compute_local_layout aeabi flag at its five
         # test call sites).
-        value: 29553
+        value: 29556
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
