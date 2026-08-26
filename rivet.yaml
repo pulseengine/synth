@@ -42,36 +42,44 @@ commits:
 externals:
   kiln:
     git: https://github.com/pulseengine/kiln.git
-    path: /Volumes/Home/git/pulseengine/kiln
     ref: main
     prefix: kiln
 
   meld:
     git: https://github.com/pulseengine/meld.git
-    path: /Volumes/Home/git/pulseengine/meld
     ref: main
     prefix: meld
 
   sigil:
     git: https://github.com/pulseengine/sigil.git
-    path: /Volumes/Home/git/pulseengine/sigil
     ref: main
     prefix: sigil
 
   loom:
     git: https://github.com/pulseengine/loom.git
-    path: /Volumes/Home/git/pulseengine/loom
     ref: main
     prefix: loom
 
   gale:
     git: https://github.com/pulseengine/gale.git
-    path: /Volumes/Home/git/pulseengine/gale
     ref: main
     prefix: gale
 
   scry:
     git: https://github.com/pulseengine/scry.git
-    path: /Volumes/Home/git/pulseengine/scry
     ref: main
     prefix: scry
+
+  # jess hosts the hermetic Renode silicon oracles synth artifacts trace to
+  # (e.g. TEST-PIX-013, GI-MEM-002's OOB-trap verification). Declared in #1012
+  # when federated resolution was repaired — it had been referenced by
+  # traces-to links but never declared, so the refs could not resolve.
+  # NOTE (#1012): externals deliberately carry NO `path:` — a declared local
+  # path takes precedence over `git:`, and a dead one (the /Volumes/Home
+  # entries removed in #1012) poisons resolution for everyone else: rivet
+  # reports "0 broken cross-refs" beside dozens of link errors because it
+  # never resolves the graph at all. Sync via `rivet sync` (git fallback).
+  jess:
+    git: https://github.com/pulseengine/jess.git
+    ref: main
+    prefix: jess

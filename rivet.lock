@@ -1,0 +1,29 @@
+pins:
+  gale:
+    git: https://github.com/pulseengine/gale.git
+    commit: 52d00eb7da7c4cbb42d6fab16bad09abd6d12b55
+    prefix: gale
+  jess:
+    git: https://github.com/pulseengine/jess.git
+    commit: d3211dd8ede1854dd461931f146e63ab76dbdca1
+    prefix: jess
+  kiln:
+    git: https://github.com/pulseengine/kiln.git
+    commit: cbfd1b538c49461195e920e4aff8925232623d68
+    prefix: kiln
+  loom:
+    git: https://github.com/pulseengine/loom.git
+    commit: 5168f935054f8b0e96e8612fc04fdc4f61eb85d0
+    prefix: loom
+  meld:
+    git: https://github.com/pulseengine/meld.git
+    commit: c6e51a3ac02a85a003ce7168c2b0f9b9239d7394
+    prefix: meld
+  scry:
+    git: https://github.com/pulseengine/scry.git
+    commit: 35aed0fe60639766988a4dd6918fefec7e4c2bf0
+    prefix: scry
+  sigil:
+    git: https://github.com/pulseengine/sigil.git
+    commit: 1e9ec54d529cc7371a540fa1598070289e2ef4ef
+    prefix: sigil
