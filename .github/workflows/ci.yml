@@ -301,7 +301,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 298754 \
+            --min-emulation-floor 322754 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1288,6 +1288,17 @@ jobs:
       # the range-realloc cross-barrier live-in miscompile at land time.
       - name: Run i64<->float conversion family oracle (#869, m7dp+m4f)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/i64_float_conv_869_differential.py
+      # #1069 (RQ-60-VFPPRESSURE increment 1): the AEABI-routed i64<->f32
+      # conversion family on SINGLE-precision cortex-m4f (--relocatable) —
+      # where the six ops previously DECLINED outright. Verifies everything
+      # synth emits around the `bl __aeabi_*` (marshalling, preservation, the
+      # f32 domain guard with every trap row EXECUTED, the unsigned
+      # (-1,0)->+0 clamp, inline trunc_sat saturation/NaN selection, result
+      # capture) against wasmtime under unicorn; the builtins are spec-exact
+      # stubs that ASSERT their C-defined input domain, so a guard hole
+      # reddens the run even when the numeric answer coincides.
+      - name: Run AEABI i64<->f32 routing oracle (#1069, m4f)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aeabi_i64_float_1069_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values

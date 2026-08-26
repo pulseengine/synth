@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RQ-60-VFPPRESSURE increment 1 (#1069, #869): the i64<->f32 conversion
+  family now compiles on single-precision FPU targets (cortex-m4f/m7) under
+  `--relocatable`**, routed through the AEABI runtime helpers
+  (`__aeabi_l2f`/`__aeabi_ul2f` for the converts, `__aeabi_f2lz`/`__aeabi_f2ulz`
+  for the truncations) — base-AAPCS core-register calls, zero VFP pressure.
+  Previously a function whose WASM signature contained NO f64 anywhere was
+  declined for "needing f64", because the #869 inline lowering runs on
+  double-precision machinery; that pinned every conversion-carrying function
+  to cortex-m7dp. The route is fenced (the helpers are more-total than WASM):
+  trapping truncations carry an exact-f32 two-bound domain guard (UDF on
+  NaN/out-of-range) in front of the call, plus an unsigned `(-1,0) -> +0`
+  clamp so the C-style helper never sees undefined input; `trunc_sat`
+  saturation/NaN results are selected inline (never traps). The `__aeabi_*`
+  symbols are a documented link obligation of the embedder's runtime
+  (libgcc / compiler-rt / kiln builtins); non-relocatable single-precision
+  keeps the loud decline, which now names the closable gap. The six f64-TYPED
+  family members still decline by name on single-precision, and the m7dp
+  inline path is byte-identical. Gated red-first
+  (`tests/aeabi_i64_float_1069.rs`) and by a new CI-wired execution
+  differential (`aeabi_i64_float_1069_differential.py`: 24,270 checks vs
+  wasmtime under unicorn with spec-exact domain-asserting builtin stubs,
+  every trap row executed on both sides).
+
 ## [0.59.0] - 2026-08-26
 
 **The loud direction was covered, the silent one was not.**
