@@ -77,7 +77,7 @@ artifacts:
 
       Derived unguarded set: EMPTY, pinned at empty — stronger than the census
       header's "does not grow".
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [soundness, pseudo-op, encoder-expansion, canary, derive-dont-mirror]
     links:
@@ -170,7 +170,7 @@ artifacts:
       the census has not delivered. If some subset cannot be accepted, name the
       subset and the reason — an honest frontier beats a widened one, and this
       release has already spent five findings on the cost of a silent decline.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [reach, aarch64, imports, relocatable, census]
     links:
