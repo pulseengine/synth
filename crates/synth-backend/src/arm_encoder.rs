@@ -9129,6 +9129,39 @@ impl ArmEncoder {
     }
 }
 
+/// VCR-TIER-001 (#1021/#1048) — the SCRATCH CONTRACT of an `ArmOp`'s encoder
+/// expansion: the registers, beyond the op's declared RESULT registers and the
+/// globally sanctioned R12/IP encoder scratch, that the expansion may leave
+/// modified when it completes. Transient-but-restored traffic (push/pop through
+/// the expansion's own stack red-zone, SP restored on exit) is not "modified".
+///
+/// This is the SINGLE declaration site for that contract — the one place a
+/// future expansion that must borrow a register says so (the repo rule: one
+/// declaration site, no duplicate copy that can silently drift). It is deliberately NOT derived
+/// from the expansion's observed behavior: a contract read off the bytes would
+/// rubber-stamp any clobber. Intent is declared here; the canary gate
+/// (`scripts/repro/expansion_canary_gate_1021.py`) executes the REAL emitted
+/// bytes of every variant the shipped rule table emits, on both backends, with
+/// every non-contract register holding a distinctive canary, and fails on any
+/// undeclared write — and on any declared register the expansion never
+/// actually writes, so an over-broad declaration cannot hollow the gate.
+///
+/// The default is the STRICTEST reading — result registers only — which is
+/// exactly the silent claim the atomic `ArmSemantics` pseudo-op model already
+/// makes (#1021: an atomic model of a multi-instruction expansion is a silent
+/// claim that the expansion is scratch-free). Today the table is EMPTY: #1039
+/// reworked `i32.popcnt` off R11 (the linear-memory base) and #1048 reworked
+/// the i64 shifts and bit-counts off their own operand registers, so every
+/// expansion of every rule-emitted variant is R12-only on both Thumb-2 and
+/// A32. Backend-independent for the same reason; if a backend's expansion ever
+/// diverges, this signature grows a backend parameter in the same PR.
+pub fn expansion_scratch_contract(op: &ArmOp) -> &'static [Reg] {
+    // No variant currently borrows any register beyond R12. A new declaration
+    // is added as a `match op { .. }` arm here — nowhere else.
+    let _ = op;
+    &[]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

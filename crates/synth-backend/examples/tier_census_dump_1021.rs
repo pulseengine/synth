@@ -36,7 +36,7 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use synth_backend::arm_encoder::ArmEncoder;
+use synth_backend::arm_encoder::{ArmEncoder, expansion_scratch_contract};
 use synth_synthesis::rules::Condition;
 use synth_synthesis::{ArmOp, Operand2, Reg};
 
@@ -62,15 +62,17 @@ fn reg_name(r: Reg) -> &'static str {
 }
 
 /// One representative instance: variant name (checked at runtime against the `ArmOp::` ident
-/// in `generated.rs`), a shape tag, declared outputs, declared inputs,
-/// registers the ArmOp DECLARES as clobberable temps (the `// used as temp`
-/// fields and the in-place high-limb clears), and the op itself.
+/// in `generated.rs`), a shape tag, declared outputs, declared inputs, and the
+/// op itself. The expansion's SCRATCH CONTRACT is not carried here: it is
+/// DERIVED per instance from `synth_backend::arm_encoder::expansion_scratch_contract`
+/// — the single declaration site next to the expansions (VCR-TIER-001; the
+/// former per-instance `declared_temps` hand column was deleted with #1048's
+/// fix, which removed the operand-register temps that column duplicated).
 struct Instance {
     variant: &'static str,
     shape: &'static str,
     outputs: Vec<Reg>,
     inputs: Vec<Reg>,
-    declared_temps: Vec<Reg>,
     op: ArmOp,
 }
 
@@ -93,21 +95,16 @@ fn all_conditions() -> [(Condition, &'static str); 10] {
 fn instances() -> Vec<Instance> {
     use Reg::{R0, R1, R2, R3, R4, R5};
     let mut v: Vec<Instance> = Vec::new();
-    let mut push = |variant: &'static str,
-                    shape: &'static str,
-                    outputs: &[Reg],
-                    inputs: &[Reg],
-                    declared_temps: &[Reg],
-                    op: ArmOp| {
-        v.push(Instance {
-            variant,
-            shape,
-            outputs: outputs.to_vec(),
-            inputs: inputs.to_vec(),
-            declared_temps: declared_temps.to_vec(),
-            op,
-        });
-    };
+    let mut push =
+        |variant: &'static str, shape: &'static str, outputs: &[Reg], inputs: &[Reg], op: ArmOp| {
+            v.push(Instance {
+                variant,
+                shape,
+                outputs: outputs.to_vec(),
+                inputs: inputs.to_vec(),
+                op,
+            });
+        };
 
     // --- i32 data-processing (register + the rules' immediate forms) ---
     push(
@@ -115,7 +112,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2, R4],
-        &[],
         ArmOp::Add {
             rd: R0,
             rn: R2,
@@ -127,7 +123,6 @@ fn instances() -> Vec<Instance> {
         "imm",
         &[R0],
         &[R2],
-        &[],
         ArmOp::Add {
             rd: R0,
             rn: R2,
@@ -139,7 +134,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2, R4],
-        &[],
         ArmOp::Sub {
             rd: R0,
             rn: R2,
@@ -151,7 +145,6 @@ fn instances() -> Vec<Instance> {
         "imm",
         &[R0],
         &[R2],
-        &[],
         ArmOp::Sub {
             rd: R0,
             rn: R2,
@@ -163,7 +156,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2, R4],
-        &[],
         ArmOp::Mul {
             rd: R0,
             rn: R2,
@@ -211,15 +203,14 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "reg", &[R0], &[R2, R4], &[], mk_reg());
-        push(name, "imm", &[R0], &[R2], &[], mk_imm());
+        push(name, "reg", &[R0], &[R2, R4], mk_reg());
+        push(name, "imm", &[R0], &[R2], mk_imm());
     }
     push(
         "Adds",
         "reg",
         &[R0],
         &[R2, R4],
-        &[],
         ArmOp::Adds {
             rd: R0,
             rn: R2,
@@ -231,7 +222,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R1],
         &[R3, R5],
-        &[],
         ArmOp::Adc {
             rd: R1,
             rn: R3,
@@ -243,7 +233,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2, R4],
-        &[],
         ArmOp::Subs {
             rd: R0,
             rn: R2,
@@ -255,7 +244,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R1],
         &[R3, R5],
-        &[],
         ArmOp::Sbc {
             rd: R1,
             rn: R3,
@@ -298,7 +286,7 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "reg", &[R0], &[R2, R4], &[], op);
+        push(name, "reg", &[R0], &[R2, R4], op);
     }
     // rule_i32_rotl's `32 - amount` step (scratch rs = R6 in the rule, but the
     // RSB itself is a plain 2-operand op).
@@ -307,7 +295,6 @@ fn instances() -> Vec<Instance> {
         "imm32",
         &[R0],
         &[R2],
-        &[],
         ArmOp::Rsb {
             rd: R0,
             rn: R2,
@@ -316,49 +303,20 @@ fn instances() -> Vec<Instance> {
     );
 
     // --- bit manipulation ---
-    push(
-        "Clz",
-        "reg",
-        &[R0],
-        &[R2],
-        &[],
-        ArmOp::Clz { rd: R0, rm: R2 },
-    );
-    push(
-        "Rbit",
-        "reg",
-        &[R0],
-        &[R2],
-        &[],
-        ArmOp::Rbit { rd: R0, rm: R2 },
-    );
+    push("Clz", "reg", &[R0], &[R2], ArmOp::Clz { rd: R0, rm: R2 });
+    push("Rbit", "reg", &[R0], &[R2], ArmOp::Rbit { rd: R0, rm: R2 });
     // The #1021 op. rd != rm so the mov-prefix (worst case) is included.
     push(
         "Popcnt",
         "reg",
         &[R0],
         &[R2],
-        &[],
         ArmOp::Popcnt { rd: R0, rm: R2 },
     );
 
     // --- extends ---
-    push(
-        "Sxtb",
-        "reg",
-        &[R0],
-        &[R2],
-        &[],
-        ArmOp::Sxtb { rd: R0, rm: R2 },
-    );
-    push(
-        "Sxth",
-        "reg",
-        &[R0],
-        &[R2],
-        &[],
-        ArmOp::Sxth { rd: R0, rm: R2 },
-    );
+    push("Sxtb", "reg", &[R0], &[R2], ArmOp::Sxtb { rd: R0, rm: R2 });
+    push("Sxth", "reg", &[R0], &[R2], ArmOp::Sxth { rd: R0, rm: R2 });
 
     // --- moves ---
     push(
@@ -366,21 +324,13 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2],
-        &[],
         ArmOp::Mov {
             rd: R0,
             op2: Operand2::Reg(R2),
         },
     );
     // rule_i64_extend_i32_u's zero-high-half shape.
-    push(
-        "Movw",
-        "imm0",
-        &[R1],
-        &[],
-        &[],
-        ArmOp::Movw { rd: R1, imm16: 0 },
-    );
+    push("Movw", "imm0", &[R1], &[], ArmOp::Movw { rd: R1, imm16: 0 });
 
     // --- compares (flag-setting; no register output) ---
     push(
@@ -388,7 +338,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[],
         &[R2, R4],
-        &[],
         ArmOp::Cmp {
             rn: R2,
             op2: Operand2::Reg(R4),
@@ -399,7 +348,6 @@ fn instances() -> Vec<Instance> {
         "imm0",
         &[],
         &[R2],
-        &[],
         ArmOp::Cmp {
             rn: R2,
             op2: Operand2::Imm(0),
@@ -410,7 +358,6 @@ fn instances() -> Vec<Instance> {
         "imm",
         &[],
         &[R2],
-        &[],
         ArmOp::Cmp {
             rn: R2,
             op2: Operand2::Imm(0x34),
@@ -419,20 +366,12 @@ fn instances() -> Vec<Instance> {
 
     // --- the boolean-materialization / conditional-move pseudo-ops ---
     for (cond, tag) in all_conditions() {
-        push(
-            "SetCond",
-            tag,
-            &[R0],
-            &[],
-            &[],
-            ArmOp::SetCond { rd: R0, cond },
-        );
+        push("SetCond", tag, &[R0], &[], ArmOp::SetCond { rd: R0, cond });
         push(
             "SelectMove",
             tag,
             &[R0],
             &[R4],
-            &[],
             ArmOp::SelectMove {
                 rd: R0,
                 rm: R4,
@@ -448,7 +387,6 @@ fn instances() -> Vec<Instance> {
             tag,
             &[R0],
             &[R0, R1, R2, R3],
-            &[],
             ArmOp::I64SetCond {
                 rd: R0,
                 rn_lo: R0,
@@ -464,7 +402,6 @@ fn instances() -> Vec<Instance> {
         "reg",
         &[R0],
         &[R2, R3],
-        &[],
         ArmOp::I64SetCondZ {
             rd: R0,
             rn_lo: R2,
@@ -476,7 +413,6 @@ fn instances() -> Vec<Instance> {
         "pair",
         &[R0, R1],
         &[R2, R3, R4, R5],
-        &[],
         ArmOp::I64Mul {
             rd_lo: R0,
             rd_hi: R1,
@@ -486,9 +422,11 @@ fn instances() -> Vec<Instance> {
             rm_hi: R5,
         },
     );
-    // The shift family DECLARES rm_hi as a clobberable temp ("used as temp"
-    // on the ArmOp field; the Rocq model binds it `_rmhi` — semantically
-    // dead, WASM masks the amount mod 64).
+    // The shift family is R12-only since #1048: the pre-fix expansions masked
+    // the amount IN PLACE and wrote amt-32 into rm_hi — the operand's home
+    // registers — which the census caught as an undeclared clobber. Their
+    // scratch contract is now empty (derived, like every instance's, from
+    // `expansion_scratch_contract`).
     for (name, op) in [
         (
             "I64Shl",
@@ -524,7 +462,7 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "pair", &[R0, R1], &[R2, R3, R4, R5], &[R5], op);
+        push(name, "pair", &[R0, R1], &[R2, R3, R4, R5], op);
     }
     for (name, op) in [
         (
@@ -548,10 +486,12 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "pair", &[R0, R1], &[R2, R3, R4], &[], op);
+        push(name, "pair", &[R0, R1], &[R2, R3, R4], op);
     }
-    // The bit-count expansions clear the operand high limb IN PLACE (the
-    // expansion-validator contract states the result pair is (rd, rnhi)).
+    // The bit-count expansions are rd-only since #1048: their former trailing
+    // `MOV rnhi, #0` — a hi-clear aimed at the result that landed on the
+    // OPERAND's home high register on the direct selector — was deleted (the
+    // selector now zeroes the result hi itself), so no temp is declared.
     for (name, op) in [
         (
             "I64Clz",
@@ -578,13 +518,12 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "count", &[R0], &[R2, R3], &[R3], op);
+        push(name, "count", &[R0], &[R2, R3], op);
     }
     push(
         "I64Const",
         "wide",
         &[R0, R1],
-        &[],
         &[],
         ArmOp::I64Const {
             rdlo: R0,
@@ -597,7 +536,6 @@ fn instances() -> Vec<Instance> {
         "zero",
         &[R0, R1],
         &[],
-        &[],
         ArmOp::I64Const {
             rdlo: R0,
             rdhi: R1,
@@ -609,7 +547,6 @@ fn instances() -> Vec<Instance> {
         "pair",
         &[R0, R1],
         &[R2],
-        &[],
         ArmOp::I64ExtendI32S {
             rdlo: R0,
             rdhi: R1,
@@ -642,14 +579,13 @@ fn instances() -> Vec<Instance> {
             },
         ),
     ] {
-        push(name, "pair", &[R0, R1], &[R2], &[], op);
+        push(name, "pair", &[R0, R1], &[R2], op);
     }
     push(
         "I32WrapI64",
         "reg",
         &[R0],
         &[R2],
-        &[],
         ArmOp::I32WrapI64 { rd: R0, rnlo: R2 },
     );
 
@@ -718,13 +654,15 @@ fn main() {
         let (t_hex, t_err) = encode_field(&thumb, &inst.op);
         let (a_hex, a_err) = encode_field(&a32, &inst.op);
         let comma = if i + 1 == n { "" } else { "," };
+        // The scratch contract is DERIVED from the shipped crate's single
+        // declaration site, never hand-annotated per instance (VCR-TIER-001).
         println!(
-            "{{\"variant\":\"{}\",\"shape\":\"{}\",\"outputs\":{},\"inputs\":{},\"declared_temps\":{},\"thumb\":{},\"thumb_err\":{},\"a32\":{},\"a32_err\":{}}}{}",
+            "{{\"variant\":\"{}\",\"shape\":\"{}\",\"outputs\":{},\"inputs\":{},\"scratch_contract\":{},\"thumb\":{},\"thumb_err\":{},\"a32\":{},\"a32_err\":{}}}{}",
             inst.variant,
             inst.shape,
             json_reg_list(&inst.outputs),
             json_reg_list(&inst.inputs),
-            json_reg_list(&inst.declared_temps),
+            json_reg_list(expansion_scratch_contract(&inst.op)),
             t_hex,
             t_err,
             a_hex,

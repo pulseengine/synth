@@ -1,0 +1,1138 @@
+{
+ "provenance": {
+  "commit": "c960903e (origin/main at fixture creation)",
+  "describe": "main with #1039 merged and #1048 (PR #1054) NOT merged",
+  "defects_present": [
+   "#1048 (i64 shifts + bit-counts clobber their own operand registers)"
+  ],
+  "defects_absent": [
+   "#1021 \u2014 Popcnt is R12-only here; the gate must NOT red it (discrimination leg)"
+  ],
+  "generated_by": "cargo run -p synth-backend --example tier_census_dump_1021 in a worktree at origin/main \u2014 REAL encoder output, no byte was hand-written"
+ },
+ "instances": [
+  {
+   "variant": "Add",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "1019",
+   "thumb_err": null,
+   "a32": "040082e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Add",
+   "shape": "imm",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "02f13400",
+   "thumb_err": null,
+   "a32": "340082e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Sub",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "101b",
+   "thumb_err": null,
+   "a32": "040042e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Sub",
+   "shape": "imm",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "a2f13400",
+   "thumb_err": null,
+   "a32": "340042e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Mul",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "02fb04f0",
+   "thumb_err": null,
+   "a32": "940200e0",
+   "a32_err": null
+  },
+  {
+   "variant": "And",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "02ea0400",
+   "thumb_err": null,
+   "a32": "040002e0",
+   "a32_err": null
+  },
+  {
+   "variant": "And",
+   "shape": "imm",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "02f03400",
+   "thumb_err": null,
+   "a32": "340002e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Orr",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "42ea0400",
+   "thumb_err": null,
+   "a32": "040082e1",
+   "a32_err": null
+  },
+  {
+   "variant": "Orr",
+   "shape": "imm",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "42f03400",
+   "thumb_err": null,
+   "a32": "340082e3",
+   "a32_err": null
+  },
+  {
+   "variant": "Eor",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "82ea0400",
+   "thumb_err": null,
+   "a32": "040022e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Eor",
+   "shape": "imm",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "82f03400",
+   "thumb_err": null,
+   "a32": "340022e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Adds",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "1019",
+   "thumb_err": null,
+   "a32": "040092e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Adc",
+   "shape": "reg",
+   "outputs": [
+    "r1"
+   ],
+   "inputs": [
+    "r3",
+    "r5"
+   ],
+   "thumb": "43eb0501",
+   "thumb_err": null,
+   "a32": "0510a3e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Subs",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "101b",
+   "thumb_err": null,
+   "a32": "040052e0",
+   "a32_err": null
+  },
+  {
+   "variant": "Sbc",
+   "shape": "reg",
+   "outputs": [
+    "r1"
+   ],
+   "inputs": [
+    "r3",
+    "r5"
+   ],
+   "thumb": "63eb0501",
+   "thumb_err": null,
+   "a32": "0510c3e0",
+   "a32_err": null
+  },
+  {
+   "variant": "LslReg",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "02fa04f0",
+   "thumb_err": null,
+   "a32": "1204a0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "LsrReg",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "22fa04f0",
+   "thumb_err": null,
+   "a32": "3204a0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "AsrReg",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "42fa04f0",
+   "thumb_err": null,
+   "a32": "5204a0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "RorReg",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "62fa04f0",
+   "thumb_err": null,
+   "a32": "7204a0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "Rsb",
+   "shape": "imm32",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "c2f12000",
+   "thumb_err": null,
+   "a32": "200062e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Clz",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "b2fa82f0",
+   "thumb_err": null,
+   "a32": "120f6fe1",
+   "a32_err": null
+  },
+  {
+   "variant": "Rbit",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "92faa2f0",
+   "thumb_err": null,
+   "a32": "320fffe6",
+   "a32_err": null
+  },
+  {
+   "variant": "Popcnt",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "10464fea500c0cf0553ca0eb0c0000f0333c4fea900000f0333000eb0c004fea101c00eb0c0000f00f304fea102c00eb0c004fea104c00eb0c0000f03f00",
+   "thumb_err": null,
+   "a32": "0200a0e155c505e355c545e3a0c00ce00c0040e033c303e333c343e320c10ce00c0140e00c0080e0200280e00fcf00e30fcf40e30c0000e0200480e0200880e03f0000e2",
+   "a32_err": null
+  },
+  {
+   "variant": "Sxtb",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "50b2",
+   "thumb_err": null,
+   "a32": "7200afe6",
+   "a32_err": null
+  },
+  {
+   "variant": "Sxth",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "10b2",
+   "thumb_err": null,
+   "a32": "7200bfe6",
+   "a32_err": null
+  },
+  {
+   "variant": "Mov",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "1046",
+   "thumb_err": null,
+   "a32": "0200a0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "Movw",
+   "shape": "imm0",
+   "outputs": [
+    "r1"
+   ],
+   "inputs": [],
+   "thumb": "40f20001",
+   "thumb_err": null,
+   "a32": "001000e3",
+   "a32_err": null
+  },
+  {
+   "variant": "Cmp",
+   "shape": "reg",
+   "outputs": [],
+   "inputs": [
+    "r2",
+    "r4"
+   ],
+   "thumb": "a242",
+   "thumb_err": null,
+   "a32": "040052e1",
+   "a32_err": null
+  },
+  {
+   "variant": "Cmp",
+   "shape": "imm0",
+   "outputs": [],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "002a",
+   "thumb_err": null,
+   "a32": "000052e3",
+   "a32_err": null
+  },
+  {
+   "variant": "Cmp",
+   "shape": "imm",
+   "outputs": [],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "342a",
+   "thumb_err": null,
+   "a32": "340052e3",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "eq",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "0cbf01200020",
+   "thumb_err": null,
+   "a32": "0100a0030000a013",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "eq",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "08bf2046",
+   "thumb_err": null,
+   "a32": "0400a001",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "ne",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "14bf01200020",
+   "thumb_err": null,
+   "a32": "0100a0130000a003",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "ne",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "18bf2046",
+   "thumb_err": null,
+   "a32": "0400a011",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "lt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "b4bf01200020",
+   "thumb_err": null,
+   "a32": "0100a0b30000a0a3",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "lt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "b8bf2046",
+   "thumb_err": null,
+   "a32": "0400a0b1",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "le",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "d4bf01200020",
+   "thumb_err": null,
+   "a32": "0100a0d30000a0c3",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "le",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "d8bf2046",
+   "thumb_err": null,
+   "a32": "0400a0d1",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "gt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "ccbf01200020",
+   "thumb_err": null,
+   "a32": "0100a0c30000a0d3",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "gt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "c8bf2046",
+   "thumb_err": null,
+   "a32": "0400a0c1",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "ge",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "acbf01200020",
+   "thumb_err": null,
+   "a32": "0100a0a30000a0b3",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "ge",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "a8bf2046",
+   "thumb_err": null,
+   "a32": "0400a0a1",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "lo",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "34bf01200020",
+   "thumb_err": null,
+   "a32": "0100a0330000a023",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "lo",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "38bf2046",
+   "thumb_err": null,
+   "a32": "0400a031",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "ls",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "94bf01200020",
+   "thumb_err": null,
+   "a32": "0100a0930000a083",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "ls",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "98bf2046",
+   "thumb_err": null,
+   "a32": "0400a091",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "hi",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "8cbf01200020",
+   "thumb_err": null,
+   "a32": "0100a0830000a093",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "hi",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "88bf2046",
+   "thumb_err": null,
+   "a32": "0400a081",
+   "a32_err": null
+  },
+  {
+   "variant": "SetCond",
+   "shape": "hs",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [],
+   "thumb": "2cbf01200020",
+   "thumb_err": null,
+   "a32": "0100a0230000a033",
+   "a32_err": null
+  },
+  {
+   "variant": "SelectMove",
+   "shape": "hs",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r4"
+   ],
+   "thumb": "28bf2046",
+   "thumb_err": null,
+   "a32": "0400a021",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "eq",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904208bf99420cbf01200020",
+   "thumb_err": null,
+   "a32": "020050e1030051010100a0030000a013",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "ne",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904208bf994214bf01200020",
+   "thumb_err": null,
+   "a32": "020050e1030051010100a0130000a003",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "lt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904271eb0300b4bf01200020",
+   "thumb_err": null,
+   "a32": "020050e10300d1e00100a0b30000a0a3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "le",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "824273eb0100acbf01200020",
+   "thumb_err": null,
+   "a32": "000052e10100d3e00100a0a30000a0b3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "gt",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "824273eb0100b4bf01200020",
+   "thumb_err": null,
+   "a32": "000052e10100d3e00100a0b30000a0a3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "ge",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904271eb0300acbf01200020",
+   "thumb_err": null,
+   "a32": "020050e10300d1e00100a0a30000a0b3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "lo",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904271eb030034bf01200020",
+   "thumb_err": null,
+   "a32": "020050e10300d1e00100a0330000a023",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "ls",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "824273eb01002cbf01200020",
+   "thumb_err": null,
+   "a32": "000052e10100d3e00100a0230000a033",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "hi",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "824273eb010034bf01200020",
+   "thumb_err": null,
+   "a32": "000052e10100d3e00100a0330000a023",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCond",
+   "shape": "hs",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r0",
+    "r1",
+    "r2",
+    "r3"
+   ],
+   "thumb": "904271eb03002cbf01200020",
+   "thumb_err": null,
+   "a32": "020050e10300d1e00100a0230000a033",
+   "a32_err": null
+  },
+  {
+   "variant": "I64SetCondZ",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r3"
+   ],
+   "thumb": "42ea030000280cbf01200020",
+   "thumb_err": null,
+   "a32": "030092e10100a0030000a013",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Mul",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4",
+    "r5"
+   ],
+   "thumb": "02fb05fc03fb04cca2fb04016144",
+   "thumb_err": null,
+   "a32": "92050ce093c42ce0920481e00c1081e0",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Shl",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4",
+    "r5"
+   ],
+   "thumb": "04f03f04b4f120050ad5c4f1200522fa05f503fa04f141ea050102fa04f002e002fa05f10020",
+   "thumb_err": null,
+   "a32": "3f4004e2205054e20500005a205064e23255a0e11314a0e1051081e11204a0e1010000ea1215a0e10000a0e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64ShrU",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4",
+    "r5"
+   ],
+   "thumb": "04f03f04b4f120050ad5c4f1200503fa05f522fa04f040ea050023fa04f102e023fa05f00021",
+   "thumb_err": null,
+   "a32": "3f4004e2205054e20500005a205064e21355a0e13204a0e1050080e13314a0e1010000ea3305a0e10010a0e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64ShrS",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4",
+    "r5"
+   ],
+   "thumb": "04f03f04b4f120050ad5c4f1200503fa05f522fa04f040ea050043fa04f103e043fa05f04feae371",
+   "thumb_err": null,
+   "a32": "3f4004e2205054e20500005a205064e21355a0e13204a0e1050080e15314a0e1010000ea5305a0e1c31fa0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Rotl",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4"
+   ],
+   "thumb": "0fb44df8044d4df8043d4df8042d01bc02bc04bc02f03f02b2f120030ed5c2f1200320fa03fc21fa03f301fa02f141ea0c0100fa02f040ea03000ee0c3f1200221fa02fc20fa02f200fa03f001fa03f140ea0c0c41ea020061460946004601b001b004bc08bc",
+   "thumb_err": null,
+   "a32": "0f002de904402de504302de504202de504009de404109de404209de43f2002e2203052e20700005a203062e230c3a0e13133a0e11112a0e10c1081e11002a0e1030080e1070000ea202063e231c2a0e13022a0e11003a0e11113a0e10cc080e1020081e10c10a0e10110a0e10000a0e104d08de204d08de204209de404309de4",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Rotr",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2",
+    "r3",
+    "r4"
+   ],
+   "thumb": "0fb44df8044d4df8043d4df8042d01bc02bc04bc02f03f02b2f120030ed5c2f1200301fa03fc00fa03f320fa02f040ea0c0021fa02f141ea03010ee0c3f1200200fa02fc01fa02f221fa03f141ea0c0c20fa03f141ea020160460946004601b001b004bc08bc",
+   "thumb_err": null,
+   "a32": "0f002de904402de504302de504202de504009de404109de404209de43f2002e2203052e20700005a203062e211c3a0e11033a0e13002a0e10c0080e13112a0e1031081e1070000ea202063e210c2a0e11122a0e13113a0e10cc081e13013a0e1021081e10c00a0e10110a0e10000a0e104d08de204d08de204209de404309de4",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Clz",
+   "shape": "count",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r3"
+   ],
+   "thumb": "b3f1000f03d0b3fa83f004e000bfb2fa82f000f120000023",
+   "thumb_err": null,
+   "a32": "000053e3130f6f11120f6f01200080020030a0e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Ctz",
+   "shape": "count",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r3"
+   ],
+   "thumb": "b2f1000f05d092faa2f0b0fa80f006e000bf93faa3f0b0fa80f000f120000023",
+   "thumb_err": null,
+   "a32": "000052e3320fff16330fff06100f6fe1200080020030a0e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Popcnt",
+   "shape": "count",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2",
+    "r3"
+   ],
+   "thumb": "38b494461d4664464fea540c45f25553c5f255530cea030ca4eb0c0443f23333c3f2333304ea030c4fea940404ea030404eb0c044fea141c04eb0c0440f60f73c0f60f7304ea030440f20113c0f2011304fb03f44fea14644fea550c45f25553c5f255530cea030ca5eb0c0543f23333c3f2333305ea030c4fea950505ea030505eb0c054fea151c05eb0c0540f60f73c0f60f7305ea030540f20113c0f2011305fb03f54fea156504eb050c38bc60464ff00003",
+   "thumb_err": null,
+   "a32": "38002de902c0a0e10350a0e10c40a0e1a4c0a0e1553505e3553545e303c00ce00c4044e0333303e3333343e303c004e02441a0e1034004e00c4084e024c2a0e10c4084e00f3f00e30f3f40e3034004e0013100e3013140e3940304e0244ca0e1a5c0a0e1553505e3553545e303c00ce00c5045e0333303e3333343e303c005e02551a0e1035005e00c5085e025c2a0e10c5085e00f3f00e30f3f40e3035005e0013100e3013140e3950305e0255ca0e105c084e03800bde80c00a0e10030a0e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Const",
+   "shape": "wide",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [],
+   "thumb": "47f28870c5f2665043f24431c1f22211",
+   "thumb_err": null,
+   "a32": "880707e3660545e3441303e3221141e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Const",
+   "shape": "zero",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [],
+   "thumb": "40f2000040f20001",
+   "thumb_err": null,
+   "a32": "000000e3001000e3",
+   "a32_err": null
+  },
+  {
+   "variant": "I64ExtendI32S",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "10464feae071",
+   "thumb_err": null,
+   "a32": "0200a0e1c01fa0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Extend8S",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "4ffa82f04feae071",
+   "thumb_err": null,
+   "a32": "7200afe6c01fa0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Extend16S",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "0ffa82f04feae071",
+   "thumb_err": null,
+   "a32": "7200bfe6c01fa0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "I64Extend32S",
+   "shape": "pair",
+   "outputs": [
+    "r0",
+    "r1"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "10464feae271",
+   "thumb_err": null,
+   "a32": "0200a0e1c21fa0e1",
+   "a32_err": null
+  },
+  {
+   "variant": "I32WrapI64",
+   "shape": "reg",
+   "outputs": [
+    "r0"
+   ],
+   "inputs": [
+    "r2"
+   ],
+   "thumb": "1046",
+   "thumb_err": null,
+   "a32": "0200a0e1",
+   "a32_err": null
+  }
+ ]
+}
