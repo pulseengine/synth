@@ -543,6 +543,38 @@ jobs:
           if [ -s /tmp/rivet-errors.txt ]; then
             echo "::warning::Cross-repo link errors present (expected — external projects need rivet init)"
           fi
+          # ------------------------------------------------------------------
+          # #1064 NON-VACUITY FLOOR — a skipped artifact source must not pass.
+          #
+          # release-v0.59.yaml carried non-schema top-level keys ('metadata:',
+          # 'requirements:'); rivet's generic-yaml loader skipped the WHOLE
+          # file, and this job stayed GREEN because an invisible file
+          # contributes zero errors — all 16 RQ-59-* artifacts were absent
+          # from the graph the release-readiness query runs over. The
+          # ERROR-grep above can never catch that class: validation did LESS
+          # work and reported nothing (same shape as #1012 one level up).
+          #
+          # So pin a FLOOR on artifacts loaded — the discipline
+          # scripts/oracle_run.py applies to emulation counts: the number may
+          # only rise. When a PR ADDS artifacts, raise the floor in the same
+          # PR (the visible-diff rule). A measured value BELOW the floor
+          # means an artifact source went invisible; that is the defect —
+          # never lower the floor to pass.
+          #
+          # Floor measured 2026-08-26 under the pinned rivet v0.23.0 with the
+          # externals block stripped (this job's own conditions, above):
+          # 463 local artifacts, release-v0.59.yaml's 16 included.
+          ARTIFACT_FLOOR=463
+          MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
+          echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
+          if [ -z "$MEASURED" ]; then
+            echo "::error::rivet list printed no '<N> artifacts' count line — the artifact-load floor cannot be measured. Treating as RED, not green (#1064)."
+            exit 1
+          fi
+          if [ "$MEASURED" -lt "$ARTIFACT_FLOOR" ]; then
+            echo "::error::Artifacts loaded fell below the floor ($MEASURED < $ARTIFACT_FLOOR). An artifact source file is being skipped or mis-parsed (#1064) — find it; do not lower the floor."
+            exit 1
+          fi
       - name: Check coverage
         run: rivet coverage
 
