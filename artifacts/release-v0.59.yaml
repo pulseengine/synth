@@ -707,6 +707,14 @@ requirements:
     status: implemented
     release: v0.59
     tags: [soundness, arm, relocatable, data-segments, honest-frontier, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1041"
   - id: RQ-59-I64SHIFT
     type: system-req
     title: "i64 variable shifts CLOBBER their own shift-amount operand — both selectors, executed"
@@ -756,7 +764,6 @@ requirements:
       req-type: functional
       priority: must
       verification-track: differential
-      issue: "#1041"
       issue: "#1048"
 
   - id: RQ-59-STARTFN
@@ -791,7 +798,7 @@ requirements:
       are arguably inside the documented R9/R11 embedder contract. Determine
       which side of the contract each falls on and say so; if either is outside
       it, that is a fourth silent drop and it outranks this fix.
-    status: proposed
+    status: implemented
     release: v0.59
     tags: [soundness, silent-drop, start-section, all-backends, fix-first]
     links:
