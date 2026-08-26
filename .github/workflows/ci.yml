@@ -565,7 +565,8 @@ jobs:
           # externals block stripped (this job's own conditions, above):
           # 463 local artifacts, release-v0.59.yaml's 16 included. Re-measured
           # after #1056 merged RQ-59-GLOBALINIT to main: 464, v0.59's 17 included.
-          ARTIFACT_FLOOR=464
+          # 464 -> 472 when release-v0.60.yaml landed its 8 artifacts.
+          ARTIFACT_FLOOR=472
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
