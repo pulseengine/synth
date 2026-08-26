@@ -411,3 +411,91 @@ artifacts:
       verification-track: review
       issue: "#1064"
 
+  - id: RQ-60-VFPPRESSURE
+    type: system-req
+    title: "Three named functions are the whole remaining gap to a complete falcon M7 cascade — both are VFP pressure"
+    description: >
+      #1069, filed by jess with a FULLY PUBLIC repro (six components pulled
+      anonymously from ghcr, fused with meld, lowered with synth) and measured on
+      a real RT1176 Renode model: linear memory byte-exact, 214,696 instructions
+      retired, PC in the export region. A working image missing three functions,
+      not a paper artifact.
+
+        attitude#tick   GI-FPU-002 phase 1  S0..S15 all live
+        ekf#estimate    GI-FPU-002 phase 1  S0..S15 all live
+        position#tick   GI-FPU-002 phase 2  D0..D7 all live
+
+      2 of 5 cascade stages export. The cascade cannot close a control loop on
+      target without the other three.
+
+      COORDINATOR-VERIFIED against current code before scoping (jess measured
+      0.55.0; we shipped 0.59.0):
+
+        * `alloc_vfp_temp(used: &mut [bool; 16])` — the S pool IS 16 slots,
+          S0..S15. S16..S31 (aliased D8..D15) are absent from it. Those are
+          AAPCS CALLEE-saved: using them costs a prologue/epilogue push/pop and
+          roughly DOUBLES the file. Claim confirmed.
+        * NO `__aeabi_ul2f` / `l2f` / `ul2d` / `l2d` routing exists anywhere in
+          crates/. #869's acceptance comment described exactly this route
+          ("through the existing `--builtins` mechanism", core-register based,
+          ZERO VFP pressure) and inline-f64 was implemented instead. The
+          `--builtins` flag that does exist links a kiln-builtins object and is
+          unrelated. Claim confirmed.
+        * `has_double_fpu()` is `matches!(self.fpu, Some(FPUPrecision::Double))`,
+          so f64 lowering requires m7dp. Claim confirmed.
+
+      REPRODUCED ON 0.59.0, and the minimal case is SHARPER than the cascade:
+
+          (func (export "conv") (param i64) (result f32)
+            (f32.convert_i64_u (local.get 0)))
+
+          m4f  -> DECLINED "GI-FPU-002 phase 2: scalar f64 requires a
+                  double-precision FPU target (cortex-m7dp)"
+          m7dp -> compiles, 124 bytes
+
+      A function whose signature contains NO f64 ANYWHERE is refused for needing
+      f64 — purely because synth's own lowering introduces it. That is the whole
+      of sub-problem 2 in eight lines, and it is a REACH failure of our own
+      making: the estimator cannot be built for the single-precision M4 core it
+      is architecturally assigned to, not for lack of hardware capability but
+      from the lowering strategy for one conversion.
+
+      HONEST RESIDUAL IN OUR OWN VERIFICATION: sub-problem 1 (S-exhaustion) is
+      confirmed only by CODE INSPECTION. The deep-f32 fixture written to
+      reproduce it compiled fine at 60 bytes — not deep enough to exhaust
+      S0..S15. A lane must build a fixture that actually reddens phase 1 before
+      claiming to have fixed it, or it will be fixing something it never saw
+      fail.
+
+      TWO INDEPENDENT INCREMENTS, and they should not be conflated:
+        1. Route i64<->float conversions through the AEABI builtins (core
+           registers, zero VFP pressure) as #869's acceptance comment described.
+           Unconditional or pressure-heuristic — decide deliberately. This alone
+           may unblock position#tick AND unpin conversion-carrying functions
+           from m7dp.
+        2. Extend the S-register pool into the callee-saved S16..S31 / D8..D15
+           with prologue/epilogue save-restore, for the genuinely deep f32
+           trees in attitude#tick and ekf#estimate.
+
+      DEFINITION OF DONE (jess's, adopted): those three symbols reaching
+      `nm -> T` in the fused image — 5 of 5 stages exported.
+
+      TAKE THE STANDING OFFER. jess will run any branch against the real fused
+      cascade and report the delta BY SYMBOL NAME, including READING the
+      generated code for soundness rather than only checking symbols appeared.
+      That loop has already caught two "green in isolation, no movement in the
+      real op-mix" cases (#369->#782, #869->v0.52). Run it BEFORE the release,
+      not after — a synthetic fixture that goes green while the real op-mix does
+      not move is exactly the failure this project keeps finding.
+    status: proposed
+    release: v0.60
+    tags: [reach, vfp, fpu, f32, aeabi-builtins, jess, cortex-m7, measured]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1069"
+
