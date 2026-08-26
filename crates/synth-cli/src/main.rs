@@ -2155,6 +2155,24 @@ fn compile_command(
         if let Some(reason) = &single_func_nonconst_data {
             anyhow::bail!("aarch64: {reason} — refusing to ship the region uninitialized (#851)");
         }
+        // #1017 (the #871 sibling guard, ported): this single-function wrapper
+        // carries NO relocation plumbing — `build_aarch64_elf` places the body
+        // with an empty relocation list, so a function whose code contains a
+        // `bl`/`b` placeholder awaiting R_AARCH64_CALL26/JUMP26 (a direct call
+        // to a local function or, since #1017, to an IMPORT) would ship a dead
+        // `bl #0` call site — the silent-miscompile class. Decline loudly; the
+        // module path (`--all-exports`) emits the full `.rela.text`.
+        if !compiled.relocations.is_empty() {
+            anyhow::bail!(
+                "function '{}' carries {} relocation(s) (direct calls / \
+                 substrate references), but the single-function AArch64 \
+                 wrapper emits no .rela.text — the call sites would ship as \
+                 dead `bl #0` placeholders. Compile with --all-exports (the \
+                 module path emits relocations) (#1017, the #871 class).",
+                func_name,
+                compiled.relocations.len()
+            );
+        }
         // #546: emit the AArch64 backend's own EM_AARCH64 ELF64 object, not the
         // ARM (EM_ARM/ELF32) wrapper. The A64 codegen is correct; only the
         // container differs. Discriminate on backend name, not target family:
@@ -4463,7 +4481,16 @@ fn compile_all_exports(
         let substrate = a64_substrate
             .as_ref()
             .map_err(|e| anyhow::anyhow!("aarch64: {e}"))?;
-        build_multi_func_aarch64_elf(&compiled_funcs, substrate)?
+        // #1017 (VCR-REACH-002): the import field-name table — each import
+        // call's `func_N` reloc is rewritten to its wasm field name and
+        // emitted `SHN_UNDEF` for the host linker (the ARM #173/#197
+        // `--relocatable` contract, ported).
+        build_multi_func_aarch64_elf(
+            &compiled_funcs,
+            substrate,
+            a64_plan_inputs.num_imported_funcs,
+            &a64_plan_inputs.import_func_symbols,
+        )?
     } else if is_riscv {
         // #798 (the RV32 analogue of #758; found by the VCR-VER-003 phase-2
         // probe, #777): the RV32 single-base scheme (s11 =
@@ -7874,9 +7901,13 @@ fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 fn build_multi_func_aarch64_elf(
     funcs: &[ElfFunction],
     substrate: &synth_backend_aarch64::substrate::Substrate,
+    // #1017: import count + field-name table (imported-function index order),
+    // from the same `PlanInputs` snapshot the substrate was planned from.
+    num_imported_funcs: u32,
+    import_func_symbols: &[String],
 ) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{
-        ElfFunction as A64ElfFunction, build_relocatable_object_with_data,
+        ElfFunction as A64ElfFunction, build_relocatable_object_full,
     };
     let a64_funcs: Vec<A64ElfFunction> = funcs
         .iter()
@@ -7899,13 +7930,34 @@ fn build_multi_func_aarch64_elf(
     if let Some(table) = substrate.table.clone() {
         a64_funcs.push(table);
     }
+    // #1017 (VCR-REACH-002): rewrite each import call's `func_N` reloc to the
+    // import's wasm FIELD name (ARM's `build_relocatable_elf` #173 rewrite,
+    // ported) — the builder emits it as a GLOBAL `SHN_UNDEF` external the host
+    // linker resolves. An import the module does not name keeps `func_N`,
+    // which the #1013 guard refuses (never a fabricated external). The
+    // substrate table's import trampolines already carry field names. A
+    // module with no function imports takes neither branch — byte-identical.
+    for f in &mut a64_funcs {
+        for r in &mut f.relocations {
+            if let Some(rest) = r.symbol.strip_prefix("func_")
+                && let Ok(i) = rest.parse::<u32>()
+                && i < num_imported_funcs
+                && let Some(name) = import_func_symbols
+                    .get(i as usize)
+                    .filter(|n| !n.is_empty())
+            {
+                r.symbol = name.clone();
+            }
+        }
+    }
     // #1013: a relocation against a symbol the object does not place (a
     // retained function calling a loud-declined one) is a CLEAN refusal —
     // `Err` here propagates to the #952-style non-zero exit with the reason
     // naming the declined symbol, never a panic/exit-101.
-    Ok(build_relocatable_object_with_data(
+    Ok(build_relocatable_object_full(
         &a64_funcs,
         &substrate.globals,
+        import_func_symbols,
     )?)
 }
 

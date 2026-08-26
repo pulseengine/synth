@@ -98,6 +98,15 @@ pub fn build_relocatable_object(functions: &[ElfFunction]) -> Result<Vec<u8>, Ba
     build_relocatable_object_with_data(functions, &DataBlob::default())
 }
 
+/// Data-only shorthand for [`build_relocatable_object_full`] with no undefined
+/// externals — every pre-#1017 caller keeps byte-identical output.
+pub fn build_relocatable_object_with_data(
+    functions: &[ElfFunction],
+    data: &DataBlob,
+) -> Result<Vec<u8>, BackendError> {
+    build_relocatable_object_full(functions, data, &[])
+}
+
 /// Build an `EM_AARCH64` `ET_REL` object with an optional synth-emitted `.data`
 /// section (#851 lane L3 — the WASM globals region, see [`DataBlob`]).
 ///
@@ -117,9 +126,25 @@ pub fn build_relocatable_object(functions: &[ElfFunction]) -> Result<Vec<u8>, Ba
 /// with a `RUST_BACKTRACE` note that reads as an internal bug. The DECISION is
 /// unchanged — an unrelocated `bl #0`/`adrp #0` placeholder is the
 /// silent-miscompile class and never ships.
-pub fn build_relocatable_object_with_data(
+///
+/// # Undefined externals (#1017 / VCR-REACH-002)
+///
+/// `undefined_externals` is the driver-supplied allowlist of symbols this
+/// object may legitimately NOT place: the wasm module's imported functions,
+/// under their import FIELD names (the ARM `--relocatable` #173/#197 contract,
+/// ported). A relocation targeting one is emitted against a GLOBAL `STT_FUNC`
+/// `SHN_UNDEF` symbol the host linker resolves — exactly the wasm2c/Wasker
+/// undefined-symbol pattern. The list is an ALLOWLIST, not a policy change: a
+/// relocation against any symbol that is neither placed nor listed still gets
+/// the #1013 clean refusal, so a loud-declined LOCAL callee can never silently
+/// become a link-time external. An external in the list that no relocation
+/// references is NOT emitted (no symtab noise; unreferenced imports stay
+/// invisible, matching ARM). A listed name that IS placed by this object binds
+/// to the placed symbol (ARM parity — the defined symbol wins).
+pub fn build_relocatable_object_full(
     functions: &[ElfFunction],
     data: &DataBlob,
+    undefined_externals: &[String],
 ) -> Result<Vec<u8>, BackendError> {
     // --- .text: concatenated bodies; record each function's .text offset. ---
     let mut text: Vec<u8> = Vec::new();
@@ -177,6 +202,34 @@ pub fn build_relocatable_object_with_data(
             push_sym(name, 0x11, idx_data, *off, size, &mut strtab);
         }
     }
+    // #1017: undefined externals — GLOBAL `STT_FUNC` at `SHN_UNDEF` (0), the
+    // ARM `add_undefined_symbol` shape. Only externals a relocation actually
+    // references are emitted, in first-listed order; a name this object already
+    // places is skipped (the reloc binds to the placed symbol, ARM parity).
+    {
+        let referenced: std::collections::HashSet<&str> = functions
+            .iter()
+            .flat_map(|f| &f.relocations)
+            .map(|r| r.symbol.as_str())
+            .collect();
+        // Defined-name set derived from the same inputs `push_sym` consumed
+        // (reading `sym_index` here would conflict with the closure's capture).
+        let defined: std::collections::HashSet<&str> = functions
+            .iter()
+            .flat_map(|f| &f.symbols)
+            .map(|s| s.as_str())
+            .chain(data.symbols.iter().map(|(n, _)| n.as_str()))
+            .collect();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for name in undefined_externals {
+            if referenced.contains(name.as_str())
+                && !defined.contains(name.as_str())
+                && seen.insert(name.as_str())
+            {
+                push_sym(name, 0x12, 0, 0, 0, &mut strtab);
+            }
+        }
+    }
 
     // --- .rela.text: one entry per code relocation (rebased to .text). ---
     // ELF64 packs r_info = (sym_index << 32) | type (sym in the HIGH word).
@@ -206,10 +259,11 @@ pub fn build_relocatable_object_with_data(
             // httparse corpus repro: a VCR-A64-CF-001 `br_table` decline of
             // `func_0`, called by `parse`). Refuse via `Err` — the #952 clean
             // non-zero exit with a reason naming the symbol — never a panic,
-            // which reads as a synth bug and exits 101. (True sibling parity —
-            // RISC-V keeps the reloc against an UNDEFINED `synth_func_N` symbol,
-            // loud at link time — needs undefined-external support in this
-            // builder, which is #1017/v0.60 import-dispatch-adjacent scope.)
+            // which reads as a synth bug and exits 101. (#1017: undefined
+            // externals now EXIST in this builder, but only for the driver's
+            // explicit allowlist — the module's imported functions. A symbol
+            // that is neither placed nor allowlisted, i.e. a loud-declined
+            // LOCAL callee, keeps this refusal.)
             let Some(&sidx) = sym_index.get(&r.symbol) else {
                 return Err(BackendError::CompilationFailed(format!(
                     "aarch64 ELF builder: relocation at .text+{} targets symbol \
@@ -662,5 +716,100 @@ mod tests {
                 && msg.contains("#851"),
             "refusal must name the dangling symbol and the #851 class: {msg}"
         );
+    }
+
+    /// #1017: a relocation against an ALLOWLISTED external builds, emitting a
+    /// GLOBAL `STT_FUNC` symbol at `SHN_UNDEF` (shndx 0) that the relocation
+    /// binds to — the wasm2c/Wasker undefined-symbol pattern, ARM #173/#197
+    /// ported.
+    #[test]
+    fn allowlisted_external_emits_shn_undef_symbol_1017() {
+        let obj = build_relocatable_object_full(
+            &[ElfFunction::code(
+                vec!["func_1".into(), "run".into()],
+                vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6], // bl #0 ; ret
+                vec![CodeRelocation {
+                    offset: 0,
+                    symbol: "host_add".into(),
+                    kind: RelocKind::AArch64Call26,
+                }],
+            )],
+            &DataBlob::default(),
+            &["host_add".into()],
+        )
+        .expect("an allowlisted external must build");
+        // Symbols: [0]=null [1]=func_1 [2]=run [3]=host_add (SHN_UNDEF).
+        let symtab_off = EHDR_SIZE + 8; // ehdr | .text (8 bytes) | .symtab
+        let sym3 = symtab_off + 3 * SYM_SIZE;
+        assert_eq!(obj[sym3 + 4], 0x12, "GLOBAL STT_FUNC");
+        assert_eq!(
+            u16::from_le_bytes([obj[sym3 + 6], obj[sym3 + 7]]),
+            0,
+            "st_shndx must be SHN_UNDEF"
+        );
+        // The single RELA entry binds to symbol index 3 with type CALL26.
+        let strtab: &[u8] = &obj;
+        assert!(
+            strtab
+                .windows(b"host_add\0".len())
+                .any(|w| w == b"host_add\0"),
+            "external name in .strtab"
+        );
+        let rela = sections(&obj)
+            .into_iter()
+            .find(|(n, ..)| n == ".rela.text")
+            .expect(".rela.text present");
+        let (off, len) = (rela.3, rela.4);
+        assert_eq!(len, RELA_SIZE);
+        let r_info = u64::from_le_bytes(obj[off + 8..off + 16].try_into().unwrap());
+        assert_eq!(r_info >> 32, 3, "reloc binds to the SHN_UNDEF symbol");
+        assert_eq!((r_info & 0xFFFF_FFFF) as u32, R_AARCH64_CALL26);
+    }
+
+    /// #1017: the allowlist is NOT a policy change — a relocation against a
+    /// symbol that is neither placed nor allowlisted keeps the #1013 refusal
+    /// even when OTHER externals are allowlisted, so a loud-declined local
+    /// callee can never silently become a link-time external.
+    #[test]
+    fn unlisted_dangling_symbol_still_refuses_1017() {
+        let err = build_relocatable_object_full(
+            &[ElfFunction::code(
+                vec!["func_1".into()],
+                vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6],
+                vec![CodeRelocation {
+                    offset: 0,
+                    symbol: "func_0".into(), // declined local — NOT allowlisted
+                    kind: RelocKind::AArch64Call26,
+                }],
+            )],
+            &DataBlob::default(),
+            &["host_add".into()], // allowlist names something else
+        )
+        .expect_err("an unlisted dangling symbol must still refuse");
+        assert!(err.to_string().contains("targets symbol 'func_0'"));
+    }
+
+    /// #1017: an allowlisted external no relocation references is NOT emitted
+    /// (no symtab noise), and an EMPTY allowlist is byte-identical to the
+    /// two-argument builder (the frozen contract for import-free modules).
+    #[test]
+    fn unreferenced_external_and_empty_allowlist_are_invisible_1017() {
+        let f = || {
+            vec![ElfFunction::code(
+                vec!["func_0".into(), "add".into()],
+                vec![0x20, 0x00, 0x02, 0x0B, 0xC0, 0x03, 0x5F, 0xD6],
+                vec![],
+            )]
+        };
+        let base = build_relocatable_object_with_data(&f(), &DataBlob::default()).unwrap();
+        let with_unreferenced =
+            build_relocatable_object_full(&f(), &DataBlob::default(), &["host_add".into()])
+                .unwrap();
+        let with_empty = build_relocatable_object_full(&f(), &DataBlob::default(), &[]).unwrap();
+        assert_eq!(
+            base, with_unreferenced,
+            "unreferenced external is invisible"
+        );
+        assert_eq!(base, with_empty, "empty allowlist is byte-identical");
     }
 }
