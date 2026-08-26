@@ -809,3 +809,64 @@ requirements:
       priority: must
       verification-track: differential
       issue: "#1046"
+
+  - id: RQ-59-GLOBALINIT
+    type: system-req
+    title: "ARM plain --relocatable SILENTLY DROPS nonzero global initializers"
+    description: >
+      #1052, found by the RQ-59-STARTFN lane resolving an observation the
+      RQ-59-DATASEG lane had flagged but not filed.
+
+      `(global (mut i32) (i32.const 42))` with a `global.get` export compiles
+      exit-0 on the ARM plain `--relocatable` path to an object whose ENTIRE
+      text is `push; ldr.w r0,[r9]; pop`. **0x2A appears nowhere in the ELF** —
+      no `.data`, no `__synth_globals`. wasmtime returns 42; synth returns
+      whatever the embedder left at R9.
+
+      IT IS OUTSIDE THE EMBEDDER CONTRACT, established rather than assumed. The
+      contract documents R9 as the globals-table BASE only. There is no sentence
+      anywhere assigning initializer EVALUATION to the embedder — in explicit
+      contrast to the data-segment sentence ("the embedder populates its init
+      segments") that justified #1041's refuse-with-flag. Every other path
+      ships inits, materializes them at reset (#649 treated this exact class as
+      a bug there), or loud-skips (RV32). The plain relocatable path alone does
+      none of the three.
+
+      WHY IT SURVIVED, and this is the part worth carrying: the sole
+      relocatable-path globals harness maps a ZEROED region, annotated
+      `# zeroed globals table (inits are 0)`. It passes — correctly — because
+      that fixture's initializers happen to be zero. A harness that cannot
+      distinguish "the initializers were written" from "the initializers were
+      all zero anyway" has been green over this bug for its whole existence.
+      Same family as #1055 (the param-clobber fuzz harness checking "before
+      FIRST read") and #1054's expansion-validator comment ("the expansion may
+      clobber it freely"): three checkers encoding a property easier to state
+      and weaker than the one that matters.
+
+      MINIMUM: refuse loudly, matching the house style now used three times —
+      aarch64's #851, #1049's ARM data-segment refusal, #1053's start-section
+      refusal. Materializing initializers is capability work and NOT this
+      artifact.
+
+      RED-FIRST, and the assertion shape is the whole point: the test must
+      assert a NON-ZERO EXIT and a reason naming the global initializers. It
+      must NOT assert "the initializer value is absent from the object" — that
+      passes today, on the broken behaviour, which is exactly how this survived.
+
+      WHILE THERE: strengthen the zeroed-globals harness so it could notice.
+      A fixture with a NONZERO initializer is the minimum; better, assert the
+      served image equals the runtime image the way VCR-VER-003 does for data
+      segments. If a refusal makes that harness unrunnable, say so and follow
+      #1049's shape (default refuses; any escape hatch is explicit, and emitted
+      bytes identical either way).
+    status: proposed
+    release: v0.59
+    tags: [soundness, silent-drop, globals, arm, relocatable, fix-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1052"
