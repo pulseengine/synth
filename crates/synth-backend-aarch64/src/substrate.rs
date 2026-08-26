@@ -388,6 +388,8 @@ mod tests {
             init,
             mutable: true,
             slot_bytes,
+            // RQ-59-GLOBALINIT (#1052): these fixtures model integer globals.
+            float_or_v128: false,
         }
     }
 

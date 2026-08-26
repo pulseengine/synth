@@ -82,6 +82,14 @@ pub struct WasmGlobal {
     /// laid out by SUMMING these widths (not `index * 4`): an i64 global needs
     /// room for both words, and every later global's offset shifts with it.
     pub slot_bytes: u32,
+    /// RQ-59-GLOBALINIT (#1052): declared content type is f32/f64/v128.
+    /// Those globals' initializers are deliberately uncaptured (`init: None`)
+    /// AND their access is the GI-FPU-001 (#369) / #680 loud-skip lane, so a
+    /// dropped initializer is unobservable through generated code. An
+    /// INTEGER global with `init: None` (a non-const init expr) has no such
+    /// cover — the relocatable-path init-materialization guard needs to tell
+    /// the two apart, and `slot_bytes` alone cannot (4 = i32 OR f32).
+    pub float_or_v128: bool,
 }
 
 impl WasmMemory {
@@ -1163,6 +1171,16 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         init,
                         mutable: global.ty.mutable,
                         slot_bytes,
+                        // RQ-59-GLOBALINIT (#1052): see the field doc — lets
+                        // the relocatable guard distinguish a float/v128
+                        // `None` (loud-skip lane) from an integer `None`
+                        // (non-const init expr, silently-dropped value).
+                        float_or_v128: matches!(
+                            global.ty.content_type,
+                            wasmparser::ValType::F32
+                                | wasmparser::ValType::F64
+                                | wasmparser::ValType::V128
+                        ),
                     });
                 }
             }

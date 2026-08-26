@@ -357,6 +357,24 @@ enum Commands {
         #[arg(long)]
         embedder_data_init: bool,
 
+        /// RQ-59-GLOBALINIT (#1052): declare that the EMBEDDER evaluates the
+        /// module's global INITIALIZERS and seeds the R9 globals table with
+        /// them before any export runs (from the wasm module it already
+        /// holds). Without this flag, a module whose global initializers do
+        /// not reach the emitted object — a nonzero `i32.const`/`i64.const`
+        /// init, or a non-const init expr, on the plain relocatable path —
+        /// now REFUSES: the documented contract assigns only the table BASE
+        /// (R9) to the embedder, never initializer evaluation, so every
+        /// `global.get` would silently read whatever the embedder's memory
+        /// happens to hold. All-zero constant inits never refuse (a zeroed
+        /// table is their correct initial state); `--native-pointer-abi`
+        /// with a linear memory ships the init values as `.data` (#237) and
+        /// never needs this flag. Emitted bytes are identical with or
+        /// without the flag; it only converts the refusal into an explicit
+        /// acknowledgment (the #952 / `--embedder-data-init` shape).
+        #[arg(long)]
+        embedder_global_init: bool,
+
         /// #237: native-pointer ABI for host-pointer drop-ins. Emits wasm function
         /// statics as a base-independent `.data` section (`__synth_wasm_data`,
         /// MOVW/MOVT-relocated), so a `linmem base = 0` native-pointer trampoline
@@ -699,6 +717,7 @@ fn main() -> Result<()> {
             builtins,
             relocatable,
             embedder_data_init,
+            embedder_global_init,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom,
@@ -789,6 +808,7 @@ fn main() -> Result<()> {
                 &target_spec,
                 relocatable,
                 embedder_data_init,
+                embedder_global_init,
                 native_pointer_abi,
                 no_bind_cabi_arena,
                 sbom_path,
@@ -1636,6 +1656,10 @@ fn compile_command(
     // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
     // memory 0's active data segments; suppresses the relocatable-path refusal.
     embedder_data_init: bool,
+    // RQ-59-GLOBALINIT (#1052): `--embedder-global-init` — the embedder
+    // evaluates global initializers and seeds the R9 table; suppresses the
+    // relocatable-path init-materialization refusal.
+    embedder_global_init: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep the arena import an external symbol.
     no_bind_cabi_arena: bool,
@@ -1725,6 +1749,7 @@ fn compile_command(
             target_spec,
             relocatable,
             embedder_data_init,
+            embedder_global_init,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom_path,
@@ -3107,6 +3132,10 @@ fn compile_all_exports(
     // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
     // memory 0's active data segments; suppresses the relocatable-path refusal.
     embedder_data_init: bool,
+    // RQ-59-GLOBALINIT (#1052): `--embedder-global-init` — the embedder
+    // evaluates global initializers and seeds the R9 table; suppresses the
+    // relocatable-path init-materialization refusal.
+    embedder_global_init: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep a sole `env::__cabi_arena_realloc`
     // import an external symbol instead of binding it in-image.
@@ -4546,6 +4575,12 @@ fn compile_all_exports(
             &all_data_segments,
             all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
             embedder_data_init,
+            // RQ-59-GLOBALINIT (#1052): the module's decoded globals — the
+            // builder refuses when their initializers do not materialize —
+            // and the acknowledgment flag that converts the refusal back
+            // into the (now explicit) embedder contract.
+            &all_globals,
+            embedder_global_init,
             // #237: used-extent sizing + globals slots, native-pointer ABI only.
             if native_pointer_abi {
                 Some(NativeGlobalsLayout {
@@ -5062,6 +5097,14 @@ fn build_relocatable_elf(
     // the un-materialized-segments refusal below is suppressed (bytes
     // identical either way).
     embedder_data_init: bool,
+    // RQ-59-GLOBALINIT (#1052): the module's decoded globals. The guard
+    // below refuses when a global's initial VALUE cannot reach the emitted
+    // object — a nonzero integer const init on the plain (R9-table) path, a
+    // non-const init expr on any path — unless `--embedder-global-init`
+    // explicitly assigns initializer evaluation to the embedder. Bytes
+    // identical either way (the guard emits nothing).
+    globals: &[WasmGlobal],
+    embedder_global_init: bool,
     native_globals: Option<NativeGlobalsLayout>,
     // VCR-DBG-001 step 4 (#394): the input wasm's parsed `.debug_line` (rows +
     // code_base). `None` ⇒ `--debug-line` off OR the input carried no DWARF ⇒
@@ -5170,6 +5213,67 @@ fn build_relocatable_elf(
              segments at instantiation. Relocatable data-segment init in the \
              object itself is a documented follow-on (VCR-REACH-002).",
             data_segments.len()
+        );
+    }
+    // RQ-59-GLOBALINIT (#1052): the plain relocatable path accepted
+    // `(global (mut i32) (i32.const 42))` + a `global.get` export, emitted an
+    // object whose entire text was `push; ldr.w r0,[r9]; pop`, and exited 0 —
+    // the constant 42 appeared NOWHERE in the ELF. wasmtime returns 42; the
+    // object returns whatever the embedder left at R9. That is OUTSIDE the
+    // documented embedder contract: R9 is documented as the globals-table
+    // BASE only ("Load global value from globals table (R9 = globals
+    // base)"), and no sentence anywhere assigns initializer EVALUATION to
+    // the embedder — in contrast to the data-segment sentence ("the embedder
+    // populates its init segments") behind the #1041 refusal above. Every
+    // other path ships the inits (`--native-pointer-abi` #237, aarch64
+    // #851), materializes them at reset (self-contained, #649 — which fixed
+    // exactly this class there), or loud-skips (RV32 #643). Refuse the same
+    // way. The predicate is "does the initial VALUE reach the object", not
+    // "which flag was passed": `--native-pointer-abi` WITHOUT a linear
+    // memory emits no `__synth_globals` region either (the object ships an
+    // undefined symbol and no init image), so it refuses too. All-zero
+    // const inits never refuse — a zeroed embedder table IS their correct
+    // initial state (the #643 harness fixture). Float/v128 globals stay the
+    // GI-FPU-001 (#369)/#680 lane: their access loud-skips, so a dropped
+    // init is unobservable through generated code. Materializing the inits
+    // on this path is documented capability follow-on work (v0.60), not
+    // this guard.
+    let native_inits_ship = native_globals.is_some() && emit_wasm_data;
+    let dropped_global_inits: Vec<String> = globals
+        .iter()
+        .filter(|g| !g.float_or_v128)
+        .filter_map(|g| match g.init {
+            Some(GlobalInit::I32(0)) | Some(GlobalInit::I64(0)) => None,
+            // #237: the `__synth_globals` .data slot carries the const value.
+            Some(GlobalInit::I32(_)) if native_inits_ship => None,
+            Some(GlobalInit::I32(v)) => Some(format!("global {} = (i32.const {v})", g.index)),
+            Some(GlobalInit::I64(v)) => Some(format!("global {} = (i64.const {v})", g.index)),
+            // A non-const integer init expr (e.g. `global.get` of an import):
+            // the value is not statically known, so NO path materializes it —
+            // the native `.data` slot would ship a silent 0 (`_ => 0` in the
+            // layout above).
+            None => Some(format!("global {} = non-constant init expr", g.index)),
+        })
+        .collect();
+    if !dropped_global_inits.is_empty() && !embedder_global_init {
+        anyhow::bail!(
+            "module declares {} global initializer(s) whose value(s) do not \
+             reach the emitted object ({}) — the ARM relocatable path does \
+             not materialize global initializers (the R9 globals table is \
+             embedder-mapped, and the documented contract assigns only the \
+             table BASE to the embedder, never initializer evaluation), so \
+             every global.get would silently read whatever the embedder's \
+             memory happens to hold; refusing (#1052). Compile self-contained \
+             (drop --relocatable; the Cortex-M image materializes global \
+             initializers at reset, #649), use --native-pointer-abi with a \
+             linear memory (the __synth_globals region ships the init values \
+             as .data, #237), or pass --embedder-global-init to declare that \
+             your embedder evaluates the module's global initializers and \
+             seeds the R9 table before any export runs. Shipping the \
+             initializer image on this path is a documented capability \
+             follow-on (v0.60).",
+            dropped_global_inits.len(),
+            dropped_global_inits.join(", ")
         );
     }
     // #739: `--shadow-stack-size` on a module whose generated code carries NO
@@ -8911,6 +9015,8 @@ mod tests {
             &[],
             linear_memory_bytes,
             false, // RQ-59-DATASEG (#1041): default refusal semantics
+            &[],   // RQ-59-GLOBALINIT (#1052): no globals in these fixtures
+            false, // RQ-59-GLOBALINIT (#1052): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
@@ -9021,6 +9127,8 @@ mod tests {
             &[],
             131_072,
             false, // RQ-59-DATASEG (#1041): default refusal semantics
+            &[],   // RQ-59-GLOBALINIT (#1052): no globals in these fixtures
+            false, // RQ-59-GLOBALINIT (#1052): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
@@ -9119,6 +9227,8 @@ mod tests {
             &data_segments,
             131_072,
             false, // RQ-59-DATASEG (#1041): default refusal semantics
+            &[],   // RQ-59-GLOBALINIT (#1052): no globals in these fixtures
+            false, // RQ-59-GLOBALINIT (#1052): default refusal semantics
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
@@ -9587,12 +9697,14 @@ mod tests {
                 init: Some(GlobalInit::I64(0x123456789ABCDEF0u64 as i64)),
                 mutable: true,
                 slot_bytes: 8,
+                float_or_v128: false,
             },
             WasmGlobal {
                 index: 1,
                 init: Some(GlobalInit::I32(7)),
                 mutable: true,
                 slot_bytes: 4,
+                float_or_v128: false,
             },
             // f64: init not captured (GI-FPU-001 loud-skip lane) — zero slot.
             WasmGlobal {
@@ -9600,6 +9712,7 @@ mod tests {
                 init: None,
                 mutable: true,
                 slot_bytes: 8,
+                float_or_v128: true,
             },
         ];
         assert_eq!(
