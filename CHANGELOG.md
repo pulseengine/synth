@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### The theme: the loud direction was covered, the silent one was not
+## [0.59.0] - 2026-08-26
+
+**The loud direction was covered, the silent one was not.**
+
 
 Five defects of ONE shape, none of them found by an existing differential, all
 of them exit-0. synth accepted the input, discarded part of its semantics, and
