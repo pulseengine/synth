@@ -1,0 +1,64 @@
+# =============================================================================
+# release-v0.61 — per-requirement artifact layout (RQ-60-ARTIFACTSPLIT, #1059)
+#
+# COMMENTS ONLY. This file must never carry a top-level YAML key:
+#   * rivet's generic-yaml loader accepts only `artifacts:` and SILENTLY skips
+#     any other shape (#1064 hid all 16 v0.59 artifacts that way), so content
+#     parked here would be invisible while looking maintained;
+#   * scripts/status_evidence_check.py REDS on any parsed content in this file
+#     for exactly that reason (and so it cannot become a shared write surface
+#     again, which is the defect this layout exists to remove).
+#
+# THE LAYOUT (from v0.61 on; the flat release-v0.56..v0.60.yaml files are
+# shipped history and stay as they are):
+#
+#   artifacts/release-v0.61/_release.yaml       <- this file, metadata comments
+#   artifacts/release-v0.61/RQ-61-<NAME>.yaml   <- ONE file per requirement
+#
+# One lane = one file. A lane CREATES its requirement's file and touches
+# nothing another lane touches, so the hand-merged "keep both sides" conflict
+# resolution that spliced an artifact into a sibling's mapping and silently
+# dropped its `derives-from` trace link (#1059, v0.59 wave) has no surface to
+# happen on. Verified empirically at authoring: BOTH the required CI gate's
+# pinned rivet 0.23.0 and rivet 0.32.0 recurse into this directory, load each
+# file's `artifacts:` list, and resolve the ids (`rivet validate --explain`).
+#
+# RULES FOR A PER-REQUIREMENT FILE (enforced by scripts/status_evidence_check.py
+# in the required claim-check job, and by the ARTIFACT_FLOOR in the rivet job):
+#   * top-level key must be `artifacts:` with >= 1 entry — a file contributing
+#     zero artifacts is RED per file (R0, the #1064 invisible shape);
+#   * every artifact carries its own `links:` (R5) and, being >= v0.60, a
+#     non-empty `fields.issue` and a `fields.done-when` (R5/R1);
+#   * an id declared in two files is RED (R6);
+#   * the file must end in `.yaml` or `.yml` — any other extension is invisible
+#     to rivet AND the checker; the ARTIFACT_FLOOR bump in the PR that adds the
+#     artifact is what proves the file actually loaded;
+#   * raise ARTIFACT_FLOOR in .github/workflows/ci.yml in the SAME PR that
+#     adds an artifact (the visible-diff rule).
+#
+# TEMPLATE (copy into RQ-61-<NAME>.yaml):
+#
+#   artifacts:
+#     - id: RQ-61-<NAME>
+#       type: system-req
+#       title: "<one-line problem statement>"
+#       description: >
+#         <what and why, with issue refs>
+#       status: proposed
+#       release: v0.61
+#       tags: [<...>]
+#       links:
+#         - type: derives-from
+#           target: BR-001
+#       fields:
+#         req-type: functional
+#         priority: must
+#         verification-track: differential
+#         issue: "#<NNNN>"
+#         done-when: "contains:<path>:<literal>"   # or file:<path> / manual: <reason>
+#
+# Release metadata (filled in when v0.61 is planned):
+#   project: synth
+#   release: v0.61
+#   theme: (not yet planned)
+# =============================================================================
