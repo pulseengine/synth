@@ -88,6 +88,8 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1021"
+      # The single declaration site the delivered gate hangs off (#1061).
+      done-when: "contains:crates/synth-backend/src/arm_encoder.rs:expansion_scratch_contract"
 
   - id: RQ-60-CFOBLIG
     type: system-req
@@ -141,6 +143,9 @@ artifacts:
       priority: must
       verification-track: proof
       issue: "#1057"
+      # Increment 1 is a MODEL EXTENSION: done means the WASM model gains a
+      # BrIf constructor (today `Inductive wasm_instr` has no control flow).
+      done-when: "contains:coq/Synth/WASM/WasmInstructions.v:BrIf"
 
   - id: RQ-60-A64IMPORT
     type: system-req
@@ -181,6 +186,9 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1017"
+      # #1071's delivered surface: the driver-supplied SHN_UNDEF externals
+      # allowlist on the aarch64 relocatable ELF builder.
+      done-when: "contains:crates/synth-backend-aarch64/src/elf.rs:undefined_externals"
 
   - id: RQ-60-RACOST
     type: system-req
@@ -231,6 +239,10 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#242"
+      # Done is a measured allocator verdict (VCR-RA-003 acceptance oracle +
+      # frozen anchors + execution differentials), not a single in-repo
+      # signature. Direction-A protection rests on the delivery-commit floor.
+      done-when: "manual: acceptance is VCR-RA-003's whole-function validator plus the byte-changing differentials; no single file/symbol is the verdict"
 
   - id: RQ-60-ARTIFACTSPLIT
     type: system-req
@@ -278,6 +290,12 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1059"
+      # The fix SHAPE is deliberately undecided (per-artifact files vs the
+      # strict-loader mitigation), so pre-naming one shape's signature would
+      # bias the decision. NOTE: scripts/status_evidence_check.py already
+      # parses release files duplicate-key-strict — the smaller mitigation
+      # exists for THIS surface; the artifact stays open for the decision.
+      done-when: "manual: shape undecided — either artifacts/release-v0.61/ splits into per-requirement files or the duplicate-key-strict check generalizes; decide, then pin the chosen signature"
 
   - id: RQ-60-WCETKEY
     type: system-req
@@ -348,6 +366,10 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1063"
+      # Done is gale's conversion kill-criterion on the E2 composite (a
+      # name-section-keyed hint converts or is rejected with a NAMED reason)
+      # — an external-input differential, not an in-repo signature.
+      done-when: "manual: kill-criterion runs against gale's gust:os E2 composite; the hints-key surface has no pre-nameable in-repo symbol until the design (their point 2) is decided"
 
   - id: RQ-60-FLIPCOUPLE
     type: system-req
@@ -399,7 +421,27 @@ artifacts:
       KILL-CRITERION: replay v0.59's three misses against whatever is built. A
       fix that would not have caught all three has not addressed the measurement
       that motivated it.
-    status: proposed
+
+      DELIVERED: `scripts/status_evidence_check.py`, wired in the required
+      Claim Check job — a composition of the first two shapes, enforced per
+      the third. Every release artifact >= v0.60 declares `done-when` (a
+      machine-evaluable signature of its OWN definition of done, or an
+      honest `manual: <reason>`); a claiming status whose evidence is absent
+      is red (Direction B — a `manual:` claim additionally requires a written
+      `verified-by` basis, which the reverted RQ-60-VFPPRESSURE flip did not
+      have); a non-claiming status whose evidence exists is red (Direction A
+      for work shipped under a different program id, the RQ-60-CANARY shape);
+      and a first-parent commit whose subject starts with a release-artifact
+      id must be acknowledged — status flipped, or the PR recorded in
+      `fields.landed` as "increment landed, outcome does not yet hold". By
+      the time of delivery the measured instance count had grown from three
+      to SEVEN across both directions; all seven are replayed as committed
+      fixtures in `scripts/test_status_evidence_check.py` on every CI run.
+      STATED RESIDUAL: work landing with no artifact and no id-first commit
+      subject is invisible (warned on when the id is unknown); a false
+      `verified-by` basis passes — the gate forces the basis to be written,
+      it cannot judge it.
+    status: implemented
     release: v0.60
     tags: [rivet, release-readiness, derive-dont-assert, process, measured]
     links:
@@ -410,6 +452,7 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1064"
+      done-when: "contains:.github/workflows/ci.yml:status_evidence_check.py"
 
   - id: RQ-60-VFPPRESSURE
     type: system-req
@@ -507,4 +550,13 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1069"
+      # The DoD is jess's, external by construction: three symbols reaching
+      # `nm -> T` in the meld-fused RT1176 cascade (ghcr components + Renode)
+      # — not derivable in-repo. A future `implemented` flip therefore needs
+      # a written `verified-by` naming jess's by-symbol run.
+      done-when: "manual: 5-of-5 cascade stages export (attitude#tick, ekf#estimate, position#tick reach nm -> T) in jess's fused-image run; no in-repo build can produce that image"
+      # Increment 1 (#1073, AEABI-routed i64<->f32 conversions) LANDED; the
+      # stated outcome does not yet hold — that is a different claim, and
+      # this field is where the difference is recorded (RQ-60-FLIPCOUPLE).
+      landed: "#1073"
 
