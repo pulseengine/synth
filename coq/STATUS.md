@@ -1,6 +1,19 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-08-21 (RQ-59-SUBTRACT #242 increment 6: 6 new rule
+**Last Updated: 2026-08-27 (RQ-60-CFOBLIG #1057 increment 1: the WASM model
+gains its FIRST control-flow constructor — `BrIf` (label depth, mirroring the
+shipped `WasmOp::BrIf(u32)`) — with executable semantics on two levels:
+`exec_wasm_instr` takes the fall-through case and DECLINES a taken branch
+(the flat executor cannot represent a control transfer — #615 class), and the
+new branch-observable `exec_wasm_seq` surfaces a taken branch as a `WBranch`
+outcome. The correspondence obligation is DISCHARGED: `brif_correct`
+(CorrectnessBrIf.v) proves the resolved lowering shape `compile_brif`
+(CMP cond,#0; BNE — what select_with_stack.rs emits after label resolution)
+takes the ARM branch iff the WASM side branches, against the same
+`exec_program_pc`/`exec_program_br` executor as the #73 div/rem trap guards,
+plus two exec_program_br non-vacuity corollaries (same code, condition value
+alone flips Some/None). recount 630 Qed / 2 Admitted. Previous entry
+2026-08-21, RQ-59-SUBTRACT #242 increment 6: 6 new rule
 theorems (the sign-extension family — i32.extend8_s/16_s via new SXTB/SXTH
 model instructions, i64.extend8/16/32_s via new narrow pseudo-ops, semantics
 DEFINED via I32 shifts, no new axiom — plus rule_i64_const over the new
@@ -249,7 +262,7 @@ and predates the VcrSelRules (76), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 623 Qed / 2 Admitted (+2 admit.) across all files** (recount 2026-08-21, CI-gated via `claims.yaml`)
+**Total: 630 Qed / 2 Admitted (+2 admit.) across all files** (recount 2026-08-27, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -514,8 +527,8 @@ All fully proved (Qed); no new axioms.
 
 ## Per-File Breakdown
 
-Recount 2026-08-19, RQ-58-SELDSL sweep (`grep -c 'Qed\.'` / `'Admitted\.'` per
-file; the per-file rows below sum EXACTLY to the CI-gated headline 623 / 2):
+Recount 2026-08-27, RQ-60-CFOBLIG increment 1 (`grep -c 'Qed\.'` / `'Admitted\.'`
+per file; the per-file rows below sum EXACTLY to the CI-gated headline 630 / 2):
 
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
@@ -528,6 +541,7 @@ file; the per-file rows below sum EXACTLY to the CI-gated headline 623 / 2):
 | CorrectnessF64.v | 20 | 0 | T2 |
 | CorrectnessConversions.v | 21 | 0 | T2 |
 | CorrectnessMemory.v | 8 | 0 | T2 |
+| CorrectnessBrIf.v | 4 | 0 | T1 (RQ-60-CFOBLIG #1057 increment 1: `brif_correct` — the WASM `BrIf` outcome (`exec_wasm_seq`) corresponds to the resolved `compile_brif` lowering (CMP cond,#0; BNE) under the branch-taking `exec_program_pc`, context-parametric over any surrounding program; + `compile_brif_nth` glue and the two `exec_program_br` non-vacuity corollaries where the condition value alone flips Some/None over the same code) |
 | CorrectnessComplete.v | 0 | 0 | commentary only (tier taxonomy) |
 | ArmRefinement.v | 0 | 2 | T3 (+ the 2 `admit.` tactics) |
 | Integers.v | 11 | 0 | Infra (i64_to_i32_to_i64_wrap closed v0.10.0 PR 2) |
@@ -536,7 +550,7 @@ file; the per-file rows below sum EXACTLY to the CI-gated headline 623 / 2):
 | ArmState.v | 15 | 0 | Infra (+`flags_set_reg`, RQ-58-SELDSL: the select rules' flag-preservation projection) |
 | ArmSemantics.v | 14 | 0 | Infra |
 | SailArmBridge.v | 92 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
-| WasmSemantics.v | 6 | 0 | Infra |
+| WasmSemantics.v | 9 | 0 | Infra (+3 RQ-60-CFOBLIG: `exec_wasm_seq_brif_free` pins the new branch-observable executor to `exec_wasm_program` on branch-free programs, + the `exec_wasm_seq` taken/not-taken unfolding pair) |
 | Compilation.v | 5 | 0 | Infra (#166: `ex_compile_simple_add` + `ex_compile_increment_local` discharged via `vm_compute`) |
 | Base.v | 4 | 0 | Infra |
 | StateMonad.v | 3 | 0 | Infra |
@@ -550,7 +564,7 @@ file; the per-file rows below sum EXACTLY to the CI-gated headline 623 / 2):
 | ArmInstructions.v | 0 | 0 | definitions only |
 | WasmInstructions.v | 0 | 0 | definitions only |
 | CompilerExtract.v | 0 | 0 | extraction directives only |
-| **Total** | **623** | **2** | (+2 `admit.`; headline re-derived by the claim gate — the rows above now sum to it exactly) |
+| **Total** | **630** | **2** | (+2 `admit.`; headline re-derived by the claim gate — the rows above now sum to it exactly) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 

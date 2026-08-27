@@ -36,6 +36,7 @@ Require Export Synth.Synth.CorrectnessConversions.
 Require Export Synth.Synth.CorrectnessF32.
 Require Export Synth.Synth.CorrectnessF64.
 Require Export Synth.Synth.CorrectnessMemory.
+Require Export Synth.Synth.CorrectnessBrIf.
 
 (** ** Proof Tiers
 

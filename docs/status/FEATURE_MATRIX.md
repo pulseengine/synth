@@ -64,7 +64,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 
 | Track | Derived count(s) | What it covers |
 |-------|------------------|----------------|
-| Rocq proof suite | 623 Qed / 2 Admitted (+2 `admit.` tactics) | T1 result-correspondence for all i32 and i64 selection; T2 existence-only for float/SIMD; trusted base: 93 Axiom/Parameter declarations |
+| Rocq proof suite | 630 Qed / 2 Admitted (+2 `admit.` tactics) | T1 result-correspondence for all i32 and i64 selection; T2 existence-only for float/SIMD; trusted base: 93 Axiom/Parameter declarations |
 | Verified selector DSL (VCR-SEL-001) | 80 rules / 80 Qed (1:1, + 7 pilot Qed) | The Rocq-proved rules ARE the shipped lowering path for their covered ops; model generated from the shipped rule table (#667), so selector drift breaks the matching proof |
 | Sail/ASL ISA bridge (VCR-ISA-001) | 92 Qed | `coq/Synth/ARM/SailArmBridge.v` |
 | ISA-model basis (#867) | 80/80 rule theorems stated against the SIMPLIFIED `ArmSemantics.v` model (0 against the Sail-derived one) · 5 assumed simplified→Sail obligations (`ArmRefinement.v`) · 72 simplified-model axioms | The counted #682-class trusted base — "covered" ≠ "faithful": a Qed against a simplified model is only as good as that model; see `coq/STATUS.md` |

@@ -38,6 +38,7 @@ Synth/Synth/CorrectnessF32.v
 Synth/Synth/CorrectnessF64.v
 Synth/Synth/CorrectnessConversions.v
 Synth/Synth/CorrectnessMemory.v
+Synth/Synth/CorrectnessBrIf.v
 Synth/Synth/CorrectnessComplete.v
 
 # Extraction
