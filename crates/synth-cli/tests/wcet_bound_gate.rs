@@ -1881,6 +1881,17 @@ fn index_key_for_named_function_is_refused_with_named_reason() {
         stderr.contains(STABLE_KEY),
         "the refusal must state the key to use instead: {stderr}"
     );
+    // RQ-60-WCETKEY increment 2: the refusal must ALSO be machine-readable in
+    // the sidecar — gale's spar consumer reads the JSON, not stderr, and the
+    // compile exits 0 either way. (This assertion was the hole: before it, a
+    // hints file rotted to index keys read in the JSON exactly like no hints
+    // file at all.)
+    let d = &report["hints"]["diagnostics"][0];
+    assert_eq!(
+        d.get("reason").and_then(Value::as_str),
+        Some("wcet-hint-key-index-refused"),
+        "the refusal must be NAMED in the sidecar: {report}"
+    );
 }
 
 /// An unknown key still warns loudly (nothing is silently ignored), and a
@@ -1922,5 +1933,136 @@ fn name_keys_and_hints_are_byte_invisible_in_the_elf() {
     assert_eq!(
         elf_unhinted, elf_hinted,
         "--wcet-hints / #1063 identities must never move a byte of the object"
+    );
+}
+
+// ── RQ-60-WCETKEY (#1063) increment 2: refused hints must be visible to the ──
+// ── MACHINE (the sidecar), not only to the human (stderr).                  ──
+
+/// THE GATE (red-first on main): the `synth-wcet-v1` sidecar must let a
+/// consumer that never sees stderr tell apart three states:
+///   (a) no hints file passed          → no top-level `hints` object at all
+///   (b) hints passed and consumed     → `hints.resolved` names key+function
+///   (c) hints passed, ALL refused     → `hints.resolved` empty, and every
+///       refusal is a structured `hints.diagnostics` entry carrying the same
+///       machine reason tag the stderr warning names.
+/// Before this gate, state (c) read in the JSON exactly like state (a): a
+/// hints file rotted to index keys was machine-indistinguishable from no
+/// hints file at all — and gale's spar T3/T4 track consumes the sidecar, not
+/// stderr (exit status is 0 in all three states; measured).
+#[test]
+fn sidecar_discriminates_no_hints_consumed_and_all_refused() {
+    // (a) no hints file: the `hints` object is ABSENT (not present-and-empty),
+    // so its very presence is the "hints were supplied" marker.
+    let (report_a, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", None);
+    assert!(
+        report_a.get("hints").is_none(),
+        "no --wcet-hints => no top-level `hints` object: {report_a}"
+    );
+
+    // (b) a consumed hint: `hints` present, `resolved` names the original key
+    // and the function it landed on, `diagnostics` empty.
+    let hints_ok = format!(
+        r#"{{"schema":"synth-wcet-hints-v1","functions":{{"{RAW_NAME}":{{"loop_bounds":[8]}}}}}}"#
+    );
+    let (report_b, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(&hints_ok));
+    let h = report_b
+        .get("hints")
+        .unwrap_or_else(|| panic!("hints supplied => `hints` object required: {report_b}"));
+    let resolved = h.get("resolved").and_then(Value::as_array).unwrap();
+    assert_eq!(resolved.len(), 1, "one hint resolved: {h}");
+    assert_eq!(
+        resolved[0].get("key").and_then(Value::as_str),
+        Some(RAW_NAME)
+    );
+    assert_eq!(
+        resolved[0].get("function").and_then(Value::as_str),
+        Some(RAW_NAME),
+        "resolved entry must name the function by its sidecar display name: {h}"
+    );
+    assert_eq!(
+        h.get("diagnostics").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "a cleanly consumed hint produces no diagnostics: {h}"
+    );
+
+    // (c) ALL entries refused (the #1063 index-key rot): `resolved` is empty
+    // and the refusal is a STRUCTURED record — key, machine reason tag,
+    // resolved function, and the human detail naming the key to use instead.
+    let hints_bad =
+        r#"{"schema":"synth-wcet-hints-v1","functions":{"func_0":{"loop_bounds":[8]}}}"#;
+    let (report_c, stderr_c, _) =
+        compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(hints_bad));
+    let h = report_c
+        .get("hints")
+        .unwrap_or_else(|| panic!("all-refused hints must still emit `hints`: {report_c}"));
+    assert_eq!(
+        h.get("resolved").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "nothing resolved: {h}"
+    );
+    let diags = h.get("diagnostics").and_then(Value::as_array).unwrap();
+    // NON-VACUITY FLOOR: exactly the one refused entry — a silently emptied
+    // diagnostics array (the defect this gate exists for) reds here.
+    assert_eq!(diags.len(), 1, "one refused entry => one diagnostic: {h}");
+    let d = &diags[0];
+    assert_eq!(d.get("key").and_then(Value::as_str), Some("func_0"));
+    assert_eq!(
+        d.get("reason").and_then(Value::as_str),
+        Some("wcet-hint-key-index-refused"),
+        "the sidecar must carry the SAME machine tag stderr names: {d}"
+    );
+    assert_eq!(
+        d.get("function").and_then(Value::as_str),
+        Some(RAW_NAME),
+        "index-refused DOES resolve to a known function — name it: {d}"
+    );
+    let detail = d.get("detail").and_then(Value::as_str).unwrap();
+    assert!(
+        detail.contains(STABLE_KEY),
+        "the detail must state the key to use instead: {d}"
+    );
+    // The loud direction is unchanged: stderr still warns.
+    assert!(
+        stderr_c.contains("wcet-hint-key-index-refused"),
+        "{stderr_c}"
+    );
+}
+
+/// An UNKNOWN key (resolves to no function) lands top-level with NO `function`
+/// field — an unresolvable diagnostic is never forced into a per-function slot.
+#[test]
+fn sidecar_carries_unknown_key_diagnostic_without_function() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"nosuch":{"loop_bounds":[8]}}}"#;
+    let (report, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(hints));
+    let h = report
+        .get("hints")
+        .expect("hints supplied => object present");
+    let diags = h.get("diagnostics").and_then(Value::as_array).unwrap();
+    assert_eq!(diags.len(), 1, "{h}");
+    assert_eq!(
+        diags[0].get("reason").and_then(Value::as_str),
+        Some("wcet-hint-key-unknown")
+    );
+    assert_eq!(diags[0].get("key").and_then(Value::as_str), Some("nosuch"));
+    assert!(
+        diags[0].get("function").is_none(),
+        "an unknown key resolves to NO function — the field must be absent: {}",
+        diags[0]
+    );
+}
+
+/// A refused hint is as byte-invisible in the object as a consumed one: the
+/// sidecar record is metadata, never codegen input.
+#[test]
+fn refused_hint_is_byte_invisible_in_the_elf() {
+    let hints_bad =
+        r#"{"schema":"synth-wcet-hints-v1","functions":{"func_0":{"loop_bounds":[8]}}}"#;
+    let (_, _, elf_unhinted) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", None);
+    let (_, _, elf_refused) =
+        compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(hints_bad));
+    assert_eq!(
+        elf_unhinted, elf_refused,
+        "a refused --wcet-hints entry must never move a byte of the object"
     );
 }
