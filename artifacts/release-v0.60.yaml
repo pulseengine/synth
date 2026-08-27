@@ -268,7 +268,7 @@ artifacts:
       # exactly as this artifact's GATE paragraph prescribes). Increment 2
       # (real-encoder byte costs) remains open; status stays `proposed` until
       # the measured allocator verdict in done-when exists.
-      landed: "#242"
+      landed: "#242 PR #1082"
 
   - id: RQ-60-ARTIFACTSPLIT
     type: system-req
