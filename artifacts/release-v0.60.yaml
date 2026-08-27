@@ -532,6 +532,23 @@ artifacts:
       DEFINITION OF DONE (jess's, adopted): those three symbols reaching
       `nm -> T` in the fused image — 5 of 5 stages exported.
 
+      STATUS NOTE (why `implemented` and not `verified`): increment 2 (#1075)
+      is IN. Coordinator-verified against the REAL ghcr components at 1.134.1
+      on cortex-m7dp — jess's flight core, not the easier single-precision
+      target — with the failure established on main FIRST:
+
+        iekf / position / attitude   main exit=1 SKIPPED  ->  branch exit=0
+        rate / mixer                 already compiled, unchanged
+        attitude#tick, position#tick reach `nm -> T` at 00000138
+
+      That is 5 of 5 stages PER-STAGE. The DoD says "in the FUSED image", and
+      the fused-image run has NOT happened — our local meld predates
+      `fuse --pack-rebase`, and the rescued functions' correctness evidence is
+      the fixture differential on the same code path (70/70 bit-identical vs
+      wasmtime), not an executed attitude/ekf run. jess's standing offer covers
+      exactly that gap. `verified` waits for it, INCLUDING if the answer is that
+      it is worse on target.
+
       TAKE THE STANDING OFFER. jess will run any branch against the real fused
       cascade and report the delta BY SYMBOL NAME, including READING the
       generated code for soundness rather than only checking symbols appeared.
@@ -539,7 +556,7 @@ artifacts:
       real op-mix" cases (#369->#782, #869->v0.52). Run it BEFORE the release,
       not after — a synthetic fixture that goes green while the real op-mix does
       not move is exactly the failure this project keeps finding.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [reach, vfp, fpu, f32, aeabi-builtins, jess, cortex-m7, measured]
     links:
@@ -559,4 +576,19 @@ artifacts:
       # stated outcome does not yet hold — that is a different claim, and
       # this field is where the difference is recorded (RQ-60-FLIPCOUPLE).
       landed: "#1073"
+      # WHAT I ACTUALLY VERIFIED, stated so it can be disputed rather than
+      # trusted. The gate forces this basis to be WRITTEN; it cannot judge it,
+      # so overstating here would defeat the mechanism.
+      verified-by: >-
+        PER-STAGE, not fused. Coordinator pulled the REAL ghcr components at
+        1.134.1 (iekf/position/attitude/rate/mixer), established the failure on
+        main FIRST, then compiled the same bytes on the branch, -t cortex-m7dp:
+        iekf/position/attitude went exit=1 SKIPPED -> exit=0; rate/mixer already
+        compiled and were unchanged; attitude#tick and position#tick reach
+        `nm -> T` at 00000138. Mechanism soundness is the fixture differential on
+        the same code path (70/70 bit-identical vs wasmtime), NOT an executed
+        attitude/ekf run. THE FUSED-IMAGE RUN THIS done-when NAMES HAS NOT
+        HAPPENED — local meld predates `fuse --pack-rebase`. jess holds that
+        evidence under their standing offer; `verified` waits on it, including if
+        the answer is that it is worse on target.
 
