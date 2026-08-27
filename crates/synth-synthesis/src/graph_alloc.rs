@@ -689,6 +689,14 @@ fn color_webs_costed(
                 used[c] = true;
             }
         }
+        // --- v053-mutation-site:select-pick BEGIN ---------------------
+        // Everything from here to the matching END marker is the SELECT
+        // decision (measured-cost ranking + preference order). The wired
+        // `vcr_ver_004_instrument_independence.py` oracle re-plants v0.53's
+        // mutation by replacing this span with a bare lowest-free pick, so
+        // the markers must travel with the decision when it moves — deleting
+        // them turns that oracle loudly red (marker-not-found), never
+        // silently vacuous (its non-vacuity floor guards the other half).
         let own = orig_colour.get(&n).copied().filter(|&c| c < k && !used[c]);
         // Price every free candidate; keep only the strictly cheapest set.
         let mut minima: Vec<usize> = Vec::new();
@@ -721,6 +729,7 @@ fn color_webs_costed(
                 .or_else(|| own.filter(|o| minima.contains(o)))
                 .or_else(|| minima.first().copied())
         };
+        // --- v053-mutation-site:select-pick END -----------------------
         match pick {
             Some(c) => {
                 colour.insert(n, c);
