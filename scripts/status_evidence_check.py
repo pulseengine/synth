@@ -75,6 +75,39 @@ Two independent derivations over `artifacts/release-v*.yaml`:
       so a new artifact must choose its signature (or write down that it has
       none) in the PR that creates it.
 
+(3) STRUCTURAL INTEGRITY (#1059 / RQ-60-ARTIFACTSPLIT). The v0.59 wave's
+    hand-merged "keep both sides" conflict resolution spliced a new artifact
+    INTO a sibling's mapping — between the sibling's `tags:` and its
+    `links:`/`fields:` — so the sibling silently LOST its `derives-from`
+    trace link and the new artifact inherited it. Both parse; the ids are
+    unaffected; the trace graph is simply wrong, and the verification that
+    checked it ("16 artifacts, no duplicates, YAML OK") was blind to it by
+    construction. The duplicate-key half of that incident is already
+    refused by the strict loader below; these rules catch the half that
+    would have SHIPPED:
+
+    - R5: every release artifact must carry its own non-empty `links:` (all
+      release files — measured zero violations on shipped history), and,
+      from v0.60 on, a non-empty `fields.issue`. An artifact whose links
+      were absorbed by a splice has NO `links:` key of its own — that exact
+      shape is now red.
+    - R6: a release-artifact id declared more than once across the loaded
+      release files is red. rivet reports this too, but this script's
+      `by_id` map would otherwise silently last-wins — the same defect
+      class the strict loader exists to refuse, one level up.
+    - R0 (extended): from v0.61 the per-release write surface is a
+      DIRECTORY, `artifacts/release-vX.YY/`, one file per requirement plus
+      a comments-only `_release.yaml` for release metadata — parallel lanes
+      then CREATE files instead of appending to one, so the merge-conflict
+      class that produced the splice disappears at the source (#1059's
+      chosen shape; rivet's generic-yaml source recurses into
+      subdirectories — verified empirically on BOTH the required gate's
+      pinned rivet 0.23.0 and 0.32.0). Under that layout every
+      per-requirement file must contribute >= 1 artifact (a skipped file is
+      the #1064 invisible shape, per file), and `_release.yaml` must parse
+      to NOTHING but comments — a top-level key there is exactly the shape
+      rivet skips silently, so it is red here before it can hide anything.
+
 What this does NOT cover, stated rather than silent:
   * Work that lands with NO artifact and a commit subject that names no
     artifact id is invisible to both halves (unknown-id delivery subjects are
@@ -83,6 +116,19 @@ What this does NOT cover, stated rather than silent:
     those artifacts Direction A protection rests entirely on R4's subject
     convention, which a differently-titled delivery commit evades (a MISS,
     never a false red).
+  * R5 catches an artifact whose `links:` block was absorbed WHOLE. A splice
+    that lands between `links:` and `fields:` steals only the fields — for
+    those, coverage is R1 (the absorbed `done-when` is missing) plus the
+    v0.60+ `issue:` requirement, i.e. >= v0.60 only. A splice INSIDE a
+    mapping produces a duplicate key and is refused by the strict loader.
+    A splice that swaps two artifacts' links without emptying either —
+    conceivable, never observed — passes all of these; only rivet's
+    per-type traceability rules or a human diff would see it.
+  * The directory layout only removes the conflict surface for files under
+    `artifacts/release-v*/`. A per-requirement file with a typo'd extension
+    (`.yaml.txt`) is invisible to rivet AND to this script; the artifact-
+    load floor in CI (which must be raised in the PR that adds artifacts)
+    is what notices a file that never loaded.
   * A FALSE `verified-by` basis passes. The gate forces the basis to be
     written where the reader of the release query can see it; it cannot
     judge it. That residual is exactly as manual as the artifact declared.
@@ -135,6 +181,16 @@ DECLARE_SINCE = (0, 60)
 # (shallow checkout, regex rot) — that is the defect; never lower it to pass.
 DELIVERY_FLOOR = 28
 
+# Release artifacts live in a flat per-release file (<= v0.60 history) OR,
+# from v0.61, one file per requirement under artifacts/release-vX.YY/ with a
+# comments-only _release.yaml (#1059 — parallel lanes create files instead of
+# appending to one). Comma-separated; both layouts are always scanned.
+RELEASE_GLOB = (
+    "artifacts/release-v*.yaml,"
+    "artifacts/release-v*/*.yaml,"
+    "artifacts/release-v*/*.yml"
+)
+
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
 RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)")
@@ -166,17 +222,53 @@ StrictLoader.add_constructor(
 
 
 def load_release_artifacts(root: Path, release_glob: str):
-    """[(file, version-tuple, id, status, fields-dict)] for every release artifact."""
+    """[(file, version, id, status, fields, links)] for every release artifact."""
     out = []
     bad_files = []
-    paths = sorted(glob.glob(str(root / release_glob)))
-    for p in paths:
+    paths = set()
+    for pattern in release_glob.split(","):
+        paths.update(glob.glob(str(root / pattern.strip())))
+    for p in sorted(paths):
         path = Path(p)
-        m = RELEASE_VERSION.search(path.name)
+        # The version comes from the path, not the basename: under the
+        # per-requirement layout the file is release-v0.61/RQ-61-FOO.yaml and
+        # only the directory carries the version. Basename-only matching
+        # would classify every such artifact as (0, 0) and silently exempt
+        # it from every >= v0.60 rule.
+        #
+        # Scoped to the path RELATIVE TO ROOT, never the absolute path: an
+        # ANCESTOR directory of the checkout that happened to be named
+        # `release-v0.99` would otherwise supply the first match and
+        # mis-version every artifact beneath it — a checkout-location
+        # dependency, i.e. the same class as reading an oracle's ground
+        # truth from host-dependent text.
+        rel = path.relative_to(root).as_posix() if path.is_relative_to(root) \
+            else path.name
+        m = RELEASE_VERSION.search(rel)
         version = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
         doc = yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
+        if path.name == "_release.yaml":
+            # Comments-only metadata file for the directory layout. Any
+            # top-level key here is the #1064 shape waiting to happen:
+            # rivet's generic-yaml loader skips a non-`artifacts:` file
+            # SILENTLY, so content parked here would be invisible to the
+            # graph while looking maintained. Red before it can hide.
+            if doc is not None:
+                bad_files.append(
+                    f"R0 {path.parent.name}/{path.name}: _release.yaml must "
+                    f"contain COMMENTS ONLY (top-level keys: "
+                    f"{', '.join(map(str, doc.keys())) if isinstance(doc, dict) else type(doc).__name__}) "
+                    f"— a keyed _release.yaml is skipped silently by rivet "
+                    f"(#1064) and becomes a shared write surface again (#1059)"
+                )
+            continue
         if not isinstance(doc, dict):
-            raise SystemExit(f"{path}: not a mapping — refusing to guess")
+            bad_files.append(
+                f"R0 {path.name}: release file parses to "
+                f"{type(doc).__name__}, not a mapping with `artifacts:` — "
+                f"invisible to rivet (#1064)"
+            )
+            continue
         arts = [
             a for a in (doc.get("artifacts") or [])
             if isinstance(a, dict) and "id" in a
@@ -205,6 +297,7 @@ def load_release_artifacts(root: Path, release_glob: str):
                     str(art["id"]),
                     str(art.get("status", "")),
                     art.get("fields") or {},
+                    art.get("links") or [],
                 )
             )
     return out, bad_files
@@ -252,8 +345,30 @@ def check(root: Path, release_glob: str, subjects: list[str],
     by_id = {a[2]: a for a in artifacts}
     predicates_evaluated = 0
 
+    # ---- Structural integrity (R5/R6, #1059) ------------------------------
+    seen_ids: dict[str, Path] = {}
+    for path, version, art_id, status, fields, links in artifacts:
+        if art_id in seen_ids:
+            failures.append(
+                f"R6 {art_id}: declared in BOTH {seen_ids[art_id].name} and "
+                f"{path.name} — the later one silently wins every query"
+            )
+        else:
+            seen_ids[art_id] = path
+        if not links:
+            failures.append(
+                f"R5 {art_id}: no `links:` of its own in {path.name} — the "
+                f"#1059 splice shape (a sibling absorbed them); every release "
+                f"artifact must carry its own trace links"
+            )
+        if version >= DECLARE_SINCE and not str(fields.get("issue", "")).strip():
+            failures.append(
+                f"R5 {art_id}: no non-empty `fields.issue` in {path.name} — "
+                f"required for release files >= v0.60 (#1059)"
+            )
+
     # ---- Declared-evidence half (R1/R2/R3) --------------------------------
-    for path, version, art_id, status, fields in artifacts:
+    for path, version, art_id, status, fields, _links in artifacts:
         done_when = fields.get("done-when")
         if done_when is None:
             if version >= DECLARE_SINCE:
@@ -306,7 +421,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
             )
             continue
         delivery_hits += 1
-        _, _, _, status, fields = by_id[art_id]
+        _, _, _, status, fields, _links = by_id[art_id]
         if status in CLAIMING:
             continue
         prs = PR_NUMBER.findall(subject)
@@ -341,7 +456,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, default=REPO_ROOT,
                     help="repo root to check (default: this repo)")
-    ap.add_argument("--release-glob", default="artifacts/release-v*.yaml")
+    ap.add_argument("--release-glob", default=RELEASE_GLOB,
+                    help="comma-separated glob patterns for release files "
+                         "(default covers the flat <= v0.60 files AND the "
+                         "per-requirement release-v*/ directories)")
     ap.add_argument("--subjects-file", type=Path, default=None,
                     help="newline-separated commit subjects (default: "
                          "`git log --first-parent --format=%%s` in --root)")

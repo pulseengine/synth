@@ -26,10 +26,20 @@ does two things on every CI run:
    because a gate that reds on the fix too is noise, and noise gets routed
    around (#923).
 
+3. THE #1059 SPLICE REPLAY (RQ-60-ARTIFACTSPLIT). Both defects the v0.59
+   hand-merged conflict resolution actually produced are reconstructed
+   byte-shape-for-byte-shape — the duplicate `issue:` key, and the new
+   artifact spliced INTO a sibling's mapping so the sibling silently lost
+   its `derives-from` trace link — and the gate must red on each (strict
+   loader / R5). Plus controls for the per-requirement release-v*/
+   directory layout that removes the conflict surface itself.
+
 Run: python3 scripts/test_status_evidence_check.py
 Mutation-verified at authoring (transcript in the RQ-60-FLIPCOUPLE PR):
 disabling each of R1/R2/R3/R4 and the duplicate-key strictness kills at
-least one test.
+least one test. Re-verified for RQ-60-ARTIFACTSPLIT: disabling each of
+R5/R6, the _release.yaml comments-only rule, the per-file R0, and the
+full-path version derivation kills at least one test.
 """
 
 from __future__ import annotations
@@ -48,6 +58,7 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    RELEASE_GLOB,
     DuplicateKeyError,
     StrictLoader,
     check,
@@ -94,11 +105,19 @@ SUBJ_NOISE = [
 ]
 
 
-def art(art_id, status, fields=None):
+def art(art_id, status, fields=None, links=None, issue="#1064"):
+    """A schema-complete release artifact. R5 (#1059) demands links + issue
+    of every real artifact, so the fixtures carry them by default; a test
+    that exercises R5 itself passes links=[] or issue=None explicitly."""
     a = {"id": art_id, "type": "system-req", "title": "t", "status": status,
-         "release": "v0.60"}
-    if fields:
-        a["fields"] = fields
+         "release": "v0.60",
+         "links": ([{"type": "derives-from", "target": "BR-001"}]
+                   if links is None else links)}
+    f = dict(fields or {})
+    if issue is not None:
+        f.setdefault("issue", issue)
+    if f:
+        a["fields"] = f
     return a
 
 
@@ -111,8 +130,19 @@ class Fixture:
         (self.root / "artifacts").mkdir()
 
     def release(self, name, artifacts):
+        """`name` may be a flat file (release-v0.60.yaml) or a path inside
+        the per-requirement layout (release-v0.61/RQ-61-FOO.yaml)."""
         p = self.root / "artifacts" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(yaml.safe_dump({"artifacts": artifacts}), encoding="utf-8")
+        return p
+
+    def raw(self, name, text):
+        """A release file written VERBATIM — for the byte-shape replays
+        (duplicate key, splice) that safe_dump could never produce."""
+        p = self.root / "artifacts" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
         return p
 
     def evidence(self, rel, content):
@@ -122,7 +152,7 @@ class Fixture:
         return p
 
     def run(self, subjects, floor=0):
-        return check(self.root, "artifacts/release-v*.yaml", subjects, floor)
+        return check(self.root, RELEASE_GLOB, subjects, floor)
 
 
 def fails(result):
@@ -337,6 +367,168 @@ class RuleControls(unittest.TestCase):
         # the strict loader must refuse instead.
         with self.assertRaises(DuplicateKeyError):
             yaml.load("a: 1\na: 2\n", Loader=StrictLoader)
+
+
+class Splice1059Replay(unittest.TestCase):
+    """Both defects the v0.59 hand-merged conflict resolution ACTUALLY
+    produced (RQ-60-ARTIFACTSPLIT, #1059), reconstructed in the byte shape
+    the merge left behind. The verification that missed them reported
+    '16 artifacts, no duplicates, YAML OK' — all three true."""
+
+    def test_1059_defect2_duplicate_issue_key(self):
+        # The "keep both sides" resolution left one mapping with the
+        # `issue:` key twice. yaml.safe_load keeps the last silently.
+        fx = Fixture()
+        fx.raw("release-v0.59.yaml", (
+            "artifacts:\n"
+            "  - id: RQ-59-FRESHNESS\n"
+            "    type: system-req\n"
+            "    title: t\n"
+            "    status: implemented\n"
+            "    links:\n"
+            "      - type: derives-from\n"
+            "        target: BR-001\n"
+            "    fields:\n"
+            "      issue: \"#977\"\n"
+            "      issue: \"#1028\"\n"
+        ))
+        with self.assertRaises(DuplicateKeyError):
+            fx.run([])
+
+    def test_1059_defect1_spliced_artifact_absorbs_sibling_links(self):
+        # The new entry landed BETWEEN the sibling's `tags:` and its
+        # `links:`/`fields:` — DATASEG's mapping ends at tags:, the spliced
+        # artifact inherits the trace links. Both parse; ids unique; the
+        # trace graph is wrong. This is the defect that would have SHIPPED.
+        splice = (
+            "artifacts:\n"
+            "  - id: RQ-59-DATASEG\n"
+            "    type: system-req\n"
+            "    title: t\n"
+            "    status: implemented\n"
+            "    tags: [backend]\n"
+            "  - id: RQ-59-SPLICED\n"
+            "    type: system-req\n"
+            "    title: t\n"
+            "    status: proposed\n"
+            "    links:\n"
+            "      - type: derives-from\n"
+            "        target: BR-001\n"
+            "    fields:\n"
+            "      issue: \"#1041\"\n"
+        )
+        fx = Fixture()
+        fx.raw("release-v0.59.yaml", splice)
+        r = fx.run([])
+        self.assertTrue(has(r, "R5 RQ-59-DATASEG"), fails(r))
+        # Green control: each artifact carrying its own links passes.
+        fx.release("release-v0.59.yaml", [
+            art("RQ-59-DATASEG", "implemented"),
+            art("RQ-59-SPLICED", "proposed"),
+        ])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_r5_issue_required_from_v060_only(self):
+        fx = Fixture()
+        fx.release("release-v0.60.yaml",
+                   [art("RQ-60-X", "proposed",
+                        {"done-when": "manual: reason"}, issue=None)])
+        self.assertTrue(has(fx.run([]), "R5 RQ-60-X"), fails(fx.run([])))
+        # Shipped history is frozen — no issue backfill demanded.
+        fx2 = Fixture()
+        fx2.release("release-v0.59.yaml",
+                    [art("RQ-59-X", "implemented", issue=None)])
+        self.assertEqual(fails(fx2.run([])), [])
+
+    def test_r6_duplicate_id_across_files(self):
+        # Two lanes creating the SAME per-requirement file id — by_id would
+        # otherwise silently last-wins, the #1059 class one level up.
+        fx = Fixture()
+        fx.release("release-v0.61/RQ-61-FOO.yaml",
+                   [art("RQ-61-FOO", "proposed",
+                        {"done-when": "manual: reason"})])
+        fx.release("release-v0.60.yaml",
+                   [art("RQ-61-FOO", "proposed",
+                        {"done-when": "manual: reason"})])
+        r = fx.run([])
+        self.assertTrue(has(r, "R6 RQ-61-FOO"), fails(r))
+
+
+class DirectoryLayout(unittest.TestCase):
+    """The #1059 chosen shape: artifacts/release-vX.YY/ with one file per
+    requirement and a comments-only _release.yaml. Verified against BOTH
+    the required gate's pinned rivet 0.23.0 and 0.32.0 at authoring; these
+    pin the checker's side of the contract."""
+
+    def test_layout_green(self):
+        fx = Fixture()
+        fx.raw("release-v0.61/_release.yaml",
+               "# release-v0.61 metadata — comments only (see #1064)\n")
+        fx.release("release-v0.61/RQ-61-FOO.yaml",
+                   [art("RQ-61-FOO", "proposed",
+                        {"done-when": "manual: not yet decided"})])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_layout_version_derived_from_directory(self):
+        # release-v0.61/RQ-61-FOO.yaml carries the version only in the
+        # DIRECTORY name. Basename-only matching would classify it (0, 0)
+        # and silently exempt it from every >= v0.60 rule — R1 firing here
+        # proves the version comes from the full path.
+        fx = Fixture()
+        fx.release("release-v0.61/RQ-61-FOO.yaml",
+                   [art("RQ-61-FOO", "proposed")])
+        r = fx.run([])
+        self.assertTrue(has(r, "R1 RQ-61-FOO"), fails(r))
+
+    def test_layout_per_file_r0(self):
+        # A per-requirement file in the #1064 invisible shape (non-schema
+        # top-level key) is red BY FILE — a lane's artifact cannot vanish
+        # behind the rest of the directory loading fine.
+        fx = Fixture()
+        fx.release("release-v0.61/RQ-61-OK.yaml",
+                   [art("RQ-61-OK", "proposed",
+                        {"done-when": "manual: reason"})])
+        fx.raw("release-v0.61/RQ-61-GONE.yaml",
+               "requirements:\n  - id: RQ-61-GONE\n    status: proposed\n")
+        r = fx.run([])
+        self.assertTrue(has(r, "R0 RQ-61-GONE.yaml"), fails(r))
+
+    def test_version_is_scoped_to_the_repo_root_not_the_absolute_path(self):
+        # An ANCESTOR of the checkout named `release-v0.50` must not supply
+        # the version for artifacts under `artifacts/release-v0.61/`. The
+        # absolute path would match the ancestor FIRST (it appears earlier),
+        # classify the artifact as pre-v0.60, and silently exempt it from
+        # every >= v0.60 rule — a checkout-LOCATION dependency, invisible on
+        # any CI runner whose workspace happens not to be named that way.
+        # R1 firing here is the discriminator: 0.50 < DECLARE_SINCE, 0.61 >=.
+        with tempfile.TemporaryDirectory() as outer:
+            root = Path(outer) / "release-v0.50" / "checkout"
+            (root / "artifacts").mkdir(parents=True)
+            d = root / "artifacts" / "release-v0.61"
+            d.mkdir()
+            (d / "RQ-61-FOO.yaml").write_text(
+                yaml.safe_dump({"artifacts": [art("RQ-61-FOO", "proposed")]}),
+                encoding="utf-8")
+            r = check(root, RELEASE_GLOB, [], 0)
+            self.assertTrue(has(r, "R1 RQ-61-FOO"), fails(r))
+
+    def test_release_yaml_must_be_comments_only(self):
+        # A keyed _release.yaml is exactly the shape rivet skips SILENTLY
+        # (#1064) — content parked there would be invisible to the graph
+        # while looking maintained, and the file becomes a shared write
+        # surface again. Red before it can hide anything.
+        fx = Fixture()
+        fx.release("release-v0.61/RQ-61-FOO.yaml",
+                   [art("RQ-61-FOO", "proposed",
+                        {"done-when": "manual: reason"})])
+        fx.raw("release-v0.61/_release.yaml",
+               "metadata:\n  release: v0.61\n  theme: t\n")
+        r = fx.run([])
+        self.assertTrue(has(r, "R0 release-v0.61/_release.yaml"), fails(r))
+        # Green control: comments only.
+        fx.raw("release-v0.61/_release.yaml",
+               "#   release: v0.61\n#   theme: t\n")
+        self.assertEqual(fails(fx.run([])), [])
 
 
 if __name__ == "__main__":
