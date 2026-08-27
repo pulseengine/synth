@@ -34,16 +34,33 @@ does two things on every CI run:
    loader / R5). Plus controls for the per-requirement release-v*/
    directory layout that removes the conflict surface itself.
 
+4. THE #1085 EVIDENCE-SCOPING RULES (RQ-61-EVIDENCE). Each of the three
+   instances found by USING the gate during the v0.60 cut is replayed:
+   R7 — RQ-60-CANARY's evidence committed BEFORE the previous release's
+   tag (real git fixture, real tag, real ancestry), with the
+   `shipped-in:` escape hatch as the green control, exactly as it stands
+   on main; R8 — the six measured patch-park mismatches
+   (v0.56.1/v0.56.2 in release-v0.57.yaml) as the STATED allowance, and
+   the never-hit harmful direction (a pre-v0.60 file smuggling
+   `release: v0.60` past every version-gated rule) as the red; R9 — the
+   RQ-60-A64IMPORT shape (claiming status on a crates/** code-existence
+   predicate) red, both #1090 correction forms green. R7's loud-skip
+   contract (no git / no tag / uncommitted signature warns `R7-SKIP` and
+   counts in the summary, never passes silently) is pinned here too.
+
 Run: python3 scripts/test_status_evidence_check.py
 Mutation-verified at authoring (transcript in the RQ-60-FLIPCOUPLE PR):
 disabling each of R1/R2/R3/R4 and the duplicate-key strictness kills at
 least one test. Re-verified for RQ-60-ARTIFACTSPLIT: disabling each of
 R5/R6, the _release.yaml comments-only rule, the per-file R0, and the
-full-path version derivation kills at least one test.
+full-path version derivation kills at least one test. Re-verified for
+RQ-61-EVIDENCE (#1085): disabling each of R7 (the ancestor check), R8
+(both directions), R9, and the R7-SKIP warning kills at least one test.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -59,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
     RELEASE_GLOB,
+    RELEASE_VERSION,
     DuplicateKeyError,
     StrictLoader,
     check,
@@ -105,14 +123,17 @@ SUBJ_NOISE = [
 ]
 
 
-def art(art_id, status, fields=None, links=None, issue="#1064"):
+def art(art_id, status, fields=None, links=None, issue="#1064", release=None):
     """A schema-complete release artifact. R5 (#1059) demands links + issue
     of every real artifact, so the fixtures carry them by default; a test
-    that exercises R5 itself passes links=[] or issue=None explicitly."""
+    that exercises R5 itself passes links=[] or issue=None explicitly.
+    `release` left None is stamped from the file's own version by
+    Fixture.release(), so only R8's tests (#1085) pass it explicitly."""
     a = {"id": art_id, "type": "system-req", "title": "t", "status": status,
-         "release": "v0.60",
          "links": ([{"type": "derives-from", "target": "BR-001"}]
                    if links is None else links)}
+    if release is not None:
+        a["release"] = release
     f = dict(fields or {})
     if issue is not None:
         f.setdefault("issue", issue)
@@ -129,11 +150,19 @@ class Fixture:
         self.root = Path(self._td.name)
         (self.root / "artifacts").mkdir()
 
-    def release(self, name, artifacts):
+    def release(self, name, artifacts, stamp=True):
         """`name` may be a flat file (release-v0.60.yaml) or a path inside
-        the per-requirement layout (release-v0.61/RQ-61-FOO.yaml)."""
+        the per-requirement layout (release-v0.61/RQ-61-FOO.yaml). Unless
+        stamp=False, artifacts without an explicit `release:` get the
+        file's own version — matching every artifact on shipped history —
+        so R8 (#1085) tests must opt out or pass release= explicitly."""
         p = self.root / "artifacts" / name
         p.parent.mkdir(parents=True, exist_ok=True)
+        m = RELEASE_VERSION.search(name)
+        if stamp and m:
+            for a in artifacts:
+                if isinstance(a, dict) and "release" not in a:
+                    a["release"] = f"v{m.group(1)}.{m.group(2)}"
         p.write_text(yaml.safe_dump({"artifacts": artifacts}), encoding="utf-8")
         return p
 
@@ -150,6 +179,17 @@ class Fixture:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return p
+
+    def git(self, *args):
+        """Run git in the fixture root — R7 (#1085) archaeology needs a
+        real repo with real ancestry; identity/signing pinned inline so
+        the fixture never touches the host's config."""
+        subprocess.run(
+            ["git", "-C", str(self.root), "-c", "user.name=fixture",
+             "-c", "user.email=fixture@test", "-c", "commit.gpgsign=false",
+             "-c", "tag.gpgsign=false", *args],
+            check=True, capture_output=True,
+        )
 
     def run(self, subjects, floor=0):
         return check(self.root, RELEASE_GLOB, subjects, floor)
@@ -232,11 +272,17 @@ class ReplaySevenInstances(unittest.TestCase):
         r = fx.run(["VCR-TIER-001 increment 1: canary gate over pseudo-op "
                     "encoder expansions (#1061)"])
         self.assertTrue(has(r, "R3 RQ-60-CANARY"), fails(r))
-        # Green control: the flip is consistent with the evidence.
+        # Green control: the flip is consistent with the evidence. The
+        # done-when here is the #1090 CORRECTED one (the gate's non-vacuity
+        # floor) — the original `contains:crates/...:expansion_scratch_
+        # contract` is exactly the code-existence shape R9 (#1085) now
+        # reds under a claiming status, which R9CrateSource pins.
+        fx.evidence("scripts/repro/expansion_canary_gate_1021.py",
+                    "assert emulations >= 1200\n")
         fx.release("release-v0.60.yaml", [art(
             "RQ-60-CANARY", "implemented",
-            {"done-when": "contains:crates/synth-backend/src/arm_encoder.rs:"
-                          "expansion_scratch_contract"},
+            {"done-when": "contains:scripts/repro/"
+                          "expansion_canary_gate_1021.py:emulations >= 1200"},
         )])
         self.assertEqual(fails(fx.run([]))[0:], [])
 
@@ -343,7 +389,7 @@ class RuleControls(unittest.TestCase):
     def test_unknown_id_delivery_subject_warns(self):
         fx = Fixture()
         fx.release("release-v0.59.yaml", [art("RQ-59-X", "implemented")])
-        _, _, _, warnings, failures = fx.run(
+        _, _, _, warnings, failures, _, _ = fx.run(
             ["RQ-61-GHOST (#9999): work with no artifact (#9998)"])
         self.assertEqual(failures, [])
         self.assertTrue(any("RQ-61-GHOST" in w for w in warnings), warnings)
@@ -406,11 +452,13 @@ class Splice1059Replay(unittest.TestCase):
             "    type: system-req\n"
             "    title: t\n"
             "    status: implemented\n"
+            "    release: v0.59\n"
             "    tags: [backend]\n"
             "  - id: RQ-59-SPLICED\n"
             "    type: system-req\n"
             "    title: t\n"
             "    status: proposed\n"
+            "    release: v0.59\n"
             "    links:\n"
             "      - type: derives-from\n"
             "        target: BR-001\n"
@@ -528,6 +576,253 @@ class DirectoryLayout(unittest.TestCase):
         # Green control: comments only.
         fx.raw("release-v0.61/_release.yaml",
                "#   release: v0.61\n#   theme: t\n")
+        self.assertEqual(fails(fx.run([])), [])
+
+
+CANARY_DONE_WHEN = "contains:scripts/repro/gate.py:emulations >= 1200"
+
+
+class R7EvidenceRelease(unittest.TestCase):
+    """#1085 R7 — evidence must belong to the release. The replay is the
+    RQ-60-CANARY shape: the gate merged at 08:50, v0.59.0 was tagged at
+    15:19 (the evidence is an ANCESTOR of the tag), and the v0.60 plan
+    scoped it at 18:56 — every existence rule passed throughout."""
+
+    def _repo(self):
+        """A git fixture whose evidence commit PRE-dates the v0.59.0 tag."""
+        fx = Fixture()
+        fx.git("init", "-q", "-b", "main")
+        fx.evidence("scripts/repro/gate.py", "emulations >= 1200\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m",
+               "VCR-TIER-001 increment 1: canary gate (#1061)")
+        fx.git("tag", "v0.59.0")
+        return fx
+
+    def _canary(self, fx, extra_fields=None, status="implemented"):
+        f = {"done-when": CANARY_DONE_WHEN}
+        f.update(extra_fields or {})
+        fx.release("release-v0.60.yaml", [art("RQ-60-CANARY", status, f)])
+
+    def test_replay_canary_evidence_predates_previous_tag(self):
+        fx = self._repo()
+        self._canary(fx)
+        r = fx.run([])
+        self.assertTrue(has(r, "R7 RQ-60-CANARY"), fails(r))
+        self.assertTrue(has(r, "ANCESTOR of v0.59.0"), fails(r))
+        # ... and it is the ONLY failure: the fixture reds on R7, not
+        # incidentally on some other rule.
+        self.assertEqual([f for f in fails(r) if not f.startswith("R7 ")], [])
+
+    def test_shipped_in_escape_hatch_accepts(self):
+        # The green fixture demanded by #1085: RQ-60-CANARY as it stands on
+        # main, `shipped-in: "v0.59.0"` written down (#1090).
+        fx = self._repo()
+        self._canary(fx, {"shipped-in": "v0.59.0"})
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_shipped_in_must_be_version_shaped(self):
+        # `shipped-in: earlier` must not buy the exemption — the escape
+        # hatch names WHICH release delivered the evidence.
+        fx = self._repo()
+        self._canary(fx, {"shipped-in": "earlier"})
+        r = fx.run([])
+        self.assertTrue(has(r, "R7 RQ-60-CANARY"), fails(r))
+        self.assertTrue(has(r, "not version-shaped"), fails(r))
+
+    def test_evidence_after_previous_tag_is_green(self):
+        # The normal case: evidence committed AFTER v0.59.0 belongs to
+        # v0.60 and passes with an archaeology check RECORDED (not skipped).
+        fx = Fixture()
+        fx.git("init", "-q", "-b", "main")
+        fx.evidence("README.md", "seed\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m", "seed")
+        fx.git("tag", "v0.59.0")
+        fx.evidence("scripts/repro/gate.py", "emulations >= 1200\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m",
+               "VCR-TIER-001 increment 1: canary gate (#1061)")
+        self._canary(fx)
+        r = fx.run([])
+        self.assertEqual(fails(r), [])
+        _, _, _, _, _, r7_checked, r7_skipped = r
+        self.assertEqual((r7_checked, r7_skipped), (1, 0))
+
+    def test_patch_tag_of_previous_minor_is_archaeologized_too(self):
+        # Evidence that shipped in v0.59.1 (tagged from the same line) is
+        # still a PREVIOUS release's evidence — the highest vX.(Y-1).* tag
+        # is the reference, not only .0.
+        fx = self._repo()
+        fx.evidence("scripts/repro/patch_fix.py", "patched\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m", "hotfix: patch fix (#1099)")
+        fx.git("tag", "v0.59.1")
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-PARKED", "implemented",
+            {"done-when": "contains:scripts/repro/patch_fix.py:patched"})])
+        r = fx.run([])
+        self.assertTrue(has(r, "R7 RQ-60-PARKED"), fails(r))
+        self.assertTrue(has(r, "ANCESTOR of v0.59.1"), fails(r))
+
+    # -- The loud-skip contract: R7 that cannot run must never pass quietly.
+
+    def test_no_git_skips_loudly(self):
+        fx = Fixture()  # a bare temp dir — no repo, no history
+        fx.evidence("scripts/repro/gate.py", "emulations >= 1200\n")
+        self._canary(fx)
+        r = fx.run([])
+        self.assertEqual(fails(r), [])
+        warnings_ = r[3]
+        self.assertTrue(
+            any(w.startswith("R7-SKIP RQ-60-CANARY") for w in warnings_),
+            warnings_)
+        _, _, _, _, _, r7_checked, r7_skipped = r
+        self.assertEqual((r7_checked, r7_skipped), (0, 1))
+
+    def test_missing_previous_tag_skips_loudly(self):
+        fx = Fixture()
+        fx.git("init", "-q", "-b", "main")
+        fx.evidence("scripts/repro/gate.py", "emulations >= 1200\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m", "gate")
+        self._canary(fx)  # no v0.59.* tag anywhere
+        r = fx.run([])
+        self.assertEqual(fails(r), [])
+        self.assertTrue(any("R7-SKIP" in w and "tag" in w for w in r[3]), r[3])
+
+    def test_uncommitted_signature_skips_loudly(self):
+        fx = self._repo()
+        fx.evidence("scripts/repro/other.py", "uncommitted needle\n")
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-DIRTY", "implemented",
+            {"done-when": "contains:scripts/repro/other.py:uncommitted needle"}
+        )])
+        r = fx.run([])
+        self.assertEqual(fails(r), [])
+        self.assertTrue(
+            any("R7-SKIP RQ-60-DIRTY" in w for w in r[3]), r[3])
+
+
+class R8ReleaseField(unittest.TestCase):
+    """#1085 R8 — the `release:` field (rivet's side) must agree with the
+    file's version (this checker's side)."""
+
+    def test_harmful_direction_version_gate_bypass(self):
+        # The direction nobody has hit: `release: v0.60` parked in a
+        # pre-v0.60 file. Before R8 this passed EVERY rule (no done-when
+        # demanded, path < v0.60) while rivet counted it in v0.60's scope.
+        fx = Fixture()
+        fx.release("release-v0.59.yaml",
+                   [art("RQ-59-SNEAK", "implemented", release="v0.60")])
+        r = fx.run([])
+        self.assertTrue(has(r, "R8 RQ-59-SNEAK"), fails(r))
+        self.assertTrue(has(r, "bypass"), fails(r))
+        # ... and R8 is the ONLY thing that sees it (that is the point).
+        self.assertEqual([f for f in fails(r) if not f.startswith("R8 ")], [])
+
+    def test_patch_park_allowance_replays_the_six(self):
+        # The 6 measured mismatches: real patch-release artifacts of the
+        # PREVIOUS minor parked in the next minor's file — the practice is
+        # now STATED as the rule's one allowance, so both shapes are green.
+        fx = Fixture()
+        fx.release("release-v0.57.yaml", [
+            art("RQ-561-ZEROMEM", "implemented", release="v0.56.1"),
+            art("RQ-57-SENTINEL", "implemented", release="v0.56.2"),
+        ])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_previous_minor_without_patch_is_red(self):
+        # `release: v0.56` (the MINOR, not a patch of it) in the v0.57 file
+        # is not the parked-patch practice — it is a plain disagreement.
+        fx = Fixture()
+        fx.release("release-v0.57.yaml",
+                   [art("RQ-57-X", "implemented", release="v0.56")])
+        r = fx.run([])
+        self.assertTrue(has(r, "R8 RQ-57-X"), fails(r))
+
+    def test_missing_field_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.59.yaml",
+                   [art("RQ-59-X", "implemented")], stamp=False)
+        r = fx.run([])
+        self.assertTrue(has(r, "R8 RQ-59-X"), fails(r))
+        self.assertTrue(has(r, "missing or not vX.Y"), fails(r))
+
+    def test_unparseable_field_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.59.yaml",
+                   [art("RQ-59-X", "implemented", release="0.59-final")])
+        self.assertTrue(has(fx.run([]), "R8 RQ-59-X"))
+
+    def test_matching_field_green_incl_own_patch(self):
+        # vX.Y in release-vX.Y.yaml, and vX.Y.Z in its OWN minor's file,
+        # both agree.
+        fx = Fixture()
+        fx.release("release-v0.57.yaml", [
+            art("RQ-57-A", "implemented", release="v0.57"),
+            art("RQ-57-B", "implemented", release="v0.57.1"),
+        ])
+        self.assertEqual(fails(fx.run([])), [])
+
+
+class R9CrateSource(unittest.TestCase):
+    """#1085 R9 — under a claiming status, a code-existence predicate into
+    crate source cannot fail on the failure the artifact defines for
+    itself. The specimen is RQ-60-A64IMPORT ('the acceptance number is the
+    deliverable') pinned on `contains:crates/.../elf.rs:undefined_externals`;
+    both live instances were corrected in #1090 — this is the rule."""
+
+    A64 = ("contains:crates/synth-backend-aarch64/src/elf.rs:"
+           "undefined_externals")
+
+    def _with_code(self, fx):
+        fx.evidence("crates/synth-backend-aarch64/src/elf.rs",
+                    "fn undefined_externals() {}\n")
+
+    def test_replay_a64import_code_existence_is_red(self):
+        fx = Fixture()
+        self._with_code(fx)
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-A64IMPORT", "implemented", {"done-when": self.A64})])
+        r = fx.run([])
+        self.assertTrue(has(r, "R9 RQ-60-A64IMPORT"), fails(r))
+        # The code EXISTS (R2 satisfied) — R9 is the only failure, i.e. the
+        # fixture reds on the rule under test, not incidentally.
+        self.assertEqual([f for f in fails(r) if not f.startswith("R9 ")], [])
+
+    def test_verified_by_escape_hatch_accepts(self):
+        # #1090 correction form 2: written basis for why code-existence is
+        # genuinely the outcome here.
+        fx = Fixture()
+        self._with_code(fx)
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-A64IMPORT", "implemented",
+            {"done-when": self.A64,
+             "verified-by": "census re-run: aarch64 13 -> 101 of 805, "
+                            "recorded in #1071"})])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_repointing_at_the_gate_accepts(self):
+        # #1090 correction form 1: the signature names the GATE (here a
+        # crate integration test the required Test job executes) instead of
+        # the code path.
+        fx = Fixture()
+        fx.evidence("crates/synth-backend-aarch64/tests/a64_import_gate.rs",
+                    "fn undefined_externals_census_floor() {}\n")
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-A64IMPORT", "implemented",
+            {"done-when": "contains:crates/synth-backend-aarch64/tests/"
+                          "a64_import_gate.rs:undefined_externals_census_floor"
+             })])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_non_claiming_status_not_gated(self):
+        # R9 fires on the CLAIM, not the plan: a proposed artifact may pin
+        # a crates/ signature it intends to strengthen before flipping.
+        fx = Fixture()
+        fx.release("release-v0.60.yaml", [art(
+            "RQ-60-A64IMPORT", "proposed", {"done-when": self.A64})])
         self.assertEqual(fails(fx.run([])), [])
 
 

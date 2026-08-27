@@ -340,8 +340,13 @@ jobs:
           python3 scripts/status_evidence_check.py | tee /tmp/status-evidence.log
           # Non-vacuity: re-derive the verdict from the summary the gate
           # WROTE — non-empty artifact population, a non-zero delivery-commit
-          # scan, predicates actually evaluated, zero failures.
-          grep -qE '^status-evidence: [1-9][0-9]* artifacts across [1-9][0-9]* release files, [1-9][0-9]* delivery commits matched, [1-9][0-9]* done-when predicates evaluated, 0 failures$' \
+          # scan, predicates actually evaluated, zero failures. R7 (#1085,
+          # evidence-release archaeology) LOUDLY SKIPS in-script when history
+          # or tags are missing rather than passing silently; the `(0
+          # skipped)` + >= 1 checks pinned HERE are what turn that loud skip
+          # into a CI red — fetch-depth: 0 above provides the history AND the
+          # tags this depends on.
+          grep -qE '^status-evidence: [1-9][0-9]* artifacts across [1-9][0-9]* release files, [1-9][0-9]* delivery commits matched, [1-9][0-9]* done-when predicates evaluated, [1-9][0-9]* release-scope archaeology checks \(0 skipped\), 0 failures$' \
             /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
