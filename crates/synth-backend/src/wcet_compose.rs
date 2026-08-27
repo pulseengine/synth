@@ -280,6 +280,7 @@ pub fn compose(
                     loops,
                     recursion,
                     hint_rejections,
+                    hint_key: None,
                 }
             }
             State::Declined(reason) => {

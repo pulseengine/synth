@@ -330,6 +330,29 @@ pub struct WcetRecursionBound {
     pub hint: u64,
 }
 
+/// (#1063) The durable per-function hint-key contract, emitted in the sidecar so
+/// a consumer joins against the key `--wcet-hints` will actually accept instead
+/// of re-deriving it from mangled symbols (a by-hand copy of a shipped
+/// decision — the drift class this project removes, not adds).
+///
+/// `key` is chosen by [`assign_hint_keys`], in priority order: the export name;
+/// else the `name`-section name with its non-content-derived mangling components
+/// stripped ([`stable_name_key`]) when that stripped form is unique in the
+/// module; else the raw `name`-section name; else `func_<index>` as the last
+/// resort. `build_local` is scry#137's flag: `true` means the key is NOT
+/// expected to survive an unrelated rebuild (a raw mangled name still carrying
+/// its crate disambiguator, or a bare index), so a hints file keyed on it must
+/// be regenerated per build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetHintKey {
+    /// The canonical key a `--wcet-hints` entry addresses this function by.
+    pub key: String,
+    /// `true` when the key churns across rebuilds (raw disambiguated mangling,
+    /// or an index): usable only against the build that emitted this sidecar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub build_local: bool,
+}
+
 /// The per-function result: either a sound cycle bound or a loud decline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -357,6 +380,11 @@ pub enum WcetFunction {
         /// Hints that were rejected (the static proof stands independently).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hint_rejections: Vec<WcetHintRejection>,
+        /// (#1063) The key `--wcet-hints` matches this function on, plus its
+        /// build-locality — filled by the module driver, absent on sidecars
+        /// predating the field (additive).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint_key: Option<WcetHintKey>,
     },
     /// No bound emitted — a loud decline with a machine-readable reason. A decline
     /// is emitted (rather than the function omitted) so the map is COMPLETE: a
@@ -389,6 +417,11 @@ pub enum WcetFunction {
         /// Hints that were offered for this function and rejected.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hint_rejections: Vec<WcetHintRejection>,
+        /// (#1063) The key `--wcet-hints` matches this function on, plus its
+        /// build-locality — filled by the module driver, absent on sidecars
+        /// predating the field (additive).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint_key: Option<WcetHintKey>,
     },
 }
 
@@ -403,6 +436,7 @@ impl WcetFunction {
             op: None,
             offset: None,
             hint_rejections: Vec::new(),
+            hint_key: None,
         }
     }
 
@@ -427,6 +461,7 @@ impl WcetFunction {
             op: Some(op.into()),
             offset,
             hint_rejections: Vec::new(),
+            hint_key: None,
         }
     }
 
@@ -444,7 +479,292 @@ impl WcetFunction {
             op: None,
             offset: None,
             hint_rejections,
+            hint_key: None,
         }
+    }
+
+    /// The function name this entry is keyed by in the sidecar.
+    pub fn name(&self) -> &str {
+        match self {
+            WcetFunction::Bounded { name, .. } | WcetFunction::Declined { name, .. } => name,
+        }
+    }
+
+    /// (#1063) Rewrite this entry to its durable identity: the display name plus
+    /// the hint-key contract the driver assigned. Called by the module driver
+    /// after composition (composition works in compile names, `func_<idx>` for
+    /// internal functions).
+    pub fn set_identity(&mut self, display_name: &str, key: &WcetHintKey) {
+        match self {
+            WcetFunction::Bounded { name, hint_key, .. }
+            | WcetFunction::Declined { name, hint_key, .. } => {
+                *name = display_name.to_string();
+                *hint_key = Some(key.clone());
+            }
+        }
+    }
+}
+
+/// (#1063) Derive the STABLE form of a `name`-section name — the part of the
+/// name that IS content-derived, with the components that churn per build
+/// stripped. Measured motivation (gale #1063 / scry#123): Rust v0 mangling
+/// carries a crate disambiguator (`Cs942N1ctoMYm_`) hashed from crate metadata
+/// (compiler version, feature flags, …) — NOT from the function's content — and
+/// 43–45 % of function identities churn per build for exactly this reason. A
+/// hints key that churns every build trades an unaddressable decline for an
+/// unreliable one, so the key strips:
+///
+/// - every v0 crate-root disambiguator `C s <base62>+ _` → `C` (scry#137 tier 1;
+///   local disambiguators like closures' `s_0` are source-order-derived and are
+///   KEPT — only the crate-metadata hash is stripped);
+/// - a legacy-mangling content hash suffix `17h<16 hex>E` → `E`, and its
+///   demangled form `::h<16 hex>` at the end of the name.
+///
+/// The scan is textual, not a full mangling parse: a pathological identifier
+/// that CONTAINS the pattern strips too. That is deliberate — both sides of the
+/// join (this function emitting `hint_key` and the author copying it from the
+/// sidecar) use the same derivation, so consistency is what matters; a
+/// pathological merge of two distinct names is caught by [`assign_hint_keys`]'s
+/// uniqueness check and demoted to a build-local raw key, never silently
+/// mis-keyed.
+pub fn stable_name_key(raw: &str) -> String {
+    // v0 mangling: crate-root disambiguator `C s <base62>+ _` → `C`.
+    let b = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'C' && i + 1 < b.len() && b[i + 1] == b's' {
+            let mut j = i + 2;
+            while j < b.len() && b[j].is_ascii_alphanumeric() {
+                j += 1;
+            }
+            if j > i + 2 && j < b.len() && b[j] == b'_' {
+                out.push(b'C');
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    // Only removed ASCII substrings above, so this cannot fail; the fallback is
+    // pure defense.
+    let mut out = String::from_utf8(out).unwrap_or_else(|_| raw.to_string());
+    if !out.is_ascii() {
+        return out;
+    }
+    // Legacy mangling: `…17h<16 hex>E` → `…E`.
+    if out.len() >= 20 && out.ends_with('E') {
+        let tail = &out[out.len() - 20..out.len() - 1];
+        if let Some(hex) = tail.strip_prefix("17h")
+            && hex.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            out.truncate(out.len() - 20);
+            out.push('E');
+            return out;
+        }
+    }
+    // Demangled legacy hash: trailing `::h<16 hex>`.
+    if out.len() >= 19 {
+        let tail = &out[out.len() - 19..];
+        if let Some(hex) = tail.strip_prefix("::h")
+            && hex.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            out.truncate(out.len() - 19);
+        }
+    }
+    out
+}
+
+/// (#1063) A compiled function's identity inputs, as the module driver knows
+/// them: full-index-space index, export name (if exported), and `name`-section
+/// name (if the module carries one for it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WcetFnIdentity {
+    /// Full function index (imports first — the space `func_<index>` names).
+    pub index: u32,
+    /// The export name, when the function is exported.
+    pub export_name: Option<String>,
+    /// The `name`-section name, when present (debug metadata, untrusted-benign).
+    pub debug_name: Option<String>,
+}
+
+/// (#1063) The assigned identity for one function: what the backend compiled it
+/// as, what the sidecar displays, the canonical hint key, and every key a
+/// `--wcet-hints` entry may address it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WcetKeyAssignment {
+    /// The name the backend compiled under (export name, else `func_<index>`) —
+    /// the key composition and the resolved hints map work in.
+    pub compile_name: String,
+    /// The sidecar display name: export name, else the RAW `name`-section name
+    /// (so a consumer can join against symbols), else `func_<index>`.
+    pub display_name: String,
+    /// The canonical hint key + build-locality (see [`WcetHintKey`]).
+    pub hint_key: WcetHintKey,
+    /// Every key a hints entry may address this function by (the canonical key,
+    /// plus the raw `name`-section name when it is unambiguous). `func_<index>`
+    /// is deliberately NOT accepted for a function that carries a real name: an
+    /// index silently retargets when an unrelated edit renumbers the space,
+    /// which is worse than no key (#1063).
+    pub accepted_keys: Vec<String>,
+}
+
+/// (#1063) Assign every function its durable WCET identity. Key priority:
+/// export name → stripped `name`-section name (when unique module-wide and not
+/// shadowing an export) → raw `name`-section name (unique, not shadowing;
+/// build-local) → `func_<index>` (build-local last resort). Uniqueness is
+/// checked over ALL functions' candidate names so two functions can never be
+/// assigned the same stable key; residual cross-tier collisions are additionally
+/// rejected as ambiguous at resolution time ([`resolve_hint_keys`]), so an
+/// ambiguous key is never silently applied to the wrong function.
+pub fn assign_hint_keys(fns: &[WcetFnIdentity]) -> Vec<WcetKeyAssignment> {
+    use std::collections::{HashMap, HashSet};
+    let exports: HashSet<&str> = fns
+        .iter()
+        .filter_map(|f| f.export_name.as_deref())
+        .collect();
+    let mut stripped_counts: HashMap<String, usize> = HashMap::new();
+    let mut raw_counts: HashMap<&str, usize> = HashMap::new();
+    for f in fns {
+        if let Some(d) = f.debug_name.as_deref() {
+            *stripped_counts.entry(stable_name_key(d)).or_default() += 1;
+            *raw_counts.entry(d).or_default() += 1;
+        }
+    }
+    fns.iter()
+        .map(|f| {
+            let fallback = format!("func_{}", f.index);
+            let raw_ok = |d: &str| raw_counts.get(d).copied() == Some(1) && !exports.contains(d);
+            let (compile_name, display_name, key, build_local) =
+                match (&f.export_name, &f.debug_name) {
+                    (Some(e), _) => (e.clone(), e.clone(), e.clone(), false),
+                    (None, Some(d)) => {
+                        let stripped = stable_name_key(d);
+                        if stripped_counts.get(&stripped).copied() == Some(1)
+                            && !exports.contains(stripped.as_str())
+                        {
+                            (fallback.clone(), d.clone(), stripped, false)
+                        } else if raw_ok(d) {
+                            (fallback.clone(), d.clone(), d.clone(), true)
+                        } else {
+                            (fallback.clone(), d.clone(), fallback.clone(), true)
+                        }
+                    }
+                    (None, None) => (fallback.clone(), fallback.clone(), fallback.clone(), true),
+                };
+            let mut accepted = vec![key.clone()];
+            // The raw name-section name is always an accepted alias when it is
+            // unambiguous — a hint keyed on the symbol the author sees in a
+            // disassembly must land (or be loudly rejected), never be ignored.
+            if let Some(d) = f.debug_name.as_deref()
+                && raw_ok(d)
+                && !accepted.iter().any(|k| k == d)
+            {
+                accepted.push(d.to_string());
+            }
+            WcetKeyAssignment {
+                compile_name,
+                display_name,
+                hint_key: WcetHintKey { key, build_local },
+                accepted_keys: accepted,
+            }
+        })
+        .collect()
+}
+
+/// (#1063) The outcome of resolving a `--wcet-hints` file against the module's
+/// key assignments: the re-keyed hints map (keyed by COMPILE name, the key the
+/// backend's per-function verifier looks up), which original keys resolved to
+/// which function, and a named diagnostic for every entry that was NOT consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WcetHintResolution {
+    /// The hints, re-keyed by compile name, ready for the backend.
+    pub hints: WcetHints,
+    /// `(original key, compile_name)` for every entry that resolved.
+    pub resolved: Vec<(String, String)>,
+    /// One named, human-readable reason per entry that was NOT consumed — the
+    /// driver prints each. An ignored-because-unmatched hint and a rejected
+    /// hint look identical to a `$?` check; the named reason is the difference.
+    pub diagnostics: Vec<String>,
+}
+
+/// (#1063) Resolve every `--wcet-hints` entry against the module's accepted
+/// keys. Each entry either resolves to exactly one function (and is re-keyed to
+/// that function's compile name) or produces a NAMED diagnostic:
+/// ambiguous key, duplicate entry, refused index key (the function carries a
+/// real name — an index is not an identity), or unknown key. No entry is ever
+/// silently ignored.
+pub fn resolve_hint_keys(
+    hints: WcetHints,
+    assignments: &[WcetKeyAssignment],
+) -> WcetHintResolution {
+    use std::collections::HashMap;
+    let mut by_key: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, a) in assignments.iter().enumerate() {
+        for k in &a.accepted_keys {
+            let v = by_key.entry(k.as_str()).or_default();
+            if !v.contains(&i) {
+                v.push(i);
+            }
+        }
+    }
+    let mut out = WcetHints {
+        schema: hints.schema,
+        functions: std::collections::BTreeMap::new(),
+    };
+    let mut resolved: Vec<(String, String)> = Vec::new();
+    let mut diagnostics: Vec<String> = Vec::new();
+    for (k, entry) in hints.functions {
+        match by_key.get(k.as_str()).map(Vec::as_slice) {
+            Some([i]) => {
+                let a = &assignments[*i];
+                if out.functions.contains_key(&a.compile_name) {
+                    diagnostics.push(format!(
+                        "--wcet-hints key '{k}' duplicates an earlier entry for function \
+                         '{}' — this entry was not consumed (wcet-hint-key-duplicate, #1063)",
+                        a.display_name
+                    ));
+                } else {
+                    out.functions.insert(a.compile_name.clone(), entry);
+                    resolved.push((k, a.compile_name.clone()));
+                }
+            }
+            Some(many) => diagnostics.push(format!(
+                "--wcet-hints key '{k}' is AMBIGUOUS in this module ({} functions accept \
+                 it) — the hint was not consumed (wcet-hint-key-ambiguous, #1063)",
+                many.len()
+            )),
+            None => {
+                // An index key for a function that carries a real name is
+                // REFUSED by design, and the diagnostic names the key to use:
+                // an index silently retargets when an unrelated edit adds or
+                // removes an earlier function, converting a decline for a
+                // function whose shape nobody looked at.
+                if let Some(a) = assignments
+                    .iter()
+                    .find(|a| a.compile_name == k && !a.accepted_keys.contains(&k))
+                {
+                    diagnostics.push(format!(
+                        "--wcet-hints key '{k}' is an INDEX key, but that function carries \
+                         the name '{}' — an index is not an identity (it silently retargets \
+                         when the index space shifts), so it is refused; key the hint on \
+                         '{}' instead (wcet-hint-key-index-refused, #1063)",
+                        a.display_name, a.hint_key.key
+                    ));
+                } else {
+                    diagnostics.push(format!(
+                        "--wcet-hints names function '{k}' which is not in this module — \
+                         the hint was not consumed (wcet-hint-key-unknown)"
+                    ));
+                }
+            }
+        }
+    }
+    WcetHintResolution {
+        hints: out,
+        resolved,
+        diagnostics,
     }
 }
 
@@ -663,6 +983,7 @@ mod tests {
             loops: Vec::new(),
             recursion: None,
             hint_rejections: Vec::new(),
+            hint_key: None,
         });
         r.functions
             .push(WcetFunction::declined("spins", WcetDecline::Loop));
@@ -678,5 +999,158 @@ mod tests {
     fn sidecar_path_appends_suffix() {
         let p = WcetReport::sidecar_path(std::path::Path::new("out/app.elf"));
         assert_eq!(p, std::path::PathBuf::from("out/app.elf.wcet.json"));
+    }
+
+    // ── #1063: durable hint keys ────────────────────────────────────────────
+
+    /// The v0 crate disambiguator (gale's measured churner, scry#123) strips;
+    /// content-derived components survive.
+    #[test]
+    fn stable_key_strips_v0_crate_disambiguator() {
+        assert_eq!(
+            stable_name_key("_RNvCs942N1ctoMYm_4fixt12inner_eqexit"),
+            "_RNvC4fixt12inner_eqexit"
+        );
+        // Multiple crate refs in one path all strip.
+        assert_eq!(
+            stable_name_key("_RNvNtCs942N1ctoMYm_4core3fmt3num__Cs1AbCd_5other"),
+            "_RNvNtC4core3fmt3num__C5other"
+        );
+        // Local (closure) disambiguators like `s_0` are source-order-derived
+        // and are KEPT — only the crate-metadata hash after `C` strips.
+        assert_eq!(
+            stable_name_key("_RNCNvCs942N1ctoMYm_4main4mains_0"),
+            "_RNCNvC4main4mains_0"
+        );
+    }
+
+    /// Legacy mangling and demangled hash suffixes strip; a non-mangled name is
+    /// unchanged.
+    #[test]
+    fn stable_key_strips_legacy_hashes_and_keeps_plain_names() {
+        assert_eq!(
+            stable_name_key("_ZN4core3fmt9Formatter3pad17h2b9e27d1f4d3ba32E"),
+            "_ZN4core3fmt9Formatter3padE"
+        );
+        assert_eq!(
+            stable_name_key("core::fmt::Formatter::pad::h2b9e27d1f4d3ba32"),
+            "core::fmt::Formatter::pad"
+        );
+        assert_eq!(stable_name_key("memcpy"), "memcpy");
+        assert_eq!(stable_name_key("entry"), "entry");
+    }
+
+    fn idents() -> Vec<WcetFnIdentity> {
+        vec![
+            WcetFnIdentity {
+                index: 0,
+                export_name: None,
+                debug_name: Some("_RNvCs942N1ctoMYm_4fixt12inner_eqexit".into()),
+            },
+            WcetFnIdentity {
+                index: 1,
+                export_name: Some("entry".into()),
+                debug_name: Some("_RNvCs942N1ctoMYm_4fixt5entry".into()),
+            },
+            WcetFnIdentity {
+                index: 2,
+                export_name: None,
+                debug_name: None,
+            },
+        ]
+    }
+
+    /// Export name wins; a unique stripped name-section name is the stable key
+    /// (raw name accepted as an alias); a nameless function keeps `func_<idx>`
+    /// flagged build-local.
+    #[test]
+    fn assign_priority_export_then_stripped_then_index() {
+        let a = assign_hint_keys(&idents());
+        assert_eq!(a[0].compile_name, "func_0");
+        assert_eq!(a[0].display_name, "_RNvCs942N1ctoMYm_4fixt12inner_eqexit");
+        assert_eq!(a[0].hint_key.key, "_RNvC4fixt12inner_eqexit");
+        assert!(!a[0].hint_key.build_local);
+        assert!(
+            a[0].accepted_keys
+                .iter()
+                .any(|k| k == "_RNvCs942N1ctoMYm_4fixt12inner_eqexit"),
+            "raw name-section name must be an accepted alias"
+        );
+        assert!(
+            !a[0].accepted_keys.iter().any(|k| k == "func_0"),
+            "an index key is refused once the function carries a name"
+        );
+        assert_eq!(a[1].hint_key.key, "entry");
+        assert!(!a[1].hint_key.build_local);
+        assert_eq!(a[2].hint_key.key, "func_2");
+        assert!(a[2].hint_key.build_local, "an index is not an identity");
+    }
+
+    /// Two functions whose stripped keys collide demote to their RAW names
+    /// (build-local) — a churning key is disclosed, never silently unstable.
+    #[test]
+    fn assign_demotes_stripped_collision_to_raw_build_local() {
+        let fns = vec![
+            WcetFnIdentity {
+                index: 0,
+                export_name: None,
+                debug_name: Some("_RNvCsAAAA_4c3f".into()),
+            },
+            WcetFnIdentity {
+                index: 1,
+                export_name: None,
+                debug_name: Some("_RNvCsBBBB_4c3f".into()),
+            },
+        ];
+        let a = assign_hint_keys(&fns);
+        assert_eq!(a[0].hint_key.key, "_RNvCsAAAA_4c3f");
+        assert!(a[0].hint_key.build_local);
+        assert_eq!(a[1].hint_key.key, "_RNvCsBBBB_4c3f");
+        assert!(a[1].hint_key.build_local);
+    }
+
+    /// Resolution re-keys to compile names, and every non-consumed entry gets a
+    /// NAMED diagnostic — never a silent ignore.
+    #[test]
+    fn resolve_rekeys_and_names_every_refusal() {
+        let a = assign_hint_keys(&idents());
+        let mut h = WcetHints {
+            schema: HINTS_SCHEMA.into(),
+            functions: std::collections::BTreeMap::new(),
+        };
+        let entry = WcetFunctionHints {
+            loop_bounds: vec![Some(8)],
+            recursion_depth: None,
+        };
+        // stable key, raw alias (duplicate of the same function), refused index
+        // key, and an unknown name.
+        h.functions
+            .insert("_RNvC4fixt12inner_eqexit".into(), entry.clone());
+        h.functions.insert(
+            "_RNvCs942N1ctoMYm_4fixt12inner_eqexit".into(),
+            entry.clone(),
+        );
+        h.functions.insert("func_0".into(), entry.clone());
+        h.functions.insert("nosuch".into(), entry);
+        let res = resolve_hint_keys(h, &a);
+        assert!(res.hints.functions.contains_key("func_0"));
+        assert_eq!(res.resolved.len(), 1);
+        assert_eq!(res.diagnostics.len(), 3);
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.contains("wcet-hint-key-duplicate"))
+        );
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.contains("wcet-hint-key-index-refused")
+                    && d.contains("_RNvC4fixt12inner_eqexit"))
+        );
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.contains("not in this module"))
+        );
     }
 }

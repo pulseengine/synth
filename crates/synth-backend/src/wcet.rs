@@ -743,6 +743,7 @@ pub fn function_wcet_with_hints(
                     loops,
                     recursion: None,
                     hint_rejections,
+                    hint_key: None,
                 }
             } else {
                 WcetFunction::declined_with_rejections(name, WcetDecline::Call, hint_rejections)

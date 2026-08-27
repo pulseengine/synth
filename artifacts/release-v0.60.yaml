@@ -366,7 +366,7 @@ artifacts:
       decline into `hint-verified` — or is rejected with a NAMED reason, which
       is equally fine. Being ignored because the key never matches is the
       failure.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [wcet, hints-seam, function-identity, gale, honest-frontier]
     links:
@@ -381,6 +381,25 @@ artifacts:
       # name-section-keyed hint converts or is rejected with a NAMED reason)
       # — an external-input differential, not an in-repo signature.
       done-when: "manual: kill-criterion runs against gale's gust:os E2 composite; the hints-key surface has no pre-nameable in-repo symbol until the design (their point 2) is decided"
+      # WHAT I ACTUALLY VERIFIED (RQ-60-WCETKEY PR, 2026-08-27), stated so it
+      # can be disputed rather than trusted. The kill-criterion SHAPE holds
+      # in-repo: `wcet_bound_gate.rs` #1063 section compiles an INTERNAL
+      # (non-exported) function whose name-section name is gale's literal
+      # mangled example, and a hints file keyed on that name CONVERTS its
+      # `loop` decline to `hint-verified` (raw name AND disambiguator-stripped
+      # stable key both accepted; emitted trip = synth's DERIVED 8 even under
+      # hint 100); an index key for a named function is REJECTED with the
+      # NAMED reason `wcet-hint-key-index-refused` stating the key to use.
+      # Point 2 DECIDED AND SHIPPED: every sidecar entry emits
+      # `hint_key: {key, build_local}` (scry#137's two-tier stripping). The
+      # RESIDUAL, honestly: the DoD's own composite run — the same hints file
+      # against gale's E2 `gust:os` object — has NOT been executed here (the
+      # composite is not in this repo); status stays `implemented`, not
+      # `verified`, until gale or jess runs it.
+      verified-by: >-
+        wcet_bound_gate.rs #1063 tests (kill-criterion fixture: convert +
+        named-reject + derived-not-raw + ELF byte-invisibility), 59/59 green
+        locally; gale's E2 composite re-run is the outstanding external check.
 
   - id: RQ-60-FLIPCOUPLE
     type: system-req

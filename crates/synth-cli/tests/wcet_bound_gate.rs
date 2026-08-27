@@ -350,13 +350,14 @@ fn direct_call_chain_composes_exact_bounds() {
             local.get 0 call $mid call $mid))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    // func_0 == leaf (no export name), func_1 == mid, root exported.
-    assert_bounded(&report, "func_0", 19);
-    assert_bounded(&report, "func_1", 51);
+    // #1063: the internal functions' `$` ids are name-section names, so the
+    // sidecar keys them by NAME now, not `func_<idx>`.
+    assert_bounded(&report, "leaf", 19);
+    assert_bounded(&report, "mid", 51);
     assert_bounded(&report, "root", 136);
     // Composition is a sound upper bound: each bound clears its own instr floor,
     // and root's bound covers its two mid-calls (2 × 51 = 102 <= 136).
-    for name in ["func_0", "func_1", "root"] {
+    for name in ["leaf", "mid", "root"] {
         let f = func(&report, name);
         let cycles = f.get("cycles").and_then(Value::as_u64).unwrap();
         let instrs = f.get("instr_count").and_then(Value::as_u64).unwrap();
@@ -366,7 +367,7 @@ fn direct_call_chain_composes_exact_bounds() {
         .get("cycles")
         .and_then(Value::as_u64)
         .unwrap();
-    let mid = func(&report, "func_1")
+    let mid = func(&report, "mid")
         .get("cycles")
         .and_then(Value::as_u64)
         .unwrap();
@@ -399,7 +400,7 @@ fn direct_call_inside_proven_loop_counts_callee_per_trip() {
             local.get 1))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    let leaf = func(&report, "func_0")
+    let leaf = func(&report, "leaf")
         .get("cycles")
         .and_then(Value::as_u64)
         .unwrap();
@@ -501,8 +502,9 @@ fn declined_callee_propagates_up_as_callee_unbounded() {
             local.get 0 call $spin))
     "#;
     let report = compile_wcet(wat, "cortex-m4");
-    // The callee keeps its own specific decline...
-    assert_declined(&report, "func_0", "loop");
+    // The callee keeps its own specific decline (#1063: keyed by its
+    // name-section name)...
+    assert_declined(&report, "spin", "loop");
     // ...and the caller declines with the PROPAGATION reason (not `loop`).
     assert_declined(&report, "caller", "callee-unbounded");
 }
@@ -1680,4 +1682,245 @@ fn assert_trip_floor(report: &Value, name: &str) {
              instructions alone execute more times than the bound allows: unsound"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// #1063 (RQ-60-WCETKEY) — name-section names as durable identities +
+// symmetric --wcet-hints keys.
+//
+// gale measured (E2 dissolved gust:os composite): 8 of 31 wcet functions were
+// anonymous `func_<N>` — none of them exports — so 7 of the 13 `loop` declines
+// could not be hinted AT ALL, while the name section carried real names synth
+// ignored. Worse, an index key silently RETARGETS when an unrelated edit
+// renumbers the space. These tests are the kill-criterion, permanent: a hints
+// file keyed on the name-section name of an internal function must CONVERT its
+// `loop` decline or be REJECTED with a NAMED reason — being ignored because
+// the key never matches is the failure.
+// ---------------------------------------------------------------------------
+
+/// An INTERNAL (non-exported) function carrying a v0-mangled name-section name
+/// (the `Cs942N1ctoMYm_` crate disambiguator is gale's literal churn example),
+/// with the equality-exit loop shape that is bounded ONLY under a verified
+/// hint; plus an exported caller so the internal function is reachable (#235).
+const NAMED_INTERNAL_WAT: &str = r#"
+    (module
+      (func $_RNvCs942N1ctoMYm_4fixt12inner_eqexit (result i32)
+        (local i32 i32)
+        (block
+          (loop
+            local.get 0 i32.const 8 i32.eq br_if 1
+            local.get 1 local.get 0 i32.add local.set 1
+            local.get 0 i32.const 1 i32.add local.set 0
+            br 0))
+        local.get 1)
+      (func (export "entry") (result i32)
+        call $_RNvCs942N1ctoMYm_4fixt12inner_eqexit))
+"#;
+
+/// The raw name-section name of the internal function above.
+const RAW_NAME: &str = "_RNvCs942N1ctoMYm_4fixt12inner_eqexit";
+/// Its STABLE key: the crate disambiguator (`s942N1ctoMYm_`, hashed from crate
+/// metadata, not content) stripped — the key that survives a rebuild.
+const STABLE_KEY: &str = "_RNvC4fixt12inner_eqexit";
+
+/// Like [`compile_wcet_hinted`] but also returning the compile's stderr and the
+/// emitted ELF bytes, for the named-refusal and byte-invisibility assertions.
+fn compile_wcet_capture(
+    wat: &str,
+    triple: &str,
+    hints_json: Option<&str>,
+) -> (Value, String, Vec<u8>) {
+    let dir = std::env::temp_dir().join(format!(
+        "synth_wcet_key_{}_{}_{}",
+        std::process::id(),
+        triple.replace(['/', '-'], "_"),
+        unique_id(),
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wat_path = dir.join("f.wat");
+    std::fs::write(&wat_path, wat).unwrap();
+    let out_path = dir.join("f.elf");
+    let mut args = vec![
+        "compile".to_string(),
+        wat_path.to_str().unwrap().to_string(),
+        "-o".to_string(),
+        out_path.to_str().unwrap().to_string(),
+        "-t".to_string(),
+        triple.to_string(),
+        "--emit-wcet".to_string(),
+    ];
+    if let Some(h) = hints_json {
+        let hints_path = dir.join("hints.json");
+        std::fs::write(&hints_path, h).unwrap();
+        args.push("--wcet-hints".to_string());
+        args.push(hints_path.to_str().unwrap().to_string());
+    }
+    let out = Command::new(synth())
+        .args(&args)
+        .output()
+        .expect("failed to run synth compile");
+    assert!(out.status.success(), "synth compile failed for {triple}");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let elf = std::fs::read(&out_path).unwrap();
+    let sidecar = {
+        let mut s = out_path.into_os_string();
+        s.push(".wcet.json");
+        std::path::PathBuf::from(s)
+    };
+    let report =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).expect("sidecar JSON");
+    (report, stderr, elf)
+}
+
+/// Unhinted: the internal function's entry is keyed by its RAW name-section
+/// name (never `func_0`), declines `loop`, and carries the explicit hint-key
+/// contract — `hint_key.key` is the STABLE stripped form and it is NOT flagged
+/// build-local (the stripped key survives a rebuild).
+#[test]
+fn name_section_identity_replaces_func_index_and_emits_key_contract() {
+    let (report, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", None);
+    assert_declined(&report, RAW_NAME, "loop");
+    let f = func(&report, RAW_NAME);
+    let hk = f
+        .get("hint_key")
+        .unwrap_or_else(|| panic!("entry must emit the hint_key contract: {f}"));
+    assert_eq!(hk.get("key").and_then(Value::as_str), Some(STABLE_KEY));
+    assert_eq!(
+        hk.get("build_local"),
+        None,
+        "the stripped key is stable — must not be flagged build-local: {hk}"
+    );
+    // The exported caller keeps its export name as both name and key.
+    let e = func(&report, "entry");
+    assert_eq!(
+        e.get("hint_key")
+            .and_then(|k| k.get("key"))
+            .and_then(Value::as_str),
+        Some("entry")
+    );
+}
+
+/// KILL-CRITERION (gale's, verbatim): a hints file keyed on the NAME-SECTION
+/// name of the internal function converts its `loop` decline into
+/// `hint-verified`. Before #1063 this hint was IGNORED (the key never matched
+/// anything, with a false "not in this module" warning).
+#[test]
+fn hint_keyed_on_name_section_name_converts_loop_decline() {
+    let hints = format!(
+        r#"{{"schema":"synth-wcet-hints-v1","functions":{{"{RAW_NAME}":{{"loop_bounds":[8]}}}}}}"#
+    );
+    let (report, stderr, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(&hints));
+    assert_loop(&report, RAW_NAME, 0, 8, "hint-verified");
+    assert_trip_floor(&report, RAW_NAME);
+    // The caller's callee-unbounded cascade converts too.
+    assert_eq!(
+        func(&report, "entry").get("status").and_then(Value::as_str),
+        Some("bounded")
+    );
+    assert!(
+        !stderr.contains("not consumed"),
+        "a matching hint must not warn: {stderr}"
+    );
+}
+
+/// The STABLE stripped key is accepted symmetrically, and the emitted trip is
+/// synth's DERIVED count (8), NEVER the raw hint (100) — the soundness
+/// invariant pinned in claims.yaml: hints gate consumption, they are not
+/// trusted into the bound.
+#[test]
+fn stable_key_accepted_and_emitted_trip_is_derived_never_raw_hint() {
+    let hints = format!(
+        r#"{{"schema":"synth-wcet-hints-v1","functions":{{"{STABLE_KEY}":{{"loop_bounds":[100]}}}}}}"#
+    );
+    let (report, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(&hints));
+    let f = func(&report, RAW_NAME);
+    let l = &f.get("loops").and_then(Value::as_array).unwrap()[0];
+    assert_eq!(
+        l.get("trip_count").and_then(Value::as_u64),
+        Some(8),
+        "emitted trip must be synth's DERIVED ceiling, never the raw hint: {l}"
+    );
+    assert_eq!(l.get("hint").and_then(Value::as_u64), Some(100));
+}
+
+/// A WRONG hint (below the derived trip) via the name-section key is REJECTED
+/// with the same machine reason as before — the new key path changes WHO can be
+/// addressed, never what is trusted.
+#[test]
+fn wrong_hint_via_name_section_key_still_rejected_below_derived() {
+    let hints = format!(
+        r#"{{"schema":"synth-wcet-hints-v1","functions":{{"{RAW_NAME}":{{"loop_bounds":[3]}}}}}}"#
+    );
+    let (report, _, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(&hints));
+    assert_declined(&report, RAW_NAME, "loop");
+    let rej = &func(&report, RAW_NAME)
+        .get("hint_rejections")
+        .and_then(Value::as_array)
+        .unwrap()[0];
+    assert_eq!(
+        rej.get("reason").and_then(Value::as_str),
+        Some("hint-below-derived-trip")
+    );
+}
+
+/// An INDEX key for a function that carries a real name is REFUSED with a
+/// NAMED reason that states the key to use — an index silently retargets when
+/// the index space shifts, which is worse than no key. The function stays
+/// declined (the hint is never consumed), and the refusal is a warning, not a
+/// silent ignore.
+#[test]
+fn index_key_for_named_function_is_refused_with_named_reason() {
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"func_0":{"loop_bounds":[8]}}}"#;
+    let (report, stderr, _) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(hints));
+    assert_declined(&report, RAW_NAME, "loop");
+    assert!(
+        stderr.contains("wcet-hint-key-index-refused"),
+        "the refusal must be NAMED on stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(STABLE_KEY),
+        "the refusal must state the key to use instead: {stderr}"
+    );
+}
+
+/// An unknown key still warns loudly (nothing is silently ignored), and a
+/// NAMELESS internal function keeps `func_<index>` — flagged build-local, and
+/// still addressable by it (the strictly-last-resort contract).
+#[test]
+fn nameless_internal_keeps_func_index_build_local_and_unknown_key_warns() {
+    const NAMELESS_WAT: &str = r#"
+        (module
+          (func (result i32) i32.const 7)
+          (func (export "entry") (result i32) call 0))
+    "#;
+    let hints = r#"{"schema":"synth-wcet-hints-v1","functions":{"nosuch":{"loop_bounds":[8]}}}"#;
+    let (report, stderr, _) = compile_wcet_capture(NAMELESS_WAT, "cortex-m4", Some(hints));
+    let f = func(&report, "func_0");
+    let hk = f.get("hint_key").expect("func_0 must carry the contract");
+    assert_eq!(hk.get("key").and_then(Value::as_str), Some("func_0"));
+    assert_eq!(
+        hk.get("build_local").and_then(Value::as_bool),
+        Some(true),
+        "an index is not an identity — it must be flagged build-local: {hk}"
+    );
+    assert!(
+        stderr.contains("nosuch") && stderr.contains("not in this module"),
+        "an unknown key must warn loudly: {stderr}"
+    );
+}
+
+/// The hints file and the identity/key machinery are SIDECAR-ONLY: the emitted
+/// ELF must be byte-identical with and without a consumed hint (frozen-safe —
+/// `.text` never moves for a metadata feature).
+#[test]
+fn name_keys_and_hints_are_byte_invisible_in_the_elf() {
+    let hints = format!(
+        r#"{{"schema":"synth-wcet-hints-v1","functions":{{"{RAW_NAME}":{{"loop_bounds":[8]}}}}}}"#
+    );
+    let (_, _, elf_unhinted) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", None);
+    let (_, _, elf_hinted) = compile_wcet_capture(NAMED_INTERNAL_WAT, "cortex-m4", Some(&hints));
+    assert_eq!(
+        elf_unhinted, elf_hinted,
+        "--wcet-hints / #1063 identities must never move a byte of the object"
+    );
 }
