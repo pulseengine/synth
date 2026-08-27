@@ -332,8 +332,8 @@ pub struct WcetRecursionBound {
 
 /// (#1063) The durable per-function hint-key contract, emitted in the sidecar so
 /// a consumer joins against the key `--wcet-hints` will actually accept instead
-/// of re-deriving it from mangled symbols (a hand-written mirror of a shipped
-/// decision — the class this project removes, not adds).
+/// of re-deriving it from mangled symbols (a by-hand copy of a shipped
+/// decision — the drift class this project removes, not adds).
 ///
 /// `key` is chosen by [`assign_hint_keys`], in priority order: the export name;
 /// else the `name`-section name with its non-content-derived mangling components
@@ -743,7 +743,7 @@ pub fn resolve_hint_keys(
                 // function whose shape nobody looked at.
                 if let Some(a) = assignments
                     .iter()
-                    .find(|a| a.compile_name == k && !a.accepted_keys.iter().any(|ak| *ak == k))
+                    .find(|a| a.compile_name == k && !a.accepted_keys.contains(&k))
                 {
                     diagnostics.push(format!(
                         "--wcet-hints key '{k}' is an INDEX key, but that function carries \
