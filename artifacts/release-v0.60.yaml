@@ -89,7 +89,24 @@ artifacts:
       verification-track: differential
       issue: "#1021"
       # The single declaration site the delivered gate hangs off (#1061).
-      done-when: "contains:crates/synth-backend/src/arm_encoder.rs:expansion_scratch_contract"
+        # The signature pins the GATE and its NON-VACUITY FLOOR, not the
+      # declaration site. `contains:arm_encoder.rs:expansion_scratch_contract`
+      # certified that a function exists; this artifact's claim is that every
+      # rule-emitted expansion is EXECUTED with non-contract registers
+      # canaried. Deleting the gate — or quietly dropping its emulation floor
+      # to zero, the vacuity shape #910 exists for — now turns this red.
+      done-when: "contains:scripts/repro/expansion_canary_gate_1021.py:emulations >= 1200"
+      # SHIPPED IN v0.59.0, not here (#1085). The canary gate merged as #1061
+      # at 08:50 on 2026-08-26; v0.59.0 was tagged at 15:19 the same day, so
+      # the gate is an ANCESTOR of that tag and v0.59.0's release notes
+      # already credit it ("VCR-TIER-001 increment 1 — the pseudo-op expansion
+      # canary gate"). The v0.60 plan was written at 18:56, AFTER the tag,
+      # and scoped as future work something already released. v0.60 carries
+      # this artifact's traceability closure, NOT the capability; the release
+      # notes must not claim it. Every gate passed throughout, because each
+      # asks whether the evidence EXISTS and none asks which release it
+      # arrived in — that is the rule proposed as R7 in #1085.
+      shipped-in: "v0.59.0"
 
   - id: RQ-60-CFOBLIG
     type: system-req
@@ -197,9 +214,34 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1017"
-      # #1071's delivered surface: the driver-supplied SHN_UNDEF externals
-      # allowlist on the aarch64 relocatable ELF builder.
-      done-when: "contains:crates/synth-backend-aarch64/src/elf.rs:undefined_externals"
+      # INCREMENT 1 of VCR-REACH-002, and the DoD is split accordingly.
+      #
+      # The previous signature was `contains:.../elf.rs:undefined_externals` —
+      # a CODE-EXISTENCE check, which is precisely what this artifact's own
+      # description says is NOT the deliverable ("a change that adds a code
+      # path without moving the census has not delivered"). A predicate that
+      # cannot fail on the failure the artifact defines for itself is not a
+      # predicate; see #1085 (R9).
+      #
+      # INCREMENT 2, named rather than dropped: re-run the 805-module
+      # AArch64 acceptance census against the 13/805 (1.6%) baseline, with
+      # ARM 531/805 and RV32 113/805 as controls. The corpus lives with the
+      # downstream consumer; the re-run is requested at #1017.
+      done-when: "manual: increment 1 — aarch64 import dispatch lowers, links and EXECUTES; increment 2 — the 805-module acceptance census (#1017) — is NOT claimed here"
+      verified-by: >-
+        VERIFIED: imports lower through the same bl + R_AARCH64_CALL26 path as
+        local calls and a funcref slot holding an import emits a b <field>
+        JUMP26 trampoline; pyelftools confirms host_add / ext_inc are
+        STB_GLOBAL STT_FUNC SHN_UNDEF; ld.lld links both objects against
+        assembled definitions and unicorn EXECUTES the linked images
+        (run(37) = 42 through the import; table dispatch slot0 41 -> 42,
+        slot1 21 -> 42); import-free modules byte-identical; a symbol neither
+        placed nor listed keeps the #1013 clean refusal.
+        NOT VERIFIED, and deliberately not claimed: the AArch64 ACCEPTANCE
+        RATE is UNMEASURED since #1071. The 805-module census has not been
+        re-run (the corpus is not synth-local), so no reach improvement is
+        asserted by this artifact or by the v0.60 release notes. Requested
+        at #1017; that measurement is increment 2, not this one.
 
   - id: RQ-60-RACOST
     type: system-req
