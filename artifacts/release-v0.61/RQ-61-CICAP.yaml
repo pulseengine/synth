@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-61-CICAP
+    type: system-req
+    title: "Six of the nine required contexts run on ubuntu-latest while seven rust-cpu runners idle — the release loop's binding constraint"
+    description: >
+      #1062, isolated by a natural experiment during the v0.60 cut rather than
+      argued from the job census.
+
+      Four PRs opened within ~30 minutes each reached EXACTLY 3/9 required
+      contexts within minutes and then stalled for hours. The three that
+      completed were the same three every time — Format, Version Pin Sweep,
+      Rivet Validation — and those are precisely the three that run
+      SELF-HOSTED. The six that stalled are the six on `ubuntu-latest`. Same
+      commits, same moment, same queue; the split is not explained by job cost
+      (Format is not cheaper than Clippy) but entirely by which pool the job
+      asks for.
+
+        runs-on census:  56 ubuntu-latest · 4 rust-cpu · 2 light · 1 macos · 1 matrix
+        runners:         12 online, 4 busy (OTHER repos), 8 IDLE (7 rust-cpu, 1 light)
+
+      MOVE CAREFULLY, AND THIS IS THE WHOLE RISK: a REQUIRED context naming a
+      label no online runner satisfies does not fail — it never runs, and a
+      non-running required check DEADLOCKS EVERY MERGE IN THE REPO. So:
+      retarget a NON-required job first and watch one full cycle; then move
+      required jobs ONE AT A TIME, each with its own green cycle before the
+      next. `Rivet Validation` already runs on `rust-cpu`, so that pool is
+      proven for cargo-shaped work.
+
+      TWO THAT NEED VERIFICATION, NOT A RELABEL: `Bazel Build & Proofs` pulls
+      the Rocq toolchain through Nix, and `Z3 Verification` needs Z3 headers.
+      Neither is proven on `rust-cpu`; moving them blind converts a required
+      gate into an ENVIRONMENTAL failure, which reads exactly like a
+      miscompile — the worst possible signal from this gate.
+
+      QUEUE RESIDUE FOUND WHILE DIAGNOSING, worth a sweep step: superseded
+      runs and runs on already-merged branches sit queued consuming slots, and
+      one run has been queued EIGHT DAYS and refuses cancellation
+      (HTTP 409 "not been queued yet"). Cancelling is safe only with the
+      after-check that NO required context on a live PR was left `cancelled` —
+      neither pass nor fail, and permanently blocking.
+    status: proposed
+    release: v0.61
+    tags: [ci, infrastructure, capacity]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1062"
+      done-when: "manual: at least the plain-cargo required jobs run on rust-cpu, each moved in its own PR with a green cycle; Bazel and Z3 only after their toolchains are proven on that pool"

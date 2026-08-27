@@ -624,7 +624,12 @@ jobs:
           # 472 -> 473: #1071 added SWVER-025 without raising the floor;
           # tightened here rather than left slack (a floor only fails BELOW
           # itself, so 473-measured vs 472-pinned would have passed quietly).
-          ARTIFACT_FLOOR=473
+          # 473 -> 479: v0.61's six artifacts, the FIRST release to use the
+          # per-requirement directory layout (#1059). Verified empirically on
+          # the pinned rivet 0.23.0 before bumping — the count moved by exactly
+          # six and all six ids are visible in `rivet list`, so the directory
+          # is really being recursed rather than silently skipped (#1064).
+          ARTIFACT_FLOOR=479
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then

@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-61-VCLOSURE
+    type: system-req
+    title: "The traceability completeness gate has never fired: rivet coverage prints 40.1% and exits 0"
+    description: >
+      #1091. `release-execution` names the traceability completeness gate as
+      THE release blocker: every `implemented` artifact must carry a `verifies`
+      link. Measured on main with the CI-pinned rivet 0.23.0:
+
+        release-v0.56   8/8  artifacts with NO linked sys-verification
+        release-v0.57  16/16
+        release-v0.58  11/11
+        release-v0.59  17/17
+        release-v0.60   8/8
+                       -----
+                       60/60   five consecutive releases, 100%
+
+        sys2-has-verification   system-req   61/152   40.1%
+
+      `rivet coverage` DOES run inside the required Rivet Validation job. It
+      exits 0 at 40.1%: it PRINTS, it does not ASSERT. Third instance of "a
+      validator reporting success about work it never did" (#1012, #1064), and
+      the first where the un-run work is the gate the methodology calls the
+      release blocker.
+
+      WHAT IS NOT TRUE: that the work is unverified. Every artifact carries
+      unicorn differentials, ld.lld-linked execution, Rocq proofs, mutation-
+      killed gates. What is missing is the TYPED LINK that makes it queryable —
+      "invisible to the trace graph", not "unverified". 61 of 152 non-release
+      system-reqs ARE covered, so the pattern works and release artifacts
+      simply never adopted it.
+
+      INCREMENT 1: make the coverage step ASSERT — a floor on
+      `sys2-has-verification`, pinned like ARTIFACT_FLOOR and raised in the PR
+      that improves it. Without this any backfill silently rots again.
+      INCREMENT 2: backfill v0.61's own artifacts as the pilot (each already
+      names its evidence, so the sys-verification artifact is a transcription),
+      and MEASURE the per-artifact cost before committing to the other 52.
+      Then decide the historical 52 deliberately — backfill, or state in the
+      methodology that shipped release artifacts are exempt and why. Either is
+      defensible; a documented gate that has never once fired is not.
+    status: proposed
+    release: v0.61
+    tags: [traceability, rivet, gates, methodology]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1091"
+      done-when: "manual: the coverage step FAILS below a pinned floor (red-first demonstrated by lowering the floor's input), and v0.61's own artifacts carry verifies links"

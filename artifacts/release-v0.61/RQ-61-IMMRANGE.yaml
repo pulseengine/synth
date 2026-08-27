@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-61-IMMRANGE
+    type: system-req
+    title: "Six debug_assert-guarded immediate ranges are compiled OUT in release — an out-of-range immediate mis-encodes silently"
+    description: >
+      #1072, swept as a CLASS during v0.60 rather than fixed as an instance.
+      `debug_assert!(imm12 < 0x1000, "sub imm12 out of range")` in the aarch64
+      encoder is compiled out in release, so a frame >= 4096 bytes mis-encodes
+      SP silently. Five sibling sites share the shape, four of them ARM
+      "the selector enforces X" claims — the form #946 already found FALSE once.
+
+      THE REASON THIS SURFACED IN v0.60 IS THE TRANSFERABLE PART: increasing
+      REACH converts LATENT encoder defects into REACHABLE ones. The aarch64
+      import-dispatch work (#1071) let modules through that had previously
+      declined earlier, and the census immediately exposed a defect that had
+      been unreachable only because nothing got that far. Every reach increment
+      should expect to convert some latent class into a live one, and should
+      budget for it rather than treat it as a surprise.
+
+      A `debug_assert` documenting an invariant the encoder RELIES ON is not a
+      guard; it is a comment that costs nothing in release. The fix is an
+      Ok-or-Err encode path (the #180/#185 precedent: the Thumb encoder returns
+      Err rather than corrupting high registers), NOT a release-mode assert —
+      a panic on valid input is the defect class RQ-61-MVPANIC exists to remove.
+    status: proposed
+    release: v0.61
+    tags: [encoder, aarch64, arm, soundness, latent]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1072"
+      done-when: "manual: each of the 6 sites returns Err in RELEASE builds, red-first demonstrated with a >=4096-byte frame that mis-encodes today"
