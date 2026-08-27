@@ -256,6 +256,20 @@ jobs:
       # claims.yaml, so this step is what keeps those numbers honest.
       - name: Model-coverage artifact freshness + uncovered-complement report (867)
         run: python3 scripts/model_coverage_audit.py --check
+      # RQ-60-CFOBLIG (#1057): the WASM-op -> correctness-theorem manifest
+      # (artifacts/proof-inventory.json) that consumers read INSTEAD of
+      # guessing theorem names from rule kinds (the brif_correct fused-name
+      # class: a CamelCase->snake_case guess misses 29 of 138 constructors).
+      # Re-derives the manifest from coq/Synth/**/*.v and fails if the
+      # committed artifact is stale or hand-edited — a renamed/added/removed
+      # theorem without a regenerated manifest is RED here, not discovered
+      # downstream. Its Qed re-count is additionally pinned EQUAL to the
+      # ledger's independent rocq_qed derivation
+      # (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, fields-equal), so the two
+      # readers of the proof tree cannot silently disagree. Lives in the
+      # already-REQUIRED claim-check job for the standing reason above.
+      - name: Proof-inventory manifest freshness (RQ-60-CFOBLIG, #1057)
+        run: python3 scripts/proof_inventory.py --check
       # #890: the ORACLE-WIRING gate. scripts/repro/*.py are the execution
       # oracles; 69 of 150 were referenced by no workflow at all and nothing
       # distinguished "manual by design" from "forgotten". Every script now
