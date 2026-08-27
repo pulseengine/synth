@@ -3719,12 +3719,19 @@ fn compile_all_exports(
         synth_core::wcet::assign_hint_keys(&identities)
     };
     let mut wcet_hints_resolved: Vec<(String, String)> = Vec::new();
+    // #1063 increment 2: keep the structured diagnostics — they must reach the
+    // sidecar (the machine), not only stderr (the human). Presence of a hints
+    // file is recorded separately so an all-refused file (diagnostics consumed
+    // none) is still distinguishable from no file at all.
+    let mut wcet_hint_diagnostics: Vec<synth_core::wcet::WcetHintKeyDiagnostic> = Vec::new();
+    let wcet_hints_supplied = wcet_hints.is_some();
     let wcet_hints = wcet_hints.map(|h| {
         let res = synth_core::wcet::resolve_hint_keys(h, &wcet_key_assignments);
         for d in &res.diagnostics {
             eprintln!("warning: {d}");
         }
         wcet_hints_resolved = res.resolved;
+        wcet_hint_diagnostics = res.diagnostics;
         res.hints
     });
 
@@ -4314,17 +4321,56 @@ fn compile_all_exports(
     // stay LOUD declines (composition only bounds what is provably composable).
     if let Some(wr) = wcet_report.as_mut() {
         wr.functions = synth_backend::wcet_compose::compose(&wcet_intermediates, &wcet_label_index);
+        let by_compile: std::collections::HashMap<&str, &synth_core::wcet::WcetKeyAssignment> =
+            wcet_key_assignments
+                .iter()
+                .map(|a| (a.compile_name.as_str(), a))
+                .collect();
+        let display_of = |compile: &str| -> String {
+            by_compile
+                .get(compile)
+                .map(|a| a.display_name.clone())
+                .unwrap_or_else(|| compile.to_string())
+        };
         // #1063: a hint that RESOLVED to a function which was then skipped by
         // the backend never reached a verifier — say so rather than let it
         // vanish (composition works in compile names; check before renaming).
+        // #1063 increment 2: the record ALSO goes into the sidecar diagnostics
+        // — stderr alone is invisible to the machine consumer.
         for (orig, compile) in &wcet_hints_resolved {
             if !wr.functions.iter().any(|f| f.name() == compile) {
-                eprintln!(
-                    "warning: --wcet-hints key '{orig}' resolved to a function that was \
+                let detail = format!(
+                    "--wcet-hints key '{orig}' resolved to a function that was \
                      skipped (not in the output object) — the hint was not consumed \
                      (wcet-hint-key-skipped-function, #1063)"
                 );
+                eprintln!("warning: {detail}");
+                wcet_hint_diagnostics.push(synth_core::wcet::WcetHintKeyDiagnostic {
+                    key: orig.clone(),
+                    reason: synth_core::wcet::WcetHintKeyReason::SkippedFunction,
+                    function: Some(display_of(compile)),
+                    detail,
+                });
             }
+        }
+        // #1063 increment 2 (RQ-60-WCETKEY): record the hints outcome in the
+        // sidecar whenever a hints file was passed — presence of the object is
+        // the "hints were supplied" marker, so a file whose entries were ALL
+        // refused at key resolution (diagnostics non-empty, resolved empty) is
+        // machine-distinguishable from no hints file at all (object absent)
+        // and from consumed hints (resolved non-empty). Exit status is 0 in
+        // all three states; the sidecar is the only machine channel.
+        if wcet_hints_supplied {
+            wr.hints = Some(synth_core::wcet::WcetHintsOutcome {
+                resolved: wcet_hints_resolved
+                    .iter()
+                    .map(|(k, compile)| synth_core::wcet::WcetResolvedHint {
+                        key: k.clone(),
+                        function: display_of(compile),
+                    })
+                    .collect(),
+                diagnostics: std::mem::take(&mut wcet_hint_diagnostics),
+            });
         }
         // #1063: rewrite every entry to its durable identity — display name
         // (export name, else the raw `name`-section name, else `func_<idx>`)
@@ -4332,11 +4378,6 @@ fn compile_all_exports(
         // matches on, `build_local` = scry#137's churns-per-build flag) — so a
         // consumer joins against what synth accepts instead of re-deriving it
         // from mangled symbols.
-        let by_compile: std::collections::HashMap<&str, &synth_core::wcet::WcetKeyAssignment> =
-            wcet_key_assignments
-                .iter()
-                .map(|a| (a.compile_name.as_str(), a))
-                .collect();
         for f in wr.functions.iter_mut() {
             if let Some(a) = by_compile.get(f.name()) {
                 f.set_identity(&a.display_name, &a.hint_key);

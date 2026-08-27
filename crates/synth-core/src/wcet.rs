@@ -683,10 +683,98 @@ pub struct WcetHintResolution {
     pub hints: WcetHints,
     /// `(original key, compile_name)` for every entry that resolved.
     pub resolved: Vec<(String, String)>,
-    /// One named, human-readable reason per entry that was NOT consumed — the
-    /// driver prints each. An ignored-because-unmatched hint and a rejected
-    /// hint look identical to a `$?` check; the named reason is the difference.
-    pub diagnostics: Vec<String>,
+    /// One STRUCTURED record per entry that was NOT consumed — the driver
+    /// prints each (`Display` = the human detail) AND carries them into the
+    /// sidecar's [`WcetHintsOutcome`]. An ignored-because-unmatched hint and a
+    /// rejected hint look identical to a `$?` check; the named reason is the
+    /// difference (#1063 increment 2: the reason must reach the MACHINE, not
+    /// only stderr).
+    pub diagnostics: Vec<WcetHintKeyDiagnostic>,
+}
+
+/// (#1063 increment 2) The machine reason tag for a `--wcet-hints` entry that
+/// never reached a per-loop/recursion verifier. Serialized as the SAME tag the
+/// stderr warning names, so the human and the machine read one vocabulary.
+/// (Distinct from [`WcetHintRejection`], which records a hint that DID reach a
+/// function's verifier and was rejected on the merits.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WcetHintKeyReason {
+    /// Two hints-file entries addressed the same function; the later one (in
+    /// key order) was not consumed.
+    #[serde(rename = "wcet-hint-key-duplicate")]
+    Duplicate,
+    /// The key is accepted by more than one function in this module.
+    #[serde(rename = "wcet-hint-key-ambiguous")]
+    Ambiguous,
+    /// An index key (`func_<idx>`) for a function that carries a real name —
+    /// refused by design; an index is not an identity (#1063).
+    #[serde(rename = "wcet-hint-key-index-refused")]
+    IndexRefused,
+    /// The key names no function in this module.
+    #[serde(rename = "wcet-hint-key-unknown")]
+    Unknown,
+    /// The key resolved, but the function was skipped by the backend and is
+    /// not in the output object, so the hint never reached a verifier.
+    #[serde(rename = "wcet-hint-key-skipped-function")]
+    SkippedFunction,
+}
+
+/// (#1063 increment 2) One `--wcet-hints` entry that was NOT consumed, as a
+/// structured sidecar record. `function` is present exactly when the key
+/// resolves to a single known function (duplicate, index-refused,
+/// skipped-function) and absent when it does not (ambiguous, unknown) — an
+/// unresolvable diagnostic is never forced into a per-function slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetHintKeyDiagnostic {
+    /// The original hints-file key, verbatim.
+    pub key: String,
+    /// The machine reason (the same tag the stderr warning names).
+    pub reason: WcetHintKeyReason,
+    /// The function the key resolved to (sidecar display name), where
+    /// resolvable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// The human-readable message (identical to the stderr warning text).
+    pub detail: String,
+}
+
+impl std::fmt::Display for WcetHintKeyDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+/// (#1063 increment 2) A hints-file key that resolved to a function, recorded
+/// in the sidecar so a consumer can verify WHICH function each hint landed on
+/// without re-deriving synth's key assignment. A resolved key was consumed by
+/// that function's verifier unless a [`WcetHintKeyReason::SkippedFunction`]
+/// diagnostic names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetResolvedHint {
+    /// The original hints-file key, verbatim.
+    pub key: String,
+    /// The function it resolved to (sidecar display name).
+    pub function: String,
+}
+
+/// (#1063 increment 2) The top-level `hints` object of the sidecar: the
+/// machine-readable outcome of `--wcet-hints` resolution. Present in the
+/// sidecar IFF a hints file was passed, so a consumer can tell apart
+/// (a) no hints file (object absent), (b) hints consumed (`resolved`
+/// non-empty), and (c) hints supplied but ALL refused before reaching any
+/// function (`resolved` empty, `diagnostics` non-empty) — three states that
+/// were previously identical in the JSON (and to `$?`: the compile exits 0 in
+/// all three). Additive to `synth-wcet-v1`: absent for every compile without
+/// `--wcet-hints`, so existing sidecars are byte-identical and a consumer that
+/// ignores unknown fields is unaffected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WcetHintsOutcome {
+    /// One entry per hints-file key that resolved to a function.
+    pub resolved: Vec<WcetResolvedHint>,
+    /// One entry per hints-file key that was NOT consumed (never reached a
+    /// verifier). Merits-level rejections stay per-function
+    /// (`hint_rejections`); this array is only the keys that never got there.
+    pub diagnostics: Vec<WcetHintKeyDiagnostic>,
 }
 
 /// (#1063) Resolve every `--wcet-hints` entry against the module's accepted
@@ -714,27 +802,37 @@ pub fn resolve_hint_keys(
         functions: std::collections::BTreeMap::new(),
     };
     let mut resolved: Vec<(String, String)> = Vec::new();
-    let mut diagnostics: Vec<String> = Vec::new();
+    let mut diagnostics: Vec<WcetHintKeyDiagnostic> = Vec::new();
     for (k, entry) in hints.functions {
         match by_key.get(k.as_str()).map(Vec::as_slice) {
             Some([i]) => {
                 let a = &assignments[*i];
                 if out.functions.contains_key(&a.compile_name) {
-                    diagnostics.push(format!(
-                        "--wcet-hints key '{k}' duplicates an earlier entry for function \
-                         '{}' — this entry was not consumed (wcet-hint-key-duplicate, #1063)",
-                        a.display_name
-                    ));
+                    diagnostics.push(WcetHintKeyDiagnostic {
+                        reason: WcetHintKeyReason::Duplicate,
+                        function: Some(a.display_name.clone()),
+                        detail: format!(
+                            "--wcet-hints key '{k}' duplicates an earlier entry for function \
+                             '{}' — this entry was not consumed (wcet-hint-key-duplicate, #1063)",
+                            a.display_name
+                        ),
+                        key: k,
+                    });
                 } else {
                     out.functions.insert(a.compile_name.clone(), entry);
                     resolved.push((k, a.compile_name.clone()));
                 }
             }
-            Some(many) => diagnostics.push(format!(
-                "--wcet-hints key '{k}' is AMBIGUOUS in this module ({} functions accept \
-                 it) — the hint was not consumed (wcet-hint-key-ambiguous, #1063)",
-                many.len()
-            )),
+            Some(many) => diagnostics.push(WcetHintKeyDiagnostic {
+                reason: WcetHintKeyReason::Ambiguous,
+                function: None,
+                detail: format!(
+                    "--wcet-hints key '{k}' is AMBIGUOUS in this module ({} functions accept \
+                     it) — the hint was not consumed (wcet-hint-key-ambiguous, #1063)",
+                    many.len()
+                ),
+                key: k,
+            }),
             None => {
                 // An index key for a function that carries a real name is
                 // REFUSED by design, and the diagnostic names the key to use:
@@ -745,18 +843,28 @@ pub fn resolve_hint_keys(
                     .iter()
                     .find(|a| a.compile_name == k && !a.accepted_keys.contains(&k))
                 {
-                    diagnostics.push(format!(
-                        "--wcet-hints key '{k}' is an INDEX key, but that function carries \
-                         the name '{}' — an index is not an identity (it silently retargets \
-                         when the index space shifts), so it is refused; key the hint on \
-                         '{}' instead (wcet-hint-key-index-refused, #1063)",
-                        a.display_name, a.hint_key.key
-                    ));
+                    diagnostics.push(WcetHintKeyDiagnostic {
+                        reason: WcetHintKeyReason::IndexRefused,
+                        function: Some(a.display_name.clone()),
+                        detail: format!(
+                            "--wcet-hints key '{k}' is an INDEX key, but that function carries \
+                             the name '{}' — an index is not an identity (it silently retargets \
+                             when the index space shifts), so it is refused; key the hint on \
+                             '{}' instead (wcet-hint-key-index-refused, #1063)",
+                            a.display_name, a.hint_key.key
+                        ),
+                        key: k,
+                    });
                 } else {
-                    diagnostics.push(format!(
-                        "--wcet-hints names function '{k}' which is not in this module — \
-                         the hint was not consumed (wcet-hint-key-unknown)"
-                    ));
+                    diagnostics.push(WcetHintKeyDiagnostic {
+                        reason: WcetHintKeyReason::Unknown,
+                        function: None,
+                        detail: format!(
+                            "--wcet-hints names function '{k}' which is not in this module — \
+                             the hint was not consumed (wcet-hint-key-unknown)"
+                        ),
+                        key: k,
+                    });
                 }
             }
         }
@@ -935,6 +1043,13 @@ pub struct WcetReport {
     pub wait_states: u32,
     /// Human statement of the memory precondition the bound holds under.
     pub memory_assumption: String,
+    /// (#1063 increment 2) The `--wcet-hints` resolution outcome. Present IFF
+    /// a hints file was passed — its presence is the "hints were supplied"
+    /// marker, so no-hints and all-hints-refused compiles are machine-
+    /// distinguishable even when `diagnostics` is empty. Additive; absent for
+    /// every compile without `--wcet-hints` (existing sidecars byte-identical).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<WcetHintsOutcome>,
     /// Per-function bound or decline. Complete: one entry per compiled function.
     pub functions: Vec<WcetFunction>,
 }
@@ -952,6 +1067,7 @@ impl WcetReport {
                 "zero-wait-state instruction memory (flash accelerator / I-cache hit); \
                  in-order single-issue pipeline; documented per-instruction worst-case cycles"
                     .to_string(),
+            hints: None,
             functions: Vec::new(),
         }
     }
@@ -1139,18 +1255,75 @@ mod tests {
         assert!(
             res.diagnostics
                 .iter()
-                .any(|d| d.contains("wcet-hint-key-duplicate"))
+                .any(|d| d.reason == WcetHintKeyReason::Duplicate
+                    && d.function.as_deref() == Some("_RNvCs942N1ctoMYm_4fixt12inner_eqexit"))
+        );
+        // The index-refused diagnostic RESOLVES to a known function and its
+        // detail names the key to use instead (#1063 increment 2: structured,
+        // sidecar-ready — not only a stderr string).
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.reason == WcetHintKeyReason::IndexRefused
+                    && d.key == "func_0"
+                    && d.function.as_deref() == Some("_RNvCs942N1ctoMYm_4fixt12inner_eqexit")
+                    && d.detail.contains("_RNvC4fixt12inner_eqexit"))
         );
         assert!(
             res.diagnostics
                 .iter()
-                .any(|d| d.contains("wcet-hint-key-index-refused")
-                    && d.contains("_RNvC4fixt12inner_eqexit"))
+                .any(|d| d.reason == WcetHintKeyReason::Unknown
+                    && d.key == "nosuch"
+                    && d.function.is_none()
+                    && d.detail.contains("not in this module"))
         );
-        assert!(
-            res.diagnostics
-                .iter()
-                .any(|d| d.contains("not in this module"))
-        );
+    }
+
+    /// (#1063 increment 2) The machine reason tags serialize as EXACTLY the
+    /// tags the stderr warnings name — one vocabulary for human and machine —
+    /// and the sidecar `hints` object roundtrips, with `function` absent (not
+    /// null) for an unresolvable diagnostic.
+    #[test]
+    fn hint_key_diagnostics_serialize_with_stderr_tags() {
+        for (r, tag) in [
+            (WcetHintKeyReason::Duplicate, "wcet-hint-key-duplicate"),
+            (WcetHintKeyReason::Ambiguous, "wcet-hint-key-ambiguous"),
+            (
+                WcetHintKeyReason::IndexRefused,
+                "wcet-hint-key-index-refused",
+            ),
+            (WcetHintKeyReason::Unknown, "wcet-hint-key-unknown"),
+            (
+                WcetHintKeyReason::SkippedFunction,
+                "wcet-hint-key-skipped-function",
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_value(r).unwrap(),
+                serde_json::Value::String(tag.into())
+            );
+        }
+        let mut rep = WcetReport::new("m", "cortex-m4");
+        // No hints file => the `hints` key is ABSENT (its presence is the
+        // "hints were supplied" marker).
+        assert!(!rep.to_json().unwrap().contains("\"hints\""));
+        rep.hints = Some(WcetHintsOutcome {
+            resolved: vec![],
+            diagnostics: vec![WcetHintKeyDiagnostic {
+                key: "func_0".into(),
+                reason: WcetHintKeyReason::IndexRefused,
+                function: Some("real_name".into()),
+                detail: "refused".into(),
+            }],
+        });
+        let json = rep.to_json().unwrap();
+        let back: WcetReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(rep, back);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let d = &v["hints"]["diagnostics"][0];
+        assert_eq!(d["reason"], "wcet-hint-key-index-refused");
+        // An unresolvable diagnostic omits `function` entirely.
+        rep.hints.as_mut().unwrap().diagnostics[0].function = None;
+        assert!(!rep.to_json().unwrap().contains("\"function\""));
     }
 }
