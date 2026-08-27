@@ -345,7 +345,28 @@ artifacts:
       check in CI (~8 lines), and a STRUCTURAL assertion that every requirement
       carries its own `links:`/`fields:` with a non-empty `issue:`. The second is
       the more valuable — it catches the defect that would have shipped.
-    status: proposed
+
+      DECIDED (v0.60): BOTH, because neither alone suffices. The split (from
+      v0.61: `artifacts/release-v0.61/` with one file per requirement and a
+      comments-only `_release.yaml`; verified to load on BOTH the required
+      gate's pinned rivet 0.23.0 and 0.32.0, ids resolvable via
+      `validate --explain`) removes the conflict surface, but does not detect
+      in-file corruption from any other cause and cannot retroactively protect
+      the five flat files that remain in the tree forever. The structural half
+      landed in `scripts/status_evidence_check.py` (which already parsed
+      release files duplicate-key-strict): R5 — every release artifact carries
+      its own non-empty `links:` (all versions; the #1059 splice shape), and a
+      non-empty `fields.issue` from v0.60 on; R6 — a release-artifact id
+      declared twice is red; R0 extended per file to the directory layout, with
+      `_release.yaml` refused unless comments-only (the #1064 silent-skip
+      shape). Both #1059 defects are replayed as committed fixtures in
+      `scripts/test_status_evidence_check.py` on every CI run; the five new
+      behaviours are mutation-verified (each disable kills >= 1 test). Honest
+      residual: a splice that steals only `fields:` is caught >= v0.60 only
+      (R1/issue), and a links SWAP between two artifacts that empties neither
+      is invisible to all of these — only rivet's per-type traceability rules
+      or a human diff would see it.
+    status: implemented
     release: v0.60
     tags: [infrastructure, rivet, parallel-lanes, typed-oracle]
     links:
@@ -356,12 +377,12 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1059"
-      # The fix SHAPE is deliberately undecided (per-artifact files vs the
-      # strict-loader mitigation), so pre-naming one shape's signature would
-      # bias the decision. NOTE: scripts/status_evidence_check.py already
-      # parses release files duplicate-key-strict — the smaller mitigation
-      # exists for THIS surface; the artifact stays open for the decision.
-      done-when: "manual: shape undecided — either artifacts/release-v0.61/ splits into per-requirement files or the duplicate-key-strict check generalizes; decide, then pin the chosen signature"
+      # Decided: the split ships as the v0.61 layout convention file (the
+      # signature below) AND the structural R5/R6/R0 rules in
+      # scripts/status_evidence_check.py, whose potency is re-proven per CI
+      # run by the #1059 replay fixtures + mutation kills in
+      # scripts/test_status_evidence_check.py.
+      done-when: "contains:artifacts/release-v0.61/_release.yaml:per-requirement artifact layout"
 
   - id: RQ-60-WCETKEY
     type: system-req
