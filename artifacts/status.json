@@ -19,6 +19,7 @@
   "kani_harnesses": 18,
   "mirror_marker_files": 60,
   "mirror_obligation_files": 24,
+  "proof_inventory_rocq_qed": "630",
   "rocq_admit_tactics": 2,
   "rocq_admitted": 2,
   "rocq_axioms": 93,

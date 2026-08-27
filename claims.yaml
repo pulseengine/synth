@@ -131,6 +131,17 @@ status_fields:
     kind: count
     pattern: 'Qed\.'
     glob: ['coq/Synth/WASM/WasmCertBridge.v']
+  # -- RQ-60-CFOBLIG (#1057): the proof-inventory manifest's own Qed re-count,
+  # CAPTURED from the committed artifacts/proof-inventory.json and pinned EQUAL
+  # to `rocq_qed` above by SYNTH-PROOF-INVENTORY-CROSSCHECK-1057 (fields-equal).
+  # scripts/proof_inventory.py is a SECOND textual reader of coq/Synth/**/*.v;
+  # this pin makes a disagreement between the two readers RED instead of a
+  # number to reconcile by hand. Freshness of the artifact itself is byte-gated
+  # by `proof_inventory.py --check` in the claim-check CI job.
+  proof_inventory_rocq_qed:
+    kind: capture
+    file: artifacts/proof-inventory.json
+    pattern: '"rocq_qed_total": (\d+)'
   kani_harnesses:
     kind: count
     pattern: '#\[kani::proof\]'
@@ -730,6 +741,27 @@ claims:
         max: 0
       - kind: verbatim                       # the unsoundness stays NAMED
         text: "UNSOUND, deliberately kept and deliberately named"
+
+  # RQ-60-CFOBLIG (#1057) increment 2: the proof-inventory manifest
+  # (artifacts/proof-inventory.json, schema synth-proof-inventory-v1) exists so
+  # consumers (gale's fathom) READ which theorem discharges which wasm_instr
+  # constructor instead of GUESSING names by CamelCase->snake_case — a guess
+  # that misses 29 of 138 constructors (the brif_correct fused-name class) and
+  # misreads the `_correct`/`_executes` split. The manifest is a second reader
+  # of the proof tree; this claim pins its Qed re-count EQUAL to the ledger's
+  # own independent `rocq_qed` derivation, so parser drift between the two
+  # readers is RED, never hand-reconciled. (Kernel truth still comes only from
+  # `bazel test //coq:verify_proofs` — the manifest is an index, not an oracle.)
+  - id: SYNTH-PROOF-INVENTORY-CROSSCHECK-1057
+    doc: scripts/proof_inventory.py
+    text: "pinned EQUAL to the claim ledger's independent rocq_qed derivation"
+    evidence:
+      - kind: fields-equal
+        names: [rocq_qed, proof_inventory_rocq_qed]
+      - kind: file-exists
+        path: artifacts/proof-inventory.json
+      - kind: file-exists
+        path: scripts/proof_inventory.py
 
   - id: SYNTH-A32-TRIPWIRE-UNIVERSE
     doc: scripts/templates/feature_matrix.md.tmpl
