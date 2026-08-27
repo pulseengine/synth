@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-61-A32RELOC
+    type: system-req
+    title: "cortex-r5 relocatable objects label A32 BL calls R_ARM_THM_CALL (10) instead of R_ARM_CALL (28)"
+    description: >
+      #1040, found while building the #1021 execution differential. A
+      `--target cortex-r5 --relocatable` object's in-module direct call
+      carries reloc **type 10 (R_ARM_THM_CALL)** on a word that is an A32
+      `BL` (`0xEB000000`, ARM state). Expected **type 28 (R_ARM_CALL)**;
+      R_ARM_THM_CALL belongs only on Thumb BL sites.
+
+      Repro: `scripts/repro/popcnt_r11_clobber_1021.wat` with
+      `--target cortex-r5 --all-exports --relocatable --no-optimize`;
+      `.rel.text` shows `type 10 func_2` against an `eb000000` word.
+
+      CONSEQUENCE, and why this is a soundness item rather than cosmetics:
+      any consumer that TRUSTS the declared type — a real linker, or a
+      harness — will patch Thumb halfwords into an ARM-state instruction, or
+      emit an interwork veneer, producing an invalid instruction. The #1021
+      harness died `UC_ERR_INSN_INVALID` on exactly this and now patches by
+      EXECUTION MODE as a workaround, documented in `load_elf`'s docstring.
+
+      THAT WORKAROUND IS THE PART TO NOTICE. A harness that compensates for a
+      wrong declaration is a harness that can no longer detect it — and the
+      compensation is load-bearing enough to be documented, which means the
+      wrong type is now depended upon locally. Fix the emitted type AND
+      remove the workaround in the same change; leaving the workaround would
+      preserve a second consumer of the wrong contract.
+
+      A32 is a shipped target (cortex-r5, #615), so this is emitted bytes a
+      downstream linker consumes, not an internal label.
+    status: proposed
+    release: v0.61
+    tags: [arm, a32, relocations, elf, cortex-r5]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1040"
+      done-when: "manual: A32 BL sites emit R_ARM_CALL (28), Thumb sites keep type 10, and the #1021 harness's execution-mode workaround is REMOVED"

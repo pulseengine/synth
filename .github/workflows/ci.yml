@@ -629,7 +629,12 @@ jobs:
           # the pinned rivet 0.23.0 before bumping — the count moved by exactly
           # six and all six ids are visible in `rivet list`, so the directory
           # is really being recursed rather than silently skipped (#1064).
-          ARTIFACT_FLOOR=479
+          # 479 -> 484: the five newly-triaged issues scoped into v0.61
+          # (#1095 spec-suite claim, #1097 mv oracle, #1055 fuzz window,
+          # #1040 A32 reloc type, #1080 extraction snapshots). An open issue
+          # with no rivet artifact is invisible to the release plan and
+          # resurfaces as a cut-time surprise — the issue-hunt anti-pattern.
+          ARTIFACT_FLOOR=484
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then

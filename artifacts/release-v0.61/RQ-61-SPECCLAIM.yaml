@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-61-SPECCLAIM
+    type: system-req
+    title: "README and FEATURE_MATRIX advertise a CI-tracked spec-suite compile rate that no job produces, over a submodule CI never checks out"
+    description: >
+      #1095 (gale), verified independently. Two user-facing documents advertise
+      a number that does not exist:
+
+        README.md:122          "CI-tracked compile rate" over the wasm spec suite
+        docs/status/FEATURE_MATRIX.md  "Compile-rate tracked by CI (tests/spec-testsuite)"
+
+      The FEATURE_MATRIX row is the more specific — it names the path — which
+      makes it the more misleading.
+
+      TWO INDEPENDENT REASONS THE NUMBER CANNOT EXIST, and the second is the
+      one that makes this structural rather than a missing job:
+        1. No workflow runs the suite. `ci.yml:742` RECORDS this honestly
+           ("that 257-file suite is checked out and entirely unrun") — credit
+           where due; the note is why the issue was findable at all.
+        2. `tests/spec-testsuite` is a SUBMODULE and no workflow passes
+           `submodules: recursive` to `actions/checkout`, so the directory is
+           EMPTY on every runner. Adding a job today would measure nothing.
+
+      WHAT ci.yml's NOTE DID NOT RECORD: that the advertised claims were left
+      standing. Deferring the gate is a reasonable scheduling call; leaving the
+      claim is not, and the claim is what a reader meets first.
+
+      THE SHAPE, and why it belongs in this release: v0.61's theme is gates
+      pointed at the wrong thing. This is the sharper variant — a load-bearing
+      public claim with NO gate at all, while `claims.yaml` + `claim_check.py`
+      exist precisely to pin claims like it (`SYNTH-README-STATUS-BADGES` is
+      already pinned there). The mechanism exists and this claim is not in it.
+
+      TWO HONEST END STATES, and the choice is a real fork: either wire the
+      job (checkout with `submodules: recursive`, run the suite, pin a
+      baseline the way kiln's wast-conformance workflow does) and the claim
+      becomes true; or correct both documents to say what is actually
+      measured. Do NOT ship a third state where the claim is softened enough
+      to be unfalsifiable.
+    status: proposed
+    release: v0.61
+    tags: [claims, docs, ci, spec-suite, honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1095"
+      done-when: "manual: either a CI job produces the rate over a CHECKED-OUT suite and claims.yaml pins it, or both documents state what is actually measured; not a softened middle"
