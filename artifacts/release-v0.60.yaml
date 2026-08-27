@@ -556,7 +556,7 @@ artifacts:
       real op-mix" cases (#369->#782, #869->v0.52). Run it BEFORE the release,
       not after — a synthetic fixture that goes green while the real op-mix does
       not move is exactly the failure this project keeps finding.
-    status: implemented
+    status: verified
     release: v0.60
     tags: [reach, vfp, fpu, f32, aeabi-builtins, jess, cortex-m7, measured]
     links:
@@ -580,15 +580,23 @@ artifacts:
       # trusted. The gate forces this basis to be WRITTEN; it cannot judge it,
       # so overstating here would defeat the mechanism.
       verified-by: >-
-        PER-STAGE, not fused. Coordinator pulled the REAL ghcr components at
-        1.134.1 (iekf/position/attitude/rate/mixer), established the failure on
-        main FIRST, then compiled the same bytes on the branch, -t cortex-m7dp:
-        iekf/position/attitude went exit=1 SKIPPED -> exit=0; rate/mixer already
-        compiled and were unchanged; attitude#tick and position#tick reach
-        `nm -> T` at 00000138. Mechanism soundness is the fixture differential on
-        the same code path (70/70 bit-identical vs wasmtime), NOT an executed
-        attitude/ekf run. THE FUSED-IMAGE RUN THIS done-when NAMES HAS NOT
-        HAPPENED — local meld predates `fuse --pack-rebase`. jess holds that
-        evidence under their standing offer; `verified` waits on it, including if
-        the answer is that it is worse on target.
+        DoD SATISFIED — jess ran the fused image (issue #1069, 2026-08-27).
+        meld 0.52.0 `fuse --memory shared --pack-rebase` over the five published
+        1.134.1 components -> loom 1.4.1 -> synth main: exit=0, skips=0, and ALL
+        FIVE symbols at `nm -> T` INCLUDING ekf@0.7.0#estimate, which no
+        in-repo build could produce. The self-contained image (EXEC, 94,907 B)
+        EXECUTES on jess's RT1176 Renode model: linear memory byte-exact at 4
+        non-zero probes (53,345 B to 0x20000100), PC 0x16C, 213,439 instructions
+        retired — BOTH assertions negative-controlled. Coordinator's own
+        per-stage run against the real ghcr components (failure established on
+        main first; iekf/position/attitude exit=1 SKIPPED -> exit=0 on
+        cortex-m7dp) reproduces at the fused level.
+        WHAT THIS DOES NOT CLAIM, in jess's words and kept in theirs: this is
+        "the fused image loads, initialises its linear memory correctly, and
+        executes without stalling or faulting" — NOT "attitude#tick and
+        ekf#estimate compute correct values". Invoking them needs canonical-ABI
+        argument marshalling, open on both sides; relay's SIL reference
+        (converged 0.193 s, steady-state |err| 0.0059 rad/s) is the comparison
+        baseline when it lands. `verified` here means the DoD as written —
+        5-of-5 EXPORT in the fused run — not behaviour-verified.
 
