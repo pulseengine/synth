@@ -576,4 +576,19 @@ artifacts:
       # stated outcome does not yet hold — that is a different claim, and
       # this field is where the difference is recorded (RQ-60-FLIPCOUPLE).
       landed: "#1073"
+      # WHAT I ACTUALLY VERIFIED, stated so it can be disputed rather than
+      # trusted. The gate forces this basis to be WRITTEN; it cannot judge it,
+      # so overstating here would defeat the mechanism.
+      verified-by: >-
+        PER-STAGE, not fused. Coordinator pulled the REAL ghcr components at
+        1.134.1 (iekf/position/attitude/rate/mixer), established the failure on
+        main FIRST, then compiled the same bytes on the branch, -t cortex-m7dp:
+        iekf/position/attitude went exit=1 SKIPPED -> exit=0; rate/mixer already
+        compiled and were unchanged; attitude#tick and position#tick reach
+        `nm -> T` at 00000138. Mechanism soundness is the fixture differential on
+        the same code path (70/70 bit-identical vs wasmtime), NOT an executed
+        attitude/ekf run. THE FUSED-IMAGE RUN THIS done-when NAMES HAS NOT
+        HAPPENED — local meld predates `fuse --pack-rebase`. jess holds that
+        evidence under their standing offer; `verified` waits on it, including if
+        the answer is that it is worse on target.
 
