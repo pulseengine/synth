@@ -23,7 +23,19 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from claim_check import MeasureError, _count, _region, check_ratchet  # noqa: E402
+from claim_check import (  # noqa: E402
+    DuplicateKeyError,
+    MeasureError,
+    StrictLoader,
+    _count,
+    _region,
+    check_ratchet,
+)
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover — the pure-function half still runs
+    yaml = None
 
 
 def ceiling(**kw):
@@ -318,6 +330,73 @@ class RegionAndCounting(unittest.TestCase):
             "    // the main match's `_ =>` arm falls through\n",
         )
         self.assertEqual(_count(r"^[ \t]*_ =>", ["f.rs"], self.root)[0], 2)
+
+
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class LedgerIsParsedStrictly(unittest.TestCase):
+    """#1087 — the ledger itself was loaded permissively.
+
+    `yaml.safe_load` keeps the LAST value on a duplicate key and says
+    nothing. On main, one waiver mapping in `claims.yaml` carried TWO
+    `reason:` keys: RQ-60-VFPPRESSURE increment 1's justification for a
+    **+622 line** growth of `selector_lines_code` was silently replaced by
+    RQ-59-I64SHIFT's reason for **+10 lines**. `check_ratchet` cannot
+    notice — the surviving reason is a valid non-empty string, so the gate
+    printed `51/51 claims hold` over a ledger that no longer recorded why
+    the North Star's headline metric moved by 622 lines.
+
+    The waiver is the whole accountability mechanism ("permission is
+    per-growth, never standing"), and a duplicate key deletes it while
+    leaving every downstream check green. So the ledger is parsed
+    duplicate-key-strict, and these tests are what make that non-optional.
+    """
+
+    def test_duplicate_key_anywhere_is_refused(self):
+        with self.assertRaises(DuplicateKeyError):
+            yaml.load("a: 1\na: 2\n", Loader=StrictLoader)
+
+    def test_the_exact_shipped_shape_is_refused(self):
+        # The literal shape from main: one waiver, two `reason:` keys.
+        doc = (
+            "claims:\n"
+            "  - id: X\n"
+            "    evidence:\n"
+            "      - kind: ratchet\n"
+            "        name: selector_lines_code\n"
+            "        direction: down\n"
+            "        value: 18910\n"
+            "        baseline: 17897\n"
+            "        waivers:\n"
+            "          - to: 18910\n"
+            "            reason: the +622 justification\n"
+            "            reason: the +10 justification\n"
+        )
+        with self.assertRaises(DuplicateKeyError) as cm:
+            yaml.load(doc, Loader=StrictLoader)
+        self.assertIn("reason", str(cm.exception))
+        # safe_load is the counterfactual: silent, and keeps the WRONG one.
+        kept = yaml.safe_load(doc)["claims"][0]["evidence"][0]["waivers"][0]
+        self.assertEqual(kept["reason"], "the +10 justification")
+
+    def test_a_clean_ledger_still_loads(self):
+        # A gate that only ever fails is as useless as one that only ever
+        # passes: the two-waiver split (the FIX) must load.
+        doc = (
+            "waivers:\n"
+            "  - to: 18910\n"
+            "    reason: the +622 justification\n"
+            "  - to: 18288\n"
+            "    reason: the +10 justification\n"
+        )
+        got = yaml.load(doc, Loader=StrictLoader)["waivers"]
+        self.assertEqual([w["to"] for w in got], [18910, 18288])
+
+    def test_the_repos_own_ledger_is_clean(self):
+        # Non-vacuity against the real artifact, not only fixtures.
+        ledger = pathlib.Path(__file__).resolve().parent.parent / "claims.yaml"
+        if not ledger.exists():  # pragma: no cover
+            self.skipTest("claims.yaml not present")
+        yaml.load(ledger.read_text(), Loader=StrictLoader)
 
 
 if __name__ == "__main__":
