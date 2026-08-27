@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.60.0] - 2026-08-27
+
+**Derive what you check against — and reach is part of correctness.**
+
+Two invariants, and the release spent most of its findings on the first one
+turning out to apply to its own machinery.
 
 ### Added
 
@@ -31,6 +36,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differential (`aeabi_i64_float_1069_differential.py`: 24,270 checks vs
   wasmtime under unicorn with spec-exact domain-asserting builtin stubs,
   every trap row executed on both sides).
+
+- **RQ-60-A64IMPORT (#1017, #1071): AArch64 import dispatch — imports become
+  `SHN_UNDEF` externals.** The top-ranked real-world blocker (~121 of 805
+  modules, 88 of 101 components) was a module whose code calls an imported
+  function, or whose funcref table holds one: it loud-declined wholesale.
+  This is synth's own ARM `--relocatable` #173/#197 contract ported, not new
+  policy — a call to an import lowers through the same `bl` + `R_AARCH64_CALL26`
+  path as a local call, a table slot holding an import emits a `b <field>`
+  trampoline (`JUMP26`) against the import's wasm field name, and the
+  relocatable ELF builder gained a driver-supplied undefined-externals
+  ALLOWLIST emitting `STB_GLOBAL STT_FUNC SHN_UNDEF` symbols. A symbol neither
+  placed nor listed keeps the #1013 clean refusal, so a declined local callee
+  can never silently become a link-time external; an unnamed import still
+  declines (never fabricate a symbol). `ld.lld` links the objects against
+  assembled definitions and unicorn executes the linked images: `run(37) = 42`
+  through the import, table dispatch slot0 (import) 41 -> 42 and slot1 (local)
+  21 -> 42. Import-free modules are byte-identical.
+  **The acceptance rate is UNMEASURED since this change** — the 805-module
+  corpus lives with the downstream consumer, the re-run is requested, and the
+  artifact's own rule ("a change that adds a code path without moving the
+  census has not delivered") is why this says so rather than implying the
+  1.6% figure moved.
+
+- **RQ-60-VFPPRESSURE increment 2 (#1069): frame-homed overflow VFP locals —
+  the 13->14 homed-local wall falls.** (Increment 1's entry is already in
+  `[Unreleased]` and stays as written: the AEABI-routed i64<->f32 conversions
+  on single-precision FPU targets.)
+  Increment 2 adds frame-homed overflow f32/f64 locals as a LAST-RESORT retry
+  taken only after the #881 rung also failed, so every function that compiled
+  before is produced by exactly the same path (falcon `rate.o`/`mixer.o`
+  bit-identical main vs branch). Unlocks `attitude#tick`, `ekf#estimate` and
+  `position#tick` on cortex-m7dp — **5 of 5 falcon cascade stages**, the
+  issue's own definition of done. Verified downstream: the fused image builds
+  and EXECUTES on an RT1176 M7.
+
+- **RQ-60-WCETKEY (#1063): name-section names as durable WCET identities.**
+  `synth-wcet-v1` named functions from the export section only, so an internal
+  function was `func_<index>` — an index silently retargets when an unrelated
+  edit adds or removes an earlier function. Names now come from the name
+  section with the v0 crate disambiguator stripped, and `--wcet-hints` keys are
+  symmetric with them. Measured downstream on a real `gust:os` composite:
+  **7 of 13 loop-declined functions were `func_<index>` before; 0 after.**
+  An index key for a function that carries a name is REFUSED, and the refusal
+  names the key to use instead.
+  Increment 2 makes those refusals machine-readable: the sidecar gains a
+  top-level `hints` object present exactly when a hints file was passed, so a
+  consumer can distinguish (a) no hints, (b) hints consumed, (c) hints supplied
+  and ALL refused — three states that were previously two. Every key-resolution
+  diagnostic carries the same machine tag stderr names. Merits-level rejections
+  stay in per-function `hint_rejections` (the hint reached a verifier); key
+  diagnostics are top-level (it never did). `.text` is byte-identical across all
+  three states.
+
+- **RQ-60-CFOBLIG (#1057): the WASM model gains `BrIf`, and the proof inventory
+  is DERIVED rather than guessed from theorem names.** Increment 1 adds the
+  first control-flow constructor to `WasmInstructions.v` with executable
+  semantics and a kernel-checked correspondence obligation discharged against
+  the same `exec_program_br` executor as the #73 division trap guards.
+  Increment 2 answers a measurement dispute properly: a downstream consumer
+  derived theorem names from rule kinds by CamelCase->snake_case and reported
+  `brif_correct` as the tree's only deviation. Measured, it is the **29th
+  member of a class** — every signed/unsigned comparison, div, rem and shift
+  uses the fused spelling (`i32_divs_correct`, not `i32_div_s_correct`) — and
+  **19 `*_correct` names are declared in two different files with different
+  statements**, so a name-keyed matcher is wrong in both directions. So neither
+  side renames: `artifacts/proof-inventory.json` (`synth-proof-inventory-v1`)
+  is generated from the proof tree, with binding and strength decided
+  SEMANTICALLY (does the statement apply the constructor to `exec_wasm_instr` /
+  `compile_wasm_to_arm` and run the ARM executor?) and never from names. The
+  constructor universe is parsed from `WasmInstructions.v`. Freshness is
+  byte-compared in the required claim-check job and the manifest's Qed re-count
+  is pinned fields-equal to the ledger's independent derivation, so a hand-edit
+  reds both. **Corrected while doing this:** all 138 constructors are Qed-bound;
+  the honest frontier is 63 result-correspondence vs 75 existence-only, i.e.
+  STRENGTH rather than absence.
+
+### Fixed
+
+- **RQ-60-RACOST (#242): the allocator's cost model prices real encoder bytes,
+  and a final-byte arbiter makes no-growth a construction rather than a check.**
+  Increment 1 merges tied use/def webs so an rmw colour mismatch is
+  UNREPRESENTABLE rather than detected. Increment 2 replaces occurrence counts
+  with the real encoder's own byte lengths — and the measurement redirected the
+  design: the dominant regression had an essentially IDENTITY colouring and grew
+  +96 B because preserving the input assignment defeats a downstream
+  canonicalization that lets const-CSE collapse twelve `movw`/`movt` pairs. No
+  colour-time cost model at any fidelity can see a downstream-pass interaction,
+  so candidates are now sized through the real pipeline and shipped only when
+  strictly smaller — the no-growth property becomes a CONSTRUCTION rather than
+  a check, and future allocator work (splitting, coalescing) inherits it.
+  Measured **66 functions shrink, 0 grow**; that figure comes from the
+  comparison script, which declares itself `ci-status: manual (measurement)`
+  and deliberately carries no verdict. What IS CI-gated is the allocator's
+  CORRECTNESS — `vcr_dec_001_graph_alloc_differential` and
+  `vcr_dec_001_join_alloc_execution_differential` — not the size number.
+
+- **#1087: `claims.yaml` carried a duplicate `reason:` key, and the ledger
+  recorded a +622-line waiver with a +10-line justification.** YAML keeps the
+  last value on a duplicate key, silently, so the surviving justification for
+  RQ-60-VFPPRESSURE increment 1's growth of the instruction selector was
+  RQ-59-I64SHIFT's reason for a different change in a different release.
+  `check_ratchet` asks only whether a waiver exists at this value and whether
+  its reason is non-empty — neither question can tell the right reason from
+  someone else's. The ledger is now parsed duplicate-key-strict at both load
+  sites, with a diagnostic naming the DISCARDED value's line. The same strict
+  loader already guarded the release artifacts (#1059); it had simply never
+  been pointed at the file every other claim is checked against.
+  One number to read carefully afterwards: `selector_lines_code`'s waiver
+  count went **9 -> 10 with the value unchanged at 19,199**. That is the
+  signature of a destroyed record being RESTORED — the swallowed
+  RQ-59-I64SHIFT waiver getting its own `to: 18288` entry back — not of a
+  further growth being permitted.
+
+### Infrastructure — the release's own theme, applied to itself
+
+- **RQ-60-FLIPCOUPLE (#1064): a release status must agree with the evidence on
+  main.** `scripts/status_evidence_check.py` refuses a claiming status whose
+  declared evidence is absent, a non-claiming status whose evidence exists, a
+  release file contributing zero artifacts (the #1064 silent-skip shape), and an
+  id-named delivery commit nobody acknowledged. Seven-instance replay, 7/7.
+- **RQ-60-ARTIFACTSPLIT (#1059): the single-file artifact write surface is
+  split, and the splice that motivated it is replayed as a fixture.** From
+  v0.61 each requirement gets its own file under `artifacts/release-vX.YY/`
+  with a comments-only `_release.yaml`, verified empirically to load on both
+  the CI-pinned rivet 0.23.0 and 0.32.0. Structural rules cover the flat files
+  that remain forever: every artifact must carry its own `links:` (the splice
+  that absorbed a sibling's trace links), ids must be unique across files, and
+  a per-requirement file contributing zero artifacts is red on its own.
+
+- **#1085: two artifacts pinned evidence that could not fail on the failure
+  they define.** `RQ-60-A64IMPORT`'s description says the acceptance number is
+  the deliverable; its `done-when` checked that a code path exists — which the
+  description explicitly says is *not* the deliverable. `RQ-60-CANARY`'s
+  claim is that every rule-emitted expansion is EXECUTED; its predicate named
+  a function in a source file, and would still have held with the gate
+  deleted. Both now pin the mechanism: CANARY pins the canary gate's own
+  non-vacuity floor (`emulations >= 1200`), proven sensitive — dropping that
+  floor to 0 turns the artifact red. Found by auditing all eight v0.60
+  artifacts against the bar each description sets; three of eight had it.
+
+### Known and stated, not fixed
+
+- **The subtraction ratchet moved the wrong way this release** — and not on
+  one pin. Live, from `claim_check.py claims.yaml --metric` on `main`:
+
+      metric                            now  baseline   delta  direction
+      selector_lines_code             19199     17897   +1302  must FALL
+      selector_wildcard_arms_code        55        55      +0  must FALL
+      sel_dsl_rules                      80        80      +0  must RISE
+      mirror_marker_files                60        57      +3  must FALL
+      mirror_obligation_files            24        23      +1  must FALL
+
+  Three ceilings rose, the rule floor did not. Every step carries
+  a written waiver bound to its exact value, and the two largest are reach work
+  on targets that previously had NO lowering at all (VFPPRESSURE increments 1
+  and 2, +622 and +289), where nothing could be deleted in exchange because
+  every existing path is byte-frozen. That is a defensible reason and it is
+  still the pattern the v0.58 correction exists to make visible: the verified
+  path did not grow this release and the hand-written one did.
+- **The V is NOT closed on the right-hand side, and this release does not
+  claim it is (#1091).** `release-execution`'s traceability completeness gate
+  requires every `implemented` artifact to carry a `verifies` link to a
+  verification artifact. Measured: **60 of 60 release artifacts across
+  v0.56-v0.60 have none** — five consecutive releases, 100%. `rivet coverage`
+  does run inside the required Rivet Validation job, reports
+  `sys2-has-verification` at **61/152 (40.1%)**, and exits 0 regardless: it
+  prints, it does not assert. The verification itself EXISTS in every case
+  (unicorn differentials, `ld.lld`-linked execution, Rocq proofs, mutation-
+  killed gates); what is missing is the typed link that makes it queryable —
+  "invisible to the trace graph", not "unverified". Not a v0.60 blocker,
+  because the gap predates it by four releases and nothing about it is new;
+  stated here because a release that quietly assumed "traceability
+  completeness" would be claiming a gate that has never once fired.
+
+- **RQ-60-CANARY's code shipped in v0.59.0**, not here. The artifact sits in
+  v0.60's scope and closes its traceability here; the capability — the
+  pseudo-op expansion canary gate — was released in v0.59.0 and is credited in
+  that section. See #1085 for the gate that would have caught the mis-scope.
 
 ## [0.59.0] - 2026-08-26
 
