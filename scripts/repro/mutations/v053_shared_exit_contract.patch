@@ -1,27 +1,55 @@
 diff --git a/crates/synth-synthesis/src/graph_alloc.rs b/crates/synth-synthesis/src/graph_alloc.rs
-index 94d944d..128d900 100644
+index 569fc07b..e202ba05 100644
 --- a/crates/synth-synthesis/src/graph_alloc.rs
 +++ b/crates/synth-synthesis/src/graph_alloc.rs
-@@ -926,11 +926,9 @@ mod joins {
-                 }
+@@ -689,38 +689,10 @@ fn color_webs_costed(
+                 used[c] = true;
              }
-             let own = orig_colour.get(&n).copied();
--            let pick = own
--                .filter(|&c| c < caller_saved && c < k && !used[c])
--                .or_else(|| (0..caller_saved.min(k)).find(|&c| !used[c]))
--                .or_else(|| own.filter(|&c| c < k && !used[c]))
--                .or_else(|| (0..k).find(|&c| !used[c]));
-+            // ***L6 MUTATION (v0.53 reproduction): drop the churn bias.***
-+            let _ = (own, caller_saved);
-+            let pick = (0..k).find(|&c| !used[c]);
-             match pick {
-                 Some(c) => {
-                     colour.insert(n, c);
+         }
+-        let own = orig_colour.get(&n).copied().filter(|&c| c < k && !used[c]);
+-        // Price every free candidate; keep only the strictly cheapest set.
+-        let mut minima: Vec<usize> = Vec::new();
+-        let mut min_cost: Option<u64> = None;
+-        for (c, taken) in used.iter().enumerate() {
+-            if *taken {
+-                continue;
+-            }
+-            let Some(cost) = occ_cost(n, c, &colour) else {
+-                continue; // unencodable under this candidate: excluded
+-            };
+-            match min_cost {
+-                Some(m) if cost > m => {}
+-                Some(m) if cost == m => minima.push(c),
+-                _ => {
+-                    min_cost = Some(cost);
+-                    minima = vec![c];
+-                }
+-            }
+-        }
+-        let pick = if minima.is_empty() {
+-            // Nothing sizable: own colour if free (identity is always legal —
+-            // the original stream encoded), else the pre-cost-model fallback
+-            // (lowest free colour).
+-            own.or_else(|| used.iter().position(|taken| !taken))
+-        } else {
+-            // Byte-equal minima split by the established preference order.
+-            own.filter(|o| *o < caller_saved && minima.contains(o))
+-                .or_else(|| minima.iter().copied().find(|&c| c < caller_saved))
+-                .or_else(|| own.filter(|o| minima.contains(o)))
+-                .or_else(|| minima.first().copied())
+-        };
++        // ***L6 MUTATION (v0.53 reproduction): drop the measured-cost
++        // ranking and the preference order.***
++        let _ = (&orig_colour, caller_saved, &mut *occ_cost);
++        let pick = (0..k).find(|&c| !used[c]);
+         match pick {
+             Some(c) => {
+                 colour.insert(n, c);
 diff --git a/crates/synth-synthesis/src/liveness.rs b/crates/synth-synthesis/src/liveness.rs
-index 0f6e67c..4109561 100644
+index ef90427e..86f46e7e 100644
 --- a/crates/synth-synthesis/src/liveness.rs
 +++ b/crates/synth-synthesis/src/liveness.rs
-@@ -3490,9 +3490,9 @@ pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
+@@ -4279,9 +4279,9 @@ pub fn cfg_exit_observable(terminator: &ArmOp) -> BTreeSet<Reg> {
      ];
      let pop_return = matches!(terminator, ArmOp::Pop { regs } if regs.contains(&Reg::PC));
      const AAPCS_DEAD_AT_POP_RETURN: [Reg; 4] = [R2, R3, R12, LR];
