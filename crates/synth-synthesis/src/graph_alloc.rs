@@ -78,7 +78,7 @@ use crate::abi_contract::{AbiContractVerdict, validate_abi_contract};
 use crate::instruction_selector::ArmInstruction;
 use crate::liveness::{
     apply_range_coloring, color_ranges, is_straight_line, range_interference, reg_effect,
-    straight_line_value_ranges, validate_segment_rewrite,
+    rewrite_op_maps, straight_line_value_ranges, validate_segment_rewrite,
 };
 use crate::rules::Reg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,17 +188,47 @@ fn reallocate_straight_line(
     let pool_index: BTreeMap<Reg, usize> = pool.iter().enumerate().map(|(i, r)| (*r, i)).collect();
     let adj = range_interference(&ranges);
 
+    // RQ-60-RACOST increment 1 (#242) — TIED use/def webs. A read-modify-write
+    // FIELD (`Movt`/`MovtSym`/`SelectMove` `rd`) reads and writes ONE register
+    // slot, so the value range CONSUMED there and the range BORN there must
+    // occupy the same physical register. Before this merge the two ranges were
+    // coloured independently and a disagreement was only CAUGHT afterwards by
+    // `rewrite_op`'s RMW check (`/rmw-colour-mismatch` — re-measured on main
+    // as the largest attributed `single-block` bucket, 26 of 42 on the
+    // relocatable corpus); folding them into one colouring node makes the
+    // mismatch UNREPRESENTABLE instead. Which fields are tied is PROBED from
+    // the shipped rewriter itself (`tied_range_pairs` asks `rewrite_op_maps`
+    // whether a use/def disagreement is refused), never from a hand-kept op
+    // list that could drift — and the joins path's `build_webs` has unified
+    // tied webs since increment 2, so this brings the two paths to one
+    // convention. The merge only re-imposes an assignment the ORIGINAL stream
+    // already had (both ranges live in the same register there), so it can
+    // force a decline-to-spill but never a wrong colouring; a function with no
+    // tied ops has no pairs and colours EXACTLY as before.
+    let Some(tied) = tied_range_pairs(instrs) else {
+        // Unreachable after the prescan (every op has a `reg_effect`), but a
+        // silent None here would be the "did nothing" ≠ "nothing to do" trap.
+        sub("tied-scan");
+        return None;
+    };
+    let rep = web_reps(ranges.len(), &tied);
+
     // Pins: segment inputs (def == 0) and each register's LAST-opened range
     // (the whole-function live-out) keep their original register — the function
     // must return its result registers unchanged. Reserved registers (R9-R12,
-    // SP, LR, PC) are identity-assigned outside the colouring.
+    // SP, LR, PC) are identity-assigned outside the colouring. Pins land on
+    // the tied-web REPRESENTATIVE: every member of a web shares one original
+    // register (a tie relates a use and a def of the same register), so two
+    // pins on one web always agree — declined defensively if that invariant is
+    // ever broken, never coloured through.
     let mut last_opened: BTreeMap<Reg, usize> = BTreeMap::new();
     for r in &ranges {
         last_opened.insert(r.reg, r.vreg); // ranges are in creation order
     }
     let mut pins: BTreeMap<usize, usize> = BTreeMap::new();
     let mut assignment: BTreeMap<usize, Reg> = BTreeMap::new();
-    let mut pool_nodes: BTreeSet<usize> = BTreeSet::new();
+    let mut pool_vregs: BTreeSet<usize> = BTreeSet::new(); // raw range ids
+    let mut pool_webs: BTreeSet<usize> = BTreeSet::new(); // tied-web representatives
     for r in &ranges {
         match pool_index.get(&r.reg) {
             None => {
@@ -206,22 +236,43 @@ fn reallocate_straight_line(
                 assignment.insert(r.vreg, r.reg);
             }
             Some(&idx) => {
-                pool_nodes.insert(r.vreg);
+                pool_vregs.insert(r.vreg);
+                let w = rep[r.vreg];
+                pool_webs.insert(w);
                 let exit_pinned = last_opened.get(&r.reg) == Some(&r.vreg);
                 if r.def == 0 || exit_pinned {
-                    pins.insert(r.vreg, idx);
+                    if let Some(&prev) = pins.get(&w)
+                        && prev != idx
+                    {
+                        sub("tied-pin-conflict");
+                        return None;
+                    }
+                    pins.insert(w, idx);
                 }
             }
         }
     }
 
-    // Colouring input: pool ranges only (reserved registers cannot collide with
-    // pool colours, so their edges are irrelevant to the pool colouring).
-    let mut pool_adj: BTreeMap<usize, BTreeSet<usize>> = adj
-        .iter()
-        .filter(|(n, _)| pool_nodes.contains(n))
-        .map(|(n, nbrs)| (*n, nbrs.intersection(&pool_nodes).copied().collect()))
-        .collect();
+    // Colouring input: pool ranges only, folded onto their tied-web
+    // representatives. An edge INTERNAL to one web vanishes — its endpoints
+    // are one value by construction and REQUIRED to share a register (the
+    // instruction-0 corner, where an input is consumed by an RMW def it is
+    // tied to, makes such an edge representable). Reserved registers cannot
+    // collide with pool colours, so their edges are irrelevant here.
+    let mut pool_adj: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for w in &pool_webs {
+        pool_adj.entry(*w).or_default();
+    }
+    for (n, nbrs) in &adj {
+        if !pool_vregs.contains(n) {
+            continue;
+        }
+        for m in nbrs {
+            if pool_vregs.contains(m) && rep[*n] != rep[*m] {
+                pool_adj.entry(rep[*n]).or_default().insert(rep[*m]);
+            }
+        }
+    }
 
     // #677 soundness: a pool register with NO range in this function is not
     // thereby FREE for a rename target — but for a WHOLE-FUNCTION straight-line
@@ -242,17 +293,23 @@ fn reallocate_straight_line(
         for nbrs in pool_adj.values_mut() {
             nbrs.insert(blocker);
         }
-        pool_adj.insert(blocker, pool_nodes.iter().copied().collect());
+        pool_adj.insert(blocker, pool_webs.iter().copied().collect());
     }
 
     // Spill cost: occurrence count per range (1 per def + 1 per use event),
-    // replayed with the same vreg numbering `straight_line_value_ranges` uses.
+    // replayed with the same vreg numbering `straight_line_value_ranges` uses,
+    // then folded onto tied-web representatives (a merged web's spill cost is
+    // the sum of its members' — spilling the web spills every member).
     let Some(costs) = occurrence_costs(instrs) else {
         sub("no-occurrence-costs");
         return None;
     };
+    let mut web_costs: BTreeMap<usize, usize> = BTreeMap::new();
+    for (v, c) in &costs {
+        *web_costs.entry(rep[*v]).or_insert(0) += c;
+    }
 
-    let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &costs);
+    let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &web_costs);
     if !spilled.is_empty() {
         // Spill code insertion is increment 2+ (reuse the Belady machinery).
         // For now a function that does not fit the pool declines to the shipping
@@ -260,17 +317,25 @@ fn reallocate_straight_line(
         sub("needs-spill");
         return None;
     }
-    for (v, c) in &coloring {
-        assignment.insert(*v, pool[*c]);
+    for v in &pool_vregs {
+        let Some(&c) = coloring.get(&rep[*v]) else {
+            sub("web-uncoloured");
+            return None;
+        };
+        assignment.insert(*v, pool[c]);
     }
 
     // Defense-in-depth: independently of the colourer, re-check every
     // interference edge against the final assignment (cf.
-    // `liveness::verify_allocation`, but keyed on value ranges).
+    // `liveness::verify_allocation`, but keyed on value ranges). An edge whose
+    // endpoints share a tied web is exempt from the inequality requirement —
+    // they are one value and MUST agree; that agreement is asserted instead.
     for (n, nbrs) in &adj {
         for m in nbrs {
+            let same_web = pool_vregs.contains(n) && pool_vregs.contains(m) && rep[*n] == rep[*m];
             match (assignment.get(n), assignment.get(m)) {
-                (Some(a), Some(b)) if a != b => {}
+                (Some(a), Some(b)) if !same_web && a != b => {}
+                (Some(a), Some(b)) if same_web && a == b => {}
                 _ => {
                     sub("edge-recheck");
                     return None;
@@ -337,6 +402,76 @@ fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>>
         }
     }
     Some(costs)
+}
+
+/// The TIED use/def range pairs of a straight-line segment — RQ-60-RACOST
+/// increment 1 (#242). Replayed with the SAME vreg numbering as
+/// [`straight_line_value_ranges`] (the [`occurrence_costs`] discipline, so the
+/// ids cannot drift). A register an instruction both reads and writes is
+/// probed against the SHIPPED rewriter itself: if [`rewrite_op_maps`] refuses
+/// a rename in which the use side and the def side disagree on that register,
+/// the field is a read-modify-write and the range consumed there must share a
+/// register with the range born there. Probing the rewriter — rather than
+/// keeping a second list of RMW ops — is the same no-second-source-of-truth
+/// rule as `wcet::op_mnemonic`: a new RMW arm in `rewrite_op` is tied here for
+/// free, and nothing can drift. An op the rewriter cannot express AT ALL also
+/// probes as tied; that over-merge is conservative (it only re-imposes the
+/// original stream's own assignment) and the function still declines at apply
+/// time with `/no-rewrite-arm`, so no coverage gap is hidden by it.
+fn tied_range_pairs(instrs: &[ArmInstruction]) -> Option<Vec<(usize, usize)>> {
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new();
+    let mut next = 0usize;
+    for ins in instrs {
+        let e = reg_effect(&ins.op)?;
+        let mut use_vreg: BTreeMap<Reg, usize> = BTreeMap::new();
+        for u in &e.uses {
+            let v = *current.entry(*u).or_insert_with(|| {
+                let v = next;
+                next += 1;
+                v
+            });
+            use_vreg.insert(*u, v);
+        }
+        for d in &e.defs {
+            let dv = next;
+            next += 1;
+            if let Some(&uv) = use_vreg.get(d) {
+                // The probe: a use/def disagreement on this register alone.
+                // The two probe registers are arbitrary — only the
+                // disagreement matters to `rewrite_op`'s RMW check.
+                let probe_use = BTreeMap::from([(*d, Reg::R0)]);
+                let probe_def = BTreeMap::from([(*d, Reg::R1)]);
+                if rewrite_op_maps(&ins.op, &probe_use, &probe_def).is_none() {
+                    pairs.push((uv, dv));
+                }
+            }
+            current.insert(*d, dv);
+        }
+    }
+    Some(pairs)
+}
+
+/// Union-find over the `n` range ids: the vreg → representative map the
+/// tied-web merge colours through. The smallest member id is each web's
+/// representative, so the mapping is deterministic regardless of pair order.
+fn web_reps(n: usize, pairs: &[(usize, usize)]) -> Vec<usize> {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]]; // path halving
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    for &(a, b) in pairs {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            parent[hi] = lo;
+        }
+    }
+    (0..n).map(|v| find(&mut parent, v)).collect()
 }
 
 /// VCR-DEC-001 **increment 2** — colour a whole branchy function ACROSS its
@@ -1620,6 +1755,138 @@ mod tests {
             Ok(()),
             "the colouring of the free interior range must preserve dataflow"
         );
+    }
+
+    /// RQ-60-RACOST increment 1 (#242) — RED-FIRST. A `movw r4 / movt r4`
+    /// materialization whose MOVW-side range is FREE (born mid-function,
+    /// closed by the MOVT) while the MOVT-side range is r4's last-opened
+    /// range and therefore exit-pinned to R4. Coloured independently, the
+    /// free use-side range takes the lowest free colour (R0 — its only
+    /// neighbour is the R1-pinned filler) while the def side keeps R4, and
+    /// the after-the-fact RMW check refused the whole function
+    /// (`SelectMove/Movt /rmw-colour-mismatch` — re-derived on main as the
+    /// largest attributed `single-block` bucket, 26 of 42 on the relocatable
+    /// repro corpus). BEFORE the tied-web merge this `reallocate` returned
+    /// `None`; with the use/def web merged ahead of colouring the mismatch is
+    /// unrepresentable — the web takes the pinned colour and the function
+    /// allocates.
+    #[test]
+    fn tied_rmw_web_allocates_instead_of_declining() {
+        let body = vec![
+            // Filler at index 0 so the interesting defs are not input-pinned;
+            // r1 stays live to the final add, so the movw range cannot share
+            // R1 and the two sides' neighbourhoods genuinely differ.
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R4,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            // Return sink (VCR-VER-004 needs one); pops NO pool register, so
+            // the Movt-side range stays r4's last-opened range (exit-pinned).
+            ins(ArmOp::Pop {
+                regs: vec![Reg::PC],
+            }),
+        ];
+        let out = reallocate(&body, &POOL)
+            .expect("tied rmw web must colour instead of declining (red-first: was None)");
+        assert_eq!(out.len(), body.len());
+        assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
+        // The movw/movt pair still lands on ONE register — the RMW contract
+        // the merge exists to make structural.
+        let (movw_rd, movt_rd) = match (&out[1].op, &out[2].op) {
+            (ArmOp::Movw { rd: a, .. }, ArmOp::Movt { rd: b, .. }) => (*a, *b),
+            other => panic!("movw/movt shape must be preserved, got {other:?}"),
+        };
+        assert_eq!(movw_rd, movt_rd, "tied use/def web split across registers");
+    }
+
+    /// The tied web moves TOGETHER when it is free: `pop {r4, pc}` redefines
+    /// r4, so neither RMW-side range is exit-pinned and the whole web is the
+    /// colourer's to place — both halves of the materialization land on the
+    /// SAME freely chosen register and the rewrite validates. Guards the
+    /// merged path's non-identity recolouring.
+    #[test]
+    fn tied_rmw_web_recolours_together_and_validates() {
+        let body = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R4,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+        ];
+        let out = reallocate(&body, &POOL).expect("free tied web colours");
+        assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
+        let (movw_rd, movt_rd) = match (&out[1].op, &out[2].op) {
+            (ArmOp::Movw { rd: a, .. }, ArmOp::Movt { rd: b, .. }) => (*a, *b),
+            other => panic!("movw/movt shape must be preserved, got {other:?}"),
+        };
+        assert_eq!(movw_rd, movt_rd, "tied use/def web split across registers");
+    }
+
+    /// The tie scan is PROBED from the shipped rewriter, so it ties exactly
+    /// the fields `rewrite_op` would refuse to split — an RMW field ties, a
+    /// same-register rd/rn coincidence does not (over-merging there would
+    /// cost colouring freedom for nothing).
+    #[test]
+    fn tied_pairs_probe_ties_rmw_fields_only() {
+        use crate::rules::Condition;
+        // movw r4 (vreg 0) ; movt r4 (use = vreg 0, def = vreg 1): tied.
+        let rmw = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R4,
+                imm16: 2,
+            }),
+        ];
+        assert_eq!(tied_range_pairs(&rmw), Some(vec![(0, 1)]));
+        // SelectMove rd is def AND use of one field: r2-use = vreg 0,
+        // r3 = vreg 1, r2-def = vreg 2 → tied (0, 2).
+        let sel = vec![ins(ArmOp::SelectMove {
+            rd: Reg::R2,
+            rm: Reg::R3,
+            cond: Condition::EQ,
+        })];
+        assert_eq!(tied_range_pairs(&sel), Some(vec![(0, 2)]));
+        // add r0, r0, #1: r0 appears as use and def, but rd/rn are SEPARATE
+        // fields a rename may legally split — not tied.
+        let add = vec![ins(ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R0,
+            op2: Operand2::Imm(1),
+        })];
+        assert_eq!(tied_range_pairs(&add), Some(vec![]));
     }
 
     #[test]
