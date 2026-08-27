@@ -3699,6 +3699,35 @@ fn compile_all_exports(
         info!("  '{}' (index {})", display_name, f.index);
     }
 
+    // #1063: assign every function its durable WCET identity (export name →
+    // stripped `name`-section name → raw name → `func_<idx>` last resort) and
+    // resolve every `--wcet-hints` entry against the ACCEPTED keys, re-keying
+    // the map to compile names for the backend's per-loop verifier. Every entry
+    // that does not resolve gets a NAMED warning here — an ignored-because-
+    // unmatched hint and a rejected hint look identical to a `$?` check, and
+    // the named reason is the difference. Sidecar-only: codegen never reads
+    // any of this, so the ELF stays byte-identical.
+    let wcet_key_assignments: Vec<synth_core::wcet::WcetKeyAssignment> = {
+        let identities: Vec<synth_core::wcet::WcetFnIdentity> = all_exports
+            .iter()
+            .map(|f| synth_core::wcet::WcetFnIdentity {
+                index: f.index,
+                export_name: f.export_name.clone(),
+                debug_name: f.debug_name.clone(),
+            })
+            .collect();
+        synth_core::wcet::assign_hint_keys(&identities)
+    };
+    let mut wcet_hints_resolved: Vec<(String, String)> = Vec::new();
+    let wcet_hints = wcet_hints.map(|h| {
+        let res = synth_core::wcet::resolve_hint_keys(h, &wcet_key_assignments);
+        for d in &res.diagnostics {
+            eprintln!("warning: {d}");
+        }
+        wcet_hints_resolved = res.resolved;
+        res.hints
+    });
+
     // #851 lane L3 — the aarch64 module-level substrate. Planned HERE, before
     // any body is compiled, from the op streams this compile will actually feed
     // the backend, so an unrepresentable shape declines the whole compile rather
@@ -4285,6 +4314,34 @@ fn compile_all_exports(
     // stay LOUD declines (composition only bounds what is provably composable).
     if let Some(wr) = wcet_report.as_mut() {
         wr.functions = synth_backend::wcet_compose::compose(&wcet_intermediates, &wcet_label_index);
+        // #1063: a hint that RESOLVED to a function which was then skipped by
+        // the backend never reached a verifier — say so rather than let it
+        // vanish (composition works in compile names; check before renaming).
+        for (orig, compile) in &wcet_hints_resolved {
+            if !wr.functions.iter().any(|f| f.name() == compile) {
+                eprintln!(
+                    "warning: --wcet-hints key '{orig}' resolved to a function that was \
+                     skipped (not in the output object) — the hint was not consumed \
+                     (wcet-hint-key-skipped-function, #1063)"
+                );
+            }
+        }
+        // #1063: rewrite every entry to its durable identity — display name
+        // (export name, else the raw `name`-section name, else `func_<idx>`)
+        // plus the hint-key contract (`hint_key.key` = what --wcet-hints
+        // matches on, `build_local` = scry#137's churns-per-build flag) — so a
+        // consumer joins against what synth accepts instead of re-deriving it
+        // from mangled symbols.
+        let by_compile: std::collections::HashMap<&str, &synth_core::wcet::WcetKeyAssignment> =
+            wcet_key_assignments
+                .iter()
+                .map(|a| (a.compile_name.as_str(), a))
+                .collect();
+        for f in wr.functions.iter_mut() {
+            if let Some(a) = by_compile.get(f.name()) {
+                f.set_identity(&a.display_name, &a.hint_key);
+            }
+        }
     }
 
     // Surface skipped functions (no silent omissions): a skipped function is
@@ -4871,30 +4928,11 @@ fn compile_all_exports(
     // #778: write the synth-wcet-v1 sound worst-case-cycle sidecar next to the
     // output (`<output>.wcet.json`). Additive; the ELF is byte-identical.
     if let Some(wr) = wcet_report {
-        // #778 phase 2: a --wcet-hints entry naming a function that does not
-        // exist in the module would otherwise vanish silently — an oracle typo
-        // must be LOUD (the per-loop rejections live in the sidecar; a missing
-        // function has no sidecar entry to carry one).
-        if let Some(hints) = &config.wcet_hints {
-            let compiled: std::collections::BTreeSet<&str> = wr
-                .functions
-                .iter()
-                .map(|f| match f {
-                    synth_core::wcet::WcetFunction::Bounded { name, .. }
-                    | synth_core::wcet::WcetFunction::Declined { name, .. } => name.as_str(),
-                })
-                .collect();
-            for unknown in hints
-                .functions
-                .keys()
-                .filter(|k| !compiled.contains(k.as_str()))
-            {
-                eprintln!(
-                    "warning: --wcet-hints names function '{unknown}' which is not in this \
-                     module — the hint was not consumed"
-                );
-            }
-        }
+        // #778 phase 2 / #1063: a --wcet-hints entry that does not address a
+        // function in this module is warned with a NAMED reason at key-
+        // resolution time (`resolve_hint_keys`, before compilation), and a hint
+        // whose function was skipped is warned after composition — nothing
+        // vanishes silently, so no unknown-key sweep is needed here.
         let sidecar = synth_core::wcet::WcetReport::sidecar_path(&output);
         let json = wr
             .to_json()
