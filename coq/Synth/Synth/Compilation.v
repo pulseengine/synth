@@ -549,7 +549,39 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
   | Nop =>
       (* No operation *)
       []
+
+  | BrIf _ =>
+      (* LOUD DECLINE, not a lowering (#1057, RQ-60-CFOBLIG increment 1):
+         resolving a label DEPTH to a branch OFFSET needs the enclosing
+         block structure, which this flat per-instruction model does not
+         carry. Emitting a fall-through (or a guessed offset) here would
+         be the #615 silent-NOP class — a branch compiled to code that
+         never branches. [UDF 255] makes every execution-shaped claim
+         about this arm unsatisfiable ([exec_instr (UDF _) = None]), the
+         same honest-decline instrument [exec_wasm_instr]'s catch-all
+         uses. The VERIFIED lowering shape for br_if is [compile_brif]
+         below, stated against the RESOLVED offset — the form the shipped
+         compiler actually emits after label resolution — and its
+         obligation is [brif_correct] (CorrectnessBrIf.v). *)
+      [UDF 255]
   end.
+
+(** ** br_if lowering shape (#1057, RQ-60-CFOBLIG increment 1) **)
+
+(** The shipped lowering for [BrIf] (select_with_stack.rs, `BrIf(depth)`
+    arm) is exactly
+
+      CMP cond_reg, #0
+      BNE <target label>
+
+    with the label resolved to a PC-relative offset by the branch
+    resolution phase. [compile_brif] models the RESOLVED form: [off] is
+    the number of instructions the taken branch skips (forward, matching
+    [exec_program_pc]'s branch rule [pc + 1 + off]). The condition is
+    consumed from R0, this model's stack-top convention. *)
+Definition compile_brif (off : Z) : arm_program :=
+  [CMP R0 (Imm I32.zero);
+   BCondOffset Cond_NE off].
 
 (** ** Compile Programs **)
 

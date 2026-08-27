@@ -306,12 +306,22 @@ rocq_library(
 # gate is now the 40 correctness Qed in :vcr_sel_rules themselves, which are
 # stated directly about the generated sequences.
 
+# RQ-60-CFOBLIG increment 1 (#1057): the br_if correspondence — WASM
+# branch-observable executor (exec_wasm_seq) vs the ARM branch-taking
+# executor (exec_program_br), over the resolved lowering shape compile_brif.
+rocq_library(
+    name = "correctness_brif",
+    srcs = ["Synth/Synth/CorrectnessBrIf.v"],
+    include_path = "Synth",
+    deps = _CORRECTNESS_FULL_DEPS + [":arm_flag_lemmas"],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
     srcs = ["Synth/Synth/CorrectnessComplete.v"],
     include_path = "Synth",
-    deps = [":correctness_core", ":correctness_tactics"],
+    deps = [":correctness_core", ":correctness_tactics", ":correctness_brif"],
 )
 
 # ─── Extraction ───────────────────────────────────────────────────────────────

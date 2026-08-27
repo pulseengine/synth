@@ -616,6 +616,21 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
   | Nop =>
       Some s
 
+  (* br_if — FALL-THROUGH-ONLY semantics in the flat sequential executor
+     (#1057, RQ-60-CFOBLIG increment 1). Popping the condition and
+     continuing is correct ONLY when the branch is not taken; a taken
+     branch transfers control out of the instruction sequence, which this
+     one-state-in/one-state-out shape cannot represent. So the taken case
+     DECLINES (None) rather than silently falling through — the #615
+     silent-NOP class. The full two-sided semantics, where a taken branch
+     is an observable outcome, live in [exec_wasm_seq] below. *)
+  | BrIf _ =>
+      match pop_i32 s with
+      | Some (c, s') =>
+          if I32.eq c I32.zero then Some s' else None
+      | None => None
+      end
+
   (* Unmodeled instructions fail honestly.
      The catch-all returns None (failure) rather than Some s (silent no-op)
      so the WASM model does not claim success for instructions it doesn't define.
@@ -636,6 +651,91 @@ Fixpoint exec_wasm_program (prog : list wasm_instr) (s : wasm_state) : option wa
       | None => None
       end
   end.
+
+(** ** Branch-observable execution (#1057, RQ-60-CFOBLIG increment 1)
+
+    [exec_wasm_program] is a straight-line executor: it cannot represent a
+    control transfer, which is why [exec_wasm_instr] declines a taken
+    [BrIf]. [exec_wasm_seq] makes the transfer OBSERVABLE instead of
+    unrepresentable: executing a sequence either falls through its end
+    ([WFallthrough]) or exits early toward the label at the given depth
+    ([WBranch l]) — the WasmCert-style "break" administrative outcome at
+    the smallest scale that can state a correspondence with the ARM
+    branch-taking executor [exec_program_br] (ArmSemantics.v). What it
+    deliberately does NOT model yet: the enclosing label stack
+    ([Block]/[Loop]/[End]) that would CONSUME a [WBranch] and resume at
+    the target — that is the named follow-up, not this increment. *)
+
+Inductive wasm_outcome : Type :=
+  | WFallthrough : wasm_state -> wasm_outcome
+  | WBranch : nat -> wasm_state -> wasm_outcome.
+
+Fixpoint exec_wasm_seq (prog : list wasm_instr) (s : wasm_state)
+    : option wasm_outcome :=
+  match prog with
+  | [] => Some (WFallthrough s)
+  | BrIf l :: rest =>
+      match pop_i32 s with
+      | Some (c, s') =>
+          if I32.eq c I32.zero
+          then exec_wasm_seq rest s'      (* not taken: fall through *)
+          else Some (WBranch l s')        (* taken: exit toward depth l *)
+      | None => None
+      end
+  | i :: rest =>
+      match exec_wasm_instr i s with
+      | Some s' => exec_wasm_seq rest s'
+      | None => None
+      end
+  end.
+
+(** A program is branch-free when it contains no [BrIf]. *)
+Definition brif_free (prog : list wasm_instr) : bool :=
+  forallb (fun i => match i with BrIf _ => false | _ => true end) prog.
+
+(** On branch-free programs the outcome executor IS the straight-line
+    executor: [exec_wasm_seq] refines [exec_wasm_program] with a
+    [WFallthrough] wrapper. This pins the new executor to the one the 600+
+    existing theorems are stated against — the extension cannot have
+    changed straight-line behavior. *)
+Lemma exec_wasm_seq_brif_free : forall prog s,
+  brif_free prog = true ->
+  exec_wasm_seq prog s =
+  match exec_wasm_program prog s with
+  | Some s' => Some (WFallthrough s')
+  | None => None
+  end.
+Proof.
+  induction prog as [| i rest IH]; intros s Hfree.
+  - reflexivity.
+  - unfold brif_free in Hfree. simpl in Hfree.
+    apply andb_prop in Hfree. destruct Hfree as [Hi Hrest].
+    (* [cbn] restricted to the two executors: unfolding [exec_wasm_instr]
+       on a concrete constructor would erase the term the [destruct]
+       case-splits on. *)
+    destruct i; try discriminate Hi;
+      cbn [exec_wasm_seq exec_wasm_program];
+      destruct (exec_wasm_instr _ s);
+      first [ apply IH; exact Hrest | reflexivity ].
+Qed.
+
+(** Unfolding pair for a [BrIf] at the head of a sequence — the two-sided
+    semantics in the shape the correspondence proof consumes. *)
+Lemma exec_wasm_seq_brif_taken : forall l rest s c s',
+  pop_i32 s = Some (c, s') ->
+  I32.eq c I32.zero = false ->
+  exec_wasm_seq (BrIf l :: rest) s = Some (WBranch l s').
+Proof.
+  intros l rest s c s' Hpop Hc. simpl. rewrite Hpop, Hc. reflexivity.
+Qed.
+
+Lemma exec_wasm_seq_brif_not_taken : forall l rest s c s',
+  pop_i32 s = Some (c, s') ->
+  I32.eq c I32.zero = true ->
+  exec_wasm_seq (BrIf l :: rest) s = exec_wasm_seq rest s'.
+Proof.
+  intros l rest s c s' Hpop Hc. simpl. rewrite Hpop, Hc. reflexivity.
+Qed.
 
 (** ** Properties *)
 

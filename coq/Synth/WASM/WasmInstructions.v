@@ -185,7 +185,19 @@ Inductive wasm_instr : Type :=
   (* Control flow *)
   | Drop : wasm_instr
   | Select : wasm_instr
-  | Nop : wasm_instr.
+  | Nop : wasm_instr
+
+  (* br_if <label depth> — conditional branch out of the enclosing block
+     (#1057, RQ-60-CFOBLIG increment 1). The immediate is the LABEL DEPTH,
+     exactly as carried by the shipped [WasmOp::BrIf(u32)]
+     (synth-synthesis/src/lib.rs); resolving a depth to an instruction
+     offset needs the enclosing block structure ([Block]/[Loop]/[End]),
+     which this flat model deliberately does not carry yet — a taken
+     branch is instead surfaced as an observable [WBranch] outcome by
+     [exec_wasm_seq] (WasmSemantics.v), the smallest label-stack-free
+     representation that can state a correspondence with the ARM
+     branch-taking executor [exec_program_br]. *)
+  | BrIf : nat -> wasm_instr.
 
 (** ** WebAssembly Programs *)
 
