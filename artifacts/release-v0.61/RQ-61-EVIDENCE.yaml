@@ -1,0 +1,50 @@
+artifacts:
+  - id: RQ-61-EVIDENCE
+    type: system-req
+    title: "A status can be claimed on evidence from the wrong release, or evidence that proves the wrong thing"
+    description: >
+      #1085, both halves found by USING the v0.60 status-evidence gate rather
+      than by reasoning about it.
+
+      R7 — EVIDENCE MUST BELONG TO THE RELEASE. `RQ-60-CANARY` was
+      `implemented` in v0.60 on evidence that shipped in v0.59.0: the canary
+      gate merged 08:50, v0.59.0 was tagged 15:19 (so the gate is an ANCESTOR
+      of that tag and v0.59.0's notes already credit it), and the v0.60 plan
+      was written 18:56 — after the tag — scoping already-released work. Every
+      gate passed, because each asks whether the evidence EXISTS and none asks
+      WHICH RELEASE it arrived in. Mechanical: `git log -S<literal> -- <path>`,
+      first-parent, oldest; if that commit is an ancestor of the v(X.Y-1) tag,
+      red, naming the tag. Escape hatch matching the waiver discipline: an
+      explicit `shipped-in:` with a written reason.
+
+      R8 — THE `release:` FIELD MUST EQUAL THE FILE'S VERSION. The checker
+      derives the release from the PATH; rivet's readiness query reads the
+      FIELD; nothing asserts they agree. 6 live mismatches measured (all in
+      release-v0.57.yaml carrying v0.56.1/v0.56.2 — real patch-release
+      artifacts parked in the next minor's file, a legitimate practice that
+      needs saying out loud). Benign today because both sides are < v0.60. The
+      harmful direction nobody has hit: an artifact in a pre-v0.60 file
+      carrying `release: v0.60` is EXEMPT from every >= v0.60 rule while rivet
+      counts it in v0.60's scope — a silent bypass, not a cosmetic mismatch.
+
+      R9 — A `contains:` INTO `crates/**` IS WEAKER THAN THE GATE. Three of
+      v0.60's eight artifacts pinned a code-existence predicate where the
+      artifact's own description set a measured-or-executed bar.
+      `RQ-60-A64IMPORT` is the specimen: its description says in capitals "the
+      acceptance number is the deliverable ... a change that adds a code path
+      without moving the census has not delivered", and its `done-when` checked
+      that the code path exists. A predicate that cannot fail on the failure
+      the artifact defines for itself is not a predicate. Both live instances
+      were corrected in #1090; the RULE is what is missing.
+    status: proposed
+    release: v0.61
+    tags: [gates, rivet, status-evidence, methodology]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1085"
+      done-when: "manual: R7/R8/R9 implemented in status_evidence_check.py with the #1085 instances replayed as fixtures, and the 6 R8 mismatches disposed of explicitly"

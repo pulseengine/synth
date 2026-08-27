@@ -1,0 +1,41 @@
+artifacts:
+  - id: RQ-61-WASMOP
+    type: system-req
+    title: "The proof-inventory universe is the Rocq constructor set, so the ops the consumer actually meets get no row at all"
+    description: >
+      Named residual of RQ-60-CFOBLIG (#1057), and gale's own next need.
+      `artifacts/proof-inventory.json` covers the 138 `wasm_instr` constructors
+      of the Rocq model. gale's measured frontier — `end` 64, `BrIf` 40 (now
+      bound), `block` 38, `call` 31, byte-memory 34 of their 231 uncovered
+      terminators — lives in the gap between that set and the shipped `WasmOp`
+      enum. Those ops get NO ROW, rather than an explicit "unmodeled" row.
+
+      In a manifest whose entire purpose is that ABSENCE SHOULD BE LEGIBLE,
+      a missing row is the one thing it must not do. Extend the universe to
+      `WasmOp` so every op a real object can contain has a row, carrying
+      `modeled: false` where the Rocq model has no constructor.
+
+      ORDERING PUT TO THE CONSUMER, not decided unilaterally: this (cheap,
+      unblocks their measurement immediately with honest rows) versus going
+      straight at the `Block`/`End` correspondence obligation (structurally
+      harder than `BrIf` was, and `End` alone is 64 of their 231). Default is
+      this first, for that asymmetry; gale was asked on #1057 and their answer
+      governs.
+
+      CARRY FORWARD the v0.60 correction that produced this artifact: names are
+      NOT a usable key. 19 `*_correct` theorems are declared in two files with
+      different statements, and existence-only theorems carry the `_correct`
+      suffix — so a name-derived matcher over-counts AND under-counts. Binding
+      and strength stay semantic.
+    status: proposed
+    release: v0.61
+    tags: [proofs, manifest, consumer-contract, gale]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: review
+      issue: "#1057"
+      done-when: "manual: every WasmOp variant has a row; unmodeled ops carry modeled:false; the freshness byte-compare and the Qed cross-check still gate it"
