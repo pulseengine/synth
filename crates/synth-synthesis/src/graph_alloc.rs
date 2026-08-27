@@ -309,7 +309,28 @@ fn reallocate_straight_line(
         *web_costs.entry(rep[*v]).or_insert(0) += c;
     }
 
-    let (coloring, spilled) = color_ranges(&pool_adj, pool.len(), &pins, &web_costs);
+    // Colour. A function with NO tied pairs takes the exact colourer this
+    // pass has always used, so its output is byte-for-byte unchanged. A
+    // TIED-web function was undecodable before this increment (it always
+    // declined on the rmw mismatch), so its output is NEW — and the
+    // conservative choice for a lane whose cost model is explicitly deferred
+    // to increment 2 is ZERO-CHURN: the joins path's biased select with
+    // `caller_saved = 0` degenerates to *own colour if free, else lowest
+    // free*, so a function whose only blocker was the tie recolours toward
+    // its original assignment instead of churning registers (measured: the
+    // unbiased select on newly-applying tied functions moved webs off their
+    // narrow-encoding/CSE-friendly homes and GREW controller_step.wasm
+    // 144->156 B through the downstream passes — caught by the wired
+    // vcr_dec_001_graph_alloc_differential no-growth check).
+    let (coloring, spilled) = if tied.is_empty() {
+        color_ranges(&pool_adj, pool.len(), &pins, &web_costs)
+    } else {
+        let orig_colour: BTreeMap<usize, usize> = ranges
+            .iter()
+            .filter_map(|r| pool_index.get(&r.reg).map(|&c| (rep[r.vreg], c)))
+            .collect();
+        joins::color_webs_biased(&pool_adj, pool.len(), &pins, &web_costs, &orig_colour, 0)
+    };
     if !spilled.is_empty() {
         // Spill code insertion is increment 2+ (reuse the Belady machinery).
         // For now a function that does not fit the pool declines to the shipping
@@ -1108,7 +1129,12 @@ mod joins {
     /// SHIPPING `reallocate_function`, so a different select order there would
     /// move the frozen bytes. The simplify/optimistic-spill half is the same
     /// algorithm, deliberately mirrored rather than reused for that reason.
-    fn color_webs_biased(
+    ///
+    /// `pub(super)` for RQ-60-RACOST increment 1: with `caller_saved = 0`
+    /// steps 1-2 are vacuous and the order degenerates to *own colour if
+    /// free, else lowest free* — the zero-churn identity bias the
+    /// straight-line pass uses on tied-web functions (see the call site).
+    pub(super) fn color_webs_biased(
         adj: &BTreeMap<usize, BTreeSet<usize>>,
         k: usize,
         precolored: &BTreeMap<usize, usize>,
@@ -1813,11 +1839,14 @@ mod tests {
         assert_eq!(movw_rd, movt_rd, "tied use/def web split across registers");
     }
 
-    /// The tied web moves TOGETHER when it is free: `pop {r4, pc}` redefines
-    /// r4, so neither RMW-side range is exit-pinned and the whole web is the
-    /// colourer's to place — both halves of the materialization land on the
-    /// SAME freely chosen register and the rewrite validates. Guards the
-    /// merged path's non-identity recolouring.
+    /// The tied web is placed as ONE node when it is fully free: `pop {r4,pc}`
+    /// redefines r4, so neither RMW-side range is exit-pinned and the whole
+    /// web is the colourer's to place — both halves of the materialization
+    /// land on the SAME register and the rewrite validates. Under the
+    /// zero-churn identity bias (own colour first) that register is R4, the
+    /// web's original home: increment 1's tied handling is deliberately
+    /// byte-neutral, and recolouring tied webs for measured wins is
+    /// increment 2's cost-model lane.
     #[test]
     fn tied_rmw_web_recolours_together_and_validates() {
         let body = vec![
@@ -1850,6 +1879,11 @@ mod tests {
             other => panic!("movw/movt shape must be preserved, got {other:?}"),
         };
         assert_eq!(movw_rd, movt_rd, "tied use/def web split across registers");
+        assert_eq!(
+            movw_rd,
+            Reg::R4,
+            "zero-churn bias: a fully-free tied web keeps its original home"
+        );
     }
 
     /// The tie scan is PROBED from the shipped rewriter, so it ties exactly
