@@ -1132,15 +1132,151 @@ fn compile_wasm_to_arm(
         // shrinking the `push {r4-r8,lr}` the #580 exhaustion shapes pay for.
         // `post_exhaust == false` selects the shipping pass bit for bit.
         let (out, stats) = if synth_synthesis::graph_alloc::enabled() {
-            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL) {
-                Some(new) => {
-                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
-                        eprintln!("[graph-alloc] whole-function colouring APPLIED (validated)");
+            // RQ-60-RACOST increment 2 (#242): the colourer prices every
+            // colour choice in REAL-ENCODER bytes. The sizer is the same
+            // encoder family the emit loop below constructs — Thumb-2 (with
+            // the target's FPU) or A32 — asked per candidate instruction, so
+            // there is no hand size table to drift (#936). On the fixed-width
+            // A32 ISA every candidate ties and the cost model degenerates to
+            // the identity hint (zero churn).
+            let sizing_encoder =
+                if matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb) {
+                    ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
+                } else {
+                    ArmEncoder::new_arm32()
+                };
+            let enc = |op: &synth_synthesis::rules::ArmOp| {
+                sizing_encoder.encode(op).ok().map(|b| b.len())
+            };
+            let stats_on = std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok();
+            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL, &enc) {
+                // SYNTH_GRAPH_ALLOC_FORCE (test seam, RQ-60-RACOST
+                // increment 2): ship every validated candidate WITHOUT the
+                // final-byte arbiter — the pre-arbiter behaviour. Used by
+                // `vcr_dec_001_join_alloc_execution_differential.py` so the
+                // unicorn-vs-wasmtime oracle executes the colourer's
+                // proposals on EVERY reachable shape (call, i64-pair,
+                // shift-expansion), not only the ones the arbiter lets ship —
+                // an arbiter-declined candidate is still a candidate a future
+                // change could promote, and the execution teeth must stay
+                // ahead of that. Never set in production; the arbiter is the
+                // shipping behaviour.
+                Some(candidate)
+                    if std::env::var("SYNTH_GRAPH_ALLOC_FORCE").is_ok_and(|v| v != "0") =>
+                {
+                    if stats_on {
+                        eprintln!(
+                            "[graph-alloc] whole-function colouring APPLIED \
+                             (validated; FORCED — arbiter bypassed)"
+                        );
                     }
-                    (new, synth_synthesis::liveness::ReallocStats::default())
+                    (
+                        candidate,
+                        synth_synthesis::liveness::ReallocStats::default(),
+                    )
+                }
+                Some(candidate) => {
+                    // FINAL-BYTE ARBITER (RQ-60-RACOST increment 2). A
+                    // colour-time cost model — however faithful its byte sizes
+                    // — cannot price DOWNSTREAM PASS INTERACTIONS: measured on
+                    // const_cse.wat::spill12, an identity-shaped colouring
+                    // that merely PRESERVED the greedy allocator's register
+                    // rotation defeated const-CSE's canonicalization and grew
+                    // the function 148 -> 244 B (+96), with not one occurrence
+                    // priced differently at colour time. So the candidate is
+                    // sized through the REAL downstream pipeline
+                    // (`finish_allocated_stream` — the exact passes the
+                    // shipped stream runs, not a mirror) plus label resolution
+                    // and the REAL encoder, against the shipping allocator's
+                    // stream sized identically, and it ships only when it is
+                    // STRICTLY smaller. A tie or a refusal keeps the shipping
+                    // bytes — growth on an applied function is structurally
+                    // impossible, which is exactly the wired
+                    // vcr_dec_001_graph_alloc_differential no-growth
+                    // assertion, promoted from a gate into a construction.
+                    let ship = synth_synthesis::liveness::reallocate_function_post_exhaust(
+                        &arm_instrs,
+                        &POOL,
+                        post_exhaust,
+                    );
+                    let size_of = |stream: &[synth_synthesis::ArmInstruction]| -> Option<usize> {
+                        let finished = match finish_allocated_stream(
+                            stream.to_vec(),
+                            config,
+                            post_exhaust,
+                            true,
+                        ) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                if stats_on {
+                                    // The differential greps for the RA-003
+                                    // hard-error string to detect a SHIPPED
+                                    // violation; a candidate refused during
+                                    // sizing is a decline, not a shipped
+                                    // violation, so that marker is rewritten.
+                                    let e = e.replace(
+                                        "register-allocation validation FAILED",
+                                        "register-allocation validation refused the candidate",
+                                    );
+                                    eprintln!(
+                                        "[graph-alloc] arbiter: stream refused by the \
+                                         pipeline/validators: {e}"
+                                    );
+                                }
+                                return None;
+                            }
+                        };
+                        let finished = if matches!(
+                            config.target.isa,
+                            IsaVariant::Thumb2 | IsaVariant::Thumb
+                        ) {
+                            resolve_label_branches(finished, &sizing_encoder).ok()?
+                        } else {
+                            finished
+                        };
+                        let mut total = 0usize;
+                        let mut literals = 0usize;
+                        for ins in &finished {
+                            total += sizing_encoder.encode(&ins.op).ok()?.len();
+                            if matches!(ins.op, synth_synthesis::rules::ArmOp::LdrSym { .. }) {
+                                literals += 1;
+                            }
+                        }
+                        if literals > 0 {
+                            // The emit loop 4-aligns the literal pool and
+                            // appends one word per LdrSym (no dedup — each
+                            // site carries its own addend).
+                            total += (4 - total % 4) % 4 + 4 * literals;
+                        }
+                        Some(total)
+                    };
+                    match (size_of(&candidate), size_of(&ship.0)) {
+                        (Some(cand), Some(base)) if cand < base => {
+                            if stats_on {
+                                eprintln!(
+                                    "[graph-alloc] whole-function colouring APPLIED \
+                                     (validated; arbiter: {cand} B < shipping {base} B)"
+                                );
+                            }
+                            (
+                                candidate,
+                                synth_synthesis::liveness::ReallocStats::default(),
+                            )
+                        }
+                        (cand, base) => {
+                            if stats_on {
+                                eprintln!(
+                                    "[graph-alloc] arbiter kept shipping bytes \
+                                     (candidate {cand:?} B vs shipping {base:?} B) → \
+                                     shipping reallocate_function"
+                                );
+                            }
+                            ship
+                        }
+                    }
                 }
                 None => {
-                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                    if stats_on {
                         eprintln!("[graph-alloc] DECLINED → shipping reallocate_function");
                     }
                     synth_synthesis::liveness::reallocate_function_post_exhaust(

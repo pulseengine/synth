@@ -239,7 +239,7 @@ artifacts:
       build against it. Byte-changing, so frozen anchors and the execution
       differentials gate every step; a deletion that moves emitted bytes without
       an oracle proving the new bytes correct is REFUSED, not explained.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [allocator, cost-model, tied-operands, measured, byte-changing]
     links:
@@ -265,10 +265,50 @@ artifacts:
       # cost-model lane, per this artifact's own RQ-59-MEASURE verdict. Also
       # surfaced + fixed a latent #490 hole (const-CSE alias hoist could home
       # its holder in an UNSAVED callee-saved register; caught by VCR-RA-003
-      # exactly as this artifact's GATE paragraph prescribes). Increment 2
-      # (real-encoder byte costs) remains open; status stays `proposed` until
-      # the measured allocator verdict in done-when exists.
-      landed: "#242 PR #1082"
+      # exactly as this artifact's GATE paragraph prescribes).
+      #
+      # Increment 2 of 2 — REAL-ENCODER BYTE COSTS — LANDED
+      # (feat/ra-real-encoder-costs-242): the colourer's select prices every
+      # colour by the REAL encoder's own byte length per occurrence (Fried et
+      # al. CC 2023 Algorithm 1 — C(L,r) with the encoder standing in for the
+      # hand compressibility predicate; occurrence weights 10^loop_depth from
+      # CFG natural loops; spill order W/(span x degree)), and a FINAL-BYTE
+      # ARBITER sizes each candidate through the extracted REAL downstream
+      # pipeline (finish_allocated_stream — the same passes the shipped
+      # stream runs, not a mirror) so a candidate ships only when STRICTLY
+      # smaller than the shipping allocator's bytes. Measured verdict (the
+      # done-when's substance): relocatable 19 shrank / 0 grew (-72 B, wcet
+      # -25), self-contained 47 shrank / 0 grew (-320 B, wcet -47) — the
+      # RQ-59-MEASURE regression tail (re-derived on 2026-08-27 main as
+      # {spill12 +96, gust_poll +10, hp64 +8, sum_below +4, set_canary +4})
+      # is CLOSED BY CONSTRUCTION: growth on an applied function is now
+      # unrepresentable, which converts the no-growth differential's gate
+      # into a property. KEY NEGATIVE FINDING recorded for VCR-RA-011: the
+      # cost METRIC was only half the mechanism — spill12's +96 B came from
+      # an IDENTITY-shaped colouring defeating downstream const-CSE
+      # canonicalization, invisible to ANY colour-time cost model; only the
+      # final-byte arbiter (real pipeline + real encoder) closes that class.
+      # VCR-RA-003 Consistent on every applied function; execution
+      # differential 100/100 with full engagement via the
+      # SYNTH_GRAPH_ALLOC_FORCE test seam; rmw decline bucket still 0 on
+      # both paths; frozen anchors unmoved (flag ships OFF — the default
+      # flip stays gated on VCR-MEASURE-004's domination + silicon arc,
+      # which the 66-shrank/0-grew byte distribution now feeds).
+      landed: "#242 PR #1082; increment 2 #242 (feat/ra-real-encoder-costs-242)"
+      verified-by: >-
+        The done-when's named acceptance oracles, run on the increment-2
+        binary: VCR-RA-003 validate_final_allocation Consistent on every
+        applied function and the byte-changing differentials green —
+        scripts/repro/vcr_dec_001_graph_alloc_differential.py OK (flag-off ≡
+        frozen goldens; 5 applying fixtures, no drift, no growth) and
+        scripts/repro/vcr_dec_001_join_alloc_execution_differential.py
+        100/100 PASS (unicorn vs wasmtime, ENGAGED=28 CALLSHAPES=6
+        PAIRSHAPES=9 SHIFTSHAPES=6 via SYNTH_GRAPH_ALLOC_FORCE). Measured
+        distribution (vcr_dec_001_join_alloc_measure.py, 2026-08-27):
+        relocatable 19 shrank / 0 grew / -72 B; self-contained 47 shrank /
+        0 grew / -320 B; rmw bucket 0/0 (scripts/tied_web_census_242.py);
+        cargo test --workspace 152 suites green (frozen anchors unmoved,
+        flag ships OFF).
 
   - id: RQ-60-ARTIFACTSPLIT
     type: system-req

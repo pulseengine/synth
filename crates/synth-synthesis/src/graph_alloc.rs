@@ -77,11 +77,30 @@
 use crate::abi_contract::{AbiContractVerdict, validate_abi_contract};
 use crate::instruction_selector::ArmInstruction;
 use crate::liveness::{
-    apply_range_coloring, color_ranges, is_straight_line, range_interference, reg_effect,
-    rewrite_op_maps, straight_line_value_ranges, validate_segment_rewrite,
+    apply_range_coloring, is_straight_line, range_interference, reg_effect, rewrite_op_maps,
+    straight_line_value_ranges, validate_segment_rewrite,
 };
-use crate::rules::Reg;
+use crate::rules::{ArmOp, Reg};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Cap on the 10^loop_depth occurrence weight (10^4 = a 4-deep nest; deeper
+/// nests saturate so a pathological CFG cannot overflow the u64 sums).
+const MAX_LOOP_DEPTH_EXP: u32 = 4;
+
+/// The classic Chaitin frequency estimate — 10 per loop-nesting level —
+/// applied to MEASURED bytes rather than occurrence counts.
+fn loop_weight(depth: u32) -> u64 {
+    10u64.pow(depth.min(MAX_LOOP_DEPTH_EXP))
+}
+
+/// The caller-saved prefix of the pool (R0-R3): the registers a value can
+/// move INTO for free, because they need no prologue save. The tie-break
+/// input of [`color_webs_costed`].
+fn caller_saved_prefix(pool: &[Reg]) -> usize {
+    pool.iter()
+        .take_while(|r| matches!(r, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3))
+        .count()
+}
 
 /// The VCR-VER-004 acceptance gate, applied on top of whichever dataflow
 /// validator the caller already discharged.
@@ -130,26 +149,32 @@ pub fn enabled() -> bool {
 /// `reallocate_function` step 1; the caller's later prologue / dead-frame passes
 /// run on the output unchanged (so a value homed in R4-R8 still gets its
 /// callee-saved push — the invariant VCR-RA-003 guards).
-pub fn reallocate(instrs: &[ArmInstruction], pool: &[Reg]) -> Option<Vec<ArmInstruction>> {
+pub fn reallocate(
+    instrs: &[ArmInstruction],
+    pool: &[Reg],
+    enc: &dyn Fn(&ArmOp) -> Option<usize>,
+) -> Option<Vec<ArmInstruction>> {
     if std::env::var("SYNTH_GRAPH_ALLOC_DUMP").is_ok() {
         eprintln!("[ga-dump] ---- function, {} instrs ----", instrs.len());
         for (i, ins) in instrs.iter().enumerate() {
             eprintln!("[ga-dump] {i:3}: {:?}", ins.op);
         }
     }
-    // INCREMENT 1 (v0.50) — whole straight-line functions. Tried FIRST and left
-    // bit-for-bit as it shipped, so the increment-1 corpus stays byte-identical.
-    if let Some(out) = reallocate_straight_line(instrs, pool) {
+    // INCREMENT 1 (v0.50) — whole straight-line functions, tried FIRST.
+    if let Some(out) = reallocate_straight_line(instrs, pool, enc) {
         return Some(out);
     }
     // INCREMENT 2 (v0.53, this lane) — colour ACROSS if/else joins.
-    joins::reallocate_across_joins(instrs, pool)
+    joins::reallocate_across_joins(instrs, pool, enc)
 }
 
-/// Increment 1: the whole-straight-line-function colouring, unchanged.
+/// Increment 1: the whole-straight-line-function colouring. Since RQ-60-RACOST
+/// increment 2 its select is priced by `enc` — the caller-supplied REAL
+/// encoder — instead of being cost-blind.
 fn reallocate_straight_line(
     instrs: &[ArmInstruction],
     pool: &[Reg],
+    enc: &dyn Fn(&ArmOp) -> Option<usize>,
 ) -> Option<Vec<ArmInstruction>> {
     // BOUNDED SCOPE: the whole function must be ONE straight-line segment. Any
     // control-flow / call / unmodeled op → decline (increment 2 below takes the
@@ -296,41 +321,39 @@ fn reallocate_straight_line(
         pool_adj.insert(blocker, pool_webs.iter().copied().collect());
     }
 
-    // Spill cost: occurrence count per range (1 per def + 1 per use event),
-    // replayed with the same vreg numbering `straight_line_value_ranges` uses,
-    // then folded onto tied-web representatives (a merged web's spill cost is
-    // the sum of its members' — spilling the web spills every member).
-    let Some(costs) = occurrence_costs(instrs) else {
+    // RQ-60-RACOST increment 2 (#242) — the REAL-ENCODER COST MODEL. Build the
+    // occurrence index with the same vreg replay as
+    // `straight_line_value_ranges` (folded onto tied-web representatives);
+    // both the spill-order metric and the select price colours from the
+    // caller-supplied encoder's OWN byte lengths (a straight-line segment has
+    // no loops, so every occurrence weight is 1). Cost-blind selects churned
+    // registers for nothing and defeated downstream passes
+    // (controller_step.wasm 144->156 B under increment 1's unbiased trial,
+    // caught by the wired vcr_dec_001_graph_alloc_differential no-growth
+    // check); the measured-cost ranking plus the synth-backend final-byte
+    // arbiter replace that gamble with a guarantee.
+    let Some(ix) = straight_line_occurrence_index(instrs, &rep) else {
         sub("no-occurrence-costs");
         return None;
     };
-    let mut web_costs: BTreeMap<usize, usize> = BTreeMap::new();
-    for (v, c) in &costs {
-        *web_costs.entry(rep[*v]).or_insert(0) += c;
-    }
-
-    // Colour. A function with NO tied pairs takes the exact colourer this
-    // pass has always used, so its output is byte-for-byte unchanged. A
-    // TIED-web function was undecodable before this increment (it always
-    // declined on the rmw mismatch), so its output is NEW — and the
-    // conservative choice for a lane whose cost model is explicitly deferred
-    // to increment 2 is ZERO-CHURN: the joins path's biased select with
-    // `caller_saved = 0` degenerates to *own colour if free, else lowest
-    // free*, so a function whose only blocker was the tie recolours toward
-    // its original assignment instead of churning registers (measured: the
-    // unbiased select on newly-applying tied functions moved webs off their
-    // narrow-encoding/CSE-friendly homes and GREW controller_step.wasm
-    // 144->156 B through the downstream passes — caught by the wired
-    // vcr_dec_001_graph_alloc_differential no-growth check).
-    let (coloring, spilled) = if tied.is_empty() {
-        color_ranges(&pool_adj, pool.len(), &pins, &web_costs)
-    } else {
-        let orig_colour: BTreeMap<usize, usize> = ranges
-            .iter()
-            .filter_map(|r| pool_index.get(&r.reg).map(|&c| (rep[r.vreg], c)))
-            .collect();
-        joins::color_webs_biased(&pool_adj, pool.len(), &pins, &web_costs, &orig_colour, 0)
+    let (web_w, web_span) = web_weights(&ix, instrs, enc);
+    let orig_colour: BTreeMap<usize, usize> = ranges
+        .iter()
+        .filter_map(|r| pool_index.get(&r.reg).map(|&c| (rep[r.vreg], c)))
+        .collect();
+    let mut occ = |w: usize, c: usize, assigned: &BTreeMap<usize, usize>| {
+        occurrence_bytes(&ix, instrs, pool, w, c, assigned, enc)
     };
+    let (coloring, spilled) = color_webs_costed(
+        &pool_adj,
+        pool.len(),
+        &pins,
+        &web_w,
+        &web_span,
+        &orig_colour,
+        caller_saved_prefix(pool),
+        &mut occ,
+    );
     if !spilled.is_empty() {
         // Spill code insertion is increment 2+ (reuse the Belady machinery).
         // For now a function that does not fit the pool declines to the shipping
@@ -397,32 +420,317 @@ fn reallocate_straight_line(
     }
 }
 
-/// Per-range occurrence cost (Chaitin spill metric input): 1 per def + 1 per use,
-/// replayed with the SAME vreg numbering as [`straight_line_value_ranges`] so the
-/// costs align with the range ids `range_interference` / `color_ranges` use.
-/// `None` on an unmodeled op (already excluded by the caller's pre-scan, but kept
-/// total).
-fn occurrence_costs(instrs: &[ArmInstruction]) -> Option<BTreeMap<usize, usize>> {
-    let mut costs: BTreeMap<usize, usize> = BTreeMap::new();
+/// RQ-60-RACOST increment 2 (#242) — the occurrence index the REAL-ENCODER
+/// cost model prices colours against.
+///
+/// One entry per effectful instruction: its stream index plus the
+/// register→web operand maps on the use side and the def side. `occs` inverts
+/// it (web → entries touching it) and `weight` carries the entry's loop-depth
+/// scale (`10^depth`; a straight-line segment is all 1) — the classic Chaitin
+/// frequency estimate, applied to MEASURED bytes rather than occurrence
+/// counts.
+struct OccurrenceIndex {
+    entries: Vec<Occurrence>,
+    occs: BTreeMap<usize, Vec<usize>>,
+    weight: Vec<u64>,
+}
+
+/// One effectful instruction: stream index + register→web maps per side.
+type Occurrence = (usize, BTreeMap<Reg, usize>, BTreeMap<Reg, usize>);
+
+/// The select's pricing oracle: (web, colour, partial assignment) → measured
+/// bytes, `None` when an occurrence is unencodable under the candidate.
+type OccCostFn<'a> = dyn FnMut(usize, usize, &BTreeMap<usize, usize>) -> Option<u64> + 'a;
+
+impl OccurrenceIndex {
+    fn new() -> Self {
+        OccurrenceIndex {
+            entries: Vec::new(),
+            occs: BTreeMap::new(),
+            weight: Vec::new(),
+        }
+    }
+    fn push(&mut self, i: usize, uses: BTreeMap<Reg, usize>, defs: BTreeMap<Reg, usize>, w: u64) {
+        let pi = self.entries.len();
+        let webs: BTreeSet<usize> = uses.values().chain(defs.values()).copied().collect();
+        for web in webs {
+            self.occs.entry(web).or_default().push(pi);
+        }
+        self.entries.push((i, uses, defs));
+        self.weight.push(w);
+    }
+}
+
+/// The straight-line occurrence index: the same replay discipline (and
+/// therefore the same vreg numbering) as [`straight_line_value_ranges`], with
+/// every vreg folded onto its tied-web representative via `rep`. `None` on an
+/// unmodeled op or a numbering drift (both excluded by the caller's pre-scan,
+/// but kept total — a silent partial index would misprice every web after the
+/// gap).
+fn straight_line_occurrence_index(
+    instrs: &[ArmInstruction],
+    rep: &[usize],
+) -> Option<OccurrenceIndex> {
+    let mut ix = OccurrenceIndex::new();
     let mut current: BTreeMap<Reg, usize> = BTreeMap::new();
     let mut next = 0usize;
-    for ins in instrs {
+    for (i, ins) in instrs.iter().enumerate() {
         let e = reg_effect(&ins.op)?;
+        let mut uses: BTreeMap<Reg, usize> = BTreeMap::new();
         for u in &e.uses {
             let v = *current.entry(*u).or_insert_with(|| {
                 let v = next;
                 next += 1;
                 v
             });
-            *costs.entry(v).or_insert(0) += 1;
+            uses.insert(*u, *rep.get(v)?);
         }
+        let mut defs: BTreeMap<Reg, usize> = BTreeMap::new();
         for d in &e.defs {
-            current.insert(*d, next);
-            *costs.entry(next).or_insert(0) += 1;
+            let v = next;
             next += 1;
+            current.insert(*d, v);
+            defs.insert(*d, *rep.get(v)?);
+        }
+        ix.push(i, uses, defs, 1);
+    }
+    Some(ix)
+}
+
+/// The MEASURED byte cost of homing `web` in `pool[colour]`: for every
+/// instruction the web occurs in, rewrite the operand registers to the
+/// candidate assignment (webs already coloured keep their chosen colour,
+/// undecided webs their original register) and ask the encoder for the byte
+/// length of the RESULT, scaled by the occurrence's loop weight. This is the
+/// Fried et al. (CC 2023) `C(L, r)` compressibility probe with the encoder's
+/// own bytes standing in for a hand compressibility predicate — #936 already
+/// established that a hand mirror of the encoder's size behaviour was UNSOUND
+/// at authoring, and asking the encoder itself cannot drift.
+///
+/// `None` means some occurrence became UNENCODABLE under this candidate (the
+/// #180/#311 high-register class the encoder refuses): the candidate is
+/// excluded rather than priced optimistically. An occurrence the REWRITER
+/// cannot express at all is skipped instead — that refusal is
+/// candidate-independent (the apply phase declines the whole function later),
+/// so skipping it biases no comparison.
+fn occurrence_bytes(
+    ix: &OccurrenceIndex,
+    instrs: &[ArmInstruction],
+    pool: &[Reg],
+    web: usize,
+    colour: usize,
+    assigned: &BTreeMap<usize, usize>,
+    enc: &dyn Fn(&ArmOp) -> Option<usize>,
+) -> Option<u64> {
+    let mut total = 0u64;
+    let Some(occ) = ix.occs.get(&web) else {
+        return Some(0);
+    };
+    for &pi in occ {
+        let (i, uses, defs) = &ix.entries[pi];
+        let subst = |m: &BTreeMap<Reg, usize>| -> BTreeMap<Reg, Reg> {
+            m.iter()
+                .map(|(r, w)| {
+                    let tgt = if *w == web {
+                        pool[colour]
+                    } else if let Some(&c) = assigned.get(w) {
+                        if c < pool.len() { pool[c] } else { *r }
+                    } else {
+                        *r
+                    };
+                    (*r, tgt)
+                })
+                .collect()
+        };
+        let Some(op) = rewrite_op_maps(&instrs[*i].op, &subst(uses), &subst(defs)) else {
+            continue;
+        };
+        total += (enc(&op)? as u64) * ix.weight[pi];
+    }
+    Some(total)
+}
+
+/// The Chaitin spill metric over MEASURED bytes — `W(web) = Σ_occurrences
+/// enc(instruction) × 10^loop_depth` — plus each web's live span (first to
+/// last occurrence), for the `W / (span × degree)` normalization the
+/// optimistic-spill choice uses ("normalized by live-range length", the
+/// Bernstein-area refinement of Chaitin's cost/degree). An occurrence the
+/// encoder cannot size contributes 0: the metric only ORDERS the
+/// optimistic-spill choice (a spill is a DECLINE in this pass), so
+/// under-weighting is safe.
+fn web_weights(
+    ix: &OccurrenceIndex,
+    instrs: &[ArmInstruction],
+    enc: &dyn Fn(&ArmOp) -> Option<usize>,
+) -> (BTreeMap<usize, u64>, BTreeMap<usize, usize>) {
+    let mut w_map: BTreeMap<usize, u64> = BTreeMap::new();
+    let mut first_last: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    for (pi, (i, uses, defs)) in ix.entries.iter().enumerate() {
+        let sz = enc(&instrs[*i].op).unwrap_or(0) as u64 * ix.weight[pi];
+        let webs: BTreeSet<usize> = uses.values().chain(defs.values()).copied().collect();
+        for w in webs {
+            *w_map.entry(w).or_insert(0) += sz;
+            first_last
+                .entry(w)
+                .and_modify(|(f, l)| {
+                    *f = (*f).min(*i);
+                    *l = (*l).max(*i);
+                })
+                .or_insert((*i, *i));
         }
     }
-    Some(costs)
+    let span = first_last
+        .into_iter()
+        .map(|(w, (f, l))| (w, l - f + 1))
+        .collect();
+    (w_map, span)
+}
+
+/// Chaitin/Briggs colouring with the RQ-60-RACOST increment-2 REAL-ENCODER
+/// COST MODEL in both halves (#242).
+///
+/// **Simplify / optimistic-spill order.** Where no node has degree < k, the
+/// node minimizing `W / (span × degree)` — measured bytes × 10^loop_depth,
+/// normalized by live-range length and constraint degree — is pushed as the
+/// optimistic-spill candidate (cross-multiplied to stay in integers).
+///
+/// **Select** — Fried / Stemmer-Grabow / Wachter (CC 2023, "Register
+/// Allocation for Compressed ISAs in LLVM"), Algorithm 1, adapted to a
+/// rename-only pass: every free colour is priced by `occ_cost` (the
+/// real-encoder `C(L, r)` probe over the web's occurrences — max
+/// compressibility there is min measured bytes here), the strictly cheapest
+/// wins, and among BYTE-EQUAL minima the established preference order breaks
+/// the tie:
+///   1. the web's ORIGINAL register when it is caller-saved (R0-R3) — churn-
+///      free, and a value already in scratch has nothing to gain by moving;
+///   2. the lowest caller-saved minimum — evacuate R4-R8 so the downstream
+///      `shrink_callee_saved_saves` can drop prologue push/pop entries (a win
+///      that lives entirely downstream, so colour-time bytes cannot see it);
+///   3. the web's original register (now necessarily callee-saved) — zero
+///      churn when no scratch register is free;
+///   4. the lowest minimum, as a last resort.
+///
+/// A candidate `occ_cost` refuses (an occurrence unencodable under it) is
+/// excluded outright. Fried's §4.4 hint-breaking limit is deliberately NOT
+/// carried over: it bounds the cost of breaking a COPY hint, and this pass
+/// inserts no copies — its analogue here is the FINAL-BYTE ARBITER in
+/// `synth-backend`, which sizes the whole candidate function through the real
+/// downstream pipeline and refuses any recolouring that does not strictly
+/// shrink the shipped bytes. That is strictly stronger than any colour-time
+/// bound: measured on `const_cse.wat::spill12`, even an IDENTITY-biased
+/// colouring grew the function +96 B through a defeated downstream const-CSE,
+/// with no occurrence priced differently at colour time.
+///
+/// History, so the previous selects are not re-invented: the first select
+/// (lowest free colour) repacked whole functions into R0/R1 and put a loop's
+/// compare result on top of a register `forward_stack_reloads` was forwarding
+/// through (+2 B / +22 cycles on `loop_param_bound_663::sum_const`); its
+/// successor (the fixed caller-saved-evacuation preference, kept above as the
+/// tie-break) narrowed encodings but was byte-blind, and RQ-59-MEASURE traced
+/// the colourer's entire regression tail (7 growers, one mechanism) to
+/// exactly that blindness — a 2-byte register copy and a 4-byte `[sp,#imm]`
+/// reload priced identically. The measured costs now rank first; the old
+/// order only splits ties.
+///
+/// NOT implemented by changing `chaitin_core`: that core is shared with the
+/// SHIPPING `reallocate_function`, so a different order there would move the
+/// frozen bytes. The simplify half is deliberately mirrored, not reused.
+#[allow(clippy::too_many_arguments)]
+fn color_webs_costed(
+    adj: &BTreeMap<usize, BTreeSet<usize>>,
+    k: usize,
+    precolored: &BTreeMap<usize, usize>,
+    spill_w: &BTreeMap<usize, u64>,
+    span: &BTreeMap<usize, usize>,
+    orig_colour: &BTreeMap<usize, usize>,
+    caller_saved: usize,
+    occ_cost: &mut OccCostFn<'_>,
+) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
+    let mut work: BTreeMap<usize, BTreeSet<usize>> = adj
+        .iter()
+        .filter(|(n, _)| !precolored.contains_key(n))
+        .map(|(n, nbrs)| (*n, nbrs.clone()))
+        .collect();
+    let mut stack: Vec<usize> = Vec::with_capacity(work.len());
+    while !work.is_empty() {
+        let pick = work
+            .iter()
+            .find(|(_, nbrs)| nbrs.len() < k)
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| {
+                work.iter()
+                    .min_by(|a, b| {
+                        let val = |n: &usize| spill_w.get(n).copied().unwrap_or(1).max(1) as u128;
+                        let sp = |n: &usize| span.get(n).copied().unwrap_or(1).max(1) as u128;
+                        let deg = |s: &BTreeSet<usize>| s.len().max(1) as u128;
+                        (val(a.0) * sp(b.0) * deg(b.1))
+                            .cmp(&(val(b.0) * sp(a.0) * deg(a.1)))
+                            .then(a.0.cmp(b.0))
+                    })
+                    .map(|(n, _)| *n)
+                    .unwrap()
+            });
+        let nbrs = work.remove(&pick).unwrap_or_default();
+        for n in &nbrs {
+            if let Some(s) = work.get_mut(n) {
+                s.remove(&pick);
+            }
+        }
+        stack.push(pick);
+    }
+    let mut colour: BTreeMap<usize, usize> = precolored.clone();
+    let mut spilled: BTreeSet<usize> = BTreeSet::new();
+    while let Some(n) = stack.pop() {
+        let mut used = vec![false; k];
+        for nb in adj.get(&n).into_iter().flatten() {
+            if let Some(&c) = colour.get(nb)
+                && c < k
+            {
+                used[c] = true;
+            }
+        }
+        let own = orig_colour.get(&n).copied().filter(|&c| c < k && !used[c]);
+        // Price every free candidate; keep only the strictly cheapest set.
+        let mut minima: Vec<usize> = Vec::new();
+        let mut min_cost: Option<u64> = None;
+        for (c, taken) in used.iter().enumerate() {
+            if *taken {
+                continue;
+            }
+            let Some(cost) = occ_cost(n, c, &colour) else {
+                continue; // unencodable under this candidate: excluded
+            };
+            match min_cost {
+                Some(m) if cost > m => {}
+                Some(m) if cost == m => minima.push(c),
+                _ => {
+                    min_cost = Some(cost);
+                    minima = vec![c];
+                }
+            }
+        }
+        let pick = if minima.is_empty() {
+            // Nothing sizable: own colour if free (identity is always legal —
+            // the original stream encoded), else the pre-cost-model fallback
+            // (lowest free colour).
+            own.or_else(|| used.iter().position(|taken| !taken))
+        } else {
+            // Byte-equal minima split by the established preference order.
+            own.filter(|o| *o < caller_saved && minima.contains(o))
+                .or_else(|| minima.iter().copied().find(|&c| c < caller_saved))
+                .or_else(|| own.filter(|o| minima.contains(o)))
+                .or_else(|| minima.first().copied())
+        };
+        match pick {
+            Some(c) => {
+                colour.insert(n, c);
+            }
+            None => {
+                spilled.insert(n);
+            }
+        }
+    }
+    (colour, spilled)
 }
 
 /// The TIED use/def range pairs of a straight-line segment — RQ-60-RACOST
@@ -1103,108 +1411,78 @@ mod joins {
         })
     }
 
-    /// Chaitin/Briggs colouring with a **churn-minimising colour preference**.
+    /// Natural-loop nesting depth per block, from the CFG this pass already
+    /// built: iterative dominators, back edges (`b → h` with `h` dominating
+    /// `b`), and each back edge's natural-loop body counted once. Feeds the
+    /// classic `10^depth` occurrence weight of the RQ-60-RACOST cost model
+    /// ([`super::loop_weight`]). Deliberately structural — no profile exists
+    /// here, and a bound-true static estimate is enough to ORDER costs.
     ///
-    /// `chaitin_core` (which `color_ranges` wraps) selects the LOWEST free
-    /// colour. Across a whole branchy function that repacks nearly every value
-    /// into R0/R1 — measured on `loop_param_bound_663::sum_const`, where the
-    /// repack put the loop's compare result on top of the register a later
-    /// `forward_stack_reloads` was forwarding through, replacing two `mov`s with
-    /// two `ldr`s INSIDE the loop: +2 bytes and **+22 cycles** on the WCET bound.
-    /// A whole-function allocator that ignores what the rest of the pipeline is
-    /// about to do is not automatically better than a greedy one.
-    ///
-    /// So the select phase prefers, in order:
-    ///   1. the web's ORIGINAL register, when that register is CALLER-saved
-    ///      (R0-R3) — a value already in scratch has nothing to gain by moving,
-    ///      and moving it only disturbs downstream passes;
-    ///   2. the lowest free CALLER-saved colour — this is the actual objective:
-    ///      evacuate R4-R8 so `shrink_callee_saved_saves` can drop the
-    ///      prologue's push/pop entries;
-    ///   3. the web's original register (now necessarily callee-saved), keeping
-    ///      churn at zero when no scratch register is available;
-    ///   4. the lowest free colour, as a last resort.
-    ///
-    /// NOT implemented by changing `chaitin_core`: that core is shared with the
-    /// SHIPPING `reallocate_function`, so a different select order there would
-    /// move the frozen bytes. The simplify/optimistic-spill half is the same
-    /// algorithm, deliberately mirrored rather than reused for that reason.
-    ///
-    /// `pub(super)` for RQ-60-RACOST increment 1: with `caller_saved = 0`
-    /// steps 1-2 are vacuous and the order degenerates to *own colour if
-    /// free, else lowest free* — the zero-churn identity bias the
-    /// straight-line pass uses on tied-web functions (see the call site).
-    pub(super) fn color_webs_biased(
-        adj: &BTreeMap<usize, BTreeSet<usize>>,
-        k: usize,
-        precolored: &BTreeMap<usize, usize>,
-        costs: &BTreeMap<usize, usize>,
-        orig_colour: &BTreeMap<usize, usize>,
-        caller_saved: usize,
-    ) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
-        let cost_of = |n: &usize| costs.get(n).copied().unwrap_or(1);
-        let mut work: BTreeMap<usize, BTreeSet<usize>> = adj
-            .iter()
-            .filter(|(n, _)| !precolored.contains_key(n))
-            .map(|(n, nbrs)| (*n, nbrs.clone()))
-            .collect();
-        let mut stack: Vec<usize> = Vec::with_capacity(work.len());
-        while !work.is_empty() {
-            let pick = work
-                .iter()
-                .find(|(_, nbrs)| nbrs.len() < k)
-                .map(|(n, _)| *n)
-                .unwrap_or_else(|| {
-                    work.iter()
-                        .min_by(|a, b| {
-                            (cost_of(a.0) * b.1.len())
-                                .cmp(&(cost_of(b.0) * a.1.len()))
-                                .then(a.0.cmp(b.0))
-                        })
-                        .map(|(n, _)| *n)
-                        .unwrap()
-                });
-            let nbrs = work.remove(&pick).unwrap_or_default();
-            for n in &nbrs {
-                if let Some(s) = work.get_mut(n) {
-                    s.remove(&pick);
-                }
+    /// (The previous select this cost model replaced — a fixed caller-saved-
+    /// evacuation preference — carried the `sum_const` +22-cycle churn story;
+    /// that history now lives on [`super::color_webs_costed`].)
+    pub(super) fn block_loop_depths(blocks: &[BasicBlock]) -> Vec<u32> {
+        let nb = blocks.len();
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+        for (bi, b) in blocks.iter().enumerate() {
+            for &s in &b.succ {
+                preds[s].push(bi);
             }
-            stack.push(pick);
         }
-        let mut colour: BTreeMap<usize, usize> = precolored.clone();
-        let mut spilled: BTreeSet<usize> = BTreeSet::new();
-        while let Some(n) = stack.pop() {
-            let mut used = vec![false; k];
-            for nb in adj.get(&n).into_iter().flatten() {
-                if let Some(&c) = colour.get(nb)
-                    && c < k
-                {
-                    used[c] = true;
+        // Iterative dominator sets (blocks are few; build_cfg guarantees every
+        // block reachable from the entry, so the intersection converges).
+        let all: BTreeSet<usize> = (0..nb).collect();
+        let mut dom: Vec<BTreeSet<usize>> = vec![all; nb];
+        dom[0] = BTreeSet::from([0]);
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in 1..nb {
+                let mut newd: Option<BTreeSet<usize>> = None;
+                for &p in &preds[b] {
+                    newd = Some(match newd {
+                        None => dom[p].clone(),
+                        Some(acc) => acc.intersection(&dom[p]).copied().collect(),
+                    });
                 }
-            }
-            let own = orig_colour.get(&n).copied();
-            let pick = own
-                .filter(|&c| c < caller_saved && c < k && !used[c])
-                .or_else(|| (0..caller_saved.min(k)).find(|&c| !used[c]))
-                .or_else(|| own.filter(|&c| c < k && !used[c]))
-                .or_else(|| (0..k).find(|&c| !used[c]));
-            match pick {
-                Some(c) => {
-                    colour.insert(n, c);
-                }
-                None => {
-                    spilled.insert(n);
+                let mut newd = newd.unwrap_or_default();
+                newd.insert(b);
+                if newd != dom[b] {
+                    dom[b] = newd;
+                    changed = true;
                 }
             }
         }
-        (colour, spilled)
+        let mut depth = vec![0u32; nb];
+        for (b, blk) in blocks.iter().enumerate() {
+            for &h in &blk.succ {
+                if !dom[b].contains(&h) {
+                    continue; // not a back edge
+                }
+                // Natural loop body of the back edge b → h: everything that
+                // reaches b backwards without passing through h.
+                let mut body: BTreeSet<usize> = BTreeSet::from([h]);
+                let mut work = vec![b];
+                while let Some(n) = work.pop() {
+                    if body.insert(n) {
+                        for &p in &preds[n] {
+                            work.push(p);
+                        }
+                    }
+                }
+                for n in body {
+                    depth[n] += 1;
+                }
+            }
+        }
+        depth
     }
 
     /// The increment-2 entry point. See the module doc for scope and oracles.
     pub(super) fn reallocate_across_joins(
         instrs: &[ArmInstruction],
         pool: &[Reg],
+        enc: &dyn Fn(&ArmOp) -> Option<usize>,
     ) -> Option<Vec<ArmInstruction>> {
         let blocks = match build_cfg(instrs) {
             Ok(b) => b,
@@ -1472,36 +1750,63 @@ mod joins {
                 )
             })
             .collect();
-        let mut costs: BTreeMap<usize, usize> = BTreeMap::new();
-        for (i, e) in eff.iter().enumerate() {
-            if let Some(e) = e {
+        // RQ-60-RACOST increment 2 (#242): the REAL-ENCODER COST MODEL across
+        // joins. Occurrences carry a 10^loop_depth weight (natural loops from
+        // the CFG this pass already built), and every colour choice is priced
+        // by the caller-supplied encoder's own byte lengths — see
+        // `color_webs_costed` for the select and its history.
+        let depths = block_loop_depths(&blocks);
+        let mut ix = OccurrenceIndex::new();
+        for (bi, b) in blocks.iter().enumerate() {
+            let wgt = loop_weight(depths[bi]);
+            #[allow(clippy::needless_range_loop)] // `i` is a stream index recorded in the entry
+            for i in b.start..b.end {
+                let Some(e) = &eff[i] else { continue };
+                let mut uses: BTreeMap<Reg, usize> = BTreeMap::new();
+                let mut resolved = true;
                 for u in &e.uses {
-                    for w in webs.reach_before[i].get(u).into_iter().flatten() {
-                        *costs.entry(*w).or_insert(0) += 1;
+                    match webs.reach_before[i].get(u) {
+                        Some(s) if s.len() == 1 => {
+                            uses.insert(*u, *s.iter().next()?);
+                        }
+                        // A non-singleton reaching set at a use means the
+                        // apply phase will decline this function anyway; for
+                        // PRICING, skip the instruction — the skip is
+                        // candidate-independent, so no comparison tilts.
+                        _ => {
+                            resolved = false;
+                            break;
+                        }
                     }
                 }
-                for d in &e.defs {
-                    *costs.entry(webs.def_web[&(i, *d)]).or_insert(0) += 1;
+                if !resolved {
+                    continue;
                 }
+                let defs: BTreeMap<Reg, usize> = e
+                    .defs
+                    .iter()
+                    .map(|d| (*d, webs.def_web[&(i, *d)]))
+                    .collect();
+                ix.push(i, uses, defs, wgt);
             }
         }
-        // Each web's ORIGINAL colour — the churn-minimising bias's input.
+        let (web_w, web_span) = web_weights(&ix, instrs, enc);
+        // Each web's ORIGINAL colour — the identity hint's input.
         let orig_colour: BTreeMap<usize, usize> = (0..webs.n_webs)
             .filter_map(|w| pool_index.get(&webs.reg_of[w]).map(|&c| (w, c)))
             .collect();
-        // The caller-saved prefix of the pool (R0-R3): the registers a value can
-        // move INTO for free, because they need no prologue save.
-        let caller_saved = pool
-            .iter()
-            .take_while(|r| matches!(r, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3))
-            .count();
-        let (coloring, spilled) = color_webs_biased(
+        let mut occ = |w: usize, c: usize, assigned: &BTreeMap<usize, usize>| {
+            occurrence_bytes(&ix, instrs, pool, w, c, assigned, enc)
+        };
+        let (coloring, spilled) = color_webs_costed(
             &pool_adj,
             pool.len(),
             &pins,
-            &costs,
+            &web_w,
+            &web_span,
             &orig_colour,
-            caller_saved,
+            caller_saved_prefix(pool),
+            &mut occ,
         );
         if !spilled.is_empty() {
             // Spill-code insertion across joins is a named follow-up; the
@@ -1671,6 +1976,15 @@ mod tests {
         }
     }
 
+    /// Unit-test sizer: the synthesis-side byte estimator. Production wiring
+    /// passes the REAL encoder from `synth-backend` (a crate this one cannot
+    /// depend on); the structural properties these tests pin are
+    /// sizer-independent, and the estimator is itself oracle-pinned to the
+    /// real encoder for the optimized path (`estimator_encoder_agreement`).
+    fn enc_est(op: &ArmOp) -> Option<usize> {
+        Some(crate::estimate_arm_byte_size(op))
+    }
+
     const POOL: [Reg; 9] = [
         Reg::R0,
         Reg::R1,
@@ -1704,7 +2018,7 @@ mod tests {
                 regs: vec![Reg::R4, Reg::PC],
             }),
         ];
-        let out = reallocate(&body, &POOL).expect("straight-line function colours");
+        let out = reallocate(&body, &POOL, &enc_est).expect("straight-line function colours");
         // The rewrite must pass the trace-equality validator (it did, or
         // reallocate would have returned None) — and it preserves length.
         assert_eq!(out.len(), body.len());
@@ -1774,7 +2088,7 @@ mod tests {
         // does not interfere with the pinned r0/r1 ranges beyond r0; the colourer
         // simplifies+selects a colour for it. A `Some` result that PASSES the
         // trace-equality validator proves the free-placement path ran soundly.
-        let out = reallocate(&body, &small_pool).expect("free interior range colours");
+        let out = reallocate(&body, &small_pool, &enc_est).expect("free interior range colours");
         assert_eq!(out.len(), body.len());
         assert_eq!(
             validate_segment_rewrite(&body, &out),
@@ -1826,7 +2140,7 @@ mod tests {
                 regs: vec![Reg::PC],
             }),
         ];
-        let out = reallocate(&body, &POOL)
+        let out = reallocate(&body, &POOL, &enc_est)
             .expect("tied rmw web must colour instead of declining (red-first: was None)");
         assert_eq!(out.len(), body.len());
         assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
@@ -1843,10 +2157,11 @@ mod tests {
     /// redefines r4, so neither RMW-side range is exit-pinned and the whole
     /// web is the colourer's to place — both halves of the materialization
     /// land on the SAME register and the rewrite validates. Under the
-    /// zero-churn identity bias (own colour first) that register is R4, the
-    /// web's original home: increment 1's tied handling is deliberately
-    /// byte-neutral, and recolouring tied webs for measured wins is
-    /// increment 2's cost-model lane.
+    /// increment-2 cost model the movw/movt occurrences price byte-equal in
+    /// every register, so the tie-break's caller-saved evacuation places the
+    /// web in scratch (a callee-saved home would keep a prologue save alive
+    /// downstream); the RMW contract — one register for both halves — is what
+    /// this test pins.
     #[test]
     fn tied_rmw_web_recolours_together_and_validates() {
         let body = vec![
@@ -1872,17 +2187,17 @@ mod tests {
                 regs: vec![Reg::R4, Reg::PC],
             }),
         ];
-        let out = reallocate(&body, &POOL).expect("free tied web colours");
+        let out = reallocate(&body, &POOL, &enc_est).expect("free tied web colours");
         assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
         let (movw_rd, movt_rd) = match (&out[1].op, &out[2].op) {
             (ArmOp::Movw { rd: a, .. }, ArmOp::Movt { rd: b, .. }) => (*a, *b),
             other => panic!("movw/movt shape must be preserved, got {other:?}"),
         };
         assert_eq!(movw_rd, movt_rd, "tied use/def web split across registers");
-        assert_eq!(
-            movw_rd,
-            Reg::R4,
-            "zero-churn bias: a fully-free tied web keeps its original home"
+        assert!(
+            matches!(movw_rd, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3),
+            "byte-equal minima tie-break: a fully-free tied web evacuates its \
+             callee-saved home into caller-saved scratch, got {movw_rd:?}"
         );
     }
 
@@ -1923,6 +2238,147 @@ mod tests {
         assert_eq!(tied_range_pairs(&add), Some(vec![]));
     }
 
+    /// RQ-60-RACOST increment 2 — RED-FIRST for the measured select. Under a
+    /// sizer that prices any R8-touching encoding wide (4 B) and everything
+    /// else narrow (2 B) — the real Thumb-2 high-register widening in
+    /// miniature — a free web homed in R8 with three occurrences must MOVE to
+    /// a strictly cheaper register (6 B vs 12 B measured), where increment 1's
+    /// identity bias kept it home. The def and every use land together on the
+    /// new register, and the rewrite still validates.
+    #[test]
+    fn cost_model_moves_web_off_measured_wide_register() {
+        let wide_r8 = |op: &ArmOp| -> Option<usize> {
+            Some(if format!("{op:?}").contains("R8") {
+                4
+            } else {
+                2
+            })
+        };
+        let body = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R8,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+            // R0 is redefined AFTER the R8 web dies, so its exit equation is
+            // owned by this def and the web may legally move into R0 (every
+            // register's LAST range is exit-pinned in a whole straight-line
+            // segment, which is what forbids most rename targets).
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+            // `pop {r8, pc}` redefines R8, so the interior web is FREE (not
+            // exit-pinned) and the colourer must place it.
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R8, Reg::PC],
+            }),
+        ];
+        let out = reallocate(&body, &POOL, &wide_r8).expect("measured-cost function colours");
+        assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
+        let moved = match (&out[1].op, &out[2].op) {
+            (
+                ArmOp::Mov { rd, .. },
+                ArmOp::Add {
+                    op2: Operand2::Reg(u1),
+                    ..
+                },
+            ) => {
+                assert_eq!(rd, u1, "def and use must share the new home");
+                *rd
+            }
+            other => panic!("shape must be preserved, got {other:?}"),
+        };
+        assert_ne!(
+            moved,
+            Reg::R8,
+            "a web measured 2x wider in its own home must move (red-first: \
+             the identity bias kept it in R8)"
+        );
+    }
+
+    /// The dual: when the sizer refuses (None) every register EXCEPT the
+    /// web's own home, the candidate set is empty and the select must fall
+    /// back to the own colour — an unencodable candidate is EXCLUDED, never
+    /// priced optimistically (the #180/#311 class).
+    #[test]
+    fn cost_model_excludes_unencodable_candidates() {
+        let only_r8_encodes = |op: &ArmOp| -> Option<usize> {
+            let s = format!("{op:?}");
+            // Ops not touching R8 (the filler, the pop) size normally; an
+            // R8-web occurrence re-homed anywhere else refuses to size.
+            if s.contains("R8") || !s.contains('R') {
+                Some(2)
+            } else {
+                None
+            }
+        };
+        let body = vec![
+            ins(ArmOp::Mov {
+                rd: Reg::R8,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R8,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R8, Reg::PC],
+            }),
+        ];
+        let out = reallocate(&body, &POOL, &only_r8_encodes).expect("colours");
+        assert_eq!(validate_segment_rewrite(&body, &out), Ok(()));
+        assert!(
+            matches!(out[0].op, ArmOp::Mov { rd: Reg::R8, .. }),
+            "with every other candidate unencodable the web keeps its home: {:?}",
+            out[0].op
+        );
+    }
+
+    /// The loop-depth input of the cost model: a self-loop diamond
+    /// (0 → 1 → 2 → {1, 3}) has exactly its loop body {1, 2} at depth 1.
+    #[test]
+    fn block_loop_depths_counts_natural_loops() {
+        use crate::liveness::BasicBlock;
+        let blocks = vec![
+            BasicBlock {
+                start: 0,
+                end: 1,
+                succ: vec![1],
+            },
+            BasicBlock {
+                start: 1,
+                end: 2,
+                succ: vec![2],
+            },
+            BasicBlock {
+                start: 2,
+                end: 3,
+                succ: vec![1, 3],
+            },
+            BasicBlock {
+                start: 3,
+                end: 4,
+                succ: vec![],
+            },
+        ];
+        assert_eq!(joins::block_loop_depths(&blocks), vec![0, 1, 1, 0]);
+        // And the weight saturates at 10^4 rather than overflowing.
+        assert_eq!(loop_weight(0), 1);
+        assert_eq!(loop_weight(2), 100);
+        assert_eq!(loop_weight(40), 10_000);
+    }
+
     #[test]
     fn declines_on_control_flow() {
         // A branch makes it non-straight-line → decline (None).
@@ -1937,7 +2393,7 @@ mod tests {
             }),
         ];
         assert!(
-            reallocate(&body, &POOL).is_none(),
+            reallocate(&body, &POOL, &enc_est).is_none(),
             "control flow is outside the bounded whole-straight-line scope"
         );
     }
@@ -1948,14 +2404,14 @@ mod tests {
             label: "func_1".into(),
         })];
         assert!(
-            reallocate(&body, &POOL).is_none(),
+            reallocate(&body, &POOL, &enc_est).is_none(),
             "a call is unmodeled — decline to the shipping path"
         );
     }
 
     #[test]
     fn declines_on_empty() {
-        assert!(reallocate(&[], &POOL).is_none());
+        assert!(reallocate(&[], &POOL, &enc_est).is_none());
     }
 
     // ================================================================
@@ -2029,7 +2485,8 @@ mod tests {
     #[test]
     fn colours_across_an_if_else_join() {
         let body = diamond();
-        let out = reallocate(&body, &POOL).expect("the diamond must colour across its join");
+        let out =
+            reallocate(&body, &POOL, &enc_est).expect("the diamond must colour across its join");
         assert_eq!(out.len(), body.len());
         assert_ne!(out, body, "an identity rewrite gates nothing");
         // The else-arm's R4 value moved OFF the callee-saved register.
@@ -2238,7 +2695,7 @@ mod tests {
             ins(ArmOp::Bx { rm: Reg::LR }),
         ];
         assert_eq!(joins::build_cfg(&numeric), Err("numeric-branch"));
-        assert!(reallocate(&numeric, &POOL).is_none());
+        assert!(reallocate(&numeric, &POOL, &enc_est).is_none());
     }
 
     // ================================================================
@@ -2285,7 +2742,8 @@ mod tests {
     #[test]
     fn colours_across_a_call() {
         let body = call_body();
-        let out = reallocate(&body, &POOL).expect("a call-containing function must colour");
+        let out =
+            reallocate(&body, &POOL, &enc_est).expect("a call-containing function must colour");
         assert_eq!(out.len(), body.len());
         assert_ne!(out, body, "an identity rewrite gates nothing");
         // The post-call temporary moved OFF the callee-saved register...
@@ -2484,7 +2942,7 @@ mod tests {
         ];
         // Either the pass declines (identity colouring) or it rewrites — but in
         // NO case may the cross-call value land in call-clobbered scratch.
-        if let Some(out) = reallocate(&body, &POOL) {
+        if let Some(out) = reallocate(&body, &POOL, &enc_est) {
             let home = match &out[1].op {
                 ArmOp::Mov { rd, .. } => *rd,
                 other => panic!("shape changed: {other:?}"),
@@ -2526,7 +2984,7 @@ mod tests {
         ] {
             let body = vec![ins(op), ins(ArmOp::Bx { rm: Reg::LR })];
             assert_eq!(joins::build_cfg(&body), Err(why));
-            assert!(reallocate(&body, &POOL).is_none());
+            assert!(reallocate(&body, &POOL, &enc_est).is_none());
         }
     }
 }
