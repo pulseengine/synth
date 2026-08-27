@@ -377,12 +377,17 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1059"
-      # Decided: the split ships as the v0.61 layout convention file (the
-      # signature below) AND the structural R5/R6/R0 rules in
-      # scripts/status_evidence_check.py, whose potency is re-proven per CI
-      # run by the #1059 replay fixtures + mutation kills in
-      # scripts/test_status_evidence_check.py.
-      done-when: "contains:artifacts/release-v0.61/_release.yaml:per-requirement artifact layout"
+      # Decided: the split ships as the v0.61 layout convention file AND the
+      # structural R5/R6/R0 rules in scripts/status_evidence_check.py.
+      #
+      # The signature pins the REPLAY, not the prose. A `contains:` on
+      # _release.yaml's own text would still pass with R5/R6 deleted from the
+      # checker — it would certify that this PR wrote a paragraph. The
+      # replayed #1059 splice is the mechanism that actually protects: it
+      # runs in the required Claim Check job, so deleting the rule it
+      # exercises turns that job red rather than leaving a green predicate
+      # over a removed check.
+      done-when: "contains:scripts/test_status_evidence_check.py:test_1059_defect1_spliced_artifact_absorbs_sibling_links"
 
   - id: RQ-60-WCETKEY
     type: system-req

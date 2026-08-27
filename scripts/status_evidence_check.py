@@ -230,12 +230,21 @@ def load_release_artifacts(root: Path, release_glob: str):
         paths.update(glob.glob(str(root / pattern.strip())))
     for p in sorted(paths):
         path = Path(p)
-        # The version comes from the FULL path, not the basename: under the
+        # The version comes from the path, not the basename: under the
         # per-requirement layout the file is release-v0.61/RQ-61-FOO.yaml and
         # only the directory carries the version. Basename-only matching
         # would classify every such artifact as (0, 0) and silently exempt
         # it from every >= v0.60 rule.
-        m = RELEASE_VERSION.search(path.as_posix())
+        #
+        # Scoped to the path RELATIVE TO ROOT, never the absolute path: an
+        # ANCESTOR directory of the checkout that happened to be named
+        # `release-v0.99` would otherwise supply the first match and
+        # mis-version every artifact beneath it — a checkout-location
+        # dependency, i.e. the same class as reading an oracle's ground
+        # truth from host-dependent text.
+        rel = path.relative_to(root).as_posix() if path.is_relative_to(root) \
+            else path.name
+        m = RELEASE_VERSION.search(rel)
         version = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
         doc = yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
         if path.name == "_release.yaml":

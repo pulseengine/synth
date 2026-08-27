@@ -493,6 +493,25 @@ class DirectoryLayout(unittest.TestCase):
         r = fx.run([])
         self.assertTrue(has(r, "R0 RQ-61-GONE.yaml"), fails(r))
 
+    def test_version_is_scoped_to_the_repo_root_not_the_absolute_path(self):
+        # An ANCESTOR of the checkout named `release-v0.50` must not supply
+        # the version for artifacts under `artifacts/release-v0.61/`. The
+        # absolute path would match the ancestor FIRST (it appears earlier),
+        # classify the artifact as pre-v0.60, and silently exempt it from
+        # every >= v0.60 rule — a checkout-LOCATION dependency, invisible on
+        # any CI runner whose workspace happens not to be named that way.
+        # R1 firing here is the discriminator: 0.50 < DECLARE_SINCE, 0.61 >=.
+        with tempfile.TemporaryDirectory() as outer:
+            root = Path(outer) / "release-v0.50" / "checkout"
+            (root / "artifacts").mkdir(parents=True)
+            d = root / "artifacts" / "release-v0.61"
+            d.mkdir()
+            (d / "RQ-61-FOO.yaml").write_text(
+                yaml.safe_dump({"artifacts": [art("RQ-61-FOO", "proposed")]}),
+                encoding="utf-8")
+            r = check(root, RELEASE_GLOB, [], 0)
+            self.assertTrue(has(r, "R1 RQ-61-FOO"), fails(r))
+
     def test_release_yaml_must_be_comments_only(self):
         # A keyed _release.yaml is exactly the shape rivet skips SILENTLY
         # (#1064) — content parked there would be invisible to the graph
