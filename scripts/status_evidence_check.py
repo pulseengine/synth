@@ -108,6 +108,74 @@ Two independent derivations over `artifacts/release-v*.yaml`:
       to NOTHING but comments — a top-level key there is exactly the shape
       rivet skips silently, so it is red here before it can hide anything.
 
+(4) EVIDENCE SCOPING (RQ-61-EVIDENCE, #1085 — all three found by USING
+    this gate during the v0.60 cut, not by reasoning about it):
+
+    - R7 (evidence must belong to the release): RQ-60-CANARY was
+      `implemented` in v0.60 on evidence that shipped in v0.59.0 — the
+      canary gate merged at 08:50 (#1061), v0.59.0 was tagged at 15:19
+      (the gate is an ANCESTOR of that tag; v0.59.0's notes credit it),
+      and the v0.60 plan scoped it at 18:56, AFTER the tag. Every rule
+      above passed, because each asks whether evidence EXISTS and none
+      asks WHICH RELEASE it arrived in. So: for every contains:/file:
+      done-when that currently HOLDS, the first-parent commit that
+      INTRODUCED the signature (`git log -S<literal>` oldest for
+      contains:, `--diff-filter=A` oldest for file:) must NOT be an
+      ancestor of the previous minor's release tag — the HIGHEST
+      vX.(Y-1).* tag, so "shipped in the previous minor's PATCH" is
+      caught too (a main-line commit that is an ancestor of a patch tag
+      predates the patch branch point, so the later-tagged-patch case
+      cannot mis-attribute post-minor work). Escape hatch, per-case like
+      the ratchet waivers: an explicit `fields.shipped-in: vX.Z`
+      (version-shaped, reason written beside it) accepts the artifact as
+      carrying traceability CLOSURE for work another release delivered —
+      RQ-60-CANARY on main is the live green instance.
+
+      Reliability, stated rather than silent: git archaeology needs full
+      history and tags, and CI checkouts are often shallow. When the
+      root is not a git repo, the checkout is SHALLOW, the previous-
+      minor tag is invisible, or the signature holds only uncommitted,
+      R7 LOUDLY SKIPS: an `R7-SKIP` warning per artifact, and the skip
+      count printed in the machine-read summary line. The skip cannot
+      become the quiet-pass shape in CI: the CI step's summary grep pins
+      `(0 skipped)` and >= 1 archaeology check performed, and a shallow
+      CI checkout already reds the DELIVERY_FLOOR before R7 is reached.
+
+    - R8 (the `release:` field must equal the file's version): this
+      script derives an artifact's release from its PATH; rivet's
+      readiness query reads the FIELD; nothing asserted they agree. The
+      harmful direction: an artifact in a pre-v0.60 file carrying
+      `release: v0.60` is EXEMPT from every >= v0.60 rule here while
+      rivet counts it in v0.60's scope — a silent version-gate bypass of
+      R1/R5, red. The 6 measured benign mismatches (v0.56.1/v0.56.2
+      artifacts in release-v0.57.yaml) are real PATCH-RELEASE artifacts
+      parked in the next minor's file — a legitimate practice now STATED
+      as the rule's one allowance: a field naming a PATCH of the file's
+      previous minor (vX.(Y-1).Z, Z >= 1) is green, because a patch cut
+      mid-cycle is written up in the file of the minor under
+      development. Everything else — field ahead of the path, field
+      behind it without a patch component, missing, unparseable — is
+      red.
+
+    - R9 (a `contains:` into crate SOURCE is weaker than the gate that
+      exercises it): three of v0.60's eight artifacts pinned
+      code-existence where their own description set a measured-or-
+      executed bar (RQ-60-A64IMPORT: "the acceptance number is the
+      deliverable", done-when = a symbol exists). A predicate that
+      cannot fail on the failure the artifact defines for itself is not
+      a predicate. Both live instances were corrected in #1090 — one
+      re-pointed at its gate's non-vacuity floor, one moved to `manual:`
+      + `verified-by`; this rule is what was missing. Under a CLAIMING
+      status, a contains:/file: whose path is crate SOURCE — `crates/**`
+      EXCLUDING `/tests/` components, because crate integration-test
+      dirs are executed by the required Test job and are gate-shaped,
+      exactly like scripts/, coq/ (kernel-checked by verify_proofs) and
+      workflow files; measured on the tree, every honest signature
+      already points at one of those — requires a written
+      `fields.verified-by` saying why code-existence genuinely IS the
+      outcome here. The better fix is re-pointing the signature at the
+      gate, which is what both #1090 corrections did.
+
 What this does NOT cover, stated rather than silent:
   * Work that lands with NO artifact and a commit subject that names no
     artifact id is invisible to both halves (unknown-id delivery subjects are
@@ -132,6 +200,18 @@ What this does NOT cover, stated rather than silent:
   * A FALSE `verified-by` basis passes. The gate forces the basis to be
     written where the reader of the release query can see it; it cannot
     judge it. That residual is exactly as manual as the artifact declared.
+    The same holds for `shipped-in` (R7): the gate checks its FORMAT and
+    that it was written down; it does not re-derive which tag the named
+    version corresponds to.
+  * R7 checks only the "arrived too EARLY" direction (evidence already an
+    ancestor of the previous release). Evidence landing AFTER the
+    release's own tag — scoped to vX.Y, delivered in vX.Y+1 — is the
+    other mis-scoping direction; it is what the release-notes review
+    catches today, and R7 does not claim it.
+  * R9 verifies the signature points at gate-shaped SURFACE (scripts/,
+    tests, coq/, workflows — anything that is not crate source). Whether
+    a scripts/ signature names a gate some CI job actually RUNS is
+    oracle_wiring_check.py's surface, not this one's.
 
 Anti-vacuity (the checker is a new defect surface; five releases running
 found the defect in checking machinery):
@@ -194,6 +274,21 @@ RELEASE_GLOB = (
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
 RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)")
+
+# R8: the artifact's own `release:` field — the side rivet's readiness query
+# reads. vX.Y or vX.Y.Z; anything else is red, not skipped.
+FIELD_VERSION = re.compile(r"^v(\d+)\.(\d+)(?:\.(\d+))?$")
+
+# R7 escape hatch: `shipped-in` must at least be version-shaped, so
+# `shipped-in: "yes"` cannot buy the exemption.
+SHIPPED_IN_VERSION = re.compile(r"^v\d+\.\d+(?:\.\d+)?$")
+
+# R9: crate SOURCE — the code-existence surface. Paths under crates/ whose
+# components include a `tests` dir are integration tests the required Test
+# job executes, i.e. gate-shaped, and are deliberately NOT matched.
+def is_crate_source(path: str) -> bool:
+    parts = path.split("/")
+    return parts[0] == "crates" and "tests" not in parts[1:]
 
 
 class DuplicateKeyError(Exception):
@@ -298,6 +393,7 @@ def load_release_artifacts(root: Path, release_glob: str):
                     str(art.get("status", "")),
                     art.get("fields") or {},
                     art.get("links") or [],
+                    art.get("release"),
                 )
             )
     return out, bad_files
@@ -315,21 +411,75 @@ def first_parent_subjects(root: Path) -> list[str]:
 
 
 def evaluate(done_when: str, root: Path):
-    """-> (kind, holds_or_None). `manual:` evaluates to None (no signature)."""
+    """-> (kind, holds_or_None, path, literal). `manual:` evaluates to None
+    (no signature); path/literal are None where inapplicable."""
     if done_when.startswith("contains:"):
         rest = done_when[len("contains:"):]
         path, sep, literal = rest.partition(":")
         if not sep or not literal:
-            return ("malformed", None)
+            return ("malformed", None, None, None)
         f = root / path
-        return ("contains", f.is_file() and literal in f.read_text(
-            encoding="utf-8", errors="replace"))
+        holds = f.is_file() and literal in f.read_text(
+            encoding="utf-8", errors="replace")
+        return ("contains", holds, path, literal)
     if done_when.startswith("file:"):
-        return ("file", (root / done_when[len("file:"):].strip()).exists())
+        path = done_when[len("file:"):].strip()
+        return ("file", (root / path).exists(), path, None)
     if done_when.startswith("manual:"):
         reason = done_when[len("manual:"):].strip()
-        return ("manual", None) if reason else ("malformed", None)
-    return ("malformed", None)
+        return ("manual", None, None, None) if reason \
+            else ("malformed", None, None, None)
+    return ("malformed", None, None, None)
+
+
+# ---- R7 git archaeology (#1085) ------------------------------------------
+
+
+def _git(root: Path, *args: str):
+    r = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True
+    )
+    return r.returncode, r.stdout
+
+
+def git_history_state(root: Path) -> str:
+    """'ok' | 'no-git' | 'shallow' — whether R7 archaeology can be trusted."""
+    rc, out = _git(root, "rev-parse", "--is-shallow-repository")
+    if rc != 0:
+        return "no-git"
+    return "shallow" if out.strip() == "true" else "ok"
+
+
+def previous_release_tag(root: Path, version: tuple) -> str | None:
+    """Highest vX.(Y-1).* tag, so evidence shipped in the previous minor's
+    PATCH releases is caught too. None when no such tag is visible."""
+    x, y = version
+    if y == 0:
+        return None
+    rc, out = _git(root, "tag", "-l", f"v{x}.{y - 1}.*")
+    if rc != 0:
+        return None
+    tags = []
+    for t in out.split():
+        m = re.fullmatch(rf"v{x}\.{y - 1}\.(\d+)", t)
+        if m:
+            tags.append((int(m.group(1)), t))
+    return max(tags)[1] if tags else None
+
+
+def introducing_commit(root: Path, kind: str, path: str,
+                       literal: str | None) -> str | None:
+    """Oldest FIRST-PARENT commit that introduced the done-when signature —
+    for contains: the pickaxe over the literal, for file: the commit that
+    added the path. None when the signature holds only uncommitted."""
+    if kind == "contains":
+        rc, out = _git(root, "log", "--first-parent", "--format=%H",
+                       f"-S{literal}", "--", path)
+    else:
+        rc, out = _git(root, "log", "--first-parent", "--diff-filter=A",
+                       "--format=%H", "--", path)
+    commits = out.split()
+    return commits[-1] if rc == 0 and commits else None
 
 
 def landed_prs(fields: dict) -> set[str]:
@@ -347,7 +497,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
 
     # ---- Structural integrity (R5/R6, #1059) ------------------------------
     seen_ids: dict[str, Path] = {}
-    for path, version, art_id, status, fields, links in artifacts:
+    for path, version, art_id, status, fields, links, release_field in artifacts:
         if art_id in seen_ids:
             failures.append(
                 f"R6 {art_id}: declared in BOTH {seen_ids[art_id].name} and "
@@ -367,8 +517,48 @@ def check(root: Path, release_glob: str, subjects: list[str],
                 f"required for release files >= v0.60 (#1059)"
             )
 
-    # ---- Declared-evidence half (R1/R2/R3) --------------------------------
-    for path, version, art_id, status, fields, _links in artifacts:
+    # ---- Path/field release agreement (R8, #1085) -------------------------
+    for path, version, art_id, status, fields, links, release_field in artifacts:
+        m = FIELD_VERSION.match(str(release_field or "").strip())
+        if not m:
+            failures.append(
+                f"R8 {art_id}: `release:` field {release_field!r} in "
+                f"{path.name} is missing or not vX.Y[.Z] — rivet's readiness "
+                f"query reads this field; it must be a version"
+            )
+            continue
+        fv = (int(m.group(1)), int(m.group(2)))
+        patch = m.group(3)
+        if fv == version:
+            continue
+        if (patch is not None and int(patch) >= 1
+                and fv == (version[0], version[1] - 1)):
+            # The one STATED allowance: a PATCH release of the previous
+            # minor, written up in the file of the minor under development
+            # (the 6 measured v0.56.1/v0.56.2-in-release-v0.57.yaml cases).
+            continue
+        if fv > version:
+            failures.append(
+                f"R8 {art_id}: `release: {release_field}` parked in "
+                f"{path.name} — this checker version-gates by PATH, so the "
+                f"artifact is EXEMPT from every >= v0.60 rule while rivet "
+                f"counts it in {release_field}'s scope: a silent version-"
+                f"gate bypass, not a cosmetic mismatch"
+            )
+        else:
+            failures.append(
+                f"R8 {art_id}: `release: {release_field}` disagrees with "
+                f"{path.name} and is not a patch of the previous minor — "
+                f"the path (checker) and the field (rivet) name different "
+                f"releases"
+            )
+
+    # ---- Declared-evidence half (R1/R2/R3 + R9 + R7) ----------------------
+    r7_checked = 0
+    r7_skipped = 0
+    git_state: str | None = None  # probed lazily, once
+    prev_tags: dict[tuple, str | None] = {}
+    for path, version, art_id, status, fields, _links, _release in artifacts:
         done_when = fields.get("done-when")
         if done_when is None:
             if version >= DECLARE_SINCE:
@@ -377,7 +567,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
                     f"machine signature of done, or `manual: <reason>`"
                 )
             continue
-        kind, holds = evaluate(str(done_when), root)
+        kind, holds, dw_path, dw_literal = evaluate(str(done_when), root)
         predicates_evaluated += 1
         if kind == "malformed":
             failures.append(
@@ -406,6 +596,76 @@ def check(root: Path, release_glob: str, subjects: list[str],
                     f"under-reports shipped work"
                 )
 
+        # R9 (#1085): under a CLAIMING status, a signature into crate SOURCE
+        # only proves code exists — it cannot fail on the failure the
+        # artifact defines for itself. Point it at the gate instead, or
+        # write the basis for why code-existence IS the outcome.
+        if (status in CLAIMING and kind in ("contains", "file")
+                and is_crate_source(dw_path)
+                and not str(fields.get("verified-by", "")).strip()):
+            failures.append(
+                f"R9 {art_id}: status `{status}` on a code-existence "
+                f"done-when into crate source ({dw_path}) — a predicate that "
+                f"cannot fail on the artifact's own definition of failure is "
+                f"not a predicate (#1090); re-point it at the gate that "
+                f"exercises the outcome, or write `verified-by` saying why "
+                f"code-existence genuinely IS the outcome here"
+            )
+
+        # R7 (#1085): evidence must belong to the release. Only a signature
+        # that HOLDS has an introduction to date; archaeology needs full git
+        # history and tags, and every unverifiable case SKIPS LOUDLY (the CI
+        # summary grep pins the skip count at zero).
+        if kind in ("contains", "file") and holds is True:
+            if git_state is None:
+                git_state = git_history_state(root)
+            if git_state != "ok":
+                r7_skipped += 1
+                warnings.append(
+                    f"R7-SKIP {art_id}: {git_state} at {root} — evidence-"
+                    f"release scoping NOT verified for {done_when!r}"
+                )
+                continue
+            if version not in prev_tags:
+                prev_tags[version] = previous_release_tag(root, version)
+            prev_tag = prev_tags[version]
+            if prev_tag is None:
+                r7_skipped += 1
+                warnings.append(
+                    f"R7-SKIP {art_id}: no v{version[0]}.{version[1] - 1}.* "
+                    f"tag visible (tags not fetched?) — evidence-release "
+                    f"scoping NOT verified"
+                )
+                continue
+            intro = introducing_commit(root, kind, dw_path, dw_literal)
+            if intro is None:
+                r7_skipped += 1
+                warnings.append(
+                    f"R7-SKIP {art_id}: signature holds on the tree but no "
+                    f"first-parent commit introduces it (uncommitted work?) "
+                    f"— evidence-release scoping NOT verified"
+                )
+                continue
+            r7_checked += 1
+            rc, _ = _git(root, "merge-base", "--is-ancestor", intro, prev_tag)
+            if rc == 0:
+                shipped = str(fields.get("shipped-in", "")).strip()
+                if not shipped:
+                    failures.append(
+                        f"R7 {art_id}: done-when evidence was introduced by "
+                        f"{intro[:9]}, an ANCESTOR of {prev_tag} — it shipped "
+                        f"in a PREVIOUS release, so this artifact is "
+                        f"mis-scoped; either move it or declare "
+                        f"`shipped-in: <version>` with the reason written "
+                        f"beside it (#1085)"
+                    )
+                elif not SHIPPED_IN_VERSION.match(shipped):
+                    failures.append(
+                        f"R7 {art_id}: `shipped-in: {shipped!r}` is not "
+                        f"version-shaped (vX.Y[.Z]) — the escape hatch names "
+                        f"WHICH release delivered the evidence"
+                    )
+
     # ---- Delivery-commit floor (R4) ---------------------------------------
     delivery_hits = 0
     flagged: set[tuple[str, str]] = set()
@@ -421,7 +681,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
             )
             continue
         delivery_hits += 1
-        _, _, _, status, fields, _links = by_id[art_id]
+        _, _, _, status, fields, _links, _release = by_id[art_id]
         if status in CLAIMING:
             continue
         prs = PR_NUMBER.findall(subject)
@@ -449,7 +709,8 @@ def check(root: Path, release_glob: str, subjects: list[str],
             f"floor never comes down to pass"
         )
 
-    return artifacts, predicates_evaluated, delivery_hits, warnings, failures
+    return (artifacts, predicates_evaluated, delivery_hits, warnings,
+            failures, r7_checked, r7_skipped)
 
 
 def main() -> int:
@@ -475,9 +736,8 @@ def main() -> int:
         else first_parent_subjects(args.root)
     )
     try:
-        artifacts, preds, hits, warnings, failures = check(
-            args.root, args.release_glob, subjects, args.delivery_floor
-        )
+        artifacts, preds, hits, warnings, failures, r7_checked, r7_skipped = \
+            check(args.root, args.release_glob, subjects, args.delivery_floor)
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
@@ -490,7 +750,8 @@ def main() -> int:
     print(
         f"status-evidence: {len(artifacts)} artifacts across {files} release "
         f"files, {hits} delivery commits matched, {preds} done-when "
-        f"predicates evaluated, {len(failures)} failures"
+        f"predicates evaluated, {r7_checked} release-scope archaeology "
+        f"checks ({r7_skipped} skipped), {len(failures)} failures"
     )
     return 1 if failures else 0
 

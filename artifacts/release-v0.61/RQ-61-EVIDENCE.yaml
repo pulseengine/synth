@@ -36,7 +36,21 @@ artifacts:
       that the code path exists. A predicate that cannot fail on the failure
       the artifact defines for itself is not a predicate. Both live instances
       were corrected in #1090; the RULE is what is missing.
-    status: proposed
+
+      DISPOSITIONS AS IMPLEMENTED. R8's 6 mismatches: kept, under the now-
+      STATED allowance — a field naming a PATCH of the file's previous minor
+      (vX.(Y-1).Z, Z >= 1) is the parked-patch practice and green; every
+      other disagreement (including the harmful field-ahead-of-path
+      direction) is red. R9's predicate: `crates/**` EXCLUDING `/tests/`
+      components — crate integration-test dirs are executed by the required
+      Test job and are gate-shaped like scripts/, coq/ and workflows, which
+      is where every honest live signature already points. R7 on a shallow
+      clone / missing tag / uncommitted signature: LOUD `R7-SKIP` warning
+      plus a skip count in the machine-read summary line, and the CI step's
+      grep pins `(0 skipped)` with >= 1 archaeology check — so the skip
+      can never quietly pass in the required job (whose fetch-depth: 0
+      already feeds the R4 delivery floor).
+    status: implemented
     release: v0.61
     tags: [gates, rivet, status-evidence, methodology]
     links:
@@ -47,4 +61,16 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1085"
-      done-when: "manual: R7/R8/R9 implemented in status_evidence_check.py with the #1085 instances replayed as fixtures, and the 6 R8 mismatches disposed of explicitly"
+      # The signature names the R7 replay class in the unit suite the
+      # required Claim Check job runs — the gate that exercises all three
+      # rules, not the code that implements them (R9 applied to itself).
+      done-when: "contains:scripts/test_status_evidence_check.py:class R7EvidenceRelease"
+      verified-by: >-
+        Red-first per rule against the pre-change checker (all three
+        defective fixtures passed with 0 failures, then failed on exactly
+        the rule under test and no other); 5 mutations each killing >= 1
+        test with needle counts asserted before mutating (transcripts in
+        the #1085 PR); green controls: 66 artifacts on main at 0 failures
+        with 4 release-scope archaeology checks performed and 0 skipped,
+        RQ-60-CANARY accepted through its shipped-in escape hatch, the 6
+        R8 patch-park mismatches accepted through the stated allowance.
