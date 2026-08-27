@@ -77,7 +77,7 @@ artifacts:
 
       Derived unguarded set: EMPTY, pinned at empty — stronger than the census
       header's "does not grow".
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [soundness, pseudo-op, encoder-expansion, canary, derive-dont-mirror]
     links:
@@ -170,7 +170,7 @@ artifacts:
       the census has not delivered. If some subset cannot be accepted, name the
       subset and the reason — an honest frontier beats a widened one, and this
       release has already spent five findings on the cost of a silent decline.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [reach, aarch64, imports, relocatable, census]
     links:
@@ -473,9 +473,18 @@ artifacts:
            Unconditional or pressure-heuristic — decide deliberately. This alone
            may unblock position#tick AND unpin conversion-carrying functions
            from m7dp.
-        2. Extend the S-register pool into the callee-saved S16..S31 / D8..D15
-           with prologue/epilogue save-restore, for the genuinely deep f32
-           trees in attitude#tick and ekf#estimate.
+        2. RETIRED BY MEASUREMENT — kept written down so it is not
+           re-proposed. The plan was "extend the S-register pool into the
+           callee-saved S16..S31 / D8..D15". A discriminating variant (same
+           pressure, different RESIDENCE) showed the wall is NOT capacity:
+           60 simultaneously-live f32 on the OPERAND STACK compile, while 14
+           in HOMED LOCALS do not. The #881 spill rung rescues stack pressure
+           to 60+; its guard spills "the deepest straight-line-segment f32/f64
+           STACK value" and never touches homed locals. Pool extension would
+           move the wall 13 -> ~29 locals — a bigger number, THE SAME WALL
+           FURTHER OUT, paid with prologue/epilogue push/pop on every affected
+           function. The delivered increment 2 instead frame-homes overflow
+           locals from their first def.
 
       DEFINITION OF DONE (jess's, adopted): those three symbols reaching
       `nm -> T` in the fused image — 5 of 5 stages exported.
