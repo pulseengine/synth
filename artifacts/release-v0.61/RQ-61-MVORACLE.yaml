@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-61-MVORACLE
+    type: system-req
+    title: "The silent-miscompile evidence behind the #1093 decline is not a CI oracle — the guard survives, its justification does not"
+    description: >
+      #1097, found while verifying RQ-61-MVPANIC. #1093 was reported as a
+      panic; the class sweep found the same root cause in a shape that does
+      NOT panic — it compiled, exited 0, and returned an UNINITIALIZED
+      REGISTER:
+
+        movw r1, #7      <- the block PARAMETER
+        cmp  r0, #0
+        beq  +8          <- false path skips the then-branch
+        add  r3, r1, #42 <- r3 written ONLY on the true path
+        mov  r0, r3      <- result = r3
+
+      wasmtime gives 7. RV32 `block (param..)`+br_if and `loop (param..)`+
+      back-edge are the same shape.
+
+      #1096 makes the whole class DECLINE, which is the right fix. But the
+      DEMONSTRATION — the unicorn-vs-wasmtime differential proving those three
+      shapes returned wrong answers — lives in a lane scratchpad. It is not in
+      `scripts/repro/`, not CI-wired, and not counted by the oracle-wiring
+      floors.
+
+      So what survives is a guard plus tests asserting the guard declines.
+      NOTHING IN THE REPO DEMONSTRATES WHY THE DECLINE IS MANDATORY rather
+      than conservative. A future contributor improving reach meets the
+      decline with no executable evidence of what it protects against, and
+      the honest-sounding move — "this construct is simple, let's support it"
+      — is exactly how the miscompile returns.
+
+      THIS IS THE INVERSE OF THE RELEASE'S OTHER FINDINGS. Elsewhere a check
+      exists and points at the wrong thing; here the check is right and the
+      evidence for its necessity was thrown away after use.
+
+      Promote the differential into `scripts/repro/`, CI-wired, with a
+      non-vacuity floor (`# ci-checks: emulations >= N`), pinned RED-FIRST
+      against the pre-#1096 binary: the three silent shapes must return wrong
+      values on the old code and decline on current main. That also gives any
+      future multi-value lowering an acceptance oracle it must pass before the
+      guard can be relaxed — the only safe way to eventually remove it.
+    status: proposed
+    release: v0.61
+    tags: [oracle, differential, multi-value, evidence]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1097"
+      done-when: "manual: the differential is in scripts/repro/, CI-wired with an emulation floor, and RED against the pre-#1096 binary on all three silent shapes"

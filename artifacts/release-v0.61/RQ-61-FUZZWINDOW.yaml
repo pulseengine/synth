@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-61-FUZZWINDOW
+    type: system-req
+    title: "The i64 param-clobber fuzz harness checks 'before FIRST read' — a write between two reads is exempt by construction"
+    description: >
+      #1055. `i64_lowering_doesnt_clobber_params` (the #100 cargo-fuzz
+      harness) and its companion `assert_no_param_clobber_before_localget`
+      check a STRICTLY WEAKER invariant than the one they exist to enforce.
+      They compute `earliest_read` — the first `LocalGet` per param — and flag
+      only writes occurring BEFORE it. **A write BETWEEN TWO READS is exempt
+      by construction:**
+
+        local.get $amt   ;; earliest_read for $amt is HERE
+        i64.shl          ;; expansion clobbers $amt's home high register
+        local.get $amt   ;; second read now sees the clobbered value
+
+      That window is EXACTLY the shape of #1048 and the I64Clz/I64Ctz/
+      I64Popcnt clobber found alongside it (#1054) — defects the harness had
+      itself NAMED and could not catch. Two live miscompiles walked through
+      the hole in a check written to stop them.
+
+      THE CLASS, and it is this release's theme in its purest form: the
+      harness is not absent, not disabled, and not misconfigured. It runs, it
+      passes, and its PREDICATE is narrower than its NAME. `earliest_read` is
+      a cheap proxy for "the param is live"; liveness is the real property,
+      and a param is live from its first read until its last.
+
+      The fix is to widen the window to the param's full live range (or state
+      precisely why a narrower one is sound). RED-FIRST IS FREE AND
+      MANDATORY: the harness must FAIL on the pre-#1054 sources, where the
+      defects it missed are still present. A widened harness that has never
+      been shown to catch the two defects it was blind to is not evidence of
+      anything.
+    status: proposed
+    release: v0.61
+    tags: [fuzz, i64, aapcs, gates, vacuity]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1055"
+      done-when: "manual: the harness FAILS on pre-#1054 sources (the #1048 and Clz/Ctz/Popcnt shapes it missed) and passes on main"
