@@ -194,7 +194,15 @@ jobs:
     #    claim-covered, generated, or allowlisted with a rationale).
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 — the status-evidence gate (RQ-60-FLIPCOUPLE, #1064)
+      # scans first-parent commit SUBJECTS for delivery commits ("RQ-N-FOO:
+      # ..." must be acknowledged by RQ-N-FOO's artifact). A shallow checkout
+      # would scan one subject and pass vacuously; the gate's in-script
+      # delivery floor (28) turns that into a RED, and this line is what
+      # keeps it green the honest way.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Ensure PyYAML
         run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
@@ -296,6 +304,39 @@ jobs:
           # merely exiting 0 over nothing.
           grep -qE '^artifact citations: [1-9][0-9]* cited filters over [1-9][0-9]* test names' \
             /tmp/artifact-cites.log
+
+      # RQ-60-FLIPCOUPLE / #1064 — the status-evidence gate. v0.58 made
+      # release readiness a QUERY over rivet statuses, and SEVEN measured
+      # instances across v0.59/v0.60 showed nothing ties "the code landed" to
+      # "the artifact says so" — six stale `proposed` over shipped code, one
+      # premature `implemented` over an unmet definition of done. Both
+      # directions are the same substitution ("the PR merged" read as "the
+      # stated outcome holds"), so every release artifact >= v0.60 now
+      # declares `done-when` evidence and every id-first delivery commit must
+      # be acknowledged by its artifact. Full rules + stated residuals in the
+      # script's docstring; all seven instances are replayed as fixtures by
+      # the unit test below on every run.
+      #
+      # Lives in the already-REQUIRED claim-check job for the standing
+      # reason: a brand-new job is not a required context on main, so it
+      # could sit red for weeks blocking nothing.
+      - name: Status-evidence gate — a release status must agree with the evidence on main (1064)
+        run: |
+          set -euo pipefail
+          python3 scripts/status_evidence_check.py | tee /tmp/status-evidence.log
+          # Non-vacuity: re-derive the verdict from the summary the gate
+          # WROTE — non-empty artifact population, a non-zero delivery-commit
+          # scan, predicates actually evaluated, zero failures.
+          grep -qE '^status-evidence: [1-9][0-9]* artifacts across [1-9][0-9]* release files, [1-9][0-9]* delivery commits matched, [1-9][0-9]* done-when predicates evaluated, 0 failures$' \
+            /tmp/status-evidence.log
+      # The gate that polices the statuses does not get to be the unchecked
+      # one (six releases running found the defect in the CHECKER). This
+      # replays all seven measured miss instances — reconstructed from the
+      # real historical statuses at d656fb8a/e1a7b57d/f1e2e7bc/3267e0d3/
+      # f8036ec1/e6a3b27a plus the reverted VFPPRESSURE flip — and asserts
+      # the gate reds on each, plus green/red controls for every rule.
+      - name: Unit-test the status-evidence gate — seven-instance replay (1064)
+        run: python3 scripts/test_status_evidence_check.py
 
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
