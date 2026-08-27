@@ -8032,6 +8032,34 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
     let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
     let mut replace_at: BTreeMap<usize, ArmOp> = BTreeMap::new(); // holder materializations
 
+    // #490 (surfaced by RQ-60-RACOST increment 1, v0.60): the hoist introduces
+    // a NEW write to its holder register, and it runs AFTER
+    // `ensure_callee_saved_prologue` + `shrink_callee_saved_saves` have FIXED
+    // the function's save list — so homing the holder in a callee-saved
+    // register the prologue does not push clobbers the caller's R4-R8, the
+    // exact class the unconditional VCR-RA-003 validator refuses with
+    // `CalleeSavedNotSaved` (and DID refuse, hard-failing the compile: the
+    // tied-web merge freed R7 body-wide on flight_seam::controller_step,
+    // shrink dropped R7 from the push list, and the hoist then picked R7 as
+    // "free"). A callee-saved candidate is therefore eligible only when the
+    // prologue SAVES it. Provably byte-identical on every currently-compiling
+    // input: a stream in which the hoist had picked an unsaved callee-saved
+    // register would already hard-fail VCR-RA-003, so no compiling fixture
+    // exercises the changed choice.
+    const CALLEE_SAVED_HOIST: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    let prologue_saved: BTreeSet<Reg> = instrs
+        .iter()
+        .find_map(|i| match &i.op {
+            ArmOp::Push { regs } if regs.contains(&Reg::LR) => Some(regs.iter().copied().collect()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let unsaved_callee: BTreeSet<Reg> = CALLEE_SAVED_HOIST
+        .iter()
+        .filter(|r| !prologue_saved.contains(r))
+        .copied()
+        .collect();
+
     let mut seg_start = 0;
     let mut process_segment = |start: usize, end: usize| {
         let seg = &instrs[start..end];
@@ -8094,6 +8122,9 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
             let hi = *covered.iter().max().unwrap();
             let mut avoid = reserved.clone();
             avoid.insert(rd);
+            // #490: an unsaved callee-saved register is not a legal holder —
+            // see the `unsaved_callee` derivation above.
+            avoid.extend(unsaved_callee.iter().copied());
             let Some(rf) = free_reg_over(seg, first_start, hi, &avoid) else {
                 continue; // no register free across the reuse window → decline
             };
@@ -14957,6 +14988,112 @@ mod tests {
                 .count(),
             2,
             "both `add _,500,500` uses retargeted to the hoisted register"
+        );
+    }
+
+    /// #490 (surfaced by RQ-60-RACOST increment 1): the extending-alias hoist
+    /// must NEVER home its holder in a callee-saved register the prologue does
+    /// not save — it runs AFTER `shrink_callee_saved_saves` fixed the save
+    /// list, so such a write clobbers the caller's register and VCR-RA-003
+    /// hard-fails the compile (`CalleeSavedNotSaved`; observed on
+    /// flight_seam::controller_step once the tied-web merge freed R7
+    /// body-wide). RED-FIRST: before the `unsaved_callee` gate this stream
+    /// hoisted 500 into R4 with no push anywhere in sight.
+    #[test]
+    fn const_cse_hoist_declines_unsaved_callee_saved_holder_490() {
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        // Same shape as the hoist's positive test, but R0/R1 are kept busy in
+        // the window so the only liveness-free candidates are R4-R8 — and
+        // there is NO prologue push, so none of them is saved.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R0, Reg::R0),
+            add(Reg::R1, Reg::R1),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(
+            removed, 0,
+            "no legal holder register: the hoist must decline, not clobber an \
+             unsaved callee-saved register"
+        );
+        assert_eq!(out, seq, "declined hoist leaves the stream untouched");
+    }
+
+    /// The saved-set gate is PRECISE, not a blanket callee-saved ban: the same
+    /// stream behind a `push {{r4, lr}}` prologue may (and does) hoist into R4.
+    #[test]
+    fn const_cse_hoist_allows_saved_callee_saved_holder_490() {
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        let seq = vec![
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4, Reg::LR],
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R0, Reg::R0),
+            add(Reg::R1, Reg::R1),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 1, "R4 is pushed, so it is a legal holder");
+        let mats: Vec<Reg> = out
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Movw { rd, imm16: 500 } => Some(*rd),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            mats,
+            vec![Reg::R4],
+            "hoisted into the SAVED callee-saved R4"
         );
     }
 
