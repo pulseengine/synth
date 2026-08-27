@@ -254,6 +254,21 @@ artifacts:
       # frozen anchors + execution differentials), not a single in-repo
       # signature. Direction-A protection rests on the delivery-commit floor.
       done-when: "manual: acceptance is VCR-RA-003's whole-function validator plus the byte-changing differentials; no single file/symbol is the verdict"
+      # Increment 1 of 2 — TIED OPERANDS — LANDED (feat/ra-tied-operand-webs-242,
+      # commits reference epic #242): the straight-line colourer merges tied
+      # use/def webs (probed from the shipped rewriter, joins-path convention),
+      # closing the entire re-derived rmw-colour-mismatch decline population
+      # (relocatable 26 of 42 single-block declines -> 0; self-contained 15 -> 0;
+      # scripts/tied_web_census_242.py re-derives both sides — the artifact's
+      # 49-of-71 figure above was STALE at execution). Deliberately byte-neutral
+      # under a zero-churn identity bias: recolouring for wins is increment 2's
+      # cost-model lane, per this artifact's own RQ-59-MEASURE verdict. Also
+      # surfaced + fixed a latent #490 hole (const-CSE alias hoist could home
+      # its holder in an UNSAVED callee-saved register; caught by VCR-RA-003
+      # exactly as this artifact's GATE paragraph prescribes). Increment 2
+      # (real-encoder byte costs) remains open; status stays `proposed` until
+      # the measured allocator verdict in done-when exists.
+      landed: "#242 PR #1082"
 
   - id: RQ-60-ARTIFACTSPLIT
     type: system-req
