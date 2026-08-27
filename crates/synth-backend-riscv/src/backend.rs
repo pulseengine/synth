@@ -85,9 +85,14 @@ impl Backend for RiscVBackend {
             // an argument-register home. None when the driver supplied no
             // arg-count table (hand-built modules) — pure inference, as before.
             let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            let func_config = if declared_params.is_some() {
+            // #1093: thread THIS function's blocktype-arity side-table too, so
+            // the module-level path carries the same channel the CLI
+            // per-function loop sets — the parameter-taking-block-type decline
+            // in `compile_function_with_opts` fires on every driver path.
+            let func_config = if declared_params.is_some() || !func.block_arity.is_empty() {
                 Some(CompileConfig {
                     current_func_param_count: declared_params,
+                    current_func_block_arity: func.block_arity.clone(),
                     ..config.clone()
                 })
             } else {
@@ -259,6 +264,27 @@ fn compile_function_with_opts(
     opts: SelectorOptions,
 ) -> Result<CompiledFunction, BackendError> {
     ensure_supported_target(&config.target)?;
+
+    // #1093: a PARAMETER-taking block type (`if`/`block`/`loop (param ..)`,
+    // wasm multi-value) declines LOUDLY before selection. The RV32 selector's
+    // control frames record `stack_height_at_entry` and reconcile if/else arms
+    // and branch edges against it; block params sit BELOW that checkpoint, so
+    // `lower_else`'s `split_off(entry)` panics ("`at` split index ... should
+    // be <= len ...") and the else-less / branch-edge shapes silently produce
+    // the wrong join value (see `find_param_block_type` for the measured
+    // matrix). This is the aarch64 VCR-A64-CF-001 frame-open refusal ported,
+    // NOT multi-value support. Checked on the driver's ORIGINAL stream — the
+    // one the decoder's ordinal side-table was built against (the
+    // `memory.grow(0)` fold below never touches Block/Loop/If, but the
+    // original stream is the honest key regardless). Empty side-table
+    // (hand-built op streams) ⇒ never fires ⇒ byte-identical.
+    if let Some((what, ord, arity)) =
+        synth_core::find_param_block_type(ops, &config.current_func_block_arity)
+    {
+        return Err(BackendError::CompilationFailed(
+            synth_core::param_block_decline_msg("the RV32 selector", what, ord, arity),
+        ));
+    }
 
     let num_params = effective_num_params(ops, config);
     // #539/#242 (VCR-SEL-005): fold `i32.const 0; memory.grow` → `memory.size`

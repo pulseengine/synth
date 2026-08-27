@@ -33,6 +33,20 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
+        // #1093 pre-flight: a PARAMETER-taking block type declines as a typed
+        // error, never a panic — block params pop BELOW the #313 frame-entry
+        // checkpoint, so `Else`'s `split_off` panics (and the else-less shape
+        // is silently wrong). Guards direct library callers who set
+        // `block_arity`; the CLI paths are declined in `compile_wasm_to_arm`.
+        // Mechanism + measured matrix: `synth_core::find_param_block_type`.
+        if let Some((what, ord, arity)) =
+            synth_core::find_param_block_type(wasm_ops, &self.block_arity)
+        {
+            return Err(synth_core::Error::synthesis(
+                synth_core::param_block_decline_msg("the ARM selector", what, ord, arity),
+            ));
+        }
+
         // #359/#503: AAPCS stack arguments. We pass args past r0..r3 on the
         // outgoing stack and read incoming stack-passed params from the
         // caller's stack. The incoming-param homing (`compute_local_layout` →

@@ -337,6 +337,27 @@ fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
 ) -> Result<CompileArmOutput, String> {
+    // #1093: a PARAMETER-taking block type (`if`/`block`/`loop (param ..)`,
+    // wasm multi-value) declines LOUDLY here — the single choke point BOTH
+    // ARM codegen paths pass through, so neither the optimized route nor the
+    // #197 direct route can reach the selectors' frame-entry stack
+    // checkpoints, which cannot represent params consumed below them (the
+    // `split_off` panic with an `else`; a silently-wrong false-path value
+    // without one — see `find_param_block_type`). This is the aarch64
+    // VCR-A64-CF-001 frame-open refusal ported, NOT multi-value support.
+    // Checked on the driver's ORIGINAL stream, which is what the ordinal
+    // side-table was built against. Empty side-table (hand-built op streams)
+    // ⇒ never fires ⇒ byte-identical for every existing caller.
+    if let Some((what, ord, arity)) =
+        synth_core::find_param_block_type(wasm_ops, &config.current_func_block_arity)
+    {
+        return Err(synth_core::param_block_decline_msg(
+            "the ARM selector",
+            what,
+            ord,
+            arity,
+        ));
+    }
     // #539: `memory.grow(0)` must return the CURRENT page count, not the
     // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
     // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly
