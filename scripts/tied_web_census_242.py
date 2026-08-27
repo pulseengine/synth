@@ -33,6 +33,17 @@ preceding it:
                         prescan (non-straight-line / unmodeled op) and joins
                         refused it silently as single-block
 
+One subtlety keeps the attribution honest: the SHIPPING segment-based
+`reallocate_function` (run after a graph-alloc decline) prints
+`rewrite-refused complete set` lines through the SAME apply_range_coloring
+census, and those land in the stream AFTER the current function's join
+verdict — i.e. inside the NEXT function's evidence window.  A GENUINE
+increment-1 refusal is printed immediately before its own
+`increment-1 declined: apply-colouring` line, so a refusal listing counts as
+increment-1 evidence ONLY when the very next diagnostic line is that
+apply-colouring sub-reason; anything else is shipping-path noise and is
+dropped.
+
 Usage:  python3 scripts/tied_web_census_242.py <synth-binary> [--json OUT]
 Exit 0 unless a compile fails — this MEASURES, it does not judge.
 """
@@ -95,21 +106,34 @@ def attribute(stderr):
     inc1 = []          # sub-reason strings
     refused_rmw = []   # op families refused as /rmw-colour-mismatch
     refused_other = False
+    # A refusal listing counts as increment-1 evidence ONLY if the immediately
+    # following diagnostic line is `increment-1 declined: apply-colouring`
+    # (see the module doc: the shipping pass prints the same listing).
+    pending_rmw = []
+    pending_other = False
     for line in stderr.splitlines():
         m = INC1.match(line)
         if m:
-            inc1.append(m.group(1))
+            reason = m.group(1)
+            if reason == "apply-colouring":
+                refused_rmw.extend(pending_rmw)
+                refused_other = refused_other or pending_other
+            pending_rmw, pending_other = [], False
+            inc1.append(reason)
             continue
         m = REFUSED.match(line)
         if m:
+            pending_rmw, pending_other = [], False
             for item in m.group(1).split(", "):
                 name = item.split(" x")[0]
                 fam, _, cause = name.partition("/")
                 if cause == "rmw-colour-mismatch":
-                    refused_rmw.append(fam)
+                    pending_rmw.append(fam)
                 else:
-                    refused_other = True
+                    pending_other = True
             continue
+        # Any other line breaks refusal→apply-colouring adjacency.
+        pending_rmw, pending_other = [], False
         m = JOIN.match(line)
         if m:
             reason = m.group(1)
