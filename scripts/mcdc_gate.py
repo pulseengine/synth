@@ -209,7 +209,13 @@ BRANCH_POPULATION = {
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32::_$u7b$$u7b$closure$u7d$$u7d$": 2,
     "synth_backend_riscv::backend::build_options": 8,
-    "synth_backend_riscv::backend::compile_function_with_opts": 9,
+    # 9 -> 10 (RQ-61-MVPANIC, #1093): the parameter-taking-block-type decline
+    # (`find_param_block_type` over the ordinal blocktype-arity side-table —
+    # the aarch64 VCR-A64-CF-001 refusal ported) added ONE condition at the
+    # top of the function. Driven both ways by the rv_param_block_gate rows
+    # (params=0 compiles, params=1/2 decline). Value taken from the gate's
+    # own REPIN output on the #1096 evidence, not hand-counted.
+    "synth_backend_riscv::backend::compile_function_with_opts": 10,
     "synth_backend_riscv::backend::effective_num_params": 1,
     "synth_backend_riscv::backend::ensure_supported_target": 4,
     "synth_core::static_data_addr::resolve_owner": 4,
