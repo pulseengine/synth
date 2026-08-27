@@ -139,6 +139,12 @@ EXPECTED_DECLINES = {
     "rv32_br_value_931.wat": "i64 br-with-value",
     "trunc_sat_782.wat": "f64 and i64 saturating truncations",
     "vfp_spill_881.wat": "f64 spill shapes",
+    # #1069 increment 2: the f32 columns (live13/14/16/24) COMPILE here — the
+    # frame-homed-local rung is target-independent — but live8d is f64, which
+    # this sweep's single-precision m4f target declines by precision. The
+    # m7dp execution truth for all five lives in
+    # vfp_local_pressure_1069_differential.py.
+    "vfp_local_pressure_1069.wat": "f64 local shapes (live8d) on m4f",
 }
 
 # Compile floor: a FLOOR, so adding fixtures cannot redden the job. Measured

@@ -213,7 +213,12 @@ impl InstructionSelector {
             &self.type_arg_counts,
             // #881: the VFP spill rung hands out slots from the same shared
             // pool, so it must force the area exactly like the integer rung.
-            self.spill_on_exhaustion || self.vfp_spill_on_exhaustion,
+            // #1069: the frame-home lever hands out PERMANENT slots from the
+            // same pool — listed here defensively even though the backend
+            // only ever sets it together with the VFP rung flag (a caller
+            // setting it alone would otherwise get slots aliasing the #204
+            // param homes: a silent miscompile, not a decline).
+            self.spill_on_exhaustion || self.vfp_spill_on_exhaustion || self.vfp_frame_home_locals,
             self.param_backing_on_exhaustion,
             calls_float_boundary,
             aeabi_builtin_calls,
@@ -308,6 +313,7 @@ impl InstructionSelector {
         let mut spill = SpillState::with_slots(layout.i64_spill_base, self.i64_spill_slots);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
         spill.vfp_spill_on_exhaustion = self.vfp_spill_on_exhaustion;
+        spill.vfp_frame_home_locals = self.vfp_frame_home_locals;
         spill.area_reserved = layout.spill_area_reserved;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
@@ -649,6 +655,17 @@ impl InstructionSelector {
         // S0, D1(=S2:S3), S1. For an f32-only signature this degenerates to
         // the sequential `S0, S1, …` seeding it replaces (byte-identical).
         let mut f64_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
+        // #1069 (RQ-60-VFPPRESSURE increment 2): FRAME-homed float locals —
+        // local index -> permanent [SP,#slot] byte offset. Populated ONLY
+        // under the LAST-resort `vfp_frame_home_locals` lever (set by the
+        // backend after the plain #881 rung also exhausted), when a fresh
+        // local home would pin a register above the S7/D3 cap (or the file
+        // is already exhausted): the local then lives in the frame from its
+        // first def, `local.set` stores, `local.get` loads. Empty in every
+        // default AND every plain-rung compile, so both are byte-identical
+        // by construction.
+        let mut f32_frame: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
+        let mut f64_frame: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
         if fpu.is_some() {
             let seeds = vfp_param_layout(num_params, &params_f32, &params_f64_vfp)
                 .map_err(|e| synth_core::Error::synthesis(format!("GI-FPU-002 phase 3: {e}")))?;
@@ -739,7 +756,25 @@ impl InstructionSelector {
                         vfp_cf_floor = stack.len();
                     }
                     _ => {
-                        let (window, need_s, need_pairs) = vfp_op_demand(op);
+                        // #1069: a `local.get` of a FRAME-homed float local
+                        // loads into a fresh S-reg / aligned D-pair — demand
+                        // headroom for it. `vfp_op_demand` cannot know
+                        // residence; both maps are empty unless the rung
+                        // frame-homed a local, so this override is inert for
+                        // every pre-#1069 rung compile.
+                        let frame_local_demand = if let WasmOp::LocalGet(i) = op {
+                            if f32_frame.contains_key(i) {
+                                Some((0, 1, 0))
+                            } else if f64_frame.contains_key(i) {
+                                Some((0, 0, 1))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        let (window, need_s, need_pairs) =
+                            frame_local_demand.unwrap_or_else(|| vfp_op_demand(op));
                         if window + need_s + need_pairs > 0 {
                             let lo = stack.len().saturating_sub(window);
                             for pos in lo..stack.len() {
@@ -804,6 +839,7 @@ impl InstructionSelector {
                     idx,
                     &params_f32,
                     &mut f32_home,
+                    &mut f32_frame,
                     &mut vfp_used,
                     &mut vfp_home,
                     &mut stack,
@@ -828,6 +864,7 @@ impl InstructionSelector {
                     idx,
                     &params_f64_vfp,
                     &mut f64_home,
+                    &mut f64_frame,
                     &mut vfp_used,
                     &mut vfp_home,
                     &mut stack,
