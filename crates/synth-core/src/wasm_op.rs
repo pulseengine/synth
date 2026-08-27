@@ -636,6 +636,7 @@ pub fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
 ///  - a `br_if` into a `block (param ..)` and a back-edge to a
 ///    `loop (param ..)` header mis-reconcile the join value on RV32
 ///    (measured wrong values; ARM already declined the loop case via #509).
+///
 /// Only the branch-free fall-through shape happens to compile correctly, and
 /// telling it apart from the broken shapes would be a NEW predicate with its
 /// own proof burden — so, exactly like aarch64, the whole class declines

@@ -8,7 +8,7 @@
 #
 # Usage:
 #   ./run_supported.sh                    # Full run with optimizer
-#   ./run_supported.sh --no-optimize      # Bypass optimizer (avoids regalloc panics)
+#   ./run_supported.sh --no-optimize      # Bypass optimizer (isolates optimizer-only failures)
 #   ./run_supported.sh --quick            # Only test high-value files (i32, control flow, etc.)
 
 set -euo pipefail
@@ -27,7 +27,7 @@ for arg in "$@"; do
         --quick) QUICK_MODE=true ;;
         --help|-h)
             echo "Usage: $0 [--no-optimize] [--quick]"
-            echo "  --no-optimize  Disable peephole optimizer (avoids regalloc panics)"
+            echo "  --no-optimize  Disable peephole optimizer (isolates optimizer-only failures)"
             echo "  --quick        Only test high-value spec files"
             exit 0
             ;;
@@ -136,7 +136,7 @@ for wast_file in "${FILES[@]}"; do
     if echo "$COMPILE" | grep -q "panicked"; then
         COMPILE_PANIC=$((COMPILE_PANIC + 1))
         PANIC_FILES+=("$basename($TEST_TOTAL)")
-        printf "[%3d/%d] ${YELLOW}PANIC${NC}       %-30s  tests=%s  (optimizer regalloc exhausted)\n" \
+        printf "[%3d/%d] ${YELLOW}PANIC${NC}       %-30s  tests=%s  (compiler defect — a panic is never an acceptable decline)\n" \
                "$CURRENT" "$TOTAL" "$basename" "$TEST_TOTAL"
     elif echo "$COMPILE" | grep -q "No exported functions"; then
         COMPILE_NOEXPORT=$((COMPILE_NOEXPORT + 1))
@@ -178,7 +178,12 @@ echo -e "${GREEN}Parse OK:             $PARSE_OK${NC}"
 echo -e "${RED}Parse FAIL:           $PARSE_FAIL${NC}"
 echo ""
 echo -e "${GREEN}Compile OK:           $COMPILE_OK${NC}  (${#OK_FILES[@]} files)"
-echo -e "${YELLOW}Compile PANIC:        $COMPILE_PANIC${NC}  (optimizer regalloc — all pass with --no-optimize)"
+# #1093 correction: this line used to say "optimizer regalloc — all pass with
+# --no-optimize", which was FALSE for the multi-value class: the split_off
+# panic lived in INSTRUCTION SELECTION (both ARM paths and RV32), before the
+# optimizer, and --no-optimize changed nothing. A panic here is a compiler
+# defect to fix (usually by a loud decline), not a mode to route around.
+echo -e "${YELLOW}Compile PANIC:        $COMPILE_PANIC${NC}  (compiler defects — file each one; do NOT assume --no-optimize helps)"
 echo -e "${RED}Compile ERROR:        $COMPILE_ERROR${NC}"
 echo -e "${CYAN}Compile NO_EXPORTS:   $COMPILE_NOEXPORT${NC}  (validation-only or all modules lack exports)"
 echo ""
@@ -186,7 +191,7 @@ echo "Total assert_return tests parsed: $TOTAL_ASSERT_RETURN"
 echo ""
 
 if [ ${#PANIC_FILES[@]} -gt 0 ]; then
-    echo "Optimizer regalloc panics (fixable with --no-optimize):"
+    echo "Compile panics (compiler defects — reproduce and file each; --no-optimize is a diagnostic, not a fix):"
     printf "  %s\n" "${PANIC_FILES[@]}"
     echo ""
 fi
