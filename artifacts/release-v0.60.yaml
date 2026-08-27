@@ -132,7 +132,7 @@ artifacts:
       (`//coq:verify_proofs` + claim_check), not from a grep over `.v` files —
       gale's own caveat #2 is that it read Qed/Admitted from source without
       re-running the kernel, and that gap applies to us too.
-    status: proposed
+    status: implemented
     release: v0.60
     tags: [proof, wasm-model, control-flow, reach, union-metric]
     links:
@@ -146,6 +146,17 @@ artifacts:
       # Increment 1 is a MODEL EXTENSION: done means the WASM model gains a
       # BrIf constructor (today `Inductive wasm_instr` has no control flow).
       done-when: "contains:coq/Synth/WASM/WasmInstructions.v:BrIf"
+      # Increment 1 delivered MORE than the done-when signature: BrIf carries
+      # executable semantics (exec_wasm_instr fall-through + the new
+      # branch-observable exec_wasm_seq / WBranch outcome layer) and the
+      # correspondence obligation is DISCHARGED Qed (brif_correct,
+      # CorrectnessBrIf.v) against exec_program_pc/exec_program_br — kernel
+      # recount 630 Qed / 2 Admitted via //coq:verify_proofs. The union-metric
+      # movement on gale's three drivers is a REASONED estimate (BrIf = 38 of
+      # 477 instances ≈ 8 points) until gale re-runs #1057's measurement —
+      # that re-run, and the remaining seven control-flow kinds + sub-word
+      # memory, are the residual of this artifact, not of increment 1.
+      verified-by: "bazel test //coq:verify_proofs (Rocq kernel, brif_correct Qed) + claim_check 51/51"
 
   - id: RQ-60-A64IMPORT
     type: system-req
