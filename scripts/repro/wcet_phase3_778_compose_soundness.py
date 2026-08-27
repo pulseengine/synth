@@ -122,7 +122,8 @@ def main():
     p, e = wat_file("chain", CHAIN_WAT)
     rep = compile_wat(p, e)
     # root/mid/leaf all bounded and composed.
-    for nm, cyc_expect in [("func_0", 19), ("func_1", 51), ("root", 136)]:
+    # #1063: internal functions are keyed by their name-section names now
+    for nm, cyc_expect in [("leaf", 19), ("mid", 51), ("root", 136)]:
         f = sidecar_entry(rep, nm)
         assert f["status"] == "bounded" and f["cycles"] == cyc_expect, \
             f"{nm}: {f} (expected composed {cyc_expect})"
@@ -134,7 +135,7 @@ def main():
     # r1 starts 0, each trip r1 = leaf(r1) = r1+1, 10 trips => r1 = 10.
     check_composed("loopcaller", rep, e, expect_r0=10, args=())
     # And the composed bound must include >= 10x the leaf body (multiplier kept).
-    leaf = sidecar_entry(rep, "func_0")["cycles"]
+    leaf = sidecar_entry(rep, "leaf")["cycles"]
     lc = sidecar_entry(rep, "loopcaller")["cycles"]
     assert lc >= 10 * leaf, f"loopcaller {lc} < 10x leaf {leaf} — multiplier lost"
     print(f"  OK loopcaller composed bound {lc} >= 10 x leaf {leaf}"
