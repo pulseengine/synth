@@ -1096,7 +1096,7 @@ fn compile_wasm_to_arm(
     // SP-untouched, even-count-padded — see shrink_callee_saved_saves):
     // ~12 cycles of pure save/restore overhead removed on small leaves.
     let realloc_on = std::env::var("SYNTH_RANGE_REALLOC").map_or(true, |v| v != "0");
-    let arm_instrs = if realloc_on {
+    let (arm_instrs, ran_realloc) = if realloc_on {
         use synth_synthesis::rules::Reg;
         const POOL: [Reg; 9] = [
             Reg::R0,
@@ -1132,15 +1132,151 @@ fn compile_wasm_to_arm(
         // shrinking the `push {r4-r8,lr}` the #580 exhaustion shapes pay for.
         // `post_exhaust == false` selects the shipping pass bit for bit.
         let (out, stats) = if synth_synthesis::graph_alloc::enabled() {
-            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL) {
-                Some(new) => {
-                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
-                        eprintln!("[graph-alloc] whole-function colouring APPLIED (validated)");
+            // RQ-60-RACOST increment 2 (#242): the colourer prices every
+            // colour choice in REAL-ENCODER bytes. The sizer is the same
+            // encoder family the emit loop below constructs — Thumb-2 (with
+            // the target's FPU) or A32 — asked per candidate instruction, so
+            // there is no hand size table to drift (#936). On the fixed-width
+            // A32 ISA every candidate ties and the cost model degenerates to
+            // the identity hint (zero churn).
+            let sizing_encoder =
+                if matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb) {
+                    ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
+                } else {
+                    ArmEncoder::new_arm32()
+                };
+            let enc = |op: &synth_synthesis::rules::ArmOp| {
+                sizing_encoder.encode(op).ok().map(|b| b.len())
+            };
+            let stats_on = std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok();
+            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL, &enc) {
+                // SYNTH_GRAPH_ALLOC_FORCE (test seam, RQ-60-RACOST
+                // increment 2): ship every validated candidate WITHOUT the
+                // final-byte arbiter — the pre-arbiter behaviour. Used by
+                // `vcr_dec_001_join_alloc_execution_differential.py` so the
+                // unicorn-vs-wasmtime oracle executes the colourer's
+                // proposals on EVERY reachable shape (call, i64-pair,
+                // shift-expansion), not only the ones the arbiter lets ship —
+                // an arbiter-declined candidate is still a candidate a future
+                // change could promote, and the execution teeth must stay
+                // ahead of that. Never set in production; the arbiter is the
+                // shipping behaviour.
+                Some(candidate)
+                    if std::env::var("SYNTH_GRAPH_ALLOC_FORCE").is_ok_and(|v| v != "0") =>
+                {
+                    if stats_on {
+                        eprintln!(
+                            "[graph-alloc] whole-function colouring APPLIED \
+                             (validated; FORCED — arbiter bypassed)"
+                        );
                     }
-                    (new, synth_synthesis::liveness::ReallocStats::default())
+                    (
+                        candidate,
+                        synth_synthesis::liveness::ReallocStats::default(),
+                    )
+                }
+                Some(candidate) => {
+                    // FINAL-BYTE ARBITER (RQ-60-RACOST increment 2). A
+                    // colour-time cost model — however faithful its byte sizes
+                    // — cannot price DOWNSTREAM PASS INTERACTIONS: measured on
+                    // const_cse.wat::spill12, an identity-shaped colouring
+                    // that merely PRESERVED the greedy allocator's register
+                    // rotation defeated const-CSE's canonicalization and grew
+                    // the function 148 -> 244 B (+96), with not one occurrence
+                    // priced differently at colour time. So the candidate is
+                    // sized through the REAL downstream pipeline
+                    // (`finish_allocated_stream` — the exact passes the
+                    // shipped stream runs, not a mirror) plus label resolution
+                    // and the REAL encoder, against the shipping allocator's
+                    // stream sized identically, and it ships only when it is
+                    // STRICTLY smaller. A tie or a refusal keeps the shipping
+                    // bytes — growth on an applied function is structurally
+                    // impossible, which is exactly the wired
+                    // vcr_dec_001_graph_alloc_differential no-growth
+                    // assertion, promoted from a gate into a construction.
+                    let ship = synth_synthesis::liveness::reallocate_function_post_exhaust(
+                        &arm_instrs,
+                        &POOL,
+                        post_exhaust,
+                    );
+                    let size_of = |stream: &[synth_synthesis::ArmInstruction]| -> Option<usize> {
+                        let finished = match finish_allocated_stream(
+                            stream.to_vec(),
+                            config,
+                            post_exhaust,
+                            true,
+                        ) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                if stats_on {
+                                    // The differential greps for the RA-003
+                                    // hard-error string to detect a SHIPPED
+                                    // violation; a candidate refused during
+                                    // sizing is a decline, not a shipped
+                                    // violation, so that marker is rewritten.
+                                    let e = e.replace(
+                                        "register-allocation validation FAILED",
+                                        "register-allocation validation refused the candidate",
+                                    );
+                                    eprintln!(
+                                        "[graph-alloc] arbiter: stream refused by the \
+                                         pipeline/validators: {e}"
+                                    );
+                                }
+                                return None;
+                            }
+                        };
+                        let finished = if matches!(
+                            config.target.isa,
+                            IsaVariant::Thumb2 | IsaVariant::Thumb
+                        ) {
+                            resolve_label_branches(finished, &sizing_encoder).ok()?
+                        } else {
+                            finished
+                        };
+                        let mut total = 0usize;
+                        let mut literals = 0usize;
+                        for ins in &finished {
+                            total += sizing_encoder.encode(&ins.op).ok()?.len();
+                            if matches!(ins.op, synth_synthesis::rules::ArmOp::LdrSym { .. }) {
+                                literals += 1;
+                            }
+                        }
+                        if literals > 0 {
+                            // The emit loop 4-aligns the literal pool and
+                            // appends one word per LdrSym (no dedup — each
+                            // site carries its own addend).
+                            total += (4 - total % 4) % 4 + 4 * literals;
+                        }
+                        Some(total)
+                    };
+                    match (size_of(&candidate), size_of(&ship.0)) {
+                        (Some(cand), Some(base)) if cand < base => {
+                            if stats_on {
+                                eprintln!(
+                                    "[graph-alloc] whole-function colouring APPLIED \
+                                     (validated; arbiter: {cand} B < shipping {base} B)"
+                                );
+                            }
+                            (
+                                candidate,
+                                synth_synthesis::liveness::ReallocStats::default(),
+                            )
+                        }
+                        (cand, base) => {
+                            if stats_on {
+                                eprintln!(
+                                    "[graph-alloc] arbiter kept shipping bytes \
+                                     (candidate {cand:?} B vs shipping {base:?} B) → \
+                                     shipping reallocate_function"
+                                );
+                            }
+                            ship
+                        }
+                    }
                 }
                 None => {
-                    if std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok() {
+                    if stats_on {
                         eprintln!("[graph-alloc] DECLINED → shipping reallocate_function");
                     }
                     synth_synthesis::liveness::reallocate_function_post_exhaust(
@@ -1183,6 +1319,219 @@ fn compile_wasm_to_arm(
                 synth_synthesis::abi_contract::validate_abi_contract(&arm_instrs, &out)
             );
         }
+        (out, true)
+    } else {
+        (arm_instrs, false)
+    };
+    // RQ-60-RACOST increment 2 (#242): every rewrite pass between the chosen
+    // allocation and the encoder now lives in `finish_allocated_stream`, so
+    // the SYNTH_GRAPH_ALLOC final-byte arbiter can size a candidate through
+    // the REAL pipeline. Flag-off this is the exact pre-extraction sequence,
+    // called once, in the same place.
+    let arm_instrs = finish_allocated_stream(arm_instrs, config, post_exhaust, ran_realloc)?;
+
+    // Encode to binary — use Thumb-2 for Cortex-M targets
+    let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
+
+    let encoder = if use_thumb2 {
+        ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
+    } else {
+        ArmEncoder::new_arm32()
+    };
+
+    // #202: resolve local label branches (Bcc/B/Bhs/Blo) to byte-accurate
+    // offsets before encoding. `select_with_stack` emits them as label
+    // placeholders and never resolves them — without this they encode as
+    // `bne.n #0` and land mid-instruction whenever a 32-bit Thumb-2 instruction
+    // sits between the branch and its target (UsageFault on real hardware).
+    // Only meaningful for Thumb-2 (the offset units are halfword/PC+4).
+    let arm_instrs = if use_thumb2 {
+        let resolved = resolve_label_branches(arm_instrs, &encoder)?;
+        // SC-5 (#740/#930): hard-gate every branch target onto the
+        // instruction-start set of the final stream — both codegen paths
+        // funnel through here. See `validate_branch_targets`.
+        validate_branch_targets(&resolved, &encoder)?;
+        resolved
+    } else {
+        arm_instrs
+    };
+
+    // #778: capture the FINAL Thumb-2 instruction stream (post label-resolution,
+    // the exact list the encode loop below consumes) so `compile_function` can
+    // derive the sound WCET bound. Cheap clone; frozen-safe (the WCET walk is a
+    // pure observation and never touches `code`). Only the Thumb-2 path — the A32
+    // (Cortex-R5) cycle model is a follow-up.
+    let final_instrs_for_wcet: Option<Vec<synth_synthesis::ArmInstruction>> = if use_thumb2 {
+        Some(arm_instrs.clone())
+    } else {
+        None
+    };
+
+    let mut code = Vec::new();
+    let mut relocations = Vec::new();
+
+    // #345: literal-pool address loads. Each `LdrSym` was encoded as a placeholder
+    // `LDR.W rd,[pc,#0]`; record where its instruction sits and what it loads so
+    // we can append a pooled word (carrying the symbol address via R_ARM_ABS32)
+    // and patch the PC-relative offset once the pool position is known.
+    struct PendingLiteral {
+        ldr_offset: u32,
+        symbol: String,
+        addend: i32,
+    }
+    let mut pending_literals: Vec<PendingLiteral> = Vec::new();
+
+    // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
+    // here because `code.len()` immediately before `encode()` is the final
+    // machine offset of the instruction within this function's `.text` — nothing
+    // after the loop shifts earlier instructions (the literal pool is appended at
+    // the end; the LDR patch below is in-place/length-preserving). Purely
+    // additive: it does not touch `code`, so `.text` is byte-identical.
+    let mut line_map: LineMap = Vec::new();
+    // VCR-DEC-003 (#396): object-branch class per emitted instruction, parallel
+    // to `line_map`. Cheap, additive, does not touch `code`.
+    let mut branch_map: synth_core::backend::BranchMap = Vec::new();
+
+    for instr in &arm_instrs {
+        // Record a relocation for every BL: the encoder emits `bl #0` and
+        // relies on a relocation to patch the target. This covers BOTH import
+        // dispatch stubs (`__meld_*`, undefined externals) AND internal calls
+        // (`func_N`, defined in this object). Previously only `__meld_*` was
+        // recorded, so internal `BL func_N` calls were left as unpatched
+        // `bl #0` placeholders branching to a garbage address (#167).
+        if let ArmOp::Bl { label } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: label.clone(),
+                kind: synth_core::backend::RelocKind::ThmCall,
+            });
+        }
+        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
+        // addressing). The encoder writes the addend in place; record the matching
+        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
+        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovwAbs,
+            });
+        }
+        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovtAbs,
+            });
+        }
+        // #345: defer the literal-pool word + reloc + offset patch to the
+        // post-loop pass (the pool address is not yet known).
+        if let ArmOp::LdrSym { symbol, addend, .. } = &instr.op {
+            pending_literals.push(PendingLiteral {
+                ldr_offset: code.len() as u32,
+                symbol: symbol.clone(),
+                addend: *addend,
+            });
+        }
+
+        // The machine offset of this instruction is the current code length,
+        // captured before the bytes are appended.
+        line_map.push((code.len() as u32, instr.source_line));
+        branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
+
+        let encoded = encoder
+            .encode(&instr.op)
+            .map_err(|e| format!("ARM encoding failed: {}", e))?;
+        code.extend_from_slice(&encoded);
+    }
+
+    // #345: place the literal pool at the end of this function's `.text`. Gated on
+    // there being at least one `LdrSym` — functions without one are byte-identical
+    // to before (no trailing padding, so downstream `func_offsets` are unchanged
+    // and the frozen differential fixtures stay bit-for-bit equal).
+    if !pending_literals.is_empty() {
+        if !use_thumb2 {
+            return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
+        }
+        // 4-byte align the pool start (Thumb-2 word loads require it, and
+        // `Align(PC,4)` in the LDR-literal semantics assumes a word-aligned pool).
+        while code.len() % 4 != 0 {
+            code.push(0x00);
+        }
+        // One distinct pooled word per LdrSym (no dedup: different sites carry
+        // different addends, and the REL addend lives in the word).
+        for lit in &pending_literals {
+            let word_offset = code.len() as u32;
+
+            // REL semantics: the linker computes `S + A`, where A is the in-place
+            // value of the relocated word. Initialize the word to the addend so
+            // the final loaded address is `symbol + addend`.
+            code.extend_from_slice(&(lit.addend as u32).to_le_bytes());
+            relocations.push(CodeRelocation {
+                offset: word_offset,
+                symbol: lit.symbol.clone(),
+                kind: synth_core::backend::RelocKind::Abs32,
+            });
+
+            // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
+            // address = Align(PC,4) + imm12, with PC = ldr_offset + 4. The pool is
+            // always after the LDR, so U=1 (already set in hw1 = 0xF8DF).
+            let pc = lit.ldr_offset + 4;
+            let aligned_pc = pc & !3u32;
+            let imm12 = word_offset - aligned_pc;
+            if imm12 > 0xFFF {
+                // Wide LDR-literal range is ±4 KB; these function bodies are far
+                // smaller, but fail cleanly rather than miscompile if exceeded.
+                return Err(format!(
+                    "LdrSym literal pool out of range (#345): imm12={} > 4095 \
+                     for symbol {}",
+                    imm12, lit.symbol
+                ));
+            }
+            let hw2_off = (lit.ldr_offset + 2) as usize;
+            let mut hw2 = u16::from_le_bytes([code[hw2_off], code[hw2_off + 1]]);
+            hw2 = (hw2 & 0xF000) | (imm12 as u16); // keep Rt, set imm12
+            let hw2_bytes = hw2.to_le_bytes();
+            code[hw2_off] = hw2_bytes[0];
+            code[hw2_off + 1] = hw2_bytes[1];
+        }
+    }
+
+    Ok((
+        code,
+        relocations,
+        line_map,
+        branch_map,
+        final_instrs_for_wcet,
+    ))
+}
+
+/// RQ-60-RACOST increment 2 (#242): every rewrite pass between a CHOSEN
+/// register allocation and the encoder, as ONE reusable sequence.
+///
+/// Extracted VERBATIM from `compile_wasm_to_arm` (pure code motion) so the
+/// `SYNTH_GRAPH_ALLOC` final-byte arbiter can size a candidate allocation
+/// through the REAL downstream pipeline — the same passes, in the same order,
+/// reading the same flags — rather than through a hand-mirrored predicate of
+/// them (the #936 drift class: a hand mirror of the encoder's offset-fold
+/// threshold was UNSOUND at authoring; a hand mirror of eleven rewrite passes
+/// would be worse). Flag-off behaviour is byte-identical: the shipping path
+/// calls this exactly once, on the same stream, in the same place it always
+/// ran.
+///
+/// `ran_realloc` selects the historical branch: the dead-frame /
+/// callee-saved-prologue / shrink trio runs only downstream of the range
+/// re-allocation lever (`SYNTH_RANGE_REALLOC` on), exactly as before the
+/// extraction. Diagnostics inside (SYNTH_FUSE_STATS, SYNTH_SHADOW_ALLOC,
+/// SYNTH_SPILL_REPORT) print once per CALL, so an arbiter sizing run repeats
+/// them — measurement noise under two opt-in flags, never a byte change.
+fn finish_allocated_stream(
+    arm_instrs: Vec<synth_synthesis::ArmInstruction>,
+    config: &CompileConfig,
+    post_exhaust: bool,
+    ran_realloc: bool,
+) -> Result<Vec<synth_synthesis::ArmInstruction>, String> {
+    let arm_instrs = if ran_realloc {
+        let out = arm_instrs;
         // VCR-RA-002 (#390, epic #242): eliminate a provably-dead stack frame
         // (`sub sp,#N`/`add sp,#N` reserved by `compute_local_layout` for locals
         // that promotion homed in registers, never accessed). Removing it saves
@@ -1220,7 +1569,6 @@ fn compile_wasm_to_arm(
         // stays — correct, just not minimised in this debug configuration.
         synth_synthesis::liveness::ensure_callee_saved_prologue(&arm_instrs)
     };
-
     // VCR-RA-001 SHADOW ALLOCATION (#209/#242): run the register allocator on
     // the selected stream and LOG what it finds — without changing a single
     // emitted byte. This is the measure-only bridge between the built analysis
@@ -1657,180 +2005,7 @@ fn compile_wasm_to_arm(
             }
         }
     }
-
-    // Encode to binary — use Thumb-2 for Cortex-M targets
-    let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
-
-    let encoder = if use_thumb2 {
-        ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
-    } else {
-        ArmEncoder::new_arm32()
-    };
-
-    // #202: resolve local label branches (Bcc/B/Bhs/Blo) to byte-accurate
-    // offsets before encoding. `select_with_stack` emits them as label
-    // placeholders and never resolves them — without this they encode as
-    // `bne.n #0` and land mid-instruction whenever a 32-bit Thumb-2 instruction
-    // sits between the branch and its target (UsageFault on real hardware).
-    // Only meaningful for Thumb-2 (the offset units are halfword/PC+4).
-    let arm_instrs = if use_thumb2 {
-        let resolved = resolve_label_branches(arm_instrs, &encoder)?;
-        // SC-5 (#740/#930): hard-gate every branch target onto the
-        // instruction-start set of the final stream — both codegen paths
-        // funnel through here. See `validate_branch_targets`.
-        validate_branch_targets(&resolved, &encoder)?;
-        resolved
-    } else {
-        arm_instrs
-    };
-
-    // #778: capture the FINAL Thumb-2 instruction stream (post label-resolution,
-    // the exact list the encode loop below consumes) so `compile_function` can
-    // derive the sound WCET bound. Cheap clone; frozen-safe (the WCET walk is a
-    // pure observation and never touches `code`). Only the Thumb-2 path — the A32
-    // (Cortex-R5) cycle model is a follow-up.
-    let final_instrs_for_wcet: Option<Vec<synth_synthesis::ArmInstruction>> = if use_thumb2 {
-        Some(arm_instrs.clone())
-    } else {
-        None
-    };
-
-    let mut code = Vec::new();
-    let mut relocations = Vec::new();
-
-    // #345: literal-pool address loads. Each `LdrSym` was encoded as a placeholder
-    // `LDR.W rd,[pc,#0]`; record where its instruction sits and what it loads so
-    // we can append a pooled word (carrying the symbol address via R_ARM_ABS32)
-    // and patch the PC-relative offset once the pool position is known.
-    struct PendingLiteral {
-        ldr_offset: u32,
-        symbol: String,
-        addend: i32,
-    }
-    let mut pending_literals: Vec<PendingLiteral> = Vec::new();
-
-    // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
-    // here because `code.len()` immediately before `encode()` is the final
-    // machine offset of the instruction within this function's `.text` — nothing
-    // after the loop shifts earlier instructions (the literal pool is appended at
-    // the end; the LDR patch below is in-place/length-preserving). Purely
-    // additive: it does not touch `code`, so `.text` is byte-identical.
-    let mut line_map: LineMap = Vec::new();
-    // VCR-DEC-003 (#396): object-branch class per emitted instruction, parallel
-    // to `line_map`. Cheap, additive, does not touch `code`.
-    let mut branch_map: synth_core::backend::BranchMap = Vec::new();
-
-    for instr in &arm_instrs {
-        // Record a relocation for every BL: the encoder emits `bl #0` and
-        // relies on a relocation to patch the target. This covers BOTH import
-        // dispatch stubs (`__meld_*`, undefined externals) AND internal calls
-        // (`func_N`, defined in this object). Previously only `__meld_*` was
-        // recorded, so internal `BL func_N` calls were left as unpatched
-        // `bl #0` placeholders branching to a garbage address (#167).
-        if let ArmOp::Bl { label } = &instr.op {
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: label.clone(),
-                kind: synth_core::backend::RelocKind::ThmCall,
-            });
-        }
-        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
-        // addressing). The encoder writes the addend in place; record the matching
-        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
-        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: symbol.clone(),
-                kind: synth_core::backend::RelocKind::MovwAbs,
-            });
-        }
-        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: symbol.clone(),
-                kind: synth_core::backend::RelocKind::MovtAbs,
-            });
-        }
-        // #345: defer the literal-pool word + reloc + offset patch to the
-        // post-loop pass (the pool address is not yet known).
-        if let ArmOp::LdrSym { symbol, addend, .. } = &instr.op {
-            pending_literals.push(PendingLiteral {
-                ldr_offset: code.len() as u32,
-                symbol: symbol.clone(),
-                addend: *addend,
-            });
-        }
-
-        // The machine offset of this instruction is the current code length,
-        // captured before the bytes are appended.
-        line_map.push((code.len() as u32, instr.source_line));
-        branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
-
-        let encoded = encoder
-            .encode(&instr.op)
-            .map_err(|e| format!("ARM encoding failed: {}", e))?;
-        code.extend_from_slice(&encoded);
-    }
-
-    // #345: place the literal pool at the end of this function's `.text`. Gated on
-    // there being at least one `LdrSym` — functions without one are byte-identical
-    // to before (no trailing padding, so downstream `func_offsets` are unchanged
-    // and the frozen differential fixtures stay bit-for-bit equal).
-    if !pending_literals.is_empty() {
-        if !use_thumb2 {
-            return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
-        }
-        // 4-byte align the pool start (Thumb-2 word loads require it, and
-        // `Align(PC,4)` in the LDR-literal semantics assumes a word-aligned pool).
-        while code.len() % 4 != 0 {
-            code.push(0x00);
-        }
-        // One distinct pooled word per LdrSym (no dedup: different sites carry
-        // different addends, and the REL addend lives in the word).
-        for lit in &pending_literals {
-            let word_offset = code.len() as u32;
-
-            // REL semantics: the linker computes `S + A`, where A is the in-place
-            // value of the relocated word. Initialize the word to the addend so
-            // the final loaded address is `symbol + addend`.
-            code.extend_from_slice(&(lit.addend as u32).to_le_bytes());
-            relocations.push(CodeRelocation {
-                offset: word_offset,
-                symbol: lit.symbol.clone(),
-                kind: synth_core::backend::RelocKind::Abs32,
-            });
-
-            // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
-            // address = Align(PC,4) + imm12, with PC = ldr_offset + 4. The pool is
-            // always after the LDR, so U=1 (already set in hw1 = 0xF8DF).
-            let pc = lit.ldr_offset + 4;
-            let aligned_pc = pc & !3u32;
-            let imm12 = word_offset - aligned_pc;
-            if imm12 > 0xFFF {
-                // Wide LDR-literal range is ±4 KB; these function bodies are far
-                // smaller, but fail cleanly rather than miscompile if exceeded.
-                return Err(format!(
-                    "LdrSym literal pool out of range (#345): imm12={} > 4095 \
-                     for symbol {}",
-                    imm12, lit.symbol
-                ));
-            }
-            let hw2_off = (lit.ldr_offset + 2) as usize;
-            let mut hw2 = u16::from_le_bytes([code[hw2_off], code[hw2_off + 1]]);
-            hw2 = (hw2 & 0xF000) | (imm12 as u16); // keep Rt, set imm12
-            let hw2_bytes = hw2.to_le_bytes();
-            code[hw2_off] = hw2_bytes[0];
-            code[hw2_off + 1] = hw2_bytes[1];
-        }
-    }
-
-    Ok((
-        code,
-        relocations,
-        line_map,
-        branch_map,
-        final_instrs_for_wcet,
-    ))
+    Ok(arm_instrs)
 }
 
 /// VCR-DEC-003 (#396): classify one emitted `ArmOp` into its object-level

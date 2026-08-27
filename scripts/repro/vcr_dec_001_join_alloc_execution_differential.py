@@ -204,7 +204,7 @@ CASES = [
 CLEAR = [
     "SYNTH_NO_CMP_SELECT_FUSE", "SYNTH_NO_LOCAL_PROMOTE", "SYNTH_NO_IMM_SHIFT_FOLD",
     "SYNTH_NO_STACK_FWD", "SYNTH_SPILL_REALLOC", "SYNTH_CONST_CSE", "SYNTH_BASE_CSE",
-    "SYNTH_DEAD_FRAME_ELIM", "SYNTH_UXTH_FOLD", "SYNTH_GRAPH_ALLOC",
+    "SYNTH_DEAD_FRAME_ELIM", "SYNTH_UXTH_FOLD", "SYNTH_GRAPH_ALLOC", "SYNTH_GRAPH_ALLOC_FORCE",
     "SYNTH_SHIFT_MASK_ELIDE", "SYNTH_RANGE_REALLOC",
 ]
 
@@ -217,6 +217,13 @@ def compile_image(wat, out, graph_alloc):
         env["SYNTH_GRAPH_ALLOC"] = "1"
         env["SYNTH_GRAPH_ALLOC_STATS"] = "1"
         env["SYNTH_RA003_VERBOSE"] = "1"
+        # RQ-60-RACOST increment 2: bypass the final-byte arbiter so the
+        # colourer's proposals are EXECUTED on every reachable shape, not only
+        # the ones the arbiter ships (an arbiter-declined candidate is still a
+        # candidate a future change could promote, and these execution teeth
+        # must stay ahead of that). Production flag-on keeps the arbiter and
+        # is byte-gated by vcr_dec_001_graph_alloc_differential.py instead.
+        env["SYNTH_GRAPH_ALLOC_FORCE"] = "1"
     r = subprocess.run(
         [SYNTH, "compile", str(REPRO / wat), "-o", out, "-b", "arm",
          "--target", "cortex-m4", "--all-exports"],
