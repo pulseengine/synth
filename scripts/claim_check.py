@@ -149,6 +149,61 @@ try:
 except ImportError:
     sys.exit("claim_check: needs PyYAML  (pip install pyyaml)")
 
+class DuplicateKeyError(Exception):
+    """A mapping declared the same key twice (#1087)."""
+
+
+class StrictLoader(yaml.SafeLoader):
+    """`yaml.safe_load` keeps the LAST value on a duplicate key, silently.
+
+    That is not a hypothetical here. On main, `claims.yaml`'s
+    `selector_lines_code` ratchet carried TWO `reason:` keys inside one
+    waiver mapping: RQ-60-VFPPRESSURE increment 1 wrote an honest
+    justification for a **+622 line** growth of the instruction selector,
+    and last-wins silently replaced it with RQ-59-I64SHIFT's reason for a
+    **+10 line** growth. The ledger then recorded — and this gate passed —
+    a 622-line growth of the North Star's headline metric as permitted
+    because ten lines were added to `select_default`. The waiver mechanism
+    exists so every movement of a pinned number carries a written reason
+    bound to that value; a duplicate key removes exactly that, and nothing
+    downstream can tell, because what survives is a perfectly valid
+    non-empty string.
+
+    So this file is parsed duplicate-key-strict. This is the same loader
+    discipline `scripts/status_evidence_check.py` applies to the release
+    artifacts (#1059) — it was simply never pointed at the ledger, which is
+    the one file every other claim in the repo is checked against.
+    """
+
+
+def _strict_mapping(loader: StrictLoader, node, deep: bool = False):
+    seen: dict = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise DuplicateKeyError(
+                f"duplicate key {key!r}: declared at line {seen[key]} and "
+                f"AGAIN at line {key_node.start_mark.line + 1} — YAML keeps "
+                f"the LAST one silently, so the first value is discarded "
+                f"with no diagnostic. Split the mapping (#1087)."
+            )
+        seen[key] = key_node.start_mark.line + 1
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _strict_mapping
+)
+
+
+def strict_load(text: str, where: str):
+    """Parse YAML, refusing the silent last-wins duplicate-key merge."""
+    try:
+        return yaml.load(text, Loader=StrictLoader)
+    except DuplicateKeyError as exc:
+        sys.exit(f"claim_check: {where}: {exc}")
+
+
 STATUS_JSON = "artifacts/status.json"
 FEATURE_MATRIX = "docs/status/FEATURE_MATRIX.md"
 FEATURE_MATRIX_TMPL = "scripts/templates/feature_matrix.md.tmpl"
@@ -234,7 +289,7 @@ def _yaml_field(ev, root):
     path = root / ev["path"]
     if not path.exists():
         return None, f'yaml file missing: {ev["path"]}'
-    data = yaml.safe_load(path.read_text(errors="ignore")) or {}
+    data = strict_load(path.read_text(errors="ignore"), ev["path"]) or {}
     items = data.get(ev.get("list", "artifacts"), [])
     for item in items:
         if isinstance(item, dict) and item.get("id") == ev["id"]:
@@ -963,7 +1018,7 @@ def main():
     if not path.exists():
         sys.exit(f"claim_check: {path} not found")
     root = path.parent
-    data = yaml.safe_load(path.read_text()) or {}
+    data = strict_load(path.read_text(), str(path)) or {}
     claims = data.get("claims", [])
     status_spec = data.get("status_fields", {}) or {}
     if not claims:

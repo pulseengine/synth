@@ -1327,6 +1327,12 @@ claims:
               aeabi_i64_float_1069_differential.py execution differential
               (unicorn + spec-exact builtin stubs vs wasmtime, trap rows
               executed).
+          # RESTORED (#1087): this reason was a SECOND `reason:` key inside the
+          # `to: 18910` mapping above — YAML last-wins silently discarded the
+          # 622-line justification and left THIS one attached to it, so the
+          # ledger recorded a +622 growth as permitted for +10 lines. The
+          # I64SHIFT growth is its own waiver, at its own value, again.
+          - to: 18288
             reason: >-
               RQ-59-I64SHIFT (#1048): +10 lines in select_default — the
               i64.clz/ctz/popcnt arm now emits its own explicit
