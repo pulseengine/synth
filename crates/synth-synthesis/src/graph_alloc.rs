@@ -350,7 +350,7 @@ fn reallocate_straight_line(
     // interference edge against the final assignment (cf.
     // `liveness::verify_allocation`, but keyed on value ranges). An edge whose
     // endpoints share a tied web is exempt from the inequality requirement —
-    // they are one value and MUST agree; that agreement is asserted instead.
+    // they are one value living in one register; equality is asserted instead.
     for (n, nbrs) in &adj {
         for m in nbrs {
             let same_web = pool_vregs.contains(n) && pool_vregs.contains(m) && rep[*n] == rep[*m];
