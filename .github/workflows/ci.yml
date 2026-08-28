@@ -878,7 +878,17 @@ jobs:
     # workspace test set too, but named here so a provenance regression is a
     # visible, self-describing red — witness's MC/DC object-certification depends
     # on this contract holding.
-    runs-on: ubuntu-latest
+    # RQ-61-CICAP (#1062) increment 1 — the FIRST retarget, deliberately a
+    # NON-REQUIRED job. 56 of 63 job definitions name ubuntu-latest while 7
+    # of 8 idle org runners carry `rust-cpu`; measured on four PRs, every one
+    # reached exactly 3/9 required contexts within minutes and then stalled —
+    # the three that passed being the three already on self-hosted. This job
+    # needs only `dtolnay/rust-toolchain`, the same shape as `Rivet
+    # Validation`, which already runs on this pool successfully. A REQUIRED
+    # context is not moved until this one has a full green cycle, because a
+    # required check whose label no runner satisfies never runs and deadlocks
+    # every merge in the repo.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
