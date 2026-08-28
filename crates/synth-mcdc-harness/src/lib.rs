@@ -579,6 +579,36 @@ pub extern "C" fn rv_bounds_gate(mode: i32, bytes: i32) -> i32 {
     }
 }
 
+/// Drives the #1093 parameter-taking-block-type decline in
+/// `synth_backend_riscv::backend::compile_function_with_opts` (the aarch64
+/// VCR-A64-CF-001 refusal ported): `find_param_block_type` over the decoder's
+/// ordinal blocktype-arity side-table, checked BEFORE selection. The shipped
+/// defect class this decision guards: `params != 0` PANICKED the selector
+/// (`lower_else`'s `split_off`, exit 101 on valid multi-value wasm) and the
+/// else-less / branch-edge shapes compiled silently WRONG.
+///
+/// Rows: `params = 0` → a void `block` — the guard's None arm, compile
+/// succeeds (and the row flows on through the validator/encode decisions
+/// downstream of the guard); `params = 1` / `params = 2` → the decline arm
+/// (2 is the #1093 repro's `(param i32 i32)` arity). `params` arrives as a
+/// Wasm parameter so the side-table is never constant-folded.
+#[unsafe(no_mangle)]
+pub extern "C" fn rv_param_block_gate(params: i32) -> i32 {
+    let p = params.clamp(0, 255) as u8;
+    let config = CompileConfig {
+        target: TargetSpec::riscv32imac(),
+        // Ordinal 0 = the one `Block` below. (p, 0) with p != 0 is the
+        // parameter-taking class; (0, 0) is the legacy void reading.
+        current_func_block_arity: vec![(p, 0)],
+        ..Default::default()
+    };
+    let ops = [WasmOp::Block, WasmOp::End, WasmOp::I32Const(1), WasmOp::End];
+    match RiscVBackend::new().compile_function("f", &ops, &config) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,6 +655,11 @@ mod tests {
         assert_eq!(rv_bounds_gate(2, 65536), 0);
         assert_eq!(rv_bounds_gate(2, 196608), 1, "#651: non-power-of-two");
         assert_eq!(rv_bounds_gate(3, 65536), 1, "non-RISC-V target must refuse");
+
+        // #1093 param-block gate: void compiles, parameter-taking declines.
+        assert_eq!(rv_param_block_gate(0), 0, "void block must compile");
+        assert_eq!(rv_param_block_gate(1), 1, "#1093: (1,0) block must decline");
+        assert_eq!(rv_param_block_gate(2), 1, "#1093: params=2 must decline");
 
         // Every added shape must be reachable and classified.
         for shape in 0..=21 {

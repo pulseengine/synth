@@ -112,6 +112,13 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   `# a non-RISC-V target: flips ensure_supported_target's conjunction` \
   --invoke-with-args 'rv_bounds_gate:3,65536' \
   --invoke-with-args 'rv_bounds_gate:3,0' \
+  `# #1093 parameter-taking block type — compile_function_with_opts'` \
+  `# find_param_block_type decline (the ported aarch64 VCR-A64-CF-001` \
+  `# refusal): 0 = void block compiles (None arm), 1/2 = decline arm` \
+  `# (2 is the #1093 repro's (param i32 i32) arity)` \
+  --invoke-with-args 'rv_param_block_gate:0' \
+  --invoke-with-args 'rv_param_block_gate:1' \
+  --invoke-with-args 'rv_param_block_gate:2' \
   -o "$OUT/run.json"
 
 "$WITNESS" report --input "$OUT/run.json" --format mcdc > "$OUT/report.txt"

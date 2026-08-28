@@ -1311,9 +1311,26 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19199
+        value: 19213
         baseline: 17897
         waivers:
+          - to: 19213
+            reason: >-
+              RQ-61-MVPANIC (#1093): +14 lines — the parameter-taking
+              block-type pre-flight in select_with_stack (a typed decline where
+              the #313 Else `split_off(checkpoint)` PANICKED, exit 101, on
+              valid multi-value wasm). Not a lowering arm: the predicate and
+              message live ONCE in synth-core (find_param_block_type /
+              param_block_decline_msg — the aarch64 VCR-A64-CF-001 frame-open
+              refusal ported), and this guard is the selector-local call
+              covering direct library callers that set block_arity; every CLI
+              path is declined upstream in compile_wasm_to_arm. Nothing could
+              be deleted in exchange — the class previously had NO handling
+              here (it panicked), and the else-less/branch-edge shapes it also
+              covers were measured SILENT miscompiles (ipe(0) -> 0, want 7).
+              Gated red-first (select_with_stack_declines_param_block_types)
+              and byte-identity over the repro corpus (no fixture carries a
+              parameter-taking block type; pre/post .text identical).
           - to: 19199
             reason: >-
               RQ-60-VFPPRESSURE increment 2 (#1069): +289 lines — frame-homed
@@ -1535,7 +1552,10 @@ claims:
         # frame-homed overflow f32/f64 locals under the last-resort VFP retry
         # (see the lines_code waiver); zero test-module movement (the #1069
         # tests live in crates/synth-backend/tests, outside this family).
-        value: 29845
+        # 29845 -> 29859 (RQ-61-MVPANIC, #1093): +14 code — the
+        # parameter-taking block-type pre-flight decline in select_with_stack
+        # (see the lines_code waiver); zero test-module movement.
+        value: 29859
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

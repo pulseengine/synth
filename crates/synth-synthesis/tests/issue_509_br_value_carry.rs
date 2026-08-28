@@ -257,9 +257,15 @@ fn unsupported_value_carry_shapes_decline_loudly_509() {
         End,
     ];
     let e = select_err(&loop_param, 0, vec![(1, 0)]);
+    // #1093: the parameter-taking frame now declines at frame OPEN (the
+    // ported aarch64 VCR-A64-CF-001 pre-flight), BEFORE the branch is ever
+    // reached — subsuming the #509 branch-site decline for this shape. The
+    // property this test pins (loud Err, never a silent drop) is unchanged;
+    // the #509 arm in `edge_value_move` stays as defense-in-depth for any
+    // future wiring that bypasses the pre-flight.
     assert!(
-        e.contains("#509") && e.contains("loop"),
-        "loop-param br declines loudly: {e}"
+        e.contains("loop #0 has type (1, 0)") && e.contains("PARAMETER-taking block type"),
+        "loop-param br declines loudly (at frame open since #1093): {e}"
     );
 
     // br to a multi-value block.

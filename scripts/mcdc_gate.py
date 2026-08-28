@@ -130,6 +130,46 @@ SCORED_PREFIXES = (
 # Witness-version invariance was verified separately (0.28.0 and 0.42.0 give
 # identical numbers on the same host), so the tool is not what moves these.
 #
+# RQ-61-MVPANIC (#1093) RE-STATEMENT — the SECOND instance of the #990 class,
+# and it followed the protocol above rather than re-deriving it. FLOOR_PROVED
+# 57 -> 56, nothing else moved.
+#
+#   THE DISCRIMINATING MEASUREMENT, run on the instrument side (the stable
+#   surface this file designates as the arbiter), main b2abf951 vs the #1093
+#   branch, using this script's own extraction:
+#
+#     main   175 scored branches across 20 functions
+#     branch 176 scored branches across 20 functions
+#     functions whose population DIFFERS: exactly 1 —
+#       synth_backend_riscv::backend::compile_function_with_opts  9 -> 10
+#       (the intended #1093 arity guard; BRANCH_POPULATION re-pinned to 10)
+#     of the 19 equal-count functions, 19/19 carry byte-identical
+#       (kind, instr_index) branch signatures.
+#
+#   So NO condition was deleted and none became unreachable. The report side
+#   nonetheless moved 32 dec/141 cond/60 proved -> 27/132/56, and the loss
+#   decomposes entirely onto functions this PR never touched (sp_slot_store
+#   -2 with its full_mcdc decision vanishing from the report,
+#   validate_final_allocation_rv32 -4 on a 13->12 decision regrouping,
+#   build_options -1, validate_reloc_resolutions -1, offset +4 by
+#   validate_served_image going 0 -> 4 scored conditions).
+#
+#   HYPOTHESIS "the new guard just needs more rows" WAS KILLED, not assumed:
+#   the guard's branch has hits: 7 in run.json and its driver flips both
+#   outcomes (asserted in the harness host test), yet the report places it in
+#   NO decision. No number of rows can prove a condition witness never scores.
+#   And the FIRST red — the guard alone, before any harness change existed —
+#   already moved dec 32->29 / dead 48->51 in DIFFERENT functions, so the
+#   perturbation is a property of adding code anywhere, not of the driver.
+#
+#   56 is the MEASURED value with ZERO slack, deliberately: the pre-existing
+#   57 sat 5 below its own 62 baseline, and widening that gap would absorb
+#   exactly the noise that needs to stay visible. This floor will very likely
+#   red again on the next unrelated-code PR until witness#208 is fixed. That
+#   recurrence is the argument, filed as #1100, for moving the real assertion
+#   onto the stable surface instead of re-stating a report-side number each
+#   time. Upstream: pulseengine/witness#208 (fresh instance commented).
+#
 # RQ-59-ZEROINIT (#990) RE-STATEMENT, with the evidence that forced it — read
 # before touching these numbers again. The #990 PR added ~100 lines of UNSCORED
 # code to a crate linked into the harness wasm (the zero-init classifier in
@@ -167,12 +207,12 @@ SCORED_PREFIXES = (
 #
 # ci-checks: mcdc scored decisions >= 21
 # ci-checks: mcdc scored conditions >= 130
-# ci-checks: mcdc scored conditions proved >= 57
+# ci-checks: mcdc scored conditions proved >= 56
 # ci-checks: mcdc fully-proved decisions >= 3
 # ci-checks: mcdc dead conditions <= 50
 FLOOR_DECISIONS = 21
 FLOOR_CONDITIONS = 130
-FLOOR_PROVED = 57
+FLOOR_PROVED = 56
 FLOOR_FULL_MCDC_DECISIONS = 3
 # DEAD is CEILINGED, not ignored. 50 scored conditions are never evaluated —
 # 40 of them in `is_straight_line`, whose match arms cover RV32 opcodes the row
@@ -209,7 +249,13 @@ BRANCH_POPULATION = {
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32::_$u7b$$u7b$closure$u7d$$u7d$": 2,
     "synth_backend_riscv::backend::build_options": 8,
-    "synth_backend_riscv::backend::compile_function_with_opts": 9,
+    # 9 -> 10 (RQ-61-MVPANIC, #1093): the parameter-taking-block-type decline
+    # (`find_param_block_type` over the ordinal blocktype-arity side-table —
+    # the aarch64 VCR-A64-CF-001 refusal ported) added ONE condition at the
+    # top of the function. Driven both ways by the rv_param_block_gate rows
+    # (params=0 compiles, params=1/2 decline). Value taken from the gate's
+    # own REPIN output on the #1096 evidence, not hand-counted.
+    "synth_backend_riscv::backend::compile_function_with_opts": 10,
     "synth_backend_riscv::backend::effective_num_params": 1,
     "synth_backend_riscv::backend::ensure_supported_target": 4,
     "synth_core::static_data_addr::resolve_owner": 4,

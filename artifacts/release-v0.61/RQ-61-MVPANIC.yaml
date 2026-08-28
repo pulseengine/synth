@@ -37,7 +37,7 @@ artifacts:
       a fix ships a half-lowered construct. Same policy as #1013, where
       AArch64 panicked and ARM/RISC-V declined and we matched the EXISTING
       refusal rather than inventing one.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [robustness, decline-honesty, multi-value, arm, riscv, spec-suite]
     links:
@@ -49,3 +49,27 @@ artifacts:
       verification-track: differential
       issue: "#1093"
       done-when: "manual: both ARM paths and rv32 exit non-101 with a NAMED decline on the if.wast `params` shape; the run_supported.sh --no-optimize claim corrected; red-first = the panic itself"
+      verified-by: >-
+        Delivered as #1096, verified by the coordinator against BOTH binaries
+        rather than from the lane report. The reported panic converts: all 12
+        (shape x path) combinations that previously exited 101 now exit 1 with
+        a named decline, and the whole vendored spec suite goes from exactly
+        one panicking file per backend to zero.
+        THE CLASS SWEEP FOUND SOMETHING WORSE THAN THE REPORTED PANIC, and it
+        is the reason this artifact is `implemented` rather than partially so:
+        an else-less `if (param i32) (result i32)` COMPILED CLEANLY (exit 0) on
+        all three paths and emitted, on the direct ARM path,
+          movw r1,#7 ; cmp r0,#0 ; beq +8 ; add r3,r1,#42 ; mov r0,r3
+        — r3 is written ONLY on the true path, so the false path returns an
+        UNINITIALIZED REGISTER and the block parameter in r1 is dropped.
+        wasmtime gives 7. That is a silent wrong-answer miscompile on valid
+        wasm, strictly worse than the panic that was reported, and the same
+        applies to rv32 `block (param..)`+br_if and `loop (param..)`+back-edge.
+        All of those now decline too.
+        NO REGRESSION: an independent byte-identity sweep over
+        scripts/repro/*.wat x 3 legs gives 339 byte-identical / 0 differing /
+        0 previously-compiling modules newly declined (162 were already
+        declined before the change).
+        NOT CLAIMED: parameter-taking block types are still not LOWERED. This
+        artifact converts a panic and three silent miscompiles into loud
+        declines; multi-value lowering is a separate capability question.

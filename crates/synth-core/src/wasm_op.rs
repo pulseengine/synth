@@ -611,6 +611,78 @@ pub fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
     out
 }
 
+/// #1093 — find the first PARAMETER-taking block type in a function's op
+/// stream: the k-th `Block`/`Loop`/`If` (ordinal-keyed, matching the decoder's
+/// blocktype-arity side-table `FunctionOps::block_arity` /
+/// `CompileConfig::current_func_block_arity`) whose `(params, results)` arity
+/// has `params != 0`. Returns `(construct, ordinal, arity)` for the decline
+/// message; `None` when every block type is parameter-free — including the
+/// EMPTY side-table of hand-built op streams, which reads as all-void (the
+/// legacy behaviour, so nothing moves for existing callers).
+///
+/// WHY THIS EXISTS (the aarch64 selector's VCR-A64-CF-001 frame-open refusal,
+/// ported — aarch64 was the only backend that already declined this class):
+/// the ARM direct selector and the RV32 selector both checkpoint the operand
+/// stack at frame ENTRY and reconcile if/else arms and branch edges against
+/// that checkpoint. A parameter-taking block type consumes operands that sit
+/// BELOW the checkpoint, so (all MEASURED on v0.60.0, #1093):
+///  - `if (param ..) .. else ..` PANICS in both selectors — the `Else` arm's
+///    `split_off(checkpoint)` walks past the shrunken vstack
+///    ("`at` split index (is 2) should be <= len (is 1)", exit 101);
+///  - `if (param ..)` WITHOUT an else SILENTLY returns the wrong value on the
+///    false path (measured `ipe(0)` → 0, want 7, on all four ARM/RV32 legs —
+///    the "implicit else has nothing to reconcile" assumption is false once
+///    the frame has params);
+///  - a `br_if` into a `block (param ..)` and a back-edge to a
+///    `loop (param ..)` header mis-reconcile the join value on RV32
+///    (measured wrong values; ARM already declined the loop case via #509).
+///
+/// Only the branch-free fall-through shape happens to compile correctly, and
+/// telling it apart from the broken shapes would be a NEW predicate with its
+/// own proof burden — so, exactly like aarch64, the whole class declines
+/// loudly at the first parameter-taking frame.
+pub fn find_param_block_type(
+    wasm_ops: &[WasmOp],
+    block_arity: &[(u8, u8)],
+) -> Option<(&'static str, usize, (u8, u8))> {
+    if block_arity.iter().all(|&(p, _)| p == 0) {
+        return None; // fast path: no parameter-taking type anywhere
+    }
+    let mut ord = 0usize;
+    for op in wasm_ops {
+        let what = match op {
+            WasmOp::Block => "block",
+            WasmOp::Loop => "loop",
+            WasmOp::If => "if",
+            _ => continue,
+        };
+        let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+        if arity.0 != 0 {
+            return Some((what, ord, arity));
+        }
+        ord += 1;
+    }
+    None
+}
+
+/// #1093 — the one shared decline message for a parameter-taking block type.
+/// ARM and RV32 both call this, so their refusal wording is one definition
+/// with nothing to drift (the same sharing rationale as
+/// [`rewrite_memory_grow_zero`] above). `backend` names the declining
+/// selector; the needle "PARAMETER-taking block type" deliberately matches
+/// the aarch64 VCR-A64-CF-001 message so cross-backend decline-parity probes
+/// can use one predicate for all three.
+pub fn param_block_decline_msg(backend: &str, what: &str, ord: usize, arity: (u8, u8)) -> String {
+    format!(
+        "{what} #{ord} has type {arity:?} — a PARAMETER-taking block type \
+         (multi-value) is not lowered on {backend}: the operand-stack \
+         checkpoint at frame entry cannot represent params consumed BELOW it \
+         (with an `else` the reconciliation split panics; without one, or on \
+         a branch edge, the join value is silently wrong); loud-declining \
+         (#1093, the aarch64 VCR-A64-CF-001 refusal ported)"
+    )
+}
+
 #[cfg(test)]
 mod grow_zero_tests {
     use super::*;
@@ -645,5 +717,66 @@ mod grow_zero_tests {
             rewrite_memory_grow_zero(&[WasmOp::I32Const(0), WasmOp::MemoryGrow(3)]),
             vec![WasmOp::MemorySize(3)]
         );
+    }
+
+    // ── #1093: find_param_block_type — the ported VCR-A64-CF-001 predicate ──
+
+    #[test]
+    fn param_block_empty_table_is_void() {
+        // Hand-built op streams carry no side-table: every block reads as
+        // void, the legacy behaviour — the check must never fire.
+        let ops = [WasmOp::Block, WasmOp::If, WasmOp::End, WasmOp::End];
+        assert_eq!(find_param_block_type(&ops, &[]), None);
+    }
+
+    #[test]
+    fn param_block_all_void_is_none() {
+        let ops = [WasmOp::Block, WasmOp::Loop, WasmOp::End, WasmOp::End];
+        assert_eq!(find_param_block_type(&ops, &[(0, 1), (0, 0)]), None);
+    }
+
+    #[test]
+    fn param_block_reports_construct_and_ordinal() {
+        // The #1093 repro shape: one `if` with type (2, 1).
+        let ops = [
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::I32Add,
+            WasmOp::Else,
+            WasmOp::I32Sub,
+            WasmOp::End,
+        ];
+        assert_eq!(
+            find_param_block_type(&ops, &[(2, 1)]),
+            Some(("if", 0, (2, 1)))
+        );
+    }
+
+    #[test]
+    fn param_block_ordinal_keying_matches_decoder_order() {
+        // Ordinals count Block/Loop/If in op-stream order (the decoder's
+        // side-table contract) — the offender here is the SECOND construct.
+        let ops = [
+            WasmOp::Block, // ord 0, void
+            WasmOp::Loop,  // ord 1, (1, 1) — parameter-taking
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert_eq!(
+            find_param_block_type(&ops, &[(0, 0), (1, 1)]),
+            Some(("loop", 1, (1, 1)))
+        );
+    }
+
+    #[test]
+    fn param_block_msg_carries_the_parity_needle() {
+        // Cross-backend decline-parity probes match on this exact needle,
+        // shared with the aarch64 VCR-A64-CF-001 message.
+        let msg = param_block_decline_msg("the ARM direct selector", "if", 0, (2, 1));
+        assert!(msg.contains("PARAMETER-taking block type"));
+        assert!(msg.contains("if #0 has type (2, 1)"));
+        assert!(msg.contains("#1093"));
     }
 }
