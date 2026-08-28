@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-61-MCDCFLOOR
+    type: system-req
+    title: "The MC/DC gate's report-side floors are layout-coupled — adding code anywhere moves them, and re-stating a number each time is not a gate"
+    description: >
+      #1100, filed from RQ-61-MVPANIC's second red and its manifest diff.
+
+      Adding the #1093 arity guard moved witness's REPORT-side reconstruction
+      on functions the change never touched: 32 dec / 141 cond / 60 proved ->
+      27 / 132 / 56, with the loss decomposing onto `sp_slot_store` (-2, its
+      full_mcdc decision vanishing from the report),
+      `validate_final_allocation_rv32` (-4 on a 13->12 regrouping),
+      `build_options` (-1) and `validate_reloc_resolutions` (-1).
+
+      THE INSTRUMENT SIDE SAYS NOTHING WAS LOST — verified independently with
+      the gate's own extraction: 175 -> 176 scored branches across 20
+      functions, exactly ONE population differing
+      (`compile_function_with_opts` 9 -> 10, the intended guard), and 19/19
+      of the equal-count functions carrying byte-identical
+      `(kind, instr_index)` signatures.
+
+      So the report-side floors measure witness's layout-sensitive decision
+      reconstruction as much as they measure synth's coverage. This is the
+      SECOND instance (after #990/RQ-59-ZEROINIT) and it was handled the same
+      way — a re-statement WITH evidence, FLOOR_PROVED 57 -> 56, zero slack,
+      per the protocol already written into `scripts/mcdc_gate.py`.
+
+      THE PROBLEM WITH THAT BEING THE STANDING ANSWER: a floor re-stated on
+      every unrelated-code PR is a number being maintained, not a property
+      being asserted. The deletion-sensitive check already lives on the
+      stable surface (`BRANCH_POPULATION`, exact per-function instrument-side
+      counts); the report-side floors are the part that keeps moving. Options,
+      to be decided with evidence rather than taste: express the report-side
+      assertion as a DELTA against the same run's instrument-side population
+      instead of an absolute; or scope the floors per-function where the
+      population is pinned; or retire the absolutes and let BRANCH_POPULATION
+      plus the row-driver sanity test carry the gate. Upstream fix in
+      witness#208 would remove the need entirely — a fresh instance is
+      already commented there.
+
+      NOT A LICENCE TO LOWER FLOORS. Every re-statement so far carried the
+      manifest diff that proved nothing real was lost; that requirement stays
+      whatever shape the gate ends up in.
+    status: proposed
+    release: v0.61
+    tags: [mcdc, witness, gates, fragility]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1100"
+      done-when: "manual: the report-side assertion no longer needs re-stating on an unrelated-code PR — or it is retired in favour of the stable surface, with the reasoning written down"

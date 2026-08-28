@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-61-DANGLE
+    type: system-req
+    title: "rv32 ships an unlinkable object with exit 0 when a retained function calls a DECLINED internal function"
+    description: >
+      #1102 (gale), reproduced by the coordinator on a minimal 10-line module
+      rather than on the reported real-world driver.
+
+      A retained function that calls a declined INTERNAL function emits an
+      undefined `synth_func_N` and the compile EXITS 0:
+
+        (func $big (param i32) (result i32)      ;; declines on rv32:
+          (i32.load offset=1048588 (local.get 0)));; "immediate too large"
+        (func (export "entry") (param i32) (result i32)
+          (call $big (local.get 0)))
+
+        warning: skipping function 'func_0' ... immediate 1048588 too large
+        Compiled 1 functions            EXIT=0
+        symtab: defined ['entry'] · UNDEFINED ['synth_func_0']
+        ld.lld: undefined symbol: synth_func_0
+
+      WHY THE EXISTING GUARDS MISS IT, and this is the reusable part: #952
+      converts a declined REQUESTED EXPORT into a non-zero exit, and #1013
+      gave aarch64 a refusal for the same class. Both are keyed on EXPORTS.
+      `func_0` here is INTERNAL — nobody requested it, so no export guard
+      fires — yet an exported entry point relocates against it. The mechanism
+      exists and is pointed one level too shallow, which is this release's
+      recurring shape.
+
+      CROSS-BACKEND, MEASURED on a module every backend now declines (a
+      parameter-taking block type, #1093):
+
+        rv32      exit 0, dangling `synth_func_0`   <- the defect
+        aarch64   exit 1, refuses                    <- #1013's guard working
+        arm thumb-2 / a32  exit 0 with the skip, and NOT YET CHARACTERISED —
+          synth's ARM relocatable objects carry `.rel.text` with NO `.symtab`
+          in this configuration, so the symtab probe that works for rv32 and
+          aarch64 cannot answer the question. NOTE FOR WHOEVER TAKES THIS:
+          a HEALTHY ARM object (no declines) has the same shape, so the
+          absent symtab is pre-existing and is NOT evidence of the defect —
+          the coordinator nearly recorded it as one. ARM needs a different
+          probe (resolve the reloc's `r_info_sym` against whatever symbol
+          source the ARM path actually emits) before any claim either way.
+
+      THE FIX SHAPE, not the fix: match aarch64's refusal — a relocation
+      against a function the backend declined must fail the compile loudly,
+      as #952 does for exports. Do not fabricate a stub, and do not silently
+      drop the call: both convert an unlinkable object into a wrong one.
+    status: proposed
+    release: v0.61
+    tags: [riscv, elf, relocations, decline-honesty, silent-failure]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1102"
+      done-when: "manual: a retained function relocating against a declined internal function fails the compile loudly on rv32; ARM characterised either way with a probe that works on its object shape; aarch64's exit-1 behaviour unchanged"

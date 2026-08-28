@@ -50,3 +50,23 @@ artifacts:
       verification-track: review
       issue: "#1062"
       done-when: "manual: at least the plain-cargo required jobs run on rust-cpu, each moved in its own PR with a green cycle; Bazel and Z3 only after their toolchains are proven on that pool"
+      # INCREMENT 1 LANDED as #1101 — recorded here rather than flipping the
+      # status, because the artifact is explicitly multi-increment and the
+      # REQUIRED jobs (the ones that actually block merges) have not moved.
+      # `landed:` is the machine-readable "increment landed, the artifact is
+      # not done" that R4 exists to demand; silence would be red, and a flip
+      # to `implemented` would claim an outcome that has not happened.
+      #
+      # WHAT INCREMENT 1 MEASURED, and it corrects the plan rather than
+      # confirming it: the moved job ran on pulseengine-ci-01-10 and passed,
+      # but timing against main's ubuntu-latest run of the same job was
+      #     rust-cpu      queue 3s  exec 67s  total 70s
+      #     ubuntu-latest queue 4s  exec 37s  total 41s
+      # — the self-hosted runner is ~2x SLOWER to execute and the queue wait
+      # was equal, because the queue was empty at that moment. The benefit is
+      # CONTENTION RELIEF on the required path, not per-job speed, so the
+      # conclusion is MOVE LESS, NOT MORE: each further move needs its own
+      # contention justification and re-measurement, and one that neither
+      # relieves contention nor runs faster should be reverted rather than
+      # kept for tidiness.
+      landed: "#1101 (increment 1 — one non-required job retargeted)"
