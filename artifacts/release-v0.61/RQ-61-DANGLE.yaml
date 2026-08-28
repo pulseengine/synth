@@ -46,7 +46,7 @@ artifacts:
       against a function the backend declined must fail the compile loudly,
       as #952 does for exports. Do not fabricate a stub, and do not silently
       drop the call: both convert an unlinkable object into a wrong one.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [riscv, elf, relocations, decline-honesty, silent-failure]
     links:
@@ -58,3 +58,47 @@ artifacts:
       verification-track: differential
       issue: "#1102"
       done-when: "manual: a retained function relocating against a declined internal function fails the compile loudly on rv32; ARM characterised either way with a probe that works on its object shape; aarch64's exit-1 behaviour unchanged"
+      verified-by: >-
+        One backend-agnostic driver gate in `compile_all_exports`
+        (crates/synth-cli/src/main.rs, after the #952 export gate, before any
+        ELF builder): a retained function's relocation whose symbol is a
+        skipped function's index label (`func_{idx}` / `synth_func_{idx}`)
+        bails with a #1102 error naming every dangling caller->callee edge.
+        The driver is the site where the two facts already meet — it owns
+        `skipped_funcs` and `compiled_funcs[].relocations` for all four
+        backends, whose ELF paths are three separate crates. NOT waived by
+        --allow-skipped-exports (partial != unlinkable; aarch64's #1013
+        refusal was likewise unconditional), pinned by a test.
+        ARM CHARACTERISED, WITH THE PROBE: `arm-none-eabi-readelf -sW -r` on
+        the baseline showed ARM Thumb-2 AND A32 relocatable objects with
+        `func_0` as a GLOBAL SHN_UNDEF and the R_ARM_THM_CALL retained, exit
+        0 — the SAME defect, not fine. The "no .symtab" report was a probe
+        artifact: the ARM builder emits the symtab SECTION with an empty
+        name string, so probing by section NAME misses what probing by
+        section TYPE finds. Without --relocatable the dangling reloc even
+        silently flipped the output to ET_REL. Both refuse now; aarch64's
+        refusal stays exit 1 (message now the driver's #1102, the builder's
+        #851 Err retained as defense-in-depth).
+        RED-FIRST BOTH DIRECTIONS: baseline exits 0 on the minimal module,
+        gale's multi-export shape, ARM/A32 (ld.lld: undefined synth_func_0 /
+        func_N); fixed binary exits 1 on all, no partial object left. Silent
+        direction: 835 (fixture,leg) pairs — scripts/repro/*.wat + in-tree
+        .wasm x 5 legs — baseline vs fixed: 666 byte-identical, 166
+        fail-identically, 0 DIFFERING, 3 rv32 pairs newly-declined
+        (aarch64_f32_unsupported_554 / popcnt_r11_clobber_1021 /
+        recursive_shadow_stack), each PROVEN unlinkable-before by an UNDEF
+        `synth_func_N` in the baseline object; none is compiled on rv32 by
+        any CI job. Gates: dangling_declined_callee_1102.rs (8 tests, all
+        four backend legs + flag-no-waiver + two negative controls), #1013
+        test updated to the earlier refusal site, #952's negative control
+        restated (its old fixture was measured to BE this defect — retained
+        `f` carried a dangling `func_1`); cargo test --workspace green,
+        clippy -D green, claim_check 52/52, status-evidence 0 failures.
+        HONEST RESIDUAL: the gate matches direct-call index labels only — a
+        declined function referenced solely from a funcref TABLE
+        (call_indirect elem entry) is not covered by this gate and keeps its
+        pre-existing behaviour; and #952's old asymmetry ("an internal-helper
+        decline is routine exit 0") now holds only when nothing retained
+        references the helper — with --all-exports every reachable internal
+        decline either dangles (refused) or cascades into a declined export
+        (#952's territory).
