@@ -43,6 +43,15 @@
 //! -dispatch capability push (v0.60). This fix only converts the existing
 //! refusal from a panic into the #952-style clean error.
 //!
+//! UPDATE (#1102, RQ-61-DANGLE): that rv32 "loud at link time" behaviour was
+//! judged the defect, not the mitigation — an object carrying an undefined
+//! symbol for a function the module itself DEFINES can never link, and the
+//! compile exited 0. The refusal this test pins now fires for EVERY backend
+//! at a driver-level gate BEFORE the ELF builders run, so the asserted
+//! message is the #1102 one; the aarch64 builder's #851 `Err` stays as
+//! defense-in-depth. See `dangling_declined_callee_1102.rs` for the
+//! rv32/ARM/A32 legs.
+//!
 //! Fixtures are generated WAT (not the loom-repo corpus file, which is not
 //! vendored here); both shapes were verified against the UNFIXED v0.58.0
 //! binary before this test was written: repro exits 101 with the panic,
@@ -168,12 +177,18 @@ fn dangling_reloc_against_declined_function_refuses_cleanly() {
     );
 
     // Machine-readable reason: names the declined symbol and the class.
+    // #1102 (RQ-61-DANGLE): the refusal now fires one level EARLIER — the
+    // backend-agnostic driver gate in `compile_all_exports`, which refuses a
+    // retained-function relocation against ANY declined function before an
+    // ELF builder runs (the same class on rv32/ARM/A32 previously shipped
+    // with exit 0). The aarch64 builder's own #851/#1013 `Err` remains as
+    // defense-in-depth for un-placed symbols that are not skip-related. If
+    // this assertion ever sees the #851 message again, the driver gate was
+    // removed or narrowed — that is a real signal, not a text drift.
     assert!(
-        err.contains("targets symbol 'func_0'")
-            && err.contains("does not place")
-            && err.contains("#851"),
-        "refusal reason must name the declined symbol (func_0) and the #851 \
-         unrelocated-placeholder class.\nstderr:\n{err}"
+        err.contains("#1102") && err.contains("-> 'func_0'"),
+        "refusal reason must name the #1102 dangling-declined-callee class \
+         and the declined symbol (func_0).\nstderr:\n{err}"
     );
 
     // A refused compile must not leave a partial object behind.

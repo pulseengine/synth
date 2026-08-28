@@ -36,7 +36,9 @@
 //! # The asymmetry this test protects
 //!
 //! Declining a non-exported internal helper (pulled in only for #235
-//! reachability) is routine and must keep exiting 0 — that is the
+//! reachability) is routine and must keep exiting 0 — PROVIDED no retained
+//! function still relocates against it (#1102 refuses that shape as
+//! unlinkable; see `dangling_declined_callee_1102.rs`) — that is the
 //! NEGATIVE CONTROL below. Only a decline of a function the module actually
 //! `(export ...)`s must flip the exit code. Getting this backwards (failing
 //! the build on every skip) would break the `--all-exports` corpus-sweep
@@ -90,20 +92,26 @@ const REQUESTED_EXPORT_DECLINED: &str = r#"(module
   (func (export "f") (result i32) (call $g (i32.const 7) (i64.const 9))))
 "#;
 
-/// `f` is exported and compiles fine; `$hard` is an internal, NON-exported
-/// helper pulled in only because `f` calls it (#235 reachability). `$hard`'s
-/// f64 result makes IT decline on a soft-float target — but nothing asked for
-/// `$hard` by name, so its absence is routine, not a build failure.
+/// Internal-helper skips with NO dangling reference stay routine. `$hard`
+/// (internal, f64 result) declines on a soft-float target, and its decline
+/// CASCADES into its direct caller `f` (f64 at the AAPCS-VFP boundary), so
+/// nothing RETAINED references either of them; `ok` compiles and carries no
+/// relocations. Under `--allow-skipped-exports` (needed because the cascade
+/// reaches the export `f`) the partial object is emitted with exit 0.
 ///
-/// Verified empirically before writing this test (against the unmodified
-/// v0.56.1 binary) that this fixture actually PRODUCES a skip of a
-/// non-exported function: `$hard` unreachable-but-uncalled produces no skip
-/// at all (it is simply never compiled), so the helper MUST be called from
-/// the export for `reachable_from_exports` to pull it in and then decline it.
-const ONLY_HELPER_DECLINED: &str = r#"(module
+/// HISTORY (#1102, RQ-61-DANGLE): the previous fixture here stopped the
+/// cascade one level short — `f` compiled and kept a `bl func_1` against the
+/// declined `$helper`, so the "routine exit-0 skip" this control asserted
+/// was, measured, an UNLINKABLE object (GLOBAL UNDEF `func_1` no linker
+/// input could resolve). That shape now REFUSES at the driver's #1102 gate
+/// (see `dangling_declined_callee_1102.rs`, which pins it as a RED case).
+/// The asymmetry this control protects is therefore restated precisely:
+/// a decline that leaves no dangling reference is not a build failure —
+/// a decline that does is not a "skip" at all.
+const HELPER_DECLINE_NO_DANGLE: &str = r#"(module
   (func $hard (result f64) (f64.sqrt (f64.const 2.0)))
-  (func $helper (result i32) (call $hard) (drop) (i32.const 1))
-  (func (export "f") (result i32) (call $helper)))
+  (func (export "f") (result i32) (call $hard) (drop) (i32.const 1))
+  (func (export "ok") (result i32) (i32.const 1)))
 "#;
 
 /// RED (must pass only after the fix): a compile that declines a REQUESTED
@@ -134,39 +142,46 @@ fn declined_requested_export_exits_nonzero() {
     );
 }
 
-/// NEGATIVE CONTROL, both before and after the fix: skipping only a
-/// non-exported internal helper must still exit 0. This is the asymmetry
-/// #952 explicitly preserves — routine helper skips are not build failures.
-/// If this test ever starts failing, the fix over-broadened the gate to fail
-/// the build on ANY skip, not just a skipped export.
+/// NEGATIVE CONTROL: an internal-helper skip whose references all declined
+/// with it (no retained function relocates against it) still exits 0 and
+/// emits the partial object. If this test ever starts failing, a gate was
+/// over-broadened to fail the build on ANY skip — not just a skipped export
+/// (#952) or a dangling reference from retained code (#1102).
 #[test]
-fn skipped_nonexported_helper_still_exits_zero() {
+fn skipped_helper_without_dangling_reference_still_exits_zero() {
     let dir = workdir("negctrl");
-    let out = compile(&dir, ONLY_HELPER_DECLINED, "ctrl.o", &[]);
+    let out = compile(
+        &dir,
+        HELPER_DECLINE_NO_DANGLE,
+        "ctrl.o",
+        &["--allow-skipped-exports"],
+    );
     let err = stderr(&out);
 
-    // Non-vacuity: a control that never exercises a skip proves nothing (the
-    // #275/A32 lesson — see call_indirect_275_selfcontained.rs). Anchor on
-    // BOTH the per-function warning naming the skipped helper AND the
-    // aggregate count, so a future refactor that stops skipping `$hard`
-    // (e.g. broadens f64 support) fails this test loudly rather than leaving
-    // it passing for the wrong reason.
+    // Non-vacuity: a control that never exercises an INTERNAL-function skip
+    // proves nothing (the #275/A32 lesson — see
+    // call_indirect_275_selfcontained.rs). Anchor on the helper's own skip
+    // (`func_0` = the non-exported `$hard`) AND the aggregate count, so a
+    // future refactor that stops skipping it (e.g. broadens f64 support)
+    // fails this test loudly rather than leaving it passing for the wrong
+    // reason.
     assert!(
-        err.contains("skipping function") && err.contains("were skipped"),
+        err.contains("skipping function 'func_0'") && err.contains("were skipped"),
         "fixture must actually skip the non-exported helper for this control \
          to mean anything — got:\n{err}"
-    );
-    assert!(
-        !err.contains("skipping function 'f'"),
-        "the EXPORT 'f' must not be the one skipped — this fixture is meant \
-         to isolate a helper-only skip. stderr:\n{err}"
     );
 
     assert!(
         out.status.success(),
-        "#952 negative control: skipping only a non-exported internal helper \
-         (never asked for by name) must still exit 0 — only a declined \
-         REQUESTED export may fail the build. stderr:\n{err}"
+        "negative control: a decline that leaves NO dangling reference from \
+         retained code must still exit 0 under --allow-skipped-exports — \
+         only a declined REQUESTED export (#952) or a retained function \
+         relocating against a declined one (#1102) may fail the build. \
+         stderr:\n{err}"
+    );
+    assert!(
+        dir.join("ctrl.o").exists(),
+        "control object was not emitted"
     );
 }
 

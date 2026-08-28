@@ -3972,7 +3972,12 @@ fn compile_all_exports(
     // exit-code gate below keys on — a build gating on `$?` must fail when a
     // named public entry point silently vanished, but not when an unexported
     // implementation detail did.
-    let mut skipped_funcs: Vec<(String, String, bool)> = Vec::new();
+    // #1102: the fourth field is the skipped function's FULL wasm index — the
+    // index space direct-call relocation labels are stated in (`func_{idx}` on
+    // ARM/A32/aarch64, `synth_func_{idx}` on RV32) — so the dangling-reference
+    // gate below can tell whether any RETAINED function still relocates
+    // against a function this compile declined.
+    let mut skipped_funcs: Vec<(String, String, bool, u32)> = Vec::new();
     // #778 phase 3: collect per-function WCET intermediates (own-body cycles +
     // direct call sites, or a decline) and a `func_<idx>` → position map, so the
     // module-level composer can resolve direct calls across the call graph AFTER
@@ -4077,6 +4082,7 @@ fn compile_all_exports(
                 name.clone(),
                 format!("unsupported operator: {reason}"),
                 func.export_name.is_some(),
+                func.index,
             ));
             continue;
         }
@@ -4186,7 +4192,12 @@ fn compile_all_exports(
                     backend.name(),
                     e
                 );
-                skipped_funcs.push((name.clone(), e.to_string(), func.export_name.is_some()));
+                skipped_funcs.push((
+                    name.clone(),
+                    e.to_string(),
+                    func.export_name.is_some(),
+                    func.index,
+                ));
                 continue;
             }
         };
@@ -4394,7 +4405,7 @@ fn compile_all_exports(
             all_exports.len(),
             skipped_funcs
                 .iter()
-                .map(|(n, _, _)| n.as_str())
+                .map(|(n, _, _, _)| n.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -4420,8 +4431,8 @@ fn compile_all_exports(
     if !allow_skipped_exports {
         let skipped_exports: Vec<&str> = skipped_funcs
             .iter()
-            .filter(|(_, _, is_export)| *is_export)
-            .map(|(n, _, _)| n.as_str())
+            .filter(|(_, _, is_export, _)| *is_export)
+            .map(|(n, _, _, _)| n.as_str())
             .collect();
         if !skipped_exports.is_empty() {
             let total_exports = all_exports
@@ -4439,6 +4450,61 @@ fn compile_all_exports(
                 skipped_exports.len(),
                 total_exports,
                 skipped_exports.join(", ")
+            );
+        }
+    }
+
+    // #1102 (RQ-61-DANGLE): a RETAINED function that relocates against a
+    // function this compile DECLINED must fail the compile loudly — the
+    // object would carry an undefined symbol for a function the module itself
+    // DEFINES, so no linker input can ever resolve it: the object is not
+    // partial, it is UNLINKABLE (measured: `ld.lld` "undefined symbol:
+    // synth_func_0" on RV32; ARM/A32 ship the same dangling `func_N` GLOBAL
+    // UNDEF, and a `--cortex-m`-less compile even silently flips to ET_REL
+    // because the dangling reloc counts as external). #952 and the aarch64
+    // #1013 builder refusal are keyed one level too shallow for this class:
+    // #952 fires only on a declined REQUESTED EXPORT, and #1013 lives only in
+    // the aarch64 ELF builder — an INTERNAL decline referenced by a retained
+    // export slipped past both with exit 0. This gate sits where the two
+    // facts already meet: the driver knows which functions were skipped
+    // (`skipped_funcs`, with wasm indices) and which relocations the retained
+    // functions carry (`compiled_funcs`), across all four backends' otherwise
+    // separate ELF paths. Direct-call relocations are always index-labelled
+    // (`func_{idx}` from the ARM/A32/aarch64 selectors, `synth_func_{idx}`
+    // from RV32) — never export-named — so index labels are the complete
+    // match set.
+    //
+    // Deliberately NOT waived by `--allow-skipped-exports`: that flag means
+    // "I accept a PARTIAL object" (a requested export absent — the corpus-
+    // sweep shape), which is categorically different from "I accept an object
+    // that cannot link". The aarch64 #1013 refusal is likewise unconditional;
+    // this is the same policy applied to every backend. Also deliberately not
+    // a fabricated stub or a dropped call — both would turn an unlinkable
+    // object into a WRONG one.
+    {
+        let mut dangling: Vec<String> = Vec::new();
+        for (sname, _reason, _, sidx) in &skipped_funcs {
+            let labels = [format!("func_{sidx}"), format!("synth_func_{sidx}")];
+            for f in &compiled_funcs {
+                if f.relocations.iter().any(|r| labels.contains(&r.symbol)) {
+                    dangling.push(format!("'{}' -> '{}'", f.name, sname));
+                }
+            }
+        }
+        if !dangling.is_empty() {
+            anyhow::bail!(
+                "#1102: {} retained function(s) relocate against function(s) \
+                 this compile DECLINED: {}. The object would carry an \
+                 undefined symbol for a function the module itself DEFINES, \
+                 so it can never link — refusing to emit it rather than \
+                 shipping an unlinkable object with exit 0 (the aarch64 #1013 \
+                 refusal applied to every backend). See the preceding \
+                 'skipping function' warning(s) for each decline reason. \
+                 --allow-skipped-exports does not cover this: that flag \
+                 accepts a PARTIAL object (a requested export absent), not an \
+                 UNLINKABLE one.",
+                dangling.len(),
+                dangling.join(", ")
             );
         }
     }
