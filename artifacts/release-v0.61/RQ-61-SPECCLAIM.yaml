@@ -37,7 +37,7 @@ artifacts:
       becomes true; or correct both documents to say what is actually
       measured. Do NOT ship a third state where the claim is softened enough
       to be unfalsifiable.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [claims, docs, ci, spec-suite, honesty]
     links:
@@ -49,3 +49,36 @@ artifacts:
       verification-track: review
       issue: "#1095"
       done-when: "manual: either a CI job produces the rate over a CHECKED-OUT suite and claims.yaml pins it, or both documents state what is actually measured; not a softened middle"
+      verified-by: >-
+        The done-when's first arm holds, verified against the artifacts not
+        the intent: (1) a CI job produces the rate over a CHECKED-OUT suite —
+        .github/workflows/spec-suite.yml passes `submodules: recursive` and
+        runs scripts/spec_compile_census.py, which was run locally over the
+        real 257-file checkout and PASSES with every bucket equal to its pin;
+        (2) claims.yaml pins it — SYNTH-SPEC-SUITE-CENSUS-README and
+        SYNTH-SPEC-SUITE-CENSUS-MATRIX bind the two doc rows' numbers to the
+        script's PINS table and the workflow's checkout/run lines, and
+        claim_check is green; (3) not a softened middle — both rows now name
+        the workflow, the script, and the exact numbers, and the census can
+        FAIL: an empty suite dir, a +1 ok-pin, a -1 all_declined-pin, and a
+        drifted README number were each demonstrated red (exit 1 / claim FAIL)
+        before this status flip. Evidence transcripts in the PR body.
+      landed: >-
+        Fork (a) taken — the gate was wired, chosen on measurement, not from
+        the armchair: the full census runs in ~10 s of compiles per backend
+        after one cargo build, so a job is cheap. The `Spec Suite` workflow
+        (.github/workflows/spec-suite.yml) is the FIRST workflow to check out
+        the submodule (`submodules: recursive`) and it runs
+        scripts/spec_compile_census.py, which exact-pins a nine-bucket census
+        per backend over all 257 top-level .wast files — declines counted
+        separately from errors per the compliance envelope. Measured baseline
+        (suite commit 3453673): full-module compile 23 ARM / 13 RV32 / 27
+        AArch64, at-least-one-export 92/82/60, panics 0/0/0 (the #1093 if.wast
+        panic the issue measured is gone). Non-vacuity: exactly-257-files
+        floor makes an empty checkout RED, never a 0/0 pass. Red-first at
+        authoring: empty dir, an ok-pin +1, and an all_declined-pin -1 all
+        exit 1; a drifted README number fails SYNTH-SPEC-SUITE-CENSUS-README
+        (demonstrated). Both doc rows rewritten to cite the workflow + script;
+        claims.yaml binds doc <-> script <-> workflow
+        (SYNTH-SPEC-SUITE-CENSUS-README / -MATRIX) and its header comment no
+        longer lists the census as "gated elsewhere". ci.yml:759 note updated.
