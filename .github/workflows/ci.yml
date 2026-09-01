@@ -2656,6 +2656,67 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
 
+  param-block-silent-1097-oracle:
+    name: "param-block silent-miscompile oracle (#1097, pre-#1096 bytes + decline)"
+    # #1097 (RQ-61-MVORACLE): the EVIDENCE for the #1096 parameter-taking
+    # block-type decline, kept executable. The committed fixture holds the
+    # PRE-#1096 compiler's own emitted objects (rev c4b463f3^); every run
+    # re-executes them under unicorn against wasmtime-first expected values
+    # and requires the four demonstrated SILENT-WRONG vectors to return
+    # EXACTLY the pinned wrong values (if/ARM + if/RV32: uninitialized-
+    # register canary instead of 7; block/RV32: dropped br_if param;
+    # loop/RV32: mangled back-edge join, 2 for 10) — a decline with its
+    # justification re-proven, not archived. The green half asserts the
+    # current compiler CLEANLY declines all six shape x backend legs (exit
+    # != 0, no panic, no object, the shared #1093 needle) and that the guard
+    # module of supported neighbours still compiles and matches wasmtime.
+    # Negative results are pinned as such: block/ARM was CORRECT pre-#1096
+    # (conservative leg) and loop/ARM was already #509-declined — neither is
+    # asserted wrong, per "do not manufacture a wrong answer".
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run #1097 param-block silent-miscompile oracle (fixture red half + live decline half)"
+        # `set -euo pipefail` per #890. The `ci-checks: emulations >= 19`
+        # floor counts the 11 fixture + 8 guard unicorn entries; it CANNOT
+        # see the decline half (#1113 — a refused compile emulates nothing),
+        # so that half carries its own in-script floor (refusals == 6) and
+        # the grep below pins its printed count (the #1112 pattern). The
+        # silent-wrong partition is likewise pinned in-script AND grepped:
+        # a red half that stopped demonstrating the miscompile must not
+        # stay green.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py | tee pbs1097.txt
+          grep -Eq '^refusals: [1-9][0-9]*$' pbs1097.txt
+          grep -Eq '^silent-wrong vectors: 4 \(of 4 pinned\); match vectors: [1-9][0-9]*$' pbs1097.txt
+          grep -q '^RESULT: PASS' pbs1097.txt
+      # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
     # VCR-ORACLE-001 (#242, #676): a HETEROGENEOUS funcref table (mixed
