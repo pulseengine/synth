@@ -653,8 +653,63 @@ jobs:
             echo "::error::Artifacts loaded fell below the floor ($MEASURED < $ARTIFACT_FLOOR). An artifact source file is being skipped or mis-parsed (#1064) — find it; do not lower the floor."
             exit 1
           fi
-      - name: Check coverage
-        run: rivet coverage
+      # ------------------------------------------------------------------
+      # #1091 V-CLOSURE FLOOR — `rivet coverage` must ASSERT, not print.
+      #
+      # release-execution names the traceability completeness gate as THE
+      # release blocker, and it had never fired: this step ran
+      # `rivet coverage`, which printed `sys2-has-verification 61/165`
+      # into a log nobody reads and EXITED 0 at any percentage — 60/60
+      # release artifacts across v0.56–v0.60 carried no linked
+      # sys-verification while the job stayed green. Third instance of a
+      # validator reporting success about work it never did (#1012, #1064).
+      #
+      # NOT "unverified work": the verification EXISTS (unicorn execution
+      # differentials, ld.lld-linked run evidence, Rocq proofs with
+      # red-first transcripts, mutation-killed gates). What was missing is
+      # the TYPED `verifies` LINK that makes it queryable by the trace
+      # graph. This floor pins the covered count so links, once added,
+      # cannot silently rot away again.
+      #
+      # Same discipline as ARTIFACT_FLOOR above: the number may only rise,
+      # and a PR that adds coverage raises the floor in the same PR (the
+      # visible-diff rule). Floor measured 2026-09-01 under the pinned
+      # rivet v0.23.0 with the externals block stripped (this job's own
+      # conditions): sys2-has-verification 61 covered of 165 system-reqs.
+      #
+      # WHAT THIS FLOOR CAN DETECT: a lost `verifies` edge (deleted, or
+      # spliced away — the #1059 shape); a sys-verification source file
+      # going invisible to the loader (the #1064 shape — covered drops by
+      # that file's whole contribution); a rivet output/rule rename (the
+      # row disappears → unmeasurable → RED, never green).
+      # WHAT IT CANNOT DETECT, stated so nobody reads more into it:
+      # (a) NEW system-reqs landing without verification — the DENOMINATOR
+      # grows, the ratio decays, and this covered-count floor does not
+      # move; that direction is owned by the per-release backfill
+      # discipline decided under #1091, not by this pin. (b) a
+      # sys-verification artifact whose cited evidence is weak, stale, or
+      # restated prose — the floor counts typed links; judging the
+      # evidence lives in scripts/status_evidence_check.py and review.
+      #
+      # RED-FIRST (2026-09-01, locally under the pinned 0.23.0): pinned at
+      # 62 with 61 measured, this step exits 1 with the below-floor error;
+      # at 61 it exits 0; on output missing the sys2 row entirely, the
+      # unmeasurable branch exits 1.
+      - name: Check coverage (asserting — #1091)
+        run: |
+          set -o pipefail
+          SYS2_VERIFIED_FLOOR=61
+          rivet coverage 2>&1 | tee /tmp/rivet-coverage.txt
+          COVERED=$(awk '$1 == "sys2-has-verification" && $2 == "system-req" {print $3; exit}' /tmp/rivet-coverage.txt)
+          echo "sys2-has-verification floor=$SYS2_VERIFIED_FLOOR covered=${COVERED:-<none>}"
+          if ! [ "$COVERED" -ge 0 ] 2>/dev/null; then
+            echo "::error::rivet coverage printed no parseable 'sys2-has-verification' covered count — the V-closure floor cannot be measured. Treating as RED, not green (#1064, #1091)."
+            exit 1
+          fi
+          if [ "$COVERED" -lt "$SYS2_VERIFIED_FLOOR" ]; then
+            echo "::error::system-reqs with a linked sys-verification fell below the floor ($COVERED < $SYS2_VERIFIED_FLOOR). A verifies edge was lost or a verification source file went invisible (#1091) — find it; do not lower the floor."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # Rivet Federated Graph — ADVISORY (deliberately NOT in the required set).
