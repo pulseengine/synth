@@ -673,4 +673,32 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("unsigned 12-bit immediate"), "{e}");
     }
+
+    /// RQ-61-IMMRANGE (#1072): a SLOT class id past the type-guard `cmp`
+    /// imm12 declines here — this is the upstream bound the selector's OOB/
+    /// type-guard comment cites for the sidecar values (the EXPECTED id has
+    /// its own #1072 decline in the selector). Previously stated but never
+    /// tripped by a test — the #946 unverified-enforcement shape.
+    #[test]
+    fn oversized_slot_class_id_declines() {
+        let slots = vec![Some(0u32)];
+        let ids = vec![MAX_CLASS_ID + 1];
+        let sizes = [Some(1u32)];
+        let segs = [ElemSegmentInfo {
+            table_index: 0,
+            offset: Some(0),
+            funcs: Some(vec![0]),
+        }];
+        let e = plan(&PlanInputs {
+            funcref_slots: slots.to_vec(),
+            funcref_class_ids: ids.to_vec(),
+            table_sizes: sizes.to_vec(),
+            elem_segments: segs.to_vec(),
+            uses_call_indirect: true,
+            ..base()
+        })
+        .unwrap_err();
+        assert!(e.contains("structural type class id"), "{e}");
+        assert!(e.contains("4095"), "{e}");
+    }
 }
