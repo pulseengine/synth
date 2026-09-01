@@ -642,7 +642,7 @@ jobs:
           # 484 -> 486: #1102 (rv32 dangling synth_func_N on a declined
           # internal, exit 0) and #1100 (MC/DC report-side floors are
           # layout-coupled), both triaged in the same wave that found them.
-          ARTIFACT_FLOOR=486
+          ARTIFACT_FLOOR=487
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
@@ -1056,6 +1056,10 @@ jobs:
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py | tee impdisp1017.txt
           grep -Eq '^executions: [1-9][0-9]* \([1-9][0-9]* value, [1-9][0-9]* trap\)' impdisp1017.txt
+          # The `ci-checks: emulations >= 6` floor counts only the wasmtime/
+          # unicorn differentials; it cannot see the decline-honesty half, so
+          # that half carries its own floor here (#1104 follow-up).
+          grep -Eq '^refusals: [1-9][0-9]*$' impdisp1017.txt
           grep -q '^RESULT: PASS' impdisp1017.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
@@ -1541,7 +1545,14 @@ jobs:
       # truth is wasmtime. WIDENS coverage only — #757 stays OPEN (blocked on
       # the reporter's reduced module); a divergence here is a real find.
       - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
-        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py | tee mss406.txt
+          # The `ci-checks: emulations >= 27` floor counts only the two
+          # emulated paths; it is blind to the #1041 refusal assertion, which
+          # emulates nothing. That half carries its own floor here (#1113).
+          grep -Eq '^refusals: [1-9][0-9]*$' mss406.txt
       # #757: gale's EXACT fused os-tl node (loom.wasm) — the real miscompile that
       # 7 synthetic reconstructions could not reproduce (PR #772). Three active data
       # segments overlap at linmem 0x100000; the #354 reloc retargeting bound the
