@@ -1421,10 +1421,23 @@ fn compile_wasm_to_arm(
         // recorded, so internal `BL func_N` calls were left as unpatched
         // `bl #0` placeholders branching to a garbage address (#167).
         if let ArmOp::Bl { label } = &instr.op {
+            // #1040: the relocation type is ISA-STATE-dependent and this is the
+            // only site that knows the state. An A32 (Cortex-R) `bl` is
+            // R_ARM_CALL (28); a Thumb `bl` is R_ARM_THM_CALL (10). Emitting
+            // the Thumb type for an A32 word made any consumer that trusts the
+            // declared type patch Thumb halfwords into an ARM-state
+            // instruction. Decided here rather than in the ELF emitter, where
+            // `config.target` is no longer in scope and the ISA would have to
+            // be re-derived — the shape that produced the bug.
+            let kind = if config.target.isa == synth_core::target::IsaVariant::Arm32 {
+                synth_core::backend::RelocKind::ArmCall
+            } else {
+                synth_core::backend::RelocKind::ThmCall
+            };
             relocations.push(CodeRelocation {
                 offset: code.len() as u32,
                 symbol: label.clone(),
-                kind: synth_core::backend::RelocKind::ThmCall,
+                kind,
             });
         }
         // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data

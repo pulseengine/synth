@@ -578,8 +578,24 @@ pub const FUNC_TABLE_SYMBOL: &str = "__synth_func_table";
 /// resolves these when combining the Synth object with the Kiln bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocKind {
-    /// R_ARM_THM_CALL — a Thumb BL call site (the default; #167).
+    /// R_ARM_THM_CALL (ELF type 10) — a THUMB BL call site (#167). Correct
+    /// only for a Thumb-state `bl`, whose 32-bit placeholder is `f7ff fffe`
+    /// (branch-to-self, addend -4 for the +4 pipeline bias).
     ThmCall,
+    /// R_ARM_CALL (ELF type 28) — an ARM-STATE (A32) BL call site (#1040).
+    /// The A32 analogue of [`RelocKind::ThmCall`], exactly as
+    /// [`RelocKind::AArch64Call26`] and [`RelocKind::RiscvCallPlt`] are the
+    /// analogues for their ISAs — the ISA is fixed at the site that KNOWS it,
+    /// never re-derived at the ELF emitter where the information is gone.
+    ///
+    /// Emitting `ThmCall` for an A32 `bl` was #1040: a consumer that trusts
+    /// the declared type patches Thumb halfwords into an ARM-state word (or
+    /// emits an interwork veneer), producing an invalid instruction. The
+    /// matching A32 placeholder is `ebfffffe` (branch-to-self, addend -8 for
+    /// the +8 pipeline bias) — `gas` emits exactly that for `bl <extern>` in
+    /// ARM mode, and `eb000000` (addend 0) lands two instructions past the
+    /// callee entry, the A32 twin of #174.
+    ArmCall,
     /// R_ARM_MOVW_ABS_NC — the MOVW half of a symbol-relative address (#237).
     MovwAbs,
     /// R_ARM_MOVT_ABS — the MOVT half of a symbol-relative address (#237).
