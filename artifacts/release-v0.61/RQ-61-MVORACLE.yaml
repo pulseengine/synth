@@ -51,6 +51,7 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1097"
+      landed: "#1122"
       # As filed the done-when was "manual: the differential is in
       # scripts/repro/, CI-wired with an emulation floor, and RED against the
       # pre-#1096 binary on all three silent shapes"; the CI wiring is the
