@@ -136,6 +136,17 @@ EXPECTED_DECLINES = {
     "f64_369.wat": "f64 surface as a whole on the relocatable path",
     "float_select_return_782.wat": "f64 select + f64 return",
     "i64_float_conv_869.wat": "i64<->f32/f64 conversions",
+    # #1097: these three are the #1096 parameter-taking block-type class and
+    # decline BY DESIGN — the decline's necessity is what
+    # param_block_silent_1097_differential.py exists to demonstrate (four
+    # silent-wrong legs re-executed from the pre-#1096 compiler's own bytes
+    # on every CI run). Do NOT take them off this list by lowering the
+    # shapes without passing that oracle first. The sibling
+    # param_block_silent_1097_guard.wat (supported neighbours) COMPILES and
+    # is deliberately absent here.
+    "param_block_silent_1097_block.wat": "#1096 param-taking block type (block+br_if), declined by design",
+    "param_block_silent_1097_if.wat": "#1096 param-taking block type (else-less if), declined by design",
+    "param_block_silent_1097_loop.wat": "#1096 param-taking block type (loop back-edge), declined by design",
     "rv32_br_value_931.wat": "i64 br-with-value",
     "trunc_sat_782.wat": "f64 and i64 saturating truncations",
     "vfp_spill_881.wat": "f64 spill shapes",
