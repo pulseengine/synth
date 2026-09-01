@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-61-R4BLIND
+    type: system-req
+    title: "status_evidence R4 is blind to conventional-commit delivery subjects — two v0.61 artifacts shipped and stayed 'proposed' with the gate green"
+    description: >
+      #1119, found by reading the release status by hand rather than by any
+      gate. R4 is the rule that stops a shipped artifact from silently staying
+      `proposed`: a first-parent commit whose subject STARTS WITH a known
+      artifact id must either carry a CLAIMING status or name the commit's PR
+      in `fields.landed`.
+
+      The match is anchored on the SUBJECT PREFIX. Every lane PR this release
+      names its artifact first (`RQ-61-VCLOSURE (#1091): ...`), so R4 sees them
+      all. Commits using this repo's OTHER prevalent subject style —
+      conventional-commit prefixes — are invisible:
+
+        RQ-61-A32RELOC    #1116  "fix(#1040): A32 BL sites carry ..."    unseen
+        RQ-61-ORACLEFLOOR #1112  "fix(oracle): #1104 shadowed the ..."   unseen
+
+      Both had every `done-when` clause satisfied by merged code. Both stayed
+      `proposed` while `status_evidence_check` reported 0 FAILURES throughout.
+      Flipped in #1120.
+
+      THE FAILURE DIRECTION IS THE SILENT ONE: work landed, the artifact says
+      nothing, the gate says green — so a release-notes pass reading statuses
+      would under-report what shipped. The v0.59 "orphaned status flips" class
+      recurring, and the same family as #1085 (evidence that cannot fail),
+      #1091 (a gate that prints instead of asserting) and #1113 (a floor blind
+      to half its oracle).
+
+      WHAT THE FIX MUST NOT BREAK, recorded so it is not re-litigated: the
+      prefix anchor is what makes R4 cheap and unambiguous — it cannot mistake
+      a passing mention ("also relevant to RQ-61-FOO") for a delivery claim.
+      Widening to "the id appears anywhere in the subject" would turn every
+      cross-reference into a delivery commit and produce false reds, which is
+      worse than the blind spot. R4 must also stay FIRST-PARENT, so a merged
+      branch's internal commits do not each count as a delivery.
+
+      The option that would actually have caught both instances is resolving
+      through `fields.issue`: map each artifact's `issue:` (`#1040`, `#1113`)
+      and treat a subject naming that issue as a delivery commit. Its risk is
+      an issue referenced for another reason (a partial fix, a revert) becoming
+      a false delivery claim, so it needs a marker discipline.
+
+      RED-FIRST IS FREE HERE and is required: commits `b4860e4e` and `eefa19ef`
+      are an already-measured regression corpus. A fix that does not flag both
+      has not fixed the reported thing.
+    status: proposed
+    release: v0.61
+    tags: [gate, traceability, non-vacuity, evidence]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1119"
+      done-when: "manual: status_evidence_check flags a delivery commit whose subject names the artifact's issue rather than its id — proven RED against commits b4860e4e and eefa19ef, and proven NOT to fire on a subject that merely cross-references an artifact id"
