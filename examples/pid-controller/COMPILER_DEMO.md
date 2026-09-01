@@ -1,5 +1,14 @@
 # PID Controller - Formal Verification in Action
 
+> **Historical demo (#1080).** The OCaml driver used here
+> (`compiler/synth_compile.exe`, dune-built from checked-in extraction
+> snapshots) was removed in #1080 — nothing built or ran it, and the
+> snapshots had drifted from the Rocq sources. The `dune build` /
+> `synth_compile.exe` commands below no longer work. The shipped compiler is
+> the Rust `synth compile` CLI; extraction from the verified model still runs
+> in CI as a Bazel target (`bazel test //coq:verify_proofs`). The generated
+> assembly shown below is preserved as a record of the demo.
+
 ## What We Just Built
 
 This example demonstrates **actual formally verified compilation** - not just theory, but working code generated using mathematical proofs.
