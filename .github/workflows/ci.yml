@@ -642,7 +642,7 @@ jobs:
           # 484 -> 486: #1102 (rv32 dangling synth_func_N on a declined
           # internal, exit 0) and #1100 (MC/DC report-side floors are
           # layout-coupled), both triaged in the same wave that found them.
-          ARTIFACT_FLOOR=486
+          ARTIFACT_FLOOR=487
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then

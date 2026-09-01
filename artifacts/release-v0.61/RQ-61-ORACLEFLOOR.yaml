@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-61-ORACLEFLOOR
+    type: system-req
+    title: "An oracle's ci-checks floor cannot see its decline half — 4 oracles could lose that half and stay green"
+    description: >
+      #1113, found while repairing the aarch64 import-dispatch oracle in
+      #1112. `scripts/oracle_run.py` requires exactly one `# ci-checks:`
+      floor per repro oracle, and `oracle_wiring_check.py` sums those floors
+      into a claims.yaml-pinned total. That machinery works. But an
+      `emulations` floor counts ONLY emulator entries.
+
+      Four oracles assert a DECLINE direction (run a compile, treat exit 0 as
+      the failure) IN ADDITION TO emulating differentials. A failed compile
+      produces no object to emulate, so the decline half contributes ZERO to
+      the counter its own oracle is floored on. Delete or neuter that half and
+      `measured == floor` still holds; the job stays green.
+
+        aarch64_import_dispatch_1017_differential.py   >= 6    fixed in #1112
+        multi_segment_static_data_differential.py      >= 27   open
+        riscv_extern_call_871_differential.py          >= 20   open
+        rv32_label_882_differential.py                 >= 15   open
+
+      Derivation: `# ci-checks: emulations >= N` header, an
+      `if <proc>.returncode == 0:` failure branch, and emulation present. The
+      loose proxy (any returncode assertion) matches 60 files, but those are
+      overwhelmingly "the compile must succeed" preconditions; the tight set
+      is 4.
+
+      HOW IT WAS FOUND MATTERS MORE THAN THE COUNT. Not by audit. #1104 added
+      a driver-level refusal that preempts the aarch64 ELF builder's, so the
+      probe — pinned to the builder's WORDING — went red. The wording pin is
+      the only reason this was visible; had #1104 deleted the probe instead,
+      the floor would still have been met and nothing would have reddened.
+      The failure mode of the remaining three is SILENCE.
+
+      This is the release's recurring shape one level up: the check exists, is
+      wired, and is pinned — and the pin cannot see half of what the check
+      asserts. Same family as #1085 (evidence that cannot fail) and #1091 (a
+      gate that prints instead of asserting).
+
+      Fix as applied in #1112: keep the `emulations` floor (it is the stronger
+      assertion for the executing half, and only one header is permitted), and
+      give the decline half its own in-script non-vacuity floor mirroring the
+      `VACUOUS:` idiom these scripts already use for trap/value coverage —
+      count refusals, print `refusals: N`, return 1 on zero, and grep it in
+      ci.yml. While there, assert the decline's DURABLE property rather than a
+      message string: exit != 0, no panic, the symbol is named, and NO OBJECT
+      IS WRITTEN — the wording is what drifted, the written-object check is
+      wording-free and is the actual safety property.
+
+      DELIBERATELY NOT IN SCOPE, recorded so it is not re-litigated: allowing
+      multiple `ci-checks:` headers in oracle_run.py. It would move a floor
+      out of the file that describes it and admit two floors that can
+      disagree; oracle_run.py's own docstring makes the locality argument
+      against it.
+    status: proposed
+    release: v0.61
+    tags: [oracle, non-vacuity, ci, evidence]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1113"
+      done-when: "manual: each of the three remaining oracles prints a counted decline floor, returns non-zero when that count is zero, and ci.yml greps it — proven by deleting the decline probe and observing the job go RED"
