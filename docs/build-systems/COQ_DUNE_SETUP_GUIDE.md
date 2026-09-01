@@ -1,5 +1,15 @@
 # Coq + Dune Setup Guide for ASIL D Verification
 
+> **Historical proposal — NOT adopted (#1080).** This guide recommends
+> building the Rocq proofs with Dune; the project chose the opposite. The
+> proofs build hermetically under Bazel (`bazel test //coq:verify_proofs`,
+> `coq/BUILD.bazel`, rules_rocq with a Nix toolchain), and extraction runs as
+> a Bazel target (`coq/Synth/Extraction/CompilerExtract.v`) on every CI run —
+> the "no production-ready Bazel rules exist" premise below did not hold for
+> this repo. The dune tree this guide's plan produced (`extracted/`,
+> `validation/`, `compiler/`, root `dune-project`) was never wired into any
+> build and was removed in #1080. Kept as a record of the trade-off analysis.
+
 ## Why Dune, Not Bazel?
 
 **TL;DR: Use the standard toolchain. Don't reinvent the wheel.**

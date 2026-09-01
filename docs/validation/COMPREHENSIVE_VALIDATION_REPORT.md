@@ -1,5 +1,16 @@
 # Comprehensive Validation Report - Synth Compiler
 
+> **Historical record (#1080).** This report describes a 2025-11 run of the
+> dune-built `validation/` test executables. Those executables — and the
+> checked-in OCaml extraction snapshots they linked against — were removed in
+> #1080: nothing built or ran them after this report, and the snapshots had
+> drifted from the Rocq sources. The build commands below no longer apply.
+> Current, CI-gated validation evidence lives in the Rocq proof suite
+> (`bazel test //coq:verify_proofs`, which re-runs extraction from
+> `coq/Synth/Extraction/CompilerExtract.v` on every run), `synth-verify`
+> translation validation, and the differential oracles — see
+> `docs/validation/VALIDATION_STATUS.md`.
+
 **Date**: 2025-11-20 (Updated)
 **Validation Type**: Compilation + Semantic Correctness
 **Test Suite**: Comprehensive (147 tests)
