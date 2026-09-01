@@ -1056,6 +1056,10 @@ jobs:
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py | tee impdisp1017.txt
           grep -Eq '^executions: [1-9][0-9]* \([1-9][0-9]* value, [1-9][0-9]* trap\)' impdisp1017.txt
+          # The `ci-checks: emulations >= 6` floor counts only the wasmtime/
+          # unicorn differentials; it cannot see the decline-honesty half, so
+          # that half carries its own floor here (#1104 follow-up).
+          grep -Eq '^refusals: [1-9][0-9]*$' impdisp1017.txt
           grep -q '^RESULT: PASS' impdisp1017.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
