@@ -89,7 +89,14 @@ def compile_synth(out, extra):
 def assert_relocatable_refuses_dataseg(tmp):
     """#1041 red-first, kept live in the harness: the FULL data-carrying module
     must REFUSE loudly on --relocatable — a silent exit 0 here is the filed bug
-    coming back."""
+    coming back.
+
+    Returns 1 (one refusal asserted) so `main` can floor it. This half emulates
+    NOTHING — a refused compile produces no object to run — so the
+    `# ci-checks: emulations >= 27` header cannot see it: delete this call and
+    `measured == floor` still holds and the job stays green (#1113). The
+    returned count is that half's own floor.
+    """
     env = {"PATH": "/usr/bin:/bin"}
     out = str(tmp / "refused.o")
     cmd = [SYNTH, "compile", str(WAT), "-o", out, "--all-exports",
@@ -99,10 +106,20 @@ def assert_relocatable_refuses_dataseg(tmp):
         sys.exit("#1041 REGRESSION: --relocatable accepted a data-carrying "
                  "module with exit 0 (the silent-drop bug)")
     log = (r.stderr or "") + (r.stdout or "")
+    if "panicked at" in log or "RUST_BACKTRACE" in log:
+        sys.exit(f"#1041: refusal PANICKED (exit 101 reads as a synth bug, not "
+                 f"a decline): {log[-400:]}")
     if "#1041" not in log or "active data segment" not in log:
         sys.exit(f"#1041: refusal is not loud/precise — expected a reason "
                  f"naming the active data segments, got: {log[-400:]}")
-    print("=== relocatable refusal (#1041): loud and precise ===")
+    # Wording-free and the actual safety property: a refused compile must not
+    # leave an object behind for a build to pick up.
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        sys.exit(f"#1041: an object was written despite the refusal "
+                 f"({os.path.getsize(out)} bytes) — the refusal is not "
+                 f"fail-closed")
+    print("=== relocatable refusal (#1041): loud, precise, no object written ===")
+    return 1
 
 
 def load_syms(elf):
@@ -243,7 +260,7 @@ def main():
     # the embedder ("the embedder populates its init segments" was always its
     # documented contract — wasm_init_image below), now explicitly
     # acknowledged. Emitted .text is identical either way.
-    assert_relocatable_refuses_dataseg(tmp)
+    refusals = assert_relocatable_refuses_dataseg(tmp)
     rel_o = str(tmp / "rel.o")
     compile_synth(rel_o, ["--relocatable", "--embedder-data-init"])
     _, code, base, syms = load_syms(rel_o)
@@ -251,8 +268,15 @@ def main():
         "relocatable (memory 0 at R11, embedder-populated init, .text far away)",
         RelocatableRunner(code, base, syms), truth)
 
+    # Non-vacuity for the decline half (#1113): the `emulations` floor counts
+    # only the two emulated paths above and is blind to the refusal assertion.
+    if refusals == 0:
+        print("VACUOUS: refusals=0 — the #1041 refusal half asserted nothing")
+        sys.exit(1)
+
     total = sc_fails + rel_fails
-    print(f"\nORACLE: {'PASS' if total == 0 else f'FAIL ({total} divergences)'}")
+    print(f"\nrefusals: {refusals}")
+    print(f"ORACLE: {'PASS' if total == 0 else f'FAIL ({total} divergences)'}")
     sys.exit(0 if total == 0 else 1)
 
 
