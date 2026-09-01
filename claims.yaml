@@ -35,9 +35,13 @@
 #
 # Not bound here (deliberately — runtime-derived, gated elsewhere): the
 # 141/141 ordeal-vs-Z3 agreement and 139/139 validator counts (re-derived by
-# the CI `verify` job that actually runs them), the wasm spec-suite compile
-# rate (CI-tracked), and cycle/size numbers (gale silicon + differential
-# jobs).
+# the CI `verify` job that actually runs them), and cycle/size numbers (gale
+# silicon + differential jobs). The wasm spec-suite compile CENSUS moved OFF
+# this list in #1095: for years "(CI-tracked)" here was itself the overclaim —
+# no job ran the suite and no checkout initialized the submodule. It is now
+# produced by the `Spec Suite` workflow (scripts/spec_compile_census.py,
+# exact-pinned there) and the doc rows citing it are bound below by the
+# SYNTH-SPEC-SUITE-CENSUS-* claims.
 
 # -----------------------------------------------------------------------------
 # status_fields — the derivations behind artifacts/status.json (the single
@@ -775,6 +779,83 @@ claims:
         path: crates/synth-backend/tests/a32_no_silent_nop_615.rs
       - kind: file-exists
         path: crates/synth-backend/tests/wcet_sp_no_wildcard_946.rs
+
+  # RQ-61-SPECCLAIM (#1095) — the spec-suite compile census. The doc rows cite
+  # numbers whose single source is the PINS table in
+  # scripts/spec_compile_census.py (run by the `Spec Suite` workflow, the only
+  # one that checks out the tests/spec-testsuite submodule). These claims bind
+  # doc <-> script <-> workflow so no leg can drift alone: the numeric phrase
+  # must sit verbatim in each doc, the same numbers must sit in the script's
+  # pins, and the workflow must still check out the submodule and run the
+  # script. The census itself (does the compiler still produce those counts?)
+  # is gated at runtime by the workflow, not re-derived here — claim_check
+  # runs without submodules, which is the original #1095 failure mode and
+  # exactly why this ledger must not pretend to measure the suite.
+  - id: SYNTH-SPEC-SUITE-CENSUS-README
+    doc: README.md
+    text: "full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 60, panics 0 / 0 / 0"
+    evidence:
+      - kind: count-eq                       # arm pins in the census script
+        pattern: 'ok=23, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # riscv pins
+        pattern: 'ok=13, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # aarch64 pins
+        pattern: 'ok=27, partial=33'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # doc-cited ok+partial figures
+        pattern: '"arm": 92, "riscv": 82, "aarch64": 60'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # the 257-file non-vacuity floor
+        pattern: 'EXPECTED_WAST_FILES = 257'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-min                      # the checkout is non-vacuous
+        pattern: 'submodules: recursive'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+      - kind: count-min                      # ...and the job runs the census
+        pattern: 'spec_compile_census'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+
+  - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 60, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |"
+    evidence:
+      - kind: count-eq                       # same script pins as the README leg
+        pattern: 'ok=23, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'ok=13, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'ok=27, partial=33'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '"arm": 92, "riscv": 82, "aarch64": 60'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'EXPECTED_WAST_FILES = 257'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-min
+        pattern: 'submodules: recursive'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+      - kind: count-min
+        pattern: 'spec_compile_census'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
 
   - id: SYNTH-README-STATUS-BADGES
     doc: README.md
