@@ -1866,8 +1866,20 @@ impl ArmEncoder {
             }
 
             ArmOp::Bl { label: _ } => {
-                // BL encoding: cond(4) | 1011 | offset(24)
-                0xEB000000
+                // BL encoding: cond(4) | 1011 | offset(24). Relocatable
+                // placeholder; an R_ARM_CALL relocation patches the target.
+                //
+                // #1040: the placeholder must carry an embedded addend of -8,
+                // not 0. A32 `BL` computes `target = P + 8 + (imm24 << 2)`, so
+                // under REL semantics a 0 addend (`eb000000`) resolves two
+                // instructions PAST the callee entry — the A32 twin of the
+                // Thumb #174 bug. The correct word is what `gas` emits for
+                // `bl <extern>` in ARM mode:
+                //   ebfffffe  ->  `bl <self>`  (imm24 = -2, offset = -8),
+                // which nets to exactly S. Verified against
+                // `arm-none-eabi-as -march=armv7-r`, which emits `ebfffffe`
+                // with an R_ARM_CALL relocation.
+                0xEBFFFFFE
             }
 
             ArmOp::Bx { rm } => {
@@ -10353,6 +10365,44 @@ mod tests {
         let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
         // Verify BL opcode
         assert_eq!(instr & 0x0F000000, 0x0B000000);
+    }
+
+    /// #1040: the A32 BL relocatable placeholder must carry an embedded addend
+    /// of -8 so an R_ARM_CALL nets to exactly the symbol S — the A32 twin of
+    /// the Thumb #167/#174 test above. A32 `BL` computes
+    /// `target = P + 8 + (imm24 << 2)`, so:
+    ///   - `eb000000` (imm24 = 0, addend 0) lands at S+8, two instructions
+    ///     past the callee entry. This is what synth emitted before #1040, and
+    ///     combined with the mislabelled R_ARM_THM_CALL a real linker
+    ///     (`arm-none-eabi-ld`) corrupted the word to `eaca0000` — opcode
+    ///     `eb` (BL) flipped to `ea` (B), so LR was never set at all.
+    ///   - `ebfffffe` (imm24 = -2, offset -8) is `bl <self>` and nets to S.
+    ///     This is exactly what `arm-none-eabi-as -march=armv7-r` emits for
+    ///     `bl <extern>`, verified directly rather than derived from the ABI.
+    #[test]
+    fn test_encode_arm32_bl_placeholder_addend_1040() {
+        let encoder = ArmEncoder::new_arm32();
+        let code = encoder
+            .encode(&ArmOp::Bl {
+                label: "callee".to_string(),
+            })
+            .unwrap();
+        assert_eq!(code.len(), 4, "A32 BL is one 32-bit word");
+        let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
+        assert_eq!(
+            instr, 0xEBFF_FFFE,
+            "A32 BL placeholder must be `ebfffffe` (gas's `bl <extern>`), not              `eb000000` — a 0 addend resolves two instructions past the callee              entry (#1040)"
+        );
+        // Spell the addend out so a future edit cannot satisfy the literal by
+        // accident: sign-extended imm24, word-scaled, plus the +8 pipeline
+        // bias, must be exactly 0 (branch-to-self).
+        let imm24 = instr & 0x00FF_FFFF;
+        let signed = ((imm24 as i32) << 8) >> 8;
+        assert_eq!(
+            8 + (signed << 2),
+            0,
+            "placeholder must branch to itself so the REL addend is -8"
+        );
     }
 
     /// Regression test for #167 + #174: the Thumb-2 BL relocatable placeholder
