@@ -50,4 +50,14 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1091"
+      # Increments 1 + pilot LANDED (#1091 branch feat/vclosure-1091): the
+      # coverage step asserts (SYS2_VERIFIED_FLOOR, red-first shown at 62 vs
+      # 61 measured, then 69 after the pilot) and the v0.60 EIGHT are
+      # backfilled (VER060-001..008, measured transcription cost recorded on
+      # the PR). The stated outcome does NOT yet fully hold: v0.61's own
+      # artifacts do not carry verifies links yet, and the historical-52
+      # decision (backfill vs documented exemption) is still the
+      # coordinator's call — this field records the difference
+      # (RQ-60-FLIPCOUPLE's mechanism).
+      landed: "#1091 increment 1 (asserting floor) + v0.60 backfill pilot"
       done-when: "manual: the coverage step FAILS below a pinned floor (red-first demonstrated by lowering the floor's input), and v0.61's own artifacts carry verifies links"

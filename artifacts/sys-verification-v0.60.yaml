@@ -1,0 +1,244 @@
+# =============================================================================
+# sys-verification backfill for the v0.60 release artifacts (#1091, pilot).
+#
+# WHAT THIS FILE IS: the TYPED `verifies` links that make v0.60's existing
+# verification evidence queryable by the trace graph. It is a TRANSCRIPTION,
+# not new verification — every RQ-60-* artifact already named its evidence in
+# `done-when`/`verified-by`; these artifacts cite that evidence (the script,
+# the job, the proof, the transcript) so `rivet coverage`'s
+# `sys2-has-verification` rule can see it. #1091 measured 60/60 release
+# artifacts across v0.56-v0.60 with NO linked sys-verification while the
+# evidence itself was real and in-tree.
+#
+# WHAT THIS FILE IS NOT: a restatement of requirement titles to move a number.
+# Each artifact below names concrete evidence with a path or a dated external
+# record; if that evidence disappears, status_evidence_check.py's rules on the
+# RQ-60-* side and the differential jobs themselves go red — this file only
+# adds the graph edge.
+#
+# Deliberately NOT named `release-v0.60-*.yaml`: scripts/status_evidence_check.py
+# sweeps `artifacts/release-v*` and applies release-REQUIREMENT rules
+# (done-when/R7 archaeology/R8 release-field agreement) that are shaped for
+# system-reqs, not for evidence-citation artifacts. These live beside
+# verification.yaml / e2e-verification.yaml, the existing home of the
+# sys-verification pattern.
+# =============================================================================
+
+artifacts:
+  - id: VER060-001
+    type: sys-verification
+    title: "Pseudo-op expansion canary gate (#1021) — emulated scratch-contract differential"
+    description: >
+      scripts/repro/expansion_canary_gate_1021.py executes all 77 rule-emitted
+      pseudo-op expansion instances on BOTH Thumb-2 and A32 under register
+      canaries (R11 = 0xB11B11B1) and asserts nothing outside
+      {results} u {declared contract} u {R12} moved, SP restored, memory
+      confined to the expansion's own red-zone, full byte decode, and no
+      declared contract register unexercised. Non-vacuity floor: >= 1200
+      emulations per run (pinned in the RQ-60-CANARY done-when). Potency is
+      re-proven on every run by two committed old-encoder fixtures that must
+      red on exactly the pinned registers (pre-#1039: Popcnt r11 + operand
+      tier; pre-#1054: operand tier only) — the gate discriminates WHICH fix
+      is present. Shipped in v0.59.0 (PR #1061); v0.60 carries the
+      traceability closure, which is what this artifact records.
+    status: implemented
+    tags: [canary, pseudo-op, emulation, differential, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-CANARY
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/repro/expansion_canary_gate_1021.py"
+        coverage: "77 expansion instances x {Thumb-2, A32}, >= 1200 emulations; 2 red-first fixtures"
+
+  - id: VER060-002
+    type: sys-verification
+    title: "BrIf correctness obligation discharged in the Rocq kernel (brif_correct Qed)"
+    description: >
+      The WASM model extension (BrIf constructor in
+      coq/Synth/WASM/WasmInstructions.v, executable semantics via
+      exec_wasm_instr fall-through plus the branch-observable exec_wasm_seq /
+      WBranch outcome layer) and the discharged correspondence obligation
+      brif_correct in coq/Synth/Synth/CorrectnessBrIf.v, stated against
+      exec_program_pc/exec_program_br, are checked by the Rocq KERNEL —
+      `bazel test //coq:verify_proofs` (kernel recount 630 Qed / 2 Admitted at
+      delivery) — with the count re-derived every commit by
+      `python3 scripts/claim_check.py claims.yaml`. Per the requirement's own
+      union-metric honesty note, the gale 477-instance denominator movement is
+      a reasoned estimate until gale re-runs #1057's measurement; what this
+      artifact cites is the kernel-checked proof, not that estimate.
+    status: implemented
+    tags: [rocq, proof, control-flow, kernel-checked, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-CFOBLIG
+    fields:
+      method: formal-verification
+      steps:
+        run: "bazel test //coq:verify_proofs && python3 scripts/claim_check.py claims.yaml"
+        coverage: "brif_correct Qed (CorrectnessBrIf.v) against exec_program_pc/exec_program_br"
+
+  - id: VER060-003
+    type: sys-verification
+    title: "AArch64 import dispatch — ld.lld-linked unicorn execution differential (#1017 increment 1)"
+    description: >
+      scripts/repro/aarch64_import_dispatch_1017_differential.py (wired in CI
+      via scripts/oracle_run.py in the aarch64 oracle job): imports lower
+      through the same bl + R_AARCH64_CALL26 path as local calls; a funcref
+      slot holding an import emits a b <field> JUMP26 trampoline; pyelftools
+      confirms host_add / ext_inc are STB_GLOBAL STT_FUNC SHN_UNDEF; ld.lld
+      links both objects against assembled definitions and unicorn EXECUTES
+      the linked images (run(37) = 42 through the import; table dispatch
+      slot0 41 -> 42, slot1 21 -> 42); import-free modules stay
+      byte-identical; a symbol neither placed nor listed keeps the #1013
+      clean refusal. SCOPE, kept as the requirement states it: increment 1
+      only — the 805-module acceptance census (increment 2) is NOT claimed by
+      this artifact or by the requirement.
+    status: implemented
+    tags: [aarch64, imports, unicorn, ld-lld, differential, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-A64IMPORT
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py"
+        coverage: "import call + funcref trampoline + symtab shape + linked execution; census NOT covered"
+
+  - id: VER060-004
+    type: sys-verification
+    title: "Graph-allocator cost-model increments — VCR-RA-003 validator + byte/execution differentials"
+    description: >
+      The requirement's own named acceptance oracles, run on the increment-2
+      binary: VCR-RA-003 validate_final_allocation Consistent on every applied
+      function; scripts/repro/vcr_dec_001_graph_alloc_differential.py OK
+      (flag-off == frozen goldens, 5 applying fixtures, no drift, no growth);
+      scripts/repro/vcr_dec_001_join_alloc_execution_differential.py 100/100
+      PASS (unicorn vs wasmtime, ENGAGED=28 via the SYNTH_GRAPH_ALLOC_FORCE
+      test seam); measured byte distribution from
+      scripts/repro/vcr_dec_001_join_alloc_measure.py (2026-08-27: relocatable
+      19 shrank / 0 grew / -72 B, self-contained 47 shrank / 0 grew / -320 B);
+      rmw decline bucket 0/0 re-derived by scripts/tied_web_census_242.py.
+      Flag ships OFF; frozen anchors unmoved (cargo test --workspace).
+    status: implemented
+    tags: [allocator, cost-model, differential, unicorn, wasmtime, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-RACOST
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/repro/vcr_dec_001_graph_alloc_differential.py && python3 scripts/repro/vcr_dec_001_join_alloc_execution_differential.py && python3 scripts/tied_web_census_242.py"
+        coverage: "VCR-RA-003 Consistent; 100/100 execution differential; 66 shrank / 0 grew; rmw bucket 0/0"
+
+  - id: VER060-005
+    type: sys-verification
+    title: "Release-artifact structural rules — #1059 defects replayed as committed fixtures"
+    description: >
+      scripts/test_status_evidence_check.py replays BOTH #1059 defects as
+      committed fixtures on every CI run (required Claim Check job), including
+      test_1059_defect1_spliced_artifact_absorbs_sibling_links — the splice
+      that silently moved a sibling's links. The five new structural
+      behaviours (R5 own-links, R5 issue-field, R6 duplicate-id, R0 per-file
+      emptiness, R0 keyed-_release.yaml refusal) in
+      scripts/status_evidence_check.py are mutation-verified: disabling each
+      kills >= 1 test. The requirement's honest residual stands: a splice
+      stealing only `fields:` is caught >= v0.60 only, and a links SWAP that
+      empties neither artifact is invisible to all of these.
+    status: implemented
+    tags: [rivet, structural, mutation-verified, claim-check, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-ARTIFACTSPLIT
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/test_status_evidence_check.py"
+        coverage: "both #1059 defects replayed; 5 rules mutation-verified"
+
+  - id: VER060-006
+    type: sys-verification
+    title: "wcet-hints name-section keying — kill-criterion fixture tests (#1063)"
+    description: >
+      The #1063 section of crates/synth-cli/tests/wcet_bound_gate.rs compiles
+      an INTERNAL (non-exported) function whose name-section name is gale's
+      literal mangled example and asserts the kill-criterion shape: a hints
+      file keyed on that name CONVERTS its `loop` decline to `hint-verified`
+      (raw name AND disambiguator-stripped stable key both accepted; emitted
+      trip = synth's DERIVED 8 even under hint 100); an index key for a named
+      function is REJECTED with the named reason
+      `wcet-hint-key-index-refused`; hints/sidecar stay ELF byte-invisible.
+      EXTERNAL RESIDUAL, kept as the requirement states it: the DoD's own
+      composite run — the same hints file against gale's E2 `gust:os` object —
+      has not been executed in this repo; the requirement stays `implemented`
+      until gale or jess runs it.
+    status: implemented
+    tags: [wcet, hints-seam, kill-criterion, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-WCETKEY
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli --test wcet_bound_gate"
+        coverage: "convert + named-reject + derived-not-raw + byte-invisibility; gale E2 re-run outstanding"
+
+  - id: VER060-007
+    type: sys-verification
+    title: "Status-evidence coupling gate wired required — seven measured misses replayed"
+    description: >
+      scripts/status_evidence_check.py runs in the required Claim Check job
+      (wired in .github/workflows/ci.yml, the requirement's done-when): every
+      release artifact >= v0.60 declares `done-when`; a claiming status with
+      absent evidence is red (Direction B, `manual:` additionally requiring a
+      written `verified-by`); a non-claiming status whose evidence exists is
+      red (Direction A, the RQ-60-CANARY shape); an id-first release commit
+      must be acknowledged via status flip or `fields.landed`. All SEVEN
+      measured v0.59 misses (grown from the three the requirement was filed
+      on) are replayed as committed fixtures in
+      scripts/test_status_evidence_check.py on every CI run. Stated residual:
+      work landing with no artifact and no id-first subject is invisible, and
+      a false `verified-by` basis passes — the gate forces the basis to be
+      written, it cannot judge it.
+    status: implemented
+    tags: [rivet, status-coupling, claim-check, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-FLIPCOUPLE
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/status_evidence_check.py && python3 scripts/test_status_evidence_check.py"
+        coverage: "both directions + landed-acknowledgement; 7 replayed fixtures"
+
+  - id: VER060-008
+    type: sys-verification
+    title: "Fused RT1176 cascade run by jess — 5/5 stages export, image executes (#1069, 2026-08-27)"
+    description: >
+      External execution evidence, recorded with a date and kept in its
+      authors' scope: jess ran the fused image (issue #1069, 2026-08-27) —
+      meld 0.52.0 `fuse --memory shared --pack-rebase` over the five published
+      1.134.1 components -> loom 1.4.1 -> synth main: exit=0, skips=0, ALL
+      FIVE symbols at `nm -> T` including ekf@0.7.0#estimate (the DoD's
+      5-of-5, which no in-repo build could produce). The self-contained image
+      (EXEC, 94,907 B) EXECUTES on jess's RT1176 Renode model: linear memory
+      byte-exact at 4 non-zero probes, PC 0x16C, 213,439 instructions retired,
+      both assertions negative-controlled. In-repo corroboration: the
+      coordinator's per-stage run against the real ghcr components (failure
+      established on main first: iekf/position/attitude exit=1 SKIPPED ->
+      exit=0 on cortex-m7dp) and the 70/70 bit-identical fixture differential
+      on the rescued code path. WHAT THIS DOES NOT CLAIM, in jess's words:
+      the image "loads, initialises its linear memory correctly, and executes
+      without stalling or faulting" — NOT that attitude#tick / ekf#estimate
+      compute correct values (canonical-ABI marshalling open on both sides).
+    status: implemented
+    tags: [jess, renode, rt1176, fused-image, external-evidence, v060-backfill]
+    links:
+      - type: verifies
+        target: RQ-60-VFPPRESSURE
+    fields:
+      method: simulation
+      steps:
+        run: "external: jess's RT1176 Renode run, recorded on issue #1069 (2026-08-27); in-repo per-stage repro against ghcr components on cortex-m7dp"
+        coverage: "5/5 export + boot/linear-memory execution; NOT behavioural correctness of tick/estimate"
