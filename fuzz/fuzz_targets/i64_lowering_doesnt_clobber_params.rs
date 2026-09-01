@@ -14,11 +14,29 @@
 //!   incoming i32 params, clobbering them before the user's wasm did its
 //!   first `local.get`.
 //!
-//! The invariant a correct lowering must satisfy:
+//! The invariant a correct lowering must satisfy (#1055, RQ-61-FUZZWINDOW —
+//! strengthened from "before the FIRST read" to "while the param is LIVE"):
 //!
-//!   *Before each parameter `p ∈ [0,num_params)` is first **read** as a
-//!   source by an ARM instruction emitted from a `LocalGet(p)`, no earlier
-//!   ARM instruction may write to `R{p}`.*
+//!   *While a later `LocalGet(p)` can still observe parameter
+//!   `p ∈ [0,num_params)` — i.e. anywhere strictly before `p`'s LAST
+//!   `LocalGet` — no ARM instruction may write to `R{p}` (unless the wasm
+//!   program itself asked for the write via `LocalSet(p)`/`LocalTee(p)`).*
+//!
+//! The predecessor predicate computed `earliest_read` (the FIRST `LocalGet`)
+//! and flagged only writes BEFORE it, which exempted a write BETWEEN TWO
+//! READS by construction — exactly the #1048 shift-amount clobber and the
+//! Clz/Ctz/Popcnt operand-hi clear (#1054), defects this harness's own #103
+//! audit had named and the window could not see. Writes AFTER the last read
+//! stay exempt: the param is dead and reusing its home register is
+//! legitimate (the selector really does it — flagging it would be a false
+//! positive; the property is liveness, not ordering).
+//!
+//! Bounds, stated: declared `ArmOp` destinations only — a write hidden
+//! inside an encoder expansion is invisible at this tier no matter how the
+//! window is phrased. That axis is owned by the #1054 operand-preservation
+//! clause of `synth_verify::validate_expansion` (which rejects the pre-fix
+//! bytes) and by `crates/synth-backend/tests/issue_1055_reread_window.rs`,
+//! which composes that clause with this window over the same re-read shapes.
 //!
 //! This harness builds a fuzz-driven program that mixes i32 params with
 //! i64 ops, runs it through `select_with_stack`, and asserts the invariant.
@@ -37,15 +55,16 @@ fuzz_target!(|input: FuzzInput| {
         return; // No params to clobber.
     }
 
-    // Build a wasm program shape: mandatory `LocalGet(p)` for each param p
-    // (so the harness can find each param's first-read site), then the
-    // arbitrary ops, then a final `LocalGet(0)` to keep the stack
-    // non-empty for return.
+    // Build a wasm program shape: the arbitrary ops first, then a mandatory
+    // `LocalGet(p)` for each param p.
     //
-    // Crucially we put the LocalGets *after* the arbitrary ops so any
-    // i64 op that runs first has a chance to clobber the param regs
-    // before anything reads them. (If we read params first the bug
-    // can't manifest.)
+    // The trailing LocalGets define the WINDOW END: they are each param's
+    // last (often only) read, so every param is live across the entire
+    // middle and any write to a param's home register anywhere in the
+    // middle is a flaggable clobber. When the arbitrary middle contains its
+    // own `LocalGet(p)` (the generator emits them), the program is the
+    // read -> op -> re-read shape of #1048 — the exact posture the old
+    // first-read window exempted.
     let mut wasm_ops: Vec<WasmOp> = Vec::new();
     let mut middle = lower_arbitrary_to_wasm_ops(&input.ops, num_params);
     // Skip control-flow ops we can't easily balance in this minimal harness.
@@ -74,31 +93,32 @@ fuzz_target!(|input: FuzzInput| {
         Err(_) => return,
     };
 
-    // For each param p, find the wasm index of its first LocalGet.
-    let mut first_read_wasm_idx: [Option<usize>; 4] = [None; 4];
+    // For each param p, find the wasm index of its LAST LocalGet (#1055:
+    // the window runs to the last read, not the first).
+    let mut last_read_wasm_idx: [Option<usize>; 4] = [None; 4];
     for (idx, op) in wasm_ops.iter().enumerate() {
         if let WasmOp::LocalGet(p) = op {
             let p = *p as usize;
-            if p < 4 && first_read_wasm_idx[p].is_none() {
-                first_read_wasm_idx[p] = Some(idx);
+            if p < 4 {
+                last_read_wasm_idx[p] = Some(idx); // later reads overwrite
             }
         }
     }
 
     // For each param p, walk the lowered ARM instructions in order. Any
-    // instruction whose `source_line` is < first_read_wasm_idx[p] AND
+    // instruction whose `source_line` is < last_read_wasm_idx[p] AND
     // writes R{p} is a clobber — UNLESS the source wasm op is
     // `LocalSet(p)` or `LocalTee(p)`, in which case the write to R{p}
     // is wasm-program-intended (the user explicitly asked to store into
     // param-local p). Without this carve-out the harness false-positives
     // on every `LocalSet(p); ...; LocalGet(p)` pattern, since the
     // LocalSet legitimately emits a Mov writing R{p}.
-    for (p, &first_read_idx) in first_read_wasm_idx
+    for (p, &last_read_idx) in last_read_wasm_idx
         .iter()
         .take(num_params as usize)
         .enumerate()
     {
-        let first_read = match first_read_idx {
+        let last_read = match last_read_idx {
             Some(i) => i,
             None => continue,
         };
@@ -116,8 +136,9 @@ fuzz_target!(|input: FuzzInput| {
                 Some(l) => l,
                 None => continue,
             };
-            if line >= first_read {
-                break; // Past the param's first read — out of the window.
+            if line >= last_read {
+                continue; // At or past the param's LAST read — it is dead,
+                // and home-register reuse past that point is legitimate.
             }
             // Skip the wasm-program-intended write: LocalSet(p) and
             // LocalTee(p) MAY semantically write R{p} (it's where the
@@ -125,8 +146,7 @@ fuzz_target!(|input: FuzzInput| {
             // program. A real compiler bug here would be a write from a
             // different wasm op (e.g., I32WrapI64 hardcoding R0 as its
             // destination — the bug PR #111 fixed).
-            if let Some(WasmOp::LocalSet(p_op)) | Some(WasmOp::LocalTee(p_op)) =
-                wasm_ops.get(line)
+            if let Some(WasmOp::LocalSet(p_op)) | Some(WasmOp::LocalTee(p_op)) = wasm_ops.get(line)
                 && *p_op as usize == p
             {
                 continue;
@@ -164,7 +184,7 @@ fuzz_target!(|input: FuzzInput| {
                     w,
                     param_reg,
                     "AAPCS clobber: ARM instr at wasm line {line} writes param reg {param_reg:?} \
-                     before LocalGet({p}) at line {first_read}. Op: {:?}. Sequence: {:?}",
+                     while LocalGet({p}) at line {last_read} still reads it. Op: {:?}. Sequence: {:?}",
                     instr.op,
                     arm_instrs
                         .iter()
@@ -248,6 +268,40 @@ fn writes(op: &ArmOp) -> Vec<Reg> {
         | ArmOp::GlobalGet { rd, .. }
         | ArmOp::MemorySize { rd }
         | ArmOp::MemoryGrow { rd, .. } => vec![*rd],
+
+        // #1055: the i64 unary / comparison pseudo-ops were missing from
+        // this table entirely (they fell through to "writes nothing") —
+        // the harness could not see a hardcoded destination on the very
+        // ops #103's audit named. Single-register destinations:
+        ArmOp::I64Clz { rd, .. }
+        | ArmOp::I64Ctz { rd, .. }
+        | ArmOp::I64Popcnt { rd, .. }
+        | ArmOp::I64Eqz { rd, .. }
+        | ArmOp::I64Eq { rd, .. }
+        | ArmOp::I64Ne { rd, .. }
+        | ArmOp::I64LtS { rd, .. }
+        | ArmOp::I64LtU { rd, .. }
+        | ArmOp::I64LeS { rd, .. }
+        | ArmOp::I64LeU { rd, .. }
+        | ArmOp::I64GtS { rd, .. }
+        | ArmOp::I64GtU { rd, .. }
+        | ArmOp::I64GeS { rd, .. }
+        | ArmOp::I64GeU { rd, .. }
+        | ArmOp::I32WrapI64 { rd, .. } => vec![*rd],
+
+        // #1055: pair destinations that were also missing.
+        ArmOp::I64Rotl { rdlo, rdhi, .. }
+        | ArmOp::I64Rotr { rdlo, rdhi, .. }
+        | ArmOp::I64Const { rdlo, rdhi, .. }
+        | ArmOp::I64Ldr { rdlo, rdhi, .. }
+        | ArmOp::I64ExtendI32S { rdlo, rdhi, .. }
+        | ArmOp::I64ExtendI32U { rdlo, rdhi, .. }
+        | ArmOp::I64Extend8S { rdlo, rdhi, .. }
+        | ArmOp::I64Extend16S { rdlo, rdhi, .. }
+        | ArmOp::I64Extend32S { rdlo, rdhi, .. } => vec![*rdlo, *rdhi],
+
+        ArmOp::Umull { rdlo, rdhi, .. } => vec![*rdlo, *rdhi],
+        ArmOp::Uxtb { rd, .. } | ArmOp::Uxth { rd, .. } | ArmOp::Mla { rd, .. } => vec![*rd],
 
         // Movt preserves the low 16 bits but writes the high 16 — for the
         // purposes of "did we touch this register" we count it as a write.
