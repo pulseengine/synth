@@ -86,4 +86,15 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1080"
+      landed: >-
+        PR #1121 (Refs #1080) — disposition (1) executed with the census
+        re-verified independently: all four directories deleted (98 snapshot
+        files — the 61 .ml plus 37 .mli, coq/ carrying 19 .mli the census
+        missed — with the dune tree, root dune-project, and root
+        BUILD.bazel's zero-consumer //:test_data filegroup that globbed only
+        validation/**), VALIDATION_STATUS.md's body REWRITTEN so it no
+        longer contradicts its own header, historical-note headers on
+        COMPREHENSIVE_VALIDATION_REPORT.md, COQ_DUNE_SETUP_GUIDE.md and
+        COMPILER_DEMO.md, and the .v extraction target untouched —
+        `bazel test //coq:verify_proofs` still exercises it every CI run.
       done-when: "manual: all 61 snapshots across the four directories are either deleted (with VALIDATION_STATUS.md rewritten so its body no longer contradicts its own header) or regenerated-and-byte-compared in CI; the mutually-inconsistent copies cannot survive either way, and `bazel test //coq:verify_proofs` must still pass after the change"
