@@ -1,7 +1,7 @@
 artifacts:
   - id: RQ-61-ORACLEFLOOR
     type: system-req
-    title: "An oracle's ci-checks floor cannot see its decline half — 4 oracles could lose that half and stay green"
+    title: "An oracle's ci-checks floor cannot see its decline half — 2 oracles could lose that half and stay green"
     description: >
       #1113, found while repairing the aarch64 import-dispatch oracle in
       #1112. `scripts/oracle_run.py` requires exactly one `# ci-checks:`
@@ -9,22 +9,30 @@ artifacts:
       into a claims.yaml-pinned total. That machinery works. But an
       `emulations` floor counts ONLY emulator entries.
 
-      Four oracles assert a DECLINE direction (run a compile, treat exit 0 as
+      TWO oracles assert a DECLINE direction (run a compile, treat exit 0 as
       the failure) IN ADDITION TO emulating differentials. A failed compile
       produces no object to emulate, so the decline half contributes ZERO to
       the counter its own oracle is floored on. Delete or neuter that half and
       `measured == floor` still holds; the job stays green.
 
-        aarch64_import_dispatch_1017_differential.py   >= 6    fixed in #1112
-        multi_segment_static_data_differential.py      >= 27   open
-        riscv_extern_call_871_differential.py          >= 20   open
-        rv32_label_882_differential.py                 >= 15   open
+        aarch64_import_dispatch_1017_differential.py   >= 6    #1112
+        multi_segment_static_data_differential.py      >= 27   #1112 (the
+                                                               #1041 red-first
+                                                               refusal)
 
-      Derivation: `# ci-checks: emulations >= N` header, an
-      `if <proc>.returncode == 0:` failure branch, and emulation present. The
-      loose proxy (any returncode assertion) matches 60 files, but those are
-      overwhelmingly "the compile must succeed" preconditions; the tight set
-      is 4.
+      THE COUNT WAS FIRST PUBLISHED AS FOUR AND IS WRONG; recorded because the
+      error is the more useful artifact. The derivation was a regex — a
+      `# ci-checks: emulations >= N` header plus an `if <proc>.returncode == 0:`
+      failure branch — and it matched two RISC-V oracles
+      (`riscv_extern_call_871`, `rv32_label_882`) whose `returncode == 0`
+      branch is a TOOLCHAIN PROBE ("does this clang accept rv32imac?"), not a
+      decline assertion at all. Reading the four sites reduced the class to
+      two. A grep is a hypothesis; the code is the oracle. The wider proxy
+      (any returncode assertion) matched 60 files, almost all "the compile must
+      succeed" preconditions.
+
+      Both members are FIXED IN #1112, so this artifact ships closed rather
+      than as a backlog entry.
 
       HOW IT WAS FOUND MATTERS MORE THAN THE COUNT. Not by audit. #1104 added
       a driver-level refusal that preempts the aarch64 ELF builder's, so the
@@ -64,4 +72,4 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1113"
-      done-when: "manual: each of the three remaining oracles prints a counted decline floor, returns non-zero when that count is zero, and ci.yml greps it — proven by deleting the decline probe and observing the job go RED"
+      done-when: "manual: both oracles print a counted decline floor (`refusals: N`), return non-zero when that count is zero, and ci.yml greps it — each proven RED-FIRST by simulating the decline probe's deletion and observing the oracle exit 1 with VACUOUS"

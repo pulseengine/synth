@@ -1545,7 +1545,14 @@ jobs:
       # truth is wasmtime. WIDENS coverage only — #757 stays OPEN (blocked on
       # the reporter's reduced module); a divergence here is a real find.
       - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
-        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py | tee mss406.txt
+          # The `ci-checks: emulations >= 27` floor counts only the two
+          # emulated paths; it is blind to the #1041 refusal assertion, which
+          # emulates nothing. That half carries its own floor here (#1113).
+          grep -Eq '^refusals: [1-9][0-9]*$' mss406.txt
       # #757: gale's EXACT fused os-tl node (loom.wasm) — the real miscompile that
       # 7 synthetic reconstructions could not reproduce (PR #772). Three active data
       # segments overlap at linmem 0x100000; the #354 reloc retargeting bound the
