@@ -190,6 +190,15 @@ impl ArmEncoder {
         // trap on mismatch (§4.4.8). Mirror of the Thumb-2 arm; `None`
         // emits nothing (homogeneous tables byte-identical by construction).
         if let Some((expected_id, type_off)) = type_check {
+            // RQ-61-IMMRANGE (#1072): these `debug_assert`s are compiled out
+            // in release, where the `& 0xFF` / `& 0xFFF` masks below would
+            // silently TRUNCATE an out-of-range value (id 256 compares as 0,
+            // letting a NULL slot pass the §4.4.8 check). The enforcement
+            // claim is DEMONSTRATED, not assumed: the sole `Some` producer is
+            // `resolve_runtime_type_check` (instruction_selector.rs), which
+            // loud-declines id > 255 and offset > 4095, and
+            // `test_676_call_indirect_runtime_check_range_declines` trips
+            // both declines (mutation-checked: disabling either turns it red).
             debug_assert!(expected_id <= 255, "selector enforces the CMP imm8 range");
             debug_assert!(type_off <= 4095, "selector enforces the LDR imm12 range");
             // MOV r12, idx, LSL #2 (same as the dispatch tail's scale).
@@ -3941,6 +3950,14 @@ impl ArmEncoder {
                 // only scratch (#212); the dispatch tail below recomputes
                 // idx*4 — the index register is never clobbered here.
                 if let Some((expected_id, type_off)) = type_check {
+                    // RQ-61-IMMRANGE (#1072): compiled out in release, where
+                    // the masks below silently TRUNCATE (id 256 compares as
+                    // 0 — a NULL slot would pass the §4.4.8 check). The
+                    // enforcement claim is DEMONSTRATED: the sole `Some`
+                    // producer, `resolve_runtime_type_check`, loud-declines
+                    // id > 255 / offset > 4095, tripped by
+                    // `test_676_call_indirect_runtime_check_range_declines`
+                    // (mutation-checked — see the A32 twin above).
                     debug_assert!(*expected_id <= 255, "selector enforces the CMP imm8 range");
                     debug_assert!(*type_off <= 4095, "selector enforces the LDR imm12 range");
                     // MOV.W R12, idx, LSL #2 (same encoding as the dispatch

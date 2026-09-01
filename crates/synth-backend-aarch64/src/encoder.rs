@@ -466,6 +466,19 @@ pub fn adrp(rd: Reg, imm21_pages: i32) -> u32 {
 /// `cmp wn, #imm12` — `subs wzr, wn, #imm12` (flags only). Compares against an
 /// unsigned 12-bit immediate without burning a scratch register. Clang ground
 /// truth: `cmp w17, #7` = 0x7100_1E3F.
+///
+/// RQ-61-IMMRANGE (#1072): the `debug_assert` below is COMPILED OUT in
+/// release, where an out-of-range immediate shifts its overflow bits into the
+/// `sh` field (bit 22) and beyond — measured: imm 4096 encoded 0x7140_023F =
+/// `cmp w17, #0, lsl #12`, a silently wrong compare. Every in-tree caller is
+/// bounded by a LOUD upstream decline, each tripped by a test: the br_table
+/// chain index by `BR_TABLE_MAX_TARGETS` (selector,
+/// `br_table_residuals_loud_decline_by_name`), the dispatch OOB guard's table
+/// size by `substrate::plan`'s `MAX_TABLE_SLOTS`
+/// (`oversized_table_declines`), and the type guard's expected class id by
+/// the selector's `MAX_CLASS_ID` decline
+/// (`call_indirect_declines_expected_class_id_past_cmp_imm12`) — the last was
+/// UNGUARDED until #1072. A new caller must bound its immediate the same way.
 pub fn cmp_imm(rn: Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000, "cmp imm12 out of range");
     0x7100_0000 | (imm12 << 10) | ((rn as u32) << 5) | (WZR as u32)
@@ -480,6 +493,15 @@ pub fn cmp_imm64(rn: Reg, imm12: u32) -> u32 {
 /// the zero-extended operand (extend-shift field [12:10], 0..=4). Used to scale a
 /// zero-extended i32 table index by the slot size. Clang ground truth:
 /// `add x16, x16, w9, uxtw #3` = 0x8B29_4E10.
+///
+/// RQ-61-IMMRANGE (#1072) reachability verdict: the `debug_assert` below is
+/// compiled out in release (a shift of 5..=7 encodes an architecturally
+/// UNDEFINED extend amount, and >= 8 overflows imm3 [12:10] into the option
+/// field [15:13], mutating UXTW into a different extend), but the SOLE in-tree caller
+/// is the `call_indirect` dispatch's index scale, which passes the LITERAL 3
+/// (`TABLE_SLOT_BYTES = 8`); no module-derived value reaches this parameter.
+/// A caller taking the shift from input must bound it with a loud decline
+/// first, per the `cmp_imm` pattern above.
 pub fn add_ext_uxtw_sh(rd: Reg, rn: Reg, rm: Reg, shift: u32) -> u32 {
     debug_assert!(shift <= 4, "uxtw extend-shift out of range");
     add_ext_uxtw(rd, rn, rm) | (shift << 10)
