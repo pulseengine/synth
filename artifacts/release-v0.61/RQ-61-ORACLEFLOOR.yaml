@@ -61,7 +61,7 @@ artifacts:
       out of the file that describes it and admit two floors that can
       disagree; oracle_run.py's own docstring makes the locality argument
       against it.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [oracle, non-vacuity, ci, evidence]
     links:
@@ -72,4 +72,28 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1113"
+      verified-by: >-
+        PR #1112, both members of the class. Each oracle's decline half now
+        carries its own in-script non-vacuity floor (`refusals: N`, returning
+        non-zero with a `VACUOUS:` line at zero) mirroring the trap/value idiom
+        these scripts already use, plus a `grep -Eq` in ci.yml. The
+        `# ci-checks:` header was deliberately LEFT at `emulations >= N`: only
+        one header is permitted per oracle and the emulation floor is the
+        stronger assertion for the executing half. Each proven RED-FIRST.
+        multi_segment, simulating the probe's deletion: `VACUOUS: refusals=0 —
+        the #1041 refusal half asserted nothing`, EXIT=1 (before the change the
+        same deletion left `measured=27 floor=27` and printed ORACLE: PASS).
+        aarch64_import_dispatch, run against a module whose callee does NOT
+        decline: three independent assertions fire, including `an object was
+        written despite the refusal (736 bytes)`. Both probes additionally
+        gained two WORDING-FREE assertions — the refusal must not PANIC, and it
+        must write NO OBJECT — because a pinned message string is exactly what
+        drifted when #1104 moved the refusal to an earlier guard.
+      landed: >-
+        PR #1112 — complete; the class is swept, not sampled. The count was
+        first published as FOUR and corrected to TWO in the same PR:
+        `riscv_extern_call_871` and `rv32_label_882` matched the derivation
+        regex because their `returncode == 0` branch is a TOOLCHAIN PROBE
+        ("does this clang accept rv32imac?"), not a decline assertion. A grep
+        is a hypothesis; the code is the oracle. Corrected publicly on #1113.
       done-when: "manual: both oracles print a counted decline floor (`refusals: N`), return non-zero when that count is zero, and ci.yml greps it — each proven RED-FIRST by simulating the decline probe's deletion and observing the oracle exit 1 with VACUOUS"

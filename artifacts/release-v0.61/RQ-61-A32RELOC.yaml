@@ -29,7 +29,7 @@ artifacts:
 
       A32 is a shipped target (cortex-r5, #615), so this is emitted bytes a
       downstream linker consumes, not an internal label.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [arm, a32, relocations, elf, cortex-r5]
     links:
@@ -40,4 +40,35 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1040"
+      verified-by: >-
+        PR #1116. `RelocKind::ArmCall` joins `AArch64Call26` and
+        `RiscvCallPlt` as its ISA's call relocation; `arm_backend.rs` selects
+        it from `config.target.isa` (the only site that knows the ISA state)
+        and the ELF emitter merely maps it to `ArmRelocationType::Call` (28) —
+        deliberately NOT decided at the emitter, where `config.target` is out
+        of scope and the ISA would have to be re-derived, which is the shape
+        that produced the bug. A SECOND, UNFILED defect was found by asking
+        `arm-none-eabi-as` rather than reasoning about the ABI: the A32
+        placeholder was `eb000000` (addend 0) where gas emits `ebfffffe`
+        (addend -8); since A32 BL computes `P + 8 + (imm24 << 2)`, a 0 addend
+        resolves TWO INSTRUCTIONS PAST the callee entry — the A32 twin of the
+        Thumb #174 bug, masked because the type was wrong too. Verified with a
+        REAL LINKER: `arm-none-eabi-ld` on the pre-fix object produced
+        `eaca0000`, the opcode itself corrupted from `eb` (BL) to `ea` (B) so
+        the link register was never set and the target was garbage; the fixed
+        object links to `ebffffe3` -> 0x80bc == `func_2` exactly. Measured
+        both directions: cortex-r5 type=28/`ebfffffe`, cortex-m4 type=10/`f7ff
+        fffe` UNCHANGED. The #1021 harness's execution-mode workaround is
+        removed AND INVERTED into an assertion (a type/mode disagreement is now
+        a hard failure), so it is an oracle FOR the reloc type rather than a
+        consumer routing around it — proven potent by reverting the backend
+        fix and observing `#1040 REGRESSION: reloc type 10 ... declares Thumb
+        state but this leg executes in ARM state`. Locked by
+        `test_encode_arm32_bl_placeholder_addend_1040`, which asserts the
+        literal word AND re-derives the addend so a future edit cannot satisfy
+        it by accident.
+      landed: >-
+        PR #1116 — complete. Every feature set built (default, riscv,
+        all-features) because a new `RelocKind` variant can break feature-gated
+        match sites a default build never compiles.
       done-when: "manual: A32 BL sites emit R_ARM_CALL (28), Thumb sites keep type 10, and the #1021 harness's execution-mode workaround is REMOVED"
