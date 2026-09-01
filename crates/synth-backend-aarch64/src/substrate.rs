@@ -681,8 +681,8 @@ mod tests {
     /// tripped by a test — the #946 unverified-enforcement shape.
     #[test]
     fn oversized_slot_class_id_declines() {
-        let slots = vec![Some(0u32)];
-        let ids = vec![MAX_CLASS_ID + 1];
+        let slots = [Some(0u32)];
+        let ids = [MAX_CLASS_ID + 1];
         let sizes = [Some(1u32)];
         let segs = [ElemSegmentInfo {
             table_index: 0,
