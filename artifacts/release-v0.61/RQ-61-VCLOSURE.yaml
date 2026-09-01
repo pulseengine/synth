@@ -59,5 +59,5 @@ artifacts:
       # decision (backfill vs documented exemption) is still the
       # coordinator's call — this field records the difference
       # (RQ-60-FLIPCOUPLE's mechanism).
-      landed: "#1091 increment 1 (asserting floor) + v0.60 backfill pilot"
+      landed: "PR #1115 — increment 1: the coverage step ASSERTS (V-closure floor, red-first at 62-vs-61) + the v0.60 sys-verification backfill pilot (VER060-001..008, covered 61 -> 69). Status stays `proposed` DELIBERATELY: the stated outcome also requires v0.61's OWN artifacts to carry verifies links, and the disposition of the 52 pre-v0.60 artifacts is still open (the lane measured them as archaeology, not transcription, and recommended exempting them). This is the R4 machine-readable statement -- increment landed, stated outcome does NOT yet hold."
       done-when: "manual: the coverage step FAILS below a pinned floor (red-first demonstrated by lowering the floor's input), and v0.61's own artifacts carry verifies links"
