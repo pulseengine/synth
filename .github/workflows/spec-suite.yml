@@ -1,0 +1,55 @@
+# RQ-61-SPECCLAIM (#1095): the job that makes the README / FEATURE_MATRIX
+# "spec test suite" rows TRUE. Before this workflow existed, both docs
+# advertised a "CI-tracked compile rate" that no job produced — and no
+# workflow checked out submodules, so tests/spec-testsuite was EMPTY on every
+# runner. Two layers of non-vacuity:
+#   1. `submodules: recursive` on checkout (the suite is a submodule);
+#   2. scripts/spec_compile_census.py hard-fails unless it finds exactly the
+#      pinned number of .wast files — so if this checkout ever regresses to
+#      empty, the job goes RED instead of reporting a vacuous 0/0 success.
+# The census keeps declines separate from errors (a decline is not a failure)
+# and exact-pins every bucket per backend; proven able to fail at authoring
+# (empty dir + off-by-one pin both exit 1 — evidence in PR #1095 thread).
+#
+# NOT in the required-check set (main's 9): a new required context that fails
+# to run deadlocks all merges. Advisory-but-red-visible, like the other
+# oracle jobs.
+name: Spec Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  spec-compile-census:
+    name: spec-suite compile census (#1095)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Load-bearing: without this the suite directory is empty and the
+          # census would measure nothing. The script's 257-file floor is the
+          # backstop that turns that state red.
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-spec-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-spec-
+            ${{ runner.os }}-cargo-
+      - name: Build synth (riscv feature covers all three census backends)
+        run: cargo build --features riscv --bin synth
+      - name: Run spec-suite compile census (exact-pinned, all backends)
+        run: python3 scripts/spec_compile_census.py

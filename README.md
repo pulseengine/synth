@@ -122,7 +122,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
 | Rocq mechanized proofs | CI-derived (badges above) | i32 + i64 T1 correctness proofs; the selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73); counts re-derived into `artifacts/status.json` on every commit |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
-| WebAssembly spec test suite | CI-tracked compile rate | Compilation only — not executed on emulator |
+| WebAssembly spec test suite | Compile census gated in CI (`Spec Suite` workflow → `scripts/spec_compile_census.py`, #1095) | All 257 top-level .wast files compiled per backend, declines counted separately from errors: full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 60, panics 0 / 0 / 0 — every count exact-pinned, an empty/missing suite is RED; compilation only — not executed on emulator |
 
 ### What doesn't work yet
 
