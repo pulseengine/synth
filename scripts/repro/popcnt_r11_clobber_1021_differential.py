@@ -120,13 +120,24 @@ def encode_thm_bl(pc, target):
 def load_elf(path, thumb):
     """(syms, .text bytes with in-module calls resolved, text base addr).
 
-    Calls are patched by the EXECUTION MODE of the leg, not by the declared
-    reloc type: synth labels the in-module `bl` R_ARM_THM_CALL (type 10) even
-    on the cortex-r5 (A32) object, where the placeholder is an A32 `BL`
-    word (0xEBxxxxxx) — patching Thumb halfwords into it produced
-    UC_ERR_INSN_INVALID, not a real popcnt finding. (The mislabel itself is a
-    synth ELF-builder quirk worth its own issue; a real linker would build an
-    interwork veneer or mis-patch the same way this harness first did.)
+    Calls are patched by the DECLARED RELOC TYPE, which is what a real linker
+    trusts. This harness previously patched by the leg's EXECUTION MODE as a
+    workaround for #1040 — synth labelled the in-module `bl` R_ARM_THM_CALL
+    (type 10) even on the cortex-r5 A32 object, and patching Thumb halfwords
+    into an ARM-state word produced UC_ERR_INSN_INVALID rather than a real
+    popcnt finding.
+
+    #1040 is fixed (A32 sites now carry R_ARM_CALL/28 with the `ebfffffe`
+    -8-addend placeholder), so the workaround is removed AND INVERTED into an
+    assertion: a type/mode disagreement is now a hard failure. That makes this
+    harness an oracle FOR the relocation type rather than a consumer that
+    routes around it — had it worked this way originally, #1040 would have
+    been caught here instead of surviving into a shipped object.
+
+    Verified against `arm-none-eabi-ld`: the pre-fix object linked the `bl` to
+    `0xeaca0000` — opcode corrupted from `eb` (BL) to `ea` (B), so the link
+    register was never set and the target was garbage. The fixed object links
+    to `0xebffffe3`, exactly the callee.
     """
     e = ELFFile(open(path, "rb"))
     symtab = [s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
@@ -147,6 +158,18 @@ def load_elf(path, thumb):
             if t not in (R_ARM_THM_CALL, R_ARM_THM_JUMP24, R_ARM_CALL):
                 die(f"unexpected reloc type {t}")
             off = r["r_offset"]
+            # #1040: the declared type must AGREE with the leg's ISA state.
+            # Patching against a mislabelled type is what a real linker does,
+            # and it corrupts the instruction (`eb` BL -> `ea` B, verified with
+            # arm-none-eabi-ld). Refusing here is the whole point: this is now
+            # an oracle for the reloc type, not a workaround around it.
+            want_thumb = t in (R_ARM_THM_CALL, R_ARM_THM_JUMP24)
+            if want_thumb != thumb:
+                die(f"#1040 REGRESSION: reloc type {t} at offset 0x{off:x} "
+                    f"declares {'Thumb' if want_thumb else 'ARM'} state but "
+                    f"this leg executes in {'Thumb' if thumb else 'ARM'} "
+                    f"state — a linker trusting the declared type would patch "
+                    f"the wrong instruction form")
             if thumb:
                 hw1, hw2 = encode_thm_bl(CODE + off, CODE + (syms[name] & ~1))
                 struct.pack_into("<HH", text, off, hw1, hw2)
