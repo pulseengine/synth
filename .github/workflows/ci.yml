@@ -100,9 +100,26 @@ jobs:
 
   clippy:
     name: Clippy
-    # Same runner note as Test — the z3-sys disk pressure that forced
-    # ubuntu-latest is gone (#553); moving back to smithy is a follow-up.
-    runs-on: ubuntu-latest
+    # RQ-61-CICAP (#1062) increment 2. The z3-sys disk pressure that forced
+    # ubuntu-latest is gone (#553), and this job is plain cargo — no external
+    # toolchain, unlike Z3/Bazel/Kani, which the artifact holds back until
+    # their toolchains are proven on this pool.
+    #
+    # Why rust-cpu is safe for a REQUIRED context: three jobs already run
+    # there, and increment 1's `synth-provenance-v1 reconciliation gate`
+    # has been green on it for 5/5 consecutive main runs. The job NAME is
+    # unchanged, so the required context still reports — a failure would
+    # block PRs (recoverable by revert, whose own CI runs the reverted
+    # config) rather than DEADLOCK them, which is what a renamed or
+    # never-running required context would do.
+    #
+    # Capacity, sampled rather than read off one instant (the correction in
+    # #1062): across 10 samples over ~9 minutes with 2-5 runs QUEUED, the
+    # self-hosted pools were idle throughout - rust-cpu 2/7 falling to 0/7,
+    # lean-mem 0/4, light 0/1 - while 56 of 65 job definitions (86.2%) queued
+    # against the GitHub-hosted quota. An earlier point reading of 7/7 was a
+    # merge-wave transient and is corrected on the issue.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
