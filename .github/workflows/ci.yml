@@ -677,9 +677,14 @@ jobs:
           #       artifacts/sys-verification-v0.60.yaml) transcribing the
           #       evidence the RQ-60-* artifacts already name into typed
           #       `verifies` links.
+          # 496 -> 509: #1091 increment 2 — sys-verification-v0.61.yaml adds
+          # 13 evidence-transcription artifacts (VER061-001..013), one per
+          # implemented RQ-61-* requirement. Re-measured under the pinned
+          # rivet 0.23.0, externals stripped: 509, and the count moved by
+          # exactly the 13 ids visible in `rivet list`.
           # Measured, not computed: the live count is re-derived below and
           # this pin is the value it reports.
-          ARTIFACT_FLOOR=496
+          ARTIFACT_FLOOR=509
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
@@ -717,6 +722,19 @@ jobs:
       # sys-verification artifacts (VER060-001..008) transcribing the
       # evidence the RQ-60-* artifacts already name; re-measured 69/165
       # (41.8%) under the same conditions.
+      # 69 -> 82: #1091 increment 2 — sys-verification-v0.61.yaml links the
+      # 13 implemented RQ-61-* artifacts (VER061-001..013). Re-measured
+      # 82/167 (49.1%) under the same conditions (pinned 0.23.0, externals
+      # stripped). DECIDED under #1091, recorded here because this comment
+      # is where the "per-release backfill discipline" was delegated to:
+      # from v0.60 on, every release's artifacts get transcription links in
+      # the PR wave that implements them; the 52 pre-v0.60 release
+      # artifacts (v0.56-v0.59) are EXEMPT — they predate the mandatory
+      # done-when/verified-by fields (RQ-60-FLIPCOUPLE), so linking them is
+      # archaeology (~15-25 h measured), not transcription (~5-10
+      # min/artifact measured twice). Their verification exists in their
+      # release notes; it is not queryable by the trace graph, and that is
+      # a recorded limitation, not a debt being serviced.
       #
       # WHAT THIS FLOOR CAN DETECT: a lost `verifies` edge (deleted, or
       # spliced away — the #1059 shape); a sys-verification source file
@@ -739,7 +757,7 @@ jobs:
       - name: Check coverage (asserting — #1091)
         run: |
           set -o pipefail
-          SYS2_VERIFIED_FLOOR=69
+          SYS2_VERIFIED_FLOOR=82
           rivet coverage 2>&1 | tee /tmp/rivet-coverage.txt
           COVERED=$(awk '$1 == "sys2-has-verification" && $2 == "system-req" {print $3; exit}' /tmp/rivet-coverage.txt)
           echo "sys2-has-verification floor=$SYS2_VERIFIED_FLOOR covered=${COVERED:-<none>}"

@@ -39,7 +39,19 @@ artifacts:
       Then decide the historical 52 deliberately — backfill, or state in the
       methodology that shipped release artifacts are exempt and why. Either is
       defensible; a documented gate that has never once fired is not.
-    status: proposed
+
+      DECIDED (increment 2): the 52 pre-v0.60 release artifacts (v0.56–v0.59)
+      are EXEMPT from backfill. Reason, measured not asserted: they predate
+      the mandatory `done-when`/`verified-by` fields (RQ-60-FLIPCOUPLE), so
+      linking them is archaeology (~15–25 h, measured by the increment-1
+      lane), not transcription (~5–7 min/artifact on the v0.60 pilot,
+      re-confirmed ~10 min/artifact on v0.61). Their verification exists in
+      their release notes; it is not queryable by the trace graph, and that
+      is a recorded limitation, not a debt being serviced. The exemption is
+      recorded where future readers meet it: here, in the
+      sys-verification-v0.61.yaml header, and in the ci.yml coverage-step
+      comment that owns the per-release backfill discipline.
+    status: implemented
     release: v0.61
     tags: [traceability, rivet, gates, methodology]
     links:
@@ -50,14 +62,25 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1091"
-      # Increments 1 + pilot LANDED (#1091 branch feat/vclosure-1091): the
-      # coverage step asserts (SYS2_VERIFIED_FLOOR, red-first shown at 62 vs
-      # 61 measured, then 69 after the pilot) and the v0.60 EIGHT are
-      # backfilled (VER060-001..008, measured transcription cost recorded on
-      # the PR). The stated outcome does NOT yet fully hold: v0.61's own
-      # artifacts do not carry verifies links yet, and the historical-52
-      # decision (backfill vs documented exemption) is still the
-      # coordinator's call — this field records the difference
-      # (RQ-60-FLIPCOUPLE's mechanism).
-      landed: "PR #1115 — increment 1: the coverage step ASSERTS (V-closure floor, red-first at 62-vs-61) + the v0.60 sys-verification backfill pilot (VER060-001..008, covered 61 -> 69). Status stays `proposed` DELIBERATELY: the stated outcome also requires v0.61's OWN artifacts to carry verifies links, and the disposition of the 52 pre-v0.60 artifacts is still open (the lane measured them as archaeology, not transcription, and recommended exempting them). This is the R4 machine-readable statement -- increment landed, stated outcome does NOT yet hold."
+      landed: "PR #1115 (increment 1: the coverage step ASSERTS — SYS2_VERIFIED_FLOOR, red-first at 62-vs-61 — plus the v0.60 backfill pilot VER060-001..008, covered 61 -> 69) and the #1091 increment-2 PR (sys-verification-v0.61.yaml, VER061-001..013, covered 69 -> 82, both floors re-derived under the pinned rivet 0.23.0; the historical-52 exemption recorded in three places)."
+      verified-by: >-
+        Both done-when clauses, each against the artifact not the intent.
+        CLAUSE 1 (the step FAILS below a pinned floor): PR #1115's red-first
+        transcript — pinned at 62 with 61 measured, the Check coverage step
+        exits 1 with the below-floor error; at 61 it exits 0; on output
+        missing the sys2 row, the unmeasurable branch exits 1 (recorded in
+        the ci.yml step comment, dated 2026-09-01). CLAUSE 2 (v0.61's own
+        artifacts carry verifies links): sys-verification-v0.61.yaml links
+        all 13 implemented RQ-61-* requirements (VER061-001..013), each
+        citing the concrete evidence the requirement's own
+        verified-by/done-when names and carrying its stated residual
+        verbatim; re-measured under CI's exact conditions (pinned rivet
+        0.23.0, externals stripped): sys2-has-verification 69 -> 82,
+        artifacts 496 -> 509, both pinned as the new floors in the same
+        commit. DELIBERATELY UNLINKED, so the coverage number is not
+        overstated: RQ-61-CICAP (still proposed — `Test` remains on
+        ubuntu-latest) and RQ-61-VCLOSURE itself (its flip happens on this
+        evidence; a self-link authored in the same commit would be the
+        metric-gaming shape this artifact exists to remove — a later
+        increment may add it once the flip has survived review).
       done-when: "manual: the coverage step FAILS below a pinned floor (red-first demonstrated by lowering the floor's input), and v0.61's own artifacts carry verifies links"
