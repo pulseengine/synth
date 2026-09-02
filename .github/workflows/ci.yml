@@ -140,7 +140,18 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: [self-hosted, linux, x64, light]
+    # SINGLE POINT OF FAILURE REMOVED (2026-09-02). This was
+    # [self-hosted, linux, x64, light], a pool with EXACTLY ONE runner
+    # (pulseengine-ci-01-8). That runner went offline and this job — a REQUIRED
+    # context — sat 600s and failed with ZERO steps executed, which blocks every
+    # merge in the repo: branch protection needs the context to PASS, and a
+    # dead pool cannot produce a pass. `Version Pin Sweep` was behind the same
+    # single runner, so TWO of the nine required contexts shared one machine.
+    #
+    # Moved to `lean-mem` (4 runners, all online and idle at the time of the
+    # move). The rule this encodes: a REQUIRED context must not depend on a
+    # single-runner pool. Capacity was never the problem — redundancy was.
+    runs-on: [self-hosted, linux, x64, lean-mem]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -161,7 +172,18 @@ jobs:
 
   pin-sweep:
     name: Version Pin Sweep
-    runs-on: [self-hosted, linux, x64, light]
+    # SINGLE POINT OF FAILURE REMOVED (2026-09-02). This was
+    # [self-hosted, linux, x64, light], a pool with EXACTLY ONE runner
+    # (pulseengine-ci-01-8). That runner went offline and this job — a REQUIRED
+    # context — sat 600s and failed with ZERO steps executed, which blocks every
+    # merge in the repo: branch protection needs the context to PASS, and a
+    # dead pool cannot produce a pass. `Version Pin Sweep` was behind the same
+    # single runner, so TWO of the nine required contexts shared one machine.
+    #
+    # Moved to `lean-mem` (4 runners, all online and idle at the time of the
+    # move). The rule this encodes: a REQUIRED context must not depend on a
+    # single-runner pool. Capacity was never the problem — redundancy was.
+    runs-on: [self-hosted, linux, x64, lean-mem]
     steps:
       - uses: actions/checkout@v7
       # Issue #145: fail at PR time if [workspace.package].version drifts from
