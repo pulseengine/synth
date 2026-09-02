@@ -71,15 +71,19 @@ artifacts:
         missing the sys2 row, the unmeasurable branch exits 1 (recorded in
         the ci.yml step comment, dated 2026-09-01). CLAUSE 2 (v0.61's own
         artifacts carry verifies links): sys-verification-v0.61.yaml links
-        all 13 implemented RQ-61-* requirements (VER061-001..013), each
+        13 of the 15 RQ-61-* requirements (VER061-001..013) — all that were
+        `implemented` when this was authored; CICAP closed one commit later
+        and is an unwritten link, not an incomplete requirement — each
         citing the concrete evidence the requirement's own
         verified-by/done-when names and carrying its stated residual
         verbatim; re-measured under CI's exact conditions (pinned rivet
         0.23.0, externals stripped): sys2-has-verification 69 -> 82,
         artifacts 496 -> 509, both pinned as the new floors in the same
         commit. DELIBERATELY UNLINKED, so the coverage number is not
-        overstated: RQ-61-CICAP (still proposed — `Test` remains on
-        ubuntu-latest) and RQ-61-VCLOSURE itself (its flip happens on this
+        overstated: RQ-61-CICAP (which read `proposed` when this was written
+        and is now `implemented` — its link is simply unwritten, and a cold
+        review at release assembly caught this sentence describing the older
+        tree) and RQ-61-VCLOSURE itself (its flip happens on this
         evidence; a self-link authored in the same commit would be the
         metric-gaming shape this artifact exists to remove — a later
         increment may add it once the flip has survived review).
