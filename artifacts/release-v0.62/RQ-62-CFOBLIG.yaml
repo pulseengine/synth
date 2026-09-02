@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-62-CFOBLIG
+    type: system-req
+    title: "The Block/End correspondence obligation — where all 180 of gale's remaining uncovered instances live"
+    description: >
+      #1057's remaining half, and the increment RQ-61-WASMOP deliberately
+      deferred. The consumer has now re-measured twice and the number is theirs,
+      not ours.
+
+      gale (fathom), measured on v0.60.0 keyed by constructor rather than by
+      guessed theorem name: applied 496, SMT-verified 22, Rocq-qed 294, UNION
+      covered 316/496 = 64 %, gap 180. After RQ-61-WASMOP the entire remaining
+      gap answers with an explicit `"unmodeled"` row instead of a missing row —
+      `End` 64, `Block` 38, `Call` 31, `I32Load8U`/`I32Store8` 34, `Br` 7,
+      `Unreachable` 6. Their words: "180 of 180 accounted for, with nothing
+      hiding behind a naming mismatch any more."
+
+      So the manifest is honest and the obligation is still absent. `End` alone
+      is 64 of 180. This is the structurally harder increment — #1079 landed
+      `BrIf` with executable semantics and a kernel-checked correspondence
+      obligation, and Block/End are not that shape: they are the block-structure
+      boundary itself, where the WASM model's `exec_wasm_seq` / `WBranch`
+      outcome layer meets the ARM model's straight-line execution.
+
+      A NEGATIVE RESULT HERE IS GENUINELY VALUABLE and should be pursued
+      without embarrassment: "the correspondence for `End` cannot be stated
+      against the current ARM semantics without X" is a real finding and the
+      input to VCR-ISA-001. What is NOT acceptable is an existence-only
+      theorem carrying a `*_correct` name — gale's own matcher was broken by
+      exactly that (`I64ExtendI32S/U` obligations are `*_executes`, and "no
+      naming fix would have found them"). Binding and strength stay SEMANTIC.
+
+      CARRY FORWARD, non-negotiable: names are not a usable key. 19 `*_correct`
+      theorems are declared in two files with different statements. Any
+      inventory change stays derived from the proof tree, never from a name.
+    status: proposed
+    release: v0.62
+    tags: [proofs, control-flow, rocq, consumer-contract, gale]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: proof
+      issue: "#1057"
+      done-when: "manual: either Block/End carry a kernel-checked correspondence obligation reflected semantically in proof-inventory.json, or the obstruction is stated precisely enough to be VCR-ISA-001 input — with no existence-only theorem named `*_correct`"

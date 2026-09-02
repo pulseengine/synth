@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-62-MVLOWER
+    type: system-req
+    title: "Parameter-taking block types DECLINE on every backend but are still not LOWERED — and the acceptance oracle for relaxing that guard now exists"
+    description: >
+      The named residual of RQ-61-MVPANIC ("NOT CLAIMED: parameter-taking block
+      types are still not LOWERED") and a reach item, not a checker one.
+
+      #1093 was closed the right way: two backends PANICKED and one silently
+      returned an uninitialized register, so the whole class was made to decline
+      loudly on all four. That is correct and stays correct until something can
+      prove a lowering right. But a decline is a refusal to compile real wasm —
+      `if`/`block`/`loop` with parameters is ordinary multi-value output — so it
+      sits directly on the acceptance number RQ-62-REACH measures.
+
+      WHAT MAKES THIS TRACTABLE NOW AND NOT BEFORE: RQ-61-MVORACLE (#1097)
+      exists. Before it, the evidence that the decline was MANDATORY rather
+      than conservative lived in a lane scratchpad, so anyone improving reach
+      met a guard with no executable justification and the honest-sounding move
+      — "this construct is simple, let's support it" — was how the miscompile
+      returned. The oracle now replays the pre-#1096 compiler's own emitted
+      objects on every CI run and pins four silent-wrong vectors. IT IS THE
+      ACCEPTANCE TEST: any lowering must make those four vectors CORRECT, not
+      merely make the decline go away.
+
+      NEGATIVE RESULTS ARE FIRST-CLASS AND LIKELY. RQ-61-MVORACLE already
+      measured that `block`/ARM was CORRECT pre-#1096 (its decline is purely
+      conservative) while `loop`/ARM was refused by the older #509 back-edge
+      decline. So the shapes are NOT uniform, and the honest outcome may be
+      "these two shapes lower soundly, these two stay declined, here is why"
+      rather than the whole class. A partial lowering with a stated boundary
+      beats a complete one with an unstated one.
+
+      HARD CONSTRAINT: the guard may only be relaxed for a shape whose lowering
+      passes the #1097 oracle. Removing the decline to raise an acceptance
+      number, without that, re-introduces a silent wrong-value miscompile — the
+      exact defect #1093 was.
+    status: proposed
+    release: v0.62
+    tags: [reach, multi-value, lowering, acceptance-oracle]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1093"
+      done-when: "manual: for each param-block shape either a lowering lands that makes the #1097 oracle's silent-wrong vectors CORRECT, or the shape is recorded as staying declined with the measured reason — no shape's decline is relaxed without passing that oracle"

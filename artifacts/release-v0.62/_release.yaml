@@ -1,0 +1,18 @@
+# v0.62 — "Reach is part of correctness."
+#
+# v0.61 was 15 of 15 artifacts fixing CHECKERS. That was the right scope for
+# one release and the wrong scope for two: CLAUDE.md's North Star extension
+# says it directly — "A proof about input we refuse is worth nothing." Measured
+# on 805 real-world modules (#1017): ARM 66%, RV32 14%, AArch64 1.6%.
+#
+# So v0.62 turns outward. Its spine is what synth ACCEPTS, and its opener is
+# the highest-signal item on the tracker: a real integrator blocked on a
+# contract we never wrote down (#1131). Self-found defects rank below a user
+# who cannot proceed.
+#
+# The checker work that remains is carried as NAMED RESIDUALS of v0.61
+# artifacts rather than as a second sweep — one of them (#1102's funcref-table
+# gap) is a live correctness hole, not process debt, and is scoped `must`.
+#
+# This file is comments only; artifacts live in RQ-62-*.yaml siblings, one per
+# requirement (the #1059 layout).
