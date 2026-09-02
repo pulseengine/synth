@@ -1825,7 +1825,10 @@ claims:
       - kind: ratchet
         name: mirror_marker_files
         direction: down
-        value: 60
+        # v0.61 RQ-61-FUZZWINDOW (#1055): 60 -> 59 — issue_103_i64_aapcs.rs
+        # no longer says "mirrors" (the first-read checker doc it described
+        # was replaced by the while-live invariant, stated in its own terms).
+        value: 59
         baseline: 57
         waivers:
           - to: 60
