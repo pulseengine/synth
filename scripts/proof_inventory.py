@@ -22,16 +22,44 @@ against from the artifact you ship"). Worse for any name-based guess:
 
 So instead: this script DERIVES a machine-readable inventory from the proof
 tree itself and commits it as `artifacts/proof-inventory.json`
-(schema `synth-proof-inventory-v1`, following `synth-wcet-v1` practice).
+(schema `synth-proof-inventory-v2`, following `synth-wcet-v1` practice).
 A consumer reads the manifest instead of guessing names; theorem names stop
 being load-bearing.
+
+v1 -> v2 (#1057, RQ-61-WASMOP): the v1 universe was the Rocq model's own
+constructor set, so every op the model does NOT have — exactly gale's measured
+frontier (`End` 64, `Block` 38, `Call` 31, byte-memory 34, `Br` 7,
+`Unreachable` 6 of their 180-instance gap) — got NO ROW AT ALL rather than an
+explicit "unmodeled" row. In a manifest whose purpose is that absence should
+be legible, a missing row is the one thing it must not do. v2's universe is
+the shipped `WasmOp` enum (crates/synth-core/src/wasm_op.rs) — the IR every
+accepted function is decoded into — so every op a consumer can meet in a
+synth-compiled object has a row; rows whose op has no `wasm_instr` constructor
+carry `"modeled": false`. Row key is `"op"`; `"constructor"` remains (the
+Rocq constructor when modeled, null otherwise) so a v1 consumer keyed on
+`constructor` reads v2 unchanged for every modeled op.
 
 METHOD — static, textual, a heuristic labelled as one (the
 model_coverage_audit.py / #867 shape):
 
-  Universe: the `wasm_instr` constructors of coq/Synth/WASM/WasmInstructions.v,
-  PARSED from the file (never hand-listed — a hand-kept constructor list would
-  be one more mirror), in declaration order.
+  Universe: the `WasmOp` variants of crates/synth-core/src/wasm_op.rs, PARSED
+  from the file (never hand-listed — a hand-kept list would be one more
+  mirror), in declaration order, with the same tokenization as the tested
+  scanner in selector_stack_effect_no_wildcard_946.rs. Scope, stated: this is
+  "every op an ACCEPTED module can carry", not "every op wasm 3.0 defines" —
+  an operator with no `WasmOp` variant (reference types, table ops,
+  memory.init/data.drop, atomics, most of SIMD) falls through the decoder's
+  `_ => None` and loud-skips its function at decode, so it can produce no
+  instance for a consumer to meet. `MultiMemory` is decoder-synthesized (it
+  wraps a non-zero-memory-index access), not a wasm opcode itself.
+
+  Model join: a `WasmOp` variant is `modeled` iff a `wasm_instr` constructor
+  of coq/Synth/WASM/WasmInstructions.v (still PARSED, still declaration-order)
+  carries the identical name — an exact-name JOIN of two parsed shipped
+  artifacts, not a derived naming convention (nothing is CamelCase-mangled).
+  Every constructor MUST name a variant or this script REFUSES: a model
+  constructor with no shipped op (a rename, a model-only addition) is a loud
+  red, never a silently dropped row.
 
   Binding — by what the statement APPLIES, never by deriving a name: a
   Theorem/Lemma/Example DISCHARGES a constructor C when its STATEMENT (the
@@ -59,14 +87,21 @@ model_coverage_audit.py / #867 shape):
   Measured against the tree this classifier exposes what the suffix
   convention hides: some `*_correct` names carry existence-only statements.
 
-  Per constructor:
-    status                "qed" if >= 1 binding theorem ends `Qed.`;
+  Per op:
+    modeled               true iff the Rocq model has the constructor.
+    status                "unmodeled" when modeled is false (no constructor,
+                          so no obligation is even statable — the honest row
+                          #1057 asked for);
+                          "qed" if >= 1 binding theorem ends `Qed.`;
                           "admitted" if bindings exist but none reach Qed;
-                          "absent" if nothing binds (today: none — every
-                          constructor is bound at least at existence tier).
+                          "absent" if a constructor exists but nothing binds
+                          (today: none — every constructor is bound at least
+                          at existence tier).
     result_correspondence true iff >= 1 Qed'd binding theorem is
                           result-correspondence — the honest per-op frontier
-                          (69 of 138 today are existence-only or weaker).
+                          (69 of the 138 modeled ops today are existence-only
+                          or weaker; the 141 unmodeled rows are false by
+                          construction).
 
 HONESTY / RESIDUAL, stated up front:
 
@@ -78,12 +113,22 @@ HONESTY / RESIDUAL, stated up front:
     `Qed.` over coq/Synth/**/*.v in THIS script's own code path, and is
     pinned EQUAL to the claim ledger's independent rocq_qed derivation
     by claims.yaml (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, `fields-equal`) —
-    if the two readers disagree, CI is RED, not reconciled by hand. (2) The committed artifact is byte-compared against
-    re-derivation on every CI run (`--check`, claim-check job), so a renamed/
-    added/removed theorem without a regenerated manifest is RED.
-  * Non-vacuity floors (this script REFUSES to green): >= 100 constructors
-    parsed, >= 50 bound, >= 40 result-correspondence, >= 1 qed. An empty or
-    gutted manifest cannot pass.
+    if the two readers disagree, CI is RED, not reconciled by hand.
+    (2) `_meta.cross_check.wasm_op_total` is likewise pinned EQUAL to the
+    independently hand-pinned `WASM_OP_VARIANT_COUNT` of
+    crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
+    (SYNTH-PROOF-INVENTORY-UNIVERSE-1057) — a broken variant parser here
+    disagrees with a constant a Rust test re-verifies against the same
+    source, and CI is RED. (3) The committed artifact is byte-compared
+    against re-derivation on every CI run (`--check`, claim-check job), so a
+    renamed/added/removed theorem — or a new `WasmOp` variant — without a
+    regenerated manifest is RED.
+  * Non-vacuity floors (this script REFUSES to green): >= 250 WasmOp
+    variants parsed (no duplicates), >= 100 constructors parsed, every
+    constructor naming a variant, >= 50 bound, >= 40 result-correspondence,
+    >= 1 qed. An empty or gutted manifest cannot pass, and neither half of
+    the universe (modeled or unmodeled) can silently vanish — the #1113
+    class of a floor that sees only half of what it asserts.
   * The strength classifier is textual: an existential phrased through an
     alias, or a post-state constraint spelled without `/\\`/get_reg/
     state_correspondence, would misclassify (none exist today). The per-entry
@@ -106,11 +151,13 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ARTIFACT = ROOT / "artifacts" / "proof-inventory.json"
 WASM_INSTRUCTIONS = "coq/Synth/WASM/WasmInstructions.v"
+WASM_OP_RS = "crates/synth-core/src/wasm_op.rs"
 COQ_GLOB = "coq/Synth"
 
-SCHEMA = "synth-proof-inventory-v1"
+SCHEMA = "synth-proof-inventory-v2"
 
 # Non-vacuity floors — the manifest must refuse to green when gutted.
+MIN_WASM_OPS = 250
 MIN_CONSTRUCTORS = 100
 MIN_BOUND = 50
 MIN_RESULT = 40
@@ -150,6 +197,46 @@ def wasm_instr_constructors(text):
         raise SystemExit(
             f"proof_inventory: implausibly few wasm_instr constructors "
             f"({len(names)} < {MIN_CONSTRUCTORS}) — parser drift, refusing to green"
+        )
+    return names
+
+
+def wasm_op_variants(text):
+    """Top-level variant names of `pub enum WasmOp`, in declaration order.
+
+    Same tokenization as the tested Rust scanner in
+    selector_stack_effect_no_wildcard_946.rs: strip `//` comments, walk the
+    enum body line by line tracking `{`/`}` depth, and at depth 0 take a
+    leading identifier that starts uppercase and is followed by `{`, `(`,
+    `,` or `}`. The count is cross-pinned against that test's hand-pinned
+    WASM_OP_VARIANT_COUNT via claims.yaml (fields-equal), so the two readers
+    cannot drift apart silently."""
+    body = text.split("pub enum WasmOp {", 1)
+    if len(body) != 2:
+        raise SystemExit("proof_inventory: could not find `pub enum WasmOp {`")
+    names = []
+    depth = 0
+    for line in body[1].splitlines():
+        line = line.split("//", 1)[0]
+        stripped = line.strip()
+        if depth == 0:
+            m = re.match(r"([A-Za-z0-9_]+)\s*([{(,}])", stripped)
+            if m and m.group(1)[0].isupper():
+                names.append(m.group(1))
+        depth += line.count("{") - line.count("}")
+        if depth < 0:
+            break
+    else:
+        raise SystemExit("proof_inventory: `pub enum WasmOp` body never closed")
+    if len(names) != len(set(names)):
+        raise SystemExit(
+            "proof_inventory: duplicate WasmOp variant names parsed — "
+            "the scanner is confused, refusing to green"
+        )
+    if len(names) < MIN_WASM_OPS:
+        raise SystemExit(
+            f"proof_inventory: implausibly few WasmOp variants "
+            f"({len(names)} < {MIN_WASM_OPS}) — parser drift, refusing to green"
         )
     return names
 
@@ -206,6 +293,17 @@ def strength(stmt):
 
 def build():
     constructors = wasm_instr_constructors((ROOT / WASM_INSTRUCTIONS).read_text())
+    ops = wasm_op_variants((ROOT / WASM_OP_RS).read_text())
+
+    # The model join is exact-name over two PARSED artifacts. A constructor
+    # that names no shipped op would silently drop a row — refuse instead.
+    orphans = [c for c in constructors if c not in set(ops)]
+    if orphans:
+        raise SystemExit(
+            f"proof_inventory: wasm_instr constructor(s) with no WasmOp "
+            f"variant of the same name: {' '.join(orphans)} — a model-side "
+            f"rename or model-only op; the join is broken, refusing to green"
+        )
 
     rocq_qed_total = 0
     blocks = []  # (name, stmt, terminator, relpath)
@@ -218,32 +316,41 @@ def build():
             if ARM_SIDE.search(stmt):
                 blocks.append((name, stmt, term, rel))
 
+    modeled_set = set(constructors)
     entries = []
-    for ctor in constructors:
-        thms = [
-            {
-                "name": name,
-                "file": rel,
-                "terminator": term,
-                "strength": strength(stmt),
-            }
-            for name, stmt, term, rel in blocks
-            if anchors_constructor(stmt, ctor)
-        ]
-        thms.sort(key=lambda t: (t["file"], t["name"]))
-        if any(t["terminator"] == "Qed" for t in thms):
-            status = "qed"
-        elif thms:
-            status = "admitted"
+    for op in ops:
+        modeled = op in modeled_set
+        if modeled:
+            thms = [
+                {
+                    "name": name,
+                    "file": rel,
+                    "terminator": term,
+                    "strength": strength(stmt),
+                }
+                for name, stmt, term, rel in blocks
+                if anchors_constructor(stmt, op)
+            ]
+            thms.sort(key=lambda t: (t["file"], t["name"]))
+            if any(t["terminator"] == "Qed" for t in thms):
+                status = "qed"
+            elif thms:
+                status = "admitted"
+            else:
+                status = "absent"
+            result = any(
+                t["terminator"] == "Qed" and t["strength"] == "result-correspondence"
+                for t in thms
+            )
         else:
-            status = "absent"
-        result = any(
-            t["terminator"] == "Qed" and t["strength"] == "result-correspondence"
-            for t in thms
-        )
+            thms = []
+            status = "unmodeled"
+            result = False
         entries.append(
             {
-                "constructor": ctor,
+                "op": op,
+                "constructor": op if modeled else None,
+                "modeled": modeled,
                 "status": status,
                 "result_correspondence": result,
                 "theorems": thms,
@@ -253,11 +360,19 @@ def build():
     summary = {"total": len(entries)}
     for e in entries:
         summary[e["status"]] = summary.get(e["status"], 0) + 1
+    summary["modeled"] = sum(1 for e in entries if e["modeled"])
     summary["result_correspondence"] = sum(
         1 for e in entries if e["result_correspondence"]
     )
 
-    bound = summary["total"] - summary.get("absent", 0)
+    if summary["modeled"] != len(constructors):
+        raise SystemExit(
+            f"proof_inventory: {summary['modeled']} modeled rows != "
+            f"{len(constructors)} parsed constructors — the join lost a row, "
+            f"refusing to green"
+        )
+
+    bound = summary["modeled"] - summary.get("absent", 0)
     if bound < MIN_BOUND:
         raise SystemExit(
             f"proof_inventory: only {bound} constructors bound to a theorem "
@@ -277,8 +392,12 @@ def build():
             "schema": SCHEMA,
             "issue": 1057,
             "generated_by": "scripts/proof_inventory.py (re-run it; do not hand-edit)",
-            "universe": "wasm_instr constructors (coq/Synth/WASM/WasmInstructions.v), "
-            "parsed from the file in declaration order",
+            "universe": "WasmOp variants (crates/synth-core/src/wasm_op.rs), "
+            "parsed from the file in declaration order — the shipped IR every "
+            "accepted function is decoded into; rows are modeled:true iff a "
+            "wasm_instr constructor of the same name exists in "
+            "coq/Synth/WASM/WasmInstructions.v (also parsed; every constructor "
+            "must name a variant or generation refuses)",
             "binding": "a theorem discharges a constructor when its STATEMENT "
             "applies exec_wasm_instr / compile_wasm_to_arm / singleton "
             "exec_wasm_seq to that constructor AND runs the ARM-side executor "
@@ -297,6 +416,17 @@ def build():
                 "Theorem names are NOT unique across files (i64_shl_correct "
                 "names two different statements); the (file, name) pair is "
                 "the key. Do not match on names.",
+                '"modeled": false means the Rocq model has NO constructor for '
+                "this op — no correctness obligation is even statable about "
+                "it yet. That is the honest per-op frontier one tier below "
+                '"existence-only": unproved because unmodeled, stated as a '
+                "row instead of as a missing row (#1057).",
+                "Universe scope: WasmOp is every op an ACCEPTED module can "
+                "carry, not every op wasm 3.0 defines — an operator with no "
+                "WasmOp variant loud-skips its function at the decoder's "
+                "`_ => None` and can produce no instance for a consumer to "
+                "meet. MultiMemory is decoder-synthesized (a non-zero-memory-"
+                "index wrapper), not a wasm opcode itself.",
                 '"result_correspondence": false with status "qed" means the '
                 "op is proven to EXECUTE (the T2 tier of coq/STATUS.md) but "
                 "no Qed'd theorem pins its result — the honest per-op "
@@ -309,8 +439,15 @@ def build():
                 "names from rule kinds — 29 of the 138 constructors have "
                 "fused names a CamelCase->snake_case guess misses, and the "
                 "suffix conventions do not delimit the proof surface.",
+                'v1 -> v2: the row key is "op" and the universe is the '
+                "shipped WasmOp enum; \"constructor\" remains on every row "
+                "(null when unmodeled), so a consumer keyed on constructor "
+                "reads v2 unchanged for every modeled op.",
             ],
-            "cross_check": {"rocq_qed_total": rocq_qed_total},
+            "cross_check": {
+                "rocq_qed_total": rocq_qed_total,
+                "wasm_op_total": len(ops),
+            },
         },
         "summary": summary,
         "entries": entries,
@@ -325,13 +462,14 @@ def report(data):
     s = data["summary"]
     print("proof_inventory (#1057) — WASM-op -> correctness-theorem manifest")
     print(f"  schema: {data['_meta']['schema']}")
-    print(f"  constructors: {s}")
+    print(f"  ops: {s}")
     print(
         f"  cross-check rocq_qed_total: "
         f"{data['_meta']['cross_check']['rocq_qed_total']}"
+        f"  wasm_op_total: {data['_meta']['cross_check']['wasm_op_total']}"
     )
     existence_only = [
-        e["constructor"]
+        e["op"]
         for e in data["entries"]
         if e["status"] == "qed" and not e["result_correspondence"]
     ]
@@ -341,7 +479,14 @@ def report(data):
     )
     for i in range(0, len(existence_only), 8):
         print("    " + " ".join(existence_only[i : i + 8]))
-    absent = [e["constructor"] for e in data["entries"] if e["status"] == "absent"]
+    unmodeled = [e["op"] for e in data["entries"] if not e["modeled"]]
+    print(
+        f"  no Rocq constructor — no obligation statable "
+        f"(unmodeled frontier, {len(unmodeled)}):"
+    )
+    for i in range(0, len(unmodeled), 8):
+        print("    " + " ".join(unmodeled[i : i + 8]))
+    absent = [e["op"] for e in data["entries"] if e["status"] == "absent"]
     if absent:
         print(f"  absent ({len(absent)}): " + " ".join(absent))
 

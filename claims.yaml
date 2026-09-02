@@ -146,6 +146,22 @@ status_fields:
     kind: capture
     file: artifacts/proof-inventory.json
     pattern: '"rocq_qed_total": (\d+)'
+  # -- RQ-61-WASMOP (#1057): the manifest's universe is the shipped WasmOp
+  # enum since schema v2 (v1 covered only the 138 Rocq constructors, so the
+  # ops gale actually meets — End/Block/Call/Br/Unreachable/byte-memory — got
+  # NO ROW rather than an explicit modeled:false row). These two captures pin
+  # the manifest's own variant count EQUAL to the independently hand-pinned
+  # WASM_OP_VARIANT_COUNT that selector_stack_effect_no_wildcard_946.rs
+  # re-verifies against the same source at test time — two readers of
+  # wasm_op.rs that disagree turn CI red, never a silently shrunken universe.
+  proof_inventory_wasm_op_total:
+    kind: capture
+    file: artifacts/proof-inventory.json
+    pattern: '"wasm_op_total": (\d+)'
+  wasm_op_variant_count_pin:
+    kind: capture
+    file: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
+    pattern: '^const WASM_OP_VARIANT_COUNT: usize = (\d+);'
   kani_harnesses:
     kind: count
     pattern: '#\[kani::proof\]'
@@ -747,7 +763,8 @@ claims:
         text: "UNSOUND, deliberately kept and deliberately named"
 
   # RQ-60-CFOBLIG (#1057) increment 2: the proof-inventory manifest
-  # (artifacts/proof-inventory.json, schema synth-proof-inventory-v1) exists so
+  # (artifacts/proof-inventory.json, schema synth-proof-inventory-v2 since
+  # RQ-61-WASMOP) exists so
   # consumers (gale's fathom) READ which theorem discharges which wasm_instr
   # constructor instead of GUESSING names by CamelCase->snake_case — a guess
   # that misses 29 of 138 constructors (the brif_correct fused-name class) and
@@ -766,6 +783,28 @@ claims:
         path: artifacts/proof-inventory.json
       - kind: file-exists
         path: scripts/proof_inventory.py
+
+  # RQ-61-WASMOP (#1057): schema v2 extends the manifest's universe from the
+  # Rocq constructor set to the shipped WasmOp enum, so absence is a ROW
+  # (modeled: false), never a missing row. This claim pins the universe size:
+  # the artifact's own wasm_op_total must EQUAL the hand-pinned (and
+  # test-verified) WASM_OP_VARIANT_COUNT of the no-wildcard tripwire — the
+  # generator's Python reader and the tripwire's Rust reader of wasm_op.rs
+  # cannot drift apart silently, and a gutted variant parse cannot green.
+  - id: SYNTH-PROOF-INVENTORY-UNIVERSE-1057
+    doc: scripts/proof_inventory.py
+    text: "independently hand-pinned `WASM_OP_VARIANT_COUNT`"
+    evidence:
+      - kind: fields-equal
+        names: [proof_inventory_wasm_op_total, wasm_op_variant_count_pin]
+      - kind: verbatim
+        text: '"modeled": false means the Rocq model has NO constructor'
+      - kind: count-eq
+        pattern: '"modeled": false'
+        glob: ['artifacts/proof-inventory.json']
+        expect: 141
+      - kind: file-exists
+        path: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
 
   - id: SYNTH-A32-TRIPWIRE-UNIVERSE
     doc: scripts/templates/feature_matrix.md.tmpl
