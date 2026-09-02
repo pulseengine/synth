@@ -41,7 +41,48 @@ artifacts:
       NOT A LICENCE TO LOWER FLOORS. Every re-statement so far carried the
       manifest diff that proved nothing real was lost; that requirement stays
       whatever shape the gate ends up in.
-    status: proposed
+
+      DECISION (the increment that landed, chosen from the options above with
+      the reasoning written down): the absolute floors are KEPT — they are
+      the only check that notices a row-set or harness regression that stops
+      driving outcomes — and the #990 protocol is made ENFORCED and
+      AUDITABLE instead of folklore. scripts/mcdc_gate.py now (1) classifies
+      every floor miss: WITH a BRANCH_POPULATION mismatch it exits 1
+      (FAIL[branch-population], the real alarm, no re-statement offered);
+      WITHOUT one it exits 2 (FAIL[reconstruction-drift]) and attributes the
+      movement per-function against a pinned REPORT_SHAPE baseline — naming
+      the functions whose report-side counts moved while their instrument
+      population did not, with the paste-able evidence block pre-filled, so
+      the re-statement is mechanical rather than archaeological. (2) Every
+      floor movement must land as an append to the RESTATEMENTS ledger in
+      the gate (date, refs, all five constants, mandatory
+      population_evidence, and a per-function drift decomposition whenever a
+      floor loosens) — check_restatement_ledger() refuses ANY run whose live
+      constants disagree with the newest entry, and the ledger is seeded
+      with the three historical movements (#912 statement, #990 and #1093
+      re-statements). (3) claims.yaml SYNTH-MCDC-FLOOR-RESTATEMENT binds the
+      constants' exact values, so the movement is a visible claims.yaml diff
+      checked on every PR without the wasm toolchain — the RQ-58-METRIC
+      "permission is per-movement" shape, with the waiver channel living in
+      the gate's own ledger rather than duplicated in claims.yaml (a second
+      channel would be a hand-maintained mirror). Both failure modes carry
+      committed red-first tests (scripts/test_mcdc_gate.py, 15 cases,
+      including exit-code separation, alarm-dominates-mixed, and a
+      gate-copy potency test that a floor edit without a ledger append
+      refuses to run). Green shape drift with floors met prints an ADVISORY
+      per-function note — the audit trail — never a red, because failing on
+      layout noise would red every unrelated-code PR (the recurrence this
+      issue documents).
+
+      HONEST RESIDUAL: the floors will still re-state on unrelated-code PRs
+      until witness#208 lands upstream — that is now a classified exit-2
+      event with a mechanical, ledgered path, not archaeology. And the drift
+      attribution is baseline-relative (REPORT_SHAPE from the last
+      re-statement's run), so between re-statements it decomposes the
+      CUMULATIVE movement, not this PR's alone; per-PR decomposition needs
+      witness#208's stable decision identities (named there as the field the
+      report side does not carry).
+    status: implemented
     release: v0.61
     tags: [mcdc, witness, gates, fragility]
     links:
@@ -52,4 +93,9 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1100"
-      done-when: "manual: the report-side assertion no longer needs re-stating on an unrelated-code PR — or it is retired in favour of the stable surface, with the reasoning written down"
+      # Re-stated when the increment landed: the original manual predicate
+      # ("no longer needs re-stating on an unrelated-code PR") is witness#208's
+      # to satisfy, not this repo's — the in-repo property this artifact can
+      # own is that a re-statement is CLASSIFIED, ENFORCED and AUDITABLE, and
+      # that has a machine signature.
+      done-when: "contains:scripts/mcdc_gate.py:FAIL[reconstruction-drift]"
