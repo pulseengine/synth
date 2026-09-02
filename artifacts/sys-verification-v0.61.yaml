@@ -19,10 +19,21 @@
 # COVERAGE DECISIONS, recorded here because this file is where a reader will
 # look for the missing links:
 #   * RQ-61-CICAP and RQ-61-VCLOSURE carried status `proposed` when this file
-#     was authored — a sys-verification link would claim a completion that
-#     has not happened, so they are deliberately absent. (RQ-61-VCLOSURE
-#     flips on this same PR's evidence; its link can be added by a later
-#     increment once the flip itself has survived review.)
+#     was authored, so a sys-verification link would have claimed a completion
+#     that had not happened — hence their deliberate absence.
+#     CORRECTED AT RELEASE ASSEMBLY (a cold review caught it): BOTH are now
+#     `implemented` — CICAP closed one commit before this file merged, and
+#     VCLOSURE flips on this file's own evidence. So the ORIGINAL reason no
+#     longer holds for either, and the honest restatement is:
+#       - RQ-61-CICAP is unlinked because nobody has written its link yet,
+#         not because it is incomplete. A later increment should add it.
+#       - RQ-61-VCLOSURE stays unlinked ON PURPOSE and the reason is
+#         unchanged: a self-link authored in the same commit that flips the
+#         status manufactures the evidence that closes it — the metric-gaming
+#         shape this artifact exists to remove.
+#     The coverage floor (82) counts only what is linked, so it is not
+#     overstated either way. Left visible rather than rewritten, because
+#     stale prose behind a green gate is this release's own defect class.
 #   * The 52 pre-v0.60 release artifacts (v0.56–v0.59) are EXEMPT from
 #     backfill, decided under #1091: they predate the mandatory
 #     `done-when`/`verified-by` fields (RQ-60-FLIPCOUPLE), so linking them is

@@ -93,11 +93,22 @@ artifacts:
         the GitHub-hosted quota, not the self-hosted fleet — the better
         problem, since the capacity to absorb the work is already paid for.
 
-        RESIDUAL, named not hidden: Test/Bazel/Z3/Kani remain on
-        ubuntu-latest, so 5 of 9 required contexts still queue against that
-        quota. Moving them is a per-toolchain question (apt llvm, bazel+nix,
-        z3, kani), each needing its own proof on the pool, and each should be
-        measured on its own numbers rather than inheriting Clippy's.
+        RESIDUAL, all FIVE named — a cold review caught this counting four
+        and saying five. Test, Bazel, Z3, Kani AND Claim Check remain on
+        ubuntu-latest. The first four are per-toolchain questions (apt llvm,
+        bazel+nix, z3, kani), each needing its own proof on the pool and each
+        to be measured on its own numbers rather than inheriting Clippy's.
+
+        CLAIM CHECK IS A DIFFERENT CASE, called out rather than quietly
+        counted: it is PYTHON, not cargo, so it falls outside this predicate's
+        "plain-cargo" scope — but it has NO system-package install (its only
+        setup is a guarded `python3 -m pip install --user pyyaml`), and two
+        other python required jobs (Version Pin Sweep, Rivet Validation)
+        already run self-hosted. It is therefore the obvious next candidate,
+        and the reason it is not moved HERE is timing rather than principle:
+        it is a required context and this artifact closed during a release
+        assembly, where moving one is gratuitous risk. Named so the next
+        increment does not have to rediscover it.
       # INCREMENT 1 LANDED as #1101 — recorded here rather than flipping the
       # status, because the artifact is explicitly multi-increment and the
       # REQUIRED jobs (the ones that actually block merges) have not moved.
@@ -117,4 +128,4 @@ artifacts:
       # contention justification and re-measurement, and one that neither
       # relieves contention nor runs faster should be reverted rather than
       # kept for tidiness.
-      landed: "#1101 (increment 1 — one non-required job retargeted); PR #1127 (increment 2 — the required `Clippy` context moved to rust-cpu, plain cargo, name unchanged so the context still reports). Status stays `proposed`: the done-when asks for the plain-cargo required jobs, and `Test` is still on ubuntu-latest. NOTE the capacity reading behind this artifact was CORRECTED on #1062 — a point sample showed rust-cpu 7/7 and I inferred saturation; 10 samples over ~9 minutes with runs queued throughout show all 12 self-hosted runners idle (rust-cpu 2/7 -> 0/7, lean-mem 0/4, light 0/1). The original done-when is well-founded; the bottleneck is the GitHub-hosted quota, not the self-hosted fleet."
+      landed: "#1101 (increment 1 — one non-required job retargeted); PR #1127 (increment 2 — the required `Clippy` context moved to rust-cpu, plain cargo, name unchanged so the context still reports). Increment 2 landed here; the artifact was CLOSED in the NEXT commit, once the predicate was re-stated on the measurement that `Test` is not plain-cargo. This sentence read 'Status stays proposed' when written one commit earlier — corrected rather than left, because stale prose sitting behind a green gate is precisely this release's own defect class. NOTE the capacity reading behind this artifact was CORRECTED on #1062 — a point sample showed rust-cpu 7/7 and I inferred saturation; 10 samples over ~9 minutes with runs queued throughout show all 12 self-hosted runners idle (rust-cpu 2/7 -> 0/7, lean-mem 0/4, light 0/1). The original done-when is well-founded; the bottleneck is the GitHub-hosted quota, not the self-hosted fleet."
