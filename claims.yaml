@@ -2429,6 +2429,67 @@ claims:
         text: "ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl"
 
   # ---------------------------------------------------------------------------
+  # #1100 / RQ-61-MCDCFLOOR — the MC/DC report-side floors move ONLY through
+  # the gate's own re-statement ledger. The floors are layout-coupled through
+  # witness's DWARF decision reconstruction (upstream witness#208): adding
+  # code ANYWHERE can move them on untouched functions, so the standing
+  # protocol (#990, twice exercised) is re-statement WITH manifest evidence,
+  # never a floor lowered bare. scripts/mcdc_gate.py now ENFORCES it: a floor
+  # miss WITH a BRANCH_POPULATION mismatch exits 1 (real alarm, no
+  # re-statement offered); a miss WITHOUT one exits 2 (reconstruction drift,
+  # per-function attribution + the paste-able ledger entry); and
+  # check_restatement_ledger() refuses any run whose live constants disagree
+  # with the newest RESTATEMENTS entry.
+  #
+  # These pins bind the constants' EXACT current values, so every movement is
+  # a visible claims.yaml diff in the PR that caused it — checked by the
+  # claim-check job on every PR, no wasm toolchain required. Deliberately NOT
+  # `kind: ratchet`: these numbers are BIDIRECTIONAL layout noise with no
+  # honest direction to assert, and their waiver channel already exists as
+  # the RESTATEMENTS ledger inside the gate (evidence-carrying, per-movement,
+  # self-checked); a second waiver channel here would be the hand-maintained
+  # mirror this file exists to count. When a floor moves: append the
+  # RESTATEMENTS entry, update the constant, and update the matching pin
+  # below — same diff.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-MCDC-FLOOR-RESTATEMENT
+    doc: scripts/mcdc_gate.py
+    text: "movement and evidence travel in the SAME diff"
+    evidence:
+      - kind: count-eq                       # the five constants, exact values
+        pattern: '^FLOOR_DECISIONS = 21$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_CONDITIONS = 130$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_PROVED = 56$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_FULL_MCDC_DECISIONS = 3$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^CEILING_DEAD = 50$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq                       # the enforcement itself exists…
+        pattern: '^def check_restatement_ledger'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-min                      # …is CALLED by the gate…
+        pattern: 'ledger_problems = check_restatement_ledger\(\)'
+        glob: ['scripts/mcdc_gate.py']
+        min: 1
+      - kind: count-min                      # …and its potency tests are wired
+        pattern: 'test_gate_refuses_to_run_on_inconsistent_ledger'
+        glob: ['scripts/test_mcdc_gate.py']
+        min: 1
+
+  # ---------------------------------------------------------------------------
   # #910 — the coverage instrument says its SCOPE. The job was `Code Coverage`,
   # a name implying whole-system coverage for a measurement of the Rust test
   # suite alone; the differentials spawn an UNINSTRUMENTED subprocess from other
