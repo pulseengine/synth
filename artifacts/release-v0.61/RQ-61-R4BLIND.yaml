@@ -45,7 +45,7 @@ artifacts:
       RED-FIRST IS FREE HERE and is required: commits `b4860e4e` and `eefa19ef`
       are an already-measured regression corpus. A fix that does not flag both
       has not fixed the reported thing.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [gate, traceability, non-vacuity, evidence]
     links:
@@ -56,4 +56,33 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1119"
+      verified-by: >-
+        The fix is TWO rules, because the measured corpus itself refutes half
+        of option 2 as written: R4-issue resolves a conventional-commit
+        subject whose SCOPE names a `fields.issue` (`fix(#1040): ...` ->
+        RQ-61-A32RELOC) and demands the same acknowledgment as R4 — but
+        eefa19ef's subject names NEITHER its artifact nor its issue (#1113);
+        the `#1104` it does name is the PR that INTRODUCED the defect, so
+        any resolver reaching into the description would have MISATTRIBUTED
+        it. eefa19ef is instead caught by R10, a window attribution floor:
+        every delivery-typed first-parent commit since the previous minor's
+        tag must be attributable to SOME artifact (id anywhere in subject,
+        known issue anywhere in subject, or its PR in any `landed:`/
+        `verified-by:`) — unattributable is red, and the red forces exactly
+        the `landed: PR #1112` line #1120 had to write by hand. RED-FIRST on
+        the measured corpus: at 331bbd8b (last pre-#1120-flip commit; old
+        gate 0 failures) the fixed gate reports exactly 2 failures — `R4
+        RQ-61-A32RELOC: issue-anchored delivery commit (fix(#1040): ... /
+        PR #1116)` and `R10: ... 'fix(oracle): #1104 shadowed ...'` — and 0
+        failures on main after the flip. NEGATIVE DIRECTION, live and
+        fixture: 0cb36bc7 (`fix(rivet): ... RQ-61-VCLOSURE's ...`) stays
+        green (a mention is attribution, never a delivery claim);
+        description-position `#N`, Revert subjects, and ambiguous issues
+        (warn, never guess) all green in scripts/test_status_evidence_check
+        .py (R4BlindSpot1119, 9 tests, mutation-verified both ways).
+        Frozen history is out of window, so `fix(#1085): ... (#1090)` —
+        v0.60-era work on the issue RQ-61-EVIDENCE now holds — cannot
+        misattribute. The window scan pins its own non-vacuity: ci.yml
+        greps the `status-evidence-window:` line, so an underivable window
+        (shallow checkout, no tags) is a CI red, not a quiet skip.
       done-when: "manual: status_evidence_check flags a delivery commit whose subject names the artifact's issue rather than its id — proven RED against commits b4860e4e and eefa19ef, and proven NOT to fire on a subject that merely cross-references an artifact id"

@@ -348,6 +348,12 @@ jobs:
           # tags this depends on.
           grep -qE '^status-evidence: [1-9][0-9]* artifacts across [1-9][0-9]* release files, [1-9][0-9]* delivery commits matched, [1-9][0-9]* done-when predicates evaluated, [1-9][0-9]* release-scope archaeology checks \(0 skipped\), 0 failures$' \
             /tmp/status-evidence.log
+          # #1119 (RQ-61-R4BLIND): the R4-issue/R10 window scan must have
+          # RUN — a SKIPPED window line (no git, tags not fetched) fails
+          # this numeric match, so the in-script loud skip becomes a CI red
+          # exactly like R7's.
+          grep -qE '^status-evidence-window: [0-9]+ delivery-shaped commits since v[0-9]+\.[0-9]+' \
+            /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
       # replays all seven measured miss instances — reconstructed from the
