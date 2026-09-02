@@ -260,13 +260,18 @@ jobs:
       # (artifacts/proof-inventory.json) that consumers read INSTEAD of
       # guessing theorem names from rule kinds (the brif_correct fused-name
       # class: a CamelCase->snake_case guess misses 29 of 138 constructors).
-      # Re-derives the manifest from coq/Synth/**/*.v and fails if the
+      # Since RQ-61-WASMOP (schema v2) its universe is the shipped WasmOp
+      # enum, so an op with no Rocq constructor is a modeled:false ROW, not a
+      # missing row. Re-derives the manifest from coq/Synth/**/*.v plus
+      # crates/synth-core/src/wasm_op.rs and fails if the
       # committed artifact is stale or hand-edited — a renamed/added/removed
-      # theorem without a regenerated manifest is RED here, not discovered
-      # downstream. Its Qed re-count is additionally pinned EQUAL to the
-      # ledger's independent rocq_qed derivation
-      # (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, fields-equal), so the two
-      # readers of the proof tree cannot silently disagree. Lives in the
+      # theorem or WasmOp variant without a regenerated manifest is RED here,
+      # not discovered downstream. Its Qed re-count is additionally pinned
+      # EQUAL to the ledger's independent rocq_qed derivation
+      # (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, fields-equal), and its
+      # variant count EQUAL to the tripwire test's hand-pinned
+      # WASM_OP_VARIANT_COUNT (SYNTH-PROOF-INVENTORY-UNIVERSE-1057), so the
+      # readers of either source cannot silently disagree. Lives in the
       # already-REQUIRED claim-check job for the standing reason above.
       - name: Proof-inventory manifest freshness (RQ-60-CFOBLIG, #1057)
         run: python3 scripts/proof_inventory.py --check

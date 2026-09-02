@@ -2,55 +2,29 @@
   "_meta": {
     "binding": "a theorem discharges a constructor when its STATEMENT applies exec_wasm_instr / compile_wasm_to_arm / singleton exec_wasm_seq to that constructor AND runs the ARM-side executor (exec_program / _br / _pc) \u2014 bound by what the statement APPLIES, never by deriving a name (the fused-vs-underscored naming split, brif_correct included, is deliberately irrelevant here)",
     "cross_check": {
-      "rocq_qed_total": 630
+      "rocq_qed_total": 630,
+      "wasm_op_total": 279
     },
     "generated_by": "scripts/proof_inventory.py (re-run it; do not hand-edit)",
     "honesty": [
       "This manifest is an INDEX into the proof tree, produced by a second textual reader. It can say Qed about text the Rocq kernel would reject: it is only meaningful alongside a green `bazel test //coq:verify_proofs`.",
       "cross_check.rocq_qed_total is pinned EQUAL to the claim ledger's independent rocq_qed derivation (claims.yaml fields-equal) \u2014 two readers of the tree that disagree turn CI red rather than being reconciled by hand.",
       "Theorem names are NOT unique across files (i64_shl_correct names two different statements); the (file, name) pair is the key. Do not match on names.",
+      "\"modeled\": false means the Rocq model has NO constructor for this op \u2014 no correctness obligation is even statable about it yet. That is the honest per-op frontier one tier below \"existence-only\": unproved because unmodeled, stated as a row instead of as a missing row (#1057).",
+      "Universe scope: WasmOp is every op an ACCEPTED module can carry, not every op wasm 3.0 defines \u2014 an operator with no WasmOp variant loud-skips its function at the decoder's `_ => None` and can produce no instance for a consumer to meet. MultiMemory is decoder-synthesized (a non-zero-memory-index wrapper), not a wasm opcode itself.",
       "\"result_correspondence\": false with status \"qed\" means the op is proven to EXECUTE (the T2 tier of coq/STATUS.md) but no Qed'd theorem pins its result \u2014 the honest per-op frontier. strength is a semantic classification of each statement, not a reading of its name: some *_correct names carry existence-only statements.",
-      "Consumers: read this file (fetch it from the tagged tree, e.g. raw.githubusercontent.com/pulseengine/synth/<tag>/artifacts/proof-inventory.json) instead of deriving theorem names from rule kinds \u2014 29 of the 138 constructors have fused names a CamelCase->snake_case guess misses, and the suffix conventions do not delimit the proof surface."
+      "Consumers: read this file (fetch it from the tagged tree, e.g. raw.githubusercontent.com/pulseengine/synth/<tag>/artifacts/proof-inventory.json) instead of deriving theorem names from rule kinds \u2014 29 of the 138 constructors have fused names a CamelCase->snake_case guess misses, and the suffix conventions do not delimit the proof surface.",
+      "v1 -> v2: the row key is \"op\" and the universe is the shipped WasmOp enum; \"constructor\" remains on every row (null when unmodeled), so a consumer keyed on constructor reads v2 unchanged for every modeled op."
     ],
     "issue": 1057,
-    "schema": "synth-proof-inventory-v1",
-    "universe": "wasm_instr constructors (coq/Synth/WASM/WasmInstructions.v), parsed from the file in declaration order"
+    "schema": "synth-proof-inventory-v2",
+    "universe": "WasmOp variants (crates/synth-core/src/wasm_op.rs), parsed from the file in declaration order \u2014 the shipped IR every accepted function is decoded into; rows are modeled:true iff a wasm_instr constructor of the same name exists in coq/Synth/WASM/WasmInstructions.v (also parsed; every constructor must name a variant or generation refuses)"
   },
   "entries": [
     {
-      "constructor": "I32Const",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_const_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_const_large_reconstruct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64Const",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i64_const_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
       "constructor": "I32Add",
+      "modeled": true,
+      "op": "I32Add",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -82,6 +56,8 @@
     },
     {
       "constructor": "I32Sub",
+      "modeled": true,
+      "op": "I32Sub",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -113,6 +89,8 @@
     },
     {
       "constructor": "I32Mul",
+      "modeled": true,
+      "op": "I32Mul",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -144,6 +122,8 @@
     },
     {
       "constructor": "I32DivS",
+      "modeled": true,
+      "op": "I32DivS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -157,6 +137,8 @@
     },
     {
       "constructor": "I32DivU",
+      "modeled": true,
+      "op": "I32DivU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -170,6 +152,8 @@
     },
     {
       "constructor": "I32RemS",
+      "modeled": true,
+      "op": "I32RemS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -183,6 +167,8 @@
     },
     {
       "constructor": "I32RemU",
+      "modeled": true,
+      "op": "I32RemU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -196,6 +182,8 @@
     },
     {
       "constructor": "I32And",
+      "modeled": true,
+      "op": "I32And",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -227,6 +215,8 @@
     },
     {
       "constructor": "I32Or",
+      "modeled": true,
+      "op": "I32Or",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -258,6 +248,8 @@
     },
     {
       "constructor": "I32Xor",
+      "modeled": true,
+      "op": "I32Xor",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -289,6 +281,8 @@
     },
     {
       "constructor": "I32Shl",
+      "modeled": true,
+      "op": "I32Shl",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -314,6 +308,8 @@
     },
     {
       "constructor": "I32ShrS",
+      "modeled": true,
+      "op": "I32ShrS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -339,6 +335,8 @@
     },
     {
       "constructor": "I32ShrU",
+      "modeled": true,
+      "op": "I32ShrU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -364,6 +362,8 @@
     },
     {
       "constructor": "I32Rotl",
+      "modeled": true,
+      "op": "I32Rotl",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -395,6 +395,8 @@
     },
     {
       "constructor": "I32Rotr",
+      "modeled": true,
+      "op": "I32Rotr",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -419,282 +421,9 @@
       ]
     },
     {
-      "constructor": "I32Eqz",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_eqz_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_eqz_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_eqz_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32Eq",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_eq_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_eq_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_eq_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32Ne",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_ne_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_ne_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_ne_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32LtS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_lts_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_lts_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_lt_s_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32LtU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_ltu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_ltu_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_lt_u_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32GtS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_gts_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_gts_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_gt_s_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32GtU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_gtu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_gtu_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_gt_u_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32LeS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_les_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_les_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_le_s_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32LeU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_leu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_leu_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_le_u_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32GeS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_ges_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_ges_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_ge_s_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32GeU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI32.v",
-          "name": "i32_geu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "i32_geu_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/VcrSelRules.v",
-          "name": "rule_i32_ge_u_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
       "constructor": "I32Clz",
+      "modeled": true,
+      "op": "I32Clz",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -720,6 +449,8 @@
     },
     {
       "constructor": "I32Ctz",
+      "modeled": true,
+      "op": "I32Ctz",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -745,6 +476,8 @@
     },
     {
       "constructor": "I32Popcnt",
+      "modeled": true,
+      "op": "I32Popcnt",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -769,7 +502,684 @@
       ]
     },
     {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Extend8S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Extend16S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "I32Eqz",
+      "modeled": true,
+      "op": "I32Eqz",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_eqz_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_eqz_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_eqz_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32Eq",
+      "modeled": true,
+      "op": "I32Eq",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_eq_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_eq_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_eq_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32Ne",
+      "modeled": true,
+      "op": "I32Ne",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_ne_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_ne_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_ne_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32LtS",
+      "modeled": true,
+      "op": "I32LtS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_lts_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_lts_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_lt_s_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32LtU",
+      "modeled": true,
+      "op": "I32LtU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_ltu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_ltu_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_lt_u_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32LeS",
+      "modeled": true,
+      "op": "I32LeS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_les_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_les_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_le_s_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32LeU",
+      "modeled": true,
+      "op": "I32LeU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_leu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_leu_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_le_u_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32GtS",
+      "modeled": true,
+      "op": "I32GtS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_gts_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_gts_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_gt_s_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32GtU",
+      "modeled": true,
+      "op": "I32GtU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_gtu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_gtu_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_gt_u_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32GeS",
+      "modeled": true,
+      "op": "I32GeS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_ges_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_ges_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_ge_s_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32GeU",
+      "modeled": true,
+      "op": "I32GeU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI32.v",
+          "name": "i32_geu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_geu_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/VcrSelRules.v",
+          "name": "rule_i32_ge_u_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32Const",
+      "modeled": true,
+      "op": "I32Const",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_const_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i32_const_large_reconstruct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32Load",
+      "modeled": true,
+      "op": "I32Load",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "i32_load_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32Store",
+      "modeled": true,
+      "op": "I32Store",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "i32_store_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Load8S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Load8U",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Load16S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Load16U",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Store8",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32Store16",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Block",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Loop",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Br",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "BrIf",
+      "modeled": true,
+      "op": "BrIf",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessBrIf.v",
+          "name": "brif_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "BrTable",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Return",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Call",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "CallIndirect",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "LocalGet",
+      "modeled": true,
+      "op": "LocalGet",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "local_get_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "LocalSet",
+      "modeled": true,
+      "op": "LocalSet",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "local_set_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "LocalTee",
+      "modeled": true,
+      "op": "LocalTee",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "local_tee_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "GlobalGet",
+      "modeled": true,
+      "op": "GlobalGet",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "global_get_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "GlobalSet",
+      "modeled": true,
+      "op": "GlobalSet",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "global_set_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MemorySize",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MemoryGrow",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MemoryCopy",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MemoryFill",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MultiMemory",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "Drop",
+      "modeled": true,
+      "op": "Drop",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "drop_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "Select",
+      "modeled": true,
+      "op": "Select",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "select_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "If",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Else",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "End",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "Unreachable",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "Nop",
+      "modeled": true,
+      "op": "Nop",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "nop_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
       "constructor": "I64Add",
+      "modeled": true,
+      "op": "I64Add",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -783,6 +1193,8 @@
     },
     {
       "constructor": "I64Sub",
+      "modeled": true,
+      "op": "I64Sub",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -796,6 +1208,8 @@
     },
     {
       "constructor": "I64Mul",
+      "modeled": true,
+      "op": "I64Mul",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -809,6 +1223,8 @@
     },
     {
       "constructor": "I64DivS",
+      "modeled": true,
+      "op": "I64DivS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -822,6 +1238,8 @@
     },
     {
       "constructor": "I64DivU",
+      "modeled": true,
+      "op": "I64DivU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -835,6 +1253,8 @@
     },
     {
       "constructor": "I64RemS",
+      "modeled": true,
+      "op": "I64RemS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -848,6 +1268,8 @@
     },
     {
       "constructor": "I64RemU",
+      "modeled": true,
+      "op": "I64RemU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -861,6 +1283,8 @@
     },
     {
       "constructor": "I64And",
+      "modeled": true,
+      "op": "I64And",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -874,6 +1298,8 @@
     },
     {
       "constructor": "I64Or",
+      "modeled": true,
+      "op": "I64Or",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -887,6 +1313,8 @@
     },
     {
       "constructor": "I64Xor",
+      "modeled": true,
+      "op": "I64Xor",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -900,6 +1328,8 @@
     },
     {
       "constructor": "I64Shl",
+      "modeled": true,
+      "op": "I64Shl",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -919,6 +1349,8 @@
     },
     {
       "constructor": "I64ShrS",
+      "modeled": true,
+      "op": "I64ShrS",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -938,6 +1370,8 @@
     },
     {
       "constructor": "I64ShrU",
+      "modeled": true,
+      "op": "I64ShrU",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -957,6 +1391,8 @@
     },
     {
       "constructor": "I64Rotl",
+      "modeled": true,
+      "op": "I64Rotl",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -976,6 +1412,8 @@
     },
     {
       "constructor": "I64Rotr",
+      "modeled": true,
+      "op": "I64Rotr",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -989,221 +1427,14 @@
           "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
           "name": "i64_rotr_correct",
           "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64Eqz",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_eqz_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_eqz_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64Eq",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_eq_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_eq_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64Ne",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_ne_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_ne_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64LtS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_lts_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_lts_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64LtU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_ltu_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_ltu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64GtS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_gts_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_gts_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64GtU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_gtu_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_gtu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64LeS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_les_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_les_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64LeU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_leu_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_leu_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64GeS",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_ges_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_ges_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I64GeU",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64.v",
-          "name": "i64_geu_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        },
-        {
-          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
-          "name": "i64_geu_correct",
-          "strength": "result-correspondence",
           "terminator": "Qed"
         }
       ]
     },
     {
       "constructor": "I64Clz",
+      "modeled": true,
+      "op": "I64Clz",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -1223,6 +1454,8 @@
     },
     {
       "constructor": "I64Ctz",
+      "modeled": true,
+      "op": "I64Ctz",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -1242,6 +1475,8 @@
     },
     {
       "constructor": "I64Popcnt",
+      "modeled": true,
+      "op": "I64Popcnt",
       "result_correspondence": true,
       "status": "qed",
       "theorems": [
@@ -1260,540 +1495,357 @@
       ]
     },
     {
-      "constructor": "F32Add",
+      "constructor": "I64Eqz",
+      "modeled": true,
+      "op": "I64Eqz",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_eqz_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_eqz_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64Eq",
+      "modeled": true,
+      "op": "I64Eq",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_eq_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_eq_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64Ne",
+      "modeled": true,
+      "op": "I64Ne",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_ne_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_ne_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64LtS",
+      "modeled": true,
+      "op": "I64LtS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_lts_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_lts_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64LtU",
+      "modeled": true,
+      "op": "I64LtU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_ltu_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_ltu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64LeS",
+      "modeled": true,
+      "op": "I64LeS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_les_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_les_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64LeU",
+      "modeled": true,
+      "op": "I64LeU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_leu_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_leu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64GtS",
+      "modeled": true,
+      "op": "I64GtS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_gts_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_gts_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64GtU",
+      "modeled": true,
+      "op": "I64GtU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_gtu_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_gtu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64GeS",
+      "modeled": true,
+      "op": "I64GeS",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_ges_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_ges_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64GeU",
+      "modeled": true,
+      "op": "I64GeU",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64.v",
+          "name": "i64_geu_correct",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        },
+        {
+          "file": "coq/Synth/Synth/CorrectnessI64Comparisons.v",
+          "name": "i64_geu_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64Const",
+      "modeled": true,
+      "op": "I64Const",
+      "result_correspondence": true,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessSimple.v",
+          "name": "i64_const_correct",
+          "strength": "result-correspondence",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I64Load",
+      "modeled": true,
+      "op": "I64Load",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_add_executes",
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "i64_load_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "F32Sub",
+      "constructor": "I64Store",
+      "modeled": true,
+      "op": "I64Store",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_sub_executes",
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "i64_store_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "F32Mul",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load8S",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_mul_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Div",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load8U",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_div_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Sqrt",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load16S",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_sqrt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Min",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load16U",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_min_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Max",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load32S",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_max_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Abs",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Load32U",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_abs_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Neg",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Store8",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_neg_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Copysign",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Store16",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_copysign_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F32Ceil",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Store32",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_ceil_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Floor",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_floor_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Trunc",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_trunc_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Nearest",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_nearest_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Eq",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_eq_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Ne",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_ne_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Lt",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_lt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Gt",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_gt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Le",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_le_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F32Ge",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF32.v",
-          "name": "f32_ge_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Add",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_add_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Sub",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_sub_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Mul",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_mul_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Div",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_div_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Sqrt",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_sqrt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Min",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_min_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Max",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_max_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Abs",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_abs_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Neg",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_neg_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Copysign",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_copysign_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Ceil",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_ceil_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Floor",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_floor_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Trunc",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_trunc_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Nearest",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_nearest_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Eq",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_eq_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Ne",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_ne_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Lt",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_lt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Gt",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_gt_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Le",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_le_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "F64Ge",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessF64.v",
-          "name": "f64_ge_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "I32WrapI64",
-      "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i32_wrap_i64_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
       "constructor": "I64ExtendI32S",
+      "modeled": true,
+      "op": "I64ExtendI32S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1807,6 +1859,8 @@
     },
     {
       "constructor": "I64ExtendI32U",
+      "modeled": true,
+      "op": "I64ExtendI32U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1819,104 +1873,377 @@
       ]
     },
     {
-      "constructor": "I32TruncF32S",
+      "constructor": "I32WrapI64",
+      "modeled": true,
+      "op": "I32WrapI64",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
           "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i32_trunc_f32_s_executes",
+          "name": "i32_wrap_i64_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I32TruncF32U",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Extend8S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Extend16S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64Extend32S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "F32Add",
+      "modeled": true,
+      "op": "F32Add",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i32_trunc_f32_u_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_add_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I32TruncF64S",
+      "constructor": "F32Sub",
+      "modeled": true,
+      "op": "F32Sub",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i32_trunc_f64_s_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_sub_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I32TruncF64U",
+      "constructor": "F32Mul",
+      "modeled": true,
+      "op": "F32Mul",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i32_trunc_f64_u_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_mul_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64TruncF32S",
+      "constructor": "F32Div",
+      "modeled": true,
+      "op": "F32Div",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i64_trunc_f32_s_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_div_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64TruncF32U",
+      "constructor": "F32Eq",
+      "modeled": true,
+      "op": "F32Eq",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i64_trunc_f32_u_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_eq_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64TruncF64S",
+      "constructor": "F32Ne",
+      "modeled": true,
+      "op": "F32Ne",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i64_trunc_f64_s_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_ne_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64TruncF64U",
+      "constructor": "F32Lt",
+      "modeled": true,
+      "op": "F32Lt",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessConversions.v",
-          "name": "i64_trunc_f64_u_executes",
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_lt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Le",
+      "modeled": true,
+      "op": "F32Le",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_le_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Gt",
+      "modeled": true,
+      "op": "F32Gt",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_gt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Ge",
+      "modeled": true,
+      "op": "F32Ge",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_ge_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Abs",
+      "modeled": true,
+      "op": "F32Abs",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_abs_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Neg",
+      "modeled": true,
+      "op": "F32Neg",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_neg_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Ceil",
+      "modeled": true,
+      "op": "F32Ceil",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_ceil_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Floor",
+      "modeled": true,
+      "op": "F32Floor",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_floor_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Trunc",
+      "modeled": true,
+      "op": "F32Trunc",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_trunc_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Nearest",
+      "modeled": true,
+      "op": "F32Nearest",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_nearest_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Sqrt",
+      "modeled": true,
+      "op": "F32Sqrt",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_sqrt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Min",
+      "modeled": true,
+      "op": "F32Min",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_min_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Max",
+      "modeled": true,
+      "op": "F32Max",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_max_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Copysign",
+      "modeled": true,
+      "op": "F32Copysign",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF32.v",
+          "name": "f32_copysign_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32Const",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "F32Load",
+      "modeled": true,
+      "op": "F32Load",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "f32_load_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F32Store",
+      "modeled": true,
+      "op": "F32Store",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "f32_store_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
@@ -1924,6 +2251,8 @@
     },
     {
       "constructor": "F32ConvertI32S",
+      "modeled": true,
+      "op": "F32ConvertI32S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1937,6 +2266,8 @@
     },
     {
       "constructor": "F32ConvertI32U",
+      "modeled": true,
+      "op": "F32ConvertI32U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1950,6 +2281,8 @@
     },
     {
       "constructor": "F32ConvertI64S",
+      "modeled": true,
+      "op": "F32ConvertI64S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1963,6 +2296,8 @@
     },
     {
       "constructor": "F32ConvertI64U",
+      "modeled": true,
+      "op": "F32ConvertI64U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1976,6 +2311,8 @@
     },
     {
       "constructor": "F32DemoteF64",
+      "modeled": true,
+      "op": "F32DemoteF64",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -1988,7 +2325,425 @@
       ]
     },
     {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32ReinterpretI32",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32ReinterpretF32",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "I32TruncF32S",
+      "modeled": true,
+      "op": "I32TruncF32S",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i32_trunc_f32_s_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "I32TruncF32U",
+      "modeled": true,
+      "op": "I32TruncF32U",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i32_trunc_f32_u_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32TruncSatF32S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32TruncSatF32U",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64TruncSatF32S",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64TruncSatF32U",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "F64Add",
+      "modeled": true,
+      "op": "F64Add",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_add_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Sub",
+      "modeled": true,
+      "op": "F64Sub",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_sub_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Mul",
+      "modeled": true,
+      "op": "F64Mul",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_mul_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Div",
+      "modeled": true,
+      "op": "F64Div",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_div_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Eq",
+      "modeled": true,
+      "op": "F64Eq",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_eq_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Ne",
+      "modeled": true,
+      "op": "F64Ne",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_ne_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Lt",
+      "modeled": true,
+      "op": "F64Lt",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_lt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Le",
+      "modeled": true,
+      "op": "F64Le",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_le_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Gt",
+      "modeled": true,
+      "op": "F64Gt",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_gt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Ge",
+      "modeled": true,
+      "op": "F64Ge",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_ge_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Abs",
+      "modeled": true,
+      "op": "F64Abs",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_abs_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Neg",
+      "modeled": true,
+      "op": "F64Neg",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_neg_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Ceil",
+      "modeled": true,
+      "op": "F64Ceil",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_ceil_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Floor",
+      "modeled": true,
+      "op": "F64Floor",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_floor_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Trunc",
+      "modeled": true,
+      "op": "F64Trunc",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_trunc_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Nearest",
+      "modeled": true,
+      "op": "F64Nearest",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_nearest_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Sqrt",
+      "modeled": true,
+      "op": "F64Sqrt",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_sqrt_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Min",
+      "modeled": true,
+      "op": "F64Min",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_min_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Max",
+      "modeled": true,
+      "op": "F64Max",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_max_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Copysign",
+      "modeled": true,
+      "op": "F64Copysign",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessF64.v",
+          "name": "f64_copysign_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F64Const",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "F64Load",
+      "modeled": true,
+      "op": "F64Load",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "f64_load_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
+      "constructor": "F64Store",
+      "modeled": true,
+      "op": "F64Store",
+      "result_correspondence": false,
+      "status": "qed",
+      "theorems": [
+        {
+          "file": "coq/Synth/Synth/CorrectnessMemory.v",
+          "name": "f64_store_executes",
+          "strength": "existence-only",
+          "terminator": "Qed"
+        }
+      ]
+    },
+    {
       "constructor": "F64ConvertI32S",
+      "modeled": true,
+      "op": "F64ConvertI32S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -2002,6 +2757,8 @@
     },
     {
       "constructor": "F64ConvertI32U",
+      "modeled": true,
+      "op": "F64ConvertI32U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -2015,6 +2772,8 @@
     },
     {
       "constructor": "F64ConvertI64S",
+      "modeled": true,
+      "op": "F64ConvertI64S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -2028,6 +2787,8 @@
     },
     {
       "constructor": "F64ConvertI64U",
+      "modeled": true,
+      "op": "F64ConvertI64U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -2041,6 +2802,8 @@
     },
     {
       "constructor": "F64PromoteF32",
+      "modeled": true,
+      "op": "F64PromoteF32",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
@@ -2053,230 +2816,877 @@
       ]
     },
     {
-      "constructor": "I32Load",
+      "constructor": null,
+      "modeled": false,
+      "op": "F64ReinterpretI64",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64ReinterpretF64",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": "I64TruncF64S",
+      "modeled": true,
+      "op": "I64TruncF64S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "i32_load_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i64_trunc_f64_s_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64Load",
+      "constructor": "I64TruncF64U",
+      "modeled": true,
+      "op": "I64TruncF64U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "i64_load_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i64_trunc_f64_u_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "F32Load",
+      "constructor": "I32TruncF64S",
+      "modeled": true,
+      "op": "I32TruncF64S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "f32_load_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i32_trunc_f64_s_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "F64Load",
+      "constructor": "I32TruncF64U",
+      "modeled": true,
+      "op": "I32TruncF64U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "f64_load_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i32_trunc_f64_u_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I32Store",
+      "constructor": "I64TruncF32S",
+      "modeled": true,
+      "op": "I64TruncF32S",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "i32_store_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i64_trunc_f32_s_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "I64Store",
+      "constructor": "I64TruncF32U",
+      "modeled": true,
+      "op": "I64TruncF32U",
       "result_correspondence": false,
       "status": "qed",
       "theorems": [
         {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "i64_store_executes",
+          "file": "coq/Synth/Synth/CorrectnessConversions.v",
+          "name": "i64_trunc_f32_u_executes",
           "strength": "existence-only",
           "terminator": "Qed"
         }
       ]
     },
     {
-      "constructor": "F32Store",
+      "constructor": null,
+      "modeled": false,
+      "op": "I32TruncSatF64S",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "f32_store_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "F64Store",
+      "constructor": null,
+      "modeled": false,
+      "op": "I32TruncSatF64U",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessMemory.v",
-          "name": "f64_store_executes",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "LocalGet",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "local_get_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "LocalSet",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "local_set_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
-    },
-    {
-      "constructor": "LocalTee",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64TruncSatF64S",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "local_tee_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "GlobalGet",
+      "constructor": null,
+      "modeled": false,
+      "op": "I64TruncSatF64U",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "global_get_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "GlobalSet",
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Const",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "global_set_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "Drop",
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Load",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "drop_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "Select",
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Store",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "select_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "Nop",
+      "constructor": null,
+      "modeled": false,
+      "op": "V128And",
       "result_correspondence": false,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessSimple.v",
-          "name": "nop_correct",
-          "strength": "existence-only",
-          "terminator": "Qed"
-        }
-      ]
+      "status": "unmodeled",
+      "theorems": []
     },
     {
-      "constructor": "BrIf",
-      "result_correspondence": true,
-      "status": "qed",
-      "theorems": [
-        {
-          "file": "coq/Synth/Synth/CorrectnessBrIf.v",
-          "name": "brif_correct",
-          "strength": "result-correspondence",
-          "terminator": "Qed"
-        }
-      ]
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Or",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Xor",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "V128Not",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "V128AndNot",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Add",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Sub",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Neg",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Eq",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Ne",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16LtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16LtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16GtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16GtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16LeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16LeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16GeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16GeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Splat",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16ExtractLaneS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16ExtractLaneU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16ReplaceLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Shuffle",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I8x16Swizzle",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Add",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Sub",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Mul",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Neg",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Eq",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Ne",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8LtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8LtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8GtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8GtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8LeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8LeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8GeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8GeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8Splat",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8ExtractLaneS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8ExtractLaneU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I16x8ReplaceLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Add",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Sub",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Mul",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Neg",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Eq",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Ne",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4LtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4LtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4GtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4GtU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4LeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4LeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4GeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4GeU",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4Splat",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4ExtractLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I32x4ReplaceLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Add",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Sub",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Mul",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Neg",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Eq",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Ne",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2LtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2GtS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2LeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2GeS",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2Splat",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2ExtractLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "I64x2ReplaceLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Add",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Sub",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Mul",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Div",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Abs",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Neg",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Sqrt",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Eq",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Ne",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Lt",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Le",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Gt",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Ge",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4Splat",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4ExtractLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "F32x4ReplaceLane",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
     }
   ],
   "summary": {
+    "modeled": 138,
     "qed": 138,
     "result_correspondence": 63,
-    "total": 138
+    "total": 279,
+    "unmodeled": 141
   }
 }
