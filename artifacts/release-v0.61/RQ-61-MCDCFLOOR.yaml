@@ -99,3 +99,9 @@ artifacts:
       # own is that a re-statement is CLASSIFIED, ENFORCED and AUDITABLE, and
       # that has a machine signature.
       done-when: "contains:scripts/mcdc_gate.py:FAIL[reconstruction-drift]"
+      landed: >-
+        PR #1126 (v0.61): failure-mode classifier (exit 1 alarm / exit 2
+        drift), RESTATEMENTS ledger + check_restatement_ledger(),
+        REPORT_SHAPE attribution baseline, claims.yaml
+        SYNTH-MCDC-FLOOR-RESTATEMENT exact-value pins, 15 committed
+        red-first cases
