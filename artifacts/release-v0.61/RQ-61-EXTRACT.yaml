@@ -75,7 +75,7 @@ artifacts:
       (#1057) are gated. Choose deliberately — (2) is defensible only if the
       extracted OCaml is meant to be reviewable evidence for an assessor,
       which is a real use and the only reason to keep it.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [rocq, extraction, generated-artifacts, staleness]
     links:
@@ -86,6 +86,25 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1080"
+      verified-by: >-
+        PR #1121 (merged as a5c75caf), disposition (1), every done-when
+        clause re-verified independently on main AFTER the merge rather
+        than taken from the PR body: (a) the snapshots are GONE — `coq/*.ml`,
+        `coq/*.mli`, `extracted/`, `validation/`, `compiler/*.ml`, the dune
+        tree and root dune-project all absent from the tree, and the
+        delivery commit's diff deletes exactly 98 `.ml`/`.mli` files (the 61
+        the census counted plus 37 `.mli` including coq/'s 19 the census
+        missed, matching `landed:`); (b) docs/validation/VALIDATION_STATUS.md
+        is REWRITTEN — it opens with a historical note, describes extraction
+        as the Bazel build step it actually is, and the body's former
+        "Successfully implemented" / "Complete and ready for use" / "40
+        files total" claims are gone (grep finds none), so the document no
+        longer contradicts its own header; (c) the `.v` extraction target
+        is untouched and `bazel test //coq:verify_proofs` still exercises
+        it — CI's `Bazel Build & Proofs` job on PR #1121 passed, and main
+        at the merge is green. The mutually-inconsistent copies cannot
+        survive because no copy exists: extraction output is derived in the
+        sandbox on every CI run, with nothing checked in to drift.
       landed: >-
         PR #1121 (Refs #1080) — disposition (1) executed with the census
         re-verified independently: all four directories deleted (98 snapshot

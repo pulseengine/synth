@@ -74,6 +74,38 @@ Two independent derivations over `artifacts/release-v*.yaml`:
     - R1: an artifact in a release file >= v0.60 with no `done-when` is red,
       so a new artifact must choose its signature (or write down that it has
       none) in the PR that creates it.
+    - R4-issue (#1119 / RQ-61-R4BLIND): the same acknowledgment demand for a
+      conventional-commit subject whose SCOPE is an issue reference --
+      `fix(#1040): ...` resolves through `fields.issue` to the artifact
+      holding that issue (the highest-release holder; a still-ambiguous
+      issue WARNS, never guesses). The scope position IS the marker
+      discipline: a `#N` in the DESCRIPTION is measured to name a cause,
+      not a target (eefa19ef's `fix(oracle): #1104 shadowed ...` references
+      the PR that INTRODUCED the defect -- resolving it would have
+      misattributed the commit), so description-position references never
+      become delivery claims. Scoped to the RELEASE WINDOW (first-parent
+      commits since the previous minor's tag) because an issue can be
+      re-worked across releases: `fix(#1085): ... (#1090)` was v0.60-era
+      work on the issue RQ-61-EVIDENCE now holds, and matching frozen
+      history against the current cycle's issue map would misattribute it.
+    - R10 (#1119, the completeness floor R4 cannot be): every first-parent
+      delivery-TYPED commit (feat/fix/perf/proof/test types; plan/chore/
+      docs/salvage/investigate/track are process commits) in the release
+      window must be ATTRIBUTABLE to some release artifact -- a known
+      artifact id anywhere in the subject, a known `fields.issue` number
+      anywhere in the subject, or the commit's PR number named in any
+      artifact's `landed:`/`verified-by:`. Unattributable is red: work
+      landed and every artifact is silent. This is what catches the
+      measured eefa19ef instance -- a delivery whose subject names neither
+      its artifact (RQ-61-ORACLEFLOOR) nor its issue (#1113) cannot be
+      RESOLVED to one artifact, but it can be NOTICED, and the red forces a
+      human to write the attribution (`landed:`) that resolution needs.
+      Attribution deliberately errs toward green -- a mention suffices,
+      because R10's demand is NON-SILENCE, not a status flip, so the
+      passing-mention rule R4 protects is not violated. A window that
+      cannot be derived (no git, no previous-minor tag) SKIPS LOUDLY, and
+      the CI grep on the `status-evidence-window:` line turns that skip
+      into a red.
 
 (3) STRUCTURAL INTEGRITY (#1059 / RQ-60-ARTIFACTSPLIT). The v0.59 wave's
     hand-merged "keep both sides" conflict resolution spliced a new artifact
@@ -177,13 +209,21 @@ Two independent derivations over `artifacts/release-v*.yaml`:
       gate, which is what both #1090 corrections did.
 
 What this does NOT cover, stated rather than silent:
-  * Work that lands with NO artifact and a commit subject that names no
-    artifact id is invisible to both halves (unknown-id delivery subjects are
-    at least WARNED on). That is candidate shape 3's structural gap.
+  * Work that lands with NO artifact used to be invisible to both halves.
+    R10 closes that INSIDE the release window for delivery-typed
+    conventional subjects; outside the window, for a subject with no
+    recognized type prefix (`fix: x` with no scope, a bare sentence), and
+    for process-typed subjects, the gap remains (unknown-id delivery
+    subjects are at least WARNED on).
   * A `manual:` done-when under a non-claiming status cannot fire R3 — for
-    those artifacts Direction A protection rests entirely on R4's subject
-    convention, which a differently-titled delivery commit evades (a MISS,
-    never a false red).
+    those artifacts Direction A protection rests on R4's subject
+    convention plus R4-issue's scope convention; a delivery commit using
+    NEITHER is caught only as R10's weaker non-silence demand (a red that
+    forces attribution, not a status flip).
+  * R4-issue resolves an issue held by artifacts in SEVERAL releases to the
+    highest-release holder, and WARNS instead of guessing when that is
+    still ambiguous — an ambiguous-issue delivery commit therefore gets
+    R10's attribution demand only.
   * R5 catches an artifact whose `links:` block was absorbed WHOLE. A splice
     that lands between `links:` and `fields:` steals only the fields — for
     those, coverage is R1 (the absorbed `done-when` is missing) plus the
@@ -230,7 +270,9 @@ found the defect in checking machinery):
     re-proven on every CI run, not asserted once at authoring.
 
 Exit 0 iff no rule fires. Prints a `status-evidence:` summary line the CI
-step greps as a second non-vacuity anchor.
+step greps as a second non-vacuity anchor, and a `status-evidence-window:`
+line pinning that the R4-issue/R10 window scan actually ran (SKIPPED there
+fails the CI grep, so the loud skip cannot become the quiet pass).
 """
 
 from __future__ import annotations
@@ -273,6 +315,18 @@ RELEASE_GLOB = (
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
+
+# R4-issue / R10 (#1119): conventional-commit subjects. Only the SCOPE
+# position (`fix(#1040): ...`) counts as a delivery CLAIM for an issue —
+# it is a deliberate authoring position, not a mention. `Revert "fix(...)"`
+# does not match (anchored), and a scopeless `fix: x` is out of scope.
+CONVENTIONAL = re.compile(r"^([a-z]+)\(([^)]*)\)!?: ")
+SCOPE_ISSUE = re.compile(r"^#(\d+)$")
+# R10: subject types that deliver code, measured over first-parent history;
+# everything else (plan/chore/docs/salvage/investigate/track) is process.
+DELIVERY_TYPES = frozenset({"feat", "fix", "perf", "proof", "test"})
+ID_ANYWHERE = re.compile(r"\bRQ-\d+-[A-Z0-9]+\b")
+ISSUE_ANYWHERE = re.compile(r"#(\d+)\b")
 RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)")
 
 # R8: the artifact's own `release:` field — the side rivet's readiness query
@@ -486,8 +540,30 @@ def landed_prs(fields: dict) -> set[str]:
     return set(re.findall(r"#(\d+)", str(fields.get("landed", ""))))
 
 
+def release_window_subjects(root: Path, version: tuple):
+    """(tag, first-parent subjects since the previous minor's highest tag),
+    or (None, None) when underivable — no git, no tag visible. The caller
+    reports the skip LOUDLY; a silent empty window would be the #1064
+    quiet-pass shape for R4-issue/R10."""
+    if git_history_state(root) != "ok":
+        return None, None
+    tag = previous_release_tag(root, version)
+    if tag is None:
+        return None, None
+    rc, out = _git(root, "log", "--first-parent", "--format=%s",
+                   f"{tag}..HEAD")
+    if rc != 0:
+        return None, None
+    return tag, out.splitlines()
+
+
 def check(root: Path, release_glob: str, subjects: list[str],
-          delivery_floor: int):
+          delivery_floor: int, window_subjects: list[str] | str | None = "derive"):
+    """`window_subjects` — the first-parent subjects of the current RELEASE
+    WINDOW (since the previous minor's tag), R4-issue's and R10's scan
+    surface. "derive" (the default, what CI runs) derives it from git in
+    `root`; an explicit list replays a fixture; None means underivable —
+    the scan SKIPS LOUDLY and the summary line says so."""
     failures: list[str] = []
     warnings: list[str] = []
     artifacts, bad_files = load_release_artifacts(root, release_glob)
@@ -699,6 +775,105 @@ def check(root: Path, release_glob: str, subjects: list[str],
             f"the increment"
         )
 
+    # ---- Issue-anchored delivery claims (R4-issue) + attribution floor
+    # ---- (R10) — both #1119, both scoped to the release window ------------
+    if window_subjects == "derive":
+        max_version = max((a[1] for a in artifacts), default=(0, 0))
+        window_label, window_subjects = (
+            release_window_subjects(root, max_version)
+            if max_version > (0, 0) else (None, None))
+    else:
+        window_label = "(replayed window)" if window_subjects is not None \
+            else None
+
+    # fields.issue -> holder artifacts (several releases may hold one issue).
+    issue_holders: dict[str, list] = {}
+    for a in artifacts:
+        num = str((a[4] or {}).get("issue", "")).strip().lstrip("#")
+        if num.isdigit():
+            issue_holders.setdefault(num, []).append(a)
+    # Every PR number any artifact's landed:/verified-by: prose names — the
+    # R10 attribution surface that greens eefa19ef AFTER the #1120 flip
+    # wrote `landed: PR #1112` down.
+    acknowledged_prs: set[str] = set()
+    for a in artifacts:
+        for field in ("landed", "verified-by"):
+            acknowledged_prs.update(
+                re.findall(r"#(\d+)", str((a[4] or {}).get(field, ""))))
+
+    issue_delivery_hits = 0
+    window_delivery = 0
+    window_attributed = 0
+    if window_subjects is None:
+        warnings.append(
+            "WINDOW-SKIP: release window not derivable (no git, or the "
+            "previous minor's tag is not visible) — R4-issue and R10 were "
+            "NOT checked; the CI grep on `status-evidence-window:` turns "
+            "this into a red")
+    else:
+        for subject in window_subjects:
+            m = CONVENTIONAL.match(subject)
+            if not m:
+                continue
+            # -- R4-issue: the SCOPE names an issue -> a delivery claim.
+            sm = SCOPE_ISSUE.match(m.group(2))
+            if sm and sm.group(1) in issue_holders:
+                holders = issue_holders[sm.group(1)]
+                best = max(h[1] for h in holders)
+                best_holders = [h for h in holders if h[1] == best]
+                if len(best_holders) > 1:
+                    warnings.append(
+                        f"WARN: issue-anchored delivery commit {subject!r} "
+                        f"names issue #{sm.group(1)}, held by "
+                        f"{', '.join(h[2] for h in best_holders)} — "
+                        f"ambiguous, R4-issue will not guess (R10 "
+                        f"attribution still applies)")
+                else:
+                    _, _, art_id, status, fields, _links, _release = \
+                        best_holders[0]
+                    issue_delivery_hits += 1
+                    prs = PR_NUMBER.findall(subject)
+                    pr = prs[-1] if prs else None
+                    if (status not in CLAIMING
+                            and not (pr is not None
+                                     and pr in landed_prs(fields))):
+                        key = (art_id, pr or subject)
+                        if key not in flagged:
+                            flagged.add(key)
+                            failures.append(
+                                f"R4 {art_id}: issue-anchored delivery "
+                                f"commit on main "
+                                f"({subject.split(':')[0]}: → issue "
+                                f"#{sm.group(1)}"
+                                f"{f' / PR #{pr}' if pr else ''}) but "
+                                f"status is `{status}` and `landed:` does "
+                                f"not acknowledge it — the #1119 blind "
+                                f"spot; flip the status or record the "
+                                f"increment"
+                            )
+            # -- R10: every delivery-typed commit must be attributable.
+            if m.group(1) not in DELIVERY_TYPES:
+                continue
+            window_delivery += 1
+            if (set(ID_ANYWHERE.findall(subject)) & set(by_id)
+                    or set(ISSUE_ANYWHERE.findall(subject))
+                    & set(issue_holders)):
+                window_attributed += 1
+                continue
+            prs = PR_NUMBER.findall(subject)
+            if prs and prs[-1] in acknowledged_prs:
+                window_attributed += 1
+                continue
+            failures.append(
+                f"R10: delivery-shaped commit in the release window is "
+                f"attributable to NO release artifact: {subject!r} — no "
+                f"known artifact id or issue number in the subject, and no "
+                f"artifact's `landed:`/`verified-by:` names its PR (#1119: "
+                f"work landed, every artifact silent). Name the artifact "
+                f"in a `landed:` entry, or create the artifact this work "
+                f"belongs to"
+            )
+
     # ---- Anti-vacuity ------------------------------------------------------
     if not artifacts:
         failures.append("VACUOUS: zero release artifacts loaded")
@@ -710,7 +885,9 @@ def check(root: Path, release_glob: str, subjects: list[str],
         )
 
     return (artifacts, predicates_evaluated, delivery_hits, warnings,
-            failures, r7_checked, r7_skipped)
+            failures, r7_checked, r7_skipped,
+            issue_delivery_hits, window_delivery, window_attributed,
+            window_label)
 
 
 def main() -> int:
@@ -735,9 +912,15 @@ def main() -> int:
         if args.subjects_file
         else first_parent_subjects(args.root)
     )
+    # A subjects FILE has no git window behind it: R4-issue/R10 then scan
+    # the provided subjects as the window (a replay is by construction the
+    # window under study). The in-repo run derives the real window.
+    window = subjects if args.subjects_file else "derive"
     try:
-        artifacts, preds, hits, warnings, failures, r7_checked, r7_skipped = \
-            check(args.root, args.release_glob, subjects, args.delivery_floor)
+        (artifacts, preds, hits, warnings, failures, r7_checked, r7_skipped,
+         issue_hits, window_delivery, window_attributed, window_label) = \
+            check(args.root, args.release_glob, subjects,
+                  args.delivery_floor, window_subjects=window)
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
@@ -753,6 +936,15 @@ def main() -> int:
         f"predicates evaluated, {r7_checked} release-scope archaeology "
         f"checks ({r7_skipped} skipped), {len(failures)} failures"
     )
+    if window_label is None:
+        print("status-evidence-window: SKIPPED — release window not "
+              "derivable (#1119)")
+    else:
+        print(
+            f"status-evidence-window: {window_delivery} delivery-shaped "
+            f"commits since {window_label} — {window_attributed} attributed, "
+            f"{issue_hits} issue-anchored delivery claims"
+        )
     return 1 if failures else 0
 
 
