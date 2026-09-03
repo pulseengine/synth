@@ -29,13 +29,3 @@ filegroup(
     ]),
     visibility = ["//visibility:public"],
 )
-
-# Test data for integration tests
-filegroup(
-    name = "test_data",
-    srcs = glob([
-        "validation/**/*.wasm",
-        "validation/**/*.wat",
-    ]),
-    visibility = ["//visibility:public"],
-)

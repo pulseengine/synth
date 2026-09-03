@@ -27,7 +27,7 @@ artifacts:
       different statements, and existence-only theorems carry the `_correct`
       suffix — so a name-derived matcher over-counts AND under-counts. Binding
       and strength stay semantic.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [proofs, manifest, consumer-contract, gale]
     links:
@@ -39,3 +39,17 @@ artifacts:
       verification-track: review
       issue: "#1057"
       done-when: "manual: every WasmOp variant has a row; unmodeled ops carry modeled:false; the freshness byte-compare and the Qed cross-check still gate it"
+      verified-by: >-
+        Schema v2 manifest regenerated: 279 rows = all 279 WasmOp variants
+        (universe parsed from wasm_op.rs, cross-pinned fields-equal against
+        the tripwire test's hand-pinned WASM_OP_VARIANT_COUNT by
+        SYNTH-PROOF-INVENTORY-UNIVERSE-1057), 138 modeled (unchanged
+        binding/strength: 138 qed, 63 result-correspondence), 141 rows with
+        modeled:false including all of gale's named frontier (End, Block,
+        Call, Br, Unreachable, I32Load8U, I32Store8). Gates proven still
+        red-capable in the PR: hand-editing a row, planting a WasmOp variant
+        without regenerating, rocq_qed_total 630->629 (both the fields-equal
+        pin and the byte-compare), wasm_op_total 279->278, a modeled:false
+        count drift, and a model-side constructor rename (generator refuses
+        on the broken join) each turn the respective gate red; restored
+        green after each.

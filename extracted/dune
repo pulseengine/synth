@@ -1,5 +1,0 @@
-(library
- (name synth_extracted)
- (modules :standard)
- (libraries zarith)
- (flags (:standard -w -33)))

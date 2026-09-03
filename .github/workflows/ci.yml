@@ -100,9 +100,26 @@ jobs:
 
   clippy:
     name: Clippy
-    # Same runner note as Test — the z3-sys disk pressure that forced
-    # ubuntu-latest is gone (#553); moving back to smithy is a follow-up.
-    runs-on: ubuntu-latest
+    # RQ-61-CICAP (#1062) increment 2. The z3-sys disk pressure that forced
+    # ubuntu-latest is gone (#553), and this job is plain cargo — no external
+    # toolchain, unlike Z3/Bazel/Kani, which the artifact holds back until
+    # their toolchains are proven on this pool.
+    #
+    # Why rust-cpu is safe for a REQUIRED context: three jobs already run
+    # there, and increment 1's `synth-provenance-v1 reconciliation gate`
+    # has been green on it for 5/5 consecutive main runs. The job NAME is
+    # unchanged, so the required context still reports — a failure would
+    # block PRs (recoverable by revert, whose own CI runs the reverted
+    # config) rather than DEADLOCK them, which is what a renamed or
+    # never-running required context would do.
+    #
+    # Capacity, sampled rather than read off one instant (the correction in
+    # #1062): across 10 samples over ~9 minutes with 2-5 runs QUEUED, the
+    # self-hosted pools were idle throughout - rust-cpu 2/7 falling to 0/7,
+    # lean-mem 0/4, light 0/1 - while 56 of 65 job definitions (86.2%) queued
+    # against the GitHub-hosted quota. An earlier point reading of 7/7 was a
+    # merge-wave transient and is corrected on the issue.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -260,13 +277,18 @@ jobs:
       # (artifacts/proof-inventory.json) that consumers read INSTEAD of
       # guessing theorem names from rule kinds (the brif_correct fused-name
       # class: a CamelCase->snake_case guess misses 29 of 138 constructors).
-      # Re-derives the manifest from coq/Synth/**/*.v and fails if the
+      # Since RQ-61-WASMOP (schema v2) its universe is the shipped WasmOp
+      # enum, so an op with no Rocq constructor is a modeled:false ROW, not a
+      # missing row. Re-derives the manifest from coq/Synth/**/*.v plus
+      # crates/synth-core/src/wasm_op.rs and fails if the
       # committed artifact is stale or hand-edited — a renamed/added/removed
-      # theorem without a regenerated manifest is RED here, not discovered
-      # downstream. Its Qed re-count is additionally pinned EQUAL to the
-      # ledger's independent rocq_qed derivation
-      # (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, fields-equal), so the two
-      # readers of the proof tree cannot silently disagree. Lives in the
+      # theorem or WasmOp variant without a regenerated manifest is RED here,
+      # not discovered downstream. Its Qed re-count is additionally pinned
+      # EQUAL to the ledger's independent rocq_qed derivation
+      # (SYNTH-PROOF-INVENTORY-CROSSCHECK-1057, fields-equal), and its
+      # variant count EQUAL to the tripwire test's hand-pinned
+      # WASM_OP_VARIANT_COUNT (SYNTH-PROOF-INVENTORY-UNIVERSE-1057), so the
+      # readers of either source cannot silently disagree. Lives in the
       # already-REQUIRED claim-check job for the standing reason above.
       - name: Proof-inventory manifest freshness (RQ-60-CFOBLIG, #1057)
         run: python3 scripts/proof_inventory.py --check
@@ -347,6 +369,12 @@ jobs:
           # into a CI red — fetch-depth: 0 above provides the history AND the
           # tags this depends on.
           grep -qE '^status-evidence: [1-9][0-9]* artifacts across [1-9][0-9]* release files, [1-9][0-9]* delivery commits matched, [1-9][0-9]* done-when predicates evaluated, [1-9][0-9]* release-scope archaeology checks \(0 skipped\), 0 failures$' \
+            /tmp/status-evidence.log
+          # #1119 (RQ-61-R4BLIND): the R4-issue/R10 window scan must have
+          # RUN — a SKIPPED window line (no git, tags not fetched) fails
+          # this numeric match, so the in-script loud skip becomes a CI red
+          # exactly like R7's.
+          grep -qE '^status-evidence-window: [0-9]+ delivery-shaped commits since v[0-9]+\.[0-9]+' \
             /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
@@ -475,7 +503,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-coverage-
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.0
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage (LCOV)
@@ -642,7 +670,21 @@ jobs:
           # 484 -> 486: #1102 (rv32 dangling synth_func_N on a declined
           # internal, exit 0) and #1100 (MC/DC report-side floors are
           # layout-coupled), both triaged in the same wave that found them.
-          ARTIFACT_FLOOR=486
+          # 486 -> 495. Two independent additions landed in the same
+          # release and both are additive:
+          #   +1  RQ-61-ORACLEFLOOR (#1113, PR #1112) — the decline-half floor
+          #   +8  the #1091 v0.60 backfill pilot (VER060-001..008,
+          #       artifacts/sys-verification-v0.60.yaml) transcribing the
+          #       evidence the RQ-60-* artifacts already name into typed
+          #       `verifies` links.
+          # 496 -> 509: #1091 increment 2 — sys-verification-v0.61.yaml adds
+          # 13 evidence-transcription artifacts (VER061-001..013), one per
+          # implemented RQ-61-* requirement. Re-measured under the pinned
+          # rivet 0.23.0, externals stripped: 509, and the count moved by
+          # exactly the 13 ids visible in `rivet list`.
+          # Measured, not computed: the live count is re-derived below and
+          # this pin is the value it reports.
+          ARTIFACT_FLOOR=518
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
@@ -653,8 +695,80 @@ jobs:
             echo "::error::Artifacts loaded fell below the floor ($MEASURED < $ARTIFACT_FLOOR). An artifact source file is being skipped or mis-parsed (#1064) — find it; do not lower the floor."
             exit 1
           fi
-      - name: Check coverage
-        run: rivet coverage
+      # ------------------------------------------------------------------
+      # #1091 V-CLOSURE FLOOR — `rivet coverage` must ASSERT, not print.
+      #
+      # release-execution names the traceability completeness gate as THE
+      # release blocker, and it had never fired: this step ran
+      # `rivet coverage`, which printed `sys2-has-verification 61/165`
+      # into a log nobody reads and EXITED 0 at any percentage — 60/60
+      # release artifacts across v0.56–v0.60 carried no linked
+      # sys-verification while the job stayed green. Third instance of a
+      # validator reporting success about work it never did (#1012, #1064).
+      #
+      # NOT "unverified work": the verification EXISTS (unicorn execution
+      # differentials, ld.lld-linked run evidence, Rocq proofs with
+      # red-first transcripts, mutation-killed gates). What was missing is
+      # the TYPED `verifies` LINK that makes it queryable by the trace
+      # graph. This floor pins the covered count so links, once added,
+      # cannot silently rot away again.
+      #
+      # Same discipline as ARTIFACT_FLOOR above: the number may only rise,
+      # and a PR that adds coverage raises the floor in the same PR (the
+      # visible-diff rule). Floor measured 2026-09-01 under the pinned
+      # rivet v0.23.0 with the externals block stripped (this job's own
+      # conditions): sys2-has-verification 61 covered of 165 system-reqs.
+      # 61 -> 69 in the same PR: the #1091 v0.60 backfill pilot added 8
+      # sys-verification artifacts (VER060-001..008) transcribing the
+      # evidence the RQ-60-* artifacts already name; re-measured 69/165
+      # (41.8%) under the same conditions.
+      # 69 -> 82: #1091 increment 2 — sys-verification-v0.61.yaml links the
+      # 13 implemented RQ-61-* artifacts (VER061-001..013). Re-measured
+      # 82/167 (49.1%) under the same conditions (pinned 0.23.0, externals
+      # stripped). DECIDED under #1091, recorded here because this comment
+      # is where the "per-release backfill discipline" was delegated to:
+      # from v0.60 on, every release's artifacts get transcription links in
+      # the PR wave that implements them; the 52 pre-v0.60 release
+      # artifacts (v0.56-v0.59) are EXEMPT — they predate the mandatory
+      # done-when/verified-by fields (RQ-60-FLIPCOUPLE), so linking them is
+      # archaeology (~15-25 h measured), not transcription (~5-10
+      # min/artifact measured twice). Their verification exists in their
+      # release notes; it is not queryable by the trace graph, and that is
+      # a recorded limitation, not a debt being serviced.
+      #
+      # WHAT THIS FLOOR CAN DETECT: a lost `verifies` edge (deleted, or
+      # spliced away — the #1059 shape); a sys-verification source file
+      # going invisible to the loader (the #1064 shape — covered drops by
+      # that file's whole contribution); a rivet output/rule rename (the
+      # row disappears → unmeasurable → RED, never green).
+      # WHAT IT CANNOT DETECT, stated so nobody reads more into it:
+      # (a) NEW system-reqs landing without verification — the DENOMINATOR
+      # grows, the ratio decays, and this covered-count floor does not
+      # move; that direction is owned by the per-release backfill
+      # discipline decided under #1091, not by this pin. (b) a
+      # sys-verification artifact whose cited evidence is weak, stale, or
+      # restated prose — the floor counts typed links; judging the
+      # evidence lives in scripts/status_evidence_check.py and review.
+      #
+      # RED-FIRST (2026-09-01, locally under the pinned 0.23.0): pinned at
+      # 62 with 61 measured, this step exits 1 with the below-floor error;
+      # at 61 it exits 0; on output missing the sys2 row entirely, the
+      # unmeasurable branch exits 1.
+      - name: Check coverage (asserting — #1091)
+        run: |
+          set -o pipefail
+          SYS2_VERIFIED_FLOOR=82
+          rivet coverage 2>&1 | tee /tmp/rivet-coverage.txt
+          COVERED=$(awk '$1 == "sys2-has-verification" && $2 == "system-req" {print $3; exit}' /tmp/rivet-coverage.txt)
+          echo "sys2-has-verification floor=$SYS2_VERIFIED_FLOOR covered=${COVERED:-<none>}"
+          if ! [ "$COVERED" -ge 0 ] 2>/dev/null; then
+            echo "::error::rivet coverage printed no parseable 'sys2-has-verification' covered count — the V-closure floor cannot be measured. Treating as RED, not green (#1064, #1091)."
+            exit 1
+          fi
+          if [ "$COVERED" -lt "$SYS2_VERIFIED_FLOOR" ]; then
+            echo "::error::system-reqs with a linked sys-verification fell below the floor ($COVERED < $SYS2_VERIFIED_FLOOR). A verifies edge was lost or a verification source file went invisible (#1091) — find it; do not lower the floor."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # Rivet Federated Graph — ADVISORY (deliberately NOT in the required set).
@@ -756,11 +870,12 @@ jobs:
         # rather than reporting a silent pass — an unreachable gate that prints
         # nothing is the class this release exists to remove.
         #
-        # NOTE, recorded not fixed here: this target tree references
-        # `tests/spec-testsuite` ZERO times, so it is NOT the "CI-tracked compile
-        # rate" over the official suite that README.md:122 and
-        # FEATURE_MATRIX:122 advertise. That 257-file suite is checked out and
-        # entirely unrun. Wiring it is RQ-56-CONF's continuation.
+        # NOTE (updated by #1095): this target tree still references
+        # `tests/spec-testsuite` ZERO times — but that is no longer the gap it
+        # recorded. The official-suite compile census the docs advertise is
+        # produced by `.github/workflows/spec-suite.yml` (the only workflow
+        # that checks out the submodule), exact-pinned in
+        # `scripts/spec_compile_census.py` with a 257-file non-vacuity floor.
         # `|| rc=$?`, NOT a bare `rc=$?` on the next line: GitHub runs `run:`
         # under `bash -e`, so a non-zero `bazel test` aborts the step BEFORE the
         # capture — which is exactly how the first attempt at this fix failed,
@@ -1056,6 +1171,10 @@ jobs:
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py | tee impdisp1017.txt
           grep -Eq '^executions: [1-9][0-9]* \([1-9][0-9]* value, [1-9][0-9]* trap\)' impdisp1017.txt
+          # The `ci-checks: emulations >= 6` floor counts only the wasmtime/
+          # unicorn differentials; it cannot see the decline-honesty half, so
+          # that half carries its own floor here (#1104 follow-up).
+          grep -Eq '^refusals: [1-9][0-9]*$' impdisp1017.txt
           grep -q '^RESULT: PASS' impdisp1017.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
@@ -1541,7 +1660,14 @@ jobs:
       # truth is wasmtime. WIDENS coverage only — #757 stays OPEN (blocked on
       # the reporter's reduced module); a divergence here is a real find.
       - name: Run multi-segment static-data oracle (#406, self-contained + relocatable)
-        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py | tee mss406.txt
+          # The `ci-checks: emulations >= 27` floor counts only the two
+          # emulated paths; it is blind to the #1041 refusal assertion, which
+          # emulates nothing. That half carries its own floor here (#1113).
+          grep -Eq '^refusals: [1-9][0-9]*$' mss406.txt
       # #757: gale's EXACT fused os-tl node (loom.wasm) — the real miscompile that
       # 7 synthetic reconstructions could not reproduce (PR #772). Three active data
       # segments overlap at linmem 0x100000; the #354 reloc retargeting bound the
@@ -2575,6 +2701,67 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+
+  param-block-silent-1097-oracle:
+    name: "param-block silent-miscompile oracle (#1097, pre-#1096 bytes + decline)"
+    # #1097 (RQ-61-MVORACLE): the EVIDENCE for the #1096 parameter-taking
+    # block-type decline, kept executable. The committed fixture holds the
+    # PRE-#1096 compiler's own emitted objects (rev c4b463f3^); every run
+    # re-executes them under unicorn against wasmtime-first expected values
+    # and requires the four demonstrated SILENT-WRONG vectors to return
+    # EXACTLY the pinned wrong values (if/ARM + if/RV32: uninitialized-
+    # register canary instead of 7; block/RV32: dropped br_if param;
+    # loop/RV32: mangled back-edge join, 2 for 10) — a decline with its
+    # justification re-proven, not archived. The green half asserts the
+    # current compiler CLEANLY declines all six shape x backend legs (exit
+    # != 0, no panic, no object, the shared #1093 needle) and that the guard
+    # module of supported neighbours still compiles and matches wasmtime.
+    # Negative results are pinned as such: block/ARM was CORRECT pre-#1096
+    # (conservative leg) and loop/ARM was already #509-declined — neither is
+    # asserted wrong, per "do not manufacture a wrong answer".
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run #1097 param-block silent-miscompile oracle (fixture red half + live decline half)"
+        # `set -euo pipefail` per #890. The `ci-checks: emulations >= 19`
+        # floor counts the 11 fixture + 8 guard unicorn entries; it CANNOT
+        # see the decline half (#1113 — a refused compile emulates nothing),
+        # so that half carries its own in-script floor (refusals == 6) and
+        # the grep below pins its printed count (the #1112 pattern). The
+        # silent-wrong partition is likewise pinned in-script AND grepped:
+        # a red half that stopped demonstrating the miscompile must not
+        # stay green.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py | tee pbs1097.txt
+          grep -Eq '^refusals: [1-9][0-9]*$' pbs1097.txt
+          grep -Eq '^silent-wrong vectors: 4 \(of 4 pinned\); match vectors: [1-9][0-9]*$' pbs1097.txt
+          grep -q '^RESULT: PASS' pbs1097.txt
+      # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
   call-indirect-676-heterogeneous-oracle:
     name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)

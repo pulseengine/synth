@@ -35,9 +35,13 @@
 #
 # Not bound here (deliberately — runtime-derived, gated elsewhere): the
 # 141/141 ordeal-vs-Z3 agreement and 139/139 validator counts (re-derived by
-# the CI `verify` job that actually runs them), the wasm spec-suite compile
-# rate (CI-tracked), and cycle/size numbers (gale silicon + differential
-# jobs).
+# the CI `verify` job that actually runs them), and cycle/size numbers (gale
+# silicon + differential jobs). The wasm spec-suite compile CENSUS moved OFF
+# this list in #1095: for years "(CI-tracked)" here was itself the overclaim —
+# no job ran the suite and no checkout initialized the submodule. It is now
+# produced by the `Spec Suite` workflow (scripts/spec_compile_census.py,
+# exact-pinned there) and the doc rows citing it are bound below by the
+# SYNTH-SPEC-SUITE-CENSUS-* claims.
 
 # -----------------------------------------------------------------------------
 # status_fields — the derivations behind artifacts/status.json (the single
@@ -142,6 +146,22 @@ status_fields:
     kind: capture
     file: artifacts/proof-inventory.json
     pattern: '"rocq_qed_total": (\d+)'
+  # -- RQ-61-WASMOP (#1057): the manifest's universe is the shipped WasmOp
+  # enum since schema v2 (v1 covered only the 138 Rocq constructors, so the
+  # ops gale actually meets — End/Block/Call/Br/Unreachable/byte-memory — got
+  # NO ROW rather than an explicit modeled:false row). These two captures pin
+  # the manifest's own variant count EQUAL to the independently hand-pinned
+  # WASM_OP_VARIANT_COUNT that selector_stack_effect_no_wildcard_946.rs
+  # re-verifies against the same source at test time — two readers of
+  # wasm_op.rs that disagree turn CI red, never a silently shrunken universe.
+  proof_inventory_wasm_op_total:
+    kind: capture
+    file: artifacts/proof-inventory.json
+    pattern: '"wasm_op_total": (\d+)'
+  wasm_op_variant_count_pin:
+    kind: capture
+    file: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
+    pattern: '^const WASM_OP_VARIANT_COUNT: usize = (\d+);'
   kani_harnesses:
     kind: count
     pattern: '#\[kani::proof\]'
@@ -743,7 +763,8 @@ claims:
         text: "UNSOUND, deliberately kept and deliberately named"
 
   # RQ-60-CFOBLIG (#1057) increment 2: the proof-inventory manifest
-  # (artifacts/proof-inventory.json, schema synth-proof-inventory-v1) exists so
+  # (artifacts/proof-inventory.json, schema synth-proof-inventory-v2 since
+  # RQ-61-WASMOP) exists so
   # consumers (gale's fathom) READ which theorem discharges which wasm_instr
   # constructor instead of GUESSING names by CamelCase->snake_case — a guess
   # that misses 29 of 138 constructors (the brif_correct fused-name class) and
@@ -763,6 +784,28 @@ claims:
       - kind: file-exists
         path: scripts/proof_inventory.py
 
+  # RQ-61-WASMOP (#1057): schema v2 extends the manifest's universe from the
+  # Rocq constructor set to the shipped WasmOp enum, so absence is a ROW
+  # (modeled: false), never a missing row. This claim pins the universe size:
+  # the artifact's own wasm_op_total must EQUAL the hand-pinned (and
+  # test-verified) WASM_OP_VARIANT_COUNT of the no-wildcard tripwire — the
+  # generator's Python reader and the tripwire's Rust reader of wasm_op.rs
+  # cannot drift apart silently, and a gutted variant parse cannot green.
+  - id: SYNTH-PROOF-INVENTORY-UNIVERSE-1057
+    doc: scripts/proof_inventory.py
+    text: "independently hand-pinned `WASM_OP_VARIANT_COUNT`"
+    evidence:
+      - kind: fields-equal
+        names: [proof_inventory_wasm_op_total, wasm_op_variant_count_pin]
+      - kind: verbatim
+        text: '"modeled": false means the Rocq model has NO constructor'
+      - kind: count-eq
+        pattern: '"modeled": false'
+        glob: ['artifacts/proof-inventory.json']
+        expect: 141
+      - kind: file-exists
+        path: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
+
   - id: SYNTH-A32-TRIPWIRE-UNIVERSE
     doc: scripts/templates/feature_matrix.md.tmpl
     text: "no-wildcard tripwire"
@@ -775,6 +818,83 @@ claims:
         path: crates/synth-backend/tests/a32_no_silent_nop_615.rs
       - kind: file-exists
         path: crates/synth-backend/tests/wcet_sp_no_wildcard_946.rs
+
+  # RQ-61-SPECCLAIM (#1095) — the spec-suite compile census. The doc rows cite
+  # numbers whose single source is the PINS table in
+  # scripts/spec_compile_census.py (run by the `Spec Suite` workflow, the only
+  # one that checks out the tests/spec-testsuite submodule). These claims bind
+  # doc <-> script <-> workflow so no leg can drift alone: the numeric phrase
+  # must sit verbatim in each doc, the same numbers must sit in the script's
+  # pins, and the workflow must still check out the submodule and run the
+  # script. The census itself (does the compiler still produce those counts?)
+  # is gated at runtime by the workflow, not re-derived here — claim_check
+  # runs without submodules, which is the original #1095 failure mode and
+  # exactly why this ledger must not pretend to measure the suite.
+  - id: SYNTH-SPEC-SUITE-CENSUS-README
+    doc: README.md
+    text: "full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 60, panics 0 / 0 / 0"
+    evidence:
+      - kind: count-eq                       # arm pins in the census script
+        pattern: 'ok=23, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # riscv pins
+        pattern: 'ok=13, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # aarch64 pins
+        pattern: 'ok=27, partial=33'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # doc-cited ok+partial figures
+        pattern: '"arm": 92, "riscv": 82, "aarch64": 60'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # the 257-file non-vacuity floor
+        pattern: 'EXPECTED_WAST_FILES = 257'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-min                      # the checkout is non-vacuous
+        pattern: 'submodules: recursive'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+      - kind: count-min                      # ...and the job runs the census
+        pattern: 'spec_compile_census'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+
+  - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 60, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |"
+    evidence:
+      - kind: count-eq                       # same script pins as the README leg
+        pattern: 'ok=23, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'ok=13, partial=69'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'ok=27, partial=33'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '"arm": 92, "riscv": 82, "aarch64": 60'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: 'EXPECTED_WAST_FILES = 257'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-min
+        pattern: 'submodules: recursive'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+      - kind: count-min
+        pattern: 'spec_compile_census'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
 
   - id: SYNTH-README-STATUS-BADGES
     doc: README.md
@@ -1744,7 +1864,10 @@ claims:
       - kind: ratchet
         name: mirror_marker_files
         direction: down
-        value: 60
+        # v0.61 RQ-61-FUZZWINDOW (#1055): 60 -> 59 — issue_103_i64_aapcs.rs
+        # no longer says "mirrors" (the first-read checker doc it described
+        # was replaced by the while-live invariant, stated in its own terms).
+        value: 59
         baseline: 57
         waivers:
           - to: 60
@@ -2343,6 +2466,67 @@ claims:
         min: 37
       - kind: verbatim
         text: "ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl"
+
+  # ---------------------------------------------------------------------------
+  # #1100 / RQ-61-MCDCFLOOR — the MC/DC report-side floors move ONLY through
+  # the gate's own re-statement ledger. The floors are layout-coupled through
+  # witness's DWARF decision reconstruction (upstream witness#208): adding
+  # code ANYWHERE can move them on untouched functions, so the standing
+  # protocol (#990, twice exercised) is re-statement WITH manifest evidence,
+  # never a floor lowered bare. scripts/mcdc_gate.py now ENFORCES it: a floor
+  # miss WITH a BRANCH_POPULATION mismatch exits 1 (real alarm, no
+  # re-statement offered); a miss WITHOUT one exits 2 (reconstruction drift,
+  # per-function attribution + the paste-able ledger entry); and
+  # check_restatement_ledger() refuses any run whose live constants disagree
+  # with the newest RESTATEMENTS entry.
+  #
+  # These pins bind the constants' EXACT current values, so every movement is
+  # a visible claims.yaml diff in the PR that caused it — checked by the
+  # claim-check job on every PR, no wasm toolchain required. Deliberately NOT
+  # `kind: ratchet`: these numbers are BIDIRECTIONAL layout noise with no
+  # honest direction to assert, and their waiver channel already exists as
+  # the RESTATEMENTS ledger inside the gate (evidence-carrying, per-movement,
+  # self-checked); a second waiver channel here would be the hand-maintained
+  # mirror this file exists to count. When a floor moves: append the
+  # RESTATEMENTS entry, update the constant, and update the matching pin
+  # below — same diff.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-MCDC-FLOOR-RESTATEMENT
+    doc: scripts/mcdc_gate.py
+    text: "movement and evidence travel in the SAME diff"
+    evidence:
+      - kind: count-eq                       # the five constants, exact values
+        pattern: '^FLOOR_DECISIONS = 21$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_CONDITIONS = 130$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_PROVED = 56$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^FLOOR_FULL_MCDC_DECISIONS = 3$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^CEILING_DEAD = 50$'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-eq                       # the enforcement itself exists…
+        pattern: '^def check_restatement_ledger'
+        glob: ['scripts/mcdc_gate.py']
+        expect: 1
+      - kind: count-min                      # …is CALLED by the gate…
+        pattern: 'ledger_problems = check_restatement_ledger\(\)'
+        glob: ['scripts/mcdc_gate.py']
+        min: 1
+      - kind: count-min                      # …and its potency tests are wired
+        pattern: 'test_gate_refuses_to_run_on_inconsistent_ledger'
+        glob: ['scripts/test_mcdc_gate.py']
+        min: 1
 
   # ---------------------------------------------------------------------------
   # #910 — the coverage instrument says its SCOPE. The job was `Code Coverage`,

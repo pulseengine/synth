@@ -909,15 +909,15 @@ dependencies = [
 
 [[package]]
 name = "scry-sai-bits"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d79172a27acefe2c4c25bcd3177f3b31fef898d3852d25dbe63307436abef4f2"
+checksum = "89ff5009c3d6c4720da619518ade682fc3620a028f1ee85cbee53fe8affc9b40"
 
 [[package]]
 name = "scry-sai-core"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610fe659720c5727eab74ab5321b74e77c759fbbc1d8857c404c6f78e642aa74"
+checksum = "2c875ac760b0ce4ee514b92af19d8e4b1d7466d39cded53ae07912e2b37ff18e"
 dependencies = [
  "scry-sai-bits",
  "scry-sai-float",
@@ -934,54 +934,54 @@ dependencies = [
 
 [[package]]
 name = "scry-sai-float"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dee3385975e9d26fa8295d42b9241db96011ea154d71fac3e2687e9138a7e338"
+checksum = "9daccd1184af126fa7383a1364e6775b7d21bdfc84c8671932efd5165ad3d184"
 
 [[package]]
 name = "scry-sai-handle"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d996b2331f4c10f050e07f79bd82dafed17380c16e6af32b9ea89be044604c4"
+checksum = "b4131ce59565080649f788da13bf03a887c4e9481dd4d322032bf1cde83fb794"
 
 [[package]]
 name = "scry-sai-interval"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ed8f84f821419072e07ca1c5cad4d7baef5fb7057f28f326cba6a21b48b3ed"
+checksum = "3e5dd7e1d67a6054fe4071b1ffee2cd018e066aa5035832edc07f3ba6e87a132"
 
 [[package]]
 name = "scry-sai-octagon"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4693919dbcdd26d5fed366060b9b1ac660c0ad59ada7eb252e5fcf3417a3760a"
+checksum = "0b5d4fef9600e5b684e3369d847f48b74542f425a4b961ea256fa95cd662ccae"
 
 [[package]]
 name = "scry-sai-pentagon"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53224e61c42a16450b08028432bc8673fc712b98e630aed032c63045c5552aed"
+checksum = "f3db903e162d088ec155808e40369ac2c430abfa8fb5d1e727112dfb44672014"
 
 [[package]]
 name = "scry-sai-provenance"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95e76d376ff174e4802ce1c93960b113d67eb4c1e82144d124d2c24a7aaf7a3"
+checksum = "3715f1c898a7031e8f90f4e4959e76841fe15aaa0fd9f7ead6cd59622a1992e6"
 
 [[package]]
 name = "scry-sai-segment"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5300163217ba63f58030e4055438761bcbdd83d107bb24e454832a3a9eb96e8"
+checksum = "55018d28013f9fca5e19f596782ae1d64c8fd46df2eb681af6fdb298d8b4dc4d"
 dependencies = [
  "scry-sai-interval",
 ]
 
 [[package]]
 name = "scry-sai-taint"
-version = "3.2.4"
+version = "3.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1bef42b05646632bb914cd2586cd19bf263f51ca9b31d1a28d2f2adff09b6d8"
+checksum = "3a7381ecb944874feb72512de396d4fbf605be198a73e7f3d2be7f7dd56f7f98"
 
 [[package]]
 name = "semver"
@@ -1111,14 +1111,14 @@ dependencies = [
 
 [[package]]
 name = "synth-abi"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "synth-wit",
 ]
 
 [[package]]
 name = "synth-analysis"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-aarch64"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "synth-core",
  "thiserror",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-awsm"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-riscv"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-wasker"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1178,11 +1178,11 @@ dependencies = [
 
 [[package]]
 name = "synth-cfg"
-version = "0.60.0"
+version = "0.61.0"
 
 [[package]]
 name = "synth-cli"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "synth-core"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "gimli",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "synth-frontend"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "synth-mcdc-harness"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "synth-backend-riscv",
  "synth-core",
@@ -1247,14 +1247,14 @@ dependencies = [
 
 [[package]]
 name = "synth-memory"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "bitflags",
 ]
 
 [[package]]
 name = "synth-opt"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "criterion",
  "synth-cfg",
@@ -1262,11 +1262,11 @@ dependencies = [
 
 [[package]]
 name = "synth-qemu"
-version = "0.60.0"
+version = "0.61.0"
 
 [[package]]
 name = "synth-synthesis"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "proptest",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "synth-test"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "synth-verify"
-version = "0.60.0"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "synth-wit"
-version = "0.60.0"
+version = "0.61.0"
 
 [[package]]
 name = "tempfile"
