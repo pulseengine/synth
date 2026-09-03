@@ -37,6 +37,31 @@ artifacts:
       failure blocks PRs; only a renamed or never-running context DEADLOCKS
       them. Rollback is a revert, whose own CI runs the reverted config.
 
+      REDUNDANCY IS A SEPARATE AXIS FROM CAPACITY, and this artifact now owns
+      the invariant because a live incident proved the two are not the same
+      thing. On 2026-09-02 the `light` pool had EXACTLY ONE runner
+      (pulseengine-ci-01-8) and it went offline. Two REQUIRED contexts —
+      `Format` and `Version Pin Sweep` — were routed there, so both were
+      assigned to a dead machine, sat 600s, and failed having executed ZERO
+      steps. Branch protection needs a required context to PASS; a dead pool
+      cannot produce one, so NOTHING IN THE REPO COULD MERGE. It was resolved
+      at the fleet level (the runner returned and two `rust-cpu` machines
+      gained the `light` label, so `light` now has 3), not in this repo.
+
+      WHY EVERY MEASUREMENT IN #1062 MISSED IT: they all asked "is this pool
+      IDLE?". `light` was idle, which reads as healthy. None asked "HOW MANY
+      MACHINES CAN SATISFY THIS LABEL?" — and idle and unavailable are
+      indistinguishable in a utilisation reading. That is the third variant of
+      the same error this issue has produced (the first two were reading a rate
+      off a single instant, in opposite directions).
+
+      SO THE INVARIANT, to be enforced rather than remembered: a REQUIRED
+      context must not target a label satisfiable by fewer than two ONLINE
+      runners. Any retarget in this artifact must demonstrate the destination
+      label's online-runner count, not merely that the pool was idle. Red-first
+      is available and cheap: point the check at a single-runner label and it
+      must refuse.
+
       NOT IN SCOPE: `Test`/`Bazel`/`Z3`/`Kani`. Each needs its toolchain proven
       on the pool first, and `Test` in particular runs `sudo apt-get install`,
       which no self-hosted job in this repo does.
@@ -51,4 +76,4 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1062"
-      done-when: "manual: Claim Check runs self-hosted with its own green cycle as acceptance evidence and its own sampled measurement (window + queue depth, not a point reading), or is recorded as unsuitable with the measured reason"
+      done-when: "manual: Claim Check runs self-hosted with its own green cycle as acceptance evidence and its own sampled measurement (window + queue depth, not a point reading), or is recorded as unsuitable with the measured reason; AND no required context targets a label satisfiable by fewer than two ONLINE runners, checked rather than remembered"
