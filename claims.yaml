@@ -2597,3 +2597,68 @@ claims:
         pattern: 'test_dependabot_minor_hold\.py'  # required Claim Check job
         glob: ['.github/workflows/ci.yml']
         expect: 1
+
+  # RQ-62-EMBEDDER (#1131): the --relocatable embedder ABI document
+  # (docs/embedder-abi-relocatable-arm.md) is DERIVED from the emitter, and
+  # this claim binds the two: the doc's register-contract sentences must stay
+  # verbatim, and the emitter patterns each sentence cites must still exist.
+  # Moving the globals base off R9, the linmem base off R11, the size off
+  # R10, widening the allocator past R8, or adding a reserved register to the
+  # prologue's saved set all change a pinned pattern and turn this red — as
+  # does rewording the doc's contract rows without coming here. The byte-level
+  # cross-check (compile + disassemble + assert) is
+  # scripts/embedder_abi_audit_1131.py.
+  - id: SYNTH-EMBEDDER-ABI-RELOCATABLE-1131
+    doc: docs/embedder-abi-relocatable-arm.md
+    text: "**R11** (`fp`) | Linear-memory (memory 0) base address | Embedder, before any export runs | Embedder | (b) chosen"
+    evidence:
+      - kind: verbatim                       # the doc's R10 contract row
+        text: "**R10** (`sl`) | Linear-memory (memory 0) size **in bytes** | Embedder, before any export runs"
+      - kind: verbatim                       # the doc's R9 contract row
+        text: "**R9** (`sb`) | Globals-table base address | Embedder, before any export runs"
+      - kind: verbatim                       # the doc's R12 scratch row
+        text: "**R12** (`ip`) | Encoder scratch"
+      - kind: verbatim                       # the load-bearing size semantics
+        text: "`LSR rd, R10, #16`"
+      - kind: count-eq                       # allocator universe stops at R8:
+        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = \['   # R9/R10/R11/R12
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1                            # reserved (doc: "never allocated")
+      - kind: count-min                      # memory accesses are R11-based
+        pattern: 'MemAddr::reg_imm\(Reg::R11'
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        min: 8
+      - kind: count-min                      # ...including the folded-offset form
+        pattern: 'MemAddr::imm\(Reg::R11'
+        glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
+        min: 4
+      - kind: count-min                      # globals are R9-based (get + set +
+        pattern: 'MemAddr::imm\(Reg::R9'     # i64 pair halves)
+        glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
+        min: 6
+      - kind: count-eq                       # memory.size derives pages from
+        pattern: 'memory size in bytes / 65536 = pages'   # R10 bytes in BOTH
+        glob: ['crates/synth-backend/src/arm_encoder.rs'] # encoders (Thumb-2 +
+        expect: 2                                         # A32)
+      - kind: count-min                      # ...and the Thumb-2 encoding reads
+        pattern: 'reg_to_bits\(&Reg::R10\)'  # R10 itself, not a copy
+        glob: ['crates/synth-backend/src/arm_encoder.rs']
+        min: 1
+      - kind: count-min                      # the prologue saves ONLY R4-R8+LR
+        pattern: 'regs: vec!\[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR\]'
+        glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
+        min: 1                               # (adding a reserved reg changes this)
+      - kind: count-eq                       # --relocatable forces the direct
+        pattern: '`--relocatable` \(host-link ET_REL\) forces the direct selector'
+        glob: ['crates/synth-backend/src/arm_backend.rs']
+        expect: 1                            # selector (#197) — the doc's scope
+      - kind: file-exists                    # the byte-level cross-check exists
+        path: scripts/embedder_abi_audit_1131.py
+      - kind: count-eq                       # the --relocatable help states the
+        pattern: 'the embedder sets R11 = linear-memory'   # same contract (the
+        glob: ['crates/synth-cli/src/main.rs']             # #1131 ask) — help,
+        expect: 1                                          # doc and emitter
+      - kind: count-eq                       # cannot drift pairwise
+        pattern: 'R10 = linear-memory size in BYTES, and R9 = globals-table'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
