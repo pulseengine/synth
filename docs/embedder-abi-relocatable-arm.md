@@ -184,7 +184,12 @@ whatever the region holds), not a trap.
   `R_ARM_THM_CALL` relocations — an object whose every relocation is
   `R_ARM_THM_CALL` is the expected shape. Read the symbol table by section
   TYPE (`SHT_SYMTAB`), not name: the ARM builder emits its symtab with an
-  empty section name.
+  empty section name. Component-model export names keep the WIT name
+  verbatim, including `:` `@` `#` — and in GNU ARM assembly `@` begins a
+  comment, so a C-side `__asm__` rename label on such a name truncates
+  mid-symbol ("garbage following instruction"). Reference the `func_N`
+  alias at the same address instead (or `objcopy --redefine-sym` if you
+  must keep the WIT name).
 
 ## What is INCIDENTAL — observed in some outputs, guaranteed by nothing
 
