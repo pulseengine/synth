@@ -684,7 +684,7 @@ jobs:
           # exactly the 13 ids visible in `rivet list`.
           # Measured, not computed: the live count is re-derived below and
           # this pin is the value it reports.
-          ARTIFACT_FLOOR=517
+          ARTIFACT_FLOOR=518
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
