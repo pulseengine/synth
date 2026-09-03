@@ -4509,6 +4509,84 @@ fn compile_all_exports(
         }
     }
 
+    // RQ-62-TABLEDANGLE (#1102 residual): a DECLINED function reachable ONLY
+    // through the funcref TABLE — an `elem` segment names it, no direct call
+    // does — slips the #1102 gate above, because no relocation carries its
+    // index label. Measured red-first per backend (v0.61, this fixture: a
+    // dynamic-index `call_indirect` over `(elem $good $bad)` where `$bad`
+    // declines):
+    //   - ARM Thumb-2 / A32 `--relocatable`: exit 0, object ships, links
+    //     CLEAN — the dispatch reads the R11 table region the EMBEDDER
+    //     populates, and the declined function's code and symbol are simply
+    //     ABSENT from the object. The embedder cannot honor the table
+    //     contract for that slot (the #1046 argument: the function's code is
+    //     not in the artifact, so there is nothing an embedder could point
+    //     the slot at) — `call_indirect` to it becomes whatever garbage the
+    //     region holds. That is the live hole this gate closes.
+    //   - ARM/A32 self-contained (`--cortex-m` family, no imports): already
+    //     refuses — the image builder's #275 "broken dispatch table" bail is
+    //     slot-precise and test-pinned, so this gate deliberately stands
+    //     DOWN there (`self_contained_funcref_table`) rather than shadowing
+    //     a pinned refusal.
+    //   - RV32: `call_indirect` itself is a loud per-function decline, so
+    //     the dispatching export is skipped and #952 exits non-zero.
+    //   - aarch64: the substrate table's `b func_N` trampoline reloc hits
+    //     the ELF builder's #851/#1013 refusal. This gate now fires first
+    //     with the uniform message; the builder refusal stays as
+    //     defense-in-depth (the same layering `dangling_declined_callee_1102`
+    //     documents for the direct-call class).
+    // Scoped to a RETAINED dispatch: if no compiled function performs
+    // `call_indirect`, no shipped code reads the table, and a skipped elem
+    // target is an ordinary partial-object skip (warned, and covered by #952
+    // when it is an export) — refusing there would red every corpus sweep
+    // for a table nothing dispatches through. Deliberately NOT waived by
+    // `--allow-skipped-exports`, for the #1102 reason: that flag accepts a
+    // PARTIAL object, not one whose dispatch table cannot be populated.
+    if !config.self_contained_funcref_table {
+        let skipped_idx: std::collections::BTreeSet<u32> =
+            skipped_funcs.iter().map(|(_, _, _, i)| *i).collect();
+        let retained_dispatch = compiled_funcs.iter().any(|cf| {
+            all_exports.iter().any(|f| {
+                f.index == cf.wasm_index
+                    && f.ops
+                        .iter()
+                        .any(|op| matches!(op, WasmOp::CallIndirect { .. }))
+            })
+        });
+        if retained_dispatch && !skipped_idx.is_empty() {
+            let dead_slots: Vec<String> = all_funcref_slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, entry)| match entry {
+                    Some(fidx) if skipped_idx.contains(fidx) => {
+                        Some(format!("slot {slot} -> function {fidx}"))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !dead_slots.is_empty() {
+                anyhow::bail!(
+                    "#1102/RQ-62-TABLEDANGLE: {} funcref-table slot(s) name \
+                     function(s) this compile DECLINED ({}), and a retained \
+                     function dispatches through the table (`call_indirect`). \
+                     The declined function's code is in NO object, so no \
+                     embedder or linker input can ever populate that slot — \
+                     dispatching to it would execute whatever the table \
+                     region holds. Refusing to emit the object rather than \
+                     shipping an unpopulatable dispatch table with exit 0 \
+                     (the #275 self-contained broken-table refusal applied \
+                     to the host-linked paths). See the preceding 'skipping \
+                     function' warning(s) for each decline reason. \
+                     --allow-skipped-exports does not cover this: that flag \
+                     accepts a PARTIAL object, not one whose dispatch table \
+                     cannot be populated.",
+                    dead_slots.len(),
+                    dead_slots.join(", ")
+                );
+            }
+        }
+    }
+
     // Check if any function has relocations (import calls)
     let has_relocations = compiled_funcs.iter().any(|f| !f.relocations.is_empty());
 

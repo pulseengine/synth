@@ -45,4 +45,5 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1102"
+      landed: "#1138"
       done-when: "manual: a module whose elem segment names a DECLINED function with no direct call site either links or refuses loudly on all four backends — demonstrated red-first per backend, never inferred from the direct-call path"
