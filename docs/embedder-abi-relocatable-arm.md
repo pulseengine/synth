@@ -217,6 +217,16 @@ Category (c). Do not build a harness on any of these:
   "works" for exactly as long as the module keeps that shape. Set it
   regardless; which emissions read it is an implementation detail.
 
+- **A WORKING RESULT DOES NOT VERIFY THE METHOD THAT PRODUCED IT.** Requested
+  by jess after conforming to this contract correctly *by luck, twice*
+  (#1131): they read R11 out of the self-contained reset handler — a 1-in-2
+  guess between two linear-memory bases in that binary, which they won — and
+  their harness then matched a SIL reference bit-exact, which felt like
+  confirmation and was not. A correct output means the inferred contract was
+  not *detectably* wrong on that input; it says nothing about the contract.
+  Everything in this section is the set of things a passing harness can be
+  built on top of and still be wrong about.
+
 ## Compliance note
 
 With the default `--safety-bounds none` there is no OOB trap on this path —

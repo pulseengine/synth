@@ -33,7 +33,7 @@ artifacts:
       byte. If writing it down reveals that the contract is under-determined —
       that two code paths disagree, or a value is incidental rather than
       guaranteed — that is a FINDING and outranks the document.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [docs, embedder, relocatable, consumer-contract, jess]
     links:
@@ -44,5 +44,51 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1131"
+      verified-by: >-
+        PR #1139, and CLOSED ON THE INTEGRATOR'S OWN CONFIRMATION rather than
+        on our assessment — which is what the done-when's third clause
+        required and why the artifact was held open after the code landed.
+        jess on #1131: "The document is sufficient. I audited jess's existing
+        harness against it line by line and found no ambiguity I had to
+        resolve by guessing."
+
+        THE DOCUMENT CAUGHT TWO INDEPENDENT LATENT DEFECTS IN A CONSUMER THAT
+        WAS ALREADY GREEN. (1) jess had read R11 out of synth's self-contained
+        reset handler and treated it as authoritative — the exact method
+        category (c) disclaims. That image carries TWO linear-memory bases
+        (`OPTIMIZED_LINMEM_BASE = 0x2000_0100`, 0x100 above the handler's
+        R11); they had a 1-in-2 guess and won it. (2) Their C shim happened to
+        compile to a bare `b.w` tail-branch, so GCC never allocated R11 as a
+        frame pointer — conformance "by optimisation outcome, not by
+        conformance", and one more local variable would have silently produced
+        a wrong linear-memory base on a flight control loop. Both are now
+        fixed on their side with `-ffixed-r9/r10/r11` plus an assertion over
+        EMITTED code (not the flag).
+
+        The three-way (a) fixed / (b) chosen / (c) incidental split is what
+        they credit for making the audit possible: "without it I could not
+        have told which of my working assumptions were load-bearing."
+
+        Category (c) extended at their request with the sentence they say they
+        would most have wanted three days earlier: a working result does not
+        verify the method that produced it.
+
+        The contract is bound to the emitter, not merely written beside it —
+        `scripts/embedder_abi_audit_1131.py` re-derives the load-bearing facts
+        from a compiled object and `claims.yaml` pins them
+        (SYNTH-EMBEDDER-ABI-RELOCATABLE-1131), so emitter drift reddens the
+        required Claim Check job. Potency verified by the coordinator by
+        making the emitter disagree with the doc ("RESULT: FAIL — fact 2:
+        non-call relocation types [28]") and restoring. NOTE: two earlier
+        potency attempts were INVALID — one failed environmentally in both
+        control and mutation (discriminating nothing), the other mutated a
+        fact the doc explicitly disclaims as incidental. Only the third was a
+        real test.
+
+        RESIDUAL, and it is jess's top ask on #1132: prose is not a gate for
+        the EMBEDDER's side. They conformed wrong-but-green in two independent
+        places and found it only by reading the doc after the fact. A
+        mechanical `synth verify-embedder` that refuses when a linked object
+        writes R9/R10/R11 is tracked separately.
       done-when: "manual: every register and address the embedder must honour for --relocatable on Cortex-M is documented WITH the emitting code as its citation, the integrator confirms it unblocks the RT1176 cascade, and a check fails if the document and the emitter disagree"
       landed: "PR #1139 (contract doc derived from the emitter with file:line citations, byte-level audit script, claims.yaml doc<->emitter binding red-first proven, --help block beside the --embedder-* flags). Status stays proposed: the done-when's second leg — the integrator confirms it unblocks the RT1176 cascade — is theirs to confirm on #1131, not ours to assert."
