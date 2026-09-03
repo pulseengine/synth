@@ -1,0 +1,454 @@
+# =============================================================================
+# sys-verification for the v0.61 release artifacts (#1091, increment 2).
+#
+# WHAT THIS FILE IS: the TYPED `verifies` links that make v0.61's verification
+# evidence queryable by the trace graph — the same transcription the v0.60
+# pilot (sys-verification-v0.60.yaml) performed for the RQ-60-* set. Every
+# RQ-61-* artifact below already names its evidence in `done-when` /
+# `verified-by` / `landed`; these artifacts cite that evidence (the test, the
+# CI job, the workflow, the red-first transcript) so `rivet coverage`'s
+# `sys2-has-verification` rule can see it, and carry each requirement's stated
+# RESIDUAL verbatim so no link overstates what was shown.
+#
+# WHAT THIS FILE IS NOT: a restatement of requirement titles to move a number
+# — that is the gamed-metric class this release (#1091) is named for. If a
+# cited referent disappears, the RQ-61-* side's own gates (the required Claim
+# Check job, the oracle floors, the differential jobs) go red; this file only
+# adds the graph edge.
+#
+# COVERAGE DECISIONS, recorded here because this file is where a reader will
+# look for the missing links:
+#   * RQ-61-CICAP and RQ-61-VCLOSURE carried status `proposed` when this file
+#     was authored, so a sys-verification link would have claimed a completion
+#     that had not happened — hence their deliberate absence.
+#     CORRECTED AT RELEASE ASSEMBLY (a cold review caught it): BOTH are now
+#     `implemented` — CICAP closed one commit before this file merged, and
+#     VCLOSURE flips on this file's own evidence. So the ORIGINAL reason no
+#     longer holds for either, and the honest restatement is:
+#       - RQ-61-CICAP is unlinked because nobody has written its link yet,
+#         not because it is incomplete. A later increment should add it.
+#       - RQ-61-VCLOSURE stays unlinked ON PURPOSE and the reason is
+#         unchanged: a self-link authored in the same commit that flips the
+#         status manufactures the evidence that closes it — the metric-gaming
+#         shape this artifact exists to remove.
+#     The coverage floor (82) counts only what is linked, so it is not
+#     overstated either way. Left visible rather than rewritten, because
+#     stale prose behind a green gate is this release's own defect class.
+#   * The 52 pre-v0.60 release artifacts (v0.56–v0.59) are EXEMPT from
+#     backfill, decided under #1091: they predate the mandatory
+#     `done-when`/`verified-by` fields (RQ-60-FLIPCOUPLE), so linking them is
+#     archaeology (~15–25 h measured by the #1091 lane), not transcription
+#     (~5–7 min/artifact measured on the v0.60 pilot and re-confirmed at
+#     ~10 min/artifact on this file). Their verification exists and is
+#     described in their release notes; it is not queryable by the trace
+#     graph, and that is a recorded limitation, not a debt being serviced.
+#
+# Deliberately NOT in artifacts/release-v0.61/: scripts/status_evidence_check.py
+# applies release-REQUIREMENT rules (done-when/R7 archaeology/R8 release-field
+# agreement) to `artifacts/release-v*` paths — rules shaped for system-reqs,
+# not evidence-citation artifacts. Same placement rationale as the v0.60 pilot.
+# =============================================================================
+
+artifacts:
+  - id: VER061-001
+    type: sys-verification
+    title: "A32 BL reloc type + addend — literal-word encoder test, inverted harness assertion, real-linker check (#1040)"
+    description: >
+      test_encode_arm32_bl_placeholder_addend_1040
+      (crates/synth-backend/src/arm_encoder.rs) asserts the A32 BL
+      placeholder literal word (`ebfffffe`, addend -8) AND re-derives the
+      addend so a future edit cannot satisfy it by accident; cortex-r5
+      emits R_ARM_CALL (28) selected from `config.target.isa` in
+      arm_backend.rs (RelocKind::ArmCall), cortex-m4 keeps type
+      10/`f7ff fffe` unchanged. The #1021 canary harness's execution-mode
+      workaround was REMOVED AND INVERTED into an assertion — a reloc
+      type/execution-mode disagreement is now a hard failure in
+      scripts/repro/expansion_canary_gate_1021.py, proven potent at delivery
+      by reverting the backend fix and observing the named #1040 regression
+      message. Delivery-time evidence recorded in the requirement:
+      `arm-none-eabi-ld` on the pre-fix object corrupted BL to B
+      (`eaca0000`); the fixed object links to `ebffffe3` -> func_2 exactly.
+    status: implemented
+    tags: [arm, a32, relocations, elf, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-A32RELOC
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend --lib test_encode_arm32_bl_placeholder_addend_1040 && python3 scripts/repro/expansion_canary_gate_1021.py"
+        coverage: "literal word + re-derived addend + both-directions reloc type; harness asserts type/mode agreement instead of compensating"
+
+  - id: VER061-002
+    type: sys-verification
+    title: "Dangling declined-internal-callee refusal — 8-test gate across all four backend legs, 835-pair silent sweep (#1102)"
+    description: >
+      crates/synth-cli/tests/dangling_declined_callee_1102.rs (8 tests): the
+      backend-agnostic driver gate in compile_all_exports bails, naming every
+      dangling caller->callee edge, on all four backend legs (rv32, aarch64,
+      ARM Thumb-2, A32), is NOT waived by --allow-skipped-exports, and
+      carries two negative controls. Red-first both directions at delivery:
+      baseline exit 0 on the minimal module, gale's multi-export shape, and
+      ARM/A32 (ld.lld: undefined synth_func_N); fixed binary exit 1 on all
+      with no partial object left. Silent direction measured over 835
+      (fixture, leg) pairs: 666 byte-identical, 166 fail-identically, 0
+      differing, 3 rv32 pairs newly-declined each PROVEN unlinkable-before
+      by an UNDEF synth_func_N in the baseline object. STATED RESIDUAL,
+      carried verbatim: the gate matches direct-call index labels only — a
+      declined function referenced solely from a funcref TABLE
+      (call_indirect elem entry) is not covered and keeps its pre-existing
+      behaviour.
+    status: implemented
+    tags: [riscv, elf, decline-honesty, differential, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-DANGLE
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli --test dangling_declined_callee_1102"
+        coverage: "all four backend legs + flag-no-waiver + 2 negative controls; funcref-table references NOT covered"
+
+  - id: VER061-003
+    type: sys-verification
+    title: "R7/R8/R9 status-evidence rules — red-first per rule, 5 mutations each, replay class in the required Claim Check job (#1085)"
+    description: >
+      scripts/status_evidence_check.py (required Claim Check job) enforces
+      R7 evidence-belongs-to-the-release (git log -S archaeology against the
+      previous minor's tag, `shipped-in:` escape hatch), R8
+      release-field/path agreement (parked-patch allowance stated; the
+      harmful field-ahead-of-path direction red), and R9
+      no-`contains:`-into-crates/** (excluding /tests/). The replay class
+      R7EvidenceRelease in scripts/test_status_evidence_check.py runs on
+      every CI run. Delivery evidence recorded in the requirement: red-first
+      per rule against the pre-change checker (each defective fixture failed
+      on exactly the rule under test), 5 mutations each killing >= 1 test
+      with needle counts asserted before mutating; green controls include
+      RQ-60-CANARY through its shipped-in hatch and the 6 R8 patch-park
+      mismatches through the stated allowance. STATED RESIDUAL: R7 on a
+      shallow clone / missing tag emits a LOUD R7-SKIP whose count the CI
+      step's grep pins at `(0 skipped)` — the skip cannot quietly pass in
+      the required job.
+    status: implemented
+    tags: [gates, rivet, status-evidence, mutation-verified, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-EVIDENCE
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/status_evidence_check.py && python3 scripts/test_status_evidence_check.py"
+        coverage: "R7 + R8 + R9, red-first per rule, 5 mutations each; R7-SKIP pinned to 0 in CI"
+
+  - id: VER061-004
+    type: sys-verification
+    title: "Extraction snapshots deleted — every done-when clause re-verified independently on main after the merge (#1080)"
+    description: >
+      Disposition (1) of the requirement's stated fork, verified clause by
+      clause on main AFTER PR #1121 merged (a5c75caf) rather than from the
+      PR body: (a) all snapshot copies GONE — coq/*.ml(i), extracted/,
+      validation/, compiler/*.ml, the dune tree and root dune-project absent;
+      the delivery diff deletes exactly 98 .ml/.mli files (the 61 the census
+      counted plus 37 .mli it missed); (b)
+      docs/validation/VALIDATION_STATUS.md REWRITTEN so the body no longer
+      contradicts its own header (the former "Successfully implemented" /
+      "Complete and ready for use" claims grep-absent); (c) the .v
+      extraction target untouched — `bazel test //coq:verify_proofs` still
+      re-runs extraction into the sandbox on every CI run. The
+      mutually-inconsistent copies cannot survive because NO copy exists:
+      extraction output is derived fresh each run with nothing checked in to
+      drift, so no ongoing byte-compare gate is needed for this disposition.
+    status: implemented
+    tags: [rocq, extraction, staleness, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-EXTRACT
+    fields:
+      method: inspection
+      steps:
+        run: "bazel test //coq:verify_proofs  # plus absence: no *.ml/*.mli snapshots under coq/, no extracted/ or validation/ trees"
+        coverage: "98 snapshot files deleted, doc rewritten, extraction still exercised in-sandbox every CI run"
+
+  - id: VER061-005
+    type: sys-verification
+    title: "Param-clobber window widened to last read — pre-#1054 encoder bytes FAIL the strengthened checker (#1055)"
+    description: >
+      crates/synth-backend/tests/issue_1055_reread_window.rs: the pre-#1054
+      encoder (commit 1fe1ad22, parent of #1054's merge) was built and its
+      OWN emitted bytes for the #1048 re-read shapes spliced into the
+      lowered streams FAIL the strengthened checker with a solver
+      counterexample (pre_1054_shl_amount_clobber_caught,
+      pre_1054_clz_operand_hi_clear_caught) — the mandatory red-first on the
+      two defects the old predicate was blind to — while the same streams on
+      shipped bytes PASS with an 11-certification non-vacuity floor. The
+      legacy first-read predicate's blindness is itself a committed test
+      (blindness_record_* asserts the old predicate ACCEPTS the
+      between-reads clobber the new window rejects). Both checkers
+      strengthened in place: issue_103's
+      assert_no_param_clobber_while_param_live (last-read window + 24-op
+      read->op->re-read matrix) and the #100 cargo-fuzz harness (last-read
+      window + the missing i64 write-table entries; 1,655,990 runs / 120 s
+      at delivery, no crash — no false positives on fixed main).
+    status: implemented
+    tags: [fuzz, i64, aapcs, red-first, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-FUZZWINDOW
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend --test issue_1055_reread_window"
+        coverage: "both missed defects caught on pre-#1054 bytes; old-predicate blindness committed as a test; 11-certification floor"
+
+  - id: VER061-006
+    type: sys-verification
+    title: "Six debug_assert immediate-range sites closed per #1072's three-outcome list, release-mode red-first (#1072)"
+    description: >
+      Red-first in RELEASE mode at delivery (./target/release/synth on a
+      generated 4096-signature module): pre-fix exit 0 emitting 0x7140_023F
+      = `cmp w17, #0, lsl #12` (silent mis-encode a NULL slot would pass),
+      post-fix exit 1 naming #1072. Standing gates: cargo test -p
+      synth-backend-aarch64 --lib
+      (call_indirect_declines_expected_class_id_past_cmp_imm12, boundary
+      4095 pinned; oversized_slot_class_id_declines mutation-checked) and
+      cargo test -p synth-synthesis --lib
+      test_676_call_indirect_runtime_check_range_declines, mutation-checked
+      red against BOTH selector declines the four ARM sites cite. Decline
+      oracles re-run on the fixed binary: aarch64_m2_decline_538.py 13/13,
+      aarch64_call_indirect_851_differential.py 35/35 — acceptance moved for
+      no corpus module. SCOPE, carried verbatim: per #1072's own closure
+      list, one aarch64 site is a promoted loud decline, the four ARM
+      "selector enforces X" sites are DEMONSTRATED upstream guards with
+      tripping tests (not Err promotions), and add_ext_uxtw_sh is a stated
+      unreachability (sole caller passes the literal 3).
+    status: implemented
+    tags: [encoder, aarch64, arm, soundness, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-IMMRANGE
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend-aarch64 --lib && cargo test -p synth-synthesis --lib test_676_call_indirect_runtime_check_range_declines && python3 scripts/repro/aarch64_m2_decline_538.py && python3 scripts/repro/aarch64_call_indirect_851_differential.py"
+        coverage: "1 promoted decline (4095 boundary pinned) + 4 demonstrated guards + 1 stated unreachability; 13/13 + 35/35 oracles"
+
+  - id: VER061-007
+    type: sys-verification
+    title: "MC/DC floor re-statement classified, ledgered, and claims-pinned — 15 committed red-first cases (#1100)"
+    description: >
+      scripts/mcdc_gate.py classifies every floor miss — exit 1
+      FAIL[branch-population] (the real alarm, no re-statement offered) vs
+      exit 2 FAIL[reconstruction-drift] (per-function attribution against
+      the pinned REPORT_SHAPE baseline, paste-able evidence block
+      pre-filled); check_restatement_ledger() refuses ANY run whose live
+      constants disagree with the newest RESTATEMENTS ledger entry (seeded
+      with the #912/#990/#1093 movements); claims.yaml
+      SYNTH-MCDC-FLOOR-RESTATEMENT binds the constants' exact values so
+      every movement is a visible claims.yaml diff. Both failure modes carry
+      committed red-first tests: scripts/test_mcdc_gate.py, 15 cases,
+      including exit-code separation, alarm-dominates-mixed, and a gate-copy
+      potency test that a floor edit without a ledger append refuses to run.
+      STATED RESIDUAL, carried verbatim: the floors will still re-state on
+      unrelated-code PRs until witness#208 lands upstream — now a
+      classified exit-2 event with a mechanical, ledgered path; and drift
+      attribution is baseline-relative, decomposing CUMULATIVE movement
+      between re-statements, not this PR's alone.
+    status: implemented
+    tags: [mcdc, witness, gates, red-first, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-MCDCFLOOR
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/test_mcdc_gate.py && python3 scripts/claim_check.py claims.yaml"
+        coverage: "15 red-first cases (both exit codes + ledger potency); constants claims-pinned; witness#208 residual open"
+
+  - id: VER061-008
+    type: sys-verification
+    title: "Pre-#1096 silent-miscompile differential promoted to a CI oracle with emulation + refusal floors (#1097)"
+    description: >
+      scripts/repro/param_block_silent_1097_differential.py, wired as the
+      param-block-silent-1097-oracle CI job (`# ci-checks: emulations >= 19`
+      plus a `refusals:` grep in ci.yml, per #1113's decline-half floor).
+      The red half re-executes the PRE-#1096 compiler's own emitted objects
+      (committed fixture param_block_silent_1097_red_pre1096.json, rev
+      b2abf951, regenerable via --capture) against wasmtime-first values on
+      every CI run: if/ARM ipe(0) -> 0xC0DE0003 (uninitialized-R3 canary),
+      if/RV32 and block/RV32 -> uninitialized-T2 canary, loop/RV32 lpb(3)
+      -> 2 (want 10). Green half: all six shape x backend legs decline
+      cleanly on main (exit 1, not 101, no panic, no object) and supported
+      neighbours still compile and match wasmtime. Red-first: pointing the
+      oracle at the pre-#1096 binary fails with all six legs accepted +
+      refusals=0 VACUOUS. NEGATIVE RESULTS PINNED AS SUCH, carried
+      verbatim: block/ARM was CORRECT pre-#1096 on all 7 probed vectors
+      (that leg's decline is conservative) and loop/ARM was already refused
+      by the #509 back-edge decline.
+    status: implemented
+    tags: [oracle, differential, multi-value, unicorn, wasmtime, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-MVORACLE
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py"
+        coverage: "3 silent-wrong shapes red on committed pre-#1096 objects; 6/6 legs decline on main; emulations >= 19 + refusals floor"
+
+  - id: VER061-009
+    type: sys-verification
+    title: "Multi-value param-block panics converted to named declines on all paths — standing evidence in two CI gates (#1093)"
+    description: >
+      Delivery-time verification (recorded in the requirement) was the
+      coordinator's dual-binary measurement: all 12 (shape x path)
+      combinations that exited 101 now exit 1 with a named decline; the
+      vendored spec suite went from exactly one panicking file per backend
+      to zero; an independent byte-identity sweep gave 339 byte-identical /
+      0 differing / 0 previously-compiling modules newly declined. STANDING
+      in-repo evidence, cited rather than re-narrated: the green half of
+      scripts/repro/param_block_silent_1097_differential.py (CI-wired,
+      #1097) asserts all six shape x backend legs decline with the shared
+      #1093 needle — exit 1, not 101, no "panicked at", no object written —
+      and scripts/spec_compile_census.py (Spec Suite workflow, #1095) pins
+      panics 0/0/0 per backend over the full 257-file suite including the
+      if.wast `(param i32 i32)` shapes the issue measured. NOT CLAIMED,
+      carried verbatim: parameter-taking block types are still not LOWERED —
+      this converts a panic and three silent miscompiles into loud declines;
+      multi-value lowering is a separate capability question.
+    status: implemented
+    tags: [robustness, decline-honesty, multi-value, spec-suite, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-MVPANIC
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py && python3 scripts/spec_compile_census.py"
+        coverage: "6/6 legs named-decline (no 101), spec-suite panics pinned 0/0/0; lowering NOT claimed"
+
+  - id: VER061-010
+    type: sys-verification
+    title: "Decline-half non-vacuity floors on both class members, red-first by simulated deletion (#1113)"
+    description: >
+      Both members of the swept class carry an in-script refusal floor
+      (`refusals: N`, non-zero exit with a `VACUOUS:` line at zero) plus a
+      `grep -Eq '^refusals: [1-9]'` in ci.yml:
+      aarch64_import_dispatch_1017_differential.py and
+      multi_segment_static_data_differential.py. Proven RED-FIRST at
+      delivery by simulating exactly the silent failure the requirement
+      names: deleting multi_segment's probe yields `VACUOUS: refusals=0 —
+      the #1041 refusal half asserted nothing`, EXIT=1 (before the change
+      the same deletion left measured==floor and printed ORACLE: PASS);
+      running aarch64_import_dispatch against a non-declining callee fires
+      three independent assertions including "an object was written despite
+      the refusal". Both probes also gained two WORDING-FREE assertions (no
+      panic; no object written), because a pinned message string is what
+      drifted when #1104 moved the refusal. SCOPE, carried verbatim: the
+      class is swept, not sampled — the count was first published as FOUR
+      and corrected to TWO on #1113 (two regex matches were toolchain
+      probes, not decline assertions); multiple `# ci-checks:` headers per
+      oracle were deliberately ruled out.
+    status: implemented
+    tags: [oracle, non-vacuity, ci, red-first, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-ORACLEFLOOR
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/oracle_run.py scripts/repro/aarch64_import_dispatch_1017_differential.py && python3 scripts/oracle_run.py scripts/repro/multi_segment_static_data_differential.py"
+        coverage: "both members floored + ci.yml greps; red-first by probe deletion / non-declining input"
+
+  - id: VER061-011
+    type: sys-verification
+    title: "R4-issue + R10 window attribution — red on both measured blind-spot commits, mention-not-delivery preserved (#1119)"
+    description: >
+      scripts/status_evidence_check.py gained two rules, both exercised by
+      the R4BlindSpot1119 class in scripts/test_status_evidence_check.py
+      (9 tests, mutation-verified both ways, run in the required Claim Check
+      job): R4-issue resolves a conventional-commit subject whose scope
+      names a fields.issue (`fix(#1040): ...` -> RQ-61-A32RELOC); R10 is a
+      window attribution floor — every delivery-typed first-parent commit
+      since the previous minor's tag must be attributable to SOME artifact,
+      which is what catches eefa19ef (whose subject names neither its
+      artifact nor its issue, and whose `#1104` reference would have been a
+      MISATTRIBUTION for any description-reaching resolver). RED-FIRST on
+      the measured corpus at delivery: at 331bbd8b the fixed gate reports
+      exactly the 2 failures the blind spot hid (b4860e4e / eefa19ef) and 0
+      on main after the flip; the negative direction holds live and in
+      fixtures (a cross-reference mention, description-position #N, Revert
+      subjects, ambiguous issues all stay green). Window non-vacuity: ci.yml
+      greps the `status-evidence-window:` line, so an underivable window is
+      a CI red, not a quiet skip.
+    status: implemented
+    tags: [gate, traceability, non-vacuity, mutation-verified, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-R4BLIND
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/status_evidence_check.py && python3 scripts/test_status_evidence_check.py"
+        coverage: "R4-issue + R10, red on both measured commits, mention/Revert/ambiguous all green; window grep pinned"
+
+  - id: VER061-012
+    type: sys-verification
+    title: "Spec-suite compile census wired: checked-out submodule, nine-bucket exact pins, claims-bound doc rows (#1095)"
+    description: >
+      Fork (a) of the requirement's stated choice: the Spec Suite workflow
+      (.github/workflows/spec-suite.yml) is the first to check out
+      tests/spec-testsuite with `submodules: recursive` and runs
+      scripts/spec_compile_census.py, which exact-pins a nine-bucket census
+      per backend over all 257 top-level .wast files, declines counted
+      separately from errors per the compliance envelope. Measured baseline
+      at suite commit 3453673: full-module compile 23 ARM / 13 RV32 / 27
+      AArch64; at-least-one-export 92/82/60; panics 0/0/0. claims.yaml
+      SYNTH-SPEC-SUITE-CENSUS-README and -MATRIX bind both doc rows'
+      numbers to the script's PINS table and the workflow's checkout/run
+      lines. Non-vacuity: an exactly-257-files floor makes an empty
+      checkout RED, never a 0/0 pass. Red-first at authoring: empty dir, an
+      ok-pin +1, an all_declined-pin -1 each exit 1; a drifted README
+      number fails the claim (all demonstrated, transcripts in the PR).
+      SCOPE: the census measures compile acceptance buckets, not execution
+      correctness — the compliance-envelope framing both doc rows now carry.
+    status: implemented
+    tags: [claims, docs, ci, spec-suite, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-SPECCLAIM
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/spec_compile_census.py && python3 scripts/claim_check.py claims.yaml"
+        coverage: "257-file checked-out suite, 9 buckets x 3 backends exact-pinned, doc rows claims-bound; acceptance not execution"
+
+  - id: VER061-013
+    type: sys-verification
+    title: "proof-inventory universe extended to all 279 WasmOp variants with modeled:false rows — gates proven red-capable (#1057)"
+    description: >
+      Schema v2 artifacts/proof-inventory.json: 279 rows = all 279 WasmOp
+      variants (universe parsed from wasm_op.rs, cross-pinned fields-equal
+      against the tripwire test's hand-pinned WASM_OP_VARIANT_COUNT by
+      claims.yaml SYNTH-PROOF-INVENTORY-UNIVERSE-1057), 138 modeled with
+      UNCHANGED binding/strength (138 qed, 63 result-correspondence), 141
+      rows modeled:false including all of gale's named frontier (End,
+      Block, Call, Br, Unreachable, I32Load8U, I32Store8). Standing gates:
+      `python3 scripts/proof_inventory.py --check` in CI (the freshness
+      byte-compare and Qed cross-check) plus claim_check. Proven still
+      red-capable in the delivery PR: a hand-edited row, a WasmOp variant
+      planted without regeneration, rocq_qed_total 630->629, wasm_op_total
+      279->278, a modeled:false count drift, and a model-side constructor
+      rename each turned the respective gate red, restored green after
+      each. SCOPE, carried verbatim: a modeled:false row makes ABSENCE
+      legible — it models nothing; binding and strength stay semantic, not
+      name-derived.
+    status: implemented
+    tags: [proofs, manifest, gale, claims, v061-vclosure]
+    links:
+      - type: verifies
+        target: RQ-61-WASMOP
+    fields:
+      method: automated-test
+      steps:
+        run: "python3 scripts/proof_inventory.py --check && python3 scripts/claim_check.py claims.yaml"
+        coverage: "279-row universe, 141 modeled:false, 6 red-capability demonstrations; modeling strength unchanged"

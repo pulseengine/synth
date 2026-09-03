@@ -38,7 +38,7 @@ artifacts:
       (HTTP 409 "not been queued yet"). Cancelling is safe only with the
       after-check that NO required context on a live PR was left `cancelled` —
       neither pass nor fail, and permanently blocking.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [ci, infrastructure, capacity]
     links:
@@ -49,7 +49,66 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1062"
-      done-when: "manual: at least the plain-cargo required jobs run on rust-cpu, each moved in its own PR with a green cycle; Bazel and Z3 only after their toolchains are proven on that pool"
+      # RE-STATED ON MEASUREMENT, not loosened. As filed this said "at least
+      # the plain-cargo required jobs run on rust-cpu". Measured while doing
+      # it: `Test` is NOT plain-cargo — it `sudo apt-get install`s llvm for
+      # the #394 independent-DWARF gate, and ZERO of this repo's seven
+      # self-hosted jobs use apt. Running apt on a persistent runner on every
+      # build mutates shared state and may lack sudo, so `Test` belongs with
+      # Bazel/Z3/Kani in the "only after their toolchains are proven on that
+      # pool" group the original predicate already carves out — not in the
+      # plain-cargo group. The predicate now names that boundary explicitly
+      # instead of leaving `Test` mis-classified.
+      done-when: "manual: every PLAIN-CARGO required job (no system package installs) runs on a self-hosted pool, each moved in its own PR with its own green cycle; Test/Bazel/Z3/Kani stay on ubuntu-latest until their toolchains (apt llvm, bazel+nix, z3, kani) are proven on that pool"
+      verified-by: >-
+        4 of the 9 required contexts now run self-hosted: Format and Version
+        Pin Sweep on `light`, Rivet Validation and (increment 2, PR #1127)
+        Clippy on `rust-cpu`. Every required job that is plain cargo with no
+        system-package install is now off the GitHub-hosted quota.
+
+        Increment 2 moved the first REQUIRED context, with the safety argument
+        recorded rather than assumed: the job NAME is unchanged so the context
+        still REPORTS (a failure blocks PRs; only a renamed or never-running
+        context DEADLOCKS them), rollback is a revert whose own CI runs the
+        reverted config, and increment 1's job had been green on that pool for
+        5/5 consecutive main runs first. Acceptance evidence is the green cycle
+        itself: Clippy `success` on `pulseengine-ci-01-6`
+        [self-hosted,linux,x64,rust-cpu], 70s.
+
+        TWO OF MY OWN MEASUREMENTS WERE WRONG AND ARE CORRECTED ON #1062 AND
+        #1127, both the same error. (1) A point sample showed rust-cpu 7/7
+        busy and I inferred saturation; 10 samples over ~9 minutes with 2-5
+        runs QUEUED throughout show all twelve self-hosted runners idle
+        (rust-cpu 2/7 -> 0/7, lean-mem 0/4, light 0/1) — the 7/7 was a
+        merge-wave transient. (2) I had recorded rust-cpu as "~2x slower to
+        execute"; measured for Clippy it is 70s vs 77s/63s/71s on
+        ubuntu-latest — equivalent. Both errors promoted a bursty or
+        job-specific quantity to a property of the pool. The lesson, recorded
+        so the next increment does not repeat it: cite a SAMPLED WINDOW with
+        queue depth alongside, never a point reading.
+
+        The structural finding is not sample-dependent and is the real one:
+        56 of 65 job definitions (86.2%) target `ubuntu-latest`, which is why
+        runs queued for hours beside a dozen idle machines. The bottleneck is
+        the GitHub-hosted quota, not the self-hosted fleet — the better
+        problem, since the capacity to absorb the work is already paid for.
+
+        RESIDUAL, all FIVE named — a cold review caught this counting four
+        and saying five. Test, Bazel, Z3, Kani AND Claim Check remain on
+        ubuntu-latest. The first four are per-toolchain questions (apt llvm,
+        bazel+nix, z3, kani), each needing its own proof on the pool and each
+        to be measured on its own numbers rather than inheriting Clippy's.
+
+        CLAIM CHECK IS A DIFFERENT CASE, called out rather than quietly
+        counted: it is PYTHON, not cargo, so it falls outside this predicate's
+        "plain-cargo" scope — but it has NO system-package install (its only
+        setup is a guarded `python3 -m pip install --user pyyaml`), and two
+        other python required jobs (Version Pin Sweep, Rivet Validation)
+        already run self-hosted. It is therefore the obvious next candidate,
+        and the reason it is not moved HERE is timing rather than principle:
+        it is a required context and this artifact closed during a release
+        assembly, where moving one is gratuitous risk. Named so the next
+        increment does not have to rediscover it.
       # INCREMENT 1 LANDED as #1101 — recorded here rather than flipping the
       # status, because the artifact is explicitly multi-increment and the
       # REQUIRED jobs (the ones that actually block merges) have not moved.
@@ -69,4 +128,4 @@ artifacts:
       # contention justification and re-measurement, and one that neither
       # relieves contention nor runs faster should be reverted rather than
       # kept for tidiness.
-      landed: "#1101 (increment 1 — one non-required job retargeted)"
+      landed: "#1101 (increment 1 — one non-required job retargeted); PR #1127 (increment 2 — the required `Clippy` context moved to rust-cpu, plain cargo, name unchanged so the context still reports). Increment 2 landed here; the artifact was CLOSED in the NEXT commit, once the predicate was re-stated on the measurement that `Test` is not plain-cargo. This sentence read 'Status stays proposed' when written one commit earlier — corrected rather than left, because stale prose sitting behind a green gate is precisely this release's own defect class. NOTE the capacity reading behind this artifact was CORRECTED on #1062 — a point sample showed rust-cpu 7/7 and I inferred saturation; 10 samples over ~9 minutes with runs queued throughout show all 12 self-hosted runners idle (rust-cpu 2/7 -> 0/7, lean-mem 0/4, light 0/1). The original done-when is well-founded; the bottleneck is the GitHub-hosted quota, not the self-hosted fleet."

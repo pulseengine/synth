@@ -33,6 +33,19 @@ keeps finding:
 Usage:
     scripts/mcdc_gate.py <mcdc-run-dir>      # dir written by scripts/mcdc_run.sh
     scripts/mcdc_gate.py <dir> --report-only # print, never fail
+
+Exit codes (#1100 — the two failure modes are DIFFERENT things and must not
+be confusable; CI fails on any nonzero):
+    0   all floors met (advisory report-shape notes may still print)
+    1   FAIL[branch-population] — the REAL ALARM: the instrument-side branch
+        population moved; a condition was deleted from (or added to) a gated
+        predicate. Also used for FAIL[restatement-ledger] (script-integrity:
+        a floor constant moved without its RESTATEMENTS append).
+    2   FAIL[reconstruction-drift] — a report-side floor missed while every
+        BRANCH_POPULATION pin matched exactly: witness's layout-sensitive
+        decision reconstruction moved under the binary (witness#208). The
+        output names the drifted functions and prints the auditable
+        RE-STATEMENT block; never lower a floor without it.
 """
 
 from __future__ import annotations
@@ -224,6 +237,193 @@ FLOOR_FULL_MCDC_DECISIONS = 3
 CEILING_DEAD = 50
 
 # ───────────────────────────────────────────────────────────────────────────
+# RE-STATEMENT LEDGER (#1100 / RQ-61-MCDCFLOOR) — every movement of the
+# report-side floors above, WITH the evidence that authorized it, in
+# claims.yaml's waiver spirit: permission is PER-MOVEMENT, never standing.
+#
+# The floors are coupled to binary layout through witness's DWARF-based
+# decision reconstruction (upstream witness#208): adding code ANYWHERE can
+# move them on functions the change never touched. The #990 protocol, made
+# enforceable here rather than folklore:
+#
+#   * a floor miss WITH a BRANCH_POPULATION mismatch is the REAL ALARM —
+#     a condition was deleted from (or added to) a gated predicate. The
+#     gate exits 1 and OFFERS NO re-statement: with the population moved,
+#     the floor miss is (or may be) a real coverage loss.
+#   * a floor miss WITHOUT a population mismatch is reconstruction drift —
+#     the gate exits 2, attributes the movement per-function against
+#     REPORT_SHAPE, and prints the ledger entry the re-statement must carry.
+#   * a re-statement is an APPEND here in the SAME diff that moves a floor
+#     constant. check_restatement_ledger() refuses the run when the newest
+#     entry's floors do not equal the live constants, so a floor cannot
+#     move without a ledger append — and the claims.yaml
+#     SYNTH-MCDC-FLOOR-RESTATEMENT pins bind the constants' exact values,
+#     so the movement is ALSO a visible claims.yaml diff checked by the
+#     claim-check job on every PR, no wasm toolchain required. Movement and
+#     evidence travel in the SAME diff.
+#
+# Entry fields (all load-bearing, all checked by check_restatement_ledger):
+#   date                 YYYY-MM-DD of the evidence run
+#   refs                 the PR/issue carrying the full evidence — non-empty
+#   floors               ALL FIVE constants as of this entry (not just the
+#                        one that moved — so the ledger alone reconstructs
+#                        the constants' full history)
+#   population_evidence  WHY nothing real was lost: the instrument-side
+#                        branch-population comparison, in prose a later
+#                        reader can check against the mcdc-evidence
+#                        artifacts. Mandatory: a loosening with no stated
+#                        population evidence is the exact anti-pattern
+#                        #1100 exists to prevent.
+#   drift                per-function decomposition of the report-side
+#                        movement — REQUIRED whenever a floor moved DOWN
+#                        (or the dead ceiling UP) vs the previous entry.
+RESTATEMENTS = (
+    {
+        "date": "2026-08-14",
+        "refs": "#912 / PR #978 (RQ-57-MCDC) — the original measured statement",
+        "floors": {"decisions": 22, "conditions": 130, "proved": 57, "full": 4, "dead": 50},
+        "population_evidence": (
+            "initial statement, not a loosening: measured on ubuntu-latest / "
+            "rustc 1.96.1 / witness 0.42.0, 56 rows; red-first mutations (a) "
+            "condition-deletion and (b) row-drop in the CI job comment"
+        ),
+        "drift": "",
+    },
+    {
+        "date": "2026-08-21",
+        "refs": "#990 / PR #1016 (RQ-59-ZEROINIT); upstream witness#208",
+        "floors": {"decisions": 21, "conditions": 130, "proved": 57, "full": 3, "dead": 50},
+        "population_evidence": (
+            "instrument-side manifests IDENTICAL main vs branch: 175 branches, "
+            "per-function counts byte-for-byte equal, ZERO scored-source change "
+            "— ~100 UNSCORED lines (the zero-init classifier) moved the report "
+            "side 26 dec/6 full -> 21/3; opposite sign on macOS, same sources"
+        ),
+        "drift": (
+            "validate_final_allocation 7->4 dec, validate_served_image 2->0, "
+            "count_params closure 1->0, validate_reloc_resolutions 2->1 with "
+            "its full credit gone, build_options full 1->0, sp_slot_load "
+            "swapped for sp_slot_store, spanned GAINED 2"
+        ),
+    },
+    {
+        "date": "2026-08-28",
+        "refs": "#1093 / PR #1096 (RQ-61-MVPANIC); filed #1100; upstream witness#208",
+        "floors": {"decisions": 21, "conditions": 130, "proved": 56, "full": 3, "dead": 50},
+        "population_evidence": (
+            "this gate's own extraction, main b2abf951 vs branch a3b01739: "
+            "175 -> 176 scored branches across 20 functions; exactly ONE "
+            "population differs (compile_function_with_opts 9 -> 10, the "
+            "intended #1093 guard, re-pinned); 19/19 equal-count functions "
+            "carry byte-identical (kind, instr_index) branch signatures"
+        ),
+        "drift": (
+            "proved 60->56 entirely on untouched functions: sp_slot_store -2 "
+            "(its full_mcdc decision VANISHED from the report), "
+            "validate_final_allocation_rv32 -4 (13->12 decision regrouping), "
+            "build_options -1, validate_reloc_resolutions -1; offset by "
+            "validate_served_image 0->4 scored cond, runtime_image +1, "
+            "spanned +1"
+        ),
+    },
+)
+
+_FLOOR_KEYS = ("decisions", "conditions", "proved", "full", "dead")
+
+
+def check_restatement_ledger() -> list[str]:
+    """The ledger is load-bearing, so its consistency is CHECKED, not trusted.
+
+    Returns human-readable problems; any problem refuses the whole run
+    (exit 1) before anything is scored — a gate whose floors have
+    inconsistent provenance must not certify anything.
+    """
+    problems: list[str] = []
+    if not RESTATEMENTS:
+        return ["RESTATEMENTS is empty — the floors have no provenance"]
+    prev: dict | None = None
+    for i, e in enumerate(RESTATEMENTS):
+        who = f"RESTATEMENTS[{i}] ({e.get('date', '?')})"
+        for field in ("date", "refs", "population_evidence"):
+            if not str(e.get(field, "")).strip():
+                problems.append(
+                    f"{who}: empty {field!r} — evidence is mandatory; a floor "
+                    f"movement without it is the #1100 anti-pattern"
+                )
+        floors = e.get("floors", {})
+        if sorted(floors) != sorted(_FLOOR_KEYS):
+            problems.append(f"{who}: floors must state ALL of {_FLOOR_KEYS}")
+            continue
+        if prev is not None:
+            loosened = []
+            for k in _FLOOR_KEYS:
+                worse = floors[k] > prev[k] if k == "dead" else floors[k] < prev[k]
+                if worse:
+                    loosened.append(k)
+            if loosened and not str(e.get("drift", "")).strip():
+                problems.append(
+                    f"{who}: loosens {loosened} but carries no per-function "
+                    f"'drift' decomposition — a later reader cannot audit it"
+                )
+        prev = floors
+    live = {
+        "decisions": FLOOR_DECISIONS,
+        "conditions": FLOOR_CONDITIONS,
+        "proved": FLOOR_PROVED,
+        "full": FLOOR_FULL_MCDC_DECISIONS,
+        "dead": CEILING_DEAD,
+    }
+    last = RESTATEMENTS[-1].get("floors", {})
+    if last != live:
+        problems.append(
+            f"live floors {live} != newest ledger entry {last} — a constant "
+            f"moved without a RESTATEMENTS append (or the append forgot to "
+            f"update the constants); "
+            f"movement and evidence travel in the SAME diff"
+        )
+    return problems
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# REPORT_SHAPE (#1100) — the ADVISORY per-function report-side baseline: the
+# attribution surface for the drift classifier. NEVER itself a failure.
+#
+# (dec, full, cond, proved, gap, dead) per scored function. A function pinned
+# in BRANCH_POPULATION but ABSENT here had NO reconstructed decision in the
+# baseline run (witness#208: e.g. sp_slot_store's 2 branches are instrumented
+# and pinned, yet the report groups them into no decision at all).
+#
+# Semantics, deliberately ASYMMETRIC with BRANCH_POPULATION:
+#   * floors met + shape moved      -> compact advisory note (the audit trail
+#     in the CI log; layout drift with headroom is witness#208 noise, not a
+#     defect, and failing on it would red every unrelated-code PR)
+#   * floor missed + population OK  -> this table names WHICH functions'
+#     report-side counts moved while their instrument population did not, so
+#     the re-statement is mechanical rather than archaeological
+#   * re-pinned ONLY as part of a RESTATEMENTS append (the printed
+#     RE-STATEMENT block includes the paste)
+#
+# Derived from main 465f23a2 (CI run 33573076825, mcdc-evidence artifact),
+# ubuntu-latest / rustc 1.96.1 / witness 0.42.0 — totals 27 dec / 9 full /
+# 132 cond / 56 proved / 26 gap / 50 dead.
+REPORT_SHAPE = {
+    "synth_backend_riscv::alloc_validator::is_ret": (1, 1, 2, 2, 0, 0),
+    "synth_backend_riscv::alloc_validator::is_straight_line": (1, 0, 52, 12, 0, 40),
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": (12, 6, 35, 23, 12, 0),
+    "synth_backend_riscv::backend::build_options": (1, 0, 5, 3, 0, 2),
+    "synth_backend_riscv::backend::compile_function_with_opts": (1, 0, 4, 1, 0, 3),
+    "synth_backend_riscv::backend::ensure_supported_target": (1, 0, 2, 0, 2, 0),
+    "synth_core::static_data_addr::resolve_owner": (1, 0, 2, 0, 2, 0),
+    "synth_core::static_data_addr::resolve_owner::_$u7b$$u7b$closure$u7d$$u7d$": (1, 0, 2, 0, 2, 0),
+    "synth_core::static_data_addr::runtime_image": (1, 0, 3, 2, 1, 0),
+    "synth_core::static_data_addr::validate_reloc_resolutions": (1, 1, 3, 3, 0, 0),
+    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": (2, 0, 12, 7, 5, 0),
+    "synth_core::static_data_addr::validate_served_image": (2, 1, 4, 2, 2, 0),
+    "synth_core::wasm_op::count_params_heuristic": (1, 0, 4, 1, 0, 3),
+    "synth_core::wasm_op::count_params_heuristic::_$u7b$$u7b$closure$u7d$$u7d$": (1, 0, 2, 0, 0, 2),
+}
+
+# ───────────────────────────────────────────────────────────────────────────
 # THE STABLE, DELETION-SENSITIVE SURFACE (witness#208 / #990): the
 # instrument-side branch population per scored function, pinned EXACTLY.
 #
@@ -307,6 +507,14 @@ def main() -> int:
     ap.add_argument("run_dir", type=Path)
     ap.add_argument("--report-only", action="store_true")
     args = ap.parse_args()
+
+    ledger_problems = check_restatement_ledger()
+    if ledger_problems:
+        print("FAIL[restatement-ledger] — the floors' provenance is inconsistent;")
+        print("refusing to score anything against constants with a broken ledger:")
+        for p in ledger_problems:
+            print(f"  {p}")
+        return 1
 
     manifest, report = load(args.run_dir)
     if report.get("schema") != "https://pulseengine.eu/witness-mcdc/v3":
@@ -407,33 +615,134 @@ def main() -> int:
         print("  (none)")
     print()
 
-    fails = list(pop_fails)
+    floor_fails = []
     if tot["decisions"] < FLOOR_DECISIONS:
-        fails.append(f"scored decisions {tot['decisions']} < floor {FLOOR_DECISIONS}")
+        floor_fails.append(f"scored decisions {tot['decisions']} < floor {FLOOR_DECISIONS}")
     if conditions < FLOOR_CONDITIONS:
-        fails.append(f"scored conditions {conditions} < floor {FLOOR_CONDITIONS}")
+        floor_fails.append(f"scored conditions {conditions} < floor {FLOOR_CONDITIONS}")
     if tot["proved"] < FLOOR_PROVED:
-        fails.append(f"proved conditions {tot['proved']} < floor {FLOOR_PROVED}")
+        floor_fails.append(f"proved conditions {tot['proved']} < floor {FLOOR_PROVED}")
     if tot["full"] < FLOOR_FULL_MCDC_DECISIONS:
-        fails.append(
+        floor_fails.append(
             f"fully-proved decisions {tot['full']} < floor {FLOOR_FULL_MCDC_DECISIONS}"
         )
     if tot["dead"] > CEILING_DEAD:
-        fails.append(f"dead conditions {tot['dead']} > ceiling {CEILING_DEAD}")
+        floor_fails.append(f"dead conditions {tot['dead']} > ceiling {CEILING_DEAD}")
 
-    if fails and not args.report_only:
-        for f in fails:
-            print(f"FAIL: {f}")
+    # Per-function report-shape delta vs the pinned advisory baseline — the
+    # attribution surface for the drift classifier (#1100). ZERO means "no
+    # decision reconstructed in this function".
+    def _shape_of(fn: str) -> tuple[int, int, int, int, int, int]:
+        v = per_fn.get(fn)
+        if not v:
+            return (0, 0, 0, 0, 0, 0)
+        c = v["proved"] + v["gap"] + v["dead"]
+        return (v["decisions"], v["full"], c, v["proved"], v["gap"], v["dead"])
+
+    def _fmt_shape(t) -> str:
+        return f"dec {t[0]} full {t[1]} cond {t[2]} prov {t[3]} gap {t[4]} dead {t[5]}"
+
+    shape_delta = []
+    for fn in sorted(set(REPORT_SHAPE) | set(per_fn)):
+        want = REPORT_SHAPE.get(fn, (0, 0, 0, 0, 0, 0))
+        got = _shape_of(fn)
+        if got != want:
+            shape_delta.append((fn, want, got))
+
+    would = "(report-only) would " if args.report_only else ""
+    verdict = 0
+
+    if pop_fails:
+        # MODE 1 — THE REAL ALARM. A condition was deleted from (or added to)
+        # a gated predicate: the instrument-side population moved. This is
+        # the case a ratio cannot see, and NO re-statement applies to it.
+        verdict = 1
+        print(f"{would}FAIL[branch-population] — THE REAL ALARM: the instrument-side branch")
+        print("population moved. A condition was deleted from (or added to) a gated")
+        print("predicate — the case a ratio cannot see:")
+        for f in pop_fails:
+            print(f"  FAIL: {f}")
+        for f in floor_fails:
+            print(f"  FAIL (secondary, may be a consequence): {f}")
         print()
-        print("A branch-population mismatch means a condition was deleted from (or")
-        print("added to) a gated predicate — the case a ratio cannot see. A floor")
-        print("miss WITHOUT a population mismatch is witness's layout-sensitive")
-        print("decision reconstruction moving under you (witness#208): diagnose with")
-        print("the manifest diff before touching any number, and never lower a floor")
-        print("to go green.")
-        return 1
-    for f in fails:
-        print(f"(report-only) would FAIL: {f}")
+        print("Do NOT re-state any floor on this evidence: with the population moved,")
+        print("a floor miss is (or may be) a REAL coverage loss. Resolve the branch")
+        print("population first — the REPIN block above applies only when the diff")
+        print("shows a source change to those functions.")
+    elif floor_fails:
+        # MODE 2 — RECONSTRUCTION DRIFT (witness#208, the #990/#1093/#1100
+        # class): a report-side floor missed while every scored function's
+        # instrument-side branch population matched its pin EXACTLY. Nothing
+        # was deleted; witness's layout-sensitive decision reconstruction
+        # moved under the binary. Still red (exit 2, distinct from the real
+        # alarm's exit 1) — but the output makes the re-statement mechanical
+        # and auditable instead of archaeological.
+        verdict = 2
+        print(f"{would}FAIL[reconstruction-drift] — a report-side floor missed while the")
+        print("instrument-side branch population matched EVERY pin exactly")
+        print("(witness#208; the #990/#1100 class — NOT a deleted condition):")
+        for f in floor_fails:
+            print(f"  FAIL: {f}")
+        print()
+        if shape_delta:
+            print("Functions whose REPORT-side counts moved while their INSTRUMENT")
+            print("population did not (vs REPORT_SHAPE, the pinned baseline):")
+            for fn, want, got in shape_delta:
+                pop_note = BRANCH_POPULATION.get(fn)
+                suffix = f"  [instrument population pinned-equal: {pop_note}]" if pop_note else ""
+                print(f"  {fn}:")
+                print(f"      {_fmt_shape(want)} -> {_fmt_shape(got)}{suffix}")
+        else:
+            print("REPORT_SHAPE shows no per-function movement vs its baseline — the")
+            print("baseline itself is stale relative to the floors; re-derive both")
+            print("from the last green run's mcdc-evidence artifact.")
+        print()
+        print("RE-STATEMENT block — the auditable path (#1100). Paste ONLY if this")
+        print("PR's diff contains no scored-source change explaining the loss (an")
+        print("explained loss is a real regression, not drift — witness#208, not a")
+        print("licence). Update FLOOR_*/CEILING_DEAD, REPORT_SHAPE and the")
+        print("claims.yaml SYNTH-MCDC-FLOOR-RESTATEMENT pins in the SAME diff;")
+        print("missed floors are prefilled at this run's MEASURED value (zero")
+        print("slack), unmissed floors are left standing:")
+        restate = {
+            "decisions": min(FLOOR_DECISIONS, tot["decisions"]),
+            "conditions": min(FLOOR_CONDITIONS, conditions),
+            "proved": min(FLOOR_PROVED, tot["proved"]),
+            "full": min(FLOOR_FULL_MCDC_DECISIONS, tot["full"]),
+            "dead": max(CEILING_DEAD, tot["dead"]),
+        }
+        drift_txt = "; ".join(
+            f"{fn.rsplit('::', 1)[-1] or fn} {_fmt_shape(want)} -> {_fmt_shape(got)}"
+            for fn, want, got in shape_delta
+        )
+        n_branches = sum(pop.values())
+        print("    {")
+        print('        "date": "<YYYY-MM-DD of this run>",')
+        print('        "refs": "<the PR carrying this evidence> / #1100; upstream witness#208",')
+        print(f'        "floors": {restate!r},')
+        print(f'        "population_evidence": "BRANCH_POPULATION exact-match on this run: '
+              f'{n_branches} branches across {len(pop)} scored functions, every pin equal",')
+        print(f'        "drift": "{drift_txt}",')
+        print("    },")
+        print("  updated REPORT_SHAPE entries:")
+        for fn in sorted(set(REPORT_SHAPE) | set(per_fn)):
+            got = _shape_of(fn)
+            if got != (0, 0, 0, 0, 0, 0):
+                print(f'    "{fn}": {got},')
+    elif shape_delta:
+        # Floors met, populations pinned-equal, but the reconstruction's
+        # per-function shape moved — witness#208 noise absorbed by headroom.
+        # ADVISORY, deliberately: failing on it would red every
+        # unrelated-code PR. This note is the audit trail in the CI log.
+        print(f"note: report-shape drift vs pinned baseline in {len(shape_delta)} function(s)")
+        print("      (ADVISORY — floors met, branch populations pinned-equal;")
+        print("      witness#208 layout noise, logged for the audit trail):")
+        for fn, want, got in shape_delta:
+            print(f"  {fn}: {_fmt_shape(want)} -> {_fmt_shape(got)}")
+        print()
+
+    if verdict and not args.report_only:
+        return verdict
     print("PASS: all MC/DC floors met")
     return 0
 

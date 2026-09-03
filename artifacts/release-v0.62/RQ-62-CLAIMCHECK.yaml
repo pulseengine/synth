@@ -1,0 +1,79 @@
+artifacts:
+  - id: RQ-62-CLAIMCHECK
+    type: system-req
+    title: "Claim Check is the last required context with no system dependency still queueing against the GitHub-hosted quota"
+    description: >
+      The named residual of RQ-61-CICAP, carried forward as an artifact so the
+      next increment does not rediscover it — which is what that artifact's own
+      residual asked for.
+
+      State at v0.61.0: 4 of 9 required contexts run self-hosted (`Format`,
+      `Version Pin Sweep` on `light`; `Rivet Validation`, `Clippy` on
+      `rust-cpu`). Five still queue against the GitHub-hosted quota: `Test`,
+      `Bazel`, `Z3`, `Kani` — each a genuine per-toolchain question (apt llvm,
+      bazel+nix, z3, kani) — and `Claim Check`, which is the different case.
+
+      `Claim Check` is PYTHON, not cargo, so it fell outside RQ-61-CICAP's
+      "plain-cargo" predicate. But it has NO system-package install — its only
+      setup is a guarded `python3 -c "import yaml" || python3 -m pip install
+      --user pyyaml` — and two other python required jobs already run
+      self-hosted. It was not moved in v0.61 for TIMING, not principle: it is a
+      required context and the artifact closed during a release assembly, where
+      moving one is gratuitous risk. That reason has expired.
+
+      THE MEASUREMENT DISCIPLINE IS THE POINT, and it is written here because
+      v0.61 got it wrong twice on this very issue. Both errors were the same:
+      reading a RATE off a single INSTANT and promoting it to a property of the
+      POOL — `rust-cpu` "7/7 saturated" was a merge-wave transient (10 samples
+      over ~9 min with runs queued show all 12 runners idle), and "~2x slower"
+      came from a different job (Clippy measured 70s vs 77s/63s/71s,
+      equivalent). Any claim in this increment must cite a SAMPLED WINDOW WITH
+      QUEUE DEPTH, never a point reading, and `Claim Check` must be measured on
+      its OWN numbers rather than inheriting Clippy's — it has `fetch-depth: 0`
+      and a different working-set shape.
+
+      SAFETY, unchanged from increment 2 and restated because it is a REQUIRED
+      context: keep the job NAME identical so the context still REPORTS. A
+      failure blocks PRs; only a renamed or never-running context DEADLOCKS
+      them. Rollback is a revert, whose own CI runs the reverted config.
+
+      REDUNDANCY IS A SEPARATE AXIS FROM CAPACITY, and this artifact now owns
+      the invariant because a live incident proved the two are not the same
+      thing. On 2026-09-02 the `light` pool had EXACTLY ONE runner
+      (pulseengine-ci-01-8) and it went offline. Two REQUIRED contexts —
+      `Format` and `Version Pin Sweep` — were routed there, so both were
+      assigned to a dead machine, sat 600s, and failed having executed ZERO
+      steps. Branch protection needs a required context to PASS; a dead pool
+      cannot produce one, so NOTHING IN THE REPO COULD MERGE. It was resolved
+      at the fleet level (the runner returned and two `rust-cpu` machines
+      gained the `light` label, so `light` now has 3), not in this repo.
+
+      WHY EVERY MEASUREMENT IN #1062 MISSED IT: they all asked "is this pool
+      IDLE?". `light` was idle, which reads as healthy. None asked "HOW MANY
+      MACHINES CAN SATISFY THIS LABEL?" — and idle and unavailable are
+      indistinguishable in a utilisation reading. That is the third variant of
+      the same error this issue has produced (the first two were reading a rate
+      off a single instant, in opposite directions).
+
+      SO THE INVARIANT, to be enforced rather than remembered: a REQUIRED
+      context must not target a label satisfiable by fewer than two ONLINE
+      runners. Any retarget in this artifact must demonstrate the destination
+      label's online-runner count, not merely that the pool was idle. Red-first
+      is available and cheap: point the check at a single-runner label and it
+      must refuse.
+
+      NOT IN SCOPE: `Test`/`Bazel`/`Z3`/`Kani`. Each needs its toolchain proven
+      on the pool first, and `Test` in particular runs `sudo apt-get install`,
+      which no self-hosted job in this repo does.
+    status: proposed
+    release: v0.62
+    tags: [ci, capacity, required-context]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1062"
+      done-when: "manual: Claim Check runs self-hosted with its own green cycle as acceptance evidence and its own sampled measurement (window + queue depth, not a point reading), or is recorded as unsuitable with the measured reason; AND no required context targets a label satisfiable by fewer than two ONLINE runners, checked rather than remembered"

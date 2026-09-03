@@ -31,7 +31,7 @@ artifacts:
       defects it missed are still present. A widened harness that has never
       been shown to catch the two defects it was blind to is not evidence of
       anything.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [fuzz, i64, aapcs, gates, vacuity]
     links:
@@ -43,3 +43,23 @@ artifacts:
       verification-track: differential
       issue: "#1055"
       done-when: "manual: the harness FAILS on pre-#1054 sources (the #1048 and Clz/Ctz/Popcnt shapes it missed) and passes on main"
+      verified-by: >-
+        "Pre-#1054 sources" instantiated as the pre-#1054 encoder's own
+        emitted bytes: commit 1fe1ad22 (parent of #1054's merge) was built
+        and its encoder run on the EXACT pseudo-ops today's selector emits
+        for the #1048 re-read shapes (I64Shl rd=(R4,R5) rm=(R2,R3); I64Clz
+        rd=R2 rn=(R0,R1)); those bytes, spliced into the lowered streams,
+        FAIL the strengthened checker with a solver counterexample
+        (pre_1054_shl_amount_clobber_caught /
+        pre_1054_clz_operand_hi_clear_caught,
+        crates/synth-backend/tests/issue_1055_reread_window.rs), and the
+        same streams on shipped bytes PASS with an 11-certification
+        non-vacuity floor. The legacy first-read predicate's blindness is
+        itself a committed test (blindness_record_* asserts the old
+        predicate ACCEPTS the between-reads clobber the new window
+        rejects). Both checkers strengthened in place: issue_103's
+        assert_no_param_clobber_while_param_live (last-read window +
+        24-op read->op->re-read matrix) and the fuzz harness (last-read
+        window + the missing i64 write-table entries; 1,655,990 runs /
+        120 s, no crash — no false positives on fixed main).
+      landed: "PR #1123 (v0.61)"

@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0] - 2026-09-02
+
+**The capability exists; aim it where it is needed.**
+
+Every finding in this release is a defect in a *checker*, not in the compiler —
+the fifth release running where verification machinery is the dominant defect
+surface, and the first where that was the scope rather than the surprise. The
+recurring shape: the check exists, is wired, and is pinned — and the pin cannot
+see part of what the check asserts. That is why they all failed *green*.
+
+### Fixed — compiler
+
+- **A32 `BL` relocations were mislabelled AND mis-addended (#1040).** A
+  `--target cortex-r5 --relocatable` object labelled its in-module direct call
+  `R_ARM_THM_CALL` (10) on an ARM-state `BL` word. A second defect, unfiled,
+  was found by asking `arm-none-eabi-as` rather than reasoning about the ABI:
+  the placeholder was `eb000000` (addend 0) where `gas` emits `ebfffffe`
+  (addend −8). Since A32 `BL` computes `P + 8 + (imm24 << 2)`, a zero addend
+  resolves two instructions past the callee entry — the A32 twin of the Thumb
+  #174 bug, masked because the type was wrong too. **A real linker turns the
+  pre-fix call into a plain branch to garbage**: `arm-none-eabi-ld` produced
+  `eaca0000`, the opcode itself corrupted from `eb` (BL) to `ea` (B), so the
+  link register was never set. Fixed by giving A32 its own `RelocKind::ArmCall`
+  selected at the site that knows the ISA — joining `AArch64Call26` and
+  `RiscvCallPlt` as its ISA's call relocation.
+
+- **A release-invisible immediate-range guard let a NULL table slot pass a type
+  check it must trap on (#1072).** `debug_assert!` is compiled out in release,
+  so an encoder that range-guards then encodes shifts overflow bits into
+  neighbouring instruction fields. Of six remaining sites, four were
+  demonstrated safe by finding and testing their real upstream guards, one was
+  recorded unreachable — and one was **genuinely unguarded**. A `--release`
+  build compiled a legal 4096-signature module, exited 0, and emitted
+  `cmp w17, #0, lsl #12` where `cmp w17, #4096` was meant: the id's bit 12
+  landed in the `sh` field of SUBS-immediate, zeroing the immediate. Closed
+  with a loud selector decline. Four of the six sites claimed "the selector
+  enforces X" — the #946 `writes_sp` shape — and one of those claims was
+  half-false.
+
+- **An unlinkable object shipped with exit 0 (#1102).** A retained function
+  relocating against a *declined internal* function emitted a dangling
+  `synth_func_N`. `#952` and the aarch64 `#1013` builder refusal were both
+  keyed one level too shallow. Now refused loudly on every backend.
+
+- **Parameter-taking block types (#1093).** The reported panic was the *lucky*
+  case; an `else`-less `if (param i32)` compiled cleanly and returned an
+  **uninitialized register**. All four backends now decline.
+
+### Fixed — verification machinery
+
+- **An oracle's `ci-checks` floor could not see its decline half (#1113).** A
+  refused compile emulates nothing, so a decline probe contributes zero to the
+  `emulations` counter its own oracle is floored on: deleting the probe left
+  `measured == floor` and the job stayed green. Both members of the class now
+  carry a counted `refusals:` floor. The class was first published as four and
+  **corrected to two** — two matches were toolchain probes, not decline
+  assertions.
+
+- **`rivet coverage` printed instead of asserting (#1091).** It ran inside a
+  required job, reported 40.1%, and exited 0. 60/60 release artifacts across
+  v0.56–v0.60 carried no linked `sys-verification`. The coverage step now
+  asserts against a floor (red-first proven), v0.60 and v0.61 are backfilled
+  (coverage 61 → 82), and the 52 pre-v0.60 artifacts are **explicitly exempted
+  with a measured reason**: they predate the mandatory `done-when`/`verified-by`
+  fields that make transcription possible, so backfilling them is archaeology.
+
+- **`status_evidence` R4 was blind to conventional-commit subjects (#1119).**
+  Two artifacts shipped complete and stayed `proposed` while the gate reported
+  0 failures. Fixed with scope-position issue resolution plus a window
+  attribution floor — deliberately *not* by widening the id match, which would
+  have misattributed a commit naming the PR that introduced the defect.
+
+- **The MC/DC gate could not distinguish a deleted branch from layout drift
+  (#1100).** Now classified by exit code: `1` = branch-population alarm,
+  `2` = reconstruction drift with per-function attribution. Floor movements
+  require a ledger entry carrying population evidence. No floor was lowered.
+
+- **The i64 param-clobber window checked "before FIRST read" (#1055).** A write
+  *between* two reads was exempt by construction — which is why the harness
+  built for this class missed the ops its own audit had named. Strengthened to
+  while-live; zero false positives across 1,655,990 fuzz runs. The bonus
+  finding was worse than the filed one: the harness's write-set table returned
+  "writes nothing" for a dozen i64 ops.
+
+### Added
+
+- **The advertised spec-suite compile rate now exists (#1095).** README and
+  FEATURE_MATRIX had claimed a CI-tracked number no job produced, over a
+  submodule CI never checked out. Now a real census over all 257 top-level
+  `.wast` files, per backend, **with declines counted separately from errors**,
+  exact-pinned, and an empty suite is RED rather than a vacuous 0/0.
+
+- **The proof-inventory universe is the shipped `WasmOp` enum (#1057).**
+  Previously the 138 Rocq constructors, so the ops the consumer actually meets
+  got no row at all. Now 279 rows, 141 carrying `modeled: false` — absence is
+  legible instead of missing. Schema v2 keeps `constructor` on every row, so
+  the consumer's existing matcher reads it unchanged.
+
+- **A CI-wired oracle for why the #1093 decline is mandatory (#1097).** The
+  evidence that the decline prevents a silent miscompile lived in a scratchpad;
+  it now replays the pre-fix compiler's own emitted objects on every CI run.
+
+### Removed
+
+- **98 stale extraction snapshot files across four directories (#1080).** Not
+  one stale copy but several mutually inconsistent ones — `Compilation.ml` was
+  316 lines in `coq/` and 72 in `extracted/` — and nothing ran `dune` anywhere.
+  `docs/validation/VALIDATION_STATUS.md` no longer opens with "this does not
+  exist" above a body of "Complete and ready for use".
+
+### Infrastructure
+
+- **CI capacity (#1062).** 56 of 65 job definitions (86.2%) targeted
+  `ubuntu-latest` while twelve self-hosted runners sat idle. 4 of 9 required
+  contexts are now self-hosted. Two of the maintainer's own measurements were
+  wrong and are corrected in-tree: a point sample read as pool saturation, and
+  a job-specific latency read as a pool property.
+
+### Compliance envelope
+
+Unchanged. In its default embedded configuration synth emits no out-of-bounds
+trap; spec-conformant OOB trapping requires `--safety-bounds`, and is
+unconditional on AArch64. Proof suite: 630 Qed / 2 Admitted. Verified selector
+rules: 80.
+
 ## [0.60.0] - 2026-08-27
 
 **Derive what you check against — and reach is part of correctness.**

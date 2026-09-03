@@ -6386,6 +6386,10 @@ fn build_relocatable_elf(
             // symbol-relative static-data MOVW/MOVT → R_ARM_MOVW_ABS_NC/MOVT_ABS.
             let reloc_type = match reloc.kind {
                 synth_core::backend::RelocKind::ThmCall => ArmRelocationType::ThmCall,
+                // #1040: A32 (Cortex-R) BL sites carry R_ARM_CALL (28). The
+                // kind was fixed by the backend, which knows the ISA state;
+                // this is a pure mapping, not a second decision point.
+                synth_core::backend::RelocKind::ArmCall => ArmRelocationType::Call,
                 synth_core::backend::RelocKind::MovwAbs => ArmRelocationType::MovwAbsNc,
                 synth_core::backend::RelocKind::MovtAbs => ArmRelocationType::MovtAbs,
                 // #345: literal-pool word carrying a symbol address — link-survivable

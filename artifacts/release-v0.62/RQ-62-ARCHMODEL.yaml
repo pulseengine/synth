@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-62-ARCHMODEL
+    type: system-req
+    title: "Define how a synth-compiled artifact executes on a target, and model in AADL what AADL expresses — starting with timing, which already has a consumer reconstructing it"
+    description: >
+      Maintainer decision on #1136: feature-loop steps 1-2 (spar AADL -> WIT)
+      are NOT permanently N/A. "We should at least define the basic how the
+      compiler runs on a system and things we can address in aadl if it is
+      timing or other things but the general we should address."
+
+      SYNTH ALREADY PRODUCES AADL-SHAPED FACTS AND NOTHING OWNS THEM:
+
+        --emit-wcet sound per-function cycle bounds  -> thread Expected_WCET
+        linear-memory base / globals / stack layout  -> memory components
+        reserved R9 / R10 / R11 / R12                -> processor binding
+        per-target MPU region model                  -> memory protection
+        the --safety-bounds envelope                 -> a system property,
+                                                        currently PROSE in
+                                                        CLAUDE.md
+
+      THE DECISIVE EVIDENCE IS THAT THE TIMING ALREADY FLOWS, RECONSTRUCTED.
+      CLAUDE.md already records that synth's WCET sidecar is "gale spar's T3/T4
+      `C_i` input — a bound, not a DWT observation", and `spar insight` exists
+      to compare traces against `Expected_BCET/WCET/Mean`. So the number
+      already reaches a spar analysis — by a CONSUMER hand-building a
+      scheduling model around a sidecar synth emits. That is a hand-written
+      mirror of a shipped artifact, the exact failure the North Star names
+      ("derive what you check against"). synth should DECLARE its timing and
+      layout; consumers should not reconstruct them.
+
+      PRECEDENT, and it is modest: `scry/spar/scry.aadl` is 374 lines and says
+      of itself that the model is the source-of-truth architecture while the
+      WIT is hand-derived from it for v0.1, with spar-codegen as the migration
+      path. Copy that sequencing — model as source of truth, generation as
+      migration, not prerequisite.
+
+      INCREMENT 1 IS DEFINE-AND-MAP, NOT BUILD-EVERYTHING:
+        1. define how a synth-compiled artifact EXECUTES on a target — memory
+           regions and their addresses, processor binding, MPU model;
+        2. map which of those AADL expresses natively, TIMING FIRST because
+           the bound already exists and already has a consumer;
+        3. state what AADL CANNOT carry, so the boundary is written down
+           rather than rediscovered per release.
+
+      SEQUENCING, SO NOBODY IS BLOCKED ON A MODEL: #1131 does not wait for
+      this. RQ-62-EMBEDDER ships the layout contract as a document derived from
+      the emitter, on its own timeline — an integrator is blocked today and an
+      architecture model is not the unblocking artifact. The model becomes that
+      document's SOURCE OF TRUTH afterwards, and the document is eventually
+      generated from it rather than maintained beside it.
+
+      A NEGATIVE RESULT IS FIRST-CLASS: if AADL turns out not to express a
+      compiler's deployment contract usefully — if the memory/register/timing
+      facts do not survive the round trip into a model an assessor would accept
+      — then say so with the attempt as evidence, and record steps 1-2 as
+      genuinely N/A WITH that evidence rather than the assertion this issue
+      was filed about.
+
+      CONSEQUENCE FOR THE LOOP, stated because it is coupled: steps 1-2 stop
+      being an N/A, so RQ-62-LOOPCONFORM must treat them as a real step with a
+      real artifact, not a blank.
+    status: proposed
+    release: v0.62
+    tags: [architecture, aadl, spar, feature-loop, timing, wcet]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1136"
+      done-when: "manual: a synth AADL model exists that parses under `spar parse` and carries at least the execution-on-target basics (memory regions, processor binding, MPU) plus timing properties traceable to --emit-wcet; what AADL cannot express is stated explicitly; and RQ-62-LOOPCONFORM counts steps 1-2 as a real step rather than an N/A"

@@ -1,0 +1,71 @@
+artifacts:
+  - id: RQ-62-LOOPCONFORM
+    type: system-req
+    title: "Release authorization is now standing and CONDITIONAL on the feature loop — so loop conformance must be derivable, not asserted by whoever is cutting"
+    description: >
+      The maintainer granted STANDING approval (2026-09-02) to cut and tag every
+      release, replacing per-release approval, with one condition: "yes it
+      stands for all releases IF they run through the feature loop."
+
+      THE CONDITION IS THE ENTIRE POINT, AND IT IS CURRENTLY UNCHECKABLE. Today
+      the only evidence a release ran the loop is that whoever cut it says so in
+      the release notes. A standing authorization gated on a self-assessment is
+      precisely the shape this project has spent two releases removing:
+
+        #1085  evidence that could not fail on the failure it defines
+        #1091  a gate that printed instead of asserting
+        #1113  a floor blind to half its own oracle
+        #1119  a rule blind to a whole delivery-commit shape
+        #1133  a gate whose scope excluded the file recording programme status
+
+      Adding a sixth instance — at the exact point where human approval was
+      just removed — would be the worst possible place to put one.
+
+      DERIVE CONFORMANCE FROM ARTIFACTS THAT ALREADY EXIST. Every step of the
+      loop already leaves a machine-readable trace; nothing new needs inventing,
+      only joining:
+
+        step 3  rivet          artifacts/release-vX.Y/ populated; statuses
+                               evidenced (status_evidence_check already does
+                               this — the join is what is missing)
+        step 4  oracle-gated   oracle_wiring_check green; the release's own
+                               repro scripts wired
+        step 5  witness MC/DC  the mcdc gate RAN on the release commit and its
+                               BRANCH_POPULATION pins held
+        step 6  sigil          the TAG's `Signing E2E` workflow concluded
+                               success (v0.61.0: it did)
+        step 7  clean-room     an independent cold review ran BEFORE the tag,
+                               with its findings recorded (v0.61.0: no
+                               blockers, 2 SHOULD-FIXes, both fixed pre-tag)
+        step 8  release-exec   pin sweep OK, PR-head-vs-merge diff = 0 lines,
+                               every published crate verified live
+
+      STEPS 1-2 ARE THE HARD PART AND MUST NOT BE QUIETLY PASSED. spar/WIT have
+      been recorded N/A every release and were never filed until #1136. The
+      loop's own rule is that a recurring N/A is a BACKLOG ITEM, not an
+      exemption — and the precedent proves it: witness MC/DC was N/A four
+      releases running, filed as #912, and #978 made it REAL. So this check
+      must treat an N/A as a FILED, REFERENCED decision, never as a blank.
+
+      RED-FIRST, and it is cheap: v0.61.0 conformed on steps 3-8, so it is the
+      GREEN corpus. The RED corpus is any earlier release that did not — v0.57
+      and earlier predate the witness gate entirely, so a conformance check
+      must FAIL when pointed at them. A check that passes on every release ever
+      cut is not checking anything.
+
+      SCOPE BOUND, stated because this could sprawl: this does NOT re-litigate
+      what the loop should contain, and does NOT gate the merge path. It
+      answers exactly one question — "did THIS release run the loop?" — at
+      exactly one moment, before a tag.
+    status: proposed
+    release: v0.62
+    tags: [release-process, feature-loop, non-vacuity, authorization]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1136"
+      done-when: "manual: a release's feature-loop conformance is derived from existing artifacts and FAILS when a step is missing — proven RED against a pre-witness-gate release and GREEN against v0.61.0, with an N/A accepted only when it cites a filed decision"
