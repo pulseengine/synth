@@ -45,3 +45,4 @@ artifacts:
       verification-track: review
       issue: "#1131"
       done-when: "manual: every register and address the embedder must honour for --relocatable on Cortex-M is documented WITH the emitting code as its citation, the integrator confirms it unblocks the RT1176 cascade, and a check fails if the document and the emitter disagree"
+      landed: "PR #1139 (contract doc derived from the emitter with file:line citations, byte-level audit script, claims.yaml doc<->emitter binding red-first proven, --help block beside the --embedder-* flags). Status stays proposed: the done-when's second leg — the integrator confirms it unblocks the RT1176 cascade — is theirs to confirm on #1131, not ours to assert."
