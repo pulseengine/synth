@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-62-EMBEDDER
+    type: system-req
+    title: "The --relocatable embedder layout contract is only half-written: R9 is specified, the linear-memory base is not, and an integrator is blocked on the difference"
+    description: >
+      #1131, and it is the highest-signal item on the tracker because it did
+      not come from us. jess is running a real 5-stage `--relocatable` cascade
+      object on an emulated RT1176 — the whole documented remedy chain lowers
+      cleanly, exit 0 — and stopped at the one part of the contract that is not
+      written down. They asked rather than reverse-engineering it from
+      disassembly, which is the right call and one we should not have made
+      necessary.
+
+      A USER BLOCKED ON OUR DOCS OUTRANKS A DEFECT WE FOUND OURSELVES. synth
+      declines loudly, proves what it emits, and pins what it claims — and none
+      of that reaches an embedder who cannot tell which register holds the
+      linear-memory base.
+
+      What exists: R9 (globals base) is specified. What does not: the
+      linear-memory base register and its expected value, the globals region's
+      relationship to it, the stack's placement relative to both, and which of
+      these the embedder chooses versus which synth fixes.
+
+      DERIVE IT FROM THE EMITTER, DO NOT WRITE IT FROM MEMORY. The reserved-
+      register set and the base value are knowable from the code that emits
+      them, and a hand-written contract that drifts from the emitter is exactly
+      the class #1080 punished 98 files for. The document must cite the code
+      that establishes each fact, and something must fail when they disagree —
+      a contract nobody can check is a claim, not a contract.
+
+      SCOPE BOUND: this is the CONTRACT for what synth already emits. It is not
+      a new capability, not a layout change, and must not move a single emitted
+      byte. If writing it down reveals that the contract is under-determined —
+      that two code paths disagree, or a value is incidental rather than
+      guaranteed — that is a FINDING and outranks the document.
+    status: proposed
+    release: v0.62
+    tags: [docs, embedder, relocatable, consumer-contract, jess]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1131"
+      done-when: "manual: every register and address the embedder must honour for --relocatable on Cortex-M is documented WITH the emitting code as its citation, the integrator confirms it unblocks the RT1176 cascade, and a check fails if the document and the emitter disagree"

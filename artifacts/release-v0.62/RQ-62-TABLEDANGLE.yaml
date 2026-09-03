@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-62-TABLEDANGLE
+    type: system-req
+    title: "#1102's guard matches direct-call index labels only — a declined function reachable solely through a funcref table keeps the pre-fix unlinkable behaviour"
+    description: >
+      The named residual of RQ-61-DANGLE, and the only v0.61 residual that is a
+      CORRECTNESS hole rather than coverage or process debt. It is scoped
+      `must` for that reason.
+
+      #1102 was: a retained function relocating against a function this compile
+      DECLINED emits an undefined symbol for a function the module itself
+      DEFINES, so the object can never link — and it shipped with exit 0. The
+      fix matches the relocation symbol against the skipped function's INDEX
+      LABELS (`func_{idx}` / `synth_func_{idx}`), which is complete for DIRECT
+      calls because the selectors always label them by index.
+
+      A funcref TABLE entry is a different path. An `elem` segment naming a
+      declined function puts that function in the table without any direct call
+      site, so no relocation carries its index label and the driver-level gate
+      sees nothing. The object ships. The pre-fix behaviour — an unlinkable
+      object with exit 0, or a table slot pointing at nothing — survives on
+      exactly that path.
+
+      RED-FIRST IS THE WHOLE TASK: build a module whose `elem` segment names a
+      function the backend declines, with no direct call to it, and show what
+      ships today on each backend. If it turns out the table path already
+      refuses for an unrelated reason on some backends, that is a per-backend
+      answer and must be stated per backend — #1102's own history is that the
+      same class was fixed on aarch64 (#1013) and left live on RV32 for a
+      release, because nobody checked the other three.
+
+      DO NOT widen the index-label match speculatively. The gate's completeness
+      argument rests on "direct-call relocations are always index-labelled",
+      which was VERIFIED against the compiler in #1116 rather than assumed. Any
+      extension needs its own verification of the same kind, not an inherited
+      one.
+    status: proposed
+    release: v0.62
+    tags: [correctness, relocation, funcref-table, decline-honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1102"
+      done-when: "manual: a module whose elem segment names a DECLINED function with no direct call site either links or refuses loudly on all four backends — demonstrated red-first per backend, never inferred from the direct-call path"
