@@ -338,6 +338,18 @@ enum Commands {
 
         /// Force relocatable object (.o, ET_REL) output even when wasm has no imports
         /// — for linking into a host build system.
+        ///
+        /// EMBEDDER ABI (#1131; the full contract, with the emitting code
+        /// cited line by line, is docs/embedder-abi-relocatable-arm.md):
+        /// before any export runs, the embedder sets R11 = linear-memory
+        /// base, R10 = linear-memory size in BYTES, and R9 = globals-table
+        /// base — set once; emitted code never writes any of them, and
+        /// anything the object calls out to must preserve them (they are
+        /// AAPCS callee-saved, so stock libgcc AEABI helpers comply). R9 and
+        /// R11 are independent regions (place them anywhere disjoint;
+        /// 4-byte-align both). R12 is synth's encoder scratch. The stack is
+        /// plain AAPCS; the linker/harness owns the whole layout, and synth
+        /// validates none of it on this path.
         #[arg(long)]
         relocatable: bool,
 
