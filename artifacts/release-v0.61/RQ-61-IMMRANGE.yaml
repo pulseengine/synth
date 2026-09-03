@@ -22,7 +22,7 @@ artifacts:
       Ok-or-Err encode path (the #180/#185 precedent: the Thumb encoder returns
       Err rather than corrupting high registers), NOT a release-mode assert —
       a panic on valid input is the defect class RQ-61-MVPANIC exists to remove.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [encoder, aarch64, arm, soundness, latent]
     links:
@@ -33,4 +33,54 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1072"
-      done-when: "manual: each of the 6 sites returns Err in RELEASE builds, red-first demonstrated with a >=4096-byte frame that mis-encodes today"
+      # The done-when as filed ("each of the 6 sites returns Err in RELEASE")
+      # over-specified the resolution: #1072's own closure list is per-site
+      # ONE OF {demonstrated upstream guard, promote to Err/loud decline,
+      # stated unreachability}, and this artifact's own description rules out
+      # blanket release asserts (the RQ-61-MVPANIC class) while a defensive
+      # Err behind a demonstrated guard is the "Err that can never fire" the
+      # issue ranks BELOW a demonstrated guard. Restated to the issue's list;
+      # the red-first release-mode corruption demonstration is kept as the
+      # non-negotiable part.
+      done-when: >-
+        manual: each of the 6 sites carries one of #1072's three closure
+        outcomes — a demonstrated upstream guard tripped by a test, a
+        promotion to Err/loud decline, or a stated unreachability recorded at
+        the assert — with red-first evidence in RELEASE mode (corrupted
+        encoding, not a panic) for any promoted site.
+      verified-by: >-
+        Red-first in RELEASE (./target/release/synth on a generated
+        4096-signature module): pre-fix exit 0 with 0x7140_023F =
+        `cmp w17, #0, lsl #12` in llvm-objdump, post-fix exit 1 naming #1072;
+        cargo test -p synth-backend-aarch64 --lib
+        (call_indirect_declines_expected_class_id_past_cmp_imm12 red before
+        the decline, green after, 4095 boundary pinned;
+        oversized_slot_class_id_declines mutation-checked); cargo test
+        -p synth-synthesis --lib
+        test_676_call_indirect_runtime_check_range_declines mutation-checked
+        red against BOTH selector declines the four ARM sites cite; decline
+        oracles on the fixed binary — aarch64_m2_decline_538.py 13/13 PASS,
+        aarch64_call_indirect_851_differential.py 35/35 PASS.
+      landed: >-
+        #1072 all six sites (v0.61): aarch64 encoder.rs cmp_imm — the type
+        guard's EXPECTED class id was genuinely unguarded (substrate::plan
+        bounds only SLOT ids); red-first in release, a 4096-signature module
+        compiled exit-0 emitting 0x7140_023F = `cmp w17, #0, lsl #12` (bit 12
+        landed in the sh field, a NULL slot would PASS the 4.4.8 type check),
+        debug panicked at encoder.rs:470 — fixed by a MAX_CLASS_ID selector
+        loud decline, boundary 4095 pinned; its other two callers
+        (br_table chain index, OOB-guard table size) demonstrated bounded by
+        existing loud declines with tripping tests, and plan's slot-id bound
+        got its missing tripping test (mutation-checked). aarch64
+        add_ext_uxtw_sh — stated unreachability: sole caller passes the
+        literal 3. The four ARM "selector enforces X" sites — enforcement
+        DEMONSTRATED, not assumed: sole Some-producer
+        resolve_runtime_type_check loud-declines id > 255 / offset > 4095,
+        test_676_call_indirect_runtime_check_range_declines trips both, and
+        both declines were mutation-checked red; release failure shape
+        recorded at the sites (masks truncate — id 256 compares as 0).
+        Decline-sensitive oracles re-run on the fixed binary: decline matrix
+        13/13, call_indirect execution differential 35/35 — acceptance moved
+        for no oracle/corpus module (the new decline requires > 4095 distinct
+        structural signatures, previously a silent release mis-encode, never
+        a correct accept).

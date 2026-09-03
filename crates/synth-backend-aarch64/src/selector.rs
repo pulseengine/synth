@@ -2664,6 +2664,25 @@ pub fn select_typed_cf_calls(
                          (#851)"
                     )));
                 }
+                // RQ-61-IMMRANGE (#1072): `expected` is the type guard's CMP
+                // IMMEDIATE, and `enc::cmp_imm` range-guards its imm12 with a
+                // `debug_assert` — compiled out in release, where an id past
+                // 4095 shifts its overflow bits into the instruction's shift
+                // field (bit 22) and beyond: id 4096 encoded `cmp w17, #0,
+                // lsl #12`, letting a NULL slot (reserved id 0) PASS the
+                // §4.4.8 type check it must trap on. `substrate::plan` bounds
+                // only the SLOT ids (`funcref_class_ids`); the EXPECTED
+                // type's id is bounded nowhere upstream — a module with
+                // > 4095 distinct structural signatures reaches this with a
+                // legal always-trap dispatch. Decline loudly instead.
+                if expected > crate::substrate::MAX_CLASS_ID {
+                    return Err(SelectError(format!(
+                        "call_indirect type {ti}: structural class id {expected} \
+                         exceeds the type-guard CMP unsigned 12-bit immediate \
+                         (at most {}) — loud-declining (#1072)",
+                        crate::substrate::MAX_CLASS_ID
+                    )));
+                }
                 let argc = *ctx.type_arg_counts.get(ti).ok_or_else(|| {
                     SelectError(format!("call_indirect type {ti}: unknown arg count"))
                 })?;
@@ -2711,8 +2730,12 @@ pub fn select_typed_cf_calls(
                         )));
                     }
                 }
-                // (1) OOB guard. `table_slots` and the class ids were range-
-                //     checked against the 12-bit immediate by substrate::plan.
+                // (1) OOB guard. `table_slots` was range-checked against the
+                //     12-bit immediate by substrate::plan (MAX_TABLE_SLOTS
+                //     bounds the whole contiguous region, so every table's
+                //     size fits), and the sidecar SLOT ids by its
+                //     MAX_CLASS_ID check; the EXPECTED id is bounded by the
+                //     #1072 decline above, not by plan.
                 words.push(enc::cmp_imm(idx, table_slots));
                 words.push(enc::bcond(Cond::Lo, 2)); // in range: hop the brk
                 words.push(enc::brk(0));
@@ -3055,6 +3078,64 @@ mod tests {
         assert!(matches!(relocs[0].kind, RelocKind::AArch64AdrPrelPgHi21));
         assert_eq!(relocs[1].offset, 8 * 4);
         assert!(matches!(relocs[1].kind, RelocKind::AArch64AddAbsLo12Nc));
+    }
+
+    /// RQ-61-IMMRANGE (#1072): the expected structural class id is the type
+    /// guard's `cmp` IMMEDIATE, and `enc::cmp_imm` range-guards its imm12 with
+    /// a `debug_assert` — compiled out in release. `substrate::plan` bounds
+    /// only the SLOT ids (`funcref_class_ids`); the EXPECTED type's id was
+    /// bounded nowhere, and a module with > 4095 distinct structural
+    /// signatures reaches this with a legal always-trap dispatch. Red-first:
+    /// before the selector decline, id 4096 selected fine and the RELEASE
+    /// binary emitted 0x7140_023F = `cmp w17, #0, lsl #12` — the id's bit 12
+    /// landed in the sh field (bit 22), imm12 read 0, and a NULL slot
+    /// (reserved id 0) PASSED the §4.4.8 type check it must trap on. The
+    /// debug binary panicked at `encoder.rs:470` on the same input.
+    #[test]
+    fn call_indirect_declines_expected_class_id_past_cmp_imm12() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+            WasmOp::End,
+        ];
+        let ctx_with_id = |id: u32| ModuleCtx {
+            substrate_emitted: true,
+            global_is64: vec![],
+            tables: vec![(3, 0)],
+            type_class_ids: vec![id],
+            type_arg_counts: vec![0],
+            type_result_counts: vec![0],
+            type_ret_float: vec![false],
+        };
+        let sel = |ctx: &ModuleCtx| {
+            select_typed_cf_calls(
+                &ops,
+                1,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                MemBounds::Unchecked,
+                ctx,
+            )
+        };
+        // Past the imm12 range: LOUD DECLINE, never a corrupted compare.
+        let e = sel(&ctx_with_id(4096)).unwrap_err();
+        assert!(
+            e.0.contains("exceeds the type-guard CMP unsigned 12-bit immediate")
+                && e.0.contains("#1072"),
+            "class id past imm12 must decline by name, got: {}",
+            e.0
+        );
+        // Exactly at the boundary still lowers (not off-by-one), and the
+        // emitted compare carries the full id.
+        let (w, _, _) = sel(&ctx_with_id(4095)).unwrap();
+        assert!(w.contains(&enc::cmp_imm(IP1, 4095)));
     }
 
     /// Both module-level features are FAIL-SAFE: with the default context (no

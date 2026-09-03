@@ -28,9 +28,17 @@ What this harness proves, in both directions:
     call_indirect guards).
   * DECLINE HONESTY stays: the allowlist is imports-only — a module whose
     retained function calls a loud-DECLINED local callee must still refuse
-    with the #1013 clean exit-1, never emit that callee as an undefined
+    cleanly and write NO OBJECT, never emit that callee as an undefined
     external. Probed with a real module (a `br_table` past the VCR-A64-CF-001
-    threshold declines `func_0`; `func_1` calls it).
+    threshold declines `func_0`; `func_1` calls it). The probe asserts the
+    property, not one guard's wording — see `decline_honesty_probe`.
+
+  * FLOOR SCOPE, stated because it is not obvious: the `# ci-checks:
+    emulations >= 6` header binds ONLY the six execution differentials below.
+    It cannot see the decline half, which emulates nothing — so a deleted or
+    neutered decline probe would still meet `measured=6` and the job would go
+    green. That half therefore carries its own non-vacuity floor in `main`
+    (`refusals`), mirrored by a `grep` in ci.yml.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=<target>/debug/synth python scripts/repro/aarch64_import_dispatch_1017_differential.py
@@ -226,41 +234,86 @@ def emu_run(code, faddr, args):
 
 def decline_honesty_probe():
     """A retained function calling a loud-DECLINED local callee must STILL
-    refuse (exit 1, reason naming the symbol) — the imports allowlist must not
-    have turned declined locals into silent externals. The callee declines via
-    a `br_table` past the VCR-A64-CF-001 threshold; the caller relocates
-    against it."""
-    arms = "".join(f"(i32.const {i}) (return)" for i in range(40))
-    table = " ".join(str(i % 2) for i in range(40))
+    refuse — the imports allowlist must not have turned declined locals into
+    silent externals. The callee declines via a `br_table` past the
+    VCR-A64-CF-001 threshold; the caller relocates against it.
+
+    Asserts the PROPERTY, not one site's wording. Two guards legitimately
+    refuse this class and which one fires is an implementation detail that has
+    already moved once: the driver-level #1102 pre-flight (RQ-61-DANGLE, which
+    now preempts) and the aarch64 ELF builder's #1013/#851 refusal (still
+    covered directly by `dangling_reloc_symbol_is_err_not_panic` in
+    synth-backend-aarch64, which calls the builder without the driver). Pinning
+    to `does not place` is what reddened this oracle when #1104 landed, so the
+    contract asserted here is the durable one:
+
+      * exit != 0                      — the compile fails
+      * no panic                       — a clean refusal, not exit 101
+      * the dangling symbol is named   — the refusal is actionable
+      * NO OBJECT IS WRITTEN           — the actual #1102 safety property, and
+                                         the only one that is wording-free
+
+    Returns True on a good refusal.
+    """
+    arms_table = " ".join(str(i % 2) for i in range(40))
     wat = f"""(module
   (func $declined (param i32) (result i32)
     (block (block
-      (br_table {table} 0 (local.get 0)))
+      (br_table {arms_table} 0 (local.get 0)))
       (return (i32.const 7)))
     (i32.const 9))
   (func (export "caller") (param i32) (result i32)
     local.get 0
     call $declined))"""
-    with tempfile.NamedTemporaryFile(suffix=".wat", mode="w", delete=False) as w:
+    tmpdir = tempfile.mkdtemp()
+    wat_path = os.path.join(tmpdir, "declined_local.wat")
+    obj_path = os.path.join(tmpdir, "declined_local.o")
+    with open(wat_path, "w") as w:
         w.write(wat)
-        wat_path = w.name
-    with tempfile.NamedTemporaryFile(suffix=".o") as tmp:
-        r = subprocess.run(
-            [SYNTH, "compile", wat_path, "-o", tmp.name, "-b", "aarch64",
-             "--all-exports", "--relocatable"],
-            capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
-    os.unlink(wat_path)
+    r = subprocess.run(
+        [SYNTH, "compile", wat_path, "-o", obj_path, "-b", "aarch64",
+         "--all-exports", "--relocatable"],
+        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
     err = r.stdout + r.stderr
+    wrote_object = os.path.exists(obj_path) and os.path.getsize(obj_path) > 0
+
+    ok = True
     if r.returncode == 0:
         print("FAIL: declined-local-callee module compiled — the allowlist "
               "leaked past imports")
-        return False
-    if "does not place" not in err or "func_0" not in err:
+        ok = False
+    if "panicked at" in err or "RUST_BACKTRACE" in err:
+        print(f"FAIL: refusal panicked instead of declining cleanly:\n{err}")
+        ok = False
+    if "func_0" not in err:
         print(f"FAIL: refusal did not name the declined symbol:\n{err}")
-        return False
-    print("  decline honesty: declined local callee still refuses "
-          "(exit 1, names func_0) — allowlist is imports-only")
-    return True
+        ok = False
+    # The refusal must come from a KNOWN guard of this class, so a future
+    # unrelated failure (a parse error, a missing file) cannot pass as one.
+    if "#1102" not in err and "does not place" not in err:
+        print(f"FAIL: refusal is not the dangling-callee class — expected the "
+              f"#1102 driver guard or the #851/#1013 builder guard:\n{err}")
+        ok = False
+    if wrote_object:
+        print(f"FAIL: an object was written despite the refusal "
+              f"({os.path.getsize(obj_path)} bytes) — an unlinkable object "
+              f"reached disk, which is exactly what #1102 forbids")
+        ok = False
+
+    try:
+        os.unlink(wat_path)
+        if os.path.exists(obj_path):
+            os.unlink(obj_path)
+        os.rmdir(tmpdir)
+    except OSError:
+        pass
+
+    if ok:
+        site = "#1102 driver pre-flight" if "#1102" in err else "#851 builder"
+        print(f"  decline honesty: declined local callee still refuses "
+              f"(exit {r.returncode}, names func_0, no object written, "
+              f"via the {site}) — allowlist is imports-only")
+    return ok
 
 
 def main():
@@ -300,10 +353,23 @@ def main():
         return 1
 
     print("== decline honesty ==")
-    if not decline_honesty_probe():
+    refusals = 0
+    if decline_honesty_probe():
+        refusals += 1
+    else:
         fails += 1
 
-    print(f"\nexecutions: {executions} ({value_cases} value, {trap_cases} trap)")
+    # Non-vacuity for the decline half. The `# ci-checks: emulations >= 6`
+    # floor counts ONLY the wasmtime/unicorn differentials above — it cannot
+    # see the decline probes, so deleting or neutering them would still meet
+    # the floor and the job would go green. This guard is that half's floor.
+    if refusals == 0:
+        print(f"VACUOUS: refusals={refusals} — the decline-honesty half "
+              f"asserted nothing")
+        return 1
+
+    print(f"\nrefusals: {refusals}")
+    print(f"executions: {executions} ({value_cases} value, {trap_cases} trap)")
     if fails:
         print(f"RESULT: FAIL ({fails})")
         return 1

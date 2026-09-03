@@ -40,7 +40,7 @@ artifacts:
       values on the old code and decline on current main. That also gives any
       future multi-value lowering an acceptance oracle it must pass before the
       guard can be relaxed — the only safe way to eventually remove it.
-    status: proposed
+    status: implemented
     release: v0.61
     tags: [oracle, differential, multi-value, evidence]
     links:
@@ -51,4 +51,31 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1097"
-      done-when: "manual: the differential is in scripts/repro/, CI-wired with an emulation floor, and RED against the pre-#1096 binary on all three silent shapes"
+      landed: "#1122"
+      # As filed the done-when was "manual: the differential is in
+      # scripts/repro/, CI-wired with an emulation floor, and RED against the
+      # pre-#1096 binary on all three silent shapes"; the CI wiring is the
+      # load-bearing half, so the predicate is now the machine signature of
+      # exactly that.
+      done-when: "contains:.github/workflows/ci.yml:param_block_silent_1097_differential.py"
+      verified-by: >-
+        scripts/repro/param_block_silent_1097_differential.py, wired as the
+        param-block-silent-1097-oracle job (`# ci-checks: emulations >= 19`
+        + a refusals grep, since the emulations floor cannot see the decline
+        half — #1113). The red half re-executes the PRE-#1096 compiler's own
+        emitted objects (committed fixture, rev b2abf951 = c4b463f3^,
+        regenerable via --capture) against wasmtime-first values on every CI
+        run. Demonstrated SILENT-WRONG, pinned exactly: if/ARM ipe(0) ->
+        0xC0DE0003 (the uninitialized-R3 canary; the issue's exact shape),
+        if/RV32 ipe(0) and block/RV32 bpb(1) -> uninitialized-T2 canary
+        (want 7), loop/RV32 lpb(3) -> 2 (want 10, the back-edge
+        mis-reconciled join). Negative results pinned as such, not
+        manufactured: block/ARM was CORRECT pre-#1096 on all 7 probed
+        vectors (that leg's decline is conservative) and loop/ARM was
+        already refused by the #509 back-edge decline (the fixture records
+        that refusal). Green half: all six shape x backend legs decline
+        cleanly on main (exit 1, not 101, no "panicked at", no object, the
+        shared #1093 needle) and the guard module of supported neighbours
+        still compiles and matches wasmtime on both backends. Red-first:
+        pointing SYNTH at the pre-#1096 binary fails the oracle with all six
+        legs accepted + refusals=0 VACUOUS.

@@ -17,9 +17,10 @@
   "isa_model_simplified_only": 73,
   "isa_model_uncovered": 4,
   "kani_harnesses": 18,
-  "mirror_marker_files": 60,
+  "mirror_marker_files": 59,
   "mirror_obligation_files": 24,
   "proof_inventory_rocq_qed": "630",
+  "proof_inventory_wasm_op_total": "279",
   "rocq_admit_tactics": 2,
   "rocq_admitted": 2,
   "rocq_axioms": 93,
@@ -33,7 +34,8 @@
   "selector_lines_total": 29859,
   "selector_wildcard_arms_code": 55,
   "selector_wildcard_arms_total": 90,
-  "version": "0.60.0",
+  "version": "0.61.0",
   "verus_spec_fns": 8,
+  "wasm_op_variant_count_pin": "279",
   "wasmcert_bridge_qed": 104
 }

@@ -48,6 +48,18 @@ does two things on every CI run:
    contract (no git / no tag / uncommitted signature warns `R7-SKIP` and
    counts in the summary, never passes silently) is pinned here too.
 
+5. THE #1119 R4-BLIND-SPOT REPLAY (RQ-61-R4BLIND). Both measured
+   conventional-commit delivery subjects that R4's prefix anchor could not
+   see are replayed verbatim — b4860e4e (`fix(#1040): ...`, resolved to
+   RQ-61-A32RELOC through `fields.issue` in the SCOPE position → R4 red)
+   and eefa19ef (`fix(oracle): #1104 ...`, whose subject names neither the
+   artifact nor its issue #1113 and is caught by R10's window attribution
+   floor instead) — plus the negative direction the artifact demands:
+   an id MENTION (`fix(rivet): ... RQ-61-VCLOSURE's ...`, live commit
+   0cb36bc7) is attribution, never a delivery claim; a DESCRIPTION-position
+   issue reference never resolves; a revert does not match; ambiguity
+   warns instead of guessing; and the underivable window skips loudly.
+
 Run: python3 scripts/test_status_evidence_check.py
 Mutation-verified at authoring (transcript in the RQ-60-FLIPCOUPLE PR):
 disabling each of R1/R2/R3/R4 and the duplicate-key strictness kills at
@@ -56,6 +68,9 @@ R5/R6, the _release.yaml comments-only rule, the per-file R0, and the
 full-path version derivation kills at least one test. Re-verified for
 RQ-61-EVIDENCE (#1085): disabling each of R7 (the ancestor check), R8
 (both directions), R9, and the R7-SKIP warning kills at least one test.
+Re-verified for RQ-61-R4BLIND (#1119): neutering the SCOPE_ISSUE matcher
+kills the b4860e4e replay + the ambiguity control; emptying DELIVERY_TYPES
+kills the eefa19ef replay.
 """
 
 from __future__ import annotations
@@ -121,6 +136,24 @@ SUBJ_NOISE = [
     "salvage(#242): RQ-59-CRSWEEP dispositions — 10 stale, 1 CONFIRMED "
     "STILL REAL (CR-H7 / #1021) (#1031)",
 ]
+
+# --------------------------------------------------------------------------
+# #1119 (RQ-61-R4BLIND): the two measured conventional-commit delivery
+# subjects R4's prefix anchor was blind to, verbatim from main, plus the
+# live id-mention commit that must stay green.
+# --------------------------------------------------------------------------
+SUBJ_A32RELOC_1116 = (
+    "fix(#1040): A32 BL sites carry R_ARM_CALL with a -8 addend — a real "
+    "linker turned the pre-fix call into a plain branch to garbage (#1116)"
+)
+SUBJ_ORACLEFLOOR_1112 = (
+    "fix(oracle): #1104 shadowed the aarch64 builder guard and left its "
+    "oracle pinned to the superseded wording (#1112)"
+)
+SUBJ_UNRED_1118 = (
+    "fix(rivet): un-red main's R4 — RQ-61-VCLOSURE's `landed:` named the "
+    "ISSUE, not the PR (#1118)"
+)
 
 
 def art(art_id, status, fields=None, links=None, issue="#1064", release=None):
@@ -191,8 +224,12 @@ class Fixture:
             check=True, capture_output=True,
         )
 
-    def run(self, subjects, floor=0):
-        return check(self.root, RELEASE_GLOB, subjects, floor)
+    def run(self, subjects, floor=0, window=None):
+        """`window` is the release-window subject list for R4-issue/R10
+        (#1119). Fixtures default to None — the loud-skip shape — so every
+        pre-#1119 test is unaffected; window tests pass theirs explicitly."""
+        return check(self.root, RELEASE_GLOB, subjects, floor,
+                     window_subjects=window)
 
 
 def fails(result):
@@ -389,8 +426,9 @@ class RuleControls(unittest.TestCase):
     def test_unknown_id_delivery_subject_warns(self):
         fx = Fixture()
         fx.release("release-v0.59.yaml", [art("RQ-59-X", "implemented")])
-        _, _, _, warnings, failures, _, _ = fx.run(
+        r = fx.run(
             ["RQ-61-GHOST (#9999): work with no artifact (#9998)"])
+        warnings, failures = r[3], r[4]
         self.assertEqual(failures, [])
         self.assertTrue(any("RQ-61-GHOST" in w for w in warnings), warnings)
 
@@ -582,6 +620,135 @@ class DirectoryLayout(unittest.TestCase):
 CANARY_DONE_WHEN = "contains:scripts/repro/gate.py:emulations >= 1200"
 
 
+class R4BlindSpot1119(unittest.TestCase):
+    """#1119 (RQ-61-R4BLIND) — R4 was blind to conventional-commit delivery
+    subjects; two v0.61 artifacts shipped and stayed `proposed` with the
+    gate green. Replays both measured instances RED, and pins the negative
+    direction (mention/revert/description-position/ambiguity) GREEN."""
+
+    def _a32(self, status="proposed", extra=None):
+        f = {"done-when": "manual: A32 BL sites emit R_ARM_CALL (28)"}
+        if status in ("implemented", "verified", "accepted"):
+            f["verified-by"] = "PR #1116, real-linker verified"
+        f.update(extra or {})
+        return art("RQ-61-A32RELOC", status, f, issue="#1040")
+
+    def _oracle(self, status="proposed", extra=None):
+        f = {"done-when": "manual: both oracles print a counted decline "
+                          "floor"}
+        if status in ("implemented", "verified", "accepted"):
+            f["verified-by"] = "PR #1112, both members red-first"
+        f.update(extra or {})
+        return art("RQ-61-ORACLEFLOOR", status, f, issue="#1113")
+
+    def _fx(self, arts):
+        fx = Fixture()
+        for a in arts:
+            fx.release(f"release-v0.61/{a['id']}.yaml", [a])
+        return fx
+
+    # -- The two measured instances, red -----------------------------------
+
+    def test_replay_b4860e4e_issue_in_scope_is_a_delivery_claim(self):
+        # b4860e4e merged #1116; RQ-61-A32RELOC stayed `proposed` and the
+        # old R4 (prefix anchor) reported 0 failures. The scope position
+        # resolves through fields.issue.
+        fx = self._fx([self._a32("proposed")])
+        r = fx.run([], window=[SUBJ_A32RELOC_1116])
+        self.assertTrue(has(r, "R4 RQ-61-A32RELOC"), fails(r))
+        self.assertTrue(has(r, "issue-anchored"), fails(r))
+        # Green control 1: the flip (#1120's shape).
+        fx = self._fx([self._a32("implemented")])
+        self.assertEqual(fails(fx.run([], window=[SUBJ_A32RELOC_1116])), [])
+        # Green control 2: `landed:` acknowledges the PR without a flip —
+        # the "increment landed, outcome does not yet hold" statement.
+        fx = self._fx([self._a32("proposed", {"landed": "PR #1116"})])
+        self.assertEqual(fails(fx.run([], window=[SUBJ_A32RELOC_1116])), [])
+
+    def test_replay_eefa19ef_unattributable_delivery_is_red(self):
+        # eefa19ef merged #1112. Its subject names NEITHER the artifact id
+        # NOR the artifact's issue (#1113) — the `#1104` it does name is
+        # the PR that INTRODUCED the defect, so no resolution rule can
+        # attribute it. R10 notices the silence instead.
+        fx = self._fx([self._oracle("proposed")])
+        r = fx.run([], window=[SUBJ_ORACLEFLOOR_1112])
+        self.assertTrue(has(r, "R10"), fails(r))
+        self.assertTrue(has(r, "every artifact silent"), fails(r))
+        # Green control: writing the attribution down (`landed: PR #1112`,
+        # exactly what #1120 did) resolves it.
+        fx = self._fx([self._oracle("proposed", {"landed": "PR #1112"})])
+        self.assertEqual(
+            fails(fx.run([], window=[SUBJ_ORACLEFLOOR_1112])), [])
+
+    # -- The negative direction the artifact demands -----------------------
+
+    def test_id_mention_is_attribution_not_a_delivery_claim(self):
+        # Live commit 0cb36bc7: `fix(rivet)` MENTIONS RQ-61-VCLOSURE
+        # mid-subject. It must neither red R10 (the mention attributes it)
+        # nor demand acknowledgment from VCLOSURE (a mention is not a
+        # delivery claim — the passing-mention rule R4 protects).
+        fx = Fixture()
+        fx.release("release-v0.61/RQ-61-VCLOSURE.yaml", [art(
+            "RQ-61-VCLOSURE", "proposed",
+            {"done-when": "manual: coverage asserts",
+             "landed": "PR #1115 — increment 1"}, issue="#1091")])
+        self.assertEqual(fails(fx.run([], window=[SUBJ_UNRED_1118])), [])
+
+    def test_description_position_issue_never_resolves_to_a_claim(self):
+        # A `#N` in the DESCRIPTION (not the scope) must not become a
+        # delivery claim even when N IS a known artifact issue — eefa19ef
+        # proved that position names a cause. Attribution (R10) still
+        # holds, so the commit is green without any acknowledgment.
+        fx = self._fx([self._a32("proposed")])
+        subj = ("fix(oracle): #1040 regressed the probe wording after the "
+                "guard moved (#1130)")
+        r = fx.run([], window=[subj])
+        self.assertEqual(fails(r), [])
+
+    def test_revert_subject_is_not_delivery_shaped(self):
+        fx = self._fx([self._a32("proposed")])
+        subj = ('Revert "fix(#1040): A32 BL sites carry R_ARM_CALL" (#1131)')
+        self.assertEqual(fails(fx.run([], window=[subj])), [])
+
+    def test_ambiguous_issue_warns_never_guesses(self):
+        # Two same-release artifacts holding one issue: R4-issue must not
+        # pick one. It warns; R10 attribution still applies (green).
+        fx = self._fx([
+            self._a32("proposed"),
+            art("RQ-61-OTHER", "proposed",
+                {"done-when": "manual: x"}, issue="#1040"),
+        ])
+        r = fx.run([], window=[SUBJ_A32RELOC_1116])
+        self.assertEqual(fails(r), [])
+        self.assertTrue(any("ambiguous" in w for w in r[3]), r[3])
+
+    def test_process_typed_subjects_are_exempt(self):
+        # chore/plan/docs are process commits — never delivery-shaped.
+        fx = self._fx([self._a32("proposed")])
+        window = [
+            "chore(deps): bump scry-sai-core from 3.2.4 to 3.2.7 (#1109)",
+            "plan(v0.61): scope the release (6 artifacts) (#1094)",
+            "chore(rivet): flip RQ-61-A32RELOC to implemented (#1120)",
+        ]
+        self.assertEqual(fails(fx.run([], window=window)), [])
+
+    def test_window_skip_is_loud(self):
+        # None = underivable window (no git / no previous-minor tag): both
+        # rules skip with a WINDOW-SKIP warning, never silently.
+        fx = self._fx([self._a32("proposed")])
+        r = fx.run([], window=None)
+        self.assertEqual(fails(r), [])
+        self.assertTrue(any("WINDOW-SKIP" in w for w in r[3]), r[3])
+
+    def test_landed_pr_attribution_survives_history(self):
+        # After the #1120 flip, eefa19ef stays attributable FOREVER via
+        # ORACLEFLOOR's landed naming PR #1112 — the red is not permanent.
+        fx = self._fx([self._oracle("implemented",
+                                    {"landed": "PR #1112 — complete"})])
+        self.assertEqual(
+            fails(fx.run([], window=[SUBJ_ORACLEFLOOR_1112])), [])
+
+
 class R7EvidenceRelease(unittest.TestCase):
     """#1085 R7 — evidence must belong to the release. The replay is the
     RQ-60-CANARY shape: the gate merged at 08:50, v0.59.0 was tagged at
@@ -646,7 +813,7 @@ class R7EvidenceRelease(unittest.TestCase):
         self._canary(fx)
         r = fx.run([])
         self.assertEqual(fails(r), [])
-        _, _, _, _, _, r7_checked, r7_skipped = r
+        r7_checked, r7_skipped = r[5], r[6]
         self.assertEqual((r7_checked, r7_skipped), (1, 0))
 
     def test_patch_tag_of_previous_minor_is_archaeologized_too(self):
@@ -677,7 +844,7 @@ class R7EvidenceRelease(unittest.TestCase):
         self.assertTrue(
             any(w.startswith("R7-SKIP RQ-60-CANARY") for w in warnings_),
             warnings_)
-        _, _, _, _, _, r7_checked, r7_skipped = r
+        r7_checked, r7_skipped = r[5], r[6]
         self.assertEqual((r7_checked, r7_skipped), (0, 1))
 
     def test_missing_previous_tag_skips_loudly(self):

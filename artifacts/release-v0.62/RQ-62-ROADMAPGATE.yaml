@@ -1,0 +1,50 @@
+artifacts:
+  - id: RQ-62-ROADMAPGATE
+    type: system-req
+    title: "The VCR roadmap's 39 artifacts are outside status_evidence_check's scope — two carry no status key at all"
+    description: >
+      #1133, found while consolidating v0.62 scope. `status_evidence_check.py`
+      enforces R0-R10 over `artifacts/release-v*` only, so
+      `artifacts/verified-codegen-roadmap.yaml` — 39 `VCR-*` artifacts, the
+      entire North Star programme — is subject to NONE of them.
+
+      Measured consequence: `VCR-WCET-001` and `VCR-WCET-002` have NO `status`
+      KEY AT ALL. Every other artifact in the repo has one. A missing status is
+      unrepresentable in the lifecycle, and a consumer filtering by status
+      silently drops those rows — while `rivet` still loads them, so they count
+      toward ARTIFACT_FLOOR. Visible to the count, invisible to the rules.
+
+      SAME CLASS AS v0.61'S ENTIRE SCOPE, one directory over: the gate exists,
+      is required, and is green — its SCOPE simply does not cover a file whose
+      whole purpose is recording programme status. #1085 (evidence that could
+      not fail), #1091 (a gate that printed instead of asserting), #1113 (a
+      floor blind to half its oracle), #1119 (R4 blind to a delivery-commit
+      shape) — and now the roadmap. It is arguably the worst instance, because
+      the README's North Star table and release planning both read those
+      statuses.
+
+      NOT A GLOB WIDENING, and the artifact says so to stop that being tried:
+      release artifacts carry `release:` and must satisfy R7/R8 (evidence
+      belongs to the release, `release:` matches the filename); roadmap items
+      carry `release: None` BY DESIGN until scoped, and R4's delivery rule
+      assumes a release window the roadmap has none of. Pointing the
+      release-scoped ruleset at a file it was not written for would produce
+      false reds, which is worse than the blind spot. Decide which rules apply
+      to PROGRAMME artifacts — at minimum "every artifact has a status, and it
+      is a legal lifecycle value" — and enforce those.
+
+      RED-FIRST IS FREE: `VCR-WCET-001` and `VCR-WCET-002` are an
+      already-measured corpus of two. A fix that does not flag both has not
+      fixed the reported thing.
+    status: proposed
+    release: v0.62
+    tags: [gate, traceability, non-vacuity, roadmap]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1133"
+      done-when: "manual: every roadmap artifact is checked for a legal lifecycle status by a gate that FAILS on its absence — proven RED against VCR-WCET-001 and VCR-WCET-002, and proven not to emit false reds on the roadmap's by-design `release: None`"
