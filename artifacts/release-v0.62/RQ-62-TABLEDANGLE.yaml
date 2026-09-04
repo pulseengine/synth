@@ -34,7 +34,7 @@ artifacts:
       which was VERIFIED against the compiler in #1116 rather than assumed. Any
       extension needs its own verification of the same kind, not an inherited
       one.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [correctness, relocation, funcref-table, decline-honesty]
     links:
@@ -45,5 +45,52 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1102"
-      landed: "#1138"
+      verified-by: >-
+        PR #1138. RED-FIRST PER BACKEND, never generalised from one — the
+        failure this artifact exists to prevent was the same class being fixed
+        on aarch64 (#1013) and left live on RV32 for a release because nobody
+        checked the others.
+
+        THE HOLE WAS WORSE THAN THE ARTIFACT PREDICTED. #1102's form was an
+        object that could not LINK. This one LINKS CLEAN: on ARM Thumb-2 and
+        A32 `--relocatable`, exit 0, object written, `UNDEF symbols: NONE`,
+        `arm-none-eabi-ld` links it without complaint — because the declined
+        function's code AND symbol are in NO OBJECT AT ALL. The dispatch table
+        therefore has a slot no embedder can populate, and `run(1)` executes
+        whatever that region holds. #1102 was at least loud at link time; this
+        was silent to execution. Independently reproduced by the coordinator on
+        pre-fix main before merge, reading the symtab by SHT_SYMTAB TYPE (the
+        ARM builder names its symtab with an EMPTY name, so
+        get_section_by_name returns None and a name-based read wrongly
+        concludes "no symtab").
+
+        THE DYNAMIC INDEX IS LOAD-BEARING and is why this was not found
+        earlier: with `i32.const 0` the ARM relocatable path devirtualizes the
+        dispatch into a direct call and the table never materializes, so a
+        constant-index fixture reports "no bug".
+
+        Suspicion held for exactly 2 of 5 paths. ARM Thumb-2 / A32
+        `--relocatable`: the live hole, now refused. ARM `--cortex-m`
+        self-contained: already refused by the #275 slot-precise bail
+        (preserved verbatim, stand-down verified). RV32: unreachable upstream —
+        `call_indirect` itself loud-declines. aarch64: already refused by the
+        #851/#1013 builder, kept as defense-in-depth.
+
+        The gate keys on `funcref_region_slots` plus the wasm op stream, so the
+        #1116 index-label completeness claim is NEITHER reused NOR extended —
+        an extension would have needed its own compile-and-read verification,
+        which this avoids by not making the claim. Scoped to a RETAINED
+        dispatch, so a skipped elem target nothing dispatches through stays a
+        routine partial skip; not waived by --allow-skipped-exports.
+
+        The RV32 leg is pinned BIDIRECTIONALLY: if RV32 ever gains
+        `call_indirect`, the test goes RED and forces the table question to be
+        re-answered rather than inherited — the #1102-history shape, made
+        unrepeatable. Sweep control: all 171 scripts/repro fixtures compiled
+        under the exact arm_corpus_sweep_973 leg, 0 hit the new gate, so
+        EXPECTED_DECLINES is untouched and no corpus acceptance flipped.
+
+        Verified on merged main: both previously-silent paths exit 1, write no
+        object, and name the dead slot precisely ("slot 1 -> function 1").
+      landed: "#1138 — complete; the artifact's own done-when (all four backends either link or refuse loudly, demonstrated red-first per backend) holds."
       done-when: "manual: a module whose elem segment names a DECLINED function with no direct call site either links or refuses loudly on all four backends — demonstrated red-first per backend, never inferred from the direct-call path"

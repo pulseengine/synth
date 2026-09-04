@@ -37,6 +37,48 @@ artifacts:
       increment. gale was asked for this re-run on #1017; if their numbers
       arrive first, use theirs and say so.
 
+      SCOPE DECIDED 2026-09-04, after a consumer argued against this being
+      the release's headline. jess (#1132) measured synth's reach at 100% for
+      the falcon cascade — 5/5 stages lowering on both cortex-m7dp and
+      cortex-m4f, executing bit-exact against relay's SIL reference on
+      emulated RT1176 — and said plainly: "the compile rate was never the
+      binding constraint. Publishing it as the headline risks optimizing the
+      number a flight consumer doesn't feel."
+
+      THAT IS CORRECT ABOUT JESS AND IS N=1. Their pipeline is curated on a
+      pinned toolchain; the 805-module census measures modules nobody curated
+      for us. The maintainer's test — "would it hurt anyone, or might others
+      be in need of it" — resolves the first half: reach work is additive, and
+      a consumer who has not filed yet cannot argue for it. Reach stays.
+
+      BUT THE SECOND HALF HAS A REAL ANSWER, AND IT IS NOT "NO". Reach can
+      hurt, and #1072 is the proof rather than the worry: its own framing is
+      that "increasing reach converts latent encoder defects into reachable
+      ones, and a backend that accepts 1.6% of real input has most of its
+      encoder untested by real programs". The release-invisible immediate-range
+      defect — a NULL table slot passing the §4.4.8 type check it must trap on
+      — was latent ONLY because those modules declined at module level before
+      reaching the encoder. Widening acceptance made it live. We found it by
+      going to look; a consumer would have found it by flying it.
+
+      SO THE GATING RULE, general rather than per-artifact: EVERY REACH
+      INCREMENT SHIPS WITH THE ORACLE THAT MAKES THE NEWLY-ACCEPTED INPUT
+      SAFE, and the oracle lands first. An accepted module that silently
+      returns a wrong value is strictly worse for a consumer than a loud
+      decline — that is synth's whole differentiator, and trading it for an
+      acceptance percentage would be the flattery the compliance-envelope
+      section forbids. RQ-62-MVLOWER already has this shape (the param-block
+      guard may be relaxed only for a shape whose lowering makes #1097's four
+      silent-wrong vectors CORRECT); it is written here so it applies to
+      multi-memory and AArch64 import dispatch too, not just the one artifact
+      that happened to need saying.
+
+      HEADLINE DEMOTED, WORK KEPT: reach is no longer "the one number", and
+      the acceptance rate is published as the DENOMINATOR beside every
+      capability claim rather than as an objective in itself. jess's ask —
+      the embedder contract made mechanically checkable — outranks it for the
+      consumers we actually have.
+
       THE COMPLIANCE ENVELOPE IS PART OF THIS ARTIFACT, not an afterthought:
       CLAUDE.md requires the acceptance rate to be published AS THE
       DENOMINATOR whenever performance is discussed. Loud-decline-over-silent-

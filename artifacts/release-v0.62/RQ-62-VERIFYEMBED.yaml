@@ -1,0 +1,75 @@
+artifacts:
+  - id: RQ-62-VERIFYEMBED
+    type: system-req
+    title: "The embedder side of the ABI has no gate — a consumer conformed correctly by luck, twice, and was green both times"
+    description: >
+      jess's top-priority ask on #1132, and the residual RQ-62-EMBEDDER named
+      when it closed. It outranks reach for the consumers synth actually has.
+
+      #1131 turned the embedder contract from folklore into prose, and prose is
+      a gate for OUR side only: `claims.yaml` + the audit script make the
+      emitter's conformance checkable. NOTHING CHECKS THE EMBEDDER'S SIDE, and
+      the consequence is measured rather than imagined. jess conformed
+      correctly BY LUCK ON TWO INDEPENDENT COUNTS and discovered it only by
+      reading the document after their code was green and committed:
+
+        LUCK 1, the values. They read R11 out of synth's self-contained reset
+        handler and treated it as authoritative. That image also carries
+        OPTIMIZED_LINMEM_BASE = 0x2000_0100, 0x100 above the handler's R11 — a
+        1-in-2 guess, won. Their harness then matched relay's SIL reference
+        bit-exact, which felt like confirmation and only meant the reading was
+        not DETECTABLY wrong on that graph.
+
+        LUCK 2, the clobber. Their C shim sits between boot.S establishing the
+        registers and synth's code reading them, and GCC is free to allocate
+        R11 as a frame pointer there. It did not — the shim compiled to a bare
+        `b.w` tail-branch. Conformance by OPTIMISATION OUTCOME, not by
+        conformance. One more local variable and the guarantee evaporates
+        silently, and the symptom is a wrong torque rather than a build error.
+
+      THE ASK: a check that REFUSES when any linked object writes R9/R10/R11 —
+      `synth verify-embedder <elf>`, or at minimum a documented objdump recipe
+      in the same document. synth owns the register assignment and is the only
+      party that can check conformance to it. jess's own fix is ~10 lines of
+      objdump over the emitted code (not over the -ffixed-* flags, since a flag
+      that silently stopped applying looks exactly like one that works), and
+      they observe that every embedder will need it and most will not think to
+      write it.
+
+      CONSUMER OFFER, on the record: jess will run any prototype against
+      `hardware/renode/cascade-invoke/` — a real fused falcon image on an
+      emulated RT1176 — and report before we ship it. Take it; an embedder
+      check validated only against fixtures we wrote is the shape this artifact
+      exists to remove.
+
+      SECONDARY, cheap, and from the same thread: export names contain `@`,
+      which is a comment character in ARM assembly, so
+      `pulseengine:falcon-cascade/rate@0.7.0#tick` cannot be used as a GCC
+      `__asm__` label — it does not error, it TRUNCATES SILENTLY mid-name and
+      yields an undefined symbol whose name looks almost right. A draft reply
+      claimed the `func_N` alias already solves this; MEASURED, IT DOES NOT —
+      the alias is emitted STB_LOCAL, so an external `bl func_0` cannot resolve
+      to it (`nm --extern-only` lists only the `@`-bearing name). jess's
+      `objcopy --redefine-sym` workaround is still load-bearing. Either emit
+      the alias GLOBAL or document the hazard; do not repeat the claim that it
+      is already handled.
+
+      WHY THIS IS THE HONEST-REFUSAL PATTERN EXTENDED, not a new idea: jess
+      names #952 / #1041 / #1052 as unusually good design — refuse by default,
+      the flag is an ACKNOWLEDGEMENT rather than a behaviour change, emitted
+      code byte-identical either way, so the flag cannot mask a bug and can
+      only record that a human accepted an obligation. Their question is where
+      else an obligation goes unrefused. Reserved-register clobber is one.
+      Anything a document marks INCIDENTAL is another, by construction.
+    status: proposed
+    release: v0.62
+    tags: [embedder, abi, conformance, consumer-contract, jess]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1132"
+      done-when: "manual: a mechanical check refuses an embedder object that writes R9/R10/R11, negative-controlled against a deliberately clobbering object, and validated by jess against their RT1176 harness before it ships; the `@`-alias hazard is either fixed GLOBAL or documented as unsolved"
