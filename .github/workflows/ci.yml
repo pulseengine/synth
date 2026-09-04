@@ -816,7 +816,29 @@ jobs:
             cargo install --force --git https://github.com/pulseengine/rivet --tag v0.32.0 --root ~/.cargo/rivet-0.32 rivet-cli
           fi
       - name: Sync externals (network — clones the 7 sibling repos)
-        run: ~/.cargo/rivet-0.32/bin/rivet sync
+        # #1143: AUTHENTICATE FOR QUOTA, NOT FOR ACCESS. All seven siblings are
+        # PUBLIC, so this clone needs no permission — but GitHub rate-limits
+        # ANONYMOUS git traffic, and hard from datacenter address space, which
+        # is exactly where the self-hosted fleet lives. A throttled response
+        # makes git fall back to interactive auth, and on a tty-less runner
+        # that surfaces as the confusing
+        #   fatal: could not read Username for 'https://github.com'
+        # — which reads like a permissions failure and is not one. This job had
+        # been failing that way on EVERY commit since 2026-09-02, so the
+        # federated graph went unvalidated for a whole release while the job
+        # sat advisory-red. Independently corroborated: the same limiter hit
+        # unrelated infrastructure elsewhere in the same period.
+        #
+        # GITHUB_TOKEN is repo-scoped and that is fine — we need the
+        # authenticated RATE LIMIT, not cross-repo permission. The rewrite is
+        # scoped to this step's git invocations rather than persisted.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
+          ~/.cargo/rivet-0.32/bin/rivet sync
       - name: Validate the federated graph
         # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
         # under pipefail so the log keeps the full diagnostic list.
