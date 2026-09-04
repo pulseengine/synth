@@ -2124,6 +2124,50 @@ artifacts:
       relieves the const-remat/spill pressure the 9-register limit forces (the
       9-vs-12 gap to native). Make R10 allocatable iff bounds-checking is off.
       Composes with the allocator (which reads the pool size from config).
+
+      COLLISION FOUND 2026-09-03, and it did not exist when this was written:
+      R10 is now part of a DOCUMENTED, CONSUMER-AUDITED EMBEDDER CONTRACT
+      (#1131, docs/embedder-abi-relocatable-arm.md), whose fact 1 states
+      "Emitted code never writes any of them". Making R10 allocatable makes
+      emitted code WRITE it, so this stops being an internal allocator
+      decision and becomes an ABI CHANGE. jess has already hardened their
+      build around the contract (-ffixed-r9/r10/r11 plus an assertion over
+      emitted code). VCR-RA-002 must therefore either (i) keep the promise by
+      restricting the new allocatable range to functions the embedder cannot
+      observe, or (ii) be a VERSIONED contract change moving the doc, the
+      claims.yaml pin (SYNTH-EMBEDDER-ABI-RELOCATABLE-1131) and the consumer
+      together. Discovering this at implementation time would have been
+      expensive; it is cheap now only because the contract got written down.
+
+      EXTERNAL INPUT (Wasmi 2.0, "Engineering of the Fastest Wasm
+      Interpreters", wasmi-labs.github.io/blog/posts/wasmi-v2.0/, section
+      "Problem: Calling Conventions" — raised by a colleague against the #1131
+      contract work). Wasmi hit the SAME SHAPE from the interpreter side: 7 of
+      their 9 handler arguments need GPRs (store, ip, sp, mem0, mem0_len,
+      instance, ireg) while sysv64 supplies 6, and "a 7th integer argument
+      would trash performance because it would have to be spilled to the stack
+      on every dispatch".
+
+      Their fix is the option this artifact does NOT consider. Rather than
+      freeing the scarce register conditionally, they MOVED THE VALUE TO
+      ANOTHER REGISTER DOMAIN: instance became a floating-point argument,
+      chosen "since it is used only for relatively expensive operations
+      anyway", and they measured that "the integer-to-float register domain
+      move isn't a big deal".
+
+      The SELECTION RULE is identical to this artifact's own — evict the
+      least-frequently-used of the permanently-reserved values. synth reached
+      that independently for R10; Wasmi is confirmation from a different
+      execution model that the diagnosis is right, which is worth more than a
+      new idea would be.
+
+      What it ADDS is coverage where VCR-RA-002 gives nothing: the
+      bounds-checking-ON case, where R10 must stay live and is therefore
+      un-freeable. A VFP-domain move would relieve the integer pool without
+      dropping the value. TARGET-CONDITIONAL AND UNMEASURED HERE: Cortex-M3
+      has no FPU at all so this cannot be universal, and the ARM vmov cost is
+      not the x86 cost Wasmi measured — it needs its own measurement on this
+      encoder's own bytes before being believed (the RQ-59-MEASURE rule).
     status: proposed
     tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf, release-v0.11.41]
     links:
