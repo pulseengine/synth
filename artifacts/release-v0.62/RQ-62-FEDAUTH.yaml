@@ -1,0 +1,79 @@
+artifacts:
+  - id: RQ-62-FEDAUTH
+    type: system-req
+    title: "The federated-graph job validated nothing for 17 hours because GitHub rate-limits anonymous clones from datacenter IPs"
+    description: >
+      #1143. The `Rivet Federated Graph (advisory)` job failed before it
+      validated, on every commit from 2026-09-03 04:00 to 21:25:
+
+        Sync externals (clones the 7 sibling repos)             failure
+        Validate the federated graph                            skipped
+        Non-vacuity guard — resolution must actually have run    skipped
+
+        error: git clone failed: Cloning into './.rivet/repos/gale'...
+        fatal: could not read Username for 'https://github.com'
+
+      THE ERROR ACTIVELY MISLEADS AND I READ IT WRONG TWICE. It looks like a
+      permissions failure. All seven siblings are PUBLIC (verified: gale, scry,
+      loom, meld, kiln, jess, spar all private=false), so an anonymous clone
+      needs no credentials at all. git only prompts for a username AFTER the
+      transport refuses it — GitHub returned a throttled response to an
+      ANONYMOUS request, and on a tty-less runner the fallback to interactive
+      auth surfaces as "No such device or address".
+
+      The cause is a RATE LIMITER on unauthenticated traffic, which bites
+      hardest from datacenter address space — exactly where the self-hosted
+      fleet lives. Independently corroborated: the same limiter hit unrelated
+      infrastructure elsewhere in the same window, which is stronger evidence
+      than inference from one log.
+
+      FIXED IN PR #1144 by authenticating FOR QUOTA, NOT FOR ACCESS.
+      GITHUB_TOKEN is repo-scoped and that is fine — what is needed is the
+      authenticated rate limit, not cross-repo permission. The url.insteadOf
+      rewrite is applied inside the step and removed on exit rather than
+      persisted on a shared self-hosted runner.
+
+      THE PASSES DO NOT PROVE THE FIX, and this is recorded so nobody later
+      claims they did. Measured: #1141 and #1142 passed WITHOUT the fix at
+      21:25, while #1140 failed without it at 06:14 and #1144 passed with it at
+      21:29. Every failure sits inside one contiguous window and everything
+      outside it succeeds. The limiter eased on its own. The fix is still
+      right, for a reason those passes do not demonstrate: it removes the
+      dependence on which side of a window a run lands.
+
+      AN INTERMITTENT LIMITER IS WORSE FOR SIGNAL THAN A PERMANENT ONE. A job
+      that flaps teaches maintainers to stop reading it — which is exactly what
+      happened here. I described this job's failure from memory twice in the
+      org-wide review and was wrong both times (once attributing it to dangling
+      `traces-to` refs my LOCAL rivet reports, once to my own v0.62 scoping
+      commit, whose YAML cannot affect a git clone).
+
+      WHAT THE JOB GOT RIGHT AND KEEPS: it is advisory, so nothing was blocked,
+      and it FAILS CLOSED — the non-vacuity guard was SKIPPED rather than
+      passing vacuously, which is the #1012 lesson working exactly as designed.
+
+      SAME CLASS AS #1062: GitHub's own limits are the binding constraint, not
+      our configuration. There the self-hosted fleet sat idle while the
+      GitHub-hosted quota queued for hours; here public repos were unclonable
+      from that same fleet. Both are cheaper to solve once at org level than
+      seven times per repo, which is the ask carried into #1132's temper review.
+    status: implemented
+    release: v0.62
+    tags: [ci, rate-limit, federated-graph, non-vacuity]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1143"
+      verified-by: >-
+        PR #1144 authenticates the externals sync via a scoped
+        url.insteadOf rewrite using GITHUB_TOKEN, applied in-step and removed
+        on exit. Verified on the fix's own run: sync=success,
+        validate=success — so the federated graph is NOT hiding anything; it
+        was genuinely just unclonable. Explicitly NOT claimed: that the fix
+        caused those passes (#1141/#1142 passed without it in the same hour).
+      landed: "PR #1144 — complete. The fix ships; the residual is org-level (a token for quota belongs to temper, not to seven repos), carried into #1132."
+      done-when: "manual: the externals sync authenticates so the federated graph's validation no longer depends on anonymous rate-limit luck"
