@@ -68,6 +68,7 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1136"
+      landed: "#1150"
       done-when: "contains:scripts/repro/loop_conformance_1136_gate.md:verdict=DOES-NOT-CONFORM"
       verified-by: >-
         scripts/loop_conformance_check.py run both directions on 2026-09-05
