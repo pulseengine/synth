@@ -61,7 +61,7 @@ artifacts:
       only record that a human accepted an obligation. Their question is where
       else an obligation goes unrefused. Reserved-register clobber is one.
       Anything a document marks INCIDENTAL is another, by construction.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [embedder, abi, conformance, consumer-contract, jess]
     links:
@@ -73,3 +73,30 @@ artifacts:
       verification-track: differential
       issue: "#1132"
       done-when: "manual: a mechanical check refuses an embedder object that writes R9/R10/R11, negative-controlled against a deliberately clobbering object, and validated by jess against their RT1176 harness before it ships; the `@`-alias hazard is either fixed GLOBAL or documented as unsolved"
+      verified-by: >-
+        IMPLEMENTED, NOT VERIFIED — the done-when's jess-validation clause is
+        deliberately outstanding, which is why the status stops at
+        implemented. What holds, measured: `synth verify-embedder <elf>`
+        REFUSES on writes to R9/R10/R11 in any form (dest operands, pop/ldm
+        reglists, writeback, long-multiply second dests, mrc/mrrc/vmov
+        forms), fail-closed on unknown mnemonics and undecodable bytes, with
+        a non-vacuity floor (0 instructions scanned = refusal) and a
+        refused misspelled --allow-writer. Negative-controlled BOTH
+        directions on real toolchain objects, re-proven every CI run by
+        scripts/repro/verify_embedder_gate_1132.py (9 pinned checks: exact
+        write count 5 on the 4-shape clobber .s naming all three registers;
+        the jess luck-2 shape — a plain -O2 C shim GCC gives `mla r9/sl` —
+        refused locally and accepted when rebuilt -ffixed-r9/-r10/-r11;
+        synth's own Thumb-2 + A32 --relocatable objects accepted).
+        The `@`-alias hazard took the DOCUMENTED-UNSOLVED arm, on measured
+        grounds: re-globalizing func_N would regress #656 (GLOBAL func_N =
+        multiple-definition collision co-linking two dissolved objects, a
+        consumer-filed defect), so the doc now says never to use the
+        @-bearing name as an asm label and blesses the asserted
+        objcopy --redefine-sym workaround; SYNTH-VERIFY-EMBEDDER-1132 pins
+        the UNSOLVED heading TO the #656 STB_LOCAL binding so re-globalizing
+        reddens the claim and forces the doc rewrite in the same PR.
+        REMAINING before verified: jess runs the prototype against
+        hardware/renode/cascade-invoke/ (their standing offer, accepted; the
+        ask is posted on #1132) and reports; flip to verified on THEIR
+        confirmation, not ours — the RQ-62-EMBEDDER closure shape.
