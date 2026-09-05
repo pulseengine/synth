@@ -26,8 +26,9 @@
 //! The disassembly comes from the embedder's own toolchain (`objdump`),
 //! which every Cortex-M embedder has and which decodes the full ISA with
 //! mapping-symbol code/data separation — synth deliberately does not carry a
-//! second, hand-written full-ISA decoder to drift against it (the mirror
-//! class this repo keeps deleting). What synth owns is the CLASSIFICATION:
+//! second full-ISA decoder of its own here, the drift-prone duplicate shape
+//! the RQ-58-METRIC ratchets exist to shrink. What synth owns is the
+//! CLASSIFICATION:
 //! for every instruction that MENTIONS a reserved register, decide
 //! read-vs-write from the mnemonic's operand semantics, and REFUSE
 //! ("cannot classify") on any mnemonic the table does not know. Unknown
