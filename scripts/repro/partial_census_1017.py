@@ -31,7 +31,12 @@ WHAT THIS SCRIPT MEASURES, per module, on one backend (default: arm):
      one PRIMARY blocker per non-accepted module — the module-level error for a
      module-level decline, the modal per-function skip reason for a skip-only
      decline — so "which blocker accounts for how many modules" has a number.
-     Still a measurement: no expected values, no verdict.
+     Instance-specific payloads (symbol lists, export-name lists, global-
+     initializer dumps) are collapsed so one CAUSE is one bucket, and the #952
+     export-skip / #1102 dangling-reloc refusals — POLICY errors whose root
+     cause is the per-function declines behind them — are attributed to the
+     modal per-function skip reason synth's own stderr names, when it names
+     one.  Still a measurement: no expected values, no verdict.
 
 This script only ever RUNS synth and READS its stderr; it changes no compile
 behaviour.  It is the measurement, not the feature (#1017 / RQ-59-PARTIALCENSUS).
@@ -290,7 +295,13 @@ def classify(synth, module, backend, timeout, component=False):
         # Declined plain but clean with the flag and no skip warning: should
         # not happen; surface it rather than misfile it.
         return {"verdict": "ANOMALY", "reason": first_error_line(err)}
-    return {"verdict": "DECLINE_MODULE_LEVEL", "reason": first_error_line(err)}
+    # Keep the plain run's per-function skip reasons: for the #952/#1102
+    # refusal classes they carry the ROOT CAUSE the blocker histogram ranks.
+    return {
+        "verdict": "DECLINE_MODULE_LEVEL",
+        "reason": first_error_line(err),
+        "skip_reasons": dict(skip_reasons(err)),
+    }
 
 
 # One wat identifier/index token, shared by every call-graph regex below.
@@ -420,26 +431,59 @@ def prune_reachability(module, skipped_names, skipped_export_names, timeout):
     return "prunable"
 
 
+def collapse_instance_lists(reason):
+    """Collapse instance-specific payloads so one CAUSE buckets as one
+    histogram row: the #1102 dangling-reloc symbol list ('func_25' ->
+    'func_20', ...), the #952 skipped-export name list, and the global-
+    initializer dump all differ per module while naming the same class.
+    Applied AFTER normalize_reason (digits already collapsed to N).  The full
+    per-module text is preserved in the --json records."""
+    reason = re.sub(r"DECLINED: .*$", "DECLINED: <symbol list>", reason)
+    reason = re.sub(
+        r"skipped \(not in the output object\): .*$",
+        "skipped (not in the output object): <export list>",
+        reason,
+    )
+    reason = re.sub(r"\(global N = .*$", "(global <initializer list>)", reason)
+    return reason
+
+
+def _modal(skip_reasons):
+    """The MODAL skip reason (most functions skipped for it; ties broken
+    lexicographically so the ranking is deterministic)."""
+    return max(skip_reasons.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
 def primary_blocker(rec):
     """One PRIMARY blocker per non-accepted module (RQ-62-REACH increment 1).
 
-    DECLINE_MODULE_LEVEL -> the normalized module-level error (the thing that
-    refused the whole module).  DECLINE_SKIP_ONLY -> the MODAL per-function
-    skip reason (most functions skipped for it; ties broken lexicographically
-    so the ranking is deterministic).  TIMEOUT/ANOMALY -> their own buckets.
-    Attribution, not verdict: the histogram ranks causes, it asserts nothing.
+    DECLINE_MODULE_LEVEL -> the normalized, list-collapsed module-level error
+    (the thing that refused the whole module) — EXCEPT the #952 export-skip
+    and #1102 dangling-reloc refusals, which are POLICY errors whose root
+    cause is the per-function declines behind them: those are attributed to
+    the modal per-function skip reason synth's own stderr names, when it
+    names one.  DECLINE_SKIP_ONLY -> the modal per-function skip reason.
+    TIMEOUT/ANOMALY -> their own buckets.  Attribution, not verdict: the
+    histogram ranks causes, it asserts nothing.
     """
     v = rec["verdict"]
     if v == "DECLINE_MODULE_LEVEL":
         reason = rec.get("reason", "?")
         if reason.startswith("Error: "):
             reason = reason[len("Error: "):]
-        return normalize_reason(reason)
+        reason = collapse_instance_lists(normalize_reason(reason))
+        sr = rec.get("skip_reasons") or {}
+        if sr and (
+            "requested export(s) were skipped" in reason
+            or "retained function(s) relocate against" in reason
+        ):
+            return _modal(sr)
+        return reason
     if v == "DECLINE_SKIP_ONLY":
         sr = rec.get("skip_reasons") or {}
         if not sr:
             return "(per-function skips, reasons unparsed)"
-        return max(sr.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        return _modal(sr)
     if v == "TIMEOUT":
         return "timeout"
     return rec.get("reason", "?")
