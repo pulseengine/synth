@@ -184,12 +184,34 @@ whatever the region holds), not a trap.
   `R_ARM_THM_CALL` relocations — an object whose every relocation is
   `R_ARM_THM_CALL` is the expected shape. Read the symbol table by section
   TYPE (`SHT_SYMTAB`), not name: the ARM builder emits its symtab with an
-  empty section name. Component-model export names keep the WIT name
-  verbatim, including `:` `@` `#` — and in GNU ARM assembly `@` begins a
-  comment, so a C-side `__asm__` rename label on such a name truncates
-  mid-symbol ("garbage following instruction"). Reference the `func_N`
-  alias at the same address instead (or `objcopy --redefine-sym` if you
-  must keep the WIT name).
+  empty section name.
+
+### The `@`-in-export-names hazard — UNSOLVED, work around it
+
+Component-model export names keep the WIT name verbatim, including `:` `@`
+`#` — and in GNU ARM assembly `@` begins a comment, so a C-side `__asm__`
+rename label on such a name truncates SILENTLY mid-symbol; the assembler's
+"garbage following instruction" does not point at the cause. **Do not use
+the `@`-bearing name as an asm label.**
+
+Two things that look like remedies and are not (both measured, #1132):
+
+- **The `func_N` alias does NOT solve this across translation units.** It
+  exists at the same address but is emitted `STB_LOCAL` — `nm --extern-only`
+  lists only the `@`-bearing name, so an external `bl func_N` cannot resolve
+  to it. That binding is DELIBERATE, not an oversight: `func_N` is named by
+  per-object wasm function INDEX, and emitting it GLOBAL made co-linking two
+  independently-dissolved synth objects fail with `multiple definition of
+  'func_N'` — a real consumer-filed collision (#656). Re-globalizing the
+  alias would trade this papercut for that one.
+- **`-ffixed-*`-style flag discipline doesn't apply here either** — there is
+  no flag; the truncation happens inside the assembler.
+
+The load-bearing workaround is the consumer's own:
+`objcopy --redefine-sym 'pulseengine:ns/iface@0.7.0#tick=your_c_name'` —
+and ASSERT the rename landed (`nm | grep " T your_c_name$"`) rather than
+trusting it; a silent no-op surfaces three steps later as an unresolved
+reference.
 
 ## What is INCIDENTAL — observed in some outputs, guaranteed by nothing
 
@@ -226,6 +248,66 @@ Category (c). Do not build a harness on any of these:
   not *detectably* wrong on that input; it says nothing about the contract.
   Everything in this section is the set of things a passing harness can be
   built on top of and still be wrong about.
+
+## Checking YOUR side: `synth verify-embedder` (#1132)
+
+Everything above states obligations; this section is the mechanical check on
+the embedder's half of the register contract. #1131's consumer conformed to
+it **correctly by luck**: their C shim happened to compile to a bare
+tail-branch, so GCC never allocated R11 between boot establishing the
+registers and synth's code reading them — one more local variable and the
+linear-memory base silently becomes a scratch register, and the symptom is a
+wrong value on a control loop, not a build error.
+
+```
+synth verify-embedder <elf> [--allow-writer <symbol>]...
+```
+
+REFUSES (exit nonzero, each site named) when any instruction in the given
+ELF **writes R9, R10 or R11** — in any form: destination operands,
+`pop`/`ldm` register lists, addressing-mode writeback, long-multiply second
+destinations, `mrc`/`mrrc`/`vmov`-to-core forms. It disassembles with your
+own toolchain's `objdump` (`arm-none-eabi-objdump`, `llvm-objdump`, or
+`SYNTH_OBJDUMP=<path>`), and classification is FAIL-CLOSED: an unknown
+mnemonic or undecodable bytes near a reserved register refuse rather than
+pass. A scan that decodes zero instructions also refuses — conformance about
+nothing is not conformance.
+
+Run it over the **final linked image**. Your boot code legitimately writes
+the three registers once — name that symbol with `--allow-writer` (an
+acknowledgement in the `--embedder-data-init` mold: it changes no behaviour,
+it records that a human accepted the obligation for exactly that symbol; a
+misspelled name refuses instead of silently waiving nothing). Pair it with
+`-ffixed-r9 -ffixed-r10 -ffixed-r11` on your C objects; the check is what
+notices when the flag silently stops applying.
+
+The check is deliberately STRICTER than the dynamic contract: a function
+that saves, repurposes and restores R11 around a region is AAPCS-legal *if
+nothing in that region enters synth code*, but that is not statically
+evident, so any write refuses (or gets a deliberate `--allow-writer`).
+
+**What it cannot see** (bounds, stated like every check in this repo):
+
+- Code NOT in the ELF you hand it — a bootloader, ROM routines, a debugger,
+  code injected at a later link stage. Check the final image.
+- Runtime register-context switches: an RTOS restoring a task context
+  rewrites R9-R11 from memory. The `ldm`/`pop` doing it IS flagged, but
+  whether the restored VALUES honour the contract is a runtime property.
+- Runtime-generated or self-modifying code, and handlers installed at
+  runtime whose code lives outside the scanned sections.
+- It trusts objdump's mapping-symbol (`$t`/`$d`) code/data separation.
+  Toolchain objects carry mapping symbols; on a STRIPPED object a literal
+  pool can desynchronise the decode — the failure direction there is a false
+  refusal or an undecodable-bytes refusal, not a silent pass.
+- Indirect STORES cannot modify a register, so "indirect writes" are not a
+  gap for the registers themselves — the indirect hazard is the
+  context-restore class above.
+
+It DOES see inline asm and hand-written `.s` — those are emitted code, which
+is the point of checking bytes instead of build flags. The check's own
+discrimination is CI-pinned: `scripts/repro/verify_embedder_gate_1132.py`
+refuses a real 4-shape clobbering object (naming all three registers) and
+accepts conforming, acknowledged, and synth-emitted images on every run.
 
 ## Compliance note
 

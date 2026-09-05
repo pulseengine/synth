@@ -350,7 +350,9 @@ enum Commands {
         /// R11 are independent regions (place them anywhere disjoint;
         /// 4-byte-align both). R12 is synth's encoder scratch. The stack is
         /// plain AAPCS; the linker/harness owns the whole layout, and synth
-        /// validates none of it on this path.
+        /// validates none of it on this path. Check YOUR side of the
+        /// register contract with `synth verify-embedder <linked-elf>`
+        /// (#1132): it refuses any linked code that writes R9/R10/R11.
         #[arg(long)]
         relocatable: bool,
 

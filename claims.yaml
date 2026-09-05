@@ -2662,3 +2662,34 @@ claims:
         pattern: 'R10 = linear-memory size in BYTES, and R9 = globals-table'
         glob: ['crates/synth-cli/src/main.rs']
         expect: 1
+
+  # RQ-62-VERIFYEMBED (#1132): the EMBEDDER side of the contract above, made
+  # mechanically checkable. The doc's verify-embedder section and the @-hazard
+  # section are bound to the code they describe: the checker's reserved set,
+  # its fail-closed refusal, the CI gate that proves it discriminates, and —
+  # for the @-hazard's "unsolved" status — the #656 STB_LOCAL alias binding
+  # whose existence is the REASON the func_N alias is not the fix. If someone
+  # re-globalizes the alias (or retires it), this claim goes red so the doc's
+  # hazard section is rewritten in the same PR instead of rotting.
+  - id: SYNTH-VERIFY-EMBEDDER-1132
+    doc: docs/embedder-abi-relocatable-arm.md
+    text: "REFUSES (exit nonzero, each site named) when any instruction in the given"
+    evidence:
+      - kind: verbatim                       # the subcommand + acknowledgement
+        text: "synth verify-embedder <elf> [--allow-writer <symbol>]..."
+      - kind: verbatim                       # the @-hazard is documented UNSOLVED
+        text: "The `@`-in-export-names hazard — UNSOLVED, work around it"
+      - kind: count-eq                       # the checker's reserved set IS the
+        pattern: 'const RESERVED: \[&str; 3\] = \["r9", "r10", "r11"\];'
+        glob: ['crates/synth-cli/src/verify_embedder.rs']
+        expect: 1                            # doc's three registers
+      - kind: count-min                      # fail-closed: unknown mnemonics
+        pattern: 'cannot classify, refused \(fail-closed\)'
+        glob: ['crates/synth-cli/src/verify_embedder.rs']
+        min: 1                               # refuse, never pass
+      - kind: count-eq                       # the #656 LOCAL alias binding the
+        pattern: 'SymbolBinding::Local\) // #656: in-object call label'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1                            # @-hazard section reasons from
+      - kind: file-exists                    # the negative-controlled gate
+        path: scripts/repro/verify_embedder_gate_1132.py
