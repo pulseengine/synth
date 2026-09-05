@@ -36,7 +36,7 @@ artifacts:
       RED-FIRST IS FREE: `VCR-WCET-001` and `VCR-WCET-002` are an
       already-measured corpus of two. A fix that does not flag both has not
       fixed the reported thing.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [gate, traceability, non-vacuity, roadmap]
     links:
@@ -47,4 +47,13 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1133"
-      done-when: "manual: every roadmap artifact is checked for a legal lifecycle status by a gate that FAILS on its absence — proven RED against VCR-WCET-001 and VCR-WCET-002, and proven not to emit false reds on the roadmap's by-design `release: None`"
+      landed: "PR #1155"
+      done-when: "contains:scripts/test_status_evidence_check.py:test_replay_vcr_wcet_missing_status_is_red"
+      verified-by: >
+        PR #1155: red-first transcript (both VCR-WCET offenders flagged,
+        exit 1, exactly 2 failures across 379 artifacts — no false reds on
+        the roadmap's 37 proposed/approved items with no `release:` key);
+        the corpus replay + negative-direction fixtures run on every CI
+        pass via test_status_evidence_check.py (9 new tests,
+        mutation-verified P0/P1/P2/floor); the ci.yml grep pins the
+        programme-status summary line.

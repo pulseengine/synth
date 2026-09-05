@@ -90,11 +90,14 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    PROGRAMME_FLOOR,
     RELEASE_GLOB,
     RELEASE_VERSION,
+    REPO_ROOT,
     DuplicateKeyError,
     StrictLoader,
     check,
+    check_programme,
 )
 import yaml  # noqa: E402
 
@@ -991,6 +994,142 @@ class R9CrateSource(unittest.TestCase):
         fx.release("release-v0.60.yaml", [art(
             "RQ-60-A64IMPORT", "proposed", {"done-when": self.A64})])
         self.assertEqual(fails(fx.run([])), [])
+
+
+class ProgrammeStatus1133(unittest.TestCase):
+    """P-rules (#1133 / RQ-62-ROADMAPGATE): the VCR roadmap's 39 artifacts
+    were outside every R-rule by scope, and VCR-WCET-001/002 carried no
+    `status` key at all. Replays the measured corpus of two, the negative
+    direction the artifact demands (no false reds on by-design absent
+    `release:` or on legitimately proposed/approved items), and the P0/floor
+    visibility contract. Mutation-verified at authoring: deleting the P1
+    branch kills the corpus replay; deleting P2 kills the illegal-status
+    tests; deleting P0 kills both visibility tests; zeroing the floor
+    argument path kills the floor test."""
+
+    ROADMAP = "verified-codegen-roadmap.yaml"
+
+    @staticmethod
+    def p_fails(result):
+        return result[4]
+
+    def p_has(self, result, needle):
+        return any(needle in f for f in self.p_fails(result))
+
+    def roadmap(self, fx, artifacts):
+        fx.raw(self.ROADMAP, yaml.safe_dump({"artifacts": artifacts}))
+
+    def test_replay_vcr_wcet_missing_status_is_red(self):
+        # The measured corpus: two roadmap artifacts with NO status key,
+        # beside a healthy sibling. Both must fire; the sibling must not.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-WCET-001", "type": "sys-verification", "title": "t",
+             "links": [{"type": "verifies", "target": "VCR-001"}]},
+            {"id": "VCR-WCET-002", "type": "sys-verification", "title": "t",
+             "links": [{"type": "verifies", "target": "VCR-001"}]},
+            {"id": "VCR-001", "type": "system-req", "title": "t",
+             "status": "proposed",
+             "links": [{"type": "derives-from", "target": "SR-001"}]},
+        ])
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "P1 VCR-WCET-001"), self.p_fails(r))
+        self.assertTrue(self.p_has(r, "P1 VCR-WCET-002"), self.p_fails(r))
+        self.assertEqual(len(self.p_fails(r)), 2, self.p_fails(r))
+
+    def test_null_and_empty_status_are_p1(self):
+        # `status:` (None) and `status: ""` are the same defect as a
+        # missing key: unrepresentable in the lifecycle.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-A", "type": "sw-req", "title": "t", "status": None,
+             "links": []},
+            {"id": "VCR-B", "type": "sw-req", "title": "t", "status": "",
+             "links": []},
+        ])
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "P1 VCR-A"), self.p_fails(r))
+        self.assertTrue(self.p_has(r, "P1 VCR-B"), self.p_fails(r))
+
+    def test_illegal_status_is_p2(self):
+        # A typo'd status is worse than untidy: on the release side it
+        # silently exits CLAIMING and defuses R2.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-A", "type": "sw-req", "title": "t",
+             "status": "implmented", "links": []},
+        ])
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "P2 VCR-A"), self.p_fails(r))
+
+    def test_no_false_reds_on_programme_shape(self):
+        # The negative direction #1133 demands: legitimately proposed/
+        # approved programme items with NO `release:` key (38 of 39 on
+        # main), an explicit `release: null`, and the one historical
+        # `release: v0.24.0` must all pass — the release-scoped rules
+        # (R7/R8/R4/R10) are deliberately NOT applied here.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-A", "type": "system-req", "title": "t",
+             "status": "proposed", "links": []},
+            {"id": "VCR-B", "type": "system-req", "title": "t",
+             "status": "approved", "release": None, "links": []},
+            {"id": "VCR-RA-001", "type": "system-req", "title": "t",
+             "status": "verified", "release": "v0.24.0", "links": []},
+        ])
+        self.assertEqual(self.p_fails(check_programme(fx.root, floor=0)), [])
+
+    def test_roadmap_file_missing_is_p0(self):
+        # A rename/move must red, never quietly exempt the programme again.
+        fx = Fixture()
+        fx.raw("some-other-artifacts.yaml", yaml.safe_dump({"artifacts": [
+            {"id": "X-1", "type": "sw-req", "title": "t",
+             "status": "draft", "links": []}]}))
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "not found by the scan"),
+                        self.p_fails(r))
+
+    def test_roadmap_zero_artifacts_is_p0(self):
+        # The #1064 invisible shape on the programme's own file: parses,
+        # but under non-schema keys — rivet would skip it silently.
+        fx = Fixture()
+        fx.raw(self.ROADMAP, "requirements:\n  - id: VCR-001\n")
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "contributes ZERO artifacts"),
+                        self.p_fails(r))
+
+    def test_release_files_are_status_checked_too(self):
+        # R0-R10 never checked status LEGALITY; P2 covering release files
+        # closes the typo'd-CLAIMING hole there as well.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-001", "type": "system-req", "title": "t",
+             "status": "proposed", "links": []}])
+        fx.release("release-v0.62/RQ-62-FOO.yaml",
+                   [art("RQ-62-FOO", "implmented",
+                        {"done-when": "manual: reason",
+                         "verified-by": "basis"})])
+        r = check_programme(fx.root, floor=0)
+        self.assertTrue(self.p_has(r, "P2 RQ-62-FOO"), self.p_fails(r))
+
+    def test_floor_reds_below(self):
+        # Non-vacuity: a scan that finds fewer artifacts than the pinned
+        # floor did LESS work than reality holds — red, never a quiet pass.
+        fx = Fixture()
+        self.roadmap(fx, [
+            {"id": "VCR-001", "type": "system-req", "title": "t",
+             "status": "proposed", "links": []}])
+        r = check_programme(fx.root, floor=10)
+        self.assertTrue(self.p_has(r, "P-VACUOUS"), self.p_fails(r))
+
+    def test_live_repo_is_green_and_meets_the_floor(self):
+        # The live anchor: the real repo passes with the DEFAULT floor,
+        # and the floor is not slack (checked >= PROGRAMME_FLOOR must
+        # hold on the tree this test ships with).
+        files, checked, missing, illegal, failures = check_programme(REPO_ROOT)
+        self.assertEqual(failures, [])
+        self.assertGreaterEqual(checked, PROGRAMME_FLOOR)
+        self.assertEqual((missing, illegal), (0, 0))
 
 
 if __name__ == "__main__":
