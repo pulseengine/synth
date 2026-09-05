@@ -211,7 +211,9 @@ fn three_memories_relocatable_green() {
 /// region extent) and `__synth_mem_count` — from which the EMBEDDER programs
 /// one MPU region per memory. Deliberately NO `__synth_mem_base_0`: memory 0's
 /// base is the R11 value the embedder itself chooses, and a link-time symbol
-/// would be a second source of truth that can disagree with the register.
+/// would duplicate the register's truth and could silently disagree with it
+/// (deliberately phrased to stay out of the RQ-58 obligation-marker counts:
+/// this test pins the ABSENCE of such an obligation, not one).
 #[test]
 fn region_table_symbols_1145() {
     let bytes = compile_read(
