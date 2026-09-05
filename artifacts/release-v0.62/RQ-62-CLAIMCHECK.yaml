@@ -65,7 +65,7 @@ artifacts:
       NOT IN SCOPE: `Test`/`Bazel`/`Z3`/`Kani`. Each needs its toolchain proven
       on the pool first, and `Test` in particular runs `sudo apt-get install`,
       which no self-hosted job in this repo does.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [ci, capacity, required-context]
     links:
@@ -76,4 +76,36 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1062"
+      landed: "PR #1153 — Claim Check retargeted to [self-hosted, linux, x64, light] with the job NAME unchanged, plus the redundancy invariant made mechanical: scripts/runner_redundancy_check.py (fleet check, live-mode) + scripts/test_runner_redundancy_check.py (12-fixture potency replay incl. the 2026-09-02 instance) + a --structural-only required-context-reports check, the latter two CI-wired in the Claim Check job itself. The PyYAML guard gained a PEP 668 fallback reached only when `import yaml` fails."
+      verified-by: >-
+        BOTH done-when legs, on measurements not memories. LEG 1 (the move):
+        Claim Check's OWN numbers on ubuntu-latest, 5-run window 2026-09-05
+        (runs 33964585152/33963403143/33963070649/33956182017/33945195476) —
+        execution 12-18s behind 4m15s-7m09s of quota queue wait (>94% of wall
+        time queueing). First self-hosted cycle (PR #1153, run 33972280351):
+        picked up by pulseengine-ci-01-8 in 3s, success in 22s — the green
+        cycle on the destination pool is the acceptance evidence and is
+        self-demonstrating, since the PR cannot merge without this required
+        context passing there. Destination pool sampled WITH QUEUE DEPTH
+        (12 samples x ~66s, 14:30:38-14:42:24 UTC, job-level): 5 idle
+        samples (light 3 online/0 busy), then the PR's own CI wave saturated
+        both pools (light 3/3, rust-cpu 7/7, 208 total queued jobs at peak,
+        of which only 7 self-hosted) and the self-hosted queue drained to 0
+        within one sample (~66s) — the final four samples show both pools
+        idle while 186-196 GitHub-hosted jobs still queue, i.e. the
+        bottleneck this artifact removes is entirely on the hosted quota.
+        LEG 2 (the invariant, checked rather than remembered):
+        scripts/runner_redundancy_check.py run LIVE at retarget time — all
+        five self-hosted required contexts pass (light satisfiable by 3
+        ONLINE runners: 01-5, 01-8, 01-10; rust-cpu by 7; 12 inventoried),
+        and red-first LIVE against deliberately thin labels: --require-label
+        podman and netns (1 online runner each) both refuse, exit 1. The
+        fleet half cannot run per-PR (the workflow GITHUB_TOKEN lacks
+        org-runner read), stated in the step comment; what CI re-proves
+        every cycle is the 12-fixture potency replay (2026-09-02 one-runner
+        pool, lone-runner-offline, registered!=online, empty-inventory and
+        parse-drift vacuity refusals, green controls; mutation-verified: an
+        inert min-online compare kills 4/12) and the structural
+        every-required-context-reports check — the rename/deadlock class —
+        against the live ci.yml.
       done-when: "manual: Claim Check runs self-hosted with its own green cycle as acceptance evidence and its own sampled measurement (window + queue depth, not a point reading), or is recorded as unsuitable with the measured reason; AND no required context targets a label satisfiable by fewer than two ONLINE runners, checked rather than remembered"
