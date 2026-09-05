@@ -177,4 +177,5 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#242"
+      landed: "PR #1156 (epic #242) — increment 1 ONLY (measurement): the reachable-corpus census (243 org-built modules, denominator and provenance stated in the CENSUS RESULT block above) with per-backend rates and the ranked blocker histogram, plus the census script's ranked-blocker extension. Status stays proposed: the done-when's 805-module leg is NOT satisfied by this subset — the full re-run is gale's (#1017) — and no capability increment has shipped."
       done-when: "manual: the 805-module acceptance census is re-run on v0.61.0 with per-backend rates and a ranked blocker histogram published; any capability increment that follows cites that measurement rather than the v0.60-era numbers"
