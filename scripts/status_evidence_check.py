@@ -269,10 +269,24 @@ found the defect in checking machinery):
     instances as committed fixtures, so the gate's ability to catch each is
     re-proven on every CI run, not asserted once at authoring.
 
-Exit 0 iff no rule fires. Prints a `status-evidence:` summary line the CI
-step greps as a second non-vacuity anchor, and a `status-evidence-window:`
-line pinning that the R4-issue/R10 window scan actually ran (SKIPPED there
-fails the CI grep, so the loud skip cannot become the quiet pass).
+(5) PROGRAMME-ARTIFACT STATUS LEGALITY (P0/P1/P2, #1133 /
+    RQ-62-ROADMAPGATE) — see the comment block at PROGRAMME_GLOB. The VCR
+    roadmap's 39 artifacts were outside every rule above by scope, and two
+    carried no `status` key at all. P1 (status present) and P2 (status is a
+    legal lifecycle value) apply to EVERY artifact-bearing yaml under
+    artifacts/, release files included; P0 pins the roadmap file's own
+    visibility; a P-VACUOUS floor pins the scan population. Deliberately
+    NOT applied to the roadmap: R7/R8 (it has no `release:` by design until
+    an item is scoped), R4/R10 (no release window exists), R1-R3/R9
+    (programme items are long-lived records whose per-increment delivery is
+    tracked by RQ-* release artifacts; backfilling 39 done-when signatures
+    would be a hand-written mirror — the DECLARE_SINCE reasoning).
+
+Exit 0 iff no rule fires. Prints `status-evidence:` and `programme-status:`
+summary lines the CI step greps as non-vacuity anchors, and a
+`status-evidence-window:` line pinning that the R4-issue/R10 window scan
+actually ran (SKIPPED there fails the CI grep, so the loud skip cannot
+become the quiet pass).
 """
 
 from __future__ import annotations
@@ -312,6 +326,52 @@ RELEASE_GLOB = (
     "artifacts/release-v*/*.yaml,"
     "artifacts/release-v*/*.yml"
 )
+
+# ---- Programme-artifact status legality (P-rules, #1133) --------------------
+#
+# RQ-62-ROADMAPGATE: R0-R10 are scoped to RELEASE_GLOB, so
+# artifacts/verified-codegen-roadmap.yaml — 39 VCR-* artifacts, the entire
+# North Star programme — was subject to NONE of them, and two of its
+# artifacts (VCR-WCET-001/002) carried no `status` key at all: visible to
+# rivet's ARTIFACT_FLOOR count, invisible to every rule, and silently
+# dropped by any consumer filtering on status.
+#
+# Deliberately NOT a glob widening: release rules assume obligations the
+# roadmap does not have (R7/R8 need `release:` matching the filename — 38
+# of 39 roadmap items carry none by design until scoped; R4/R10 need a
+# release window the roadmap has none of). Pointing them at the roadmap
+# would produce false reds. What DOES generalize — measured true today for
+# every artifact yaml in the repo — is the minimum the issue names:
+#
+#   P1: every artifact has a non-empty `status` key.
+#   P2: the status is a legal lifecycle value. rivet does not enforce an
+#       enum (generic-yaml source; its docs mark `status` optional), so
+#       this pin is the only mechanical guard against a typo'd status —
+#       which on the release side would silently move an artifact OUT of
+#       CLAIMING and weaken R2 to nothing.
+#   P0: the roadmap file itself must load and contribute artifacts — the
+#       #1064 invisible-file shape, applied to the one file whose whole
+#       purpose is recording programme status (a rename or restructure
+#       must red here, never quietly exempt 39 artifacts again).
+#
+# P1/P2 scan EVERY artifact-bearing yaml directly under artifacts/ plus the
+# release-v*/ dirs (release files included: R0-R10 never checked status
+# LEGALITY, only status/evidence agreement). A non-mapping or artifact-less
+# yaml other than the roadmap is skipped — top-level artifacts/ may
+# legitimately grow non-artifact yamls — and wholesale invisibility is
+# caught by the P-VACUOUS floor on artifacts checked (379 measured at
+# authoring; red only BELOW, raise it when it drifts far from live).
+LIFECYCLE = frozenset(
+    {"draft", "proposed", "approved", "implemented", "verified", "accepted"}
+)
+PROGRAMME_FILE = "artifacts/verified-codegen-roadmap.yaml"
+PROGRAMME_GLOB = (
+    "artifacts/*.yaml,"
+    "artifacts/*.yml,"
+    "artifacts/release-v*/*.yaml,"
+    "artifacts/release-v*/*.yml"
+)
+PROGRAMME_FLOOR = 379
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
@@ -555,6 +615,90 @@ def release_window_subjects(root: Path, version: tuple):
     if rc != 0:
         return None, None
     return tag, out.splitlines()
+
+
+def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
+                    floor: int = PROGRAMME_FLOOR):
+    """P-rules (#1133 / RQ-62-ROADMAPGATE): every artifact in every
+    artifact-bearing yaml under artifacts/ has a legal lifecycle status,
+    and the programme roadmap file itself is visible to the scan.
+
+    -> (files_scanned, artifacts_checked, missing, illegal, failures).
+    Raises DuplicateKeyError like the release scan (same strict loader,
+    same #1059 refusal)."""
+    failures: list[str] = []
+    paths = set()
+    for pattern in programme_glob.split(","):
+        paths.update(glob.glob(str(root / pattern.strip())))
+    files_scanned = 0
+    checked = 0
+    missing = 0
+    illegal = 0
+    roadmap_artifacts = 0
+    roadmap_seen = False
+    for p in sorted(paths):
+        path = Path(p)
+        if path.name == "_release.yaml":
+            # Comments-only by contract; its shape is R0's surface.
+            continue
+        rel = path.relative_to(root).as_posix() if path.is_relative_to(root) \
+            else path.name
+        is_roadmap = rel == PROGRAMME_FILE
+        if is_roadmap:
+            roadmap_seen = True
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
+        arts = [
+            a for a in ((doc.get("artifacts") or []) if isinstance(doc, dict)
+                        else [])
+            if isinstance(a, dict) and "id" in a
+        ]
+        if not arts:
+            # A non-artifact yaml at the top level is out of scope (the
+            # P-VACUOUS floor notices wholesale invisibility); the roadmap
+            # contributing zero is P0 below.
+            continue
+        files_scanned += 1
+        if is_roadmap:
+            roadmap_artifacts = len(arts)
+        for art in arts:
+            checked += 1
+            art_id = str(art["id"])
+            if "status" not in art or not str(art.get("status") or "").strip():
+                missing += 1
+                failures.append(
+                    f"P1 {art_id}: no `status` in {rel} — a missing status "
+                    f"is unrepresentable in the lifecycle; rivet still "
+                    f"counts the artifact (ARTIFACT_FLOOR) while every "
+                    f"status-filtering consumer silently drops it (#1133)"
+                )
+            elif str(art["status"]) not in LIFECYCLE:
+                illegal += 1
+                failures.append(
+                    f"P2 {art_id}: status {str(art['status'])!r} in {rel} "
+                    f"is not a legal lifecycle value "
+                    f"({'|'.join(sorted(LIFECYCLE))}) — rivet does not "
+                    f"enforce this enum, and on the release side a typo'd "
+                    f"status silently exits CLAIMING and defuses R2 (#1133)"
+                )
+    if not roadmap_seen:
+        failures.append(
+            f"P0 {PROGRAMME_FILE}: programme roadmap file not found by the "
+            f"scan — renamed or moved, the 39-artifact North Star programme "
+            f"is invisible to every rule again (#1133)"
+        )
+    elif roadmap_artifacts == 0:
+        failures.append(
+            f"P0 {PROGRAMME_FILE}: contributes ZERO artifacts under "
+            f"`artifacts:` — the #1064 invisible-file shape on the "
+            f"programme's single source of truth (#1133)"
+        )
+    if checked < floor:
+        failures.append(
+            f"P-VACUOUS: only {checked} artifacts status-checked "
+            f"(floor {floor}) — files invisible to the scan; the floor "
+            f"never comes down to pass"
+        )
+    return files_scanned, checked, missing, illegal, failures
 
 
 def check(root: Path, release_glob: str, subjects: list[str],
@@ -921,9 +1065,12 @@ def main() -> int:
          issue_hits, window_delivery, window_attributed, window_label) = \
             check(args.root, args.release_glob, subjects,
                   args.delivery_floor, window_subjects=window)
+        (p_files, p_checked, p_missing, p_illegal, p_failures) = \
+            check_programme(args.root)
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
+    failures = failures + p_failures
 
     for w in warnings:
         print(w)
@@ -935,6 +1082,11 @@ def main() -> int:
         f"files, {hits} delivery commits matched, {preds} done-when "
         f"predicates evaluated, {r7_checked} release-scope archaeology "
         f"checks ({r7_skipped} skipped), {len(failures)} failures"
+    )
+    print(
+        f"programme-status: {p_checked} artifacts across {p_files} artifact "
+        f"files status-checked, {p_missing} missing status, {p_illegal} "
+        f"illegal status"
     )
     if window_label is None:
         print("status-evidence-window: SKIPPED — release window not "
