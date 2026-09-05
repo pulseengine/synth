@@ -205,6 +205,85 @@ fn three_memories_relocatable_green() {
     }
 }
 
+/// RQ-62-MEMISOLATE (#1145, option 3): a multi-memory object carries the
+/// per-memory REGION TABLE — `__synth_mem_size_N` (SHN_ABS, declared initial
+/// bytes), `__synth_mem_base_k` (k >= 1, base of memory k's section, st_size =
+/// region extent) and `__synth_mem_count` — from which the EMBEDDER programs
+/// one MPU region per memory. Deliberately NO `__synth_mem_base_0`: memory 0's
+/// base is the R11 value the embedder itself chooses, and a link-time symbol
+/// would be a second source of truth that can disagree with the register.
+#[test]
+fn region_table_symbols_1145() {
+    let bytes = compile_read(
+        &two_mem_fixture(),
+        &["--relocatable", "--target", "cortex-m3"],
+    );
+    let obj = object::File::parse(&*bytes).expect("parse ELF");
+
+    let abs_value = |name: &str| -> u64 {
+        let s = obj
+            .symbols()
+            .find(|s| s.name() == Ok(name))
+            .unwrap_or_else(|| panic!("{name} must be emitted (#1145)"));
+        assert_eq!(
+            s.section(),
+            object::SymbolSection::Absolute,
+            "{name} must be SHN_ABS — a link-invariant value, not a placed address"
+        );
+        s.address()
+    };
+    assert_eq!(abs_value("__synth_mem_count"), 2, "two memories");
+    assert_eq!(abs_value("__synth_mem_size_0"), 65536, "mem 0: 1 page");
+    assert_eq!(abs_value("__synth_mem_size_1"), 3 * 65536, "mem 1: 3 pages");
+
+    // The base symbol is section-relative: its LINKED address is the region
+    // base, wherever the embedder's linker script places the section.
+    let base1 = obj
+        .symbols()
+        .find(|s| s.name() == Ok("__synth_mem_base_1"))
+        .expect("__synth_mem_base_1 must be emitted (#1145)");
+    assert!(!base1.is_undefined(), "defined, not an embedder obligation");
+    assert_eq!(base1.address(), 0, "base of .synth.wasm_mem_1");
+    assert_eq!(base1.size(), 3 * 65536, "st_size carries the region extent");
+    let base1_sec = match base1.section() {
+        object::SymbolSection::Section(idx) => obj
+            .section_by_index(idx)
+            .expect("resolvable section")
+            .name()
+            .expect("named")
+            .to_string(),
+        other => panic!("__synth_mem_base_1 must be section-relative, got {other:?}"),
+    };
+    assert_eq!(base1_sec, ".synth.wasm_mem_1");
+
+    assert!(
+        !obj.symbols().any(|s| s.name() == Ok("__synth_mem_base_0")),
+        "NO __synth_mem_base_0 — memory 0's base is the embedder's R11 value \
+         (one source of truth, docs/embedder-abi-relocatable-arm.md)"
+    );
+}
+
+/// The region table is multi-memory-only: a single-memory relocatable object
+/// carries NONE of the #1145 symbols (frozen single-memory anchors must not
+/// move — verified byte-identical at authoring across the relocatable,
+/// software-bounds and self-contained paths).
+#[test]
+fn region_table_absent_on_single_memory_1145() {
+    let wat = r#"(module
+      (memory 1)
+      (func (export "rd") (param i32) (result i32) (i32.load8_u (local.get 0))))"#;
+    let f = wat_file("single_mem_1145.wat", wat);
+    let bytes = compile_read(&f, &["--relocatable", "--target", "cortex-m3"]);
+    let obj = object::File::parse(&*bytes).expect("parse ELF");
+    for s in obj.symbols() {
+        let name = s.name().unwrap_or("");
+        assert!(
+            !name.starts_with("__synth_mem_"),
+            "single-memory object must carry no region-table symbol, found {name}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Decline matrix
 // ---------------------------------------------------------------------------
@@ -273,7 +352,9 @@ fn multi_memory_shadow_stack_refuses() {
 /// no MPU programming), and the self-contained path declines multi-memory (one
 /// R11 base). So no path both emits synth's startup AND lowers > 1 memory; the
 /// cross-memory OOB fault gate cannot be armed. Refuse rather than accept a
-/// silent MPU no-op. Blocked on self-contained multi-memory (#406 phase 2).
+/// silent MPU no-op. #1145 (option 3) ships the per-memory REGION TABLE the
+/// embedder programs the MPU from; the flag itself stays refused until the
+/// two-tenant fault criterion has executed on an MPU-bearing venue.
 #[test]
 fn multi_memory_safety_bounds_mpu_refuses() {
     let out = compile(
@@ -286,10 +367,27 @@ fn multi_memory_safety_bounds_mpu_refuses() {
             "cortex-m3",
         ],
     );
+    // #1145: the refusal no longer does tracker duty for the closed "#406
+    // phase 2" — it names the shipped region table (the embedder's MPU
+    // programming input), where the obligation is documented, and what gates
+    // acceptance (the two-tenant cross-region fault criterion).
     assert_refused(
         &out,
-        &["multi-memory", "#406", "mpu"],
+        &[
+            "multi-memory",
+            "#406",
+            "mpu",
+            "#1145",
+            "__synth_mem_base_N",
+            "docs/embedder-abi-relocatable-arm.md",
+            "two-tenant",
+        ],
         "per-memory MPU isolation interlock",
+    );
+    let err = stderr(&out);
+    assert!(
+        !err.contains("#406 phase 2"),
+        "refusal must not point at the closed #406 as a tracker: {err}"
     );
 }
 
