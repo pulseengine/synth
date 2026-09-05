@@ -85,6 +85,87 @@ artifacts:
       miscompile is the actual differentiator — disclosed, selection bias
       becomes a soundness story; undisclosed, it is the flattery the 2026
       wasm2c-performance findings called out.
+
+      CENSUS RESULT — increment 1, MEASURED 2026-09-05
+      (scripts/repro/partial_census_1017.py with its new ranked-blocker
+      extension; synth 0.61.0, main @ ae92a35f; per backend, --all-exports
+      --relocatable, timeout 60s, zero timeouts/anomalies).
+
+      THE DENOMINATOR FIRST, because it is NOT #1017's 805: 243 unique
+      modules by sha256 (131 core + 112 components, 447 MB) — every *.wasm
+      reachable on this machine: .rivet/repos/{gale,kiln,loom,meld,scry,
+      sigil}, the sibling checkouts ../loom and ../kiln, and synth itself
+      (first-path-wins dedup; target/.git/node_modules/worktrees/.claude
+      excluded below each root). Per source: kiln 124 (75 core + 49 comp),
+      meld 56 (all comp), synth 19, scry 16, loom sibling 15, gale 6, loom
+      rivet-mirror 6, kiln rivet-mirror 1. This is org-built fixtures and
+      composites — the wasm.directory component stratum and the external
+      toolchain-output modules of #1017's 805 are ABSENT and UNREACHABLE
+      here; the full 805 re-run remains gale's (asked on #1017; if their
+      numbers arrive, cite theirs). NO delta against 66%/14%/1.6% is
+      computed in this artifact — those rates are over a corpus this machine
+      does not hold, and the done-when's "805-module census on v0.61.0" is
+      therefore NOT satisfied by this measurement; what is satisfied is the
+      honest subset with its denominator stated.
+
+      PER-BACKEND, accepted / partial / declined / errored (core; comp):
+        arm      core 21/0/110/0 of 131 ; comp 6/0/106/0 of 112 -> 27/243 (11%)
+        riscv    core 35/0/ 96/0 of 131 ; comp 5/0/107/0 of 112 -> 40/243 (16%)
+        aarch64  core 41/0/ 90/0 of 131 ; comp 5/0/107/0 of 112 -> 46/243 (19%)
+
+      RANKED BLOCKER HISTOGRAM (one primary blocker per non-accepted module;
+      the #952/#1102 policy refusals attributed to the modal per-function
+      skip reason synth's own stderr names behind them):
+        arm core (110): 46 i64 load/store offset out of imm12 range; 25
+        global initializers not materialized (#1052); 15 active data
+        segments (#1041); 15 AAPCS i64/f64 even-aligned register-pair call
+        args; 5 encode_operand2 non-rotated immediate; 2 undecodable; 1
+        LdrSym Thumb-only; 1 no exports.
+        arm comp (106): 30 active data; 27 register exhaustion (no free
+        callee-saved for call result while reloading preserved param); 25
+        AAPCS pair args; 7 start section not invoked; 5 rule_i32_rotl side
+        condition; 5 call_indirect (closed-world check / sidecar range); 4
+        f32-requires-FPU-target policy; 1 global-init; 1 stack underflow; 1
+        f64 AAPCS-VFP boundary.
+        riscv core (96): 86 GlobalGet unsupported in RV32 skeleton; 3 memory
+        offset immediate too large; 2 undecodable; 1 each I64Store32 /
+        multi-memory (#406) / br_table threshold / CallIndirect / no exports.
+        riscv comp (107): 50 multi-memory (#406); 46 GlobalGet; 7 start
+        section; 4 memory-offset immediate.
+        aarch64 core (90): 41 MemoryCopy unsupported; 35 call value-stack
+        discipline loud-decline; 7 active data; 2 undecodable; 2 br_table
+        threshold; 1 temp-reg exhaustion; 1 multi-memory; 1 no exports.
+        aarch64 comp (107): 50 multi-memory; 42 call value-stack; 7 start
+        section; 4 active data; 4 MemoryCopy.
+
+      WHAT MOVED, on the one stratum where comparison is honest — v0.59's
+      2026-08-25 run (same script, same flags, same org-repos-on-this-
+      machine stratum, arm backend; snapshot differs, 307 then vs 243 now,
+      overlap unquantifiable because v0.59's per-module records were not
+      preserved): arm accepts went 249/307 (81%, of which 125 were partial
+      objects with internal skips, and 77 accepts carried active data
+      segments that were being DROPPED silently) -> 27/243 (11%, partial 0).
+      The fall is the v0.59–v0.61 honesty hardening doing its job: the #1041
+      active-data refusal, the #1052 global-init refusal, and the #1102
+      dangling-reloc refusal converted silent-drop "accepts" into loud
+      declines, and the partial bucket collapsed into them. An ACCEPT today
+      excludes every known silent-drop class; v0.59's larger number included
+      them. Anyone reading 81% -> 11% (or #1017's 66% -> anything) as a
+      capability regression is comparing an honest number to a flattered one
+      — the envelope section above exists for exactly this.
+
+      INVERSION WORTH NAMING: aarch64 — 1.6% on #1017's 805 — is the
+      HIGHEST-accepting backend on this corpus (19% overall, 31% of core
+      modules) now that RQ-60-A64IMPORT's import dispatch has landed; arm is
+      the LOWEST because the relocatable path carries the strictest
+      completeness refusals. multi-memory blocks 50 of 112 components on
+      riscv AND aarch64 but ZERO on arm (VCR-MEM-002 phase 1 is ARM-only) —
+      and those same components then decline on arm for active-data /
+      exhaustion / AAPCS causes deeper in their bodies, so no single
+      capability un-blocks the component stratum. The two undecodable
+      modules are 38- and 55-byte fixtures (kilnd loop.wasm, synth
+      examples/wasm/minimal.wasm). Later increments cite THIS measurement
+      for org-corpus scoping and gale's #1017 re-run for the 805.
     status: proposed
     release: v0.62
     tags: [reach, acceptance, aarch64, multi-memory, north-star]
@@ -96,4 +177,5 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#242"
+      landed: "PR #1156 (epic #242) — increment 1 ONLY (measurement): the reachable-corpus census (243 org-built modules, denominator and provenance stated in the CENSUS RESULT block above) with per-backend rates and the ranked blocker histogram, plus the census script's ranked-blocker extension. Status stays proposed: the done-when's 805-module leg is NOT satisfied by this subset — the full re-run is gale's (#1017) — and no capability increment has shipped."
       done-when: "manual: the 805-module acceptance census is re-run on v0.61.0 with per-backend rates and a ranked blocker histogram published; any capability increment that follows cites that measurement rather than the v0.60-era numbers"
