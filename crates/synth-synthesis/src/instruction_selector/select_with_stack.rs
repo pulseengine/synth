@@ -3438,10 +3438,24 @@ impl InstructionSelector {
                     // native-pointer ABI, known index) — pages unused here.
                     self.multi_memory_pages(*memory)?;
                     if self.bounds_check != BoundsCheckConfig::None {
+                        // #1145 root cause, stated where it bites: the
+                        // software guard compares against R10 and mask mode
+                        // derives `size-1` from R10 — and R10 holds MEMORY
+                        // 0's size by the register contract. Memory k has NO
+                        // size register (and no other per-memory limit
+                        // source is wired into the guard emitters), so a
+                        // "guarded" memory-k access would either check
+                        // against the WRONG memory's size or check nothing.
+                        // Declining is the only honest lowering until a
+                        // per-memory limit source exists (e.g. the guard
+                        // materializing `__synth_mem_size_k`).
                         return Err(synth_core::Error::synthesis(format!(
                             "multi-memory: --safety-bounds is not lowered for an \
                              op on memory {memory} in phase 1 — the bounds \
-                             machinery (R10/mask) is memory-0-only (#406)"
+                             machinery (R10/mask) is memory-0-only; memory \
+                             {memory} has no size register, so a guard would \
+                             compare against the wrong memory's bound \
+                             (#406, #1145)"
                         )));
                     }
                     let sym = Self::wasm_data_symbol(*memory);

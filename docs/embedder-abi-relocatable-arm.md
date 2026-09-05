@@ -176,7 +176,10 @@ whatever the region holds), not a trap.
   path inherits it as the embedder's layout responsibility.)
 - **Extra linear memories (k > 0):** addressed via their own
   `__synth_wasm_data_<k>` region symbol, which the linker/embedder places —
-  R10/R11 are memory-0-only (`main.rs:3617-3627`, VCR-MEM-002 #406).
+  R10/R11 are memory-0-only (`main.rs:3617-3627`, VCR-MEM-002 #406). A
+  multi-memory object additionally carries the #1145 region table; the full
+  contract — including the MPU obligation it exists for — is the
+  "Multi-memory region table" section below.
 - **Symbols:** every function is exported twice at the same address
   (`func_N` and, for exports, the wasm export name); imported functions
   become direct `func_N` BLs rewritten to the wasm field name, resolved by
@@ -212,6 +215,104 @@ The load-bearing workaround is the consumer's own:
 and ASSERT the rename landed (`nm | grep " T your_c_name$"`) rather than
 trusting it; a silent no-op surfaces three steps later as an unresolved
 reference.
+
+## The multi-memory region table (#1145, RQ-62-MEMISOLATE)
+
+A `--relocatable` object compiled from a module with **more than one** linear
+memory carries a per-memory region table — the link-time input from which the
+embedder programs one MPU (or PMP) region per memory. Emission:
+`build_relocatable_elf`, `crates/synth-cli/src/main.rs` (the
+`RQ-62-MEMISOLATE` block after the `__synth_wasm_data_<k>` symbols).
+Single-memory objects carry **none** of these symbols (byte-identical to
+pre-#1145 output; pinned by `region_table_absent_on_single_memory_1145`).
+
+### What the table is (category (a) — FIXED by synth)
+
+| Symbol | Encoding | Meaning |
+|---|---|---|
+| `__synth_mem_count` | `SHN_ABS`, `st_value` = N | Total memory count, memory 0 included. |
+| `__synth_mem_size_0` | `SHN_ABS`, `st_value` = bytes | Memory 0's declared initial size (`initial_pages x 65536`). |
+| `__synth_mem_size_k` (k ≥ 1) | `SHN_ABS`, `st_value` = bytes | Memory k's declared initial size. |
+| `__synth_mem_base_k` (k ≥ 1) | offset 0 of `.synth.wasm_mem_k`, `st_size` = region bytes | Its **linked address** is memory k's region base, wherever your linker script places the section. |
+
+`SHN_ABS` symbols are link-invariant values, not placed addresses — read one
+from C as `(uint32_t)(uintptr_t)&__synth_mem_size_1`.
+
+The sizes are **exact for the life of the process**: `memory.grow` on this
+backend always returns `-1` (every memory is fixed), and memory k's
+`memory.size` is lowered as the same constant — a region programmed from this
+table can never need to move or grow.
+
+**There is deliberately NO `__synth_mem_base_0`.** Memory 0's base is the R11
+*value* the embedder itself chooses at runtime (the register contract above);
+a link-time symbol for it would be a second copy of that truth which nothing
+forces to agree with the register. Derive region 0 from the same address you
+load into R11 — one source, no drift.
+
+### What the embedder must arrange (category (b) — CHOSEN, constrained)
+
+1. **Placement is yours, MPU legality is yours.** synth emits
+   `.synth.wasm_mem_k` with `sh_addralign = 4` — it does NOT pre-align the
+   section for your MPU, because it cannot know which MPU you have:
+   - **PMSAv7 (Cortex-M3/M4/M7):** a region's size must be a power of two
+     (≥ 32 B) and its base aligned to that size. A 1-page memory (64 KiB) is
+     a power of two — place the section 64 KiB-aligned. A non-power-of-two
+     size (e.g. 3 pages = 192 KiB) needs the next power of two (256 KiB
+     region, base 256 KiB-aligned) with 8-slice SRD subregion disables — or a
+     split across regions. Your linker script owns this; synth only
+     guarantees the size symbol is exact.
+   - **PMSAv8 (Cortex-M23/M33/M55/M85):** base and limit on a 32-byte
+     granule; any 32 B-aligned placement of any of these sizes is legal.
+2. **Region 0 covers what R10 states.** If you reserve more than
+   `__synth_mem_size_0` for memory 0 (R10 larger, allowed), your MPU region
+   must cover the RESERVED extent — the guards and `memory.size` believe R10.
+3. **Disjointness, again yours.** `[R11, R11 + R10)` and every
+   `[&__synth_mem_base_k, +__synth_mem_size_k)` must be pairwise disjoint
+   (and disjoint from the globals table and stack). Nothing on this path
+   checks your layout.
+4. **Initialization.** A memory k with active data segments ships
+   `.synth.wasm_mem_k` as PROGBITS (segment bytes at their offsets, rest
+   zero) — your normal `.data` LMA→VMA startup copy must cover it before any
+   export runs. A pure zero-init memory ships NOBITS — zero it like `.bss`.
+   Memory 0's segments remain the `--embedder-data-init` promise.
+5. **Programming the MPU is yours, and it is a memory-safety control.** synth
+   emits NO MPU programming on this path; until the #1145 two-tenant fault
+   criterion has executed on an MPU-bearing venue, `--safety-bounds mpu` on a
+   multi-memory module REFUSES rather than bless the arrangement — the
+   symbols above are the input to YOUR startup, not a claim by synth that
+   isolation exists.
+
+### The compliance fact this table does not fix
+
+**Memory k > 0 has no bounds-check story on any profile** (#1145, the finding
+that outranks the MPU headline): `--safety-bounds software|mask` loud-skip
+every memory-k access — the software guard compares against R10 and mask mode
+derives `size-1` from R10, both **memory 0's size** by the register contract;
+memory k has no size register, so a guard would check the wrong memory's
+bound — and the module then fails via #952 rather than shipping a partial
+object. A module touching memory k either compiles with NO inline bounds
+checking at all or does not compile. Embedder-programmed MPU regions from
+this table are currently the ONLY enforcement available for it. Pinned
+executable: `scripts/repro/mem_isolation_red_1145.py` (the decline needles +
+the landed cross-tenant write).
+
+### Conformance properties `verify-embedder` COULD check (named, not built)
+
+Stated so the obligation does not go ungated by omission (the #1131
+lucky-conformance class). On the **final linked image**, statically checkable
+from the symbol table alone:
+
+- every `__synth_mem_base_k`'s linked address is size-aligned for a PMSAv7
+  region covering `__synth_mem_size_k` (or 32 B-aligned under a declared
+  PMSAv8 target), and
+- the `[base_k, base_k + size_k)` regions are pairwise disjoint.
+
+NOT statically checkable, same class as the R11-value question the
+register-contract check already names as unseeable: whether the boot code's
+`MPU_RBAR/RASR` writes actually program regions matching this table, and
+whether region 0 matches the R11/R10 values boot establishes. Those are
+execution properties — the two-tenant fault criterion on Renode-M4/silicon is
+their gate, not a disassembly scan.
 
 ## What is INCIDENTAL — observed in some outputs, guaranteed by nothing
 

@@ -1431,9 +1431,24 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19213
+        value: 19227
         baseline: 17897
         waivers:
+          - to: 19227
+            reason: >-
+              RQ-62-MEMISOLATE (#1145): +14 lines — the memory-k
+              --safety-bounds decline in select_with_stack now states its ROOT
+              CAUSE at the decline site (the software guard compares against
+              R10 and mask derives size-1 from R10, both memory 0's by the
+              register contract; memory k has NO size register, so a guard
+              would check the WRONG memory's bound) and the typed message
+              names it. Not a lowering arm — no code path changed, the
+              decline stands exactly where it stood; gale's #1145 root-cause
+              question is answered where it bites instead of only in an
+              issue. Nothing could be deleted in exchange: the decline is the
+              ONLY handling this class has. Pinned by
+              mem_isolation_red_1145.py (the software/mask decline needles)
+              and the multi_memory_406 tests.
           - to: 19213
             reason: >-
               RQ-61-MVPANIC (#1093): +14 lines — the parameter-taking
@@ -1675,7 +1690,12 @@ claims:
         # 29845 -> 29859 (RQ-61-MVPANIC, #1093): +14 code — the
         # parameter-taking block-type pre-flight decline in select_with_stack
         # (see the lines_code waiver); zero test-module movement.
-        value: 29859
+        # 29859 -> 29873 (RQ-62-MEMISOLATE, #1145): +14 code — the memory-k
+        # bounds-decline root cause stated AT the decline site in
+        # select_with_stack (memory k has no size register; a guard would
+        # compare against the wrong memory's bound — see the lines_code
+        # waiver); zero test-module movement.
+        value: 29873
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

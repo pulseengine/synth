@@ -442,6 +442,24 @@ comparison into flattery. So:
   "bounded" invites exactly the confusion that makes fast/slow-path
   optimizations look like wins (see VCR-VER-002 and the Track D note on
   loop-versioning).
+- **Multi-memory: memory k > 0 cannot be bounds-checked on ANY profile**
+  (#1145, RQ-62-MEMISOLATE — gale's finding, and it outranks the MPU headline
+  it arrived beside). A module touching memory k either compiles with NO
+  inline bounds checking at all (the default) or does not compile:
+  `--safety-bounds software|mask` LOUD-SKIP every memory-k access — root
+  cause: the software guard compares against R10 and mask mode derives
+  `size-1` from R10, both MEMORY 0's size by the register contract; memory k
+  has no size register, so a guard would check the wrong memory's bound — and
+  the module then fails via #952. `--safety-bounds mpu` refuses (multi-memory
+  compiles only on `--relocatable`, where synth emits no MPU programming).
+  What ships instead (v0.62, #1145 option 3): the per-memory region table
+  (`__synth_mem_base_N`/`__synth_mem_size_N`/`__synth_mem_count`) from which
+  the EMBEDDER programs one MPU region per memory — embedder-trusted
+  isolation, obligations in `docs/embedder-abi-relocatable-arm.md`; accepting
+  `--safety-bounds mpu` itself waits on gale's two-tenant fault criterion
+  executing on an MPU-bearing venue. Pinned executable:
+  `scripts/repro/mem_isolation_red_1145.py` (decline needles + the landed
+  cross-tenant write).
 
 ## Trap preservation — the rule, written down while it is free
 

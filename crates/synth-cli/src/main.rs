@@ -3708,8 +3708,16 @@ fn compile_all_exports(
                  on --relocatable, where the host owns startup and synth emits \
                  no MPU programming; the self-contained path in turn declines \
                  multi-memory (one R11 base). Refusing rather than accepting a \
-                 silent MPU no-op. Blocked on self-contained multi-memory \
-                 (#406 phase 2)",
+                 silent MPU no-op. What SHIPS today (#1145, RQ-62-MEMISOLATE): \
+                 the plain --relocatable compile of this module carries a \
+                 per-memory REGION TABLE (`__synth_mem_base_N` / \
+                 `__synth_mem_size_N` / `__synth_mem_count` symbols; memory \
+                 0's base is your R11 value) from which YOUR startup programs \
+                 the MPU — the embedder obligation is documented in \
+                 docs/embedder-abi-relocatable-arm.md. Accepting --safety-bounds \
+                 mpu itself stays refused until the #1145 two-tenant \
+                 cross-region fault criterion has executed on an MPU-bearing \
+                 venue",
                 all_memories.len()
             );
         }
@@ -6450,6 +6458,78 @@ fn build_relocatable_elf(
         elf_builder.add_symbol(mem_sym);
         sym_count += 1;
         sym_indices.insert(name.clone(), sym_count);
+    }
+
+    // RQ-62-MEMISOLATE (#1145, option 3): the per-memory REGION TABLE, data
+    // only. A multi-memory object carries, per memory N, the two link-time
+    // facts an embedder needs to program one MPU/PMP region per memory:
+    //
+    //   __synth_mem_size_N   SHN_ABS, st_value = declared initial bytes.
+    //                        EXACT for the life of the process: memory.grow
+    //                        on this backend always returns -1, and the
+    //                        memory-N `memory.size` lowering is the same
+    //                        constant, so the region can never need to move.
+    //   __synth_mem_base_N   (N >= 1 only) defined at offset 0 of memory N's
+    //                        `.synth.wasm_mem_N` section — its LINKED address
+    //                        is the region base, wherever the embedder's
+    //                        linker script places it.
+    //   __synth_mem_count    SHN_ABS, st_value = total memory count (incl.
+    //                        memory 0), so a region-table consumer needs no
+    //                        second parse of the wasm to know N.
+    //
+    // There is deliberately NO `__synth_mem_base_0`: memory 0's base is the
+    // R11 VALUE the embedder itself chooses at runtime
+    // (docs/embedder-abi-relocatable-arm.md) — a link-time symbol for it
+    // would be a second source of truth that can silently disagree with the
+    // register, which is the exact drift class this repo refuses to ship.
+    // The embedder derives region 0 from the same address it loads into R11.
+    //
+    // synth still emits NO MPU programming on this path — programming the
+    // regions from this table is the embedder's acknowledged obligation, and
+    // `--safety-bounds mpu` on a multi-memory module KEEPS REFUSING until
+    // the #1145 two-tenant fault criterion has executed on an MPU-bearing
+    // venue (the RQ-62-REACH oracle-first rule). Emitted ONLY for a
+    // multi-memory object: single-memory output is byte-identical.
+    if !extra_memories.is_empty() {
+        /// `st_shndx` for an absolute (link-invariant) symbol value.
+        const SHN_ABS: u16 = 0xfff1;
+        let mut abs_syms: Vec<(String, u32)> = vec![
+            (
+                "__synth_mem_count".to_string(),
+                1 + extra_memories.len() as u32,
+            ),
+            ("__synth_mem_size_0".to_string(), linear_memory_bytes),
+        ];
+        for &(mem_idx, mem_bytes) in extra_memories {
+            abs_syms.push((format!("__synth_mem_size_{mem_idx}"), mem_bytes));
+        }
+        for (name, value) in abs_syms {
+            let sym = Symbol::new(&name)
+                .with_value(value)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::NoType)
+                .with_section(SHN_ABS);
+            elf_builder.add_symbol(sym);
+            sym_count += 1;
+            sym_indices.insert(name, sym_count);
+        }
+        for (i, &(mem_idx, mem_bytes)) in extra_memories.iter().enumerate() {
+            // Same section, same offset as `__synth_wasm_data_<k>` — one
+            // region, two names: the historical addressing symbol and the
+            // region-table name gale's mpu-thin consumer reads. st_size
+            // carries the region extent so `nm -S`/pyelftools see base AND
+            // size on one symbol.
+            let shndx = extra_memory_syms[i].1;
+            let base_sym = Symbol::new(&format!("__synth_mem_base_{mem_idx}"))
+                .with_value(0)
+                .with_size(mem_bytes)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Object)
+                .with_section(shndx);
+            elf_builder.add_symbol(base_sym);
+            sym_count += 1;
+            sym_indices.insert(format!("__synth_mem_base_{mem_idx}"), sym_count);
+        }
     }
 
     let mut import_label_to_field: HashMap<String, String> = HashMap::new();

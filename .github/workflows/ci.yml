@@ -1644,6 +1644,20 @@ jobs:
       # crates/synth-cli/tests/multi_memory_406.rs.
       - name: Run multi-memory distinct-regions oracle (#406, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_memory_406_differential.py
+      # RQ-62-MEMISOLATE (#1145): the RED leg of gale's two-tenant isolation
+      # kill-criterion — tenant A's one-past-its-page store LANDS in tenant
+      # B's adjacent region under a no-MPU harness (wasmtime first proves the
+      # spec TRAPS the same store), plus the #1145 region-table structural
+      # pins (__synth_mem_{count,size_N} SHN_ABS exact, __synth_mem_base_1 at
+      # the region base, NO __synth_mem_base_0) and the envelope pins
+      # (software/mask still loud-skip the memory-1 access via #952; mpu
+      # still refuses naming the criterion). The GREEN leg — the write FAULTS
+      # with MPU regions programmed from the table — is unicorn-inexecutable
+      # (no MPU model) and runs on gale's Renode M4 platform / STM32G474RE.
+      # RED pre-#1145 (no region table, refusal pointed at closed "#406
+      # phase 2") -> GREEN with the emission.
+      - name: Run two-tenant isolation RED oracle + region-table pins (#1145, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem_isolation_red_1145.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
