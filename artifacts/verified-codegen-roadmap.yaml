@@ -4294,6 +4294,13 @@ artifacts:
       the Bl/Blx op_cost change is WCET-path-only). Richer hint certificates
       (data-dependent bounds, scry) remain the named follow-up.
 
+    # implemented, not verified: phases 1-3 landed (v0.46-v0.48) behind the
+    # CI-gated wcet_bound_gate.rs fixtures + claims.yaml cycle-model pins named
+    # in verification-criteria, but the bound is not Rocq-mechanized — this
+    # file reserves `verified` for mechanized work (VCR-RA-001). Status added
+    # by RQ-62-ROADMAPGATE (#1133): this artifact carried NO status key and was
+    # invisible to every status-filtering consumer.
+    status: implemented
     links:
       - type: verifies
         target: VCR-001
@@ -4374,6 +4381,13 @@ artifacts:
       depths, scry-supplied bounds) and inter-procedural recursion composition are
       named follow-ups.
 
+    # implemented, not verified: phase 4 (#49) landed behind the CI-gated
+    # wcet_bound_gate.rs phase-4 fixtures + the unicorn cross-check named in
+    # verification-criteria, but the depth fold is not Rocq-mechanized — this
+    # file reserves `verified` for mechanized work (VCR-RA-001). Status added
+    # by RQ-62-ROADMAPGATE (#1133): this artifact carried NO status key and was
+    # invisible to every status-filtering consumer.
+    status: implemented
     links:
       - type: verifies
         target: VCR-001

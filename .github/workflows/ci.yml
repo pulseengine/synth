@@ -376,6 +376,13 @@ jobs:
           # exactly like R7's.
           grep -qE '^status-evidence-window: [0-9]+ delivery-shaped commits since v[0-9]+\.[0-9]+' \
             /tmp/status-evidence.log
+          # #1133 (RQ-62-ROADMAPGATE): the programme-status scan must have
+          # RUN and covered a real population — a checker edit that drops
+          # the P-rules (or a glob rot that scans nothing) fails this pin,
+          # not just the in-script floor. Zero missing/illegal is asserted
+          # by the exit code above; this grep asserts the scan happened.
+          grep -qE '^programme-status: [1-9][0-9]* artifacts across [1-9][0-9]* artifact files status-checked, 0 missing status, 0 illegal status$' \
+            /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
       # replays all seven measured miss instances — reconstructed from the
