@@ -1,0 +1,11 @@
+# v0.63 — scope opens with three artifacts DEFERRED FROM v0.62, each with the
+# measured reason recorded rather than a silent omission (release-planning:
+# "Move scope deliberately — deferring a requirement to a later release is a
+# scope decision, surfaced and logged, not silent").
+#
+# None of the three was dropped for being hard. One is blocked on an upstream
+# defect a consumer measured for us; two are real work that the release's
+# remaining runway could not hold without rushing proof work or relaxing a
+# guard that prevents a silent wrong-value miscompile.
+#
+# Comments only; artifacts live in RQ-63-*.yaml siblings.

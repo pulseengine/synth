@@ -1,5 +1,5 @@
 artifacts:
-  - id: RQ-62-ARCHMODEL
+  - id: RQ-63-ARCHMODEL
     type: system-req
     title: "Define how a synth-compiled artifact executes on a target, and model in AADL what AADL expresses — starting with timing, which already has a consumer reconstructing it"
     description: >
@@ -59,8 +59,40 @@ artifacts:
       CONSEQUENCE FOR THE LOOP, stated because it is coupled: steps 1-2 stop
       being an N/A, so RQ-62-LOOPCONFORM must treat them as a real step with a
       real artifact, not a blank.
+
+      DEFERRED v0.62 -> v0.63, and NOT for being hard. jess measured a
+      prerequisite this artifact did not name: **spar 0.40.0 accepts property
+      associations from property sets that were never declared and never
+      imported**, on both `memory` and `processor`, with rc=0 and no
+      diagnostic (pulseengine/spar#445). Their literal probe declared
+      `Totally_Fake::Reserved_Registers => "R9 R10 R11 R12"` — EXACTLY the
+      property this artifact proposes adding — and spar generated code for 52
+      components and exited 0. Positive control: a real syntax error in the
+      same block IS caught at `55:15: expected SEMICOLON`, rc=1, so the parser
+      reaches the property block and chooses to accept the undeclared
+      namespace.
+
+      Building the model now would therefore produce a register contract that
+      spar READS NOTHING FROM — a derived-LOOKING contract that nothing
+      validates, which is precisely the North Star failure this artifact was
+      filed against, reappearing one level up. Until spar#445 lands, a model
+      "declaring" the contract is indistinguishable from one with a typo in it.
+
+      jess also measured the second half, and it changes the shape of increment
+      1: with real `Base_Address`/`Memory_Size`/`Word_Size` properties added,
+      the generated WIT is BYTE-IDENTICAL to the run without them (`diff -rq`
+      clean). That is not a spar defect — WIT has no memory model, so a base
+      address has nowhere to land. So the layout contract needs a SECOND
+      codegen target (linker script, embedder header, or a synth embedder
+      config), NOT the WIT path feature-loop step 2 currently means. An
+      increment assuming "model it, regenerate WIT, contract is derived" would
+      produce a real model and an EMPTY derivation.
+
+      Both facts are recorded here so the v0.63 increment starts from them
+      rather than rediscovering them. jess owns the RT1176 AADL and has offered
+      to be increment 1's test consumer.
     status: proposed
-    release: v0.62
+    release: v0.63
     tags: [architecture, aadl, spar, feature-loop, timing, wcet]
     links:
       - type: derives-from
