@@ -72,6 +72,7 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1132"
+      landed: "PR #1149 — subcommand + negative-controlled CI gate + @-hazard documented-unsolved (with the #656 receipt) + SYNTH-VERIFY-EMBEDDER-1132 pin. Status stays implemented: the done-when's jess-validation leg is theirs to confirm on #1132, not ours to assert."
       done-when: "manual: a mechanical check refuses an embedder object that writes R9/R10/R11, negative-controlled against a deliberately clobbering object, and validated by jess against their RT1176 harness before it ships; the `@`-alias hazard is either fixed GLOBAL or documented as unsolved"
       verified-by: >-
         IMPLEMENTED, NOT VERIFIED — the done-when's jess-validation clause is
