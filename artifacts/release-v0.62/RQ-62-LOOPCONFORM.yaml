@@ -57,7 +57,7 @@ artifacts:
       what the loop should contain, and does NOT gate the merge path. It
       answers exactly one question — "did THIS release run the loop?" — at
       exactly one moment, before a tag.
-    status: proposed
+    status: implemented
     release: v0.62
     tags: [release-process, feature-loop, non-vacuity, authorization]
     links:
@@ -68,4 +68,20 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1136"
-      done-when: "manual: a release's feature-loop conformance is derived from existing artifacts and FAILS when a step is missing — proven RED against a pre-witness-gate release and GREEN against v0.61.0, with an N/A accepted only when it cites a filed decision"
+      done-when: "contains:scripts/repro/loop_conformance_1136_gate.md:verdict=DOES-NOT-CONFORM"
+      verified-by: >-
+        scripts/loop_conformance_check.py run both directions on 2026-09-05
+        (transcripts in scripts/repro/loop_conformance_1136_gate.md): GREEN
+        v0.61.0 exit 0 (steps 3-8 derived — 15 artifacts 15/15 done-when,
+        Claim Check / MC-DC / Version Pin Sweep check-runs success on
+        d4f935c1, Signing E2E success on the tag, 12/12 crates live); RED
+        v0.56.2 exit 1 (predates the witness gate entirely: mcdc_gate.py
+        absent, no MC/DC check-run) and RED v0.57.0 exit 1 (16/16 artifacts
+        lack done-when, status_evidence_check absent, mcdc gate present but
+        BRANCH_POPULATION-unpinned — correcting the brief's "v0.57 predates
+        the witness gate" premise: RQ-57-MCDC shipped IN v0.57.0). Steps 1-2
+        counted as a real step: N/A accepted only citing the filed
+        RQ-62-ARCHMODEL decision, matched by shape not id; an unfiled N/A is
+        red (unit-tested). Derivation branches + verdict vacuity refusal in
+        scripts/test_loop_conformance_check.py (30 tests, wired in the Claim
+        Check job).
