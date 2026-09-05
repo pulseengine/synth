@@ -209,7 +209,19 @@ jobs:
     #    --emit-status` and commit the result;
     #  * closes the README linked-doc surface (every relative .md link must be
     #    claim-covered, generated, or allowlisted with a rationale).
-    runs-on: ubuntu-latest
+    #
+    # RQ-62-CLAIMCHECK (#1062): self-hosted since v0.62 — this was the last
+    # required context with no system dependency still queueing against the
+    # GitHub-hosted quota (measured on its OWN numbers: 12-18s of execution
+    # behind 4m15s-7m09s of queue wait, 5-run window 2026-09-05). python-only;
+    # the guarded PyYAML fallback below is its whole setup. `light` satisfies
+    # the REDUNDANCY INVARIANT the 2026-09-02 outage produced (a required
+    # context must not target a label satisfiable by fewer than two ONLINE
+    # runners — 3 online at retarget time): scripts/runner_redundancy_check.py
+    # is the enforcement; run it live before retargeting any required context.
+    # SAFETY: the job NAME must stay `Claim Check` — a renamed required
+    # context never reports and DEADLOCKS all merges.
+    runs-on: [self-hosted, linux, x64, light]
     steps:
       # fetch-depth: 0 — the status-evidence gate (RQ-60-FLIPCOUPLE, #1064)
       # scans first-parent commit SUBJECTS for delivery commits ("RQ-N-FOO:
@@ -220,8 +232,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # Guarded either way; the second fallback exists because a self-hosted
+      # distro python can be PEP 668 externally-managed, where a bare
+      # `pip install --user` refuses. Only reached when `import yaml` fails.
       - name: Ensure PyYAML
-        run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
+        run: |
+          python3 -c "import yaml" \
+            || python3 -m pip install --user pyyaml \
+            || python3 -m pip install --user --break-system-packages pyyaml
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
       # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC. Epic #242 exists to
@@ -398,6 +416,31 @@ jobs:
       # potency tests above.
       - name: Unit-test the loop-conformance gate — corpora replay (1136)
         run: python3 scripts/test_loop_conformance_check.py
+
+      # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
+      # rather than remembered. On 2026-09-02 the `light` pool had exactly
+      # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —
+      # two required contexts assigned to a dead machine, 600s, zero steps.
+      # The invariant: a required context must not target a label set
+      # satisfiable by fewer than two ONLINE runners.
+      #
+      # SPLIT ON PURPOSE, stated so nobody reads more than is checked here:
+      #  * The workflow GITHUB_TOKEN cannot read the org runner inventory
+      #    (org-admin scope), so the FLEET half of the gate cannot run per-PR.
+      #    It runs LIVE (an authenticated human / the release ritual):
+      #      python3 scripts/runner_redundancy_check.py
+      #    and red-first cheap: `--require-label <thin-label>` must refuse.
+      #  * What CI CAN check without a token, it does, every run:
+      #    the potency replay below drives the gate through the 2026-09-02
+      #    instance itself (1-online pool, lone-runner-offline, registered
+      #    != online), the rename/deadlock class, the empty-inventory and
+      #    parse-drift vacuity refusals, and green controls; and the
+      #    structural pass asserts every required context still matches a
+      #    job name in THIS file — the never-reports deadlock class.
+      - name: Unit-test the runner-redundancy gate — thin-pool potency replay (RQ-62-CLAIMCHECK, #1062)
+        run: python3 scripts/test_runner_redundancy_check.py
+      - name: Runner-redundancy structural check — every required context reports (RQ-62-CLAIMCHECK, #1062)
+        run: python3 scripts/runner_redundancy_check.py --structural-only
 
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
