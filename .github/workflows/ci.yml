@@ -3790,6 +3790,19 @@ jobs:
         # discovered. wat2wasm is absent on the runner and several fixtures
         # build their .wasm from .wat at test time (the #850/#881 class).
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends wabt
+      - name: Install ARM binutils (verify-embedder gate #1132)
+        # RQ-62-VERIFYEMBED: the gate assembles its clobber/conform fixtures
+        # from .s with the REAL toolchain (arm-none-eabi-as) and the
+        # subcommand under test shells out to arm-none-eabi-objdump — the
+        # check is over toolchain-emitted code, not synthetic ELF bytes.
+        run: sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
+      - name: embedder reserved-register conformance gate (RQ-62-VERIFYEMBED, #1132)
+        # Negative-controlled BOTH directions on every run: a 4-shape
+        # clobbering object must refuse with the pinned write count naming
+        # all three reserved registers; the acknowledged establishment site,
+        # synth's own Thumb-2 + A32 --relocatable objects, and the misspelled
+        # --allow-writer / 0-instruction non-vacuity probes pin the rest.
+        run: python scripts/oracle_run.py scripts/repro/verify_embedder_gate_1132.py
       - name: a32 i64 execution differential (#615, cortex-r5)
         run: |
           ./target/debug/synth compile scripts/repro/a32_i64_615.wat --target cortex-r5 --all-exports --relocatable --no-optimize -o /tmp/a615.o

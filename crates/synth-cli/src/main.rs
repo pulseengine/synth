@@ -33,6 +33,7 @@ use wast::{Wast, WastDirective};
 #[allow(dead_code)]
 mod shadow_budget;
 mod sign;
+mod verify_embedder;
 
 /// Sentinel value clap substitutes when `--sbom` is given without a path.
 /// Resolved to `<output>.cdx.json` by [`resolve_sbom_path`]. Unlikely to
@@ -349,7 +350,9 @@ enum Commands {
         /// R11 are independent regions (place them anywhere disjoint;
         /// 4-byte-align both). R12 is synth's encoder scratch. The stack is
         /// plain AAPCS; the linker/harness owns the whole layout, and synth
-        /// validates none of it on this path.
+        /// validates none of it on this path. Check YOUR side of the
+        /// register contract with `synth verify-embedder <linked-elf>`
+        /// (#1132): it refuses any linked code that writes R9/R10/R11.
         #[arg(long)]
         relocatable: bool,
 
@@ -615,6 +618,27 @@ enum Commands {
         input: PathBuf,
     },
 
+    /// Check the EMBEDDER side of the --relocatable ARM register contract
+    /// (#1132): refuse when any code in the given ELF writes R9 (globals
+    /// base), R10 (linear-memory size) or R11 (linear-memory base). Run it
+    /// over the final linked image — it checks the emitted code the way
+    /// `-ffixed-r9/-r10/-r11` cannot (a flag that silently stopped applying
+    /// looks exactly like one that works). Contract + bounds:
+    /// docs/embedder-abi-relocatable-arm.md.
+    VerifyEmbedder {
+        /// The ELF to check (a linked image or a single object)
+        #[arg(value_name = "ELF")]
+        input: PathBuf,
+
+        /// Acknowledge a symbol that legitimately WRITES the reserved
+        /// registers — the establishment site (boot code) that sets them
+        /// before the first export runs. Repeatable. Like the
+        /// --embedder-* flags, this changes no behaviour: it records that
+        /// a human accepted the obligation for exactly that symbol.
+        #[arg(long, value_name = "SYMBOL")]
+        allow_writer: Vec<String>,
+    },
+
     /// List available compilation backends and their status
     Backends,
 
@@ -843,6 +867,12 @@ fn main() -> Result<()> {
         }
         Commands::Disasm { input } => {
             disasm_command(input)?;
+        }
+        Commands::VerifyEmbedder {
+            input,
+            allow_writer,
+        } => {
+            verify_embedder::verify_embedder_command(&input, allow_writer)?;
         }
         Commands::Backends => {
             backends_command()?;
