@@ -26,6 +26,17 @@ WHAT THIS SCRIPT MEASURES, per module, on one backend (default: arm):
   d. components (binary layer field == 1) reported as a SEPARATE stratum from
      core modules — #1017 showed components are dominated by a different cause
      (import dispatch) and must not be pooled silently.
+  e. (RQ-62-REACH increment 1) a four-bucket acceptance summary per stratum
+     (accepted / partial / declined / errored) and a RANKED BLOCKER HISTOGRAM:
+     one PRIMARY blocker per non-accepted module — the module-level error for a
+     module-level decline, the modal per-function skip reason for a skip-only
+     decline — so "which blocker accounts for how many modules" has a number.
+     Instance-specific payloads (symbol lists, export-name lists, global-
+     initializer dumps) are collapsed so one CAUSE is one bucket, and the #952
+     export-skip / #1102 dangling-reloc refusals — POLICY errors whose root
+     cause is the per-function declines behind them — are attributed to the
+     modal per-function skip reason synth's own stderr names, when it names
+     one.  Still a measurement: no expected values, no verdict.
 
 This script only ever RUNS synth and READS its stderr; it changes no compile
 behaviour.  It is the measurement, not the feature (#1017 / RQ-59-PARTIALCENSUS).
@@ -284,7 +295,13 @@ def classify(synth, module, backend, timeout, component=False):
         # Declined plain but clean with the flag and no skip warning: should
         # not happen; surface it rather than misfile it.
         return {"verdict": "ANOMALY", "reason": first_error_line(err)}
-    return {"verdict": "DECLINE_MODULE_LEVEL", "reason": first_error_line(err)}
+    # Keep the plain run's per-function skip reasons: for the #952/#1102
+    # refusal classes they carry the ROOT CAUSE the blocker histogram ranks.
+    return {
+        "verdict": "DECLINE_MODULE_LEVEL",
+        "reason": first_error_line(err),
+        "skip_reasons": dict(skip_reasons(err)),
+    }
 
 
 # One wat identifier/index token, shared by every call-graph regex below.
@@ -414,6 +431,64 @@ def prune_reachability(module, skipped_names, skipped_export_names, timeout):
     return "prunable"
 
 
+def collapse_instance_lists(reason):
+    """Collapse instance-specific payloads so one CAUSE buckets as one
+    histogram row: the #1102 dangling-reloc symbol list ('func_25' ->
+    'func_20', ...), the #952 skipped-export name list, and the global-
+    initializer dump all differ per module while naming the same class.
+    Applied AFTER normalize_reason (digits already collapsed to N).  The full
+    per-module text is preserved in the --json records."""
+    reason = re.sub(r"DECLINED: .*$", "DECLINED: <symbol list>", reason)
+    reason = re.sub(
+        r"skipped \(not in the output object\): .*$",
+        "skipped (not in the output object): <export list>",
+        reason,
+    )
+    reason = re.sub(r"\(global N = .*$", "(global <initializer list>)", reason)
+    return reason
+
+
+def _modal(skip_reasons):
+    """The MODAL skip reason (most functions skipped for it; ties broken
+    lexicographically so the ranking is deterministic)."""
+    return max(skip_reasons.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def primary_blocker(rec):
+    """One PRIMARY blocker per non-accepted module (RQ-62-REACH increment 1).
+
+    DECLINE_MODULE_LEVEL -> the normalized, list-collapsed module-level error
+    (the thing that refused the whole module) — EXCEPT the #952 export-skip
+    and #1102 dangling-reloc refusals, which are POLICY errors whose root
+    cause is the per-function declines behind them: those are attributed to
+    the modal per-function skip reason synth's own stderr names, when it
+    names one.  DECLINE_SKIP_ONLY -> the modal per-function skip reason.
+    TIMEOUT/ANOMALY -> their own buckets.  Attribution, not verdict: the
+    histogram ranks causes, it asserts nothing.
+    """
+    v = rec["verdict"]
+    if v == "DECLINE_MODULE_LEVEL":
+        reason = rec.get("reason", "?")
+        if reason.startswith("Error: "):
+            reason = reason[len("Error: "):]
+        reason = collapse_instance_lists(normalize_reason(reason))
+        sr = rec.get("skip_reasons") or {}
+        if sr and (
+            "requested export(s) were skipped" in reason
+            or "retained function(s) relocate against" in reason
+        ):
+            return _modal(sr)
+        return reason
+    if v == "DECLINE_SKIP_ONLY":
+        sr = rec.get("skip_reasons") or {}
+        if not sr:
+            return "(per-function skips, reasons unparsed)"
+        return _modal(sr)
+    if v == "TIMEOUT":
+        return "timeout"
+    return rec.get("reason", "?")
+
+
 def bin_label(frac):
     if frac >= 1.0:
         return "100%"
@@ -434,6 +509,32 @@ def report_stratum(name, rows):
     verdicts = Counter(r["verdict"] for r in rows)
     for v, n in verdicts.most_common():
         print(f"  {v:24s} {n}")
+    # RQ-62-REACH increment 1: four-bucket acceptance summary.  "partial" =
+    # object shipped but internal reachability helpers were skipped — callers
+    # deciding off this number must know it is NOT a full accept.
+    accepted = verdicts.get("ACCEPT_FULL", 0)
+    partial_n = verdicts.get("ACCEPT_INTERNAL_SKIPS", 0)
+    declined_n = sum(n for v, n in verdicts.items() if v.startswith("DECLINE"))
+    errored = len(rows) - accepted - partial_n - declined_n
+    if rows:
+        print(
+            f"  -> accepted {accepted} / partial {partial_n} / declined "
+            f"{declined_n} / errored {errored}   (denominator: {len(rows)})"
+        )
+    # RQ-62-REACH increment 1: ranked blocker histogram — one PRIMARY blocker
+    # per non-accepted module, ranked by modules blocked.
+    blockers = Counter(
+        primary_blocker(r)
+        for r in rows
+        if not r["verdict"].startswith("ACCEPT")
+    )
+    if blockers:
+        print(
+            "  ranked blocker histogram (one PRIMARY blocker per "
+            "non-accepted module):"
+        )
+        for reason, n in blockers.most_common():
+            print(f"    {n:4d}  {reason}")
     declines = [r for r in rows if r["verdict"].startswith("DECLINE")]
     skip_only = [r for r in rows if r["verdict"] == "DECLINE_SKIP_ONLY"]
     if declines:
@@ -549,6 +650,8 @@ def main():
             component=is_component(data),
             active_data=has_active_data(data),
         )
+        if not rec["verdict"].startswith("ACCEPT"):
+            rec["primary_blocker"] = primary_blocker(rec)
         rows.append(rec)
         frac = rec.get("fraction_compiled")
         frac_s = f" frac={frac:.2f}" if frac is not None else ""
