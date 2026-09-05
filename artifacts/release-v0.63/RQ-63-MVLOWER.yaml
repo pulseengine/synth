@@ -1,5 +1,5 @@
 artifacts:
-  - id: RQ-62-MVLOWER
+  - id: RQ-63-MVLOWER
     type: system-req
     title: "Parameter-taking block types DECLINE on every backend but are still not LOWERED — and the acceptance oracle for relaxing that guard now exists"
     description: >
@@ -35,8 +35,28 @@ artifacts:
       passes the #1097 oracle. Removing the decline to raise an acceptance
       number, without that, re-introduces a silent wrong-value miscompile — the
       exact defect #1093 was.
+
+      DEFERRED v0.62 -> v0.63 as a deliberate scope decision, and the reason is
+      a hazard rather than a schedule. Relaxing the param-block decline is
+      REACH work, and v0.62's own gating rule (RQ-62-REACH) is that every reach
+      increment ships with the oracle that makes the newly-accepted input safe
+      and the oracle lands FIRST. That oracle now exists — RQ-62-MVORACLE
+      (#1097) shipped in v0.61 and pins four silent-wrong vectors — so the
+      prerequisite is met and this is no longer blocked.
+
+      What it is short of is RUNWAY. A lowering that removes the decline
+      without making those four vectors CORRECT re-introduces a miscompile that
+      returns an UNINITIALIZED REGISTER on a control-flow path — #1093's
+      original silent shape. That is not a thing to do against a release
+      deadline. The guard stays; the acceptance number stays lower; nobody
+      gets a wrong value.
+
+      Carried forward with the constraint intact: the guard may be relaxed only
+      for a shape whose lowering makes #1097's silent-wrong vectors correct,
+      and the shapes are known NOT to be uniform (block/ARM was already correct
+      pre-#1096; loop/ARM was refused by the older #509 back-edge decline).
     status: proposed
-    release: v0.62
+    release: v0.63
     tags: [reach, multi-value, lowering, acceptance-oracle]
     links:
       - type: derives-from

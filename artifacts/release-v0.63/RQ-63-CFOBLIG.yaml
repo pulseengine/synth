@@ -1,5 +1,5 @@
 artifacts:
-  - id: RQ-62-CFOBLIG
+  - id: RQ-63-CFOBLIG
     type: system-req
     title: "The Block/End correspondence obligation — where all 180 of gale's remaining uncovered instances live"
     description: >
@@ -33,8 +33,27 @@ artifacts:
       CARRY FORWARD, non-negotiable: names are not a usable key. 19 `*_correct`
       theorems are declared in two files with different statements. Any
       inventory change stays derived from the proof tree, never from a name.
+
+      DEFERRED v0.62 -> v0.63 as a deliberate scope decision. This is the
+      structurally hard increment: #1079 landed `BrIf` with executable
+      semantics and a kernel-checked correspondence obligation, but `Block`/
+      `End` are not that shape — they are the block-structure boundary itself,
+      where the WASM model's `exec_wasm_seq`/`WBranch` outcome layer meets the
+      ARM model's straight-line execution. `End` alone is 64 of gale's 180
+      remaining instances.
+
+      Rushing proof work to fit a release date is how an existence-only theorem
+      acquires a `*_correct` name, which is the exact defect gale's own matcher
+      was broken by (`I64ExtendI32S/U` obligations are `*_executes`, and "no
+      naming fix would have found them"). Deferred rather than attempted
+      thinly.
+
+      NOT BLOCKED: v0.62's RQ-62-WASMOP already made the frontier legible —
+      every one of gale's 180 now answers with an explicit `"unmodeled"` row
+      instead of a missing row, so the work can start from a measured
+      denominator whenever it starts.
     status: proposed
-    release: v0.62
+    release: v0.63
     tags: [proofs, control-flow, rocq, consumer-contract, gale]
     links:
       - type: derives-from

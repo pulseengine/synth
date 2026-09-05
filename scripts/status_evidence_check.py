@@ -778,10 +778,30 @@ def check(root: Path, release_glob: str, subjects: list[str],
     # ---- Issue-anchored delivery claims (R4-issue) + attribution floor
     # ---- (R10) — both #1119, both scoped to the release window ------------
     if window_subjects == "derive":
-        max_version = max((a[1] for a in artifacts), default=(0, 0))
-        window_label, window_subjects = (
-            release_window_subjects(root, max_version)
-            if max_version > (0, 0) else (None, None))
+        # #1152: the window belongs to the release BEING CUT, not to the
+        # highest release DIRECTORY present. Every release here pre-scopes its
+        # successor (that is how a deferral gets recorded instead of
+        # vanishing), so taking the max blindly made `release-v0.63/` the
+        # window's anchor while v0.62 was still uncut — its predecessor tag
+        # v0.62.0 does not exist, the window became underivable, and R4-issue
+        # and R10 STOPPED SCANNING during exactly the run-up to a tag.
+        # Measured: hiding the pre-scoped directory restored
+        # "1 delivery-shaped commits since v0.61.0"; restoring it re-skipped.
+        #
+        # So: walk release versions high-to-low and take the first whose
+        # window actually derives. A pre-scoped future release no longer
+        # perturbs it; the genuinely underivable cases the docstring names
+        # (no git, no tag visible) still skip loudly, because none of the
+        # candidates will derive either.
+        candidates = sorted({a[1] for a in artifacts}, reverse=True)
+        window_label, window_subjects = None, None
+        for cand in candidates:
+            if cand <= (0, 0):
+                continue
+            lbl, subj = release_window_subjects(root, cand)
+            if lbl is not None:
+                window_label, window_subjects = lbl, subj
+                break
     else:
         window_label = "(replayed window)" if window_subjects is not None \
             else None
