@@ -1,0 +1,86 @@
+artifacts:
+  - id: RQ-62-MEMISOLATE
+    type: system-req
+    title: "Per-memory MPU isolation is unreachable BY CONSTRUCTION — multi-memory and MPU programming live on mutually exclusive paths, and memory 1 has no bounds-check story on any profile"
+    description: >
+      #1145, filed by gale because synth's own refusal text was doing tracker
+      duty: it names "#406 phase 2" as the blocker and #406 is closed with no
+      open issue behind it. Every claim REPRODUCED on current main (0.61.0),
+      not merely on the 0.60.0 they tested.
+
+      THE STRUCTURAL GAP. The two halves of hardware isolation are on
+      mutually exclusive paths:
+
+                          multi-memory        MPU programming (RBAR/RASR)
+        --relocatable     supported           host owns startup — none emitted
+        self-contained    declined (one R11)  synth emits the reset handler
+
+      There is no invocation producing both, so per-memory MPU isolation is
+      unreachable BY CONSTRUCTION rather than merely unimplemented. Verified:
+      `--safety-bounds mpu` on a 2-memory module exits 1 with exactly that
+      explanation.
+
+      THE REFUSAL IS RIGHT AND IS NOT WHAT NEEDS FIXING. gale says so first:
+      accepting the flag and emitting no MPU programming would be a SILENT
+      NO-OP ON A MEMORY-SAFETY CONTROL, the worst available outcome. Nothing
+      here relaxes it.
+
+      THE BIGGER FINDING, which gale noted in passing and which outranks the
+      MPU headline: MEMORY 1 HAS NO BOUNDS-CHECK STORY ON ANY PROFILE.
+      Reproduced — `--safety-bounds software` and `--safety-bounds mask` both
+      SKIP `read_b` (the memory-1 access) and then correctly fail via #952
+      rather than shipping a partial object:
+
+        --safety-bounds software  exit=1  no object  skipping 'read_b'  #952
+        --safety-bounds mask      exit=1  no object  skipping 'read_b'  #952
+
+      So multi-memory phase 1 shipped with a real capability (verified: 2
+      memories, `__synth_wasm_data_1` present, memory 1 addressed through a
+      linker-placed symbol) that is USABLE ONLY UNCHECKED. A module touching
+      memory 1 either compiles with no bounds checking at all, or does not
+      compile. That is a compliance-envelope fact and belongs in the envelope
+      section, not only in an issue.
+
+      DOWNSTREAM: sole blocker for gale v0.5.0 (gale#138, isolation /
+      multi-tenancy). REQ-OS-MPU-001 requires each tenant's linear memory in a
+      distinct MPU-protected region. gale has been carrying `blocked-synth-404`
+      and is re-pointing at this issue, since #404 was the design question
+      (answered, Model A, 2026-07-15).
+
+      THREE OPTIONS, gale's, with no stake in which: (1) self-contained
+      multi-memory — synth emits the reset handler and programs a region per
+      memory; (2) a relocatable path that EMITS the MPU programming as a
+      callable init routine plus a region table, the host calling it from its
+      own startup; (3) emit the region table as DATA ONLY
+      (`__synth_mem_base_N` / `__synth_mem_size_N`) and let the embedder
+      program the MPU.
+
+      OPTION 3 IS SMALLEST AND CARRIES A COST THIS RELEASE ALREADY NAMED. It
+      would unblock the v0.5.0 demonstrator without committing synth to owning
+      startup on the relocatable path — and there is precedent, since the
+      object already carries `__synth_wasm_data_1`. But it makes the embedder
+      TRUSTED for a memory-safety control, and RQ-62-VERIFYEMBED exists
+      precisely because the embedder side has NO GATE: jess conformed to the
+      existing register contract correctly by luck, twice, and was green both
+      times. Adding an unrefused obligation on a SAFETY control is a larger
+      version of that. If option 3 is taken it should ship WITH the
+      conformance check, not before it.
+
+      THE ORACLE IS ALREADY WRITTEN, by gale, and it is the right shape: "a
+      two-tenant image where tenant A writes outside its region and the write
+      lands in tenant B's memory instead of faulting." That is a red-first
+      EXECUTION criterion, not a compile-time assertion — exactly what the
+      reach gating rule (RQ-62-REACH) demands of any increment that widens
+      what synth accepts. gale has offered to prototype against a branch.
+    status: proposed
+    release: v0.62
+    tags: [multi-memory, mpu, isolation, safety-bounds, consumer-blocker, gale]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1145"
+      done-when: "manual: either per-memory MPU isolation is reachable by some invocation and gale's kill-criterion executes RED before the fix and FAULTS after, or the mutual exclusion is recorded in the compliance envelope as a stated limitation with memory 1's absent bounds-check story named alongside it"
