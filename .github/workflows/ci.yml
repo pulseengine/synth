@@ -385,6 +385,20 @@ jobs:
       - name: Unit-test the status-evidence gate — seven-instance replay (1064)
         run: python3 scripts/test_status_evidence_check.py
 
+      # RQ-62-LOOPCONFORM (#1136): the standing release authorization is
+      # conditional on the release running the feature loop, and
+      # scripts/loop_conformance_check.py is the gate that DERIVES that
+      # conformance (release trees + check-run conclusions + tag workflow
+      # runs + crates.io) instead of trusting the cutter's say-so. The
+      # conformance check itself gates the TAG moment, not the merge path
+      # (its scope bound), so it is deliberately NOT run per-PR — but the
+      # checker does not get to be the unchecked one: this replays its
+      # derivation branches on fixtures (both red corpora shapes, the
+      # verdict's own vacuity refusal) exactly like the mcdc/status-evidence
+      # potency tests above.
+      - name: Unit-test the loop-conformance gate — corpora replay (1136)
+        run: python3 scripts/test_loop_conformance_check.py
+
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         run: |
           set -euo pipefail
