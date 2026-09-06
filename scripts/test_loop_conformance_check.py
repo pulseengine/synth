@@ -94,6 +94,33 @@ class PureHelpers(unittest.TestCase):
         docs = [("a.yaml", {"artifacts": [artifact("A", done_when="  ")]})]
         self.assertEqual(lcc.artifacts_missing_done_when(docs)[1], ["A"])
 
+    def test_review_declared_commit_1161(self):
+        """#1161: the DECLARED commit must win over any cited sha.
+
+        The old harvest took every hex token and accepted the first that was
+        an ancestor, so on v0.63 it reported a commit the record merely CITES
+        (`e3a09ac2`) instead of the one it declares (`f810d2f5`)."""
+        rec = (
+            "# v0.63.0 cold review\n\n"
+            "- **Commit reviewed:** `f810d2f5` (`release(...)`), PR #1175.\n"
+            "- I rebuilt the pre-fix compiler at `858ff8d0` to reproduce it.\n"
+            "- Gates re-run at `e3a09ac2`.\n"
+        )
+        self.assertEqual(lcc.review_declared_commit(rec), "f810d2f5")
+        # the cited shas are still harvested, but never preferred
+        harvested = lcc.review_record_shas(rec)
+        self.assertIn("858ff8d0", harvested)
+        self.assertIn("e3a09ac2", harvested)
+        # a record with no declaration falls back rather than inventing one
+        self.assertIsNone(
+            lcc.review_declared_commit("no declaration here, just `858ff8d0`"))
+        # tolerate the formatting variants a human record uses
+        for variant in ("**Commit reviewed:** `abc1234`",
+                        "- Commit reviewed: `abc1234`",
+                        "  **Commit reviewed** `abc1234`"):
+            self.assertEqual(lcc.review_declared_commit(variant), "abc1234",
+                             f"variant not parsed: {variant!r}")
+
     def test_ci_emulation_floor(self):
         # RQ-63-FLOOREQ: BOTH spellings must be recognised. A derivation coupled
         # to the older one reports the STRONGER gate as absent — which is what

@@ -847,8 +847,14 @@ claims:
   #       in the project and appeared nowhere before v0.63.
   #   (b) 86 files (33 % of the suite) are families with ZERO support on any
   #       backend — a declared BOUNDARY, not a failure.
-  # The doc is generated from the same census run, so a family count that
-  # moves without the doc moving fails here rather than drifting.
+  # The doc is TRANSCRIBED from the census's per-family output, not written by
+  # it — an earlier version of this comment said "generated", which the v0.63
+  # cold review corrected. What makes the number honest is not this pin (its
+  # `text:` only checks the doc against itself — the doc-says-doc shape) but
+  # FAMILY_OK_PINS in spec_compile_census.py, which pins the per-family `ok`
+  # counts beside the bucket PINS so a family count that moves reddens THE
+  # CENSUS. This pin's job is narrower: that the emitter still exists and the
+  # boundary is still stated.
   - id: SYNTH-SPEC-FAMILY-MVP-CORE
     doc: docs/status/SPEC_FAMILY_CENSUS.md
     text: "| **MVP core** | 114 | **14** / 39 | **11** / 38 | **21** / 17 |"
