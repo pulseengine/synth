@@ -465,7 +465,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 324809 \
+            --min-emulation-floor 324845 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1916,6 +1916,36 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rv32_data_798_boot_differential.py
+      # #1168 (RQ-63-WASTCLOSURE): the .wast INPUT PATH skipped the #235
+      # reachable-callgraph closure and compiled exports only — a non-exported
+      # callee was never built and three of four backends shipped the object
+      # with a dangling `func_N` at exit 0 (the self-contained census leg
+      # silently flipped to a link-me ET_REL). This oracle proves, per backend
+      # leg, that the object is COMPLETE (helpers defined, unreachable helper
+      # absent, zero UNDEF), LINKABLE (a REAL link: arm-none-eabi-ld for
+      # ARM/A32, ld.lld for RV32 and aarch64 — both installed above) and
+      # CORRECT (the linked image executes under unicorn vs wasmtime). Placed
+      # here, after the lld install, because the links are hard failures.
+      - name: Run .wast reachable-callgraph closure oracle (#1168, 5 backend legs, GREEN)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/wast_callgraph_closure_1168_differential.py
+      # Non-vacuity, the OTHER half of #1168: the SAME probe binary + hatch
+      # (`EXPORTS_ONLY_275=1`, built above) reverts the .wast merge to its
+      # pre-fix exports-only behaviour, and the harness then asserts that the
+      # generalized "not placed in this object" refusal fires on EVERY leg —
+      # clean exit, the #1168 reason, no object written. #1102's gate keyed on
+      # the DECLINED set and so could not catch a never-compiled callee. Not
+      # routed through oracle_run.py: this mode emulates nothing by design
+      # (see ORACLE_WIRING.md, "not routed" table).
+      - name: Not-placed refusal stands when the closure is bypassed (#1168, probe binary)
+        run: |
+          EXPORTS_ONLY_275=1 SYNTH=./target-275probe/debug/synth \
+            python scripts/repro/wast_callgraph_closure_1168_differential.py
+      # #910: close the job with what it EXECUTED. Asserts every oracle
+      # met its declared floor AND that the expected number of them
+      # reported at all — a step deleted, commented out, or skipped by an
+      # early exit leaves the ledger short, which is a red job rather than
+      # a quietly smaller number. Also writes the measured totals to the
+      # step summary, per unit, never summed.
       # RQ-63-RVGLOBAL (#242): RV32 WASM globals — the same full-boot shape.
       # synth emits the globals as a `.data` `__synth_globals` image reached
       # via `la` HI20/LO12_I relocations; only a REAL link + boot makes that
@@ -1938,7 +1968,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 31
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 32
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
