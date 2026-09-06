@@ -2483,7 +2483,11 @@ claims:
     # declares 6): zeroing it was exit 0 before, `RATCHET BROKEN: 324640 <
     # 324646` after. Keep EQUAL to the declared total; a landing oracle bumps
     # both in the same PR.
-    text: "--min-emulation-floor 324646"
+    # v0.63 RQ-63-ARMI64OFF (#1165): 324646 -> 324770 (+124) for
+    # a32_ldst_offset_1165_differential.py — 62 unicorn entries per ISA leg
+    # (A32 = the census's `-b arm` default, and Thumb-2), measured 124 on the
+    # green run; the red run on main measured 114 with 10 declined.
+    text: "--min-emulation-floor 324770"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

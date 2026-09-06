@@ -79,7 +79,21 @@ artifacts:
         SYNTH-ORACLE-CHECK-FLOORS-910-CI verbatim pin moved in lockstep
         (57/58 -> 58/58). CHANGELOG records the finding and its relationship
         to #1113.
-      done-when: "contains:.github/workflows/ci.yml:--min-emulation-floor 324646"
+      # RQ-63-ARMI64OFF (#1165): the first oracle to land after v0.62 moved the
+      # floor 324646 -> 324770, exactly as this artifact's own protocol requires
+      # — and the literal-VALUE predicate that stood here went red on that
+      # legitimate move (an instrument that fails on the event it was designed
+      # to force). Re-pointed at the protocol text this release introduced at
+      # the gate step (commit 569ca755, so R7 archaeology still attributes it
+      # to v0.62). The value itself stays pinned verbatim in claims.yaml
+      # (SYNTH-ORACLE-CHECK-FLOORS-910-CI) and is re-derived every CI run by
+      # `oracle_wiring_check.py --min-emulation-floor`. Bumping the literal to
+      # 324770 was rejected: it would make a v0.62 artifact assert a value that
+      # shipped in v0.63. RESIDUAL (reported on #1165, not closed here): EQUAL
+      # is convention, not a check — `--min-emulation-floor` is a lower bound,
+      # so a landing oracle whose author forgets the bump re-opens slack
+      # silently; an `--exact-emulation-floor` would close it.
+      done-when: "contains:.github/workflows/ci.yml:Keep this EQUAL to"
       verified-by: >-
         Red-first in both directions, in an isolated git worktree so the
         mutations could not touch the release tree: with the OLD floor,
