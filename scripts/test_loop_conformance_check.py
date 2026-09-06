@@ -95,8 +95,22 @@ class PureHelpers(unittest.TestCase):
         self.assertEqual(lcc.artifacts_missing_done_when(docs)[1], ["A"])
 
     def test_ci_emulation_floor(self):
-        self.assertEqual(lcc.ci_emulation_floor("x\n --min-emulation-floor 322754 \\\n"), 322754)
-        self.assertEqual(lcc.ci_emulation_floor("oracle_wiring_check.py --json out"), 0)
+        # RQ-63-FLOOREQ: BOTH spellings must be recognised. A derivation coupled
+        # to the older one reports the STRONGER gate as absent — which is what
+        # happened when --exact- landed, and is why this test now pins both.
+        self.assertEqual(
+            lcc.ci_emulation_floor("x\n --min-emulation-floor 322754 \\\n"),
+            (322754, "min"))
+        self.assertEqual(
+            lcc.ci_emulation_floor("x\n --exact-emulation-floor 324845 \\\n"),
+            (324845, "exact"))
+        # when both appear, the stronger form is reported
+        self.assertEqual(
+            lcc.ci_emulation_floor(
+                " --min-emulation-floor 1 \\\n --exact-emulation-floor 2 \\\n"),
+            (2, "exact"))
+        self.assertEqual(
+            lcc.ci_emulation_floor("oracle_wiring_check.py --json out"), (0, ""))
 
     def test_signing_tag_trigger(self):
         wf = 'name: Signing E2E\non:\n  push:\n    tags:\n      - "v*"\n    branches: [main]\n'

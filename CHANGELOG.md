@@ -5,6 +5,167 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0] - 2026-09-06
+
+**Raise the percentage, and say which percentage.**
+
+The theme was acceptance. What the release found is that *acceptance is not a
+number* — it is a function of how you invoke the compiler, and the figure v0.62
+published was measured with one invocation out of four. Correcting that turned
+out to matter more than any capability added, and the capability work itself
+produced the release's most useful negative result.
+
+Three **silent miscompiles** surfaced along the way, none of them planned work,
+all found by a gate going red for a reason nobody expected.
+
+### Measured — acceptance is a ladder (#1017)
+
+Full 243-module reachable corpus, final binary, rungs reported **separately and
+never summed** (`docs/status/ACCEPTANCE_LADDER.md`):
+
+| backend | default | +embedder-ack | +allow-skipped | NEVER |
+|---------|---------|---------------|----------------|-------|
+| **arm** | 27 (11.1%) | **+72 → 99 (40.7%)** | +3 *(partial, not accepts)* | 141 |
+| riscv | 50 (20.6%) | +0 | +11 | 182 |
+| aarch64 | 49 (20.2%) | +0 | +1 | 193 |
+
+**Acknowledging the embedder obligation nearly quadruples arm — 27 → 99
+modules.** `--embedder-data-init`/`--embedder-global-init` are not a feature
+switch; they are the `#952`/`#1041`/`#1052` honest-refusal pattern, and those
+modules compile today. Counting the refusals as "cannot compile" said synth
+cannot do work it demonstrably can. `--no-optimize` adds **zero** on every
+backend.
+
+**And the correction that matters more than the headline: a blocker count is
+not a reach estimate.** `RQ-63-ARMI64OFF` cleared a 46-module blocker and
+gained **zero** reach — all 46 landed on the next rung. The census records only
+the *first* decline per function, so clearing a top blocker reveals the next
+layer rather than adding its count. All three capability lanes reported this
+independently before the full corpus confirmed it, most starkly in **aarch64's
+`MemoryCopy` going 45 → 106 modules without anyone touching `MemoryCopy`.**
+
+Net reach: arm 27 → 27, riscv 40 → **50**, aarch64 46 → **49**.
+
+### Fixed — compiler
+
+- **A32 silently masked linear-memory offsets (#1167).** `i32.load offset=5000`
+  emitted `ldr r0, [ip, #904]` — that is `5000 & 0xFFF` — and
+  `i32.load16_u offset=256` dropped the offset entirely. **Exit 0, wrong
+  address, no decline.** Thumb-2 was unaffected; `cortex-r5` and the no-target
+  `-b arm` default were not — and that default is the exact invocation the
+  acceptance census uses. `encode_mem_addr`/`_imm8` are now typed `Err`
+  tripwires rather than masks, and out-of-range offsets are materialized. A
+  mask cannot fail, which is why no oracle could see it.
+
+- **The `.wast` path skipped reachable-callgraph closure (#1168).** It compiled
+  exports only, so a non-exported callee was never built and **three of four
+  backends shipped an object with a dangling `func_N` at exit 0**. A real
+  linker rejects it. Found by chasing why the census moved by one file. The
+  refusal is now keyed on "not placed in this object, *whatever the reason*" —
+  `#1102`'s guard keyed on the *declined* set, which is why it could not fire;
+  its error even cited a warning that never existed.
+
+- **A `.wast` merge bound a call to the wrong module's body.** `four` (module 0)
+  calling import 0 silently resolved to a local body in module 1 or 2, because
+  the merge shares one `func_N` label space. Exit 0, wrong function called. Now
+  refused, naming the call.
+
+- **synth was non-deterministic (#1171).** Six identical runs produced **five
+  distinct `.text` hashes** — function ordering came from `HashMap` iteration.
+  Confined to the `.wast` merge, but that is the path the spec census feeds, so
+  every published census figure was measured through it. This one matters more
+  here than elsewhere: synth's correctness argument rests on byte-level oracles,
+  and *that entire discipline presumes the compiler is a function of its input.*
+  A frozen fixture on this path would have flapped, and a flapping byte gate
+  reads as a flaky test rather than as the defect it is detecting.
+
+### Fixed — verification machinery
+
+- **The floor equality invariant was written down and never installed
+  (#910).** `RQ-62-FLOORTIGHT` tightened the enforced floor last release and
+  wrote the rule beside it — *"keep this EQUAL to the declared total; a landing
+  oracle bumps both in the same PR"* — and its own text says **"the fix is not
+  a number but an INVARIANT."** It shipped only the number. Measured: raise one
+  oracle's declared floor by 50, leave `ci.yml` untouched, and
+  `oracle_wiring_check`, `claim_check` **and** `status_evidence_check` all
+  return **exit 0**, because `--min-` is a lower bound. `--exact-emulation-floor`
+  now fails on any inequality in either direction.
+
+  **This is the third instance of one sentence, each a level above the last:**
+  `#1113` — a decline half invisible to its own oracle's floor; `RQ-62-FLOORTIGHT`
+  — the summed ratchet below the summed declarations; and now the *rule written
+  to prevent recurrence*, unenforced. Writing the right principle and installing
+  it are different acts, and only one of them a gate can check.
+
+### Measured — the spec suite by feature family (#1095)
+
+`docs/status/SPEC_FAMILY_CENSUS.md`, emitted by the census itself. The
+aggregate (`at-least-one-export`, 84/74/57) averages families synth **targets**
+with families it has **never implemented**. Split apart it says two things:
+
+- **MVP core is 14 of 114 fully-`ok` on arm** — 12%, the scalar foundation
+  every other family rests on. The most decision-relevant number in the project,
+  and it appeared nowhere before this release. It is why `VCR-SIMD-001` is gated
+  on the core rather than on appetite.
+- **86 files — 33% of the suite — are families with zero support on any
+  backend** (SIMD 59, GC 16, relaxed 4, EH 4, tail-call 3). That is a declared
+  **boundary**, not a failure, and stating it as one is more honest than leaving
+  it inside an average.
+
+The two documents are **not comparable to each other** and both say so: the
+family census is the 257-file conformance suite under one invocation; the ladder
+is the 243-module reachable corpus, flag-aware.
+
+### Decided
+
+- **The acknowledgement flags stay opt-in (`RQ-63-ACKDEFAULT`).** Defaulting
+  them would have bought a 3.7× acceptance gain on modules that compile
+  correctly today — and would make synth *assume* an obligation the caller never
+  accepted, so an embedder that does not honour it gets uninitialised memory and
+  a wrong answer at exit 0. That is the silent-drop class three releases were
+  spent converting into loud declines. **Defaulting would buy back precisely the
+  percentage that honesty cost.** The defect was the reporting, not the default.
+
+- **x86_64 deferred with its cost written down (`VCR-X86-001`).** The
+  deployment goal is largely a *container* problem: `-b aarch64 --relocatable`
+  already emits linkable SysV ELF, so arm64 Linux links a normal library today.
+  A fifth backend starts near 0% acceptance, arrives entirely unverified against
+  a 630-Qed ARM-specific suite, and — decisively — **Arm publishes
+  machine-readable ASL while Intel does not**, so x86 rules would be checked
+  against hand-written specs: the exact Crocus failure the North Star cites.
+
+- **SIMD gated on the scalar core (`VCR-SIMD-001`)**, not on appetite. 59 files,
+  zero support, largest single gap — on a foundation that is 12% complete.
+
+### Deferred, with reasons rather than silence
+
+Four artifacts stay `proposed` in v0.63. They are **not deferred for one
+reason**, and the most interesting is `ARCHMODEL`: it is blocked upstream on
+spar#445, where spar accepts undeclared property sets *silently* — so the model
+would be **green while asserting nothing**, the same vacuity class this release
+spent its scope finding. `MVLOWER` was deferred **deliberately**: relaxing the
+`#1096` guard without first making `#1097`'s four silent-wrong vectors correct
+re-introduces an uninitialised-register return. `MACHO` and `CFOBLIG` are scope.
+
+### Toolchain
+
+synth now carries a **varve pin** (`varve.toml` + `varve-realms.toml`, layer
+`2026.08.2`, digest-pinned). It was not cosmetic: measured drift on the
+development machine was **loom 0.1.0 ambient vs 1.2.0 pinned** and **meld 0.9.0
+vs 0.42.0**. CI does not consume the pin yet, and saying so is the point.
+
+### The ratchets
+
+All seven subtraction pins are **flat** — `selector_lines_code` 19,227,
+`sel_dsl_rules` 80, `mirror_marker_files` 59. This release's code landed in the
+backends (`synth-backend-riscv`, `-aarch64`, the ARM encoder), not in
+`instruction_selector.rs`, which is what the ratchet measures. Proof suite
+unchanged at **630 Qed / 2 Admitted**.
+
+Oracle floors: **324,845 emulations across 162 wired scripts — enforced by
+equality**, not by a lower bound. 188 repro scripts, 180 wired. Claim gate
+59/59.
+
 ## [0.62.0] - 2026-09-06
 
 **Reach is part of correctness.**
