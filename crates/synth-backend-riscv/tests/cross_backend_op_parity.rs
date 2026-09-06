@@ -86,8 +86,37 @@ fn arm_lowers(ops: &[WasmOp], num_params: u32) -> bool {
 }
 
 /// Does the RISC-V (RV32IMAC) selector lower this sequence?
+///
+/// Construction mirrors the real call site (`synth-backend-riscv/backend.rs`)
+/// the way [`aarch64_lowers`] mirrors its driver: the module-level globals
+/// context says the `__synth_globals` region IS placed, with global 0 a
+/// defined mutable i32 (RQ-63-RVGLOBAL — the driver sets `emitted` only when
+/// it ships the image; the bare `select` probe would decline every global
+/// access by design, which is a property of the probe, not of the backend).
 fn riscv_lowers(ops: &[WasmOp], num_params: u32) -> bool {
-    riscv_select(ops, num_params).is_ok()
+    synth_backend_riscv::selector::select_with_module(
+        ops,
+        num_params,
+        synth_backend_riscv::SelectorOptions::wasm_compliant(),
+        &[],
+        &[],
+        &[],
+        &[],
+        &rv32_globals_ctx(),
+    )
+    .is_ok()
+}
+
+/// The RV32 probe's module context: one defined mutable i32 global at slot 0
+/// and one defined i64 global — the RV32 twin of [`a64_module_ctx`]'s
+/// `global_is64: vec![false, true]`.
+fn rv32_globals_ctx() -> synth_backend_riscv::RvGlobalsCtx {
+    synth_backend_riscv::RvGlobalsCtx {
+        emitted: true,
+        num_imported: 0,
+        widths: vec![4, 8],
+        mutable: vec![true, true],
+    }
 }
 
 /// The AArch64 selector's DECLINE REASON for a sequence, or `Ok(())` when it
@@ -805,7 +834,12 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
 /// the out-of-range / unsigned-edge indices; oversized and value-carrying
 /// tables LOUD-DECLINE by name rather than miscompiling).
 ///
-/// Ledger total: 5 Zbb + 16 − 3 closed = **18 entries** — the number below.
+/// CLOSED v0.63 (RQ-63-RVGLOBAL, #242): `global.get` + `global.set` now lower
+/// on RV32 (synth-emitted `.data` `__synth_globals` region reached via
+/// `la` HI20/LO12_I relocations; full-boot execution differential vs
+/// wasmtime under unicorn, red-first).
+///
+/// Ledger total: 5 Zbb + 16 − 5 closed = **16 entries** — the number below.
 /// Keep this line in step with the array: a count that drifts from the array is
 /// exactly the stale-claim class this ledger exists to prevent (#893).
 fn known_divergences() -> &'static [(&'static str, &'static str)] {
@@ -832,30 +866,20 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
             "Zbb cpop absent on RV32IMAC/rv32imc; RV32 seq-lowering deferred — VCR-SEL-005",
         ),
         // ---- globals (measured 2026-07-17; root-caused v0.50) ----
-        // NOT a missing selector arm — a missing SUBSTRATE. ARM addresses
-        // globals via a `__synth_globals` symbol + data reloc (R9-relative or
-        // emit_sym_addr); the RV32 encoder has NO data-symbol reloc path (Call
-        // is local-label-only, no %hi/%lo/%pcrel), and RV32 emits ET_REL only,
-        // so an absolute-constant address is unsound (the linker places the
-        // region). The reloc-free path — a linker-reserved region past linear
-        // memory, addressed `s11 + linear_memory_bytes + slot_off` — is sound
-        // and reuses the memory.size plumbing, BUT a HONEST landing needs the
-        // full #798-sized stack: CLI global-init emission + a startup init loop
-        // + a linker `.wasm_globals` region + a FULL-BOOT differential (a
-        // hand-initialized-region harness would be VACUOUS — the pre-#798
-        // control_step lesson). Deferred as that piece, VCR-SEL-005.
-        (
-            "global.get",
-            "RV32 globals need a base-relative region + startup init + linker \
-             wiring (#798-class), not a selector arm: the RV32 encoder has no \
-             data-symbol reloc and emits ET_REL only — deferred, VCR-SEL-005",
-        ),
-        (
-            "global.set",
-            "RV32 globals need a base-relative region + startup init + linker \
-             wiring (#798-class), not a selector arm: the RV32 encoder has no \
-             data-symbol reloc and emits ET_REL only — deferred, VCR-SEL-005",
-        ),
+        // (global.get / global.set CLOSED v0.63, RQ-63-RVGLOBAL #242 — the
+        //  missing SUBSTRATE this entry named landed as the aarch64 #851
+        //  design ported, not the reloc-free "region past linear memory"
+        //  sketch it proposed: the RV32 encoder now HAS a data-symbol reloc
+        //  path (`RiscVOp::La` → `lui`+`addi` with R_RISCV_HI20/LO12_I) and
+        //  the object ships a synth-emitted `.data` `__synth_globals` image
+        //  carrying the decoded initializers; the FULL-BOOT differential it
+        //  demanded is `scripts/repro/rv32_globals_1163_boot_differential.py`
+        //  — clang+lld link synth's object against its own generated
+        //  startup/linker script, unicorn boots from `_reset`, 23 export
+        //  executions vs wasmtime, RED on v0.62. The stale-entry check is
+        //  what forced this deletion. Imported globals and non-constant
+        //  initializers still LOUD-DECLINE by name — see
+        //  `synth_backend_riscv::globals`.)
         // ---- bulk memory (measured 2026-07-17) ----
         // (memory.size / memory.grow CLOSED v0.50, #242 — RV32 now lowers both:
         //  fixed-memory page-count constant + fixed-memory `-1` grow, with the

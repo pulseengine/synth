@@ -47,6 +47,17 @@ pub enum ElfBuildError {
 
     #[error("unsupported in skeleton: {0}")]
     Unsupported(&'static str),
+
+    /// RQ-63-RVGLOBAL: a function relocates against the globals region
+    /// (`__synth_globals`) but the driver placed NO region in this object.
+    /// Emitting the symbol UNDEFINED would hand the linker a dangling
+    /// reference to something no object defines — the #1102 class. Refuse.
+    #[error(
+        "function code relocates against `{0}` but this object ships no globals \
+         region — the driver compiled a global access without placing the image \
+         (RQ-63-RVGLOBAL; refusing to emit a dangling reference)"
+    )]
+    DanglingGlobalsReloc(String),
 }
 
 /// One compiled function — name + a sequence of RISC-V ops (with embedded
@@ -66,11 +77,48 @@ pub struct RiscVElfFunction {
 pub struct RiscVCallReloc {
     pub offset: u32,
     pub symbol: String,
+    /// Which `R_RISCV_*` type this record carries (RQ-63-RVGLOBAL widened
+    /// the builder past call sites: the globals `la` pair emits an
+    /// `R_RISCV_HI20` + `R_RISCV_LO12_I` against `__synth_globals`).
+    pub kind: RiscVRelocKind,
+}
+
+/// The relocation types the RV32 object emits — each fixed at the site that
+/// knows the instruction shape, never re-derived at the emitter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiscVRelocKind {
+    /// `R_RISCV_CALL_PLT` on an 8-byte `auipc`+`jalr` call placeholder (#871).
+    CallPlt,
+    /// `R_RISCV_HI20` on the `lui` of an absolute-address `la` pair
+    /// (RQ-63-RVGLOBAL).
+    Hi20,
+    /// `R_RISCV_LO12_I` on the `addi` of an absolute-address `la` pair
+    /// (RQ-63-RVGLOBAL).
+    Lo12I,
+}
+
+impl RiscVRelocKind {
+    /// The ELF `r_info` type field.
+    pub fn r_type(self) -> u32 {
+        match self {
+            RiscVRelocKind::CallPlt => R_RISCV_CALL_PLT,
+            RiscVRelocKind::Hi20 => R_RISCV_HI20,
+            RiscVRelocKind::Lo12I => R_RISCV_LO12_I,
+        }
+    }
 }
 
 /// `R_RISCV_CALL_PLT` — the modern auipc+jalr call-pair relocation type
 /// (`R_RISCV_CALL` = 18 is deprecated by the psABI).
 pub const R_RISCV_CALL_PLT: u32 = 19;
+
+/// `R_RISCV_HI20` — the `lui` half of an absolute symbol address
+/// (`((S + A) + 0x800) >> 12`). RQ-63-RVGLOBAL.
+pub const R_RISCV_HI20: u32 = 26;
+
+/// `R_RISCV_LO12_I` — the I-type (`addi`/`lw`) low-12 half of an absolute
+/// symbol address (`(S + A) & 0xFFF`, sign-extended). RQ-63-RVGLOBAL.
+pub const R_RISCV_LO12_I: u32 = 27;
 
 /// The 8-byte external-call placeholder the linker patches via
 /// `R_RISCV_CALL_PLT`: `auipc ra, 0` (0x00000097) + `jalr ra, 0(ra)`
@@ -168,7 +216,33 @@ impl RiscVElfBuilder {
         wasm_data: &[u8],
         extra_call_relocs: &[RiscVCallReloc],
     ) -> Result<Vec<u8>, ElfBuildError> {
+        self.build_object_with_globals(functions, wasm_data, &[], extra_call_relocs)
+    }
+
+    /// RQ-63-RVGLOBAL (#242): [`Self::build_object`] plus the synth-emitted
+    /// globals region. A NON-EMPTY `globals_image` ships as a `.data` PROGBITS
+    /// section (SHF_ALLOC | SHF_WRITE, 4-aligned) with ONE global `STT_OBJECT`
+    /// symbol, `__synth_globals` ([`crate::globals::GLOBALS_SYMBOL`]),
+    /// spanning it; the `la` pairs the selector emits relocate against that
+    /// symbol (`R_RISCV_HI20` + `R_RISCV_LO12_I`) and the host linker places
+    /// the region wherever its script puts `.data` — RAM, copied from flash by
+    /// the standard C-runtime startup (synth's own `riscv-runtime` startup
+    /// does exactly that). An EMPTY image omits the section and the symbol,
+    /// so a globals-free object is byte-identical to the pre-v0.63 layout.
+    ///
+    /// A relocation naming `__synth_globals` while the image is empty is
+    /// REFUSED ([`ElfBuildError::DanglingGlobalsReloc`]) rather than emitted
+    /// as an undefined symbol — a driver that compiled a global access
+    /// without placing the region is a compiler bug, not a link-time surprise.
+    pub fn build_object_with_globals(
+        &self,
+        functions: &[RiscVElfFunction],
+        wasm_data: &[u8],
+        globals_image: &[u8],
+        extra_call_relocs: &[RiscVCallReloc],
+    ) -> Result<Vec<u8>, ElfBuildError> {
         let encoder = RiscVEncoder::new_rv32();
+        let globals_symbol = crate::globals::GLOBALS_SYMBOL;
 
         // 1. Resolve labels per-function, accumulate code bytes & symbols.
         let mut text: Vec<u8> = Vec::new();
@@ -187,43 +261,71 @@ impl RiscVElfBuilder {
             call_relocs.extend(fn_relocs.into_iter().map(|r| RiscVCallReloc {
                 offset: function_offset + r.offset,
                 symbol: r.symbol,
+                kind: r.kind,
             }));
         }
         call_relocs.extend_from_slice(extra_call_relocs);
 
-        // #871: resolve relocation symbols. Defined function names win;
-        // anything else becomes an UNDEFINED global symbol (dedup'd, in
-        // first-use order so output is deterministic).
+        let has_globals = !globals_image.is_empty();
+        // RQ-63-RVGLOBAL: a globals reference with no region is a dangling
+        // symbol — refuse up front, never emit it undefined.
+        if !has_globals && call_relocs.iter().any(|r| r.symbol == globals_symbol) {
+            return Err(ElfBuildError::DanglingGlobalsReloc(
+                globals_symbol.to_string(),
+            ));
+        }
+        if has_globals && self.mode == ElfMode::Executable {
+            // The builder places `.text` at `text_base` but has no data
+            // address contract — nothing in-tree builds an ET_EXEC with a
+            // globals region; refuse rather than write a 0 st_value.
+            return Err(ElfBuildError::Unsupported(
+                "globals region (.data) in ET_EXEC mode — the RV32 object is always host-linked ET_REL",
+            ));
+        }
+
+        // #871: resolve relocation symbols. Defined function names — and the
+        // globals object symbol, when shipped — win; anything else becomes an
+        // UNDEFINED global symbol (dedup'd, in first-use order so output is
+        // deterministic).
+        let n_funcs = symbols.len();
         let mut undefined: Vec<String> = Vec::new();
         for r in &call_relocs {
-            if !symbols.iter().any(|(n, _, _)| n == &r.symbol)
-                && !undefined.iter().any(|u| u == &r.symbol)
-            {
+            let defined = symbols.iter().any(|(n, _, _)| n == &r.symbol)
+                || (has_globals && r.symbol == globals_symbol);
+            if !defined && !undefined.iter().any(|u| u == &r.symbol) {
                 undefined.push(r.symbol.clone());
             }
         }
+        // symtab index: [0] null, [1..=n_funcs] functions, [n_funcs+1] the
+        // globals object (when shipped), then the undefined externals.
+        let globals_sym_index = n_funcs as u32 + 1;
+        let n_defined = n_funcs + usize::from(has_globals);
         let sym_index_of = |name: &str| -> u32 {
-            // symtab index: [0] null, [1..] functions, then undefined.
             if let Some(i) = symbols.iter().position(|(n, _, _)| n == name) {
                 (i + 1) as u32
+            } else if has_globals && name == globals_symbol {
+                globals_sym_index
             } else {
                 let u = undefined
                     .iter()
                     .position(|u| u == name)
                     .expect("every reloc symbol is defined or collected as undefined");
-                (symbols.len() + 1 + u) as u32
+                (n_defined + 1 + u) as u32
             }
         };
         let has_relocs = !call_relocs.is_empty();
 
-        // 2. Section ordering (— entries marked § exist only when `wasm_data`
-        //    is non-empty; without it the layout is bit-identical to pre-#798):
+        // 2. Section ordering (— entries marked § exist only when their
+        //    payload is non-empty; without them the layout is bit-identical
+        //    to the pre-#798 / pre-v0.63 objects):
         //    [0]  null
         //    [1]  .text (PROGBITS, AX)
-        //    [2]§ .wasm_data (PROGBITS, A) — packed segment records
+        //    [·]§ .wasm_data (PROGBITS, A) — packed segment records (#798)
+        //    [·]§ .data (PROGBITS, WA) — the globals image (RQ-63-RVGLOBAL)
         //    [·]  .symtab (SYMTAB)
         //    [·]  .strtab (STRTAB) — symbol names
         //    [·]  .shstrtab (STRTAB) — section names
+        //    [·]§ .rela.text (RELA) — appended LAST (#871)
         let has_wasm_data = !wasm_data.is_empty();
         let mut elf = Vec::new();
         let ehsize = 52usize;
@@ -236,7 +338,7 @@ impl RiscVElfBuilder {
         let text_offset = elf.len();
         elf.extend_from_slice(&text);
 
-        // Pad to 4-byte alignment for what follows (.wasm_data / .symtab).
+        // Pad to 4-byte alignment for what follows (.wasm_data / .data / .symtab).
         while elf.len() % 4 != 0 {
             elf.push(0);
         }
@@ -252,6 +354,15 @@ impl RiscVElfBuilder {
             }
         }
 
+        // .data — the globals initializer image (RQ-63-RVGLOBAL), 4-aligned.
+        let data_offset = elf.len();
+        if has_globals {
+            elf.extend_from_slice(globals_image);
+            while elf.len() % 4 != 0 {
+                elf.push(0);
+            }
+        }
+
         // .strtab — built first so we know offsets for .symtab.
         let mut strtab = vec![0u8]; // ELF requires a leading NUL.
         let mut name_offsets: Vec<u32> = Vec::with_capacity(symbols.len());
@@ -260,13 +371,28 @@ impl RiscVElfBuilder {
             strtab.extend_from_slice(name.as_bytes());
             strtab.push(0);
         }
-        // #871: undefined external symbol names follow the function names.
+        // RQ-63-RVGLOBAL: the globals object symbol name follows the functions.
+        let globals_name_offset = strtab.len() as u32;
+        if has_globals {
+            strtab.extend_from_slice(globals_symbol.as_bytes());
+            strtab.push(0);
+        }
+        // #871: undefined external symbol names follow the defined names.
         let mut undef_name_offsets: Vec<u32> = Vec::with_capacity(undefined.len());
         for name in &undefined {
             undef_name_offsets.push(strtab.len() as u32);
             strtab.extend_from_slice(name.as_bytes());
             strtab.push(0);
         }
+
+        // Section indices — the optional payload sections shift everything
+        // after them up by one each.
+        let wasm_data_shift = if has_wasm_data { 1u32 } else { 0 };
+        let data_shift = if has_globals { 1u32 } else { 0 };
+        let data_index = 2 + wasm_data_shift; // valid only when has_globals
+        let symtab_index = 2 + wasm_data_shift + data_shift;
+        let strtab_index = symtab_index + 1;
+        let shstrtab_index = symtab_index + 2;
 
         // .symtab — entry 0 is reserved (all zero).
         let symtab_offset = elf.len();
@@ -290,6 +416,16 @@ impl RiscVElfBuilder {
             entry[14..16].copy_from_slice(&st_shndx.to_le_bytes());
             elf.extend_from_slice(&entry);
         }
+        // RQ-63-RVGLOBAL: `__synth_globals` — STB_GLOBAL / STT_OBJECT in
+        // `.data`, value 0 (section-relative), size = the whole image.
+        if has_globals {
+            let mut entry = [0u8; 16];
+            entry[0..4].copy_from_slice(&globals_name_offset.to_le_bytes());
+            entry[8..12].copy_from_slice(&(globals_image.len() as u32).to_le_bytes());
+            entry[12] = (1u8 << 4) | 1; // STB_GLOBAL << 4 | STT_OBJECT
+            entry[14..16].copy_from_slice(&(data_index as u16).to_le_bytes());
+            elf.extend_from_slice(&entry);
+        }
         // #871: undefined externals — STB_GLOBAL / STT_NOTYPE / SHN_UNDEF
         // (`nm` shows them as `U <name>`, exactly like the ARM object).
         for off in &undef_name_offsets {
@@ -299,7 +435,7 @@ impl RiscVElfBuilder {
             // st_value/st_size stay 0, st_shndx stays 0 (SHN_UNDEF).
             elf.extend_from_slice(&entry);
         }
-        let symtab_size = (symbols.len() + undefined.len() + 1) * 16;
+        let symtab_size = (n_defined + undefined.len() + 1) * 16;
 
         // .strtab
         let strtab_offset = elf.len();
@@ -307,12 +443,13 @@ impl RiscVElfBuilder {
 
         // .shstrtab — fixed contents
         let shstrtab_offset = elf.len();
-        let shstrtab_data = build_shstrtab(has_wasm_data, has_relocs);
+        let shstrtab_data = build_shstrtab(has_wasm_data, has_globals, has_relocs);
         elf.extend_from_slice(&shstrtab_data.bytes);
 
         // #871: .rela.text — placed after .shstrtab, 4-aligned. ELF32 RELA
         // entries are 12 bytes: r_offset, r_info = (sym << 8) | type,
-        // r_addend (always 0 — the call target is the symbol itself).
+        // r_addend (always 0 — the target is the symbol itself; a globals
+        // slot offset is a plain immediate on the following `lw`/`sw`).
         let mut rela_offset = 0usize;
         if has_relocs {
             while elf.len() % 4 != 0 {
@@ -320,7 +457,7 @@ impl RiscVElfBuilder {
             }
             rela_offset = elf.len();
             for r in &call_relocs {
-                let r_info = (sym_index_of(&r.symbol) << 8) | R_RISCV_CALL_PLT;
+                let r_info = (sym_index_of(&r.symbol) << 8) | r.kind.r_type();
                 elf.extend_from_slice(&r.offset.to_le_bytes());
                 elf.extend_from_slice(&r_info.to_le_bytes());
                 elf.extend_from_slice(&0i32.to_le_bytes());
@@ -336,10 +473,6 @@ impl RiscVElfBuilder {
 
         // Section headers
         let text_size = text.len() as u32;
-        // .wasm_data (when present) sits between .text and .symtab, shifting
-        // the string/symbol-table indices up by one.
-        let wasm_data_shift = if has_wasm_data { 1u32 } else { 0 };
-        let symtab_link = 3u32 + wasm_data_shift; // index of .strtab
         let mut shdrs = vec![
             // [0] null
             ShEntry::null(),
@@ -378,8 +511,27 @@ impl RiscVElfBuilder {
                 sh_entsize: 0,
             });
         }
+        if has_globals {
+            // [2/3] .data — SHF_ALLOC | SHF_WRITE: `global.set` writes it in
+            // place, so a linker script MUST give it a RAM run address (every
+            // standard bare-metal script does, with a flash load address and
+            // a startup copy). Word alignment is all the paired `lw`/`sw`
+            // lowering requires.
+            shdrs.push(ShEntry {
+                sh_name: shstrtab_data.data_off,
+                sh_type: 1,    // SHT_PROGBITS
+                sh_flags: 0x3, // SHF_WRITE | SHF_ALLOC
+                sh_addr: 0,
+                sh_offset: data_offset as u32,
+                sh_size: globals_image.len() as u32,
+                sh_link: 0,
+                sh_info: 0,
+                sh_addralign: 4,
+                sh_entsize: 0,
+            });
+        }
         shdrs.extend([
-            // [2/3] .symtab
+            // [·] .symtab
             ShEntry {
                 sh_name: shstrtab_data.symtab_off,
                 sh_type: 2, // SHT_SYMTAB
@@ -387,12 +539,12 @@ impl RiscVElfBuilder {
                 sh_addr: 0,
                 sh_offset: symtab_offset as u32,
                 sh_size: symtab_size as u32,
-                sh_link: symtab_link,
+                sh_link: strtab_index,
                 sh_info: 1, // index of first global symbol
                 sh_addralign: 4,
                 sh_entsize: 16,
             },
-            // [3/4] .strtab
+            // [·] .strtab
             ShEntry {
                 sh_name: shstrtab_data.strtab_off,
                 sh_type: 3, // SHT_STRTAB
@@ -405,7 +557,7 @@ impl RiscVElfBuilder {
                 sh_addralign: 1,
                 sh_entsize: 0,
             },
-            // [4/5] .shstrtab
+            // [·] .shstrtab
             ShEntry {
                 sh_name: shstrtab_data.shstrtab_off,
                 sh_type: 3, // SHT_STRTAB
@@ -430,8 +582,8 @@ impl RiscVElfBuilder {
                 sh_addr: 0,
                 sh_offset: rela_offset as u32,
                 sh_size: (call_relocs.len() * 12) as u32,
-                sh_link: 2 + wasm_data_shift, // .symtab
-                sh_info: 1,                   // relocates .text
+                sh_link: symtab_index,
+                sh_info: 1, // relocates .text
                 sh_addralign: 4,
                 sh_entsize: 12,
             });
@@ -452,7 +604,7 @@ impl RiscVElfBuilder {
             shentsize as u16,
             ehsize as u16,
             phentsize as u16,
-            (4 + wasm_data_shift) as u16, // shstrtab index
+            shstrtab_index as u16,
         );
 
         Ok(elf)
@@ -481,6 +633,7 @@ impl RiscVElfBuilder {
                     }
                 }
                 RiscVOp::Call { .. } => cursor += 8, // auipc + jalr pair
+                RiscVOp::La { .. } => cursor += 8,   // lui + addi pair (RQ-63-RVGLOBAL)
                 _ => cursor += 4,
             }
         }
@@ -541,9 +694,36 @@ impl RiscVElfBuilder {
                         relocs.push(RiscVCallReloc {
                             offset: bytes.len() as u32,
                             symbol: label.clone(),
+                            kind: RiscVRelocKind::CallPlt,
                         });
                         bytes.extend_from_slice(&CALL_PLACEHOLDER_BYTES);
                     }
+                }
+                RiscVOp::La { rd, symbol } => {
+                    // RQ-63-RVGLOBAL: the absolute-address pair. Both
+                    // immediates are 0 in the object; the linker patches the
+                    // `lui` via R_RISCV_HI20 (at +0) and the `addi` via
+                    // R_RISCV_LO12_I (at +4). The register fields survive
+                    // relocation (only the immediates are rewritten).
+                    let here = bytes.len() as u32;
+                    relocs.push(RiscVCallReloc {
+                        offset: here,
+                        symbol: symbol.clone(),
+                        kind: RiscVRelocKind::Hi20,
+                    });
+                    relocs.push(RiscVCallReloc {
+                        offset: here + 4,
+                        symbol: symbol.clone(),
+                        kind: RiscVRelocKind::Lo12I,
+                    });
+                    let lui = RiscVOp::Lui { rd: *rd, imm20: 0 };
+                    bytes.extend_from_slice(&encoder.encode(&lui)?.to_le_bytes());
+                    let addi = RiscVOp::Addi {
+                        rd: *rd,
+                        rs1: *rd,
+                        imm: 0,
+                    };
+                    bytes.extend_from_slice(&encoder.encode(&addi)?.to_le_bytes());
                 }
                 _ => {
                     let inst = encoder.encode(op)?;
@@ -609,13 +789,14 @@ struct ShstrtabData {
     bytes: Vec<u8>,
     text_off: u32,
     wasm_data_off: u32,
+    data_off: u32,
     symtab_off: u32,
     strtab_off: u32,
     shstrtab_off: u32,
     rela_text_off: u32,
 }
 
-fn build_shstrtab(with_wasm_data: bool, with_relocs: bool) -> ShstrtabData {
+fn build_shstrtab(with_wasm_data: bool, with_data: bool, with_relocs: bool) -> ShstrtabData {
     let mut bytes = vec![0u8];
     let text_off = bytes.len() as u32;
     bytes.extend_from_slice(b".text\0");
@@ -624,6 +805,15 @@ fn build_shstrtab(with_wasm_data: bool, with_relocs: bool) -> ShstrtabData {
     let wasm_data_off = if with_wasm_data {
         let off = bytes.len() as u32;
         bytes.extend_from_slice(b".wasm_data\0");
+        off
+    } else {
+        0
+    };
+    // Only present when the object ships a globals region (RQ-63-RVGLOBAL)
+    // — keeps globals-free objects bit-identical to the pre-v0.63 layout.
+    let data_off = if with_data {
+        let off = bytes.len() as u32;
+        bytes.extend_from_slice(b".data\0");
         off
     } else {
         0
@@ -647,6 +837,7 @@ fn build_shstrtab(with_wasm_data: bool, with_relocs: bool) -> ShstrtabData {
         bytes,
         text_off,
         wasm_data_off,
+        data_off,
         symtab_off,
         strtab_off,
         shstrtab_off,
@@ -776,6 +967,11 @@ mod tests {
                 label: "f".into(),
             },
             RiscVOp::Call { label: "f".into() },
+            // RQ-63-RVGLOBAL: the 8-byte `la` pair — the fourth size class.
+            RiscVOp::La {
+                rd: Reg::T0,
+                symbol: crate::globals::GLOBALS_SYMBOL.into(),
+            },
             RiscVOp::Lw {
                 rd: Reg::S8,
                 rs1: Reg::SP,
@@ -1021,7 +1217,8 @@ mod tests {
             relocs,
             vec![RiscVCallReloc {
                 offset: 4,
-                symbol: "mmio_read32".into()
+                symbol: "mmio_read32".into(),
+                kind: RiscVRelocKind::CallPlt,
             }]
         );
     }
@@ -1130,6 +1327,180 @@ mod tests {
         let shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap());
         assert_eq!(shnum, 5, "no .rela.text section");
         assert!(!elf.windows(10).any(|w| w == b".rela.text"));
+    }
+
+    /// RQ-63-RVGLOBAL: a NON-EMPTY globals image ships as `.data` (PROGBITS,
+    /// WA, 4-aligned) with a GLOBAL `STT_OBJECT` `__synth_globals` spanning
+    /// it, and an `La` pair relocates against that symbol with an
+    /// `R_RISCV_HI20` at +0 and an `R_RISCV_LO12_I` at +4 over the
+    /// `lui rd, 0 ; addi rd, rd, 0` placeholder. Walked by hand, like a
+    /// linker would (the #871 test's shape).
+    #[test]
+    fn globals_image_ships_as_data_with_object_symbol_and_relocs_1163() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "get".into(),
+            ops: vec![
+                RiscVOp::La {
+                    rd: Reg::T0,
+                    symbol: crate::globals::GLOBALS_SYMBOL.into(),
+                },
+                RiscVOp::Lw {
+                    rd: Reg::A0,
+                    rs1: Reg::T0,
+                    imm: 4,
+                },
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let image = [7u8, 0, 0, 0, 0xC0, 0x1D, 0xFE, 0xFF];
+        let elf = builder
+            .build_object_with_globals(&[f], &[], &image, &[])
+            .unwrap();
+
+        let shoff = u32::from_le_bytes(elf[32..36].try_into().unwrap()) as usize;
+        let shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap()) as usize;
+        let shstrndx = u16::from_le_bytes(elf[50..52].try_into().unwrap()) as usize;
+        assert_eq!(
+            shnum, 7,
+            "null/.text/.data/.symtab/.strtab/.shstrtab/.rela.text"
+        );
+        assert_eq!(shstrndx, 5, ".shstrtab shifted by the .data section");
+        let shdr = |i: usize| &elf[shoff + i * 40..shoff + (i + 1) * 40];
+        let field =
+            |h: &[u8], o: usize| u32::from_le_bytes(h[o..o + 4].try_into().unwrap()) as usize;
+        let shstr_off = field(shdr(shstrndx), 16);
+        let sec_name = |h: &[u8]| {
+            let n = shstr_off + field(h, 0);
+            let e = elf[n..].iter().position(|&b| b == 0).unwrap() + n;
+            &elf[n..e]
+        };
+        // [2] .data — PROGBITS, SHF_WRITE | SHF_ALLOC, the image verbatim.
+        let data = shdr(2);
+        assert_eq!(sec_name(data), b".data");
+        assert_eq!(field(data, 4), 1, "SHT_PROGBITS");
+        assert_eq!(field(data, 8), 0x3, "SHF_WRITE | SHF_ALLOC");
+        assert_eq!(field(data, 20), image.len(), "sh_size = image");
+        assert_eq!(field(data, 32), 4, "word alignment");
+        let doff = field(data, 16);
+        assert_eq!(&elf[doff..doff + image.len()], &image);
+        // .symtab [3]: [1] get (FUNC, .text), [2] __synth_globals (OBJECT, .data, size 8).
+        let symtab = shdr(3);
+        assert_eq!(sec_name(symtab), b".symtab");
+        assert_eq!(field(symtab, 24), 4, "sh_link -> .strtab");
+        let soff = field(symtab, 16);
+        let sym = &elf[soff + 2 * 16..soff + 3 * 16];
+        assert_eq!(sym[12], (1 << 4) | 1, "STB_GLOBAL | STT_OBJECT");
+        assert_eq!(
+            u16::from_le_bytes(sym[14..16].try_into().unwrap()),
+            2,
+            "st_shndx = .data"
+        );
+        assert_eq!(
+            u32::from_le_bytes(sym[8..12].try_into().unwrap()),
+            8,
+            "st_size = image"
+        );
+        assert_eq!(
+            u32::from_le_bytes(sym[4..8].try_into().unwrap()),
+            0,
+            "st_value = 0"
+        );
+        let stroff = field(shdr(4), 16);
+        let name_off = stroff + u32::from_le_bytes(sym[0..4].try_into().unwrap()) as usize;
+        let end = elf[name_off..].iter().position(|&b| b == 0).unwrap() + name_off;
+        assert_eq!(
+            &elf[name_off..end],
+            crate::globals::GLOBALS_SYMBOL.as_bytes()
+        );
+        // .rela.text [6]: HI20 @0 and LO12_I @4, both against symbol 2.
+        let rela = shdr(6);
+        assert_eq!(sec_name(rela), b".rela.text");
+        assert_eq!(field(rela, 4), 4, "SHT_RELA");
+        assert_eq!(field(rela, 24), 3, "sh_link -> .symtab");
+        assert_eq!(field(rela, 28), 1, "sh_info -> .text");
+        let (roff, rsz) = (field(rela, 16), field(rela, 20));
+        assert_eq!(rsz, 24, "two RELA entries");
+        let entry = |i: usize| {
+            let e = &elf[roff + i * 12..roff + (i + 1) * 12];
+            (
+                u32::from_le_bytes(e[0..4].try_into().unwrap()),
+                u32::from_le_bytes(e[4..8].try_into().unwrap()),
+                i32::from_le_bytes(e[8..12].try_into().unwrap()),
+            )
+        };
+        assert_eq!(entry(0), (0, (2 << 8) | R_RISCV_HI20, 0));
+        assert_eq!(entry(1), (4, (2 << 8) | R_RISCV_LO12_I, 0));
+        // .text: `lui t0, 0` ; `addi t0, t0, 0` ; `lw a0, 4(t0)` ; `ret`.
+        let toff = field(shdr(1), 16);
+        let word =
+            |i: usize| u32::from_le_bytes(elf[toff + i * 4..toff + i * 4 + 4].try_into().unwrap());
+        assert_eq!(word(0), 0x0000_02B7, "lui t0, 0");
+        assert_eq!(word(1), 0x0002_8293, "addi t0, t0, 0");
+        assert_eq!(word(2), 0x0042_A503, "lw a0, 4(t0)");
+        assert_eq!(field(shdr(1), 20), 16, ".text = 4 words");
+    }
+
+    /// RQ-63-RVGLOBAL: an EMPTY image is exactly `build_object` — no `.data`,
+    /// no `__synth_globals`, no shstrtab entry. (The frozen RV32 fixtures rely
+    /// on this: a module that touches no global is byte-identical.)
+    #[test]
+    fn empty_globals_image_is_byte_identical_1163() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: vec![
+                nop_op(),
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let plain = builder
+            .build_object(std::slice::from_ref(&f), &[], &[])
+            .unwrap();
+        let with_empty = builder
+            .build_object_with_globals(std::slice::from_ref(&f), &[], &[], &[])
+            .unwrap();
+        assert_eq!(
+            plain, with_empty,
+            "empty globals image must not perturb bytes"
+        );
+        assert!(!plain.windows(5).any(|w| w == b".data"));
+        assert!(!plain.windows(15).any(|w| w == b"__synth_globals"));
+    }
+
+    /// RQ-63-RVGLOBAL: code relocating against `__synth_globals` with NO
+    /// image is REFUSED — never emitted as an undefined symbol for the linker
+    /// to trip over (the #1102 dangling-reference class).
+    #[test]
+    fn dangling_globals_reloc_is_refused_1163() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let f = RiscVElfFunction {
+            name: "get".into(),
+            ops: vec![
+                RiscVOp::La {
+                    rd: Reg::T0,
+                    symbol: crate::globals::GLOBALS_SYMBOL.into(),
+                },
+                RiscVOp::Jalr {
+                    rd: Reg::ZERO,
+                    rs1: Reg::RA,
+                    imm: 0,
+                },
+            ],
+        };
+        let err = builder.build_object(&[f], &[], &[]).unwrap_err();
+        assert!(
+            matches!(err, ElfBuildError::DanglingGlobalsReloc(ref s) if s == crate::globals::GLOBALS_SYMBOL),
+            "expected DanglingGlobalsReloc, got {err:?}"
+        );
     }
 
     #[test]

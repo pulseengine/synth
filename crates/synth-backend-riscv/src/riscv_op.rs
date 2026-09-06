@@ -203,6 +203,17 @@ pub enum RiscVOp {
     /// Called function (linker-resolved). Emits `auipc + jalr` pair when
     /// the target is out of `jal`'s ±1 MiB range; the encoder picks.
     Call { label: String },
+
+    /// `la rd, symbol` — materialize the ABSOLUTE address of a linker-placed
+    /// symbol (RQ-63-RVGLOBAL, #242). Assembles to the 8-byte pair
+    /// `lui rd, %hi(symbol)` + `addi rd, rd, %lo(symbol)` with an
+    /// `R_RISCV_HI20` on the `lui` and an `R_RISCV_LO12_I` on the `addi`;
+    /// both immediates are 0 in the object and the linker fills them. This
+    /// is how the selector reaches the synth-EMITTED globals region
+    /// (`__synth_globals`) without a reserved base register — the RV32 twin
+    /// of aarch64's `adrp`+`add :lo12:` pair. `rd` is written, nothing is
+    /// read (the `addi` reads the `lui` result inside the pair).
+    La { rd: Reg, symbol: String },
 }
 
 #[cfg(test)]
