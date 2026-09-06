@@ -40,7 +40,7 @@ artifacts:
       That last point is the one most likely to be missed: this backend emits a
       sound cycle bound, and a codegen change that adds instructions without
       updating the pricing silently breaks a safety claim.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [reach, arm, encoder, i64, wcet, oracle-first]
     links:
@@ -52,3 +52,89 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: ARM lowers i64 load/store at offsets beyond imm12 by materializing the address, proven by an execution differential straddling the boundary that was RED first; frozen anchors unmoved for already-compiling offsets; and the --emit-wcet price updated with the instruction count or the bound shown unaffected"
+      landed: >-
+        PR #1165 (epic #242) — REPORTING CORRECTION FIRST: the census's
+        `-b arm` with no `--target` resolves to IsaVariant::Arm32 (the A32
+        encoder, `resolve_target_spec`'s default), NOT Thumb-2. The 46 declines
+        were the A32 `I64Ldr`/`I64Str` arm, which never received #382's Thumb-2
+        `i64_effective_base` fold; the Thumb-2 path already lowered these. The
+        same measurement found something WORSE on that target: the A32
+        word/sub-word immediate arms did not decline, they MASKED —
+        `encode_mem_addr` `& 0xFFF` (LDR/STR/LDRB/STRB) and `& 0xFF`
+        (LDRH/STRH/LDRSB/LDRSH) — so `i32.load offset=5000` compiled to
+        `ldr r0,[ip,#904]` and `i32.load16_u offset=256` to `ldrh r0,[ip]`,
+        exit 0, wrong address (the #259 class, closed on Thumb-2 by
+        check_ldst_imm12 but never on A32). And Thumb-2's `i64_effective_base`
+        clamped a memarg >= 2^31 (negative after the selector's `as i32`) to
+        0, dropping the offset the i32 form of the same memarg materializes.
+        What shipped: one A32 helper `a32_effective_base` (arm_encoder.rs)
+        that folds in-range offsets byte-identically (ADD ip,base,rm for the
+        #206 index form, nothing for the plain form) and MATERIALIZES the rest
+        as MOVW ip,#lo16 ; [MOVT ip,#hi16] ; ADD ip,ip,base ; [ADD ip,ip,rm] ;
+        access [ip,#0] — used by the i64 pair arm (fold ceiling 0xFFB so the
+        high half's +4 stays in imm12) and by `encode_arm_reg_offset_mem` for
+        all 8 word/sub-word forms (imm12 or imm8 ceiling per form);
+        `encode_mem_addr`/`encode_mem_addr_imm8` are now range-CHECKED
+        tripwires (typed Err), never masks; a base or index that IS the R12
+        scratch is a typed Err (no free register), never a clobber. Thumb-2's
+        clamp is gone: the offset is read back as u32 and materialized in
+        full (base + index + offset mod 2^32 — the arithmetic the i32 path and
+        the software guard already use); a negative FRAME offset is refused by
+        check_ldst_imm12, never clamped. Reach, re-measured with the census
+        script on the same 243-module corpus (before = main's binary, after =
+        this branch): the A32-imm12 decline class is GONE — primary blocker
+        46 -> 0, any-reason 62 -> 0 — and ACCEPTANCE IS UNCHANGED: core
+        21/131 -> 21/131, components 6/112 -> 6/112, 0 regressions, 0 newly
+        accepted. All 46 moved to the NEXT rung: 44 "register exhaustion: no
+        free callee-saved register to hold a call result while reloading a
+        preserved param" (the census's third-ranked blocker; these are kiln's
+        wasi-testsuite Rust programs), 1 AAPCS even-aligned pair args, 1
+        active data segments. So the 46-module figure was a correct count of
+        the TOP blocker, not of modules one fix away; this increment removes
+        one decline class and one silent-wrong-address class on the same
+        target and moves +0 modules on this corpus — the ladder RQ-63-LADDER
+        names, measured rather than assumed.
+      verified-by: >-
+        ORACLE FIRST, RED FIRST: scripts/repro/a32_ldst_offset_1165_differential.py
+        (+ .wat), CI-wired in repro-sweep-memory-oracle, `ci-checks: emulations
+        >= 124`, floor pin moved in lockstep (ci.yml + claims.yaml
+        SYNTH-ORACLE-CHECK-FLOORS-910-CI 324646 -> 324770, verified EQUAL by
+        oracle_wiring_check). It compiles the fixture exactly as the census
+        does (`-b arm`, no target -> A32) AND for cortex-m4, and runs the same
+        cross-addressed program under wasmtime and unicorn (UC_MODE_ARM /
+        UC_MODE_THUMB): i64 pair at 4088 / 4091 (AT the fold ceiling) / 4092
+        (the straddle: low half fits, high does not) / 4095 / 4096 / 5000 /
+        70000 (needs MOVT) / 0xfffffff8; i32 at 4095 / 4096 / 5000 /
+        0xfffffff8; halfword at 255 / 256 / 5000 (u and s); signed byte at
+        255 / 256; byte at 4095 / 4096 — loads AND stores, each read back or
+        written through an ABSOLUTE access at (addr+off) mod 2^32 so a
+        dropped/masked/clamped offset is observable. RED on main (transcript
+        in the PR): A32 leg declined 10/39 exports and matched 5/31 values
+        (word/sub-word WRONG at exit 0); Thumb-2 leg 29/31 (the two fffffff8
+        i64 cases). GREEN on this branch: 31/31 + 31/31, 124 emulations
+        measured = declared. The >= 2^31 memargs are pinned as wasmtime TRAPS
+        (spec OOB) and checked against the compliance-envelope formula
+        (R11 + (addr+off) mod 2^32); under --safety-bounds software on A32
+        they hit UDF before the materialized access (one-off unicorn check,
+        recorded in the PR). Byte-level: three encoder unit tests pin every
+        sequence against arm-none-eabi-as output (A32 `.arch armv7-r`,
+        Thumb-2 `.arch armv7e-m`), incl. at-boundary byte-identity (4091 pair,
+        4095 word, 255 halfword) and the R12-alias refusal. Frozen anchors:
+        frozen_fixtures_text_is_bit_identical_oracle_001 unchanged (cortex-m4
+        --relocatable; no anchor carries a >= 2^31 memarg, the only Thumb-2
+        shape whose bytes moved). Regression oracles re-run green:
+        a32_i64_615 (352/352, cortex-r5), expansion_canary_gate_1021 (both
+        backends), popcnt_r11_clobber_1021, i64_large_offset_382,
+        load_store_big_offset_382, addw_offset_681. WCET: unaffected by
+        construction — the backend attaches a WCET intermediate only for the
+        Thumb-2 stream (`final_instrs` is None on A32; --emit-wcet on the A32
+        default writes 0 bounded / N declined `unsupported-core`, measured),
+        and the Thumb-2 pricing sizes I64Ldr/I64Str from the real encoder per
+        instance (#936 `straightline_expansion_real`), so the only Thumb-2
+        byte change (a >= 2^31 memarg, 12 -> 24 bytes) is priced by the
+        encoder itself; positive offsets are byte-identical, bound unchanged.
+        RESIDUAL, loud not silent: A32 --safety-bounds software declines
+        halfword/byte offsets whose guard constant (offset+size, e.g. 257) is
+        not an A32 rotated immediate (`encode_operand2` typed Err — the
+        census's "encode_operand2 non-rotated immediate" bucket, unchanged
+        here).

@@ -465,7 +465,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 324646 \
+            --min-emulation-floor 324770 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -4071,6 +4071,15 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/i64_large_offset_382_differential.py
       - name: large static load/store offset differential (#382, optimized)
         run: python scripts/oracle_run.py scripts/repro/load_store_big_offset_382_differential.py
+      - name: load/store static-offset materialization differential (RQ-63-ARMI64OFF #1165, A32 default + Thumb-2)
+        # Compiles the fixture exactly as the reach census does (`-b arm`, no
+        # --target → Arm32) AND for cortex-m4, then cross-addresses every
+        # offset access at/around the imm12, imm8 and pair-form boundaries
+        # (plus the >= 2^31 memarg) under unicorn vs wasmtime. RED on main:
+        # A32 i64 pair declined past 4091; A32 word/sub-word immediates were
+        # silently MASKED (`ldr [ip,#904]` for offset=5000); Thumb-2 i64
+        # clamped a negative offset to 0.
+        run: python scripts/oracle_run.py scripts/repro/a32_ldst_offset_1165_differential.py
       - name: memory.grow(0) differential (#539, both ARM paths)
         run: python scripts/oracle_run.py scripts/repro/mem_grow_539_differential.py
       - name: static-src memmove differential (#757, inlined)

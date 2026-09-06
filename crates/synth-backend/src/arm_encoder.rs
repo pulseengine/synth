@@ -51,38 +51,39 @@ impl ArmEncoder {
     }
 
     /// Encode an ARM instruction in ARM32 mode (32-bit instructions)
-    /// #206: encode an ARM32 (A32) load/store whose address uses a register
-    /// offset (`[rn, rm{, #off}]`). Returns `None` for ops with no register
-    /// offset (the caller falls through to the immediate-form arms). Computes
-    /// `ip = base + rm` then re-encodes the op against `[ip, #off]`, which works
-    /// uniformly for word/byte/halfword/signed forms. IP (R12) is the scratch
-    /// register the selector already treats as clobberable across memory ops.
+    /// #206 / RQ-63-ARMI64OFF (#1165): encode an ARM32 (A32) word/sub-word
+    /// load/store whose effective base must be computed into IP — because the
+    /// address carries a register offset (`[rn, rm{, #off}]`, #206) and/or
+    /// because its static offset exceeds the form's immediate field (imm12 for
+    /// LDR/STR/LDRB/STRB, imm8 for LDRH/STRH/LDRSB/LDRSH; #1165 — the
+    /// immediate arms used to MASK such an offset to a wrong address). Returns
+    /// `None` for a plain in-range immediate access (the caller falls through
+    /// to the immediate-form arms, byte-identical). Otherwise
+    /// `a32_effective_base` materializes `ip` and the op is re-encoded against
+    /// `[ip, #residual]`, which is uniform for word/byte/halfword/signed forms.
+    /// IP (R12) is the scratch register the selector already treats as
+    /// clobberable across memory ops.
     fn encode_arm_reg_offset_mem(&self, op: &ArmOp) -> Result<Option<Vec<u8>>> {
-        use synth_synthesis::Reg;
-        let addr = match op {
+        let (addr, imm_max) = match op {
             ArmOp::Ldr { addr, .. }
             | ArmOp::Str { addr, .. }
             | ArmOp::Ldrb { addr, .. }
-            | ArmOp::Strb { addr, .. }
-            | ArmOp::Ldrh { addr, .. }
+            | ArmOp::Strb { addr, .. } => (addr, A32_LDST_IMM12_MAX),
+            ArmOp::Ldrh { addr, .. }
             | ArmOp::Strh { addr, .. }
             | ArmOp::Ldrsb { addr, .. }
-            | ArmOp::Ldrsh { addr, .. } => addr,
+            | ArmOp::Ldrsh { addr, .. } => (addr, A32_LDST_IMM8_MAX),
             _ => return Ok(None),
         };
-        let Some(rm) = addr.offset_reg else {
+        if addr.offset_reg.is_none() && (addr.offset as u32) <= imm_max {
             return Ok(None);
-        };
-        let ip = Reg::R12;
-        // ADD ip, base, rm  (cond=AL, opcode=ADD, S=0, register operand2)
-        let add: u32 = 0xE0800000
-            | (reg_to_bits(&addr.base) << 16)
-            | (reg_to_bits(&ip) << 12)
-            | reg_to_bits(&rm);
-        let mut bytes = add.to_le_bytes().to_vec();
-        // Re-encode the op against [ip, #off] (immediate form → no offset_reg,
-        // so this recursion hits the immediate arms, not this helper again).
-        let imm_addr = MemAddr::imm(ip, addr.offset);
+        }
+        let mut bytes = Vec::new();
+        let (base, residual) = a32_effective_base(&mut bytes, addr, imm_max)?;
+        // Re-encode the op against [base, #residual] (immediate form, in range
+        // by construction → this recursion hits the immediate arms, not this
+        // helper again).
+        let imm_addr = MemAddr::imm(base, residual as i32);
         let imm_op = match op {
             ArmOp::Ldr { rd, .. } => ArmOp::Ldr {
                 rd: *rd,
@@ -890,27 +891,15 @@ impl ArmEncoder {
             // I64Ldr / I64Str: two word accesses at [base, #off] / #off+4.
             // A register offset is materialized into IP once (the #206/#372
             // hazard: dropping it would read the wrong address).
+            // RQ-63-ARMI64OFF (#1165): an offset the pair form cannot hold
+            // (> 0xFFB, so the high half's +4 leaves imm12) used to be a loud
+            // decline here — 46 of the 110 core-module declines in v0.62's ARM
+            // census, all on the `-b arm` (Arm32) default target. It is now
+            // MATERIALIZED (MOVW/MOVT + ADD, the A32 mirror of #382's Thumb-2
+            // `i64_effective_base`); in-range offsets stay byte-identical.
             ArmOp::I64Ldr { rdlo, rdhi, addr } | ArmOp::I64Str { rdlo, rdhi, addr } => {
-                let base = if let Some(rm) = addr.offset_reg {
-                    // ADD ip, base, rm
-                    w(
-                        &mut b,
-                        0xE080_0000
-                            | (reg_to_bits(&addr.base) << 16)
-                            | (12 << 12)
-                            | reg_to_bits(&rm),
-                    );
-                    12
-                } else {
-                    reg_to_bits(&addr.base)
-                };
-                if addr.offset < 0 || addr.offset > 0xFFB {
-                    return Err(synth_core::Error::synthesis(format!(
-                        "i64 load/store offset {} out of the A32 imm12 range (0..=4091) — materialize the offset into a register",
-                        addr.offset
-                    )));
-                }
-                let off = addr.offset as u32;
+                let (base, off) = a32_effective_base(&mut b, addr, A32_I64_PAIR_IMM12_MAX)?;
+                let base = reg_to_bits(&base);
                 let opc: u32 = if matches!(op, ArmOp::I64Ldr { .. }) {
                     0xE590_0000 // LDR
                 } else {
@@ -1696,7 +1685,7 @@ impl ArmEncoder {
             // Load/Store
             ArmOp::Ldr { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_bits) = encode_mem_addr(addr)?;
 
                 // LDR encoding: cond(4) | 01 | I(1) | P(1) | U(1) | B(1) | W(1) | L(1) | Rn(4) | Rd(4) | offset(12)
                 // P=1 (pre-indexed), U=1 (add offset), L=1 (load)
@@ -1705,7 +1694,7 @@ impl ArmEncoder {
 
             ArmOp::Str { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_bits) = encode_mem_addr(addr)?;
 
                 // STR encoding: L=0 (store)
                 0xE5800000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
@@ -1714,17 +1703,15 @@ impl ArmEncoder {
             // Sub-word loads (ARM32 encoding)
             ArmOp::Ldrb { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_bits) = encode_mem_addr(addr)?;
                 // LDRB: LDR with B=1 (byte): cond|01|I|P|U|1|W|L|Rn|Rd|offset
                 0xE5D00000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
             }
 
             ArmOp::Ldrsb { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_val) = encode_mem_addr_imm8(addr)?;
                 // LDRSB (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1101|imm4L
-                // Simplified with immediate offset
-                let offset_val = offset_bits & 0xFF;
                 let imm4h = (offset_val >> 4) & 0xF;
                 let imm4l = offset_val & 0xF;
                 0xE1D000D0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
@@ -1732,9 +1719,8 @@ impl ArmEncoder {
 
             ArmOp::Ldrh { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_val) = encode_mem_addr_imm8(addr)?;
                 // LDRH (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1011|imm4L
-                let offset_val = offset_bits & 0xFF;
                 let imm4h = (offset_val >> 4) & 0xF;
                 let imm4l = offset_val & 0xF;
                 0xE1D000B0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
@@ -1742,9 +1728,8 @@ impl ArmEncoder {
 
             ArmOp::Ldrsh { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_val) = encode_mem_addr_imm8(addr)?;
                 // LDRSH (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1111|imm4L
-                let offset_val = offset_bits & 0xFF;
                 let imm4h = (offset_val >> 4) & 0xF;
                 let imm4l = offset_val & 0xF;
                 0xE1D000F0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
@@ -1753,16 +1738,15 @@ impl ArmEncoder {
             // Sub-word stores (ARM32 encoding)
             ArmOp::Strb { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_bits) = encode_mem_addr(addr)?;
                 // STRB: STR with B=1 (byte): cond|01|I|P|U|1|W|0|Rn|Rd|offset
                 0xE5C00000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
             }
 
             ArmOp::Strh { rd, addr } => {
                 let rd_bits = reg_to_bits(rd);
-                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                let (base_bits, offset_val) = encode_mem_addr_imm8(addr)?;
                 // STRH (misc store): cond|000|P|U|1|W|0|Rn|Rd|imm4H|1011|imm4L
-                let offset_val = offset_bits & 0xFF;
                 let imm4h = (offset_val >> 4) & 0xF;
                 let imm4l = offset_val & 0xF;
                 0xE1C000B0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
@@ -7888,16 +7872,25 @@ impl ArmEncoder {
     ///
     /// The effective address is fully materialized into `ip` BEFORE the halves
     /// are accessed, so an `rdlo` aliasing the index register is safe.
+    ///
+    /// RQ-63-ARMI64OFF (#1165): the wasm memarg is unsigned and reaches the
+    /// encoder through the selector's `as i32` cast, so a memarg `>= 2^31`
+    /// arrives NEGATIVE. It is read back as `u32` (lossless) and the
+    /// materialization carries the full 32 bits — `base + index + offset (mod
+    /// 2^32)`, the arithmetic the Thumb-2 word path (`encode_thumb32_add_imm`)
+    /// and the software bounds guard already use for the same memarg. This
+    /// used to CLAMP a negative offset to 0, so `i64.load offset=0xfffffff8`
+    /// silently read `[R11 + addr]` — a wrong address, and a divergence from
+    /// the i32 form of the same memarg. A FRAME access (no index) with an
+    /// out-of-range or negative offset is refused by `check_ldst_imm12` in the
+    /// halves — loud, never clamped.
     fn i64_effective_base(&self, bytes: &mut Vec<u8>, addr: &MemAddr) -> Result<(Reg, u32)> {
-        let offset = if addr.offset < 0 {
-            0u32
-        } else {
-            addr.offset as u32
-        };
+        let offset = addr.offset as u32;
         match addr.offset_reg {
             Some(idx) => {
                 let ip = Reg::R12;
-                if offset.wrapping_add(4) > 0xFFF {
+                // The high half sits at +4, which must itself fit imm12.
+                if offset > 0xFFB {
                     // Large static offset (#382): fold it (and R11) into ip so the
                     // imm12 halves stay in range instead of skipping the function.
                     // ADD ip, index, #offset  (index != ip → no add_imm alias trap)
@@ -8772,11 +8765,129 @@ fn encode_operand2(op2: &Operand2) -> Result<(u32, u32)> {
     }
 }
 
-/// Encode memory address to (base_reg, offset)
-fn encode_mem_addr(addr: &MemAddr) -> (u32, u32) {
-    let base_bits = reg_to_bits(&addr.base);
-    let offset_bits = (addr.offset as u32) & 0xFFF; // 12-bit offset
-    (base_bits, offset_bits)
+/// Largest immediate an A32 `LDR`/`STR`/`LDRB`/`STRB` `[Rn, #imm12]` form holds.
+const A32_LDST_IMM12_MAX: u32 = 0xFFF;
+/// Largest immediate an A32 `LDRH`/`STRH`/`LDRSB`/`LDRSH` `[Rn, #imm8]`
+/// (`imm4H:imm4L`) form holds.
+const A32_LDST_IMM8_MAX: u32 = 0xFF;
+/// Largest LOW-half immediate an A32 `I64Ldr`/`I64Str` pair can fold: the high
+/// half sits at `+4`, which must itself fit imm12 (`0xFFB + 4 = 0xFFF`).
+const A32_I64_PAIR_IMM12_MAX: u32 = 0xFFB;
+
+/// RQ-63-ARMI64OFF (#1165): resolve the A32 base register and residual
+/// immediate for a load/store whose static offset may exceed the form's
+/// immediate field — the A32 counterpart of the Thumb-2 `i64_effective_base`
+/// (#372/#382). Returns `(base, residual)`; the caller encodes `[base,
+/// #residual]` (and `#residual + 4` for the i64 high half).
+///
+/// The offset is the wasm memarg round-tripped through the selector's `as i32`
+/// cast (a memarg `>= 2^31` arrives negative), so it is read back as `u32` and
+/// the effective address is `base + index + offset (mod 2^32)` — the same
+/// arithmetic the Thumb-2 word path (`encode_thumb32_add_imm`) and the
+/// `--safety-bounds software` guard (`software_bounds_guard`, which round-trips
+/// the same cast) already use. A clamp or a mask here is a WRONG ADDRESS, i.e.
+/// the silent memory miscompile this artifact exists to refuse: before this
+/// helper the A32 immediate arms masked `& 0xFFF` (word/byte) and `& 0xFF`
+/// (halfword/signed), so `i32.load offset=5000` on the `-b arm` default target
+/// silently read `[ip, #904]`, and the i64 pair arm declined outright (46 of
+/// the 110 core-module declines in v0.62's ARM census).
+///
+/// - `offset <= imm_max`, no index: emits nothing, returns `(addr.base, offset)`
+///   — byte-identical to the pre-#1165 immediate form.
+/// - `offset <= imm_max`, index `rm`: emits `ADD ip, base, rm`, returns
+///   `(ip, offset)` — byte-identical to the #206 register-offset form.
+/// - `offset > imm_max`: MATERIALIZES the whole effective base into `ip`:
+///   `MOVW ip, #lo16 ; [MOVT ip, #hi16 — only when non-zero] ; ADD ip, ip, base
+///   ; [ADD ip, ip, rm]`, returns `(ip, 0)`. `ip` is fully computed BEFORE the
+///   access, so a destination register aliasing `base` or `rm` is safe.
+///
+/// `ip` (R12) is the reserved encoder scratch — never allocated (pool R0–R8;
+/// R9/R10/R11 are the globals/size/base contract registers). If `base` or `rm`
+/// IS R12 the materialization would clobber its own input, so that case is a
+/// typed `Err` — a loud decline, never a wrong address (the alias trap
+/// `encode_thumb32_add_imm` carries for `rd == rn == R12`).
+///
+/// Bytes verified against `arm-none-eabi-as` in the `test_1165_a32_*` tests
+/// and executed by `scripts/repro/a32_ldst_offset_1165_differential.py`.
+fn a32_effective_base(bytes: &mut Vec<u8>, addr: &MemAddr, imm_max: u32) -> Result<(Reg, u32)> {
+    let ip = Reg::R12;
+    let ip_bits = reg_to_bits(&ip);
+    let offset = addr.offset as u32;
+    let w = |bytes: &mut Vec<u8>, word: u32| bytes.extend_from_slice(&word.to_le_bytes());
+    // ADD rd, rn, rm (cond=AL, opcode=ADD, S=0, register operand2).
+    let add_reg = |rd: u32, rn: u32, rm: u32| 0xE080_0000 | (rn << 16) | (rd << 12) | rm;
+    if offset <= imm_max {
+        return Ok(match addr.offset_reg {
+            Some(rm) => {
+                w(
+                    bytes,
+                    add_reg(ip_bits, reg_to_bits(&addr.base), reg_to_bits(&rm)),
+                );
+                (ip, offset)
+            }
+            None => (addr.base, offset),
+        });
+    }
+    if addr.base == ip || addr.offset_reg == Some(ip) {
+        return Err(synth_core::Error::synthesis(format!(
+            "A32 load/store offset {offset:#x} exceeds the immediate field (max {imm_max:#x}) \
+             and the address already uses the R12 scratch — no free register to \
+             materialize it (RQ-63-ARMI64OFF)"
+        )));
+    }
+    // MOVW ip, #lo16 ; MOVT ip, #hi16 (elided when zero, mirroring I64Const).
+    let lo16 = offset & 0xFFFF;
+    let hi16 = offset >> 16;
+    w(
+        bytes,
+        0xE300_0000 | ((lo16 >> 12) << 16) | (ip_bits << 12) | (lo16 & 0xFFF),
+    );
+    if hi16 != 0 {
+        w(
+            bytes,
+            0xE340_0000 | ((hi16 >> 12) << 16) | (ip_bits << 12) | (hi16 & 0xFFF),
+        );
+    }
+    w(bytes, add_reg(ip_bits, ip_bits, reg_to_bits(&addr.base)));
+    if let Some(rm) = addr.offset_reg {
+        w(bytes, add_reg(ip_bits, ip_bits, reg_to_bits(&rm)));
+    }
+    Ok((ip, 0))
+}
+
+/// Encode an A32 immediate-form memory address to `(base_reg, imm12)`.
+///
+/// RQ-63-ARMI64OFF (#1165): this used to mask `& 0xFFF`, silently re-targeting
+/// any offset past the field (the #259 class, closed on Thumb-2 by
+/// `check_ldst_imm12` but never here). The immediate arms are only reached with
+/// an in-range, index-free address — `encode_arm_reg_offset_mem` materializes
+/// everything else into IP first — so this is a TRIPWIRE: a typed error, never
+/// a wrong address, should a future arm bypass that pre-pass.
+fn encode_mem_addr(addr: &MemAddr) -> Result<(u32, u32)> {
+    check_a32_imm_addr(addr, A32_LDST_IMM12_MAX)
+}
+
+/// `encode_mem_addr` for the `imm4H:imm4L` (8-bit) forms — `LDRH`/`STRH`/
+/// `LDRSB`/`LDRSH`. Same tripwire contract; the former `& 0xFF` mask is gone.
+fn encode_mem_addr_imm8(addr: &MemAddr) -> Result<(u32, u32)> {
+    check_a32_imm_addr(addr, A32_LDST_IMM8_MAX)
+}
+
+fn check_a32_imm_addr(addr: &MemAddr, imm_max: u32) -> Result<(u32, u32)> {
+    if addr.offset_reg.is_some() {
+        return Err(synth_core::Error::synthesis(
+            "internal: A32 immediate-form load/store reached with a register offset — \
+             encode_arm_reg_offset_mem must materialize it first (#206)",
+        ));
+    }
+    let offset = addr.offset as u32;
+    if offset > imm_max {
+        return Err(synth_core::Error::synthesis(format!(
+            "internal: A32 load/store immediate offset {offset:#x} exceeds the {imm_max:#x} \
+             field — encode_arm_reg_offset_mem must materialize it first (RQ-63-ARMI64OFF)"
+        )));
+    }
+    Ok((reg_to_bits(&addr.base), offset))
 }
 
 /// S-register number: S0=0, S1=1, ..., S31=31
@@ -12207,6 +12318,215 @@ mod tests {
             "small-offset indexed i64 must keep the single ADD.W ip, fp, r0"
         );
         assert_eq!(small.len(), 12, "ADD.W + 2×LDR.W (offset folded in imm12)");
+    }
+
+    /// RQ-63-ARMI64OFF (#1165): A32 `I64Ldr`/`I64Str` at and past the pair
+    /// form's immediate boundary. Bytes verified against `arm-none-eabi-as`
+    /// (`.arch armv7-r`, `.arm`). 4091 is the last offset the pair folds (the
+    /// high half sits at 4095 = imm12 max); 4092 is the straddle the v0.62
+    /// census declined on (low half fits, high half does not).
+    #[test]
+    fn test_1165_a32_i64_ldst_offset_boundary_materializes() {
+        let enc = ArmEncoder::new_arm32();
+        let le = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+        let ld = |off: i32| {
+            enc.encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, off),
+            })
+        };
+        // AT the boundary (4091): folded, byte-identical to the pre-#1165 form.
+        assert_eq!(
+            ld(4091).unwrap(),
+            le(&[0xE08BC000, 0xE59C0FFB, 0xE59C1FFF]),
+            "4091: add ip,fp,r0 ; ldr r0,[ip,#4091] ; ldr r1,[ip,#4095]"
+        );
+        // ONE ABOVE (4092): the high half would need #4096 → materialize.
+        assert_eq!(
+            ld(4092).unwrap(),
+            le(&[0xE300CFFC, 0xE08CC00B, 0xE08CC000, 0xE59C0000, 0xE59C1004]),
+            "4092: movw ip,#4092 ; add ip,ip,fp ; add ip,ip,r0 ; ldr r0,[ip] ; ldr r1,[ip,#4]"
+        );
+        // 4095 (low half at the imm12 max), 4096 (both out), 5000.
+        assert_eq!(ld(4095).unwrap()[..4], le(&[0xE300CFFF])[..]);
+        assert_eq!(ld(4096).unwrap()[..4], le(&[0xE301C000])[..]);
+        assert_eq!(
+            ld(5000).unwrap(),
+            le(&[0xE301C388, 0xE08CC00B, 0xE08CC000, 0xE59C0000, 0xE59C1004])
+        );
+        // 70000 needs MOVT; store form.
+        assert_eq!(
+            enc.encode(&ArmOp::I64Str {
+                rdlo: Reg::R2,
+                rdhi: Reg::R3,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 70000),
+            })
+            .unwrap(),
+            le(&[
+                0xE301C170, 0xE340C001, 0xE08CC00B, 0xE08CC000, 0xE58C2000, 0xE58C3004
+            ]),
+            "70000: movw ip,#0x1170 ; movt ip,#1 ; add ip,ip,fp ; add ip,ip,r0 ; str r2,[ip] ; str r3,[ip,#4]"
+        );
+        // A memarg >= 2^31 arrives negative (0xFFFFFFF8 as i32 = -8): the full
+        // 32 bits are materialized, mod 2^32 — never clamped, never masked.
+        assert_eq!(
+            ld(-8).unwrap(),
+            le(&[
+                0xE30FCFF8, 0xE34FCFFF, 0xE08CC00B, 0xE08CC000, 0xE59C0000, 0xE59C1004
+            ]),
+            "0xfffffff8: movw ip,#0xfff8 ; movt ip,#0xffff ; add ; add ; ldr ; ldr"
+        );
+        // No index register (frame-style base), out of range: MOVW ; ADD ip,ip,base.
+        assert_eq!(
+            enc.encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 5000),
+            })
+            .unwrap(),
+            le(&[0xE301C388, 0xE08CC00D, 0xE59C0000, 0xE59C1004])
+        );
+        // The base IS the scratch: no free register → typed error, not a clobber.
+        assert!(
+            enc.encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::imm(Reg::R12, 5000),
+            })
+            .is_err(),
+            "materializing over an R12 base must be refused, not clobber it"
+        );
+    }
+
+    /// RQ-63-ARMI64OFF (#1165): the A32 WORD and SUB-WORD immediate arms used
+    /// to MASK an out-of-range offset (`& 0xFFF` / `& 0xFF`) — a silent wrong
+    /// address (`i32.load offset=5000` → `ldr r0,[ip,#904]`, `i32.load16_u
+    /// offset=256` → `ldrh r0,[ip]`). At the field maximum the bytes are
+    /// unchanged; one above, the offset is materialized. Bytes verified
+    /// against `arm-none-eabi-as`.
+    #[test]
+    fn test_1165_a32_word_subword_offset_boundary_materializes_not_masks() {
+        let enc = ArmEncoder::new_arm32();
+        let le = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+        let idx = |off: i32| MemAddr::reg_imm(Reg::R11, Reg::R0, off);
+        let ldr = |addr| enc.encode(&ArmOp::Ldr { rd: Reg::R0, addr }).unwrap();
+        let ldrh = |addr| enc.encode(&ArmOp::Ldrh { rd: Reg::R0, addr }).unwrap();
+        let ldrsb = |addr| enc.encode(&ArmOp::Ldrsb { rd: Reg::R0, addr }).unwrap();
+        let strh = |addr| enc.encode(&ArmOp::Strh { rd: Reg::R1, addr }).unwrap();
+        let ldrb = |addr| enc.encode(&ArmOp::Ldrb { rd: Reg::R0, addr }).unwrap();
+        // LDR imm12: 4095 at, 4096 above.
+        assert_eq!(ldr(idx(4095)), le(&[0xE08BC000, 0xE59C0FFF]));
+        assert_eq!(
+            ldr(idx(4096)),
+            le(&[0xE301C000, 0xE08CC00B, 0xE08CC000, 0xE59C0000]),
+            "ldr 4096 must materialize, not mask to #0"
+        );
+        // LDRH imm8: 255 at, 256 above (the pre-fix bytes were `ldrh r0,[ip]`).
+        assert_eq!(ldrh(idx(255)), le(&[0xE08BC000, 0xE1DC0FBF]));
+        assert_eq!(
+            ldrh(idx(256)),
+            le(&[0xE300C100, 0xE08CC00B, 0xE08CC000, 0xE1DC00B0]),
+            "ldrh 256 must materialize, not mask to #0"
+        );
+        // LDRSB imm8 (256 above), STRH imm8 (300 above).
+        assert_eq!(
+            ldrsb(idx(256)),
+            le(&[0xE300C100, 0xE08CC00B, 0xE08CC000, 0xE1DC00D0])
+        );
+        assert_eq!(
+            strh(idx(300)),
+            le(&[0xE300C12C, 0xE08CC00B, 0xE08CC000, 0xE1CC10B0])
+        );
+        // LDRB is an imm12 form: 4095 at, 4096 above.
+        assert_eq!(ldrb(idx(4095)), le(&[0xE08BC000, 0xE5DC0FFF]));
+        assert_eq!(
+            ldrb(idx(4096)),
+            le(&[0xE301C000, 0xE08CC00B, 0xE08CC000, 0xE5DC0000])
+        );
+        // No index, out of range: MOVW ; ADD ip,ip,base ; access [ip].
+        assert_eq!(
+            ldr(MemAddr::imm(Reg::R0, 5000)),
+            le(&[0xE301C388, 0xE08CC000, 0xE59C0000])
+        );
+        // The immediate arms are now a TRIPWIRE, never a mask.
+        assert!(encode_mem_addr(&MemAddr::imm(Reg::R1, 0xFFF)).is_ok());
+        assert!(
+            encode_mem_addr(&MemAddr::imm(Reg::R1, 0x1000)).is_err(),
+            "imm12 arm must refuse 0x1000, not mask it to #0"
+        );
+        assert!(encode_mem_addr_imm8(&MemAddr::imm(Reg::R1, 0xFF)).is_ok());
+        assert!(
+            encode_mem_addr_imm8(&MemAddr::imm(Reg::R1, 0x100)).is_err(),
+            "imm8 arm must refuse 0x100, not mask it to #0"
+        );
+        // Base is the scratch: refused, not clobbered.
+        assert!(
+            enc.encode(&ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::R12, 5000),
+            })
+            .is_err()
+        );
+    }
+
+    /// RQ-63-ARMI64OFF (#1165): Thumb-2 `i64_effective_base` used to CLAMP a
+    /// negative offset (a memarg >= 2^31 after the selector's `as i32` cast)
+    /// to 0 — `i64.load offset=0xfffffff8` read `[R11+addr]`. It now
+    /// materializes the full 32 bits (MOVW+MOVT), the arithmetic the i32 word
+    /// path uses for the same memarg. Bytes verified against
+    /// `arm-none-eabi-as` (`.arch armv7e-m`, `.thumb`). A FRAME access with a
+    /// negative offset (no index register) is refused loudly by
+    /// `check_ldst_imm12`, never clamped.
+    #[test]
+    fn test_1165_thumb2_i64_negative_offset_materializes_not_clamps() {
+        let enc = ArmEncoder::new_thumb2();
+        let ld = enc
+            .encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, -8),
+            })
+            .unwrap();
+        assert_eq!(
+            ld,
+            vec![
+                0x4f, 0xf6, 0xf8, 0x7c, // movw ip, #0xfff8
+                0xcf, 0xf6, 0xff, 0x7c, // movt ip, #0xffff
+                0x00, 0xeb, 0x0c, 0x0c, // add.w ip, r0, ip
+                0x0c, 0xeb, 0x0b, 0x0c, // add.w ip, ip, fp
+                0xdc, 0xf8, 0x00, 0x00, // ldr.w r0, [ip]
+                0xdc, 0xf8, 0x04, 0x10, // ldr.w r1, [ip, #4]
+            ],
+            "0xfffffff8 must be materialized in full, not clamped to [ip,#0]"
+        );
+        let st = enc
+            .encode(&ArmOp::I64Str {
+                rdlo: Reg::R2,
+                rdhi: Reg::R3,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, i32::MIN),
+            })
+            .unwrap();
+        assert_eq!(
+            st,
+            vec![
+                0x40, 0xf2, 0x00, 0x0c, // movw ip, #0
+                0xc8, 0xf2, 0x00, 0x0c, // movt ip, #0x8000
+                0x00, 0xeb, 0x0c, 0x0c, // add.w ip, r0, ip
+                0x0c, 0xeb, 0x0b, 0x0c, // add.w ip, ip, fp
+                0xcc, 0xf8, 0x00, 0x20, // str.w r2, [ip]
+                0xcc, 0xf8, 0x04, 0x30, // str.w r3, [ip, #4]
+            ]
+        );
+        assert!(
+            enc.encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, -8),
+            })
+            .is_err(),
+            "a negative frame offset must be refused, not clamped to [sp,#0]"
+        );
     }
 
     #[test]
