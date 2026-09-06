@@ -74,9 +74,18 @@ the status.
   element segment kept the pre-fix behaviour — and this shape is **worse than
   the one #1102 fixed**: the object links clean (`UNDEF: NONE`), because the
   declined function is in no object at all, so the failure is silent to the
-  linker *and* to execution. The dynamic index is load-bearing; a constant
-  index devirtualizes and the table never materializes. Now refused on every
-  host-linked path.
+  linker *and* to execution. Now refused on every host-linked path.
+
+  *Correction, from this release's cold review:* earlier notes on this fix
+  claimed the dynamic index was load-bearing because "a constant index
+  devirtualizes and the table never materializes." **That is false.** Compiling
+  a constant-index `call_indirect` on ARM `--relocatable` emits `movw r2, #0` →
+  bounds check → `ldr.w ip, [fp, ip]` → `blx ip` — a runtime table load and an
+  indirect call, identical in shape to the dynamic case. No devirtualization
+  exists anywhere in the tree. The dynamic-index fixture is still the right
+  test, and the guard is index-insensitive (it refuses the constant-index
+  dangling shape too), so nothing about the fix changes — only a plausible-
+  sounding rationale that no one had checked.
 
 ### Added — the embedder contract, and a gate for it
 
@@ -141,6 +150,31 @@ decline site** instead of only in an issue. Red-first two-tenant oracle
   requires at least 4 **derived** slots, so an attestation cannot carry the
   verdict alone. Red-first in both directions, 30 unit tests.
 
+- **The emulation floor was 1,892 short of what it enforces — found while
+  cutting this release.** The `#910` ratchet exists to catch "an oracle lost
+  execution", and it enforced `322754` against a declared total of `324640` at
+  v0.61.0. That slack is larger than most single oracles declare, so an oracle
+  could stay wired, drop to **zero** executions, and stay green. Demonstrated on
+  **this release's own new oracle**: `mem_isolation_red_1145.py` declares 6
+  emulations, and zeroing it left the gate at exit 0. (Deleting the script
+  *whole* was always caught — but by the dangling-CI-reference check, not by the
+  floor; the two mechanisms guard different failures and only one of them is the
+  ratchet's job.) The floor is now pinned **equal** to the declared total,
+  `324646`, with the same mutation reddening it: `RATCHET BROKEN: 324640 <
+  324646`. The slack was inherited, not introduced here — it had simply never
+  been tightened when oracles landed.
+
+  **This is v0.61's #1113 one level up.** That finding was *intra*-oracle: a
+  single oracle's decline half contributes zero to its own `emulations` floor,
+  so that half could be deleted and the oracle stayed green. This one is
+  *inter*-oracle: the summed ratchet sat below the summed declarations, so any
+  oracle's **executing** half could shrink by up to 1,892 and the aggregate
+  stayed green. Same sentence — *the floor cannot see part of what it asserts* —
+  at the individual and the aggregate scale, found one release apart. The
+  per-oracle fix in #1112 was correct and did not imply the aggregate was tight;
+  nobody checked, because the aggregate gate reports on being *present and
+  wired*, never on being *tight*.
+
 - **`Claim Check` was the last required context with no system dependency still
   queueing against the GitHub-hosted quota (#1062)** — retargeted to
   self-hosted. And the invariant that made that safe is now **enforced rather
@@ -165,7 +199,8 @@ could be deleted in exchange** — the decline is the only handling this class
 has. A second regression needs a second waiver.
 
 Proof suite unchanged at **630 Qed / 2 Admitted**, 80 Rocq-proved selector
-rules. Oracle floors: 324,646 emulations across 158 wired scripts.
+rules. Oracle floors: 324,646 emulations across 158 wired scripts — **enforced**,
+now that the floor equals the declared total (below).
 
 ## [0.61.0] - 2026-09-02
 

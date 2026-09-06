@@ -1,0 +1,95 @@
+artifacts:
+  - id: RQ-62-FLOORTIGHT
+    type: system-req
+    title: "The summed emulation ratchet enforced 1,892 below what it declared — an oracle could lose ALL its execution and stay green"
+    description: >
+      Found while cutting v0.62, on THIS RELEASE'S OWN NEW ORACLE, and filed
+      because the release-review that found it is not a durable artifact.
+
+      `oracle_wiring_check.py --min-emulation-floor N` is the #910 ratchet.
+      Its own failure text states its purpose: "An oracle lost execution, or a
+      floor was lowered." It enforced `322754` in ci.yml against a DECLARED
+      total of `324640` at v0.61.0 and `324646` at the v0.62 candidate —
+      1,892 emulations of slack. That is larger than most single oracles
+      declare, so an oracle could stay present, stay wired, stay referenced,
+      and drop to ZERO executions while the gate built to notice exactly that
+      reported green.
+
+      DEMONSTRATED, not reasoned about, in an isolated worktree:
+
+        mutation 1  delete scripts/repro/mem_isolation_red_1145.py whole
+                    -> exit 1, but by the DANGLING-CI-REFERENCE check
+                       ("references ... which does NOT exist"), NOT the floor:
+                       the total fell only 324646 -> 324640, still above
+                       322754. Two mechanisms guard this set and they catch
+                       DIFFERENT failures; only one of them is the ratchet's
+                       job, and it was the one that could not fire.
+
+        mutation 2  the oracle stays wired and declares `emulations >= 0`
+                    -> exit 0. GREEN. The ratchet's own stated failure mode,
+                       invisible.
+
+        after the fix, replaying mutation 2
+                    -> exit 1, "check-floor RATCHET BROKEN: summed floors
+                       324640 < recorded minimum 324646"; the unmutated tree
+                       stays exit 0, so the new floor is correct and not
+                       merely stricter.
+
+      THIS IS #1113 ONE LEVEL UP, and that is the reason to file it rather
+      than fix it quietly. RQ-61-ORACLEFLOOR was INTRA-oracle: a single
+      oracle's decline half contributes zero to its own `emulations` floor, so
+      that half could be deleted while the oracle stayed green (fixed
+      per-oracle in #1112 with in-script `refusals: N` floors). This is
+      INTER-oracle: the summed ratchet sat below the summed declarations, so
+      any oracle's EXECUTING half could shrink by up to 1,892 and the
+      aggregate stayed green. Same sentence — THE FLOOR CANNOT SEE PART OF
+      WHAT IT ASSERTS — at the individual and the aggregate scale, found one
+      release apart. The per-oracle fix was correct and did not imply the
+      aggregate was tight; nobody checked, because every gate reporting on
+      this floor reports that it is PRESENT AND WIRED, never that it is TIGHT.
+
+      THE SLACK WAS INHERITED, NOT INTRODUCED HERE. It had simply never been
+      tightened when oracles landed — the ledger moved up in steps that were
+      always smaller than the drift. So the fix is not a number but an
+      INVARIANT: the enforced floor must EQUAL the declared total, pinned
+      verbatim in claims.yaml, so there is no slack to hide in and a landing
+      oracle must bump both in the same PR. That is the same
+      no-current-plus-slack discipline the subtraction ratchets already use.
+
+      WORTH RECORDING ABOUT THE MECHANISM: claims.yaml's
+      SYNTH-ORACLE-CHECK-FLOORS-910-CI verbatim pin caught the edit (57/58)
+      before it could ship silently. The pin cannot tell a tightening from a
+      loosening — it only forces the movement to be VISIBLE in the PR that
+      causes it, which is exactly what it is for.
+    status: implemented
+    release: v0.62
+    tags: [gate, oracle, non-vacuity, ratchet]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#910"
+      landed: >-
+        PR #1158 (release assembly), commit b9450a66 — ci.yml's
+        `--min-emulation-floor` tightened 322754 -> 324646 with the
+        equal-to-declared invariant written at the step, and claims.yaml's
+        SYNTH-ORACLE-CHECK-FLOORS-910-CI verbatim pin moved in lockstep
+        (57/58 -> 58/58). CHANGELOG records the finding and its relationship
+        to #1113.
+      done-when: "contains:.github/workflows/ci.yml:--min-emulation-floor 324646"
+      verified-by: >-
+        Red-first in both directions, in an isolated git worktree so the
+        mutations could not touch the release tree: with the OLD floor,
+        zeroing mem_isolation_red_1145.py's declared emulations (oracle left
+        wired and referenced) was EXIT 0; with the new floor the same mutation
+        is EXIT 1 with the ratchet's own message ("summed floors 324640 <
+        recorded minimum 324646"), and the unmutated tree is EXIT 0 — so the
+        floor is correct, not merely stricter. Deletion of the whole script
+        was separately shown to be caught by the dangling-CI-reference check
+        rather than the floor, which is why the floor's blindness survived.
+        Re-derived on the tree: `oracle_wiring_check.py` reports `emulations
+        158 scripts, floor total 324646`, equal to the enforced value; and
+        claim_check.py is 58/58 with the verbatim pin naming 324646.

@@ -64,10 +64,18 @@ artifacts:
         get_section_by_name returns None and a name-based read wrongly
         concludes "no symtab").
 
-        THE DYNAMIC INDEX IS LOAD-BEARING and is why this was not found
-        earlier: with `i32.const 0` the ARM relocatable path devirtualizes the
-        dispatch into a direct call and the table never materializes, so a
-        constant-index fixture reports "no bug".
+        WHY THIS WAS NOT FOUND EARLIER — and a CORRECTION. This artifact
+        first claimed the dynamic index was load-bearing because `i32.const 0`
+        "devirtualizes the dispatch into a direct call so the table never
+        materializes". The v0.62 cold review falsified that against emitted
+        bytes: a constant-index `call_indirect` on ARM `--relocatable` emits
+        `movw r2, #0` / bounds check / `ldr.w ip, [fp, ip]` / `blx ip` — the
+        same runtime table load and indirect call as the dynamic shape, and no
+        devirtualization exists in the tree. The guard is INDEX-INSENSITIVE
+        and refuses the constant-index dangling shape too, so the fix and its
+        red-first evidence are unaffected; what was wrong was the RATIONALE,
+        which is what a future contributor would have reasoned from. The
+        dynamic-index fixture remains the right test on its own merits.
 
         Suspicion held for exactly 2 of 5 paths. ARM Thumb-2 / A32
         `--relocatable`: the live hole, now refused. ARM `--cortex-m`
