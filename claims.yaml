@@ -838,6 +838,32 @@ claims:
   # is gated at runtime by the workflow, not re-derived here — claim_check
   # runs without submodules, which is the original #1095 failure mode and
   # exactly why this ledger must not pretend to measure the suite.
+  # RQ-63-SPECFAM (#1095, v0.63). The census's ONE derived figure averages
+  # families synth TARGETS with families it has never implemented. Split by
+  # family it says two things the aggregate hides, and BOTH are pinned here so
+  # neither can rot behind a green total:
+  #   (a) MVP CORE is 14 of 114 fully-ok on arm — the scalar foundation every
+  #       other family rests on, 12 %. It is the most decision-relevant number
+  #       in the project and appeared nowhere before v0.63.
+  #   (b) 86 files (33 % of the suite) are families with ZERO support on any
+  #       backend — a declared BOUNDARY, not a failure.
+  # The doc is generated from the same census run, so a family count that
+  # moves without the doc moving fails here rather than drifting.
+  - id: SYNTH-SPEC-FAMILY-MVP-CORE
+    doc: docs/status/SPEC_FAMILY_CENSUS.md
+    text: "| **MVP core** | 114 | **14** / 39 | **11** / 38 | **21** / 17 |"
+    evidence:
+      - kind: count-eq                       # the family split is EMITTED, not just documented
+        pattern: 'def report_by_family\('
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # MVP core is the declared fallback family
+        pattern: '\("MVP core", +r"\.\*"\)'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: verbatim                       # the zero-support boundary is stated as such
+        text: "86 files — 33 % of the suite — are families with ZERO support anywhere"
+
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
     text: "full-module compile 22 ARM / 12 RV32 / 27 AArch64, at-least-one-export 84 / 74 / 57, panics 0 / 0 / 0"

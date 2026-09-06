@@ -49,7 +49,7 @@ artifacts:
       byte-identical for modules that compile today, and no answer may make an
       unmet embedder obligation SILENT. That is the property #1041/#1052 bought
       and this release must not spend it for a percentage.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [reach, acceptance, embedder, defaults, decision, consumer-contract]
     links:
@@ -61,3 +61,34 @@ artifacts:
       verification-track: review
       issue: "#1041"
       done-when: "manual: the default-invocation question is decided and recorded with its reasoning, consumer input sought, emitted code proven byte-identical for modules that compile today, and no path left where an unmet embedder obligation is silent"
+      landed: >-
+        PR #1173 — decided on the RQ-63-LADDER full-corpus measurement. The
+        DECISION IS NO: the acknowledgement flags stay OPT-IN, and the fix is
+        the reporting (docs/status/ACCEPTANCE_LADDER.md), not the default.
+      verified-by: >-
+        DECIDED AGAINST, with the measurement that makes it tempting stated in
+        full so the decision is not re-litigated from the number alone.
+        THE CASE FOR defaulting is real and large: `--embedder-data-init` /
+        `--embedder-global-init` take arm from 27/243 (11.1%) to 99/243
+        (40.7%) — 72 modules, a 3.7x gain, and every one of them compiles
+        correctly today.
+        THE CASE AGAINST is decisive. The flag is an ACKNOWLEDGEMENT that the
+        EMBEDDER will initialise data and globals. Defaulting it makes synth
+        ASSUME an obligation the caller never accepted: if the embedder does
+        not honour it, the module reads uninitialised memory and returns a
+        wrong answer with exit 0. That is precisely the silent-drop class
+        #1041/#1052/#1102 spent v0.59-v0.61 converting INTO loud declines —
+        the conversion that took ARM's published acceptance 81% -> 11% and is
+        recorded in the compliance envelope as the project getting MORE
+        honest. Defaulting the flag would reverse it in one commit, and would
+        buy back exactly the percentage that conversion cost.
+        SO THE DEFECT WAS NEVER THE DEFAULT; IT WAS THE REPORTING. Publishing
+        one number measured with one invocation made an honest refusal look
+        like a missing capability. The ladder fixes that without moving a
+        single decline, which is why it is the whole fix.
+        RESIDUAL, named rather than silently accepted: a consumer who does not
+        read the docs still meets 11% on arm. The mitigation is that the
+        decline names the flag that resolves it at the decline site (the
+        #952/#1041/#1052 pattern) — the diagnostic is the discoverability
+        mechanism, and improving that text is cheaper and safer than changing
+        what synth assumes about its caller.

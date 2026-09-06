@@ -57,7 +57,7 @@ artifacts:
       NOT IN SCOPE: fixing anything the matrix reveals. Report and stop — the
       capability artifacts in this release cite this measurement, not the
       sample.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [reach, acceptance, census, measurement, compliance-envelope]
     links:
@@ -69,3 +69,33 @@ artifacts:
       verification-track: review
       issue: "#1017"
       done-when: "manual: a flag-aware acceptance matrix over the full 243-module corpus is published per backend with the NEVER bucket attributed by root cause, the rungs are reported separately rather than summed, and #1017 plus RQ-62-REACH's figures are corrected rather than left contradictory"
+      landed: >-
+        PR #1169 (harness: `--ladder` mode on partial_census_1017.py, reusing
+        its discovery/classify/primary_blocker rather than adding a second
+        census) + PR #1173 (the measurement, published as
+        docs/status/ACCEPTANCE_LADDER.md).
+      verified-by: >-
+        FULL 243-MODULE CORPUS measured on the final v0.63 binary (e3a09ac2,
+        all capability work merged), all three backends, rungs reported
+        SEPARATELY:
+          arm      default 27 (11.1%) | +embedder-ack +72 -> 99 (40.7%)
+                   | +allow-skipped +3 | +no-opt +0 | NEVER 141
+          riscv    default 50 (20.6%) | +embedder-ack +0
+                   | +allow-skipped +11 | +no-opt +0 | NEVER 182
+          aarch64  default 49 (20.2%) | +embedder-ack +0
+                   | +allow-skipped +1 | +no-opt +0 | NEVER 193
+        THE HEADLINE: acknowledging the embedder obligation nearly QUADRUPLES
+        arm — 27 -> 99 modules. v0.62 published 11% measured with one fixed
+        invocation; the 60-module sample in this release's descriptor
+        predicted "more than triple" and the full corpus gives 3.7x.
+        `--no-optimize` adds ZERO on every backend.
+        The NEVER bucket is attributed from the MOST PERMISSIVE invocation, so
+        a blocker surviving every flag is a real gap and not a missing
+        acknowledgement; the per-backend breakdowns are in the published doc.
+        CORRECTION TO THE PRIOR FIGURES, stated rather than left contradictory:
+        arm stays 27 (RQ-63-ARMI64OFF cleared 46 blocked modules and gained
+        ZERO reach), riscv 40 -> 50 (RQ-63-RVGLOBAL), aarch64 46 -> 49
+        (RQ-63-A64STACK). A BLOCKER COUNT IS NOT A REACH ESTIMATE — the census
+        records only the first decline per function, so clearing a top blocker
+        reveals the next layer rather than adding its count. aarch64's
+        MemoryCopy went 45 -> 106 without anyone touching MemoryCopy.
