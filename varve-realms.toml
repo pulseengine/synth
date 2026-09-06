@@ -1,0 +1,11 @@
+# Canonical realm definitions for the PulseEngine toolchain.
+# Commit this beside your varve.toml (or above it); `realm = "pulseengine"`
+# in the pin then needs no environment variable — the realm supplies both
+# the registry and the trust root, and the realm's root is authoritative.
+#
+# The rolling root is PROVISIONAL until the v1.0 ceremony (see SECURITY.md);
+# the rolling channel makes no qualification promise.
+
+[realm.pulseengine]
+registry   = "oci://ghcr.io/pulseengine/varve/layers"
+trust-root = "4e771dc62a08be89e3450f8cd807da58ff70af4a4e124ebf2d2b71684cfd9973"

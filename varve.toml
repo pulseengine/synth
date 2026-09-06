@@ -1,0 +1,13 @@
+# synth's toolchain pin — see `varve docs pins`.
+# The realm supplies both the registry and the trust root, so no environment
+# variable is needed; varve-realms.toml beside this file is authoritative.
+manifest-version = 1
+
+[toolchain]
+realm   = "pulseengine"
+channel = "rolling"
+layer   = "2026.08.2"
+# Digest-pinned as `varve docs pins` recommends: byte-exact freezing, and
+# constant-time resolution (~37us regardless of how many layers the local core
+# holds, vs ~2.5ms for a name-only pin at 200 layers).
+digest  = "sha256:83a699600deab6289e6e71a3860d2b47c07f1c85a5b64ad80e9700710e476d3a"
