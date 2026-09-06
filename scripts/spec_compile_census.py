@@ -66,6 +66,7 @@ import argparse
 import concurrent.futures
 import os
 import re
+from collections import Counter
 import subprocess
 import sys
 import tempfile
@@ -187,6 +188,61 @@ def run_backend(synth: Path, backend: str, files, jobs: int):
     return counts, examples
 
 
+
+# ---------------------------------------------------------------------------
+# RQ-63-SPECFAM (v0.63): the per-family split.
+#
+# This census publishes ONE derived figure per backend (`at-least-one-export`).
+# That figure is correct and gated, and it is the wrong number to plan from: it
+# averages families synth TARGETS with families synth has never implemented.
+# Split by family it says two things the aggregate hides — MVP core is 14 of
+# 114 fully-ok on arm (the scalar foundation every other family rests on), and
+# 86 files (33 % of the suite) are families with ZERO support on any backend,
+# which is a declared BOUNDARY rather than a failure.
+#
+# Families are matched on the suite's own filenames — the merged proposals are
+# named there (simd_*, ref_*, table_*, memory_copy, return_call, try*, gc_*).
+# Ordered: the first pattern that matches wins, MVP core is the fallback.
+# ---------------------------------------------------------------------------
+FAMILIES = [
+    ("SIMD",               r"^simd_"),
+    ("relaxed SIMD",       r"^relaxed_"),
+    ("threads / atomics",  r"^atomic|shared|thread"),
+    ("GC",                 r"^gc_|^struct|^array|^ref_(cast|test)|^type-(sub|equiv|rec)|^br_on_(cast|null)"),
+    ("exception handling", r"^try|^throw|^tag|^rethrow|^exception"),
+    ("tail call",          r"^return_call"),
+    ("reference types",    r"^ref_|^table_|^table\.|^elem|^linking"),
+    ("bulk memory",        r"^memory_(copy|fill|init|grow)|^data\b|^bulk"),
+    ("memory64",           r"64\.wast$|^address64|^align64|^memory64"),
+    ("multi-memory",       r"^multi.?memory|^memory_multi"),
+    ("multi-value",        r"^multi.?value|^func_ptrs"),
+    ("MVP core",           r".*"),
+]
+
+
+def family_of(name: str) -> str:
+    for label, pat in FAMILIES:
+        if re.search(pat, name):
+            return label
+    return "MVP core"
+
+
+def report_by_family(backend: str, per_file: dict) -> None:
+    """Print the per-family split. REPORTING ONLY — never gates, because the
+    pins above are the gate and a second gate on the same measurement would be
+    a second source of truth for it."""
+    tally = {}
+    for name, bucket in per_file.items():
+        tally.setdefault(family_of(name), Counter())[bucket] += 1
+    print(f"\n  per-family split ({backend}) — files ok / partial / declined:")
+    rows = sorted(tally.items(), key=lambda kv: -sum(kv[1].values()))
+    for fam_name, ctr in rows:
+        tot = sum(ctr.values())
+        dec = ctr["all_declined"] + ctr["module_decline"]
+        print(f"    {fam_name:<20}{tot:>5} files   {ctr['ok']:>4} ok  "
+              f"{ctr['partial']:>4} partial  {dec:>4} declined")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--synth", default=str(ROOT / "target/debug/synth"))
@@ -259,6 +315,9 @@ def main() -> int:
         alo = counts["ok"] + counts["partial"]
         print(f"  at-least-one-export = {alo} "
               f"(doc-cited {AT_LEAST_ONE_EXPORT[be]})")
+        # RQ-63-SPECFAM: the same measurement, split by family. Reporting only.
+        per_file = {name: b for b, rows in examples.items() for name, _ in rows}
+        report_by_family(be, per_file)
 
     print()
     if fails:

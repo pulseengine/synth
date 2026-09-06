@@ -57,7 +57,7 @@ artifacts:
       pin the MVP-core figure specifically so it cannot rot behind a green
       aggregate — the #1095 failure this census was built to fix, recurring
       one level in.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [census, spec-suite, measurement, denominator]
     links:
@@ -69,13 +69,31 @@ artifacts:
       verification-track: review
       issue: "#1095"
       done-when: "contains:scripts/spec_compile_census.py:per-family"
+      landed: >-
+        PR #1173 — `spec_compile_census.py` emits the per-family split
+        (`report_by_family`, reporting only — the existing pins remain THE
+        gate, because a second gate on the same measurement would be a second
+        source of truth for it); published as
+        docs/status/SPEC_FAMILY_CENSUS.md; the MVP-core figure pinned in
+        claims.yaml as SYNTH-SPEC-FAMILY-MVP-CORE.
       verified-by: >-
-        PENDING. Required: (a) `spec_compile_census.py` emits a per-family
-        table alongside the existing nine buckets, families derived from the
-        suite rather than hand-listed where possible; (b) the MVP-core
-        fully-ok figure is pinned in claims.yaml as its own claim, so it
-        cannot drift behind the green aggregate; (c) the docs that cite
-        92/257 cite the family split beside it, with the 33 %-zero-support
-        share stated as a deliberate boundary rather than left to look like
-        failure; (d) red-first — the pin must go red when the MVP-core count
-        changes in either direction, demonstrated by mutation.
+        MEASURED on the final v0.63 binary (e3a09ac2), all 257 spec files,
+        three backends, POST-#1168 — the pre-v0.63 figures were taken on a
+        path that under-compiled and are not comparable.
+        MVP core 114 files: arm 14 ok / 39 partial, riscv 11 / 38,
+        aarch64 21 / 17. SIMD 59 files: 0 ok on every backend. GC 16: 0 ok.
+        relaxed SIMD 4, exception handling 4, tail call 3: 0 ok.
+        THE TWO FACTS THE AGGREGATE HID, now both pinned:
+        (a) MVP CORE IS 14 OF 114 ON ARM — 12 %, the scalar foundation every
+        other family rests on, and the reason VCR-SIMD-001 is gated on the
+        core rather than on appetite;
+        (b) 86 FILES — 33 % OF THE SUITE — are families with ZERO support on
+        any backend, which is a declared BOUNDARY and not a failure, and
+        stating it as one is more honest than leaving it inside an average.
+        The census still RESULT: PASS on all three backends with the family
+        split emitted, so the split did not perturb the gate. claim_check
+        59/59 with SYNTH-SPEC-FAMILY-MVP-CORE added.
+        NOT COMPARABLE TO THE ACCEPTANCE LADDER, and the doc says so: this is
+        the 257-file conformance suite under one invocation; the ladder is the
+        243-module reachable corpus, flag-aware. Quoting one as the other is
+        the error the pair exists to prevent.

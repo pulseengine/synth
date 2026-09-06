@@ -1,0 +1,117 @@
+# Acceptance ladder — v0.63
+
+**Measured 2026-09-06** on synth at `e3a09ac2` (all v0.63 capability work merged),
+over the **243-module reachable corpus** (131 core + 112 components, unique by
+sha256, manifest at `corpora/wasm-243/MANIFEST.sha256`).
+
+Produced by `scripts/repro/partial_census_1017.py --ladder`. Rungs are reported
+**separately and never summed into one rate** — see "Why a ladder" below.
+
+## The ladder
+
+| backend | default | +embedder-ack | +allow-skipped | +no-optimize | NEVER |
+|---------|---------|---------------|----------------|--------------|-------|
+| **arm** | 27 (11.1 %) | **+72 → 99 (40.7 %)** | +3 | +0 | 141 |
+| **riscv** | 50 (20.6 %) | +0 | +11 | +0 | 182 |
+| **aarch64** | 49 (20.2 %) | +0 | +1 | +0 | 193 |
+
+- **default** — `--all-exports --relocatable`, no other flags. What a consumer
+  gets with no knowledge of the embedder contract.
+- **+embedder-ack** — `--embedder-data-init --embedder-global-init`. The
+  consumer ACKNOWLEDGES an embedder obligation. These modules compile today.
+- **+allow-skipped** — `--allow-skipped-exports`. **Categorically different: a
+  PARTIAL object is a third state, not a pass.** Counted, labelled, and never
+  folded into accepts.
+- **+no-optimize** — adds **zero on every backend**, which is worth knowing in
+  itself: the two selector paths differ in output, not in acceptance.
+
+## Why a ladder, and not one number
+
+v0.62 published `arm 11 %, riscv 16 %, aarch64 19 %` measured with ONE fixed
+invocation. On arm that under-reports by a factor of **3.7**: 27 modules become
+99 the moment the embedder obligation is acknowledged.
+
+`--embedder-data-init` / `--embedder-global-init` are **not a feature switch**.
+They are the `#952`/`#1041`/`#1052` honest-refusal pattern: synth refuses to
+emit an object whose data or globals the embedder must initialise unless the
+caller states that it will. Counting those refusals as "cannot compile" says
+synth cannot do work it demonstrably can.
+
+**This does NOT mean the flags should be default** — see `RQ-63-ACKDEFAULT`.
+The refusal is correct; only the reporting was wrong.
+
+## What moved this release, and what did not
+
+Against v0.62's census on the same corpus:
+
+| backend | v0.62 | v0.63 | delta | cause |
+|---|---|---|---|---|
+| arm | 27 | 27 | **+0** | `RQ-63-ARMI64OFF` cleared its 46-module blocker and gained **zero** reach — all 46 landed on the next rung |
+| riscv | 40 | 50 | **+10** | `RQ-63-RVGLOBAL` |
+| aarch64 | 46 | 49 | **+3** | `RQ-63-A64STACK` |
+
+**A BLOCKER COUNT IS NOT A REACH ESTIMATE.** The census records only the FIRST
+decline per function, so clearing a top blocker does not add its count — it
+reveals the next layer. All three v0.63 lanes reported this independently, and
+the full corpus confirms it: `RQ-63-A64STACK` cleared 77 modules and gained 3;
+`RQ-63-ARMI64OFF` cleared 46 and gained 0. Any plan built on primary-blocker
+counts systematically overestimates every fix.
+
+The clearest instance: **aarch64's `MemoryCopy` went 45 → 106 modules without
+anyone touching `MemoryCopy`.** Those modules were always blocked by it, hidden
+behind an earlier decline.
+
+## NEVER buckets — the real capability gaps
+
+Attributed from the MOST PERMISSIVE invocation, so a blocker surviving every
+flag is a genuine gap and not a missing acknowledgement.
+
+### arm (141)
+| n | blocker |
+|---|---------|
+| 71 | register exhaustion — no free callee-saved register to hold a call result while reloading a preserved param |
+| 41 | `#929` AAPCS: an i64 call argument needs an even-aligned register PAIR |
+| 7 | start section — no backend invokes it |
+| 5 | `rule_i32_rotl` side condition |
+| 4 | `call_indirect` type/table mismatch |
+| 4 | `encode_operand2` non-rotated immediate |
+| 3 | `GI-FPU-002` scalar f32 without an FPU |
+
+### riscv (182)
+| n | blocker |
+|---|---------|
+| 62 | immediate too large for memory offset |
+| 51 | multi-memory `#406` — no per-memory base lowering |
+| 30 | `call_indirect` unsupported in the RV32 skeleton |
+| 18 | `Call` unsupported in the RV32 skeleton |
+| 7 | start section |
+| 6 | non-contiguous global index space |
+
+### aarch64 (193)
+| n | blocker |
+|---|---------|
+| 106 | `MemoryCopy` |
+| 51 | multi-memory `#406` |
+| 22 | active data segments not materialised |
+| 7 | start section |
+| 2 | `MemoryFill` |
+
+## One cross-backend observation worth recording
+
+riscv's top blocker — *"immediate too large for memory offset"* (62 modules) —
+is the **same class** as the A32 defect `#1167` this release fixed. The two
+backends handled it oppositely: **RV32 declines loudly; A32 silently masked the
+offset and emitted a wrong address at exit 0.** Identical gap, and only one of
+them was a miscompile. The loud one cost acceptance; the silent one cost
+correctness.
+
+## Reproducing
+
+```sh
+python3 scripts/repro/partial_census_1017.py \
+  --synth ./target/debug/synth --backend <arm|riscv|aarch64> \
+  --ladder --json ladder.json <corpus-root>
+```
+
+The corpus is not carried by CI (243 modules, 426 MB); the manifest pins it by
+sha256 so a re-run is checkable.
