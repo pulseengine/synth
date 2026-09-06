@@ -2474,7 +2474,16 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ORACLE-CHECK-FLOORS-910-CI
     doc: .github/workflows/ci.yml
-    text: "--min-emulation-floor 322754"
+    # v0.62 (#1145 release review): TIGHTENED 322754 -> 324646, i.e. to EQUAL
+    # the declared `emulations floor total`. The old value carried 1,892
+    # emulations of slack — more than most single oracles declare — so an
+    # oracle could stay wired and drop to ZERO executions while this gate
+    # stayed green, which is precisely the failure #910 exists to catch.
+    # Demonstrated on this release's own new oracle (mem_isolation_red_1145.py,
+    # declares 6): zeroing it was exit 0 before, `RATCHET BROKEN: 324640 <
+    # 324646` after. Keep EQUAL to the declared total; a landing oracle bumps
+    # both in the same PR.
+    text: "--min-emulation-floor 324646"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

@@ -450,10 +450,22 @@ jobs:
         run: python3 scripts/runner_redundancy_check.py --structural-only
 
       - name: Oracle wiring gate — every repro script declares a CI status (890)
+        # FLOOR TIGHTNESS (v0.62, #1145 review): the floor must EQUAL the
+        # declared total, not merely sit below it. It had drifted 1,892
+        # emulations slack (322754 enforced vs 324640 declared at v0.61.0),
+        # which is more than most single oracles declare — so an oracle could
+        # stop executing entirely and stay green, the exact failure the #910
+        # ratchet exists to catch ("An oracle lost execution"). Deleting a
+        # script whole is caught by the dangling-reference check below; an
+        # oracle that stays WIRED and drops to zero was NOT, and that was
+        # demonstrated on this release's own new oracle
+        # (mem_isolation_red_1145.py, declares 6). Keep this EQUAL to
+        # `oracle_wiring_check.py`'s reported `emulations floor total`; when an
+        # oracle legitimately lands, bump it in the SAME PR.
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 322754 \
+            --min-emulation-floor 324646 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys

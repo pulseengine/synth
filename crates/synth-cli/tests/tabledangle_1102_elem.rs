@@ -9,9 +9,14 @@
 //!
 //! Measured red-first on the UNFIXED binary (main @ b552fb4c, v0.61), with
 //! the fixture below (`$bad` declines everywhere via a v128 op the decoder
-//! loud-marks; a DYNAMIC-index `call_indirect` so the dispatch cannot be
-//! devirtualized — with `i32.const 0` the ARM relocatable path folds the
-//! dispatch to a direct call and the table never materializes):
+//! loud-marks; a DYNAMIC-index `call_indirect`).
+//!
+//! CORRECTION (v0.62 cold review): an earlier version of this comment said a
+//! constant index would fold the dispatch to a direct call so the table never
+//! materializes. That is FALSE — `i32.const 0` still emits `movw r2, #0` /
+//! bounds check / `ldr.w ip, [fp, ip]` / `blx ip`, and synth has no
+//! devirtualization pass at all. The guard is index-insensitive; the dynamic
+//! index is a fine fixture choice, not a necessary one:
 //!
 //! | path                          | exit | object | notes                          |
 //! |-------------------------------|------|--------|--------------------------------|
@@ -62,7 +67,9 @@ fn workdir(tag: &str) -> PathBuf {
 /// The red-first shape: `$bad` is in the table (slot 1) with NO direct call
 /// site, and declines on EVERY backend (the decoder marks the v128 op, each
 /// backend refuses the marked function). The dispatch index is a runtime
-/// parameter so no path can devirtualize the `call_indirect` away.
+/// parameter. (Not because a constant index would be devirtualized — synth
+/// has no such pass, see the correction in the module comment — but because a
+/// runtime index is the shape a real dispatch table has.)
 const ELEM_DECLINED_DYN: &str = r#"(module
   (type $t (func (result i32)))
   (table 2 funcref)
