@@ -106,6 +106,17 @@ impl RiscVRelocKind {
             RiscVRelocKind::Lo12I => R_RISCV_LO12_I,
         }
     }
+
+    /// The arch-neutral [`synth_core::backend::RelocKind`] this record
+    /// carries out of the backend (a total mapping, kept beside `r_type` so
+    /// the two enums' correspondence lives in ONE place).
+    pub fn core_kind(self) -> synth_core::backend::RelocKind {
+        match self {
+            RiscVRelocKind::CallPlt => synth_core::backend::RelocKind::RiscvCallPlt,
+            RiscVRelocKind::Hi20 => synth_core::backend::RelocKind::RiscvHi20,
+            RiscVRelocKind::Lo12I => synth_core::backend::RelocKind::RiscvLo12I,
+        }
+    }
 }
 
 /// `R_RISCV_CALL_PLT` — the modern auipc+jalr call-pair relocation type

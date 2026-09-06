@@ -418,24 +418,17 @@ fn compile_function_with_opts(
     // (undefined symbol, host-resolved) and `synth_func_{local_index}` to the
     // defined function symbol — the ARM `--relocatable` contract mirrored.
     // RQ-63-RVGLOBAL: the globals `la` pair adds HI20 + LO12_I records
-    // against `__synth_globals` — the kind is fixed here, where the
-    // instruction shape is known, never re-derived at the ELF emitter.
+    // against `__synth_globals` — the kind was fixed by the assembler at the
+    // site that knows the instruction shape (`RiscVRelocKind`), and maps to
+    // the arch-neutral kind through that enum's own `core_kind` — no
+    // decision here, so this MC/DC-scored function's branch population is
+    // unchanged.
     let relocations = call_relocs
         .into_iter()
         .map(|r| synth_core::backend::CodeRelocation {
             offset: r.offset,
             symbol: r.symbol,
-            kind: match r.kind {
-                crate::elf_builder::RiscVRelocKind::CallPlt => {
-                    synth_core::backend::RelocKind::RiscvCallPlt
-                }
-                crate::elf_builder::RiscVRelocKind::Hi20 => {
-                    synth_core::backend::RelocKind::RiscvHi20
-                }
-                crate::elf_builder::RiscVRelocKind::Lo12I => {
-                    synth_core::backend::RelocKind::RiscvLo12I
-                }
-            },
+            kind: r.kind.core_kind(),
         })
         .collect();
 
