@@ -3098,6 +3098,182 @@ fn reachable_from_exports(
     num_imports: u32,
     elem_func_indices: &[u32],
 ) -> std::collections::BTreeSet<u32> {
+    let roots: std::collections::BTreeSet<u32> = funcs
+        .iter()
+        .filter(|f| f.export_name.is_some())
+        .map(|f| f.index)
+        .collect();
+    reachable_from_roots(funcs, num_imports, elem_func_indices, &roots)
+}
+
+/// #1168: which WAST module a retained function came from, and that module's
+/// import count — the two facts the driver needs AFTER the merge to (a) tell
+/// an import call (`func_N`, N < num_imports: an EXTERNAL symbol the host
+/// linker resolves, #173/#197/#871/#1017) from a call to a function the module
+/// itself DEFINES, and (b) resolve "is the callee placed in this object" per
+/// module rather than per bare index, because the multi-module merge lays
+/// every module out in ONE `func_N` label space. A `.wat`/`.wasm` input is
+/// module 0 throughout, so nothing on that path changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FuncOrigin {
+    /// Position of the owning module among the DECODED modules of the input
+    /// (0 for a single-module input). Indexes `ModuleTables`.
+    module: usize,
+    /// The owning module's imported-function count (its function index space
+    /// starts with the imports).
+    num_imports: u32,
+}
+
+/// #1168: the per-module signature side-tables the WAST merge used to collapse
+/// into ONE module's copy (the module with the most imports, else the first).
+/// A direct call's marshalling reads `func_arg_counts[callee]` /
+/// `func_result_counts[callee]` at the CALL SITE and the function's own
+/// `func_arg_counts[self]` caps param inference (#457) — so a function merged
+/// from module 2 compiled against module 0's tables was a silent miscompile
+/// whenever the two modules disagreed at that index. The compile loop now
+/// compiles every merged function against ITS module's tables.
+#[derive(Clone, Debug)]
+struct ModuleTables {
+    /// The module's ordinal among the `.wast` file's `(module ...)` directives
+    /// (for diagnostics; decode failures make this differ from the position).
+    wast_index: usize,
+    func_arg_counts: Vec<u32>,
+    func_result_counts: Vec<u32>,
+    type_arg_counts: Vec<u32>,
+    imports: Vec<ImportEntry>,
+}
+
+/// #1168: the WAST multi-module merge shares ONE `func_N` label space across
+/// every module it merges, and ONE import table (the max-imports module's).
+/// A direct call from a retained function of module k to index t therefore
+/// binds to WHICHEVER retained function carries label `func_t` (the ELF
+/// builders register the label per compiled function, last wins) — module k's
+/// own function t only if no other module's retained function has index t.
+/// Refuse the merge, naming every mis-bindable call, rather than emit a call
+/// that silently lands in another module's body: that is exactly the
+/// silently-wrong object the compliance envelope forbids, and it was LIVE on
+/// the exports-only merge (two modules each exporting a function at the same
+/// index, one of them calling it) before the closure made it more reachable.
+/// Single-module input has one index space and is exempt by construction.
+fn check_wast_merge_labels(
+    funcs: &[FunctionOps],
+    origins: &[FuncOrigin],
+    tables: &[ModuleTables],
+    merged_imports: &[ImportEntry],
+) -> Result<()> {
+    if tables.len() <= 1 {
+        return Ok(());
+    }
+    debug_assert_eq!(funcs.len(), origins.len());
+    // index label -> the modules whose RETAINED functions define it.
+    let mut defs: std::collections::BTreeMap<u32, std::collections::BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
+    for (f, o) in funcs.iter().zip(origins) {
+        defs.entry(f.index).or_default().insert(o.module);
+    }
+    let import_fn = |imports: &[ImportEntry], t: u32| -> Option<String> {
+        imports
+            .iter()
+            .filter(|i| matches!(i.kind, synth_core::wasm_decoder::ImportKind::Function(_)))
+            .find(|i| i.index == t)
+            .map(|i| format!("{}::{}", i.module, i.name))
+    };
+    let mut problems: Vec<String> = Vec::new();
+    for (f, o) in funcs.iter().zip(origins) {
+        let name = f
+            .export_name
+            .clone()
+            .unwrap_or_else(|| format!("func_{}", f.index));
+        let wast_idx = tables[o.module].wast_index;
+        let mut seen: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        for op in &f.ops {
+            let WasmOp::Call(t) = op else { continue };
+            let t = *t;
+            if !seen.insert(t) {
+                continue;
+            }
+            let modules_defining: Vec<usize> = defs
+                .get(&t)
+                .map(|d| d.iter().map(|&p| tables[p].wast_index).collect())
+                .unwrap_or_default();
+            if t < o.num_imports {
+                // An import call: the ELF builders map `func_t` to the MERGED
+                // import table's field name at index t (#173/#871), and a
+                // defined `func_t` label takes precedence over that mapping.
+                if !modules_defining.is_empty() {
+                    problems.push(format!(
+                        "'{name}' (module {wast_idx}) calls import {t}, but module(s) \
+                         {modules_defining:?} define function index {t} in the same \
+                         object, so `func_{t}` would bind to a local body instead of \
+                         the import"
+                    ));
+                    continue;
+                }
+                let mine = import_fn(&tables[o.module].imports, t);
+                let merged = import_fn(merged_imports, t);
+                if mine != merged {
+                    problems.push(format!(
+                        "'{name}' (module {wast_idx}) calls import {t} = {}, but the \
+                         merged import table maps index {t} to {}",
+                        mine.as_deref().unwrap_or("<none>"),
+                        merged.as_deref().unwrap_or("<none>")
+                    ));
+                }
+            } else {
+                match modules_defining.as_slice() {
+                    [only] if *only == wast_idx => {}
+                    [] => problems.push(format!(
+                        "'{name}' (module {wast_idx}) calls function index {t}, which \
+                         no module places in this object"
+                    )),
+                    many => problems.push(format!(
+                        "'{name}' (module {wast_idx}) calls function index {t}, but \
+                         `func_{t}` is defined by functions from module(s) {many:?} — \
+                         one object has one label namespace, so the call would bind \
+                         to whichever body was laid out last"
+                    )),
+                }
+            }
+        }
+    }
+    if !problems.is_empty() {
+        anyhow::bail!(
+            "#1168: the WAST multi-module merge cannot lay these modules out in ONE \
+             object without mis-binding a direct call: {}. A .wast merge shares a \
+             single `func_N` label space and a single import table across every \
+             module it merges; refusing rather than emit a call that silently lands \
+             in another module's function. Compile the module on its own (as \
+             .wat/.wasm) instead.",
+            problems.join("; ")
+        );
+    }
+    Ok(())
+}
+
+/// #1102/#1168: the wasm function index a direct-call relocation label names
+/// — `func_N` (ARM/A32/aarch64 selectors) or `synth_func_N` (RV32) — or
+/// `None` for any other symbol (an import field name, a `__meld_*`/`__synth_*`
+/// runtime symbol, an `__aeabi_*` helper): those are external by contract.
+/// Direct-call relocations are ALWAYS index-labelled, never export-named
+/// (verified against the compiler in #1116), so this is the complete match
+/// set for "a relocation against a function the module itself defines".
+fn parse_index_label(symbol: &str) -> Option<u32> {
+    symbol
+        .strip_prefix("synth_func_")
+        .or_else(|| symbol.strip_prefix("func_"))
+        .filter(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|rest| rest.parse::<u32>().ok())
+}
+
+/// #235/#1168: the transitive `call` closure from a given ROOT set (the
+/// exports on the `.wat`/`.wasm` path; the exports that SURVIVE the
+/// last-module-wins override on the `.wast` merge path, per module).
+fn reachable_from_roots(
+    funcs: &[FunctionOps],
+    num_imports: u32,
+    elem_func_indices: &[u32],
+    roots: &std::collections::BTreeSet<u32>,
+) -> std::collections::BTreeSet<u32> {
     let pos_by_index: std::collections::HashMap<u32, usize> = funcs
         .iter()
         .enumerate()
@@ -3110,7 +3286,7 @@ fn reachable_from_exports(
     // entry could be the dynamic callee), then keep following their direct calls.
     let mut table_included = false;
     for f in funcs {
-        if f.export_name.is_some() && reachable.insert(f.index) {
+        if roots.contains(&f.index) && reachable.insert(f.index) {
             work.push(f.index);
         }
     }
@@ -3264,6 +3440,8 @@ fn compile_all_exports(
     // Decode module(s) — for WAST files we merge exports across all modules
     let (
         all_exports,
+        all_origins, // #1168: per-function owning module + its import count (parallel to all_exports)
+        wast_module_tables, // #1168: per-module signature tables (Some on the .wast merge, None otherwise)
         all_memories,
         all_imports,
         max_num_imported_funcs,
@@ -3297,9 +3475,21 @@ fn compile_all_exports(
         info!("Found {} modules in WAST file", module_binaries.len());
 
         // Decode each module and collect exports.
-        // Use an IndexMap-style approach: last module with a given export name wins
-        // (matching WAST spec semantics where assertions test the most-recent module).
-        let mut export_map: std::collections::HashMap<String, FunctionOps> =
+        // Last module with a given export name wins (matching WAST spec
+        // semantics where assertions test the most-recent module).
+        //
+        // #1168: TWO passes. Pass 1 decodes every module, merges the
+        // module-level tables exactly as before, and records which module OWNS
+        // each export name. Pass 2 applies the #235 reachable-callgraph closure
+        // PER MODULE, seeded from the exports that SURVIVED the override, so a
+        // non-exported callee lands in the object next to its caller. Before
+        // this the .wast path compiled exports ONLY: `pub` calling a
+        // non-exported `$helper` shipped with a dangling `func_0` at exit 0
+        // on ARM/A32/RV32 (aarch64 refused only because its ELF builder
+        // refuses any unplaced relocation target, #851/#1013).
+        let mut decoded: Vec<(usize, synth_core::wasm_decoder::DecodedModule)> = Vec::new();
+        // export name -> (position in `decoded`, function index)
+        let mut export_owner: std::collections::HashMap<String, (usize, u32)> =
             std::collections::HashMap::new();
         let mut merged_memories: Vec<WasmMemory> = Vec::new();
         let mut merged_imports: Vec<ImportEntry> = Vec::new();
@@ -3338,9 +3528,10 @@ fn compile_all_exports(
                         module.memories.len()
                     );
 
-                    for func in module.functions {
-                        if let Some(name) = func.export_name.clone() {
-                            export_map.insert(name, func);
+                    let pos = decoded.len();
+                    for func in &module.functions {
+                        if let Some(name) = &func.export_name {
+                            export_owner.insert(name.clone(), (pos, func.index));
                         }
                     }
 
@@ -3373,6 +3564,7 @@ fn compile_all_exports(
                         merged_func_result_counts = module.func_result_counts.clone();
                         merged_type_arg_counts = module.type_arg_counts.clone();
                     }
+                    decoded.push((idx, module));
                 }
                 Err(e) => {
                     info!("  Module {}: decode failed ({}), skipping", idx, e);
@@ -3380,9 +3572,81 @@ fn compile_all_exports(
             }
         }
 
-        let exports: Vec<_> = export_map.into_values().collect();
+        // Pass 2 (#1168): per-module reachable-callgraph closure from the
+        // SURVIVING exports. Definition order is preserved within a module and
+        // modules are laid out in file order, so the output is deterministic
+        // (the previous HashMap `into_values()` order was not).
+        let mut exports: Vec<FunctionOps> = Vec::new();
+        let mut origins: Vec<FuncOrigin> = Vec::new();
+        let mut tables: Vec<ModuleTables> = Vec::new();
+        for (pos, (idx, module)) in decoded.into_iter().enumerate() {
+            let roots: std::collections::BTreeSet<u32> = export_owner
+                .values()
+                .filter(|(p, _)| *p == pos)
+                .map(|(_, i)| *i)
+                .collect();
+            #[cfg_attr(not(feature = "exports_only_275_probe"), allow(unused_mut))]
+            let mut reachable = reachable_from_roots(
+                &module.functions,
+                module.num_imported_funcs,
+                &module.elem_func_indices,
+                &roots,
+            );
+            // #275/#1168 non-vacuity probe — the SAME hatch the .wat path
+            // carries (see below): `EXPORTS_ONLY_275=1` on a probe-feature
+            // build reverts THIS path to its pre-#1168 exports-only merge, so
+            // the #1168 differential can prove (a) it catches the drop and (b)
+            // the never-compiled-callee refusal fires when the closure is
+            // bypassed. Absent from the shipped binary.
+            #[cfg(feature = "exports_only_275_probe")]
+            if std::env::var_os("EXPORTS_ONLY_275").is_some() {
+                reachable = roots.clone();
+            }
+            let pulled_in = reachable.len().saturating_sub(roots.len());
+            if pulled_in > 0 {
+                info!(
+                    "  Module {}: {} non-exported callee(s) reachable from its {} \
+                     surviving export(s) pulled into the object (#235/#1168)",
+                    idx,
+                    pulled_in,
+                    roots.len()
+                );
+            }
+            tables.push(ModuleTables {
+                wast_index: idx,
+                func_arg_counts: module.func_arg_counts.clone(),
+                func_result_counts: module.func_result_counts.clone(),
+                type_arg_counts: module.type_arg_counts.clone(),
+                imports: module.imports.clone(),
+            });
+            for mut func in module.functions {
+                if !reachable.contains(&func.index) {
+                    continue;
+                }
+                let owns_export = func
+                    .export_name
+                    .as_deref()
+                    .is_some_and(|n| export_owner.get(n) == Some(&(pos, func.index)));
+                if !owns_export {
+                    // A superseded export (a later module re-exported the
+                    // name) that is still reachable from THIS module's
+                    // surviving exports: keep the BODY as a file-local
+                    // `func_N` callee, never as a second GLOBAL of the
+                    // winning module's name.
+                    func.export_name = None;
+                }
+                exports.push(func);
+                origins.push(FuncOrigin {
+                    module: pos,
+                    num_imports: module.num_imported_funcs,
+                });
+            }
+        }
+        check_wast_merge_labels(&exports, &origins, &tables, &merged_imports)?;
         (
             exports,
+            origins,
+            Some(tables),
             merged_memories,
             merged_imports,
             max_imports,
@@ -3581,8 +3845,19 @@ fn compile_all_exports(
             .into_iter()
             .filter(|f| reachable.contains(&f.index))
             .collect();
+        // #1168: a single module is module 0 throughout; no per-module tables
+        // to override with (the config's are this module's).
+        let origins = vec![
+            FuncOrigin {
+                module: 0,
+                num_imports,
+            };
+            exports.len()
+        ];
         (
             exports,
+            origins,
+            None,
             memories,
             imports,
             num_imports,
@@ -4071,7 +4346,13 @@ fn compile_all_exports(
     // ARM/A32/aarch64, `synth_func_{idx}` on RV32) — so the dangling-reference
     // gate below can tell whether any RETAINED function still relocates
     // against a function this compile declined.
-    let mut skipped_funcs: Vec<(String, String, bool, u32)> = Vec::new();
+    // #1168: the fifth field is the skipped function's owning-module position
+    // (`FuncOrigin::module`), so the dangling-reference gate resolves "was
+    // the callee placed" per module on the .wast merge, never per bare index.
+    let mut skipped_funcs: Vec<(String, String, bool, u32, usize)> = Vec::new();
+    // #1168: owning module + import count of each COMPILED function, parallel
+    // to `compiled_funcs` (an `ElfFunction` carries no module identity).
+    let mut compiled_origins: Vec<FuncOrigin> = Vec::new();
     // #778 phase 3: collect per-function WCET intermediates (own-body cycles +
     // direct call sites, or a decline) and a `func_<idx>` → position map, so the
     // module-level composer can resolve direct calls across the call graph AFTER
@@ -4081,7 +4362,8 @@ fn compile_all_exports(
     let mut wcet_intermediates: Vec<synth_core::wcet::WcetIntermediate> = Vec::new();
     let mut wcet_label_index: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    for func in &all_exports {
+    debug_assert_eq!(all_exports.len(), all_origins.len());
+    for (func, origin) in all_exports.iter().zip(all_origins.iter().copied()) {
         // Exported functions keep their export name; reachable internal callees
         // (#235) have none, so they take the `func_{index}` symbol — exactly the
         // name an internal `call` relocation references, so it resolves in-object.
@@ -4141,10 +4423,25 @@ fn compile_all_exports(
                 .copied()
                 .unwrap_or(false);
             fc.current_func_block_arity = func.block_arity.clone();
+            // #1168: on the .wast merge, compile THIS function against ITS
+            // module's signature tables. The merged config carries ONE
+            // module's tables (max-imports, else first); a function merged
+            // from another module read that module's `func_arg_counts[t]` at
+            // every call site and for its own #457 cap — wrong whenever the
+            // two modules disagreed at an index. `None` on the single-module
+            // paths, whose config tables ARE the module's (byte-identical).
+            if let Some(t) = wast_module_tables
+                .as_ref()
+                .and_then(|tables| tables.get(origin.module))
+            {
+                fc.func_arg_counts = t.func_arg_counts.clone();
+                fc.func_result_counts = t.func_result_counts.clone();
+                fc.type_arg_counts = t.type_arg_counts.clone();
+            }
             // #457: THIS function's DECLARED param count, so the backends can
             // cap the access-pattern param inference that mistook a
             // read-before-write non-param local for a param.
-            fc.current_func_param_count = config.func_arg_counts.get(func.index as usize).copied();
+            fc.current_func_param_count = fc.func_arg_counts.get(func.index as usize).copied();
             // #778 phase 4 / #49: THIS function's WASM index, so the WCET pass can
             // identify its own `func_<idx>` self-call and prove/decline the
             // self-recursion depth.
@@ -4177,6 +4474,7 @@ fn compile_all_exports(
                 format!("unsupported operator: {reason}"),
                 func.export_name.is_some(),
                 func.index,
+                origin.module,
             ));
             continue;
         }
@@ -4291,6 +4589,7 @@ fn compile_all_exports(
                     e.to_string(),
                     func.export_name.is_some(),
                     func.index,
+                    origin.module,
                 ));
                 continue;
             }
@@ -4389,6 +4688,7 @@ fn compile_all_exports(
             );
         }
 
+        compiled_origins.push(origin);
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
             // #394 Tier-1.x: thread the `name`-section name through for the
@@ -4499,7 +4799,7 @@ fn compile_all_exports(
             all_exports.len(),
             skipped_funcs
                 .iter()
-                .map(|(n, _, _, _)| n.as_str())
+                .map(|(n, _, _, _, _)| n.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -4525,8 +4825,8 @@ fn compile_all_exports(
     if !allow_skipped_exports {
         let skipped_exports: Vec<&str> = skipped_funcs
             .iter()
-            .filter(|(_, _, is_export, _)| *is_export)
-            .map(|(n, _, _, _)| n.as_str())
+            .filter(|(_, _, is_export, _, _)| *is_export)
+            .map(|(n, _, _, _, _)| n.as_str())
             .collect();
         if !skipped_exports.is_empty() {
             let total_exports = all_exports
@@ -4575,17 +4875,54 @@ fn compile_all_exports(
     // this is the same policy applied to every backend. Also deliberately not
     // a fabricated stub or a dropped call — both would turn an unlinkable
     // object into a WRONG one.
+    //
+    // #1168 GENERALIZATION: the gate is now keyed on "NOT PLACED IN THIS
+    // OBJECT, whatever the reason", not on the declined set. Keying on
+    // declines is why it could not fire on the .wast path's exports-only
+    // merge: the callee there was never declined, just never compiled, so the
+    // object shipped with `U func_0` at exit 0 on three of four backends (the
+    // aarch64 refusal even asserted a decline that never happened). The
+    // complete match set is every relocation whose symbol is an INDEX LABEL
+    // (`func_N` / `synth_func_N`) with N at or past the owning module's
+    // import count — that names a function the module DEFINES, which only
+    // this compile could have placed. `func_N` with N below the import count
+    // is an import: an EXTERNAL symbol by contract (#173/#197/#871/#1017),
+    // mapped to its field name by the ELF builders, and every non-index
+    // symbol (import field names, `__meld_*`, `__synth_*`, `__aeabi_*`) is an
+    // embedder/linker-provided contract symbol — neither is a dangling
+    // reference. "Placed" is resolved per OWNING MODULE (`FuncOrigin`), so a
+    // .wast merge cannot satisfy module k's `func_N` with module j's body.
+    // The declined edges keep the #1102 wording (its decline reason precedes
+    // them on stderr); the never-compiled edges get their own, because an
+    // error that points at a warning that was never printed sends the next
+    // reader down the wrong path (#1168).
     {
-        let mut dangling: Vec<String> = Vec::new();
-        for (sname, _reason, _, sidx) in &skipped_funcs {
-            let labels = [format!("func_{sidx}"), format!("synth_func_{sidx}")];
-            for f in &compiled_funcs {
-                if f.relocations.iter().any(|r| labels.contains(&r.symbol)) {
-                    dangling.push(format!("'{}' -> '{}'", f.name, sname));
+        let placed: std::collections::HashSet<(usize, u32)> = compiled_funcs
+            .iter()
+            .zip(&compiled_origins)
+            .map(|(f, o)| (o.module, f.wasm_index))
+            .collect();
+        let skipped_by_key: std::collections::HashMap<(usize, u32), &str> = skipped_funcs
+            .iter()
+            .map(|(n, _, _, i, m)| ((*m, *i), n.as_str()))
+            .collect();
+        let mut dangling_declined: Vec<String> = Vec::new();
+        let mut dangling_absent: Vec<String> = Vec::new();
+        for (f, o) in compiled_funcs.iter().zip(&compiled_origins) {
+            for r in &f.relocations {
+                let Some(n) = parse_index_label(&r.symbol) else {
+                    continue;
+                };
+                if n < o.num_imports || placed.contains(&(o.module, n)) {
+                    continue;
+                }
+                match skipped_by_key.get(&(o.module, n)) {
+                    Some(sname) => dangling_declined.push(format!("'{}' -> '{}'", f.name, sname)),
+                    None => dangling_absent.push(format!("'{}' -> '{}'", f.name, r.symbol)),
                 }
             }
         }
-        if !dangling.is_empty() {
+        if !dangling_declined.is_empty() {
             anyhow::bail!(
                 "#1102: {} retained function(s) relocate against function(s) \
                  this compile DECLINED: {}. The object would carry an \
@@ -4597,8 +4934,25 @@ fn compile_all_exports(
                  --allow-skipped-exports does not cover this: that flag \
                  accepts a PARTIAL object (a requested export absent), not an \
                  UNLINKABLE one.",
-                dangling.len(),
-                dangling.join(", ")
+                dangling_declined.len(),
+                dangling_declined.join(", ")
+            );
+        }
+        if !dangling_absent.is_empty() {
+            anyhow::bail!(
+                "#1168: {} relocation(s) in retained function(s) target \
+                 function(s) this object does not place: {}. Each names a function the \
+                 module itself DEFINES (index at or past its import count), so \
+                 no linker input can ever resolve it — the object would be \
+                 UNLINKABLE, not partial. This is NOT a decline (no 'skipping \
+                 function' warning precedes it): the callee was never selected \
+                 for compilation, which the reachable-callgraph closure \
+                 (#235) is supposed to make impossible — refusing to emit \
+                 rather than ship a dangling reference with exit 0, and \
+                 pointing at the closure as the defect. --allow-skipped-exports \
+                 does not cover this.",
+                dangling_absent.len(),
+                dangling_absent.join(", ")
             );
         }
     }
@@ -4638,7 +4992,7 @@ fn compile_all_exports(
     // PARTIAL object, not one whose dispatch table cannot be populated.
     if !config.self_contained_funcref_table {
         let skipped_idx: std::collections::BTreeSet<u32> =
-            skipped_funcs.iter().map(|(_, _, _, i)| *i).collect();
+            skipped_funcs.iter().map(|(_, _, _, i, _)| *i).collect();
         let retained_dispatch = compiled_funcs.iter().any(|cf| {
             all_exports.iter().any(|f| {
                 f.index == cf.wasm_index
@@ -9862,6 +10216,188 @@ mod tests {
             vec![0, 1],
             "exports only"
         );
+    }
+
+    /// #1168: the closure is seeded from an explicit ROOT set — on the .wast
+    /// merge the exports that SURVIVE the last-module-wins override — so a
+    /// superseded export that nothing surviving reaches stays out, while a
+    /// surviving export's transitive callees come in.
+    #[test]
+    fn reachable_from_roots_seeds_from_surviving_exports_1168() {
+        let funcs = vec![
+            fop(0, None, vec![WasmOp::I32Const(7)]), // leaf, reached via 1
+            fop(1, None, vec![WasmOp::Call(0)]),     // mid, reached via 2
+            fop(2, Some("keep"), vec![WasmOp::Call(1)]),
+            fop(3, Some("superseded"), vec![WasmOp::Call(4)]), // NOT a root
+            fop(4, None, vec![WasmOp::I32Const(9)]),           // only 3 reaches it
+        ];
+        let roots: std::collections::BTreeSet<u32> = [2].into_iter().collect();
+        let r = reachable_from_roots(&funcs, 0, &[], &roots);
+        assert_eq!(
+            r.into_iter().collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "root's transitive callees in; the non-root export and ITS callee out"
+        );
+    }
+
+    /// #1102/#1168: index labels parse on both spellings; every other symbol
+    /// (import field names, runtime/helper symbols, near-misses) is external.
+    #[test]
+    fn parse_index_label_matches_only_direct_call_labels_1168() {
+        assert_eq!(parse_index_label("func_0"), Some(0));
+        assert_eq!(parse_index_label("func_42"), Some(42));
+        assert_eq!(parse_index_label("synth_func_7"), Some(7));
+        for external in [
+            "k_spin_lock",
+            "__meld_dispatch_import",
+            "__synth_globals",
+            "__aeabi_idiv",
+            "func_",
+            "func_x1",
+            "func_1x",
+            "myfunc_1",
+            "",
+        ] {
+            assert_eq!(parse_index_label(external), None, "{external:?}");
+        }
+    }
+
+    /// #1168: the WAST merge label check — one module is exempt (one index
+    /// space); two modules whose retained functions collide on a REFERENCED
+    /// label refuse; a collision nothing references, or disjoint labels, pass.
+    #[test]
+    fn check_wast_merge_labels_refuses_only_referenced_collisions_1168() {
+        let tables = |n: usize| -> Vec<ModuleTables> {
+            (0..n)
+                .map(|i| ModuleTables {
+                    wast_index: i,
+                    func_arg_counts: Vec::new(),
+                    func_result_counts: Vec::new(),
+                    type_arg_counts: Vec::new(),
+                    imports: Vec::new(),
+                })
+                .collect()
+        };
+        let o = |module: usize| FuncOrigin {
+            module,
+            num_imports: 0,
+        };
+        // Single module: `f` (idx 1) calls idx 0 — exempt by construction.
+        let single = vec![
+            fop(0, None, vec![WasmOp::I32Const(1)]),
+            fop(1, Some("f"), vec![WasmOp::Call(0)]),
+        ];
+        check_wast_merge_labels(&single, &[o(0), o(0)], &tables(1), &[])
+            .expect("a single module has one index space");
+        // Two modules, both define idx 0, module 0's `g` calls idx 0: the
+        // `func_0` label would bind to whichever body was laid out last.
+        let clash = vec![
+            fop(0, None, vec![WasmOp::I32Const(1)]),
+            fop(1, Some("g"), vec![WasmOp::Call(0)]),
+            fop(0, Some("h"), vec![WasmOp::I32Const(2)]),
+        ];
+        let err = check_wast_merge_labels(&clash, &[o(0), o(0), o(1)], &tables(2), &[])
+            .expect_err("a referenced cross-module label collision must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("#1168") && msg.contains("'g' (module 0) calls function index 0"),
+            "{msg}"
+        );
+        // Same two modules, but nothing calls idx 0: two LOCAL `func_0`
+        // symbols are legal and unreferenced — no refusal.
+        let unreferenced = vec![
+            fop(0, Some("a"), vec![WasmOp::I32Const(1)]),
+            fop(0, Some("b"), vec![WasmOp::I32Const(2)]),
+        ];
+        check_wast_merge_labels(&unreferenced, &[o(0), o(1)], &tables(2), &[])
+            .expect("an unreferenced label collision is harmless");
+        // Disjoint labels across modules with a call inside each: fine.
+        let disjoint = vec![
+            fop(0, None, vec![WasmOp::I32Const(1)]),
+            fop(1, Some("g"), vec![WasmOp::Call(0)]),
+            fop(2, None, vec![WasmOp::I32Const(3)]),
+            fop(3, Some("h"), vec![WasmOp::Call(2)]),
+        ];
+        check_wast_merge_labels(&disjoint, &[o(0), o(0), o(1), o(1)], &tables(2), &[])
+            .expect("disjoint index spaces do not collide");
+    }
+
+    /// #1168: an import call resolves through the MERGED import table (the
+    /// ELF builders map `func_t` to `merged_imports[t]`'s field name) — a
+    /// module whose import t has a different name, or a retained function
+    /// from another module defining label t, would bind the call wrong.
+    #[test]
+    fn check_wast_merge_labels_refuses_import_index_disagreement_1168() {
+        use synth_core::wasm_decoder::ImportKind;
+        let imp = |module: &str, name: &str| ImportEntry {
+            module: module.to_string(),
+            name: name.to_string(),
+            kind: ImportKind::Function(0),
+            index: 0,
+        };
+        let mk_tables = |imports0: Vec<ImportEntry>| {
+            vec![
+                ModuleTables {
+                    wast_index: 0,
+                    func_arg_counts: Vec::new(),
+                    func_result_counts: Vec::new(),
+                    type_arg_counts: Vec::new(),
+                    imports: imports0,
+                },
+                ModuleTables {
+                    wast_index: 1,
+                    func_arg_counts: Vec::new(),
+                    func_result_counts: Vec::new(),
+                    type_arg_counts: Vec::new(),
+                    imports: Vec::new(),
+                },
+            ]
+        };
+        let o0 = FuncOrigin {
+            module: 0,
+            num_imports: 1,
+        };
+        let o1 = FuncOrigin {
+            module: 1,
+            num_imports: 0,
+        };
+        // Module 0: import 0 = spectest::print, export `f` (idx 1) calls it.
+        // Module 1: an unrelated export at idx 5. Merged imports agree: OK.
+        let funcs = vec![
+            fop(1, Some("f"), vec![WasmOp::Call(0)]),
+            fop(5, Some("z"), vec![WasmOp::I32Const(1)]),
+        ];
+        let merged_ok = vec![imp("spectest", "print")];
+        check_wast_merge_labels(
+            &funcs,
+            &[o0, o1],
+            &mk_tables(vec![imp("spectest", "print")]),
+            &merged_ok,
+        )
+        .expect("agreeing import tables pass");
+        // Merged table names a DIFFERENT import at index 0: refuse.
+        let err = check_wast_merge_labels(
+            &funcs,
+            &[o0, o1],
+            &mk_tables(vec![imp("spectest", "print")]),
+            &[imp("env", "other")],
+        )
+        .expect_err("import-name disagreement must refuse");
+        assert!(err.to_string().contains("calls import 0"), "{err}");
+        // Module 1 defines function index 0 itself: `func_0` would bind to
+        // that local body instead of module 0's import.
+        let shadowed = vec![
+            fop(1, Some("f"), vec![WasmOp::Call(0)]),
+            fop(0, Some("z"), vec![WasmOp::I32Const(1)]),
+        ];
+        let err = check_wast_merge_labels(
+            &shadowed,
+            &[o0, o1],
+            &mk_tables(vec![imp("spectest", "print")]),
+            &merged_ok,
+        )
+        .expect_err("a local body shadowing an import label must refuse");
+        assert!(err.to_string().contains("define function index 0"), "{err}");
     }
 
     /// `encode_thumb_bl` must match `arm-none-eabi-as` byte-for-byte. These

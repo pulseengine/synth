@@ -356,6 +356,7 @@ An honest short list beats a uniform claim:
 | `fact_spec_*_494_differential.py` (5) | `compiles >= 2` | each runs twice — once executing thousands of vectors, once on a `--expect-decline` byte-identity leg that emulates nothing. The floor is the weaker leg's guarantee; the executing leg's real counts (2 002 / 2 052 / 3 167 / 288) still reach the ledger |
 | `call_indirect_275_selfcontained_differential.py` | `compiles >= 4` | a decline/emission-shape oracle across four target configurations; no execution by design |
 | `reachable_callgraph_275_selfcontained_differential.py` (RED step only) | not routed | that step inverts its verdict (`! python …`) because RED is the expected result. Routing it would file a below-floor record for a run that is *supposed* to fail. Its GREEN step is routed and carries `emulations >= 8` |
+| `wast_callgraph_closure_1168_differential.py` (probe step only) | not routed | the `EXPORTS_ONLY_275=1` step runs the probe binary with the .wast closure bypassed and asserts the not-placed REFUSAL fires on every leg — a positive verdict that emulates nothing by design. Its GREEN step is routed and carries `emulations >= 36` |
 
 Everything else — 133 of 150 wired oracles — asserts a real emulator-entry
 floor.

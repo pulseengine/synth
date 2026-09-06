@@ -264,12 +264,29 @@ pub fn build_relocatable_object_full(
             // explicit allowlist — the module's imported functions. A symbol
             // that is neither placed nor allowlisted, i.e. a loud-declined
             // LOCAL callee, keeps this refusal.)
+            //
+            // #1168: this message used to assert "the symbol was declined
+            // earlier; see the preceding warning" — a CAUSE, not an
+            // observation. On the .wast exports-only merge the callee was
+            // never declined, just never compiled, and there was no preceding
+            // warning: the message named one that did not exist and sent the
+            // investigator down the wrong path. The builder only knows the
+            // symbol is unplaced; it says exactly that and lists the two ways
+            // it can happen. The driver-level gate (#1102/#1168 in
+            // synth-cli) normally refuses both before this builder runs, so
+            // reaching this branch means a target slipped that gate.
             let Some(&sidx) = sym_index.get(&r.symbol) else {
                 return Err(BackendError::CompilationFailed(format!(
                     "aarch64 ELF builder: relocation at .text+{} targets symbol \
                      '{}', which this object does not place — refusing to ship an \
-                     unrelocated placeholder (#851). The symbol was declined \
-                     earlier; see the preceding warning (#1013).",
+                     unrelocated placeholder (#851/#1013). The symbol is neither a \
+                     function this object defines nor an allowlisted import: \
+                     either the function was loud-declined (then a 'skipping \
+                     function' warning precedes this) or it was never compiled \
+                     into this object at all (#1168 — no warning precedes this; \
+                     the reachable-callgraph closure should have retained it). \
+                     The driver-level #1102/#1168 gate normally refuses both \
+                     before this builder runs.",
                     func_off[i] + r.offset as u64,
                     r.symbol
                 )));

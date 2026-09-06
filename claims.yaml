@@ -840,22 +840,22 @@ claims:
   # exactly why this ledger must not pretend to measure the suite.
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 59, panics 0 / 0 / 0"
+    text: "full-module compile 22 ARM / 12 RV32 / 27 AArch64, at-least-one-export 84 / 74 / 57, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
-        pattern: 'ok=23, partial=69'
+        pattern: 'ok=22, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
-        pattern: 'ok=13, partial=69'
+        pattern: 'ok=12, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
-        pattern: 'ok=27, partial=32'
+        pattern: 'ok=27, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
-        pattern: '"arm": 92, "riscv": 82, "aarch64": 59'
+        pattern: '"arm": 84, "riscv": 74, "aarch64": 57'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # the 257-file non-vacuity floor
@@ -873,22 +873,22 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 59, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 22 ARM / 12 RV32 / 27 AArch64, at-least-one-export 84 / 74 / 57, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
-        pattern: 'ok=23, partial=69'
+        pattern: 'ok=22, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=13, partial=69'
+        pattern: 'ok=12, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=27, partial=32'
+        pattern: 'ok=27, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: '"arm": 92, "riscv": 82, "aarch64": 59'
+        pattern: '"arm": 84, "riscv": 74, "aarch64": 57'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -2500,7 +2500,7 @@ claims:
     #     and Thumb-2); the red run on main measured 114 with 10 declined.
     #   RQ-63-A64STACK  (#1164): +13 for
     #     aarch64_call_valstack_rq63_differential.py.
-    text: "--min-emulation-floor 324809"
+    text: "--min-emulation-floor 324845"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

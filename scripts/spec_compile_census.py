@@ -21,8 +21,11 @@ and classified into one of NINE buckets:
   ok             every exported function compiled; ELF emitted, exit 0
   partial        >=1 export compiled, the rest were per-function loud declines
                  (the #952 skipped-exports non-zero exit)
-  all_declined   every function was a per-function loud decline — "no
-                 functions compiled successfully (N skipped)"
+  all_declined   every EXPORT was a per-function loud decline — "no
+                 functions compiled successfully (N skipped)", or (#1168, now
+                 that reachable helpers are compiled too) only non-exported
+                 helpers compiled and #952 reports "N of N requested exports
+                 were skipped"
   module_decline whole-module loud refusal with a machine reason (start
                  function #1046; the aarch64 module-shape declines #851/#1013)
   no_module      the .wast contains no module to compile (assert-only file);
@@ -46,8 +49,9 @@ scripts/templates/feature_matrix.md.tmpl "WASM spec test suite" row — the
 SYNTH-SPEC-SUITE-CENSUS-* claims in claims.yaml bind them to this file, so
 claim_check goes red if they drift apart).
 
-Baseline measured 2026-09-01 on the pinned suite commit
-345367358f065375524498749470720d9cdd1418 (257 top-level .wast files; the
+Baseline measured 2026-09-01, re-measured 2026-09-06 after #1168 (the .wast
+reachable-callgraph closure — see the note above PINS), on the pinned suite
+commit 345367358f065375524498749470720d9cdd1418 (257 top-level .wast files; the
 repo's subdirectories carry 27 more inside proposals/, deliberately out of
 scope — the top level IS the merged spec, proposals are not).
 
@@ -88,35 +92,47 @@ BUCKETS = [
 # `other_error` may NEVER be raised above 0 (enforced structurally below) —
 # a panic is a compiler defect to fix, and other_error is an unclassified new
 # failure class to triage, not a number to wave through.
+# v0.63 / #1168 (RQ-63-WASTCLOSURE): the .wast path now applies the #235
+# reachable-callgraph closure, so every number below is measured on objects
+# that are COMPLETE (a retained function's callees are in the object) instead
+# of the exports-only merge that shipped dangling `func_N` references at exit
+# 0. Re-measured per file against the pre-fix binary; every move is one of:
+#   * multi-module label collision -> module_decline (12 files on arm/rv32,
+#     5 on aarch64: array, br_on_non_null, br_on_null, func, func_ptrs,
+#     imports, linking, memory_trap, memory_trap64, simd_const, struct,
+#     try_table): a retained direct call whose `func_N` label another merged
+#     module's retained function ALSO defines — on the pre-fix binary that
+#     call bound to whichever body was laid out last (a silently WRONG
+#     object), now refused with the call named;
+#   * skip-stack-guard-page: ok -> module_decline on arm/rv32: its one export
+#     calls a helper the backend DECLINES (SUB imm > 0xFFF); pre-fix the helper
+#     was never attempted and the "ok" object carried `U func_1` — the #1102
+#     gate now fires on it;
+#   * stack.wast on aarch64: partial -> module_decline: a now-retained callee
+#     uses globals, and the .wast merge threads no globals image to the
+#     aarch64 substrate (#851 refusal) — a pre-existing .wast-path gap made
+#     visible, not created.
+# None of the moves is a new decline class: every one is a refusal of an
+# object that previously shipped wrong or unlinkable. The `partial`/
+# `all_declined` split ALSO sharpened (see `classify`): an object holding only
+# non-exported helpers is `all_declined`, so `AT_LEAST_ONE_EXPORT` keeps its
+# name's meaning.
 PINS = {
-    "arm": dict(ok=23, partial=69, all_declined=135, module_decline=4,
+    "arm": dict(ok=22, partial=62, all_declined=130, module_decline=17,
                 no_module=9, no_exports=16, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=13, partial=69, all_declined=145, module_decline=4,
+    "riscv": dict(ok=12, partial=62, all_declined=140, module_decline=17,
                   no_module=9, no_exports=16, parse_fail=1, panic=0,
                   other_error=0),
-    # RQ-63-A64STACK (v0.63): partial 33 -> 32, module_decline 58 -> 59.
-    # EXACTLY ONE file moved — stack.wast — and the move is CORRECT, not a
-    # regression. On main its `not-quite-a-tree` hit the value-stack decline,
-    # so nothing referenced the module's non-exported `$add_one_to_global`
-    # (func_5). With the spill/reload fix that caller now compiles, references
-    # func_5, and the aarch64 ELF builder REFUSES the object because func_5
-    # was never placed (#851/#1013). Refusing an unlinkable object is the
-    # correct outcome; `partial` was the flattering one.
-    # The underlying hole is #1168: the .wast input path skips the #235
-    # reachable-callgraph closure, so non-exported callees are never compiled
-    # at all — and arm/riscv SHIP that object at exit 0 with an undefined
-    # symbol. These pins are therefore measured on a path that under-compiles;
-    # they must be re-derived once #1168 lands.
-    "aarch64": dict(ok=27, partial=32, all_declined=113, module_decline=59,
+    "aarch64": dict(ok=27, partial=30, all_declined=109, module_decline=65,
                     no_module=9, no_exports=16, parse_fail=1, panic=0,
                     other_error=0),
 }
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
-# arm=92 riscv=82 aarch64=60
-AT_LEAST_ONE_EXPORT = {"arm": 92, "riscv": 82, "aarch64": 59}
+# arm=84 riscv=74 aarch64=57
+AT_LEAST_ONE_EXPORT = {"arm": 84, "riscv": 74, "aarch64": 57}
 
 
 def classify(output: str, rc: int) -> str:
@@ -131,6 +147,16 @@ def classify(output: str, rc: int) -> str:
     if "no functions compiled successfully" in output:
         return "all_declined"
     if "#952:" in output:
+        # #1168: since the .wast path applies the #235 reachable-callgraph
+        # closure, an object can hold ONLY non-exported helpers (every export
+        # declined, a callee compiled). The #952 gate then reports
+        # "N of N requested export(s) were skipped". That is all_declined by
+        # this census's own definition — `partial` means >= 1 EXPORT compiled,
+        # and AT_LEAST_ONE_EXPORT = ok + partial is the doc-cited figure — so
+        # the N-of-N form is classified by what it says, not by the gate name.
+        m = re.search(r"#952: (\d+) of (\d+) requested export", output)
+        if m and m.group(1) == m.group(2):
+            return "all_declined"
         return "partial"
     if rc == 0:
         return "ok"
