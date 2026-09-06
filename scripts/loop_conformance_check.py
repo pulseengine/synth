@@ -262,6 +262,27 @@ def signing_workflow_tag_triggered(wf_text: str) -> bool:
     return bool(re.search(r"tags:\s*(\n\s*-\s*[\"']?v\*|\s*\[[^\]]*v\*)", body))
 
 
+DECLARED_COMMIT_RE = re.compile(
+    r"^\s*[-*]?\s*\*{0,2}Commit reviewed:?\*{0,2}\s*:?\s*`([0-9a-f]{7,40})`",
+    re.M | re.I,
+)
+
+
+def review_declared_commit(text):
+    """The commit the record DECLARES it reviewed, or None.
+
+    #1161 — filed at the v0.63 close-out, and it bit that very release. The
+    harvest below takes EVERY hex-looking token and accepts the first that is
+    an ancestor, so a record can be reported as reviewing a commit it never
+    names: on v0.63 it reported `e3a09ac2` for a record whose header declares
+    `f810d2f5`. A GOOD record cites other shas on purpose (a pre-fix binary it
+    rebuilt, commits it re-audited), so harvesting cannot tell the reviewed
+    commit from a cited one. The declaration can.
+    """
+    m = DECLARED_COMMIT_RE.search(text)
+    return m.group(1) if m else None
+
+
 def review_record_shas(text: str) -> list[str]:
     """Candidate reviewed-commit shas named by a cold-review record."""
     return re.findall(r"\b[0-9a-f]{8,40}\b", text)
@@ -570,6 +591,34 @@ class Check:
         ]
         if candidates:
             text = tree_read(self.ref, candidates[0]) or ""
+            declared = review_declared_commit(text)
+            # #1161. The DECLARED commit is authoritative; the harvest below is
+            # a labelled fallback. And the ancestor test is the WRONG bar for a
+            # declared head on a squash-merge repo: squashing DISCARDS the
+            # reviewed commit, so `merge-base --is-ancestor` is guaranteed to
+            # fail on exactly the commit the record is about. On v0.63 that
+            # rejected the declared `f810d2f5` and silently accepted
+            # `e3a09ac2` — a commit the record merely CITES. For a declaration
+            # the bar is: the record names it, and the object exists.
+            if declared:
+                rc_eq, full = git("rev-parse", "--verify", "-q",
+                                  f"{declared}^{{commit}}")
+                if rc_eq == 0:
+                    rc_anc, _ = git("merge-base", "--is-ancestor",
+                                    full.strip(), self.sha)
+                    rel = ("an ancestor of the release commit"
+                           if rc_anc == 0 or full.strip() == self.sha
+                           else "not an ancestor — the squash-merge discarded "
+                                "the reviewed head, which is expected here")
+                    self.add(
+                        "7",
+                        "cold-review record",
+                        DERIVED_PASS,
+                        f"{candidates[0]} DECLARES reviewed commit "
+                        f"{declared[:12]}; object exists, {rel}; reviewer "
+                        "independence remains attested inside the record",
+                    )
+                    return
             for sha in review_record_shas(text):
                 rc_eq, full = git("rev-parse", "--verify", "-q", f"{sha}^{{commit}}")
                 if rc_eq != 0:
@@ -581,9 +630,9 @@ class Check:
                         "7",
                         "cold-review record",
                         DERIVED_PASS,
-                        f"{candidates[0]} names reviewed commit {sha[:12]} "
-                        f"(ancestor of release commit); reviewer independence "
-                        "remains attested inside the record",
+                        f"{candidates[0]} mentions (UNDECLARED, #1161) commit "
+                        f"{sha[:12]} (ancestor of release commit); add a "
+                        "`Commit reviewed:` line so this is not a guess",
                     )
                     return
             self.add(

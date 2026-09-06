@@ -22,8 +22,7 @@
 # CORRECTED by the v0.63 cold review: the rung is STRUCTURALLY INERT
 # under the ladder's own `--relocatable` base, so +0 is the only value
 # it can report and no inference about the #197 selector paths follows.
-# three backends, which is itself worth knowing: the two selector paths differ
-# in output, not in acceptance.
+# three backends.
 #
 # So "increase the percentage" splits into three different jobs, and only the
 # third is compiler work:
