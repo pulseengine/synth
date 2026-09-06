@@ -237,10 +237,23 @@ def artifacts_missing_done_when(docs: list[tuple[str, object]]) -> tuple[int, li
     return total, missing
 
 
-def ci_emulation_floor(ci_text: str) -> int:
-    """The pinned oracle floor in ci.yml; 0 when absent (presence != potency)."""
-    m = re.search(r"--min-emulation-floor\s+(\d+)", ci_text)
-    return int(m.group(1)) if m else 0
+def ci_emulation_floor(ci_text: str) -> tuple[int, str]:
+    """The pinned oracle floor in ci.yml and which FORM pins it; (0, "") when
+    absent — presence is not potency.
+
+    Accepts BOTH spellings, and this matters: RQ-63-FLOOREQ (v0.63) replaced
+    `--min-emulation-floor` (a LOWER BOUND, which cannot see the declared total
+    drifting above it) with `--exact-emulation-floor` (equality, which fails in
+    either direction). A derivation coupled to the older SPELLING would report
+    the stronger gate as ABSENT — the same defect shape as RQ-62-FLOORTIGHT's
+    done-when pinning a literal value its own protocol guaranteed would move.
+    `exact` is checked first so the report names the stronger form when both
+    appear."""
+    for flag in ("exact", "min"):
+        m = re.search(rf"--{flag}-emulation-floor\s+(\d+)", ci_text)
+        if m:
+            return int(m.group(1)), flag
+    return 0, ""
 
 
 def signing_workflow_tag_triggered(wf_text: str) -> bool:
@@ -422,13 +435,15 @@ class Check:
 
     def step_4(self) -> None:
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
-        floor = ci_emulation_floor(ci)
+        floor, form = ci_emulation_floor(ci)
         if tree_has(self.ref, "scripts/oracle_wiring_check.py") and floor > 0:
             self.add(
                 "4",
                 "oracle wiring + floor",
                 DERIVED_PASS,
-                f"wired with --min-emulation-floor {floor} at ref",
+                f"wired with --{form}-emulation-floor {floor} at ref"
+                + (" (equality, not a lower bound — RQ-63-FLOOREQ)"
+                   if form == "exact" else ""),
             )
         else:
             self.add(

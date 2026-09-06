@@ -227,7 +227,23 @@ def family_of(name: str) -> str:
     return "MVP core"
 
 
-def report_by_family(backend: str, per_file: dict) -> None:
+# RQ-63-SPECFAM, hardened after the v0.63 cold review. The FIRST version of
+# this pin checked only that the DOC said 14 — it could not fail when the
+# census moved, which is the doc-says-doc shape. These are the measured
+# per-family `ok` counts, pinned like the bucket PINS above so a family count
+# that moves reddens the census itself rather than drifting until someone
+# re-reads the doc.
+FAMILY_OK_PINS = {
+    "arm":     {"MVP core": 14, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
+                "exception handling": 0, "tail call": 0},
+    "riscv":   {"MVP core": 11, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
+                "exception handling": 0, "tail call": 0},
+    "aarch64": {"MVP core": 21, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
+                "exception handling": 0, "tail call": 0},
+}
+
+
+def report_by_family(backend: str, per_file: dict) -> list:
     """Print the per-family split. REPORTING ONLY — never gates, because the
     pins above are the gate and a second gate on the same measurement would be
     a second source of truth for it."""
@@ -241,6 +257,16 @@ def report_by_family(backend: str, per_file: dict) -> None:
         dec = ctr["all_declined"] + ctr["module_decline"]
         print(f"    {fam_name:<20}{tot:>5} files   {ctr['ok']:>4} ok  "
               f"{ctr['partial']:>4} partial  {dec:>4} declined")
+    # The pin. Reporting became a GATE here after the cold review found the
+    # doc-side pin could not fail on a census move.
+    fails = []
+    for fam_name, expect in FAMILY_OK_PINS.get(backend, {}).items():
+        got = tally.get(fam_name, Counter())["ok"]
+        if got != expect:
+            fails.append(f"{backend}: family {fam_name!r} ok = {got}, "
+                         f"pin = {expect} — re-measure, then update the pin "
+                         f"AND docs/status/SPEC_FAMILY_CENSUS.md together")
+    return fails
 
 
 def main() -> int:
@@ -317,7 +343,7 @@ def main() -> int:
               f"(doc-cited {AT_LEAST_ONE_EXPORT[be]})")
         # RQ-63-SPECFAM: the same measurement, split by family. Reporting only.
         per_file = {name: b for b, rows in examples.items() for name, _ in rows}
-        report_by_family(be, per_file)
+        fails.extend(report_by_family(be, per_file))
 
     print()
     if fails:

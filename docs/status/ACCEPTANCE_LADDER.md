@@ -22,8 +22,17 @@ Produced by `scripts/repro/partial_census_1017.py --ladder`. Rungs are reported
 - **+allow-skipped** — `--allow-skipped-exports`. **Categorically different: a
   PARTIAL object is a third state, not a pass.** Counted, labelled, and never
   folded into accepts.
-- **+no-optimize** — adds **zero on every backend**, which is worth knowing in
-  itself: the two selector paths differ in output, not in acceptance.
+- **+no-optimize** — **STRUCTURALLY INERT under this base invocation, and not
+  a measured negative.** Every rung runs `--relocatable`, and
+  `arm_backend.rs:990` selects the direct path on
+  `no_optimize || relocatable || …`, so the flag changes nothing on ARM here;
+  riscv and aarch64 never read it at all. "+0" is the only value this rung can
+  report. **Nothing about the two `#197` selector paths follows from it** —
+  the optimized ARM selector is never reached by this ladder. Measuring that
+  needs a run WITHOUT `--relocatable`, which is a different ABI and a
+  different measurement. Kept and labelled rather than deleted, because a rung
+  that cannot move is the checker-that-cannot-fail class this release spent
+  its scope finding, here in a measurement harness.
 
 ## Why a ladder, and not one number
 

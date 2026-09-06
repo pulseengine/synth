@@ -4690,7 +4690,7 @@ artifacts:
 
       WHAT WOULD CHANGE THIS. Any of: a Rocq-consumable x86 semantics of
       Sail/ASL quality becoming available; MVP-core spec compliance reaching
-      a level where the scalar foundation is finished rather than 15/114
+      a level where the scalar foundation is finished rather than 14/114
       (RQ-63-SPECFAM); or a consumer requirement that is genuinely
       x86-only — none of the current consumers is. Until then this stays
       `proposed`, and the honest near-term answer to "cover the major
@@ -4714,7 +4714,7 @@ artifacts:
       margin the biggest single feature family synth does not do.
 
       IT IS ALSO NOT THE NEXT THING TO DO, and the reason is a number from the
-      same measurement: **MVP core is 15 of 114 fully-ok on arm** (12 riscv,
+      same measurement: **MVP core is 14 of 114 fully-ok on arm** (11 riscv,
       21 aarch64). Building a vector story on a scalar foundation that is
       13 % complete by its own spec suite would widen the base faster than it
       is being closed — the volume failure the v0.58 correction is about.
@@ -4730,7 +4730,7 @@ artifacts:
 
       THE PREREQUISITE, stated so this artifact can be opened on evidence
       rather than enthusiasm: MVP-core fully-ok rises materially from
-      15/114 and that figure is PINNED (RQ-63-SPECFAM makes it a claim, so
+      14/114 and that figure is PINNED (RQ-63-SPECFAM makes it a claim, so
       the prerequisite is checkable rather than a matter of opinion). The
       proof obligation should be scoped at the same time: the 630-Qed suite
       has no vector semantics, so a SIMD increment either ships T3

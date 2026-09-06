@@ -644,9 +644,27 @@ LADDER_RUNGS = [
     ("embedder-ack", ["--embedder-data-init", "--embedder-global-init"]),
     ("allow-skipped", ["--embedder-data-init", "--embedder-global-init",
                        "--allow-skipped-exports"]),
-    ("no-optimize", ["--embedder-data-init", "--embedder-global-init",
-                     "--allow-skipped-exports", "--no-optimize"]),
+    # STRUCTURALLY INERT UNDER THIS BASE INVOCATION, and labelled as such
+    # rather than deleted, because a rung that cannot move is exactly the
+    # "checker that cannot fail" class this release spent its scope finding —
+    # here in a MEASUREMENT harness rather than a CI gate.
+    # Every rung runs `--relocatable` (see run_synth), and
+    # arm_backend.rs:990 selects the direct path on
+    # `no_optimize || relocatable || ...` — so `--no-optimize` changes nothing
+    # on ARM under this base. synth-backend-riscv and synth-backend-aarch64
+    # never read `no_optimize` at all (one selector each). The optimized ARM
+    # selector is therefore NEVER REACHED by this ladder, and "+0" is the only
+    # value this rung can ever report.
+    # Consequence, stated so it is not inferred away: NOTHING about the two
+    # #197 selector paths follows from this rung. Measuring that needs a run
+    # WITHOUT `--relocatable`, which is a different ABI and a different
+    # measurement.
+    ("no-optimize (INERT)", ["--embedder-data-init", "--embedder-global-init",
+                             "--allow-skipped-exports", "--no-optimize"]),
 ]
+# Rungs whose flags cannot change the outcome under the base invocation. The
+# report marks them so a reader never reads "+0" as a measured negative.
+INERT_RUNGS = {"no-optimize (INERT)"}
 ACCEPT_VERDICTS = {"ACCEPT_FULL", "ACCEPT_INTERNAL_SKIPS"}
 
 
@@ -685,9 +703,19 @@ def report_ladder(backend, rows):
         if name in ("NEVER", "TIMEOUT"):
             print(f"  {name:<14} {n:>4}          of {total}")
             continue
-        cumulative += n
+        # Cumulative is ACCEPTS ONLY. `allow-skipped` yields PARTIAL objects
+        # and the inert rung cannot move, so folding either into a running
+        # percentage would contradict the banner two lines above — which the
+        # v0.63 cold review caught this harness doing.
+        counts_as_accept = name not in ("allow-skipped",) and name not in INERT_RUNGS
+        if counts_as_accept:
+            cumulative += n
         pct = 100.0 * cumulative / total if total else 0.0
-        note = "  <- partial objects, NOT accepts" if name == "allow-skipped" else ""
+        note = ("  <- partial objects, NOT accepts; excluded from cum"
+                if name == "allow-skipped" else "")
+        if name in INERT_RUNGS:
+            note = ("  <- INERT: cannot move under --relocatable; +0 is the "
+                    "only possible value, NOT a measured negative")
         print(f"  {name:<14} {n:>4}  (cum {cumulative:>4} = {pct:4.1f}%) of {total}{note}")
     never = [r for r in rows if r["rung"] == "NEVER"]
     if never:
