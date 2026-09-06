@@ -1,11 +1,46 @@
-# v0.63 — scope opens with three artifacts DEFERRED FROM v0.62, each with the
-# measured reason recorded rather than a silent omission (release-planning:
-# "Move scope deliberately — deferring a requirement to a later release is a
-# scope decision, surfaced and logged, not silent").
+# v0.63 — "Raise the percentage, and say which percentage."
 #
-# None of the three was dropped for being hard. One is blocked on an upstream
-# defect a consumer measured for us; two are real work that the release's
-# remaining runway could not hold without rushing proof work or relaxing a
-# guard that prevents a silent wrong-value miscompile.
+# Theme set by the maintainer: increase the acceptance rate on all backends.
+# Scoped against a MEASUREMENT, not an intuition — and the first thing that
+# measurement did was invalidate the number v0.62 published.
+#
+# THE CORRECTION THAT SHAPES THIS RELEASE. v0.62's census reported arm at 11%
+# using ONE fixed invocation. Re-measured as an escalating ladder over the same
+# corpus (60-module sample):
+#
+#   arm     default 8  | +embedder-ack 18 | +allow-skipped 2 | +no-opt 0 | NEVER 32
+#   riscv   default 11 | +embedder-ack  0 | +allow-skipped 7 | +no-opt 0 | NEVER 42
+#   aarch64 default 13 | +embedder-ack  0 | +allow-skipped 3 | +no-opt 0 | NEVER 44
+#
+# `--embedder-data-init`/`--embedder-global-init` MORE THAN TRIPLE arm (8 -> 26).
+# Those modules compile TODAY. The flag is an ACKNOWLEDGEMENT of an embedder
+# obligation (the #952/#1041/#1052 honest-refusal pattern), not a feature
+# switch, so counting them as declines says synth cannot compile work it
+# demonstrably can. `--allow-skipped-exports` is categorically different — a
+# PARTIAL object is a third state, not a pass. `--no-optimize` adds ZERO on all
+# three backends, which is itself worth knowing: the two selector paths differ
+# in output, not in acceptance.
+#
+# So "increase the percentage" splits into three different jobs, and only the
+# third is compiler work:
+#   1. measure the right thing            (RQ-63-LADDER)
+#   2. decide what the default should be  (RQ-63-ACKDEFAULT)
+#   3. close the real gaps                (RQ-63-RVGLOBAL, -A64STACK, -ARMI64OFF)
+#
+# THE GATING RULE IS NON-NEGOTIABLE AND APPLIES TO EVERY ITEM HERE, carried
+# from RQ-62-REACH: every reach increment ships with the oracle that makes the
+# newly-accepted input safe, and THE ORACLE LANDS FIRST. An accepted module that
+# silently returns a wrong value is strictly worse for a consumer than a loud
+# decline. This is not theoretical: ARM's acceptance FELL 81% -> 11% because
+# #1041/#1052/#1102 converted silent-drop accepts into loud declines (verified —
+# 15 of 20 sampled declines are those classes). Raising the number by reversing
+# that would be the flattery the compliance envelope forbids.
+#
+# MEASUREMENT DISCIPLINE, earned the hard way while producing the numbers above:
+# two attempts yielded confident WRONG results — a `break` that never fired, and
+# `-o /dev/null` breaking synth's safety-manifest sidecar so every aarch64
+# compile "failed" AFTER emitting a valid ELF (a regression was nearly reported
+# that did not exist). The ladder above is a 60-module SAMPLE of 243. Increment 1
+# is a full-corpus re-run, and no capability work cites the sample.
 #
 # Comments only; artifacts live in RQ-63-*.yaml siblings.

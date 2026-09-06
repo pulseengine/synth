@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-63-ARMI64OFF
+    type: system-req
+    title: "ARM: i64 load/store offsets beyond imm12 block 46 modules — an encoder range gap, and the class #1072 was about"
+    description: >
+      From RQ-62-REACH's census, ARM's largest genuine capability gap once the
+      reporting correction in RQ-63-LADDER is applied: `i64 ld/st offset beyond
+      imm12` accounts for 46 of 110 core declines. AAPCS register-pair args (40)
+      and register exhaustion (27) follow.
+
+      THIS IS THE #1072 CLASS, ONE STEP ON. That artifact found six
+      `debug_assert`-guarded immediate ranges compiled out in release, one of
+      them genuinely unguarded and capable of mis-encoding silently — a NULL
+      table slot passing the type check it must trap on. The fix there was to
+      make the range violations DECLINE. This artifact is the other half:
+      making the common ones COMPILE, by materializing the address rather than
+      folding an out-of-range offset.
+
+      THE PRECEDENT IS IN-TREE AND RECENT. RQ-59-WCETI64 priced
+      `i64_effective_base`'s address-materialization shape from the real
+      encoder's own bytes precisely because an exact hand mirror of the
+      offset-fold threshold was tried first and found UNSOUND at authoring — the
+      materialization `ADD` can need its own `MOVW` for a large offset, which
+      only the real encoder's output reflects. Any fix here must derive from the
+      encoder, not re-derive the threshold.
+
+      GATING RULE, and it has teeth on this one: an out-of-range offset that is
+      silently truncated or folded into a neighbouring field is a WRONG ADDRESS,
+      i.e. a silent memory miscompile — worse than the decline it replaces.
+
+        * the ORACLE LANDS FIRST: an execution differential over i64 load/store
+          at offsets straddling the imm12 boundary (below, at, above, and far
+          above), RED before the lowering;
+        * the frozen anchors must not move for offsets that already compile —
+          this is an extension, not a re-lowering;
+        * `--emit-wcet` prices this shape (#936); if the materialization changes
+          instruction count, the WCET bound must move WITH it or the bound
+          becomes unsound.
+
+      That last point is the one most likely to be missed: this backend emits a
+      sound cycle bound, and a codegen change that adds instructions without
+      updating the pricing silently breaks a safety claim.
+    status: proposed
+    release: v0.63
+    tags: [reach, arm, encoder, i64, wcet, oracle-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: ARM lowers i64 load/store at offsets beyond imm12 by materializing the address, proven by an execution differential straddling the boundary that was RED first; frozen anchors unmoved for already-compiling offsets; and the --emit-wcet price updated with the instruction count or the bound shown unaffected"
