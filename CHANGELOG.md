@@ -16,7 +16,8 @@ conformed to an unwritten ABI correctly **by luck, twice**, and a multi-memory
 isolation story that was unreachable by construction. Neither is visible from
 inside the compiler, which is why neither had a gate.
 
-**This release subtracted nothing** — 6,871 insertions against 22 deletions, and
+**This release subtracted nothing** — 6,871 insertions against 22 deletions
+(the feature merges; the release commit itself adds a further +213/−51), and
 the selector ratchet moved the wrong way by 14 lines with a written waiver
 (below). That is recorded rather than smoothed over: the subtraction metric
 exists to make a reach-and-gates release *look* like one.
@@ -45,8 +46,12 @@ multi-memory #406 (50); aarch64 — call value-stack discipline (35 + 42),
 Two readings this data does **not** support, stated so they are not made:
 
 - **ARM's 81% → 11% is not a capability regression.** The 81% (v0.59, same
-  stratum) counted 125 partial objects and 77 accepts that were *silently
-  dropping active data segments*. The v0.59–v0.61 hardening — #1041/#1052 data
+  stratum — org repos on this machine — but a *different snapshot*: 307 modules
+  then, 243 now) counted 125 partial objects and 77 accepts that were *silently
+  dropping active data segments*. Those two subcounts come from the v0.59
+  artifact written at the time, not from this release; the per-module records
+  were not preserved, so the decomposition is corroborated rather than
+  recomputable, and the 125 and 77 may overlap. The v0.59–v0.61 hardening — #1041/#1052 data
   and global initializers, #1102 dangling relocations — converted those into
   loud declines and collapsed the partial bucket to zero. **The rate fell
   because we stopped lying.** An accept today excludes every known
@@ -103,9 +108,13 @@ the status.
 
 - **`synth verify-embedder <elf>` (#1132).** The embedder half of the contract,
   mechanically checked: an object writing R9, R10, or R11 is refused.
-  Fail-closed on unknown mnemonics, `--allow-writer <symbol>` to acknowledge
-  boot code, and a warning when the scan finds zero writes at all (a scanner
-  that inspects nothing passes everything). Gated red-first by
+  `--allow-writer <symbol>` acknowledges boot code, and the scan warns when it
+  finds zero writes at all (a scanner that inspects nothing passes everything).
+  Precisely on fail-closed, since a looser reading would flatter it: an
+  *undecodable* instruction in an executable region always refuses, and a
+  zero-instruction scan always refuses, but an unrecognised **mnemonic** refuses
+  only when its operand text names a reserved register — an unknown mnemonic
+  that mentions none passes by design. Gated red-first by
   `scripts/repro/verify_embedder_gate_1132.py`.
 
 ### Documented — the multi-memory isolation envelope (#1145)
