@@ -1,0 +1,63 @@
+artifacts:
+  - id: RQ-63-ACKDEFAULT
+    type: system-req
+    title: "The cheapest acceptance win in this release is not compiler work — it is deciding what the default invocation should be"
+    description: >
+      Falls directly out of RQ-63-LADDER: passing
+      `--embedder-data-init --embedder-global-init` more than triples ARM
+      acceptance (8 -> 26 of 60) on work synth can ALREADY compile. No lowering
+      changes; the emitted code is byte-identical either way. That makes this
+      the largest single acceptance lever in v0.63 and the only one that costs
+      no codegen risk.
+
+      THE DECISION, with three defensible answers and no obvious winner:
+
+      (a) LEAVE THE DEFAULT, FIX THE REPORTING. The refusal exists because a
+          module carrying active data or non-zero global initialisers needs the
+          embedder to place them; accepting silently was #1041/#1052, and jess
+          confirmed the refusal caught a real defect on their side (they would
+          have shipped a zeroed globals table, "indistinguishable from a correct
+          all-zero table"). Under this answer the flags stay opt-in and the
+          census simply reports rungs.
+
+      (b) DEFAULT ON, WITH THE OBLIGATION STATED. The flag records an
+          acknowledgement, not a behaviour change — so defaulting it on trades a
+          loud upfront refusal for a documented duty. This is the answer that
+          most raises the headline number, and the one most likely to reintroduce
+          the failure mode #1041 exists to prevent: a consumer who never read
+          the doc gets an object whose data segments they never placed.
+
+      (c) A THIRD STATE. Neither refuse nor silently accept: emit, and make the
+          unmet obligation MECHANICALLY DETECTABLE downstream — the
+          `synth verify-embedder` shape (#1132) extended from registers to
+          data/global placement.
+
+      RECOMMENDATION, offered but not decided: (c) subsumes the benefit of (b)
+      without its hazard, and the mechanism already exists — but it is real work
+      and (a) is free today. The decision must be MADE and RECORDED, because the
+      current state is the worst of the three: the behaviour is (a) and the
+      published number reports it as if the capability were missing.
+
+      CONSUMER INPUT IS AVAILABLE AND SHOULD BE TAKEN. jess discharged
+      #1041/#1052 for a real image — extracting 13 data segments (43,005 B, of
+      which 492 non-zero) and 12 global initialisers, verified byte-identical
+      against wasmtime's own memory across 65,536 B with an independent LEB128
+      parse. They are the only party who has paid this cost end-to-end. Ask
+      them before choosing.
+
+      HARD CONSTRAINT: whichever answer is taken, the emitted code must stay
+      byte-identical for modules that compile today, and no answer may make an
+      unmet embedder obligation SILENT. That is the property #1041/#1052 bought
+      and this release must not spend it for a percentage.
+    status: proposed
+    release: v0.63
+    tags: [reach, acceptance, embedder, defaults, decision, consumer-contract]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1041"
+      done-when: "manual: the default-invocation question is decided and recorded with its reasoning, consumer input sought, emitted code proven byte-identical for modules that compile today, and no path left where an unmet embedder obligation is silent"

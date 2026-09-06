@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-63-RVGLOBAL
+    type: system-req
+    title: "RV32: GlobalGet is unsupported and blocks 132 modules — one missing feature dominates the entire backend's acceptance"
+    description: >
+      The single largest capability lever in the release, on any backend.
+      Measured in RQ-62-REACH's census: of RV32's declines, `GlobalGet
+      unsupported` accounts for 86 of 96 core modules and 46 of 107 components
+      — 132 in total. Nothing else on RV32 is close (multi-memory 50 components,
+      start-section 7, mem-offset imm 7).
+
+      RV32 is also the backend the ladder does NOT help: `--embedder-data-init`
+      / `--embedder-global-init` move its acceptance by ZERO (11 -> 11 of 60),
+      so unlike ARM there is no reporting correction hiding here. The 16% is
+      real and this is why.
+
+      THE SHAPE IS FAVOURABLE. ARM already lowers globals through a
+      register-relative region (R9 = globals base, per the #1131 embedder
+      contract), and RV32 already ships a relocatable path with per-region
+      symbols. This is porting an established design across a backend
+      boundary, not inventing one — the same character as
+      RQ-60-A64IMPORT, which took AArch64 from 1.6% to the highest-accepting
+      backend on the local corpus by porting ARM's own undefined-symbol pattern.
+
+      THE GATING RULE APPLIES IN FULL AND IS THE REASON TO BE CAREFUL. Globals
+      are state. A lowering that reads or writes the wrong location does not
+      fail loudly — it returns a wrong value, which is exactly the class
+      #1041/#1052 converted INTO loud declines and which this release must not
+      reverse. So:
+
+        * the ORACLE LANDS FIRST — a wasmtime-differential over global
+          get/set/init sequences, executing on RV32 under emulation, RED before
+          the lowering exists;
+        * `global.set` and non-zero initialisers are in scope from the start,
+          not deferred — an implementation that reads globals but silently
+          mishandles writes is the #1052 shape reintroduced;
+        * the trap/decline honesty rules stay: anything not lowered must
+          DECLINE, never silently no-op.
+
+      NEGATIVE RESULT IS FIRST-CLASS: if the RV32 globals region collides with
+      an existing reserved register or the relocatable symbol scheme, say so
+      with the measurement and scope the resolution — a partial lowering with a
+      stated boundary beats a complete one that quietly mishandles a case.
+
+      EXPECTED EFFECT, to be verified not assumed: closing this should move RV32
+      from ~16% toward the 60-70% band, since 132 of ~203 declines share this
+      single cause. Cite RQ-63-LADDER's full-corpus numbers, never the 60-module
+      sample.
+    status: proposed
+    release: v0.63
+    tags: [reach, riscv, globals, capability, oracle-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: RV32 lowers global.get AND global.set including non-zero initialisers, with a wasmtime-differential oracle that was RED before the lowering existed; anything unlowered still declines loudly; and the acceptance delta is measured on RQ-63-LADDER's full corpus"

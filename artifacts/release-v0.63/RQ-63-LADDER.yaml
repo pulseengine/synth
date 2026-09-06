@@ -1,0 +1,71 @@
+artifacts:
+  - id: RQ-63-LADDER
+    type: system-req
+    title: "Acceptance is a ladder, not a number — the published census used one invocation and under-reports ARM by ~3x"
+    description: >
+      Increment 1 of v0.63, and it must land before any capability work cites a
+      figure, because the figure v0.62 published is wrong in a specific and
+      correctable way.
+
+      WHAT WAS PUBLISHED: RQ-62-REACH's census reported arm 11%, riscv 16%,
+      aarch64 19% over a 243-module local corpus, measured with ONE fixed
+      invocation (`--all-exports --relocatable`).
+
+      WHAT A LADDER SHOWS on the same corpus (60-module sample):
+
+        arm     default 8  | +embedder-ack 18 | +allow-skipped 2 | NEVER 32
+        riscv   default 11 | +embedder-ack  0 | +allow-skipped 7 | NEVER 42
+        aarch64 default 13 | +embedder-ack  0 | +allow-skipped 3 | NEVER 44
+
+      `--embedder-data-init` / `--embedder-global-init` MORE THAN TRIPLE arm
+      (8 -> 26). Sampled directly: 22 of 22 modules declining on #1041/#1052
+      ACCEPT once the flags are passed; 0 remain. Those modules compile today.
+
+      WHY THAT IS A REPORTING DEFECT AND NOT A SETTING. The flag is an
+      ACKNOWLEDGEMENT of an embedder obligation — the #952/#1041/#1052
+      honest-refusal pattern jess named as unusually good design ("refuse by
+      default; the flag is an acknowledgement, not a behaviour change; emitted
+      code byte-identical either way"). Counting an unacknowledged obligation
+      as a CAPABILITY decline says synth cannot compile work it demonstrably
+      can, and it is the same corpus and the same compiler producing both
+      numbers.
+
+      THE RUNGS MEAN DIFFERENT THINGS and must not be summed:
+        * default            — the envelope a consumer gets with no promises made
+        * +embedder-ack      — compiles, IF the embedder accepts a stated duty
+        * +allow-skipped     — a PARTIAL object; a third state, not a pass
+        * NEVER              — the only honest denominator for "unsupported"
+      `--no-optimize` adds ZERO on all three backends: the two selector paths
+      (#197) differ in output, not in acceptance. Worth publishing as a
+      negative result.
+
+      DELIVERABLE: replace the single-number census with a flag-aware matrix
+      over the FULL 243, per backend, with the NEVER bucket broken down by root
+      cause. Correct the figures on #1017 and in RQ-62-REACH's record rather
+      than leaving two incompatible numbers in the tree. State the denominator
+      and its provenance as prominently as the rates, per the compliance
+      envelope.
+
+      THE SAMPLE IS NOT THE MEASUREMENT. The ladder above is 60 of 243, and it
+      was produced after TWO attempts that returned confident wrong numbers (a
+      `break` that never fired; `-o /dev/null` breaking synth's
+      safety-manifest sidecar so every aarch64 compile "failed" AFTER emitting
+      a valid ELF — a regression was nearly reported that did not exist). Run
+      the full corpus, and make the harness's own failure modes visible rather
+      than trusting an exit code.
+
+      NOT IN SCOPE: fixing anything the matrix reveals. Report and stop — the
+      capability artifacts in this release cite this measurement, not the
+      sample.
+    status: proposed
+    release: v0.63
+    tags: [reach, acceptance, census, measurement, compliance-envelope]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1017"
+      done-when: "manual: a flag-aware acceptance matrix over the full 243-module corpus is published per backend with the NEVER bucket attributed by root cause, the rungs are reported separately rather than summed, and #1017 plus RQ-62-REACH's figures are corrected rather than left contradictory"

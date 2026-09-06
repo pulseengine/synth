@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-63-A64STACK
+    type: system-req
+    title: "AArch64: call value-stack discipline blocks 77 modules — the largest gap on the backend that is now highest-accepting"
+    description: >
+      From RQ-62-REACH's census: `call value-stack discipline` accounts for 35
+      of 90 AArch64 core declines and 42 of 107 component declines — 77 total,
+      the backend's largest single cause. `MemoryCopy` is second at 45.
+
+      CONTEXT THAT MAKES THIS WORTH DOING NOW. AArch64 was the North Star's
+      headline blocker at 1.6% acceptance on the 805-module corpus. On the local
+      243 it is now the HIGHEST-accepting backend (19% plain, and the embedder
+      flags move it by zero, so that number is real). RQ-60-A64IMPORT did that
+      by porting ARM's own pattern. This artifact continues that arc rather than
+      opening a new front.
+
+      THE HAZARD IS THE SAME ONE #1093 ALREADY DEMONSTRATED ON THIS BACKEND. A
+      value-stack discipline defect does not reliably crash: the #1093 class
+      compiled cleanly, exited 0, and returned an UNINITIALIZED REGISTER,
+      because a result register was written on only one path. AArch64 is where
+      that was first found (VCR-A64-CF-001) and where the frame-open refusal was
+      invented. So the gating rule is not a formality here — it is the specific
+      history of this code.
+
+        * the ORACLE LANDS FIRST: a unicorn-vs-wasmtime differential over the
+          call shapes that currently decline, RED before any lowering;
+        * canary the non-contract registers (the #1021 expansion-canary shape)
+          so a partial fix that leaves a register mangled is caught as a
+          register defect rather than passing as a value match;
+        * relaxing any existing refusal requires that refusal's own oracle to
+          go GREEN — not merely that the decline stops firing.
+
+      NEGATIVE RESULT IS FIRST-CLASS: "these N call shapes lower soundly, these
+      M keep their refusal, here is the discriminator" is a better outcome than
+      a blanket relaxation. The shapes are known not to be uniform — that was
+      RQ-61-MVORACLE's finding on the ARM/RV32 side, where block/ARM was already
+      correct and loop/ARM was refused for an unrelated older reason.
+    status: proposed
+    release: v0.63
+    tags: [reach, aarch64, call-lowering, capability, oracle-first]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: the call value-stack shapes that lower are proven by a unicorn-vs-wasmtime differential that was RED first and canaries non-contract registers; every shape that keeps its refusal is named with the discriminator; acceptance delta measured on the full corpus"
