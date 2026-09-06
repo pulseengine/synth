@@ -135,8 +135,10 @@ decline site** instead of only in an issue. Red-first two-tenant oracle
 
 ### Fixed — verification machinery
 
-- **The federated-graph job validated nothing for 17 hours (#1143).** GitHub
-  rate-limits anonymous clones from datacenter IPs. The sync died before
+- **The federated-graph job stopped validating anything (#1143 — which recorded
+  a 17-hour window; that figure is a contemporaneous observation on the issue,
+  not re-derivable from the repo).** GitHub rate-limits anonymous clones from
+  datacenter IPs. The sync died before
   validation ever ran. Authenticated — for **quota, not for access**; all seven
   siblings are public. *(Two of my own diagnoses of this were wrong and were
   retracted on-issue: I first blamed my own scoping commit, then claimed the
