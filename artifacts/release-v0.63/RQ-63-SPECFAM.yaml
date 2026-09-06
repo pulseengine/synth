@@ -1,7 +1,7 @@
 artifacts:
   - id: RQ-63-SPECFAM
     type: system-req
-    title: "The spec-suite census publishes ONE aggregate that hides the number governing the roadmap — MVP core is 15 of 114, and nothing says so"
+    title: "The spec-suite census publishes ONE aggregate that hides the number governing the roadmap — MVP core is 14 of 114, and nothing says so"
     description: >
       Measured 2026-09-06 on v0.62.0 (fdcefa67) while planning this release,
       by grouping the existing census by WASM feature family. No new

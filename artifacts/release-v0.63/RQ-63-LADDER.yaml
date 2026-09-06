@@ -35,8 +35,12 @@ artifacts:
         * +embedder-ack      — compiles, IF the embedder accepts a stated duty
         * +allow-skipped     — a PARTIAL object; a third state, not a pass
         * NEVER              — the only honest denominator for "unsupported"
-      `--no-optimize` adds ZERO on all three backends: the two selector paths
-      (#197) differ in output, not in acceptance. Worth publishing as a
+      `--no-optimize` adds ZERO on all three backends — but that is a
+      TAUTOLOGY, not a finding, and the v0.63 cold review caught the
+      inference drawn from it. Every rung runs `--relocatable`, which
+      already forces the direct selector (arm_backend.rs:990); riscv and
+      aarch64 never read `no_optimize`. The optimized selector is NEVER
+      REACHED, so nothing about the two #197 paths follows.
       negative result.
 
       DELIVERABLE: replace the single-number census with a flag-aware matrix
@@ -88,7 +92,8 @@ artifacts:
         arm — 27 -> 99 modules. v0.62 published 11% measured with one fixed
         invocation; the 60-module sample in this release's descriptor
         predicted "more than triple" and the full corpus gives 3.7x.
-        `--no-optimize` adds ZERO on every backend.
+        `--no-optimize` adds ZERO on every backend — INERT, not a measured
+        negative: the rung cannot move under `--relocatable` (cold review).
         The NEVER bucket is attributed from the MOST PERMISSIVE invocation, so
         a blocker surviving every flag is a real gap and not a missing
         acknowledgement; the per-backend breakdowns are in the published doc.

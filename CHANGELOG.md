@@ -15,13 +15,20 @@ published was measured with one invocation out of four. Correcting that turned
 out to matter more than any capability added, and the capability work itself
 produced the release's most useful negative result.
 
-Three **silent miscompiles** surfaced along the way, none of them planned work,
-all found by a gate going red for a reason nobody expected.
+Four defects surfaced along the way, none of them planned work, all found by a
+gate going red for a reason nobody expected. Counted precisely, because the
+cold review found an earlier draft generous here: **two silent miscompiles**
+(#1167's wrong address, and a `.wast` call binding to an ambiguous label), **one
+silently-broken object** (#1168 — unlinkable rather than wrong, so the linker
+catches it one step later), and **one non-determinism** (#1171 — the outputs
+were semantically equivalent, so it is a reproducibility defect, not a
+miscompile).
 
 ### Measured — acceptance is a ladder (#1017)
 
-Full 243-module reachable corpus, final binary, rungs reported **separately and
-never summed** (`docs/status/ACCEPTANCE_LADDER.md`):
+Full 243-module reachable corpus, measured at `e3a09ac2` (no Rust source
+changed between it and the release commit — only version strings), rungs
+reported **separately and never summed** (`docs/status/ACCEPTANCE_LADDER.md`):
 
 | backend | default | +embedder-ack | +allow-skipped | NEVER |
 |---------|---------|---------------|----------------|-------|
@@ -33,8 +40,20 @@ never summed** (`docs/status/ACCEPTANCE_LADDER.md`):
 modules.** `--embedder-data-init`/`--embedder-global-init` are not a feature
 switch; they are the `#952`/`#1041`/`#1052` honest-refusal pattern, and those
 modules compile today. Counting the refusals as "cannot compile" said synth
-cannot do work it demonstrably can. `--no-optimize` adds **zero** on every
-backend.
+cannot do work it demonstrably can.
+
+**The `+no-optimize` rung is structurally inert, and the harness now says so.**
+Every rung runs `--relocatable`, and `arm_backend.rs:990` picks the direct
+selector on `no_optimize || relocatable || …`, so the flag changes nothing
+under this base; riscv and aarch64 never read it at all. "+0" is the only
+value that rung can report, which makes it a tautology rather than a negative
+result — **a rung that cannot move, which is this release's own
+checker-that-cannot-fail class appearing in a measurement harness.** Found by
+the cold review; the rung is now labelled `INERT` with the reason at its
+definition rather than deleted, and the inference an earlier draft drew from
+it ("the two selector paths differ in output, not in acceptance") is
+withdrawn — the optimized ARM selector is never reached by this ladder, so
+nothing about the two `#197` paths follows from it.
 
 **And the correction that matters more than the headline: a blocker count is
 not a reach estimate.** `RQ-63-ARMI64OFF` cleared a 46-module blocker and
@@ -62,16 +81,32 @@ Net reach: arm 27 → 27, riscv 40 → **50**, aarch64 46 → **49**.
   backends shipped an object with a dangling `func_N` at exit 0**. A real
   linker rejects it. Found by chasing why the census moved by one file. The
   refusal is now keyed on "not placed in this object, *whatever the reason*" —
-  `#1102`'s guard keyed on the *declined* set, which is why it could not fire;
-  its error even cited a warning that never existed.
+  `#1102`'s guard keyed on the *declined* set, which is why it could not fire.
+  The **aarch64 ELF builder's** refusal, which did fire (for the unrelated
+  `#851` reason), cited "the preceding warning" when nothing had been declined
+  and no such warning existed.
 
-- **A `.wast` merge bound a call to the wrong module's body.** `four` (module 0)
-  calling import 0 silently resolved to a local body in module 1 or 2, because
-  the merge shares one `func_N` label space. Exit 0, wrong function called. Now
-  refused, naming the call.
+- **A `.wast` merge could bind a call to the wrong module's body.** The merge
+  shares one `func_N` label space, so two modules defining function index 0
+  produce **two local `func_0` symbols in one object** and a caller's `bl`
+  relocates against an ambiguous label the linker resolves arbitrarily.
+  Reproduced on v0.62.0 with a local-vs-local collision: exit 0, object
+  written, symtab carrying both. Now refused, naming the call.
+
+  *Correction from this release's cold review:* an earlier draft cited
+  `func_ptrs.wast`'s `four` calling an import as the observed instance. That
+  is wrong — compiled on v0.62.0, `four`'s call carries a relocation against
+  the **import symbol** on every leg (`R_ARM_THM_CALL print_i32` and
+  equivalents), and the modules that would collide contribute nothing to the
+  object. The new guard's own text says `func_0` **would** bind to a local
+  body; the draft restated that conditional as a measurement. The class is
+  real; that instance was not, and the guard refuses it conservatively.
 
 - **synth was non-deterministic (#1171).** Six identical runs produced **five
   distinct `.text` hashes** — function ordering came from `HashMap` iteration.
+  The *count* is a seed-luck sample, not a property: the same protocol gave 4
+  of 4 on one fixture and 6 of 6 on another, and HEAD gives 1 of 6 everywhere.
+  What is stable is the kind, not the number.
   Confined to the `.wast` merge, but that is the path the spec census feeds, so
   every published census figure was measured through it. This one matters more
   here than elsewhere: synth's correctness argument rests on byte-level oracles,
@@ -99,7 +134,9 @@ Net reach: arm 27 → 27, riscv 40 → **50**, aarch64 46 → **49**.
 
 ### Measured — the spec suite by feature family (#1095)
 
-`docs/status/SPEC_FAMILY_CENSUS.md`, emitted by the census itself. The
+`docs/status/SPEC_FAMILY_CENSUS.md`, transcribed from the census's own
+per-family output (the census prints the split; the document is not
+auto-written, and the cold review corrected an earlier claim that it was). The
 aggregate (`at-least-one-export`, 84/74/57) averages families synth **targets**
 with families it has **never implemented**. Split apart it says two things:
 
