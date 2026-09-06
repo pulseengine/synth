@@ -1,0 +1,89 @@
+artifacts:
+  - id: RQ-63-MACHO
+    type: system-req
+    title: "Shipping synth output as a normal host library is blocked by the CONTAINER, not the ISA — aarch64 already emits linkable objects, just not Mach-O"
+    description: >
+      Scoped 2026-09-06 from a maintainer question — "should we add x86 so we
+      can deploy our work as normal libraries for Linux, macOS and so forth?"
+      Measuring before answering changed the answer.
+
+      WHAT IS ALREADY TRUE, verified on this machine at v0.62.0:
+
+        $ synth compile mvp.wat -b aarch64 --target cortex-a53 \
+              --relocatable --all-exports -o host.o
+        $ file host.o
+        host.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV)
+        $ nm host.o
+        0000000000000000 T f
+        0000000000000000 T func_0
+
+      A SysV ELF `ET_REL` for `EM_AARCH64` (183) with real global symbols and
+      AAPCS64 argument passing. **On arm64 Linux that links into a normal
+      static library today** — no new backend, no new ISA, no new proofs.
+
+      SO THE GOAL DECOMPOSES ALONG TWO AXES THAT WERE BEING CONFLATED, and
+      only one of them is a backend:
+
+        target              ISA        container    status
+        arm64 Linux .a/.so  aarch64 ok ELF ok       works; undocumented, ungated
+        macOS arm64 .dylib  aarch64 ok Mach-O MISSING
+        x86_64 anything     MISSING    varies       a fifth backend from zero
+
+      The blocker for a native library on an Apple Silicon machine — the
+      machine synth is developed on — is that `synth-backend-aarch64/src/elf.rs`
+      writes ELF and nothing writes Mach-O. That is an object-format writer:
+      the INSTRUCTION BYTES ARE IDENTICAL, so it inherits every existing
+      correctness result and adds no verification debt. It is roughly the
+      cheapest breadth available to this project.
+
+      WHY THIS INSTEAD OF x86_64, recorded so the trade is not re-litigated —
+      the reasoning is in VCR-X86-001, and its short form: a fifth backend
+      starts near 0 % acceptance and re-pays every gap already known on four
+      backends (aarch64 needed ~18 releases to reach 19 %); the 630-Qed proof
+      suite is ARM-specific so x86 would arrive entirely unverified, widening
+      the unverified surface in exactly the way the v0.58 correction names;
+      and Arm publishes machine-readable ASL — which `SailArmBridge.v` and
+      North Star invariant #1 rest on — while Intel does not, so x86 lowering
+      rules would be checked against HAND-WRITTEN specs, the precise Crocus
+      failure the North Star cites Arrival for finding.
+
+      SCOPE, deliberately narrow. Mach-O `MH_OBJECT` for `CPU_TYPE_ARM64`:
+      the load commands, `__TEXT,__text` plus the sections the existing ELF
+      path emits, the symbol table, and the relocation kinds the aarch64
+      backend already produces (`ARM64_RELOC_BRANCH26` for the direct-call
+      `R_AARCH64_CALL26` equivalent, `PAGE21`/`PAGEOFF12` for the `adrp`+`add`
+      pairs the globals region and funcref table already use). Selected by an
+      explicit flag, never inferred from the host — a compiler that silently
+      changes container by build machine is unreproducible.
+
+      THE GATING RULE APPLIES UNCHANGED (RQ-62-REACH): the oracle lands
+      first. Here the oracle is unusually strong and unusually cheap, because
+      the host toolchain is the reference — link the emitted object with the
+      system linker and EXECUTE it, comparing against wasmtime on the same
+      module. A container that assembles but does not link, or links but
+      mis-relocates, is caught by running it. Byte-identical `.text` against
+      the ELF path for the same input is a second, independent check that the
+      container work did not disturb codegen.
+    status: proposed
+    release: v0.63
+    tags: [reach, container, macho, host-native, aarch64]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: synth emits a Mach-O MH_OBJECT for CPU_TYPE_ARM64 behind an explicit flag; the object links with the host linker into a loadable library and the linked code EXECUTES with results matching wasmtime; the emitted .text is byte-identical to the ELF path for the same module"
+      verified-by: >-
+        PENDING. Required, red-first: (a) an execution differential that
+        links the emitted Mach-O with the system linker and runs it against
+        wasmtime-first expected values, CI-wired with a `# ci-checks`
+        non-vacuity floor — a container that cannot link must fail it, proven
+        by mutation; (b) a byte-identity check of `.text` against the existing
+        ELF path on the same input, so container work that perturbs codegen is
+        refused rather than explained; (c) the arm64-Linux ELF path this
+        artifact observes to already work gets its own documented, gated
+        claim — it is currently true by accident and cited nowhere, which is
+        how a working capability rots.
