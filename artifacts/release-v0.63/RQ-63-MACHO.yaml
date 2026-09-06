@@ -87,3 +87,20 @@ artifacts:
         artifact observes to already work gets its own documented, gated
         claim — it is currently true by accident and cited nowhere, which is
         how a working capability rots.
+      deferred: >-
+        DEFERRED from v0.63 on scope. The analysis stands and is unchanged:
+        `-b aarch64 --relocatable` already emits a SysV ELF ET_REL with global
+        symbols and AAPCS64, so arm64 Linux links a normal library TODAY, and
+        macOS needs a Mach-O writer over IDENTICAL instruction bytes — no new
+        ISA, no new proofs, the cheapest breadth available.
+        WHAT IT STILL NEEDS, and why it was not rushed: the gating rule this
+        release enforced on every reach increment (RQ-62-REACH — the oracle
+        lands FIRST) applies here too, and the oracle is an EXECUTION one:
+        link the emitted Mach-O with the host linker and RUN it against
+        wasmtime, plus a byte-identity check of `.text` against the ELF path.
+        That is a real lane, not a flag flip. Shipping a container without it
+        would mean claiming a new output format on "it assembles", which is
+        the standard this release rejected four times.
+        The arm64-Linux ELF path this artifact OBSERVES to already work is
+        still undocumented and ungated — true by accident, cited nowhere. That
+        half is cheap and should lead the v0.64 increment.
