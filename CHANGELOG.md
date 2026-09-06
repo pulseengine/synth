@@ -5,6 +5,168 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0] - 2026-09-06
+
+**Reach is part of correctness.**
+
+A proof about input we refuse is worth nothing — so this release measured what
+synth actually accepts, and hardened the seams where an accepted artifact leaves
+synth's control. Two of its findings are about *consumers*: an integrator who
+conformed to an unwritten ABI correctly **by luck, twice**, and a multi-memory
+isolation story that was unreachable by construction. Neither is visible from
+inside the compiler, which is why neither had a gate.
+
+**This release subtracted nothing** — 6,871 insertions against 22 deletions, and
+the selector ratchet moved the wrong way by 14 lines with a written waiver
+(below). That is recorded rather than smoothed over: the subtraction metric
+exists to make a reach-and-gates release *look* like one.
+
+### Measured — the acceptance denominator (#242, #1017)
+
+`scripts/repro/partial_census_1017.py` now emits four buckets per stratum with
+the **denominator printed beside the rate**, plus a ranked blocker histogram
+(one primary blocker per non-accepted module, deterministic tie-break).
+
+Over the 243 unique modules (by sha256) reachable on this machine — 131 core +
+112 components, every stratum named, zero timeouts:
+
+| backend | core | components | overall |
+|---------|------|------------|---------|
+| arm     | 21/131 | 6/112 | **27/243 (11%)** |
+| riscv   | 35/131 | 5/112 | **40/243 (16%)** |
+| aarch64 | 41/131 | 5/112 | **46/243 (19%)** |
+
+Top blockers, ranked: arm — i64 load/store offsets outside imm12 (46), AAPCS
+register-pair args (40), active data (30 comp), register exhaustion (27);
+riscv — `GlobalGet` unsupported in the RV32 skeleton (86 core + 46 comp),
+multi-memory #406 (50); aarch64 — call value-stack discipline (35 + 42),
+`MemoryCopy` (41), multi-memory (50).
+
+Two readings this data does **not** support, stated so they are not made:
+
+- **ARM's 81% → 11% is not a capability regression.** The 81% (v0.59, same
+  stratum) counted 125 partial objects and 77 accepts that were *silently
+  dropping active data segments*. The v0.59–v0.61 hardening — #1041/#1052 data
+  and global initializers, #1102 dangling relocations — converted those into
+  loud declines and collapsed the partial bucket to zero. **The rate fell
+  because we stopped lying.** An accept today excludes every known
+  silent-drop class.
+- **No delta is computed against #1017's 66% / 14% / 1.6%.** Different corpus;
+  the 805-module denominator is not reproducible on this machine and the
+  artifact says so instead of flattering. That re-run remains gale's.
+
+Worth naming: **aarch64 inverted.** At 1.6% on the 805 it was the
+least-accepting backend; post-RQ-60-A64IMPORT it is the *highest*-accepting on
+this corpus (19% overall, 31% of core). And multi-memory blocks 50 of 112
+components on riscv and aarch64 but **zero** on arm — where those same
+components then decline for deeper causes, so no single capability unblocks the
+component stratum.
+
+`RQ-62-REACH` stays **`proposed`**: its `done-when` names an 805-module census,
+this subset does not satisfy it, and the artifact records the gap rather than
+the status.
+
+### Fixed — compiler
+
+- **A declined function reachable only through a funcref table still shipped an
+  unlinkable object (#1102 residual).** #1102's guard matched *direct-call*
+  index labels only. A module whose declined function is named solely by an
+  element segment kept the pre-fix behaviour — and this shape is **worse than
+  the one #1102 fixed**: the object links clean (`UNDEF: NONE`), because the
+  declined function is in no object at all, so the failure is silent to the
+  linker *and* to execution. The dynamic index is load-bearing; a constant
+  index devirtualizes and the table never materializes. Now refused on every
+  host-linked path.
+
+### Added — the embedder contract, and a gate for it
+
+- **`docs/embedder-abi-relocatable-arm.md` (#1131).** The `--relocatable`
+  register contract, every fact cited to the emitting `file:line`, split into
+  what is **fixed**, what is **chosen**, and what is **incidental**. The
+  integrator (#1131/#1132) confirmed it unblocks their cascade — and reported
+  they had conformed **correctly by luck, twice**: a 1-in-2 guess between two
+  linear-memory bases, and a C shim that happened to compile to a bare `b.w`,
+  so GCC never allocated R11 as a frame pointer. The doc's highest-value entry
+  is in the *incidental* column: reading the contract off the self-contained
+  reset handler agrees today, but that image also carries the optimized
+  selector's functions, whose linear-memory base is `0x2000_0100` — `0x100`
+  above that handler's R11.
+
+- **`synth verify-embedder <elf>` (#1132).** The embedder half of the contract,
+  mechanically checked: an object writing R9, R10, or R11 is refused.
+  Fail-closed on unknown mnemonics, `--allow-writer <symbol>` to acknowledge
+  boot code, and a warning when the scan finds zero writes at all (a scanner
+  that inspects nothing passes everything). Gated red-first by
+  `scripts/repro/verify_embedder_gate_1132.py`.
+
+### Documented — the multi-memory isolation envelope (#1145)
+
+gale asked for per-memory MPU isolation. The answer is that it is **unreachable
+by construction**: multi-memory and MPU programming live on mutually exclusive
+paths. The finding that outranked the headline — **memory 1 has no bounds-check
+story on any profile**, because the software guard compares against R10 and the
+mask derives `size-1` from R10, and R10 *is* memory 0's size by the register
+contract. Memory *k* has no size register, so a guard would check the wrong
+memory's bound.
+
+Shipped as option 3: the per-memory region table is emitted **as data** for the
+embedder to program, the obligation is written into the ABI doc, and the
+`--safety-bounds` decline for memory *k* now **states its root cause at the
+decline site** instead of only in an issue. Red-first two-tenant oracle
+(`scripts/repro/mem_isolation_red_1145.py`), CI-wired.
+
+### Fixed — verification machinery
+
+- **The federated-graph job validated nothing for 17 hours (#1143).** GitHub
+  rate-limits anonymous clones from datacenter IPs. The sync died before
+  validation ever ran. Authenticated — for **quota, not for access**; all seven
+  siblings are public. *(Two of my own diagnoses of this were wrong and were
+  retracted on-issue: I first blamed my own scoping commit, then claimed the
+  job was standing-red on dangling traces — that was my local rivet, and the
+  job never reached validation at all.)*
+
+- **The VCR roadmap's 39 artifacts were outside `status_evidence_check`'s scope
+  (#1133)** — two carried no `status` key whatsoever, so no rule could fire on
+  them. New **P0–P2 programme rules**: every artifact in every `artifacts/`
+  YAML must carry a legal lifecycle status, with the roadmap file pinned
+  visible and a floor so the scope cannot silently shrink again. Red-first on
+  the two statusless VCR-WCET items, which now carry the status their content
+  earns plus the not-verified reason beside it.
+
+- **Release loop-conformance is now derived, not asserted (#1136).** Release
+  authorization became standing and *conditional on the feature loop*, which
+  makes "did the loop run?" a load-bearing question that was answered by
+  whoever was cutting. `scripts/loop_conformance_check.py vX.Y.Z` derives it
+  from traces that already exist (`pretag` / `retro` modes); `CONFORMS`
+  requires at least 4 **derived** slots, so an attestation cannot carry the
+  verdict alone. Red-first in both directions, 30 unit tests.
+
+- **`Claim Check` was the last required context with no system dependency still
+  queueing against the GitHub-hosted quota (#1062)** — retargeted to
+  self-hosted. And the invariant that made that safe is now **enforced rather
+  than remembered**: `scripts/runner_redundancy_check.py` fails if any required
+  context targets a label satisfiable by fewer than two *online* runners. A
+  required check that cannot run deadlocks every merge; that had already
+  happened once.
+
+### The subtraction ratchet, reported against itself
+
+| metric | v0.61.0 | v0.62.0 | direction |
+|--------|---------|---------|-----------|
+| `selector_lines_code` | 19,213 | **19,227** | must FALL — **+14, waived** |
+| `selector_wildcard_arms_code` | 55 | 55 | must FALL — flat |
+| `sel_dsl_rules` | 80 | 80 | must RISE — flat |
+| `mirror_marker_files` | 59 | 59 | must FALL — flat |
+
+The +14 is the #1145 decline stating its root cause at the decline site. It buys
+one waiver, bound to the exact value `19227`, with the reason written in
+`claims.yaml`: no lowering arm was added, no code path changed, and **nothing
+could be deleted in exchange** — the decline is the only handling this class
+has. A second regression needs a second waiver.
+
+Proof suite unchanged at **630 Qed / 2 Admitted**, 80 Rocq-proved selector
+rules. Oracle floors: 324,646 emulations across 158 wired scripts.
+
 ## [0.61.0] - 2026-09-02
 
 **The capability exists; aim it where it is needed.**
