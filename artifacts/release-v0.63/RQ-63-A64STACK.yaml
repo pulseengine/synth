@@ -47,7 +47,7 @@ artifacts:
       verification-track: differential
       issue: "#242"
       landed: >-
-        Branch feat/a64stack-1165 (PR filled in below once opened).
+        PR #1164 (branch feat/a64stack-1165, commit 2cb9f293).
         `crates/synth-backend-aarch64/src/selector.rs`: the exact-height guard
         at `call` and `call_indirect` (`stack.len() != argc` -> decline) is
         replaced by `spill_below_args`/`reload_below_args` — the value-stack
