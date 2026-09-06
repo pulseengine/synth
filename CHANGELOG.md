@@ -17,7 +17,8 @@ isolation story that was unreachable by construction. Neither is visible from
 inside the compiler, which is why neither had a gate.
 
 **This release subtracted nothing** — 6,871 insertions against 22 deletions
-(the feature merges; the release commit itself adds a further +213/−51), and
+across the feature merges, with the release-assembly commits (these notes, the
+cold-review record, the floor fix) adding further on top. And
 the selector ratchet moved the wrong way by 14 lines with a written waiver
 (below). That is recorded rather than smoothed over: the subtraction metric
 exists to make a reach-and-gates release *look* like one.
