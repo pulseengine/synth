@@ -4632,3 +4632,116 @@ artifacts:
     fields:
       priority: must
       issue: "#242"
+
+  # ---------------------------------------------------------------------------
+  # Breadth decisions taken 2026-09-06, recorded so they are DECIDED rather than
+  # drifting. Both were live maintainer questions; both are answered against a
+  # measurement made the same day (the spec-suite family census, RQ-63-SPECFAM).
+  # ---------------------------------------------------------------------------
+  - id: VCR-X86-001
+    type: sw-req
+    title: "x86_64 backend — wanted, and DEFERRED with the cost written down rather than left ambiguous"
+    description: >
+      A maintainer asked whether to add x86 so synth's output covers the major
+      targets and can ship as normal libraries for Linux and macOS. The answer
+      is NOT YET, and the reasoning is recorded here because "we should
+      probably do x86 sometime" is the kind of ambient intention that costs a
+      release when it is finally acted on without its constraints.
+
+      WHAT THE GOAL ACTUALLY NEEDS, measured 2026-09-06 at v0.62.0: the
+      deployment half of the question is largely a CONTAINER problem, not an
+      ISA problem. `synth -b aarch64 --relocatable` already emits a SysV ELF
+      `ET_REL` for `EM_AARCH64` with global symbols and AAPCS64 — on arm64
+      Linux that links into a normal library today. macOS arm64 needs Mach-O,
+      an object-format writer over IDENTICAL instruction bytes. That is
+      RQ-63-MACHO, and it delivers most of the stated goal at a small
+      fraction of the cost.
+
+      THE FOUR COSTS OF x86_64, in weight order:
+
+      1. A FIFTH BACKEND STARTS NEAR ZERO ACCEPTANCE and re-pays every gap
+         already known on four others. AArch64 went from #538 to 19 % on the
+         reachable corpus over roughly eighteen releases, and its remaining
+         blockers (call value-stack discipline 77 modules, MemoryCopy 45) are
+         not x86-specific — they would be re-encountered, not inherited.
+
+      2. THE PROOF SUITE IS ARM-SPECIFIC. 630 Qed across `ArmSemantics.v`,
+         `SailArmBridge.v` and the 80 generated selector-rule theorems. x86
+         arrives with none of it, so every x86 lowering is unverified by
+         construction. That is precisely the failure the v0.58 correction
+         names — building the verified path alongside the unverified one, and
+         the unverified one winning on volume — at the scale of a whole ISA.
+
+      3. NO VENDOR-AUTHORITATIVE MACHINE-READABLE SPEC. North Star invariant
+         #1 is "derive what you check against from the artifact you ship", and
+         for ARM that is discharged by Arm's own machine-readable ASL. Intel
+         publishes prose PDFs. Serious third-party x86 models exist (ACL2's
+         `x86isa` is the strongest) but they are neither the vendor's nor
+         Rocq's, so x86 rules would be checked against HAND-WRITTEN specs —
+         the exact Crocus failure the North Star already cites Arrival for
+         finding (a verified `sdiv` miscompilation, because the hand spec was
+         wrong).
+
+      4. VARIABLE-LENGTH ENCODING (1–15 bytes) makes the byte-level oracles —
+         frozen-fixture differentials, the real-encoder WCET pricing, the
+         estimator/encoder agreement gate — materially harder than Thumb-2's
+         2/4-byte world, where several of those gates get their potency from
+         predictable instruction sizes.
+
+      WHAT WOULD CHANGE THIS. Any of: a Rocq-consumable x86 semantics of
+      Sail/ASL quality becoming available; MVP-core spec compliance reaching
+      a level where the scalar foundation is finished rather than 15/114
+      (RQ-63-SPECFAM); or a consumer requirement that is genuinely
+      x86-only — none of the current consumers is. Until then this stays
+      `proposed`, and the honest near-term answer to "cover the major
+      targets" is RQ-63-MACHO plus the existing arm64 Linux path.
+    status: proposed
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      priority: could
+      issue: "#242"
+
+  - id: VCR-SIMD-001
+    type: sw-req
+    title: "SIMD is the largest single WASM gap — 59 spec files, zero support on every backend — and it is GATED on the scalar core, not on appetite"
+    description: >
+      Measured 2026-09-06 (RQ-63-SPECFAM): of the 257 top-level spec-suite
+      `.wast` files, **59 are SIMD and every one of them fully declines on
+      arm, riscv AND aarch64**. Adding relaxed-SIMD (4), that is 63 files —
+      a quarter of the suite — with no support anywhere. It is by a wide
+      margin the biggest single feature family synth does not do.
+
+      IT IS ALSO NOT THE NEXT THING TO DO, and the reason is a number from the
+      same measurement: **MVP core is 15 of 114 fully-ok on arm** (12 riscv,
+      21 aarch64). Building a vector story on a scalar foundation that is
+      13 % complete by its own spec suite would widen the base faster than it
+      is being closed — the volume failure the v0.58 correction is about.
+      Decision taken by the maintainer 2026-09-06: **SIMD lands after MVP
+      core is solid**, not before.
+
+      WHAT ALREADY EXISTS, so it is not rediscovered as new: the feature
+      matrix records Cortex-M55 Helium (MVE) encodings in the ARM backend,
+      untested on silicon or emulator, with SIMD functions loud-skipping on
+      every other target under a category-level gate (#680). That is a
+      starting point for a NARROW, one-backend, execution-gated increment —
+      not a general v128 story — whenever the gate below opens.
+
+      THE PREREQUISITE, stated so this artifact can be opened on evidence
+      rather than enthusiasm: MVP-core fully-ok rises materially from
+      15/114 and that figure is PINNED (RQ-63-SPECFAM makes it a claim, so
+      the prerequisite is checkable rather than a matter of opinion). The
+      proof obligation should be scoped at the same time: the 630-Qed suite
+      has no vector semantics, so a SIMD increment either ships T3
+      (admitted / existence-only, declared as such) or brings ARM's
+      machine-readable ASL vector fragment into the Sail bridge — which is
+      the option consistent with North Star invariant #1 and should be
+      costed before, not after, the encoder work.
+    status: proposed
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      priority: could
+      issue: "#242"

@@ -1,0 +1,81 @@
+artifacts:
+  - id: RQ-63-SPECFAM
+    type: system-req
+    title: "The spec-suite census publishes ONE aggregate that hides the number governing the roadmap — MVP core is 15 of 114, and nothing says so"
+    description: >
+      Measured 2026-09-06 on v0.62.0 (fdcefa67) while planning this release,
+      by grouping the existing census by WASM feature family. No new
+      classifier was written — `scripts/spec_compile_census.py`'s own
+      `classify()` was imported and reused, because a second classifier is a
+      second source of truth to forget to update.
+
+      `spec_compile_census.py` reports nine buckets summed over all 257
+      top-level `.wast` files and the docs cite ONE derived number:
+      `at-least-one-export = 92`. That number is correct, CI-gated, and
+      pinned. It is also the wrong number to plan from, because it averages
+      two populations that should never be averaged: features synth TARGETS
+      and features synth has never implemented at all.
+
+      Split by family (arm / riscv / aarch64, files fully-`ok`):
+
+        MVP core             114 files    15 / 12 / 21
+        SIMD                  59 files     0 /  0 /  0
+        reference types       27 files     2 /  1 /  1
+        GC                    16 files     0 /  0 /  0
+        bulk memory           15 files     5 /  0 /  1
+        memory64              14 files     1 /  0 /  4
+        relaxed SIMD           4 files     0 /  0 /  0
+        exception handling     4 files     0 /  0 /  0
+        tail call              3 files     0 /  0 /  0
+
+      TWO FACTS THE AGGREGATE HIDES, and they point in opposite directions.
+
+      (1) **MVP CORE IS 15 OF 114 FULLY-OK ON ARM.** The scalar foundation
+      every other family rests on is 13 % complete by this measure. That is
+      the single most decision-relevant number in the project and it appears
+      nowhere — not in the README, not in FEATURE_MATRIX, not in claims.yaml.
+      Every "should we add X" conversation is currently held without it.
+
+      (2) **86 FILES — 33 % OF THE SUITE — ARE FAMILIES WITH ZERO SUPPORT ON
+      ANY BACKEND** (SIMD 59, GC 16, relaxed 4, EH 4, tail-call 3). Those
+      files depress the aggregate while representing work that was never
+      scoped. A reader cannot tell the 92/257 apart from a compiler that
+      tries everything and half-fails; the truth is a compiler that does one
+      family deliberately and declines the rest, which is the loud-decline
+      stance the compliance envelope already claims as a differentiator.
+
+      SAME CLASS AS RQ-63-LADDER, one level up. That artifact found the
+      acceptance rate under-reported because it was measured with ONE
+      invocation. This one finds the spec-compile rate MIS-reported because it
+      is published as ONE population. In both cases the number is honest and
+      the aggregation is what misleads — and in both cases the fix is to
+      publish the denominator's structure, not to move the number.
+
+      NOT A NEW MEASUREMENT SYSTEM. The census already computes everything
+      needed; the family grouping is a presentation the script does not emit.
+      Add the per-family breakdown to its output and to the docs it feeds, and
+      pin the MVP-core figure specifically so it cannot rot behind a green
+      aggregate — the #1095 failure this census was built to fix, recurring
+      one level in.
+    status: proposed
+    release: v0.63
+    tags: [census, spec-suite, measurement, denominator]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1095"
+      done-when: "contains:scripts/spec_compile_census.py:per-family"
+      verified-by: >-
+        PENDING. Required: (a) `spec_compile_census.py` emits a per-family
+        table alongside the existing nine buckets, families derived from the
+        suite rather than hand-listed where possible; (b) the MVP-core
+        fully-ok figure is pinned in claims.yaml as its own claim, so it
+        cannot drift behind the green aggregate; (c) the docs that cite
+        92/257 cite the family split beside it, with the 33 %-zero-support
+        share stated as a deliberate boundary rather than left to look like
+        failure; (d) red-first — the pin must go red when the MVP-core count
+        changes in either direction, demonstrated by mutation.
