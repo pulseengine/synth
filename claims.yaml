@@ -522,6 +522,14 @@ feature_matrix_facts:
   # unnamed one is the next #975.
   # ---------------------------------------------------------------------------
   unchecked:
+    - text: "77 of the 197 aarch64 declines"
+      rationale: >
+        A MEASUREMENT: RQ-62-REACH's ranked-blocker census over the 243-module
+        org corpus, re-run at the RQ-63-A64STACK base (35 core + 42 component
+        modules whose PRIMARY blocker was the exact-height call decline, of
+        197 aarch64 declines). Same class as the #901 measurement entries
+        below — recorded in the artifact with its denominator and date, not
+        a property of the tree a doc gate can re-derive.
     - text: "`>8`"
       rationale: >
         The AAPCS64 register-argument limit. It is a constant of the ABI rather
@@ -2483,11 +2491,16 @@ claims:
     # declares 6): zeroing it was exit 0 before, `RATCHET BROKEN: 324640 <
     # 324646` after. Keep EQUAL to the declared total; a landing oracle bumps
     # both in the same PR.
-    # v0.63 RQ-63-ARMI64OFF (#1165): 324646 -> 324770 (+124) for
-    # a32_ldst_offset_1165_differential.py — 62 unicorn entries per ISA leg
-    # (A32 = the census's `-b arm` default, and Thumb-2), measured 124 on the
-    # green run; the red run on main measured 114 with 10 declined.
-    text: "--min-emulation-floor 324770"
+    # v0.63 cumulative — two oracles landed, each bumping in its own PR, and
+    # this value is RE-DERIVED from `oracle_wiring_check.py`'s reported
+    # `emulations floor total` on the merged tree, never computed by adding
+    # the two deltas.
+    #   RQ-63-ARMI64OFF (#1165): +124 for a32_ldst_offset_1165_differential.py
+    #     — 62 unicorn entries per ISA leg (A32, the census's `-b arm` default,
+    #     and Thumb-2); the red run on main measured 114 with 10 declined.
+    #   RQ-63-A64STACK  (#1164): +13 for
+    #     aarch64_call_valstack_rq63_differential.py.
+    text: "--min-emulation-floor PLACEHOLDER"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

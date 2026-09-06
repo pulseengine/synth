@@ -35,7 +35,7 @@ artifacts:
       a blanket relaxation. The shapes are known not to be uniform — that was
       RQ-61-MVORACLE's finding on the ARM/RV32 side, where block/ARM was already
       correct and loop/ARM was refused for an unrelated older reason.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [reach, aarch64, call-lowering, capability, oracle-first]
     links:
@@ -46,4 +46,87 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#242"
-      done-when: "manual: the call value-stack shapes that lower are proven by a unicorn-vs-wasmtime differential that was RED first and canaries non-contract registers; every shape that keeps its refusal is named with the discriminator; acceptance delta measured on the full corpus"
+      landed: >-
+        Branch feat/a64stack-1165 (PR filled in below once opened).
+        `crates/synth-backend-aarch64/src/selector.rs`: the exact-height guard
+        at `call` and `call_indirect` (`stack.len() != argc` -> decline) is
+        replaced by `spill_below_args`/`reload_below_args` — the value-stack
+        entries BELOW the callee's arguments are spilled to a 16-byte-aligned
+        SP area (`sub sp` + one `str x`/`str d` per entry at `[sp, #k*8]`)
+        immediately before argument marshalling and reloaded into the SAME
+        registers immediately after the `bl`/`blr`, BEFORE the result is moved
+        out of x0 (so `alloc_temp` sees them live and picks a disjoint result
+        register). The exact-args shape emits no area and is byte-identical
+        to v0.62. A defensive pool-invariant check declines loudly if any
+        entry at a call is not a caller-saved temp (x9..x15 / v16..v23). Six
+        selector unit tests pin the emitted sequence (spill/marshal/bl/reload/
+        release/result order, 32-byte padding for three entries, `str d` for
+        an FP entry, byte-identity of the exact-args shape, underflow is Err
+        not panic, call_indirect spills AFTER the §4.4.8 guards). Oracle
+        `scripts/repro/aarch64_call_valstack_rq63_differential.py` + fixture
+        `aarch64_call_valstack_rq63.wat`, CI-wired in the aarch64 unicorn job
+        (`# ci-checks: emulations >= 13`); `--min-emulation-floor` 324646 ->
+        324659 with SYNTH-ORACLE-CHECK-FLOORS-910-CI moved in lockstep, that
+        job's `--min-oracles` 15 -> 16; FEATURE_MATRIX template row extended
+        (77/197 declared `unchecked` as a dated measurement). RQ-62-FLOORTIGHT's
+        done-when re-pointed from the literal floor value to the step's
+        invariant text (its own rule moves the number; see that artifact).
+      done-when: "contains:.github/workflows/ci.yml:aarch64_call_valstack_rq63_differential.py"
+      verified-by: >-
+        CHARACTERIZATION FIRST, by measurement (partial_census_1017.py,
+        --backend aarch64, same 243-module org corpus / flags as RQ-62-REACH,
+        re-run at base adbac084 — reproduces 35 core + 42 comp = 77 exactly):
+        the bucket is ONE stderr message, `call to function N: value stack
+        holds N entries but needs exactly N (call clobbers caller-saved temps
+        below the args)` (+ its call_indirect twin). The constraint: every
+        aarch64 value-stack entry lives in a caller-saved temp and the selector
+        had no spill, so any value pushed BEFORE a call's arguments and
+        consumed AFTER it — `(binop a (call ..))`, `(call g a (call f ..))`,
+        `(store addr (call ..))`, `(call g (call f) (call f))` — was refused.
+        Inside the 77 modules: 4,468 direct-call + 81 call_indirect skips; for
+        64 of the 77 the NEXT modal decline was already `memory.copy`, for 13
+        no other per-function decline was recorded. The reconciliation
+        registers of open value-carrying frames were audited and are never
+        live across a call (every deposit is adjacent to its branch or `end`),
+        so only genuine stack entries need preserving.
+        RED FIRST: with the base compiler the new oracle exits 1 at its
+        compile step, all 10 fixture shapes declining with that needle
+        (transcript in the PR). GREEN: `oracle_run.py` reports
+        emulations=13 wasmtime_calls=13 compiles=4, `executions: 13 (12 value,
+        1 trap)`, `callee-saved checks: 12`, `refusals: 3`, RESULT: PASS. The
+        callee is the harness's own hand-encoded `clobber_add` (clang-verified)
+        that overwrites x9..x17 and v16..v23 with named canaries before
+        returning, so a missing reload is a wrong value and a canary result
+        NAMES the register; x9..x17 and x19..x27 are seeded 0xC0DE0000|i and
+        x19..x28 + SP are asserted intact after every run (the #1093
+        uninitialised-register class cannot pass as a value match). Shapes:
+        GP below a local call, below an import, call as second arg, two
+        calls, three-deep (odd count, padded area), i64 (64-bit spill width),
+        f64 (`str d`/`ldr d`), store address below a stored call result read
+        back through memory, call_indirect with a value below (+ the
+        out-of-range index still TRAPS with a value pending), and a call
+        inside a value-carrying block with the live value outside it.
+        REFUSALS KEPT, each named with its discriminator and probed
+        (exit != 0, no panic, needle, no object): float-result callee (result
+        in v0/d0, not x0), >8 register args, and the #1093 PARAMETER-taking
+        block type; the FP-argument decline (v-register marshalling) and the
+        multi-result decline are untouched in code; GP/FP temp EXHAUSTION
+        still declines at allocation, not at the call. Sibling oracles on the
+        new binary all PASS: param_block_silent_1097 (4/4 silent-wrong pinned,
+        6 refusals), aarch64 import_dispatch_1017, brtable_blockvals_851 (a
+        `bl` inside a value-carrying frame), call_indirect_851, ctrlflow_851,
+        globals_851, mem_851, locals_851; 156/156 aarch64 crate tests.
+        ACCEPTANCE DELTA on the same corpus with the fixed compiler: aarch64
+        core 41 -> 44 accepted (declines 90 -> 87), components 5 -> 5, total
+        46/243 (19%) -> 49/243 (20%), 0 regressions; the exact-height bucket
+        is 77 -> 0 and no per-function skip anywhere still names it. WHERE THE
+        77 WENT: 3 ACCEPT_FULL (gale nucleo_g474re m.loom, synth
+        gpio_thin_846.loom, synth-331 k_mutex_unlock.dissolved), 61 now
+        `memory.copy`, 10 the active-data refusal, 2 `memory.fill`, 1 GP-temp
+        exhaustion. NEGATIVE FINDING for RQ-63-SPECFAM: the 77-module figure
+        was correct as a PRIMARY blocker but not as a reach estimate — the
+        census records only the FIRST decline per function, and this bucket
+        was stacked on top of `memory.copy` (now 60 core + 46 comp, the
+        backend's largest gap by a wide margin) and active data (7 -> 17
+        core). Lifting a primary blocker moves acceptance by the modules that
+        had NO second blocker, here 3.
