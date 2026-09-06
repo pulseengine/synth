@@ -32,6 +32,18 @@
 //! `grow(0)≡size`, `grow(n>0)`→−1, the #539 rule — growth failure is
 //! §-permitted and keeps the #865 static bounds limit sound).
 //!
+//! **RQ-63-A64STACK (v0.63) — values BELOW a call's arguments survive the
+//! call.** Every value-stack entry is a caller-saved temp, so until v0.63 a
+//! `call`/`call_indirect` required the stack to hold EXACTLY its arguments and
+//! loud-declined otherwise — the modal per-function decline behind 77 of the
+//! 197 aarch64 corpus declines in RQ-62-REACH's census (every `(binop a
+//! (call ..))`, `(call g a (call f ..))`, `(store addr (call ..))`). The
+//! entries below the args are now spilled to a 16-byte-aligned SP area
+//! around the call and reloaded into the SAME registers before the result
+//! move — see [`spill_below_args`]. Execution-verified under unicorn against
+//! wasmtime with a callee that clobbers every temp and canaried non-contract
+//! registers (`aarch64_call_valstack_rq63_differential.py`).
+//!
 //! **Deliberately still declined (loud-skip, never wrong code) — the
 //! mechanically-derived complement lives in the cross-backend op-parity oracle
 //! (`crates/synth-backend-riscv/tests/cross_backend_op_parity.rs`, aarch64
@@ -2326,14 +2338,16 @@ pub fn select_typed_cf_calls(
             // an R_AARCH64_CALL26 relocation), then push the x0 result if the
             // callee returns one value. LR is preserved by the non-leaf prologue.
             //
-            // SOUNDNESS (v1 scope — everything else loud-declines, never wrong
-            // code): a call CLOBBERS all caller-saved registers (x0..x18), so
-            // value-stack temps (x9..x15) below the args do NOT survive it. We
-            // therefore require the value stack to hold EXACTLY the args at the
-            // call (`height == argc`) and decline otherwise. Combined with the
-            // non-leaf "no param reads" guard, this leaves every arg in a temp
-            // (x9..x15) disjoint from its destination (x0..x7), so the moves need
-            // no shuffle. Imports, >8 args, and non-{0,1}-result callees decline.
+            // SOUNDNESS: a call CLOBBERS all caller-saved registers (x0..x18,
+            // v16..v31), so value-stack temps below the args do NOT survive it.
+            // v1 (#851) therefore required the value stack to hold EXACTLY the
+            // args at the call and declined otherwise; RQ-63-A64STACK (v0.63)
+            // instead SPILLS the entries below the args around the call — see
+            // [`spill_below_args`] for the discipline and its ordering. The
+            // non-leaf param-homing guard leaves every arg in a temp (x9..x15)
+            // disjoint from its destination (x0..x7), so the moves need no
+            // shuffle. >8 args and non-{0,1}-result / float-result callees
+            // still decline.
             WasmOp::Call(func_idx) => {
                 let idx = *func_idx;
                 // #1017 (VCR-REACH-002): a call to an IMPORTED function
@@ -2376,21 +2390,21 @@ pub fn select_typed_cf_calls(
                          aarch64; loud-declining (#851)"
                     )));
                 }
-                // The value stack must be EXACTLY the args (nothing survives the
-                // clobber underneath). This also guarantees no arg is FP-tagged
-                // improperly — an FP arg would need v-register marshalling we do
-                // not do, and it is caught here or by the disjointness below.
-                if stack.len() != argc as usize {
-                    return Err(SelectError(format!(
+                // RQ-63-A64STACK — split the value stack at the callee's arity:
+                // `stack[base..]` are the args (deepest = x0), `stack[..base]`
+                // are LIVE values the caller still needs after the call. Fewer
+                // entries than args is an operand-stack underflow the validator
+                // rejects upstream — loud here too, never a wrapping subtract.
+                let base = stack.len().checked_sub(argc as usize).ok_or_else(|| {
+                    SelectError(format!(
                         "call to function {idx}: value stack holds {} entries but \
-                         needs exactly {argc} (call clobbers caller-saved temps \
-                         below the args); loud-declining (#851)",
+                         the callee takes {argc} — operand-stack underflow",
                         stack.len()
-                    )));
-                }
-                // Args are stack[0..argc] with stack[0] = x0 (deepest arg first).
-                // All are GP temps (x9..x15) by the guards above; decline any FP.
-                for (arg_reg, v) in stack.iter().enumerate() {
+                    ))
+                })?;
+                // Args are GP temps (x9..x15); an FP arg would need v-register
+                // marshalling this backend does not do — decline it.
+                for (arg_reg, v) in stack[base..].iter().enumerate() {
                     if v.file != File::Gp {
                         return Err(SelectError(format!(
                             "call to function {idx}: argument {arg_reg} is a float \
@@ -2399,23 +2413,32 @@ pub fn select_typed_cf_calls(
                         )));
                     }
                 }
-                for (arg_reg, v) in stack.iter().enumerate() {
+                // Preserve everything below the args across the call.
+                let below: Vec<Val> = stack[..base].to_vec();
+                let spill = spill_below_args(&mut words, &below, &stack[base..])?;
+                for (arg_reg, v) in stack[base..].iter().enumerate() {
                     if v.reg != arg_reg as u8 {
                         words.push(enc::mov_reg64(arg_reg as u8, v.reg));
                     }
                 }
-                stack.clear();
+                stack.truncate(base);
                 // Record the reloc site (byte offset of the `bl`) then emit `bl 0`.
                 call_sites.push(CallSite {
                     offset: (words.len() * 4) as u32,
                     callee: idx,
                 });
                 words.push(enc::bl(0));
+                // Reload the preserved entries into the SAME registers (their
+                // `Val`s are still on the stack, unchanged) and release the
+                // area. No reload targets x0, so the result survives them.
+                reload_below_args(&mut words, &below, spill);
                 // Push the result if the callee returns one value. Move x0 into a
                 // regular value-stack temp (x9..x15) immediately so the rest of the
                 // selector's invariant holds — value-stack entries live in the temp
                 // pool, never in x0 (which the epilogue and the next call reuse).
                 // i64 fits in x0; the value stack is width-agnostic (op-carried).
+                // `alloc_temp` sees the reloaded entries as live, so the result
+                // register cannot alias any of them.
                 if rc == 1 {
                     let dst = alloc_temp(&stack)?;
                     words.push(enc::mov_reg64(dst, 0));
@@ -2711,17 +2734,20 @@ pub fn select_typed_cf_calls(
                     )));
                 }
                 // The table index is on TOP of the stack, above the arguments.
+                // `idx` was allocated disjoint from every live entry, so it
+                // aliases nothing the spill below preserves.
                 let idx = pop_gp(&mut stack, "call_indirect")?;
-                if stack.len() != argc as usize {
-                    return Err(SelectError(format!(
+                // RQ-63-A64STACK — same split as the direct call: args are
+                // `stack[base..]`, everything below survives via the spill.
+                let base = stack.len().checked_sub(argc as usize).ok_or_else(|| {
+                    SelectError(format!(
                         "call_indirect type {ti}: value stack holds {} entries \
-                         below the index but needs exactly {argc} (the call \
-                         clobbers caller-saved temps below the args); \
-                         loud-declining (#851)",
+                         below the index but the callee takes {argc} — \
+                         operand-stack underflow",
                         stack.len()
-                    )));
-                }
-                for (arg_reg, v) in stack.iter().enumerate() {
+                    ))
+                })?;
+                for (arg_reg, v) in stack[base..].iter().enumerate() {
                     if v.file != File::Gp {
                         return Err(SelectError(format!(
                             "call_indirect type {ti}: argument {arg_reg} is a \
@@ -2762,20 +2788,27 @@ pub fn select_typed_cf_calls(
                 words.push(enc::cmp_imm(IP1, expected));
                 words.push(enc::bcond(Cond::Eq, 2)); // matching type: hop the brk
                 words.push(enc::brk(0));
-                // (4) Marshal args. Sources are temps (x9..x15), destinations
-                //     x0..x7 — disjoint, so the moves need no shuffle, and IP0
-                //     (holding the verified slot) is untouched.
-                for (arg_reg, v) in stack.iter().enumerate() {
+                // (4) Spill the live entries below the args (RQ-63-A64STACK —
+                //     after the guards, so a trapping dispatch leaves SP as it
+                //     found it), then marshal args. Sources are temps
+                //     (x9..x15), destinations x0..x7 — disjoint, so the moves
+                //     need no shuffle, and IP0 (holding the verified slot) is
+                //     untouched by either the spill or the moves.
+                let below: Vec<Val> = stack[..base].to_vec();
+                let spill = spill_below_args(&mut words, &below, &stack[base..])?;
+                for (arg_reg, v) in stack[base..].iter().enumerate() {
                     if v.reg != arg_reg as u8 {
                         words.push(enc::mov_reg64(arg_reg as u8, v.reg));
                     }
                 }
-                stack.clear();
+                stack.truncate(base);
                 // (5) Branch into the slot's trampoline (slot+4), which tail-
                 //     branches to the callee; `blr` sets x30 so the callee
-                //     returns straight back here.
+                //     returns straight back here. Then reload the preserved
+                //     entries and release the area before the result move.
                 words.push(enc::add_imm64(IP0, IP0, 4));
                 words.push(enc::blr(IP0));
+                reload_below_args(&mut words, &below, spill);
                 if rc == 1 {
                     let dst = alloc_temp(&stack)?;
                     words.push(enc::mov_reg64(dst, 0));
@@ -2892,6 +2925,93 @@ fn patch_branch(words: &mut [u32], pos: usize, target: usize) -> Result<(), Sele
         _ => unreachable!("patch_branch: not a placeholder branch: {w:#010x}"),
     };
     Ok(())
+}
+
+/// RQ-63-A64STACK — is `v` in the caller-saved temp pool this selector hands
+/// out (`x9..x15` / `v16..v23`)? Every value-stack entry of a NON-LEAF
+/// function is (params are homed to slots, call results are moved out of `x0`
+/// immediately, every other producer allocates from the pool). The call
+/// lowering re-checks it because [`spill_below_args`] RELIES on it: a param
+/// register (`x0..x7`) on the stack at a call would be marshalled over, and a
+/// reserved or platform register would be spilled into or reloaded over
+/// silently. Loud-decline, never a wrong preserve.
+fn is_pool_temp(v: &Val) -> bool {
+    match v.file {
+        File::Gp => TEMPS.contains(&v.reg),
+        File::Fp => FTEMPS.contains(&v.reg),
+    }
+}
+
+/// RQ-63-A64STACK — preserve the value-stack entries BELOW a call's arguments
+/// across the call.
+///
+/// WHY. Every value-stack entry lives in a caller-saved temp (`x9..x15`,
+/// `v16..v23`), and a `bl`/`blr` may clobber all of them. Until v0.63 the
+/// selector therefore required the stack to hold EXACTLY the args at a call
+/// and LOUD-DECLINED otherwise — which refused every `(binop a (call ..))`,
+/// `(call g a (call f ..))` and `(store addr (call ..))` a real compiler emits:
+/// the modal per-function decline behind 77 of the 197 aarch64 corpus
+/// declines in RQ-62-REACH's census (4,468 direct-call + 81 call_indirect
+/// skips inside those modules).
+///
+/// HOW. `below` is spilled to a fresh 16-byte-aligned SP area (`sub sp` then
+/// one `str x`/`str d` per entry at `[sp, #k*8]`) immediately before the
+/// argument marshalling, and [`reload_below_args`] restores each entry into
+/// its ORIGINAL register and releases the area immediately after the call.
+/// Nothing between the two touches an SP-relative local slot (only `mov`s,
+/// the call, and — for `call_indirect` — the trampoline branch), so slot
+/// addressing is unaffected; the area is a 16-byte multiple, so SP stays
+/// aligned at the call as AAPCS64 requires. Both register files spill through
+/// the full 64-bit view, exactly what the width-agnostic value stack needs
+/// (an i32/f32 occupies the low half and reads back intact).
+///
+/// SOUNDNESS-CRITICAL ORDER at the call site: spill → marshal → call →
+/// reload → result move. Reloading BEFORE the result move is what lets
+/// `alloc_temp` see the preserved entries as live and pick a disjoint result
+/// register; no reload targets `x0`, so the result survives them.
+///
+/// Returns the byte size of the area — 0 when nothing sits below the args, in
+/// which case no code is emitted and the call sequence is byte-identical to
+/// the pre-v0.63 lowering. At most 15 entries can be live (7 GP + 8 FP
+/// temps), so the area is at most 128 bytes: always inside `imm12`.
+fn spill_below_args(words: &mut Vec<u32>, below: &[Val], args: &[Val]) -> Result<u32, SelectError> {
+    if let Some(v) = below.iter().chain(args).find(|v| !is_pool_temp(v)) {
+        return Err(SelectError(format!(
+            "call: value-stack entry {v:?} is not a caller-saved temp — the \
+             spill/marshal discipline relies on the pool invariant; \
+             loud-declining rather than emit a wrong preserve (RQ-63-A64STACK)"
+        )));
+    }
+    if below.is_empty() {
+        return Ok(0);
+    }
+    let bytes = (below.len() as u32 * 8).div_ceil(16) * 16;
+    words.push(enc::sub_imm64(enc::SP, enc::SP, bytes));
+    for (k, v) in below.iter().enumerate() {
+        let k = k as u32;
+        match v.file {
+            File::Gp => words.push(enc::str_x_imm(v.reg, enc::SP, k * 8)),
+            File::Fp => words.push(enc::str_d(v.reg, enc::SP, k)),
+        }
+    }
+    Ok(bytes)
+}
+
+/// RQ-63-A64STACK — the reload half of [`spill_below_args`]: restore every
+/// preserved entry into its original register (same slot order) and release
+/// the area. A no-op when `bytes == 0`.
+fn reload_below_args(words: &mut Vec<u32>, below: &[Val], bytes: u32) {
+    if bytes == 0 {
+        return;
+    }
+    for (k, v) in below.iter().enumerate() {
+        let k = k as u32;
+        match v.file {
+            File::Gp => words.push(enc::ldr_x_imm(v.reg, enc::SP, k * 8)),
+            File::Fp => words.push(enc::ldr_d(v.reg, enc::SP, k)),
+        }
+    }
+    words.push(enc::add_imm64(enc::SP, enc::SP, bytes));
 }
 
 fn epilogue(words: &mut Vec<u32>, top: Option<Val>, frame_size: u32, is_non_leaf: bool) {
@@ -3408,17 +3528,168 @@ mod tests {
         assert!(r.is_err(), "float param homing must loud-decline");
     }
 
+    /// RQ-63-A64STACK — a live value BENEATH the args used to loud-decline
+    /// (`stack.len() != argc`). It is now SPILLED to an SP area around the
+    /// call and reloaded into the SAME register before the result leaves x0.
     #[test]
-    fn call_with_extra_stack_below_args_loud_declines() {
-        // A live value beneath the args does not survive the call → decline.
-        // stack: [const_a, const_b] but callee takes only 1 arg → height 2 != 1.
+    fn call_with_value_below_args_spills_and_reloads_around_the_bl() {
+        // stack: [1 (x9), 2 (x10)]; the callee takes ONE arg (x10) and returns
+        // one value; `1` must survive in x9 for the i32.add.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::Call(0),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[1], &[1]).unwrap();
+        let bl = sites[0].offset as usize / 4;
+        assert_eq!(w[bl], enc::bl(0));
+        // spill -> marshal -> call
+        assert_eq!(w[bl - 3], enc::sub_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(w[bl - 2], enc::str_x_imm(9, enc::SP, 0));
+        assert_eq!(w[bl - 1], enc::mov_reg64(0, 10));
+        // call -> reload -> release -> result move into a temp DISJOINT from x9
+        assert_eq!(w[bl + 1], enc::ldr_x_imm(9, enc::SP, 0));
+        assert_eq!(w[bl + 2], enc::add_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(w[bl + 3], enc::mov_reg64(10, 0));
+    }
+
+    /// The exact-args shape is BYTE-IDENTICAL to the pre-v0.63 lowering: no
+    /// spill area is emitted when nothing sits below the args.
+    #[test]
+    fn call_with_exactly_the_args_emits_no_spill_area() {
         let ops = vec![
             WasmOp::I32Const(1),
             WasmOp::I32Const(2),
             WasmOp::Call(0),
             WasmOp::End,
         ];
-        assert!(sel_calls(&ops, 0, 0, &[1], &[1]).is_err());
+        let (w, _) = sel_calls(&ops, 0, 0, &[2], &[1]).unwrap();
+        assert!(!w.contains(&enc::sub_imm64(enc::SP, enc::SP, 16)), "{w:x?}");
+        assert!(!w.contains(&enc::add_imm64(enc::SP, enc::SP, 16)), "{w:x?}");
+    }
+
+    /// Three values below (odd count): the area pads to a 16-byte multiple
+    /// (32 bytes), slots at 0/8/16, reloaded in the same order; the result
+    /// lands in the first temp no reloaded entry holds.
+    #[test]
+    fn call_with_three_values_below_args_pads_the_area_to_16() {
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::I32Const(3),
+            WasmOp::I32Const(4),
+            WasmOp::Call(0),
+            WasmOp::I32Add,
+            WasmOp::I32Add,
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[1], &[1]).unwrap();
+        let bl = sites[0].offset as usize / 4;
+        assert_eq!(w[bl - 5], enc::sub_imm64(enc::SP, enc::SP, 32));
+        assert_eq!(w[bl - 4], enc::str_x_imm(9, enc::SP, 0));
+        assert_eq!(w[bl - 3], enc::str_x_imm(10, enc::SP, 8));
+        assert_eq!(w[bl - 2], enc::str_x_imm(11, enc::SP, 16));
+        assert_eq!(w[bl - 1], enc::mov_reg64(0, 12));
+        assert_eq!(w[bl + 1], enc::ldr_x_imm(9, enc::SP, 0));
+        assert_eq!(w[bl + 2], enc::ldr_x_imm(10, enc::SP, 8));
+        assert_eq!(w[bl + 3], enc::ldr_x_imm(11, enc::SP, 16));
+        assert_eq!(w[bl + 4], enc::add_imm64(enc::SP, enc::SP, 32));
+        assert_eq!(w[bl + 5], enc::mov_reg64(12, 0));
+    }
+
+    /// An FP entry below the args spills through the FP file (`str d` /
+    /// `ldr d` at the same slot), never through a GP view.
+    #[test]
+    fn call_with_fp_value_below_args_spills_through_str_d() {
+        let ops = vec![
+            WasmOp::F64Const(2.5),
+            WasmOp::I32Const(2),
+            WasmOp::Call(0),
+            WasmOp::Drop,
+            WasmOp::Drop,
+            WasmOp::End,
+        ];
+        let (w, sites) = sel_calls(&ops, 0, 0, &[1], &[1]).unwrap();
+        let bl = sites[0].offset as usize / 4;
+        assert_eq!(w[bl - 3], enc::sub_imm64(enc::SP, enc::SP, 16));
+        // `str dT, [sp, #0]` with T in the FP temp pool.
+        let st = w[bl - 2];
+        assert_eq!(
+            st & 0xFFFF_FFE0,
+            enc::str_d(0, enc::SP, 0),
+            "not a `str d, [sp]`: {st:#010x}"
+        );
+        let t = (st & 0x1F) as u8;
+        assert!(
+            FTEMPS.contains(&t),
+            "spilled v{t} is outside the FP temp pool"
+        );
+        assert_eq!(w[bl + 1], enc::ldr_d(t, enc::SP, 0));
+        assert_eq!(w[bl + 2], enc::add_imm64(enc::SP, enc::SP, 16));
+    }
+
+    /// Fewer entries than the callee's arity is an operand-stack underflow:
+    /// a clean `Err`, never a wrapping subtract or a panic.
+    #[test]
+    fn call_with_fewer_entries_than_args_is_err_not_panic() {
+        let ops = vec![WasmOp::I32Const(1), WasmOp::Call(0), WasmOp::End];
+        let r = sel_calls(&ops, 0, 0, &[2], &[1]);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().0.contains("underflow"));
+    }
+
+    /// `call_indirect` — same discipline: the value below the args (the index
+    /// sits ABOVE them and is popped first) is spilled AFTER the three §4.4.8
+    /// guards and reloaded after the `blr`.
+    #[test]
+    fn call_indirect_with_value_below_args_spills_and_reloads_around_the_blr() {
+        let ops = vec![
+            WasmOp::I32Const(7), // x9 — must survive the call
+            WasmOp::I32Const(3), // x10 — the argument
+            WasmOp::LocalGet(0), // x11 — the table index (homed param)
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let ctx = ModuleCtx {
+            substrate_emitted: true,
+            global_is64: vec![],
+            tables: vec![(4, 0)],
+            type_class_ids: vec![3],
+            type_arg_counts: vec![1],
+            type_result_counts: vec![1],
+            type_ret_float: vec![false],
+        };
+        let (w, _sites, _relocs) = select_typed_cf_calls(
+            &ops,
+            1,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            MemBounds::Unchecked,
+            &ctx,
+        )
+        .unwrap();
+        let blr = w.iter().position(|&x| x == enc::blr(IP0)).expect("blr x16");
+        assert_eq!(w[blr - 1], enc::add_imm64(IP0, IP0, 4));
+        assert_eq!(w[blr - 2], enc::mov_reg64(0, 10));
+        assert_eq!(w[blr - 3], enc::str_x_imm(9, enc::SP, 0));
+        assert_eq!(w[blr - 4], enc::sub_imm64(enc::SP, enc::SP, 16));
+        // The guards precede the spill (a trapping dispatch leaves SP intact):
+        // the type-check `brk` is the word before `sub sp`.
+        assert_eq!(w[blr - 5], enc::brk(0));
+        assert_eq!(w[blr + 1], enc::ldr_x_imm(9, enc::SP, 0));
+        assert_eq!(w[blr + 2], enc::add_imm64(enc::SP, enc::SP, 16));
+        assert_eq!(w[blr + 3], enc::mov_reg64(10, 0));
     }
 
     #[test]

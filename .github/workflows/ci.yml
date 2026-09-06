@@ -465,7 +465,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 324770 \
+            --min-emulation-floor 324783 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1274,6 +1274,34 @@ jobs:
           # that half carries its own floor here (#1104 follow-up).
           grep -Eq '^refusals: [1-9][0-9]*$' impdisp1017.txt
           grep -q '^RESULT: PASS' impdisp1017.txt
+      - name: Run RQ-63-A64STACK call value-stack oracle (values BELOW a call's args survive the call — spilled, reloaded, canaried)
+        # The largest aarch64 corpus blocker in RQ-62-REACH's census (77
+        # modules): every value-stack entry is a caller-saved temp, so a call
+        # with anything below its args used to loud-decline. v0.63 spills the
+        # entries below the args around the `bl`/`blr`. The harness links the
+        # object against ITS OWN host callee, which overwrites x9..x17 and
+        # v16..v23 with named canaries before returning, so a missing reload
+        # is a WRONG VALUE (and a canary value NAMES the register); every
+        # non-contract GP register is seeded, and callee-saved x19..x28 + SP
+        # are asserted intact after each run — the #1093 "returned an
+        # uninitialised register" class cannot pass as a value match. Shapes:
+        # a GP / i64 / f64 value below a local, import, nested, double,
+        # 3-deep, call_indirect, store and value-carrying-block call, plus the
+        # still-must-TRAP out-of-range table index. DECLINE HONESTY leg: the
+        # float-result, >8-arg and #1093 block-param refusals still fire.
+        # NON-VACUITY: value AND trap counts, refusals, and callee-saved
+        # checks asserted non-zero; `set -euo pipefail` per #890.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/aarch64_call_valstack_rq63_differential.py | tee a64stack.txt
+          grep -Eq '^executions: [1-9][0-9]* \([1-9][0-9]* value, [1-9][0-9]* trap\)' a64stack.txt
+          grep -Eq '^callee-saved checks: [1-9][0-9]*$' a64stack.txt
+          # The `ci-checks: emulations >= 13` floor counts only the wasmtime/
+          # unicorn differentials; the decline-honesty half emulates nothing,
+          # so it carries its own floor here (the #1104 pattern).
+          grep -Eq '^refusals: [1-9][0-9]*$' a64stack.txt
+          grep -q '^RESULT: PASS' a64stack.txt
       - name: Run v0.54 L2 float-completion oracle (#851 rounding / i64 converts / GUARDED i64 trunc / FP mem)
         # The four classes the VCR-SEL-005 third-backend parity gate listed as
         # Err(reason). The soundness-critical one is TRAP_TRUNC_I64: A64
@@ -1353,7 +1381,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 15
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 16
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)

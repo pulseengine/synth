@@ -95,7 +95,20 @@ PINS = {
     "riscv": dict(ok=13, partial=69, all_declined=145, module_decline=4,
                   no_module=9, no_exports=16, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=27, partial=33, all_declined=113, module_decline=58,
+    # RQ-63-A64STACK (v0.63): partial 33 -> 32, module_decline 58 -> 59.
+    # EXACTLY ONE file moved — stack.wast — and the move is CORRECT, not a
+    # regression. On main its `not-quite-a-tree` hit the value-stack decline,
+    # so nothing referenced the module's non-exported `$add_one_to_global`
+    # (func_5). With the spill/reload fix that caller now compiles, references
+    # func_5, and the aarch64 ELF builder REFUSES the object because func_5
+    # was never placed (#851/#1013). Refusing an unlinkable object is the
+    # correct outcome; `partial` was the flattering one.
+    # The underlying hole is #1168: the .wast input path skips the #235
+    # reachable-callgraph closure, so non-exported callees are never compiled
+    # at all — and arm/riscv SHIP that object at exit 0 with an undefined
+    # symbol. These pins are therefore measured on a path that under-compiles;
+    # they must be re-derived once #1168 lands.
+    "aarch64": dict(ok=27, partial=32, all_declined=113, module_decline=59,
                     no_module=9, no_exports=16, parse_fail=1, panic=0,
                     other_error=0),
 }
@@ -103,7 +116,7 @@ PINS = {
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
 # arm=92 riscv=82 aarch64=60
-AT_LEAST_ONE_EXPORT = {"arm": 92, "riscv": 82, "aarch64": 60}
+AT_LEAST_ONE_EXPORT = {"arm": 92, "riscv": 82, "aarch64": 59}
 
 
 def classify(output: str, rc: int) -> str:

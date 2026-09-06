@@ -127,6 +127,15 @@ M32 = 0xFFFFFFFF
 # Taking a name off this list is the only way to record that a gap closed, and
 # leaving one on after it closes is red. Adding one requires saying why here.
 EXPECTED_DECLINES = {
+    # RQ-63-A64STACK (v0.63). An aarch64 value-stack fixture; 2 of its 13
+    # functions decline on ARM for PRE-EXISTING, correct reasons, verified by
+    # compiling it for cortex-m3: `below_i64` hits #929 (an i64 call argument
+    # needs an AAPCS even-aligned register PAIR and synth marshals one 32-bit
+    # register per argument, so it declines rather than dropping the high half)
+    # and `below_fp` hits GI-FPU-002 (scalar f64 needs a double-precision FPU;
+    # thumbv7m-none-eabi has none). Neither is a regression and neither is
+    # about the value-stack change this fixture exercises.
+    "aarch64_call_valstack_rq63.wat": "i64 call arg (#929 AAPCS pair) + f64 with no FPU (GI-FPU-002)",
     "aarch64_brtable_blockvals_851.wat": "i64/f32/f64 block result values",
     "aarch64_divrem_851.wat": "i64 f64-reinterpret round trip",
     "aarch64_float_completion_851.wat": "f32/f64 ceil/floor/trunc/nearest + i64<->float",
