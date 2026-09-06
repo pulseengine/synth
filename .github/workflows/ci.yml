@@ -1938,7 +1938,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 30
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 31
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)

@@ -843,11 +843,11 @@ claims:
     text: "full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 59, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
-        pattern: 'ok=23, partial=69'
+        pattern: 'ok=22, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
-        pattern: 'ok=13, partial=69'
+        pattern: 'ok=12, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
@@ -876,11 +876,11 @@ claims:
     text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 23 ARM / 13 RV32 / 27 AArch64, at-least-one-export 92 / 82 / 59, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
-        pattern: 'ok=23, partial=69'
+        pattern: 'ok=22, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=13, partial=69'
+        pattern: 'ok=12, partial=62'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq

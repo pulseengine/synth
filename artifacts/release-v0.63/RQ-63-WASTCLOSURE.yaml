@@ -1,0 +1,127 @@
+artifacts:
+  - id: RQ-63-WASTCLOSURE
+    type: system-req
+    title: "The .wast input path skips the reachable-callgraph closure — 3 of 4 backends ship an object with an undefined internal symbol at exit 0"
+    description: >
+      Found while investigating why RQ-63-A64STACK moved the aarch64 spec-suite
+      census by one file. The same two-function module — a non-exported
+      `$helper` called by an exported `pub` — compiled through `m.wat` yields
+      2 functions and no undefined symbol; through `m.wast` (the identical
+      module plus one assert_return line) it yields 1 function and `U func_0`,
+      exit 0, on cortex-m3, cortex-r5 and rv32imac. `arm-none-eabi-ld`
+      confirms: undefined reference to func_0. The self-contained `--cortex-m`
+      leg — the one spec_compile_census.py measures — silently flipped to a
+      link-me ET_REL because the dangling reloc counted as external. aarch64
+      refused, but only because its ELF builder refuses ANY unplaced
+      relocation target (#851/#1013), and its message asserted a cause that
+      had not happened: "the symbol was declined earlier; see the preceding
+      warning" — nothing was declined and no warning was printed.
+
+      WHY #1102 COULD NOT FIRE. RQ-62-TABLEDANGLE / RQ-61-DANGLE keyed the
+      dangling-reference gate on the DECLINED set. This is the sibling case:
+      the callee was never declined, just never compiled, because the .wast
+      merge collected exports only and never ran the #235 closure the .wat
+      path has carried since v0.11.28.
+
+      TWO INDEPENDENT HALVES, both required, (b) the more robust framing:
+
+        (a) apply the closure to the .wast path — PER MODULE, seeded from the
+            exports that SURVIVE the last-module-wins override, because the
+            multi-module merge lays every module out in ONE `func_N` label
+            space. The merge must REFUSE, naming the call, when a retained
+            direct call's label is also defined by another module's retained
+            function: on the pre-fix binary that call bound to whichever body
+            the ELF builder registered last — a silently WRONG object, exit 0
+            (measured; pinned red-first). A superseded export still reachable
+            from its own module's surviving export ships as a file-local
+            callee, never a second GLOBAL of the winning name. Each merged
+            function is compiled against ITS module's signature tables, not
+            the max-imports module's.
+
+        (b) generalize the refusal from "declined" to "NOT PLACED IN THIS
+            OBJECT, whatever the reason", resolved per owning module: any
+            `func_N`/`synth_func_N` relocation with N at or past the owner's
+            import count that no compiled function of that module places is
+            refused — the #1102 wording when a decline preceded it, a #1168
+            wording (pointing at the closure as the defect) when none did. Fix
+            the aarch64 builder message so it states what it observes (the
+            symbol is unplaced) and the two ways that happens, instead of a
+            warning that may not exist.
+
+      THE NON-NEGOTIABLE RULE, applied: the "reach" here is that modules which
+      silently produced broken objects now produce correct ones, so the oracle
+      must prove the emitted object is COMPLETE and LINKABLE, not merely that
+      the exit code changed — a REAL link (arm-none-eabi-ld, ld.lld) and
+      execution vs wasmtime on every backend leg, landed RED-FIRST against the
+      unfixed binary. The census WILL move, in both directions, and that is
+      expected: a decline that replaces a silently-broken object is a win.
+    status: implemented
+    release: v0.63
+    tags: [correctness, relocation, reachability, wast, census, decline-honesty]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1168"
+      verified-by: >-
+        RED-FIRST, all five backend legs, against the unfixed baseline
+        (main @ 362f7f82) with the exact oracle that now gates it:
+        scripts/repro/wast_callgraph_closure_1168_differential.py on the
+        .wast twin of the #275 execution fixture (entry -> mid -> leaf,
+        entry -> add5, `dead` unreachable). Baseline: cortex-m3/A32/rv32
+        objects carry UNDEF func_1/func_2 (synth_func_N on rv32), helpers
+        ABSENT, `arm-none-eabi-ld`/`ld.lld` fail with undefined references;
+        the self-contained census leg is ET_REL, not ET_EXEC; aarch64 refuses
+        with the phantom-warning message. Fixed: every leg ET_REL/ET_EXEC as
+        appropriate, helpers func_0/1/2 defined, func_3 absent, 0 UNDEF, real
+        link clean, 7 vectors bit-identical to wasmtime per leg — 36
+        emulations, wired in the trap-semantics-oracle job through
+        oracle_run.py with `ci-checks: emulations >= 36`, the floor
+        re-derived (324646 -> 324682) and pinned in claims.yaml.
+
+        NON-VACUITY OF HALF (b) — the closure and the refusal are proven
+        INDEPENDENTLY: the existing `exports_only_275_probe` feature build
+        (EXPORTS_ONLY_275=1) now reverts the .wast merge too, and a second CI
+        step runs the same oracle in probe mode, which asserts that with the
+        closure bypassed every leg REFUSES cleanly with the #1168 not-placed
+        reason and writes no object. Two guards, one script; a fix that
+        landed only (a) would go red on the probe step.
+
+        UNIT + INTEGRATION (cargo test, synth-cli): the minimal issue module
+        complete on all five legs with zero UNDEF and the self-contained leg
+        ET_EXEC; a single-module .wast now produces the SAME BYTES as its
+        .wat (which also pins that the merge order is deterministic — it was
+        HashMap order before: 4 distinct output hashes over 4 runs of the old
+        binary on tests/wast/i32_arithmetic.wast, 1 on the new); a superseded
+        export retained as a file-local callee with exactly one GLOBAL of the
+        winning name; a cross-module label collision refused (RED on main:
+        exit 0, object written, the call mis-bound); a retained callee that
+        DECLINES on rv32 hitting the #1102 gate on the .wast path; plus
+        table-level tests of `reachable_from_roots`, `parse_index_label` and
+        `check_wast_merge_labels` (single-module exempt; referenced collision
+        refused; unreferenced collision and disjoint labels pass; import-index
+        disagreement and import-label shadowing refused).
+
+        THE CENSUS MOVED, per file, both directions expected: measured with a
+        per-file census against both binaries. arm 23/69/135/4 ->
+        22/62/130/17 (ok/partial/all_declined/module_decline), rv32
+        13/69/145/4 -> 12/62/140/17, aarch64 27/33/113/58 -> 27/30/109/65;
+        at-least-one-export 92/82/60 -> 84/74/57. Every move is a refusal of
+        an object that previously shipped WRONG or UNLINKABLE: 12 files on
+        arm/rv32 (5 on aarch64) are multi-module label collisions (array,
+        br_on_non_null, br_on_null, func, func_ptrs, imports, linking,
+        memory_trap, memory_trap64, simd_const, struct, try_table);
+        skip-stack-guard-page's "ok" object carried `U func_1` (its callee
+        declines, the #1102 gate now fires); stack.wast on aarch64 exposes
+        that the .wast merge threads no globals image (a pre-existing gap,
+        now visible). No file GAINED: the closure's newly-compiled helpers
+        cannot lift a file into `ok`/`partial` because those buckets count
+        EXPORTS — and the classifier was sharpened so an object holding only
+        helpers (every export declined) reads `all_declined`, keeping
+        AT_LEAST_ONE_EXPORT honest to its name. The .wat path is
+        byte-identical: 171 scripts/repro fixtures x 5 legs, 0 differing.
+      landed: "PR for #1168 — both halves; the artifact's own done-when holds on all five backend legs, demonstrated red-first."
+      done-when: "contains:scripts/repro/wast_callgraph_closure_1168_differential.py:ci-checks: emulations >= 36"
