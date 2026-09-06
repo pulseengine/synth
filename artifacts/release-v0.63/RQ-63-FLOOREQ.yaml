@@ -1,0 +1,94 @@
+artifacts:
+  - id: RQ-63-FLOOREQ
+    type: system-req
+    title: "RQ-62-FLOORTIGHT wrote the equality invariant and shipped only the number — nothing enforced EQUAL, so slack could re-open one oracle at a time"
+    description: >
+      Found by the coordinator while reviewing RQ-63-A64STACK, and confirmed
+      independently by the RQ-63-ARMI64OFF lane, which reported the same
+      residual unprompted: "EQUAL is convention: `--min-emulation-floor` is a
+      lower bound; a forgotten bump re-opens slack silently."
+
+      v0.62's RQ-62-FLOORTIGHT tightened the enforced floor from 322754 to
+      324646 and wrote the rule beside it at the gate step — "Keep this EQUAL
+      to `oracle_wiring_check.py`'s reported `emulations floor total`; when an
+      oracle legitimately lands, bump it in the SAME PR." Its own description
+      says, in as many words, that "the fix is not a number but an INVARIANT."
+
+      IT SHIPPED ONLY THE NUMBER.
+
+      MEASURED on the v0.63 tree, in an isolated worktree: raise ONE oracle's
+      declared `# ci-checks: emulations` by 50 and leave ci.yml untouched —
+
+        oracle_wiring_check   EXIT=0
+        claim_check           EXIT=0
+        status_evidence_check EXIT=0
+
+      All green with declared 50 ABOVE enforced. Nothing in the repo compares
+      the two for equality:
+
+        - `oracle_wiring_check --min-emulation-floor N` tests declared >= N.
+          A LOWER BOUND cannot see declared drifting above it.
+        - `SYNTH-ORACLE-CHECK-FLOORS-910-CI` pins a verbatim STRING in ci.yml.
+          A declared-side bump never touches that string.
+        - `status_evidence_check` does not look at the floor at all.
+
+      So the slack RQ-62-FLOORTIGHT closed could re-open silently, one landing
+      oracle at a time, exactly as before — and the mechanism written to
+      prevent that was the thing left unenforced.
+
+      THIRD INSTANCE OF ONE SHAPE, EACH A LEVEL ABOVE THE LAST, which is why
+      this is filed rather than patched quietly:
+
+        #1113 (v0.61)           INTRA-oracle — a decline half contributes zero
+                                to its own oracle's emulations floor, so that
+                                half could be deleted while the oracle stayed
+                                green. Fixed per-oracle in #1112.
+        RQ-62-FLOORTIGHT        INTER-oracle — the summed ratchet sat 1,892
+                                below the summed declarations, so any oracle
+                                could lose ALL execution and stay green.
+        THIS                    The RULE written to prevent recurrence is
+                                itself unenforced.
+
+      The sentence is identical at all three scales: THE FLOOR CANNOT SEE PART
+      OF WHAT IT ASSERTS. Writing the right principle is not the same as
+      installing it, and this artifact exists so that distinction is on the
+      record rather than in a commit message.
+
+      THE FIX IS EQUALITY, NOT A BIGGER NUMBER. `--exact-emulation-floor N`
+      fails on ANY inequality in EITHER direction: below means an oracle lost
+      execution (the #910 failure), above means an oracle landed without its
+      same-PR bump (the drift this artifact is about). There is no slack to
+      hide in, which is the same no-current-plus-slack discipline the
+      subtraction ratchets already use.
+    status: implemented
+    release: v0.63
+    tags: [gate, oracle, non-vacuity, ratchet, invariant]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#910"
+      landed: >-
+        PR #1172 — `oracle_wiring_check.py` gains `--exact-emulation-floor`,
+        ci.yml's gate step switches to it, and claims.yaml's
+        SYNTH-ORACLE-CHECK-FLOORS-910-CI verbatim pin moves in lockstep. The
+        RQ-62-FLOORTIGHT done-when anchor ("Keep this EQUAL to") is preserved
+        at the step, and its comment now records that the invariant is
+        enforced rather than conventional.
+      done-when: "contains:.github/workflows/ci.yml:--exact-emulation-floor"
+      verified-by: >-
+        RED-FIRST, replaying the exact mutation that was GREEN before. With
+        one oracle's declared floor raised by 50 (a32_i64_615_differential.py,
+        352 -> 402) and ci.yml untouched:
+          --min-emulation-floor  324845  EXIT=0   (the old gate, blind)
+          --exact-emulation-floor 324845 EXIT=1   "EQUALITY BROKEN: summed
+            `ci-checks: emulations` floors 324895 != pinned 324845 (ABOVE by
+            50)"
+        Restoring the file returns EXIT=0, so the gate is correct and not
+        merely stricter. Both directions proven separately on the unmutated
+        tree: --exact at N-1 and at N+1 each EXIT=1, at N EXIT=0. claim_check
+        58/58 with the pin moved; ci.yml parses; the FLOORTIGHT done-when
+        anchor still resolves.
