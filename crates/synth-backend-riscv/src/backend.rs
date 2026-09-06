@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, SelectorOptions, select_with_signatures};
+use crate::selector::{RvBoundsMode, RvGlobalsCtx, SelectorOptions, select_with_module};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -74,6 +74,59 @@ impl Backend for RiscVBackend {
             .map(|m| m.initial_bytes())
             .unwrap_or(0);
         let opts = build_options(config, mem_size)?;
+
+        // RQ-63-RVGLOBAL (#242): plan the globals region BEFORE compiling any
+        // body, so an unrepresentable initializer declines the whole compile
+        // rather than being discovered after code addressing it was emitted.
+        // `plan_image` is the single producer of the region, and the selector
+        // prices slot offsets with the same layout function, so what the code
+        // addresses and what the object ships cannot disagree. A module whose
+        // compiled functions never touch a global plans NOTHING (no region,
+        // no symbol) and stays byte-identical.
+        let uses_globals = exports.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)))
+        });
+        let globals_image = if uses_globals {
+            crate::globals::plan_image(&module.globals)
+                .map_err(|e| BackendError::CompilationFailed(format!("riscv: {e}")))?
+        } else {
+            Vec::new()
+        };
+        let module_cfg = CompileConfig {
+            num_imported_globals: module
+                .imports
+                .iter()
+                .filter(|i| matches!(i.kind, synth_core::wasm_decoder::ImportKind::Global))
+                .count() as u32,
+            global_widths: {
+                let mut w = Vec::new();
+                for g in &module.globals {
+                    let i = g.index as usize;
+                    if w.len() <= i {
+                        w.resize(i + 1, 4);
+                    }
+                    w[i] = g.slot_bytes;
+                }
+                w
+            },
+            global_mutable: {
+                let mut m = Vec::new();
+                for g in &module.globals {
+                    let i = g.index as usize;
+                    if m.len() <= i {
+                        m.resize(i + 1, true);
+                    }
+                    m[i] = g.mutable;
+                }
+                m
+            },
+            // FAIL-SAFE: true only because the ELF build below places it.
+            rv32_globals_emitted: !globals_image.is_empty(),
+            ..config.clone()
+        };
+        let config = &module_cfg;
 
         let mut functions = Vec::new();
         let mut elf_funcs = Vec::new();
@@ -170,8 +223,10 @@ impl Backend for RiscVBackend {
         }
 
         let builder = RiscVElfBuilder::new_relocatable();
+        // RQ-63-RVGLOBAL: the planned globals image ships as `.data` +
+        // `__synth_globals`; empty ⇒ byte-identical to `build_with_data`.
         let elf = builder
-            .build_with_data(&elf_funcs, &wasm_data)
+            .build_object_with_globals(&elf_funcs, &wasm_data, &globals_image, &[])
             .map_err(|e| BackendError::CompilationFailed(format!("RISC-V ELF emit: {e}")))?;
 
         Ok(CompilationResult {
@@ -295,7 +350,9 @@ fn compile_function_with_opts(
     let ops = ops.as_slice();
     // #312: pass the decoder's "returns i64" tables down so call-fed i64
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
-    let selection = select_with_signatures(
+    // RQ-63-RVGLOBAL: and the module-level globals context (fail-safe —
+    // declines unless the driver placed the region).
+    let selection = select_with_module(
         ops,
         num_params,
         opts,
@@ -303,6 +360,7 @@ fn compile_function_with_opts(
         &config.type_ret_i64,
         &config.func_arg_counts,
         &config.func_result_counts,
+        &globals_ctx(config),
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -359,12 +417,18 @@ fn compile_function_with_opts(
     // label. The CLI maps `synth_func_{import_index}` to the wasm field name
     // (undefined symbol, host-resolved) and `synth_func_{local_index}` to the
     // defined function symbol — the ARM `--relocatable` contract mirrored.
+    // RQ-63-RVGLOBAL: the globals `la` pair adds HI20 + LO12_I records
+    // against `__synth_globals` — the kind was fixed by the assembler at the
+    // site that knows the instruction shape (`RiscVRelocKind`), and maps to
+    // the arch-neutral kind through that enum's own `core_kind` — no
+    // decision here, so this MC/DC-scored function's branch population is
+    // unchanged.
     let relocations = call_relocs
         .into_iter()
         .map(|r| synth_core::backend::CodeRelocation {
             offset: r.offset,
             symbol: r.symbol,
-            kind: synth_core::backend::RelocKind::RiscvCallPlt,
+            kind: r.kind.core_kind(),
         })
         .collect();
 
@@ -465,7 +529,7 @@ fn compile_to_riscv_ops(
     // (#539/#242), or the two selections would disagree.
     let ops = synth_core::rewrite_memory_grow_zero(ops);
     let ops = ops.as_slice();
-    let selection = select_with_signatures(
+    let selection = select_with_module(
         ops,
         num_params,
         opts,
@@ -473,9 +537,22 @@ fn compile_to_riscv_ops(
         &config.type_ret_i64,
         &config.func_arg_counts,
         &config.func_result_counts,
+        &globals_ctx(config),
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)
+}
+
+/// RQ-63-RVGLOBAL (#242): the selector's module-level globals context, from
+/// the arch-neutral `CompileConfig` fields the driver filled in. With
+/// `rv32_globals_emitted` false (the default) every global access declines.
+fn globals_ctx(config: &CompileConfig) -> RvGlobalsCtx {
+    RvGlobalsCtx {
+        emitted: config.rv32_globals_emitted,
+        num_imported: config.num_imported_globals,
+        widths: config.global_widths.clone(),
+        mutable: config.global_mutable.clone(),
+    }
 }
 
 #[cfg(test)]

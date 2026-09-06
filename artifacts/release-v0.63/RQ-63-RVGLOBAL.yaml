@@ -46,7 +46,7 @@ artifacts:
       from ~16% toward the 60-70% band, since 132 of ~203 declines share this
       single cause. Cite RQ-63-LADDER's full-corpus numbers, never the 60-module
       sample.
-    status: proposed
+    status: implemented
     release: v0.63
     tags: [reach, riscv, globals, capability, oracle-first]
     links:
@@ -58,3 +58,54 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: RV32 lowers global.get AND global.set including non-zero initialisers, with a wasmtime-differential oracle that was RED before the lowering existed; anything unlowered still declines loudly; and the acceptance delta is measured on RQ-63-LADDER's full corpus"
+      landed: "RV32 global.get/global.set for i32 AND i64, with non-zero initialisers, as the AARCH64 DESIGN PORTED — not the ARM R9 one: every defined global gets a dense width-summed (#643) slot in a synth-EMITTED `.data` image `__synth_globals` (`synth_backend_riscv::globals::plan_image`, the single producer; the selector prices offsets with the same `slot_offsets`) reached via a new `RiscVOp::La` (`lui`+`addi` carrying `R_RISCV_HI20` + `R_RISCV_LO12_I`, both new `RelocKind`s) then `lw`/`sw` at the slot (a register pair at off/off+4 for i64). No globals base register, no embedder precondition beside s11: the standard C-runtime `.data` copy seeds it (synth's own `riscv-runtime` startup already does). Fail-safe gate `CompileConfig::rv32_globals_emitted` (the `a64_substrate_emitted` contract): the selector declines unless the driver places the image; the ELF builder REFUSES a dangling `__synth_globals` reference (never an undefined symbol). Loud declines by name: an imported global (`ImportedGlobal`), a defined integer global with a non-constant initializer (the #1052 class — `--embedder-global-init` does not apply, the region is synth-owned), `global.set` on an immutable global, v128 slots, a slot past imm12, and — measured on the corpus — a component declaring globals in MORE THAN ONE nested core module (the decoder flattens their index spaces; one region cannot tell `global 0` of module 1 from module 2). Parity ledger entries for global.get/global.set deleted (18 -> 16); the RV32 probe now carries a module context like the aarch64 one."
+      verified-by: >-
+        RED-FIRST, then execution, then the corpus. THE ORACLE:
+        scripts/repro/rv32_globals_1163_boot_differential.py (CI-wired in
+        the #798 boot-oracle job; `ci-checks: emulations >= 26`; the
+        --min-emulation-floor and its claims.yaml pin moved 324646 -> 324672
+        in lockstep). It does what a consumer does — clang+lld link synth's
+        object against synth's OWN generated startup.c/linker.ld, unicorn
+        boots the firmware FROM _reset so the startup's .data copy is what
+        seeds the globals, then 23 export executions across THREE fresh boots
+        (init / mutate / pointer-into-linmem) are compared with a wasmtime
+        instance carrying the same state; plus two compile-only decline
+        probes (imported global, non-constant init) and a structural check on
+        the object (.data SHF_WRITE 32 B, STT_OBJECT symbol, HI20/LO12_I pair
+        count) and on the link (__synth_globals placed in RAM, so a set
+        cannot write flash). RED on main @ adbac084 (the unmodified tree):
+        all 13 fixture functions declined `unsupported wasm op for RV32
+        skeleton: GlobalGet(N)/GlobalSet(N)`, synth exit 1, 0 emulations,
+        floor unmet. GREEN after: RESULT PASS, 23/23 vectors match
+        (0x7, 0xfffe1dc0, the full i64 0x1122334455667788, both words of -1,
+        set/get, read-modify-write, an i64 written as two i32 halves and
+        read back as 0x0badf00ddeadbeef, negate, immutable re-read, and a
+        push/pop stack driven by a pointer global through s11-relative
+        loads/stores), 26/26 emulations, both decline probes attributed by
+        name. Disassembly read by hand (llvm-objdump -dr): `lui t0,0` +
+        R_RISCV_HI20, `addi t0,t0,0` + R_RISCV_LO12_I, `lw t0, 0x4(t0)` for
+        global 1, `lw t1,0x8(t0)`/`lw t2,0xc(t0)` for the i64 global. Unit:
+        277 riscv-crate tests green incl. the parity ledger (the two
+        entries deleted, nothing stale/unexpected), ELF-builder tests that
+        walk .data/.symtab/.rela.text by hand, an empty-image byte-identity
+        test, the dangling-reloc refusal, the emitted_byte_size<->assembler
+        sizing pin extended with `La`, and named-decline tests for every
+        refusal. THE CORPUS, same 243-module snapshot as RQ-62-REACH, run
+        BEFORE (main binary) and AFTER (this branch), `--all-exports
+        --relocatable`, timeout 60: BEFORE riscv core 35/131 + comp 5/112 =
+        40/243 (16%) — reproducing RQ-62-REACH exactly; AFTER core 45/131 +
+        comp 5/112 = 50/243 (21%). NEGATIVE RESULT, stated plainly: the
+        expected "60-70% band" did NOT materialise. The 132 was a count of
+        PRIMARY blockers (the first decline per module), not of modules
+        globals alone would unblock — behind GlobalGet the next-first
+        blocker is now visible: 64 core modules decline on `immediate N too
+        large for memory offset` (linear-memory load/store offsets past
+        imm12 — the RV32 twin of ARM's #1 blocker) and the components stay
+        on multi-memory (50), call_indirect (28) and Call arity (11), plus 6
+        components refused by the new multi-core-module globals check. So
+        globals moved RV32 by +10 modules; the offset-immediate lowering is
+        the next single largest lever on RV32 core and is filed as the
+        follow-up, not smuggled into this increment. Frozen RV32 fixtures
+        byte-identical (empty image => no section, no symbol); cargo fmt +
+        clippy -D warnings clean; claim_check 58/58 with status.json
+        regenerated; oracle_wiring_check exit 0 at the new floor.

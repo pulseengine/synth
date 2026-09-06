@@ -25,9 +25,17 @@ the SAME stateful sequence on one wasmtime instance:
   get32                      # canary survived the i64 sets (layout-shift gate)
   roundtrip_hi(0,0)          # gale's exact repro: must be 0x12345678
 
-Also checks the RV32 contract: the RISC-V selector has NO global lowering, so
-every global-touching export must LOUD-SKIP (warn + absent from the symtab),
-never silently truncate; the global-free control must still be emitted.
+Also checks the RV32 contract — which FLIPPED in v0.63 (RQ-63-RVGLOBAL, the
+RV32 selector now lowers globals through a synth-emitted `.data` region): every
+global-touching export must be EMITTED (present in the symtab, no skip warning
+naming it), the object must ship the `__synth_globals` region sized to this
+fixture's dense #643 layout, and the global-free control must still be
+emitted. Until v0.62 this leg asserted the opposite (every such export must
+LOUD-SKIP), and it went red the day the lowering landed — exactly as a stale
+contract should. RV32 EXECUTION is not this harness's protocol (the region is
+reached through HI20/LO12_I relocations a raw-.text load cannot resolve); it
+is `rv32_globals_1163_boot_differential.py`, which links and boots the real
+object and compares 23 export executions against wasmtime.
 
 RQ-59-GLOBALINIT (#1052) — why this harness was STRENGTHENED: its original
 fixture's initializers are all zero, and the zeroed scratch region it maps is
@@ -83,8 +91,10 @@ CODE, STK, RET, R11, GLOB = 0x100000, 0x900000, 0x300000, 0x20000000, 0x400000
 CANARY = 0x0C0FFEE1
 I64_VALUES = [0x123456789ABCDEF0, 0xFFFFFFFFFFFFFFFF, 0x8000000000000000]
 
-# every global-touching export (must all loud-skip on RV32)
+# every global-touching export (all EMITTED on RV32 since v0.63, RQ-63-RVGLOBAL)
 GLOBAL_FNS = ["set64", "get_lo", "get_hi", "set32", "get32", "roundtrip_hi"]
+# the fixture's dense #643 layout on RV32: i64 $c at 0, i32 $k at 8 => 12 bytes
+RV32_GLOBALS_REGION_BYTES = 12
 
 
 def compile_synth(out, backend_args):
@@ -207,28 +217,48 @@ def run_arm_path(label, relocatable):
     return fails
 
 
-def check_rv32_loudskip():
-    """RV32 has no global lowering: global-touching exports must loud-skip
-    (warn + absent symbol); the global-free control must be emitted."""
+def check_rv32_lowered():
+    """RQ-63-RVGLOBAL (v0.63): RV32 lowers globals. Every global-touching
+    export must be EMITTED with no skip warning naming it, the object must
+    ship `__synth_globals` sized to the fixture's dense layout (the same
+    i64-then-i32 layout shift the ARM legs gate), and the global-free control
+    must still be emitted. Execution lives in the boot oracle (see module doc).
+
+    The skip-warning needle is the exact `skipping function '<fn>'` text: the
+    old leg tested `fn in stderr`, which the INFO line `Compiling function
+    '<fn>'` satisfies for every export — that half could never fail."""
     out = "/tmp/i64g643_rv32.o"
     stderr = compile_synth(out, ["-b", "riscv"])
     _, _, syms = load(out)
-    print("\n=== RV32 contract (loud-skip, not silent truncation) ===")
+    print("\n=== RV32 contract (lowered: emitted + region shipped; execution = "
+          "rv32_globals_1163_boot_differential.py) ===")
     fails = 0
     for fn in GLOBAL_FNS:
-        skipped = fn not in syms
-        warned = fn in stderr
-        ok = skipped and warned
+        emitted = fn in syms
+        skipped = f"skipping function '{fn}'" in stderr
+        ok = emitted and not skipped
         if not ok:
             fails += 1
         print(f"  [{'ok ' if ok else 'BUG'}] {fn}: "
-              f"{'loud-skipped' if skipped else 'EMITTED (silent gap?)'}"
-              f"{'' if warned else ' (no warning in stderr)'}")
+              f"{'emitted' if emitted else 'ABSENT'}"
+              f"{' (skip warning in stderr)' if skipped else ''}")
+    f = ELFFile(open(out, "rb"))
+    data = f.get_section_by_name(".data")
+    region = next((sy for sec in f.iter_sections() if sec.header.sh_type == "SHT_SYMTAB"
+                   for sy in sec.iter_symbols() if sy.name == "__synth_globals"), None)
+    ok = (data is not None and data["sh_size"] == RV32_GLOBALS_REGION_BYTES
+          and region is not None and region["st_size"] == RV32_GLOBALS_REGION_BYTES
+          and region["st_info"]["type"] == "STT_OBJECT")
+    if not ok:
+        fails += 1
+    print(f"  [{'ok ' if ok else 'BUG'}] __synth_globals region: "
+          f".data={data['sh_size'] if data else None} B, symbol="
+          f"{region['st_size'] if region else None} B (expected {RV32_GLOBALS_REGION_BYTES})")
     if "pure_add" in syms:
         print("  [ok ] pure_add emitted (non-vacuity)")
     else:
         fails += 1
-        print("  [BUG] pure_add missing — skip contract is vacuous")
+        print("  [BUG] pure_add missing — the emitted-contract is vacuous")
     return fails
 
 
@@ -321,7 +351,7 @@ def main():
     total = 0
     total += run_arm_path("OPTIMIZED (default)", relocatable=False)
     total += run_arm_path("DIRECT (--relocatable)", relocatable=True)
-    total += check_rv32_loudskip()
+    total += check_rv32_lowered()
     total += check_nonzero_init_contract_1052()
     print(f"\nORACLE: {'PASS' if total == 0 else f'FAIL ({total} divergences)'}")
     sys.exit(0 if total == 0 else 1)

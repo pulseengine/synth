@@ -259,6 +259,9 @@ impl RiscVEncoder {
             Branch { .. } => Err(RiscVEncodingError::UnresolvedLabel("branch")),
             Call { .. } => Err(RiscVEncodingError::UnresolvedLabel("call")),
             Label { .. } => Err(RiscVEncodingError::UnresolvedLabel("label")),
+            // RQ-63-RVGLOBAL: a symbol-relative pair the ELF builder expands
+            // (`lui`+`addi` placeholders + HI20/LO12_I relocations).
+            La { .. } => Err(RiscVEncodingError::UnresolvedLabel("la")),
         }
     }
 

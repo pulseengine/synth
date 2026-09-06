@@ -3817,6 +3817,43 @@ fn compile_all_exports(
     }
     let a64_substrate_emitted = a64_substrate.as_ref().is_ok_and(|s| s.emitted);
 
+    // RQ-63-RVGLOBAL (#242): plan the RV32 globals region — a synth-emitted
+    // `.data` image (`__synth_globals`) carrying every defined global's
+    // decoded initializer, the aarch64 #851 design ported (no base register,
+    // no embedder precondition beside s11). Planned BEFORE any body compiles
+    // so a non-constant integer initializer refuses the whole compile rather
+    // than being found after code addressing it was emitted; planned ONLY
+    // when a compiled function touches a global, so every other module stays
+    // byte-identical (no region, no symbol). The `rv32_globals_emitted` gate
+    // below is FAIL-SAFE: true only when the RV32 ELF branch will place this
+    // exact image, so the selector cannot address a region nothing ships.
+    let rv32_globals_image: Vec<u8> = if backend.name() == "riscv"
+        && all_exports.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)))
+        }) {
+        plan_rv32_globals(&all_globals)?
+    } else {
+        Vec::new()
+    };
+    let rv32_globals_emitted = !rv32_globals_image.is_empty();
+    let num_imported_globals = all_imports
+        .iter()
+        .filter(|i| matches!(i.kind, synth_core::ImportKind::Global))
+        .count() as u32;
+    let all_global_mutable: Vec<bool> = {
+        let mut m = Vec::new();
+        for g in &all_globals {
+            let i = g.index as usize;
+            if m.len() <= i {
+                m.resize(i + 1, true);
+            }
+            m[i] = g.mutable;
+        }
+        m
+    };
+
     // VCR-MEM-004 (#901): ingest scry's `safe-accesses.json`. TOTAL — every
     // refusal path (unreadable, malformed, wrong schema, `module_sha256`
     // mismatch, `memory_min_bytes` disagreement) yields "elide nothing" with a
@@ -3995,6 +4032,13 @@ fn compile_all_exports(
         type_result_counts: a64_plan_inputs.type_result_counts.clone(),
         type_class_ids: a64_plan_inputs.type_class_ids.clone(),
         a64_substrate_emitted,
+        // RQ-63-RVGLOBAL (#242): the RV32 globals inputs. `rv32_globals_emitted`
+        // is FAIL-SAFE — true only when the RV32 ELF branch places the planned
+        // `__synth_globals` image, so the selector cannot address a region
+        // nothing ships. The op index space is imports-first, hence the count.
+        num_imported_globals,
+        global_mutable: all_global_mutable.clone(),
+        rv32_globals_emitted,
         // #275: self-contained funcref-table dispatch — enabled ONLY when the
         // builder that emits and patches the flash-resident table
         // (`build_multi_func_cortex_m_elf`) will run: Cortex-M image, not
@@ -4861,7 +4905,23 @@ fn compile_all_exports(
             );
         }
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
-        build_multi_func_riscv_elf(&compiled_funcs, &all_imports, &rv_wasm_data)?
+        // RQ-63-RVGLOBAL: place the planned globals image (`.data` +
+        // `__synth_globals`) — the region every `la __synth_globals` pair
+        // the selector emitted relocates against. Empty ⇒ byte-identical.
+        if rv32_globals_emitted {
+            info!(
+                "Shipping {} wasm global(s) ({} B) as the .data `__synth_globals` region \
+                 (RQ-63-RVGLOBAL) — the standard C-runtime .data copy seeds it at reset",
+                all_globals.len(),
+                rv32_globals_image.len()
+            );
+        }
+        build_multi_func_riscv_elf(
+            &compiled_funcs,
+            &all_imports,
+            &rv_wasm_data,
+            &rv32_globals_image,
+        )?
     } else if has_external_relocations || relocatable {
         // RQ-59-DATASEG (#1041): a memory-0 segment with a NON-CONST offset
         // was legacy-dropped at decode (absent from all_data_segments); the
@@ -6632,10 +6692,13 @@ fn build_relocatable_elf(
                 // #871: R_RISCV_CALL_PLT is emitted only by the EM_RISCV backend
                 // (its own `.rela.text` builder). It can never reach this ARM ELF
                 // relocation path; bail loudly if it somehow does.
-                synth_core::backend::RelocKind::RiscvCallPlt => {
+                synth_core::backend::RelocKind::RiscvCallPlt
+                | synth_core::backend::RelocKind::RiscvHi20
+                | synth_core::backend::RelocKind::RiscvLo12I => {
                     anyhow::bail!(
-                        "internal error: RISC-V CALL_PLT relocation reached the ARM \
-                         ELF emitter — the riscv backend emits its own .rela.text (#871)"
+                        "internal error: RISC-V relocation ({:?}) reached the ARM \
+                         ELF emitter — the riscv backend emits its own .rela.text (#871)",
+                        reloc.kind
                     )
                 }
             };
@@ -8134,13 +8197,31 @@ fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
 /// function's defined symbol. An unmapped label (a call to a local function
 /// that was skipped/not compiled) stays `synth_func_N` and becomes an
 /// undefined symbol — loud at link time, never a silent hole.
+/// RQ-63-RVGLOBAL (#242): plan the RV32 globals `.data` image from the
+/// module's defined globals — [`synth_backend_riscv::globals::plan_image`],
+/// the single producer of the region (the selector prices slot offsets with
+/// the same layout function). A non-constant integer initializer refuses.
+#[cfg(feature = "riscv")]
+fn plan_rv32_globals(globals: &[WasmGlobal]) -> Result<Vec<u8>> {
+    synth_backend_riscv::globals::plan_image(globals).map_err(|e| anyhow::anyhow!("riscv: {e}"))
+}
+
+#[cfg(not(feature = "riscv"))]
+fn plan_rv32_globals(_globals: &[WasmGlobal]) -> Result<Vec<u8>> {
+    anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
+}
+
 #[cfg(feature = "riscv")]
 fn build_multi_func_riscv_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
     wasm_data: &[u8],
+    // RQ-63-RVGLOBAL: the planned `__synth_globals` image (empty = no region).
+    globals_image: &[u8],
 ) -> Result<Vec<u8>> {
-    use synth_backend_riscv::{Reg, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+    use synth_backend_riscv::{
+        Reg, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVOp, RiscVRelocKind,
+    };
 
     // #871: label → symbol mapping (imports first, then compiled functions —
     // a local function shadows nothing because wasm indices are disjoint).
@@ -8174,17 +8255,23 @@ fn build_multi_func_riscv_elf(
         func_byte_ranges.push((start, end));
 
         // #871: rebase this function's call relocations to .text offsets.
+        // RQ-63-RVGLOBAL: the globals `la` pair adds HI20 + LO12_I records
+        // — the kind was fixed by the backend at the site that knows the
+        // instruction shape; this is a pure mapping, not a second decision.
         for reloc in &func.relocations {
-            if !matches!(reloc.kind, synth_core::backend::RelocKind::RiscvCallPlt) {
-                anyhow::bail!(
-                    "internal error: non-CALL_PLT relocation {:?} reached the RISC-V \
+            let kind = match reloc.kind {
+                synth_core::backend::RelocKind::RiscvCallPlt => RiscVRelocKind::CallPlt,
+                synth_core::backend::RelocKind::RiscvHi20 => RiscVRelocKind::Hi20,
+                synth_core::backend::RelocKind::RiscvLo12I => RiscVRelocKind::Lo12I,
+                other => anyhow::bail!(
+                    "internal error: non-RISC-V relocation {:?} reached the RISC-V \
                      ELF emitter (function '{}', offset {}) — the riscv backend only \
-                     produces R_RISCV_CALL_PLT (#871)",
-                    reloc.kind,
+                     produces R_RISCV_CALL_PLT / R_RISCV_HI20 / R_RISCV_LO12_I (#871)",
+                    other,
                     func.name,
                     reloc.offset
-                );
-            }
+                ),
+            };
             let symbol = label_to_symbol
                 .get(&reloc.symbol)
                 .cloned()
@@ -8192,6 +8279,7 @@ fn build_multi_func_riscv_elf(
             call_relocs.push(RiscVCallReloc {
                 offset: (start as u32) + reloc.offset,
                 symbol,
+                kind,
             });
         }
 
@@ -8211,7 +8299,7 @@ fn build_multi_func_riscv_elf(
 
     let builder = RiscVElfBuilder::new_relocatable();
     let mut elf = builder
-        .build_object(&placeholder_funcs, wasm_data, &call_relocs)
+        .build_object_with_globals(&placeholder_funcs, wasm_data, globals_image, &call_relocs)
         .context("RISC-V multi-function ELF generation failed")?;
 
     // .text starts immediately after the 52-byte ELF header.
@@ -8228,6 +8316,7 @@ fn build_multi_func_riscv_elf(
     _funcs: &[ElfFunction],
     _imports: &[ImportEntry],
     _wasm_data: &[u8],
+    _globals_image: &[u8],
 ) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }

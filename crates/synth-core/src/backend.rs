@@ -448,6 +448,31 @@ pub struct CompileConfig {
     /// code addressing a symbol that does not exist. Set only on the two paths
     /// that call `plan()` and place its output in the object.
     pub a64_substrate_emitted: bool,
+    /// RQ-63-RVGLOBAL (#242): how many globals the module IMPORTS. The op
+    /// stream's `global.get`/`global.set` index space is imports-FIRST, while
+    /// [`CompileConfig::global_widths`] / [`CompileConfig::global_mutable`]
+    /// are indexed by DEFINED global (the decoder's `WasmGlobal::index`), so a
+    /// backend maps an op index `i` to defined global `i - num_imported_globals`
+    /// and must decline `i < num_imported_globals` (an imported global's value
+    /// arrives at instantiation, which a synth-emitted region cannot bind).
+    pub num_imported_globals: u32,
+    /// RQ-63-RVGLOBAL (#242): per DEFINED global, its declared mutability.
+    /// Indexed like [`CompileConfig::global_widths`]. A validated module never
+    /// `global.set`s an immutable global, but the RV32 lowering declines it
+    /// anyway rather than write through a `const` — defence in depth, since
+    /// the decoder does not run the wasm validator. Empty ⇒ every global is
+    /// treated as mutable (hand-built op streams).
+    pub global_mutable: Vec<bool>,
+    /// RQ-63-RVGLOBAL (#242): whether the driver WILL place the RV32 globals
+    /// region (`__synth_globals`, a synth-emitted `.data` image carrying every
+    /// defined global's decoded initializer — `synth_backend_riscv::globals`)
+    /// in the object it assembles. FAIL-SAFE BY DEFAULT (`false`): the RV32
+    /// selector LOUD-DECLINES `global.get`/`global.set` unless this is set,
+    /// so a driver that compiles function bodies but never emits the region
+    /// cannot ship code relocating against a symbol nothing defines (the
+    /// #1102 dangling-reference class). The aarch64 `a64_substrate_emitted`
+    /// contract, ported.
+    pub rv32_globals_emitted: bool,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -551,6 +576,11 @@ impl Default for CompileConfig {
             type_result_counts: Vec::new(),
             type_class_ids: Vec::new(),
             a64_substrate_emitted: false,
+            // RQ-63-RVGLOBAL: no imports, every global mutable, and — fail-safe
+            // — NO globals region placed, so the RV32 selector declines.
+            num_imported_globals: 0,
+            global_mutable: Vec::new(),
+            rv32_globals_emitted: false,
             // #778 phase 2: no --wcet-hints file ⇒ no hints. Consulted ONLY by
             // the WCET sidecar computation — never by codegen (the emitted
             // bytes are byte-identical with or without hints).
@@ -640,6 +670,23 @@ pub enum RelocKind {
     /// symbol (the modern form; `R_RISCV_CALL` is deprecated). Emitted only by
     /// the `EM_RISCV` backend's `.rela.text`.
     RiscvCallPlt,
+    /// R_RISCV_HI20 (ELF type 26) — the `lui` half of an ABSOLUTE symbol
+    /// address (RQ-63-RVGLOBAL, #242). `offset` points at a `lui rd, 0`
+    /// placeholder whose 20-bit immediate the linker patches to
+    /// `((S + A) + 0x800) >> 12`. Always paired with an
+    /// [`RelocKind::RiscvLo12I`] on the next instruction. This pair is how
+    /// RV32 reaches a synth-EMITTED region (the globals `.data` image,
+    /// `__synth_globals`) with NO dedicated base register — the RV32 twin of
+    /// the aarch64 `adrp`+`add :lo12:` pair, so globals add no embedder
+    /// precondition beside `s11`. Absolute rather than PC-relative because the
+    /// RV32 object is always statically host-linked into a fixed-address
+    /// bare-metal image (the `medlow` code model), which needs no per-site
+    /// local symbol.
+    RiscvHi20,
+    /// R_RISCV_LO12_I (ELF type 27) — the `addi rd, rd, 0` half of an absolute
+    /// symbol address (RQ-63-RVGLOBAL). The linker patches the 12-bit I-type
+    /// immediate with the low bits of `S + A`.
+    RiscvLo12I,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -99,6 +99,29 @@ impl SelectorOptions {
     }
 }
 
+/// RQ-63-RVGLOBAL (#242): the MODULE-level globals context the selector
+/// prices `global.get`/`global.set` against. Mirrors the aarch64 `ModuleCtx`
+/// contract: `emitted` is FAIL-SAFE — `false` unless the driver has actually
+/// placed the `__synth_globals` region ([`crate::globals`]) in the object it
+/// assembles, so a bare selector probe or a driver that never emits the
+/// region cannot produce code relocating against a symbol nothing defines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RvGlobalsCtx {
+    /// The driver WILL ship the `.data` globals image this code addresses.
+    pub emitted: bool,
+    /// How many globals the module IMPORTS — the op index space is
+    /// imports-first; an access below this index is refused (its value is
+    /// bound at instantiation, which a synth-emitted region cannot do).
+    pub num_imported: u32,
+    /// Declared slot width per DEFINED global (4 = i32/f32, 8 = i64/f64,
+    /// 16 = v128 — `WasmGlobal::slot_bytes`, #643). The slot offset is the
+    /// dense prefix sum ([`crate::globals::slot_offsets`]), the SAME function
+    /// the image is laid out with.
+    pub widths: Vec<u32>,
+    /// Declared mutability per DEFINED global. Empty ⇒ all mutable.
+    pub mutable: Vec<bool>,
+}
+
 /// #882: largest `br_table` the compare-and-branch-chain lowering accepts.
 /// Each entry costs at most 2 instructions (`li` + `beq`), so 16 targets is a
 /// ≤33-instruction dispatch — past that a real jump table wins and the
@@ -151,6 +174,45 @@ pub enum SelectorError {
         expected: &'static str,
         found: &'static str,
     },
+
+    /// RQ-63-RVGLOBAL: `global.get`/`global.set` on a compile path that
+    /// places no `__synth_globals` region (the bare selector probe, a
+    /// hand-built driver). Code addressing an absent region would relocate
+    /// against a symbol nothing defines — refuse (the aarch64 #851 contract).
+    #[error(
+        "global.get/global.set (global {0}) needs the emitted `__synth_globals` region, \
+         which this compile path does not place — loud-declining (RQ-63-RVGLOBAL)"
+    )]
+    GlobalNoSubstrate(u32),
+
+    /// RQ-63-RVGLOBAL: an IMPORTED global. Its value is bound at
+    /// instantiation; RV32 emits the globals region itself and has no
+    /// instantiation step, so the access has nothing sound to read.
+    #[error(
+        "global {0} is an imported global — RV32 emits the globals region itself and \
+         cannot bind an instantiation-time import; loud-declining (RQ-63-RVGLOBAL)"
+    )]
+    ImportedGlobal(u32),
+
+    /// RQ-63-RVGLOBAL: a global index past the module's defined globals.
+    #[error("global {idx} is out of range — the module defines {defined} global(s)")]
+    GlobalOutOfRange { idx: u32, defined: usize },
+
+    /// RQ-63-RVGLOBAL: a slot width the integer lowering has no shape for
+    /// (v128 = 16; f32/f64 share the 4/8-byte slots and decline at decode).
+    #[error(
+        "global {idx} has a {width}-byte slot — only 4 (i32) and 8 (i64) byte slots \
+         lower on RV32; loud-declining (RQ-63-RVGLOBAL)"
+    )]
+    GlobalSlotWidth { idx: u32, width: u32 },
+
+    /// RQ-63-RVGLOBAL: `global.set` on a global declared immutable. Invalid
+    /// wasm (the validator rejects it), but the decoder does not validate;
+    /// never write through a `const`.
+    #[error(
+        "global.set on immutable global {0} — refusing to write through a const (RQ-63-RVGLOBAL)"
+    )]
+    ImmutableGlobalSet(u32),
 }
 
 /// A value sitting on the selector's virtual stack. RV32 is a 32-bit ISA so
@@ -268,6 +330,37 @@ pub fn select_with_signatures(
     func_arg_counts: &[u32],
     func_result_counts: &[u32],
 ) -> Result<RiscVSelection, SelectorError> {
+    // RQ-63-RVGLOBAL: no module context ⇒ no globals region ⇒ every
+    // `global.get`/`global.set` declines loudly (fail-safe default).
+    select_with_module(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
+        &RvGlobalsCtx::default(),
+    )
+}
+
+/// Same as [`select_with_signatures`], plus the MODULE-level globals context
+/// (RQ-63-RVGLOBAL, #242): with `globals.emitted` set, `global.get`/
+/// `global.set` lower to an `la __synth_globals` pair + `lw`/`sw` at the
+/// global's dense slot offset; without it (the default) they decline. The
+/// driver sets `emitted` ONLY when it will place the region
+/// ([`crate::globals::plan_image`]) in the object it assembles.
+#[allow(clippy::too_many_arguments)]
+pub fn select_with_module(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+    globals: &RvGlobalsCtx,
+) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
     //
@@ -308,6 +401,7 @@ pub fn select_with_signatures(
         func_result_counts,
         promote_locals,
         cmp_select_fuse,
+        globals,
     )
 }
 
@@ -339,6 +433,7 @@ fn select_inner(
     func_result_counts: &[u32],
     promote_locals: bool,
     cmp_select_fuse: bool,
+    globals: &RvGlobalsCtx,
 ) -> Result<RiscVSelection, SelectorError> {
     // The unpromoted lowering. With the flag off this IS the result (single
     // run, byte-identical baseline); with the flag on it is the size bar every
@@ -356,6 +451,7 @@ fn select_inner(
         false,
         None,
         cmp_select_fuse,
+        globals,
     );
     if !promote_locals {
         return baseline.map(|(sel, _)| sel);
@@ -373,6 +469,7 @@ fn select_inner(
         true,
         None,
         cmp_select_fuse,
+        globals,
     ) {
         Ok((_, promoted)) => promoted,
         Err(_) => Vec::new(),
@@ -403,6 +500,7 @@ fn select_inner(
             true,
             Some(&subset),
             cmp_select_fuse,
+            globals,
         ) else {
             continue;
         };
@@ -418,15 +516,16 @@ fn select_inner(
 
 /// Emitted `.text` byte size of a lowered op sequence. MUST agree with
 /// `elf_builder::assemble_function` pass 1: `Label` emits nothing, `Call`
-/// expands to an `auipc + jalr` pair (8 B), everything else is one 4-byte
-/// RV32I word (no compressed encodings). The mirror is pinned by
+/// expands to an `auipc + jalr` pair (8 B), `La` to a `lui + addi` pair
+/// (8 B, RQ-63-RVGLOBAL), everything else is one 4-byte RV32I word (no
+/// compressed encodings). The mirror is pinned by
 /// `emitted_byte_size_matches_assembled_text` in `elf_builder.rs` — the #511
 /// estimator↔encoder drift lesson.
 pub(crate) fn emitted_byte_size(ops: &[RiscVOp]) -> usize {
     ops.iter()
         .map(|op| match op {
             RiscVOp::Label { .. } => 0,
-            RiscVOp::Call { .. } => 8,
+            RiscVOp::Call { .. } | RiscVOp::La { .. } => 8,
             _ => 4,
         })
         .sum()
@@ -456,8 +555,10 @@ fn select_attempt(
     promote_locals: bool,
     promo_allow: Option<&std::collections::HashSet<u32>>,
     cmp_select_fuse: bool,
+    globals: &RvGlobalsCtx,
 ) -> Result<(RiscVSelection, Vec<u32>), SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
+    ctx.globals = globals.clone();
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
     ctx.func_arg_counts = func_arg_counts.to_vec();
@@ -636,7 +737,10 @@ pub(crate) fn op_dest(op: &RiscVOp) -> Option<Reg> {
         | Div { rd, .. }
         | Divu { rd, .. }
         | Rem { rd, .. }
-        | Remu { rd, .. } => Some(rd),
+        | Remu { rd, .. }
+        // RQ-63-RVGLOBAL: the `la` pair writes `rd` (a callee-saved temp
+        // here must be spilled by `preserve_callee_saved` like any other).
+        | La { rd, .. } => Some(rd),
         _ => None,
     }
 }
@@ -649,7 +753,9 @@ pub(crate) fn op_dest(op: &RiscVOp) -> Option<Reg> {
 fn op_reads(op: &RiscVOp) -> Option<Vec<Reg>> {
     use RiscVOp::*;
     match op {
-        Lui { .. } | Auipc { .. } => Some(vec![]),
+        // RQ-63-RVGLOBAL: `la` reads nothing (the pair's `addi` consumes
+        // the `lui` result internally).
+        Lui { .. } | Auipc { .. } | La { .. } => Some(vec![]),
         Addi { rs1, .. }
         | Slti { rs1, .. }
         | Sltiu { rs1, .. }
@@ -1369,6 +1475,10 @@ struct Selector {
     /// at the start of each op so it can only feed the immediately following
     /// `select`. See [`PendingCmp`].
     pending_cmp: Option<PendingCmp>,
+    /// RQ-63-RVGLOBAL: the module-level globals context — fail-safe
+    /// `Default` (no region ⇒ every global access declines) unless the
+    /// driver supplied one via [`select_with_module`].
+    globals: RvGlobalsCtx,
 }
 
 impl Selector {
@@ -1417,6 +1527,7 @@ impl Selector {
             promote_locals: false,
             cmp_select_fuse: false,
             pending_cmp: None,
+            globals: RvGlobalsCtx::default(),
         }
     }
 
@@ -1880,6 +1991,10 @@ impl Selector {
             LocalGet(idx) => self.lower_local_get(*idx, op)?,
             LocalSet(idx) => self.lower_local_set(*idx, op)?,
             LocalTee(idx) => self.lower_local_tee(*idx, op)?,
+
+            // ─── Globals — RQ-63-RVGLOBAL (#242) ────────────────────────
+            GlobalGet(idx) => self.lower_global_get(*idx)?,
+            GlobalSet(idx) => self.lower_global_set(*idx, op)?,
 
             // ─── Select (ternary) — #223 ────────────────────────────────
             Select => self.lower_select(op, pending_cmp)?,
@@ -2939,6 +3054,128 @@ impl Selector {
                 Ok((masked, 0))
             }
         }
+    }
+
+    // ────────── Globals (RQ-63-RVGLOBAL, #242) ──────────
+    //
+    // `global k` lives at `__synth_globals + slot_offsets(widths)[k']` in the
+    // `.data` region THIS object emits (`crate::globals`), `k'` being the
+    // DEFINED index (`k - num_imported`). The base is materialized with an
+    // `la` pair (absolute HI20/LO12_I relocations the host linker resolves)
+    // — no base register, no embedder precondition beside `s11` (the aarch64
+    // #851 design; see `crate::globals` for why the R9 port was not taken).
+    // An i32 global is one `lw`/`sw` at the slot; an i64 global is a
+    // register PAIR at `off` / `off + 4`, little-endian like `i64.load`.
+
+    /// Resolve `global.get`/`global.set` index `idx` to `(slot_offset, is_i64)`,
+    /// or the loud decline that applies. Every refusal is by name.
+    fn global_slot(&self, idx: u32, is_set: bool) -> Result<(i32, bool), SelectorError> {
+        let g = &self.globals;
+        // The import check comes FIRST: a module that imports globals and
+        // defines none has no region to place, and "no substrate" would
+        // mis-attribute a decline whose real cause is the import.
+        if idx < g.num_imported {
+            return Err(SelectorError::ImportedGlobal(idx));
+        }
+        if !g.emitted {
+            return Err(SelectorError::GlobalNoSubstrate(idx));
+        }
+        let defined = (idx - g.num_imported) as usize;
+        let Some(&width) = g.widths.get(defined) else {
+            return Err(SelectorError::GlobalOutOfRange {
+                idx,
+                defined: g.widths.len(),
+            });
+        };
+        let is_i64 = match width {
+            4 => false,
+            8 => true,
+            w => return Err(SelectorError::GlobalSlotWidth { idx, width: w }),
+        };
+        if is_set && g.mutable.get(defined).is_some_and(|m| !*m) {
+            return Err(SelectorError::ImmutableGlobalSet(idx));
+        }
+        let off = crate::globals::slot_offsets(&g.widths)[defined];
+        // The high word of an i64 slot sits at `off + 4`; both must fit the
+        // signed 12-bit load/store immediate.
+        let last = off + if is_i64 { 4 } else { 0 };
+        if last > 2047 {
+            return Err(SelectorError::ImmediateTooLarge {
+                value: last as i64,
+                context: "global slot offset",
+            });
+        }
+        Ok((off as i32, is_i64))
+    }
+
+    fn lower_global_get(&mut self, idx: u32) -> Result<(), SelectorError> {
+        let (off, is_i64) = self.global_slot(idx, false)?;
+        let base = self.alloc_temp();
+        self.out.push(RiscVOp::La {
+            rd: base,
+            symbol: crate::globals::GLOBALS_SYMBOL.to_string(),
+        });
+        if is_i64 {
+            let lo = self.alloc_temp();
+            let hi = self.alloc_temp();
+            self.out.push(RiscVOp::Lw {
+                rd: lo,
+                rs1: base,
+                imm: off,
+            });
+            self.out.push(RiscVOp::Lw {
+                rd: hi,
+                rs1: base,
+                imm: off + 4,
+            });
+            self.push_i64(lo, hi);
+        } else {
+            // `base` is read and overwritten by ONE instruction — reusing it
+            // as the destination is safe and saves a temp.
+            self.out.push(RiscVOp::Lw {
+                rd: base,
+                rs1: base,
+                imm: off,
+            });
+            self.push_i32(base);
+        }
+        Ok(())
+    }
+
+    fn lower_global_set(&mut self, idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
+        let (off, is_i64) = self.global_slot(idx, true)?;
+        // Popped operands are op-pinned, so the base temp cannot alias them.
+        if is_i64 {
+            let (lo, hi) = self.pop_i64(op)?;
+            let base = self.alloc_temp();
+            self.out.push(RiscVOp::La {
+                rd: base,
+                symbol: crate::globals::GLOBALS_SYMBOL.to_string(),
+            });
+            self.out.push(RiscVOp::Sw {
+                rs1: base,
+                rs2: lo,
+                imm: off,
+            });
+            self.out.push(RiscVOp::Sw {
+                rs1: base,
+                rs2: hi,
+                imm: off + 4,
+            });
+        } else {
+            let value = self.pop_i32(op)?;
+            let base = self.alloc_temp();
+            self.out.push(RiscVOp::La {
+                rd: base,
+                symbol: crate::globals::GLOBALS_SYMBOL.to_string(),
+            });
+            self.out.push(RiscVOp::Sw {
+                rs1: base,
+                rs2: value,
+                imm: off,
+            });
+        }
+        Ok(())
     }
 
     fn lower_load_word(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
@@ -9467,6 +9704,7 @@ mod tests {
             &[],
             promote,
             false,
+            &RvGlobalsCtx::default(),
         )
         .unwrap()
         .ops
@@ -9652,6 +9890,7 @@ mod tests {
             true,
             None,
             false,
+            &RvGlobalsCtx::default(),
         )
         .unwrap();
         assert_eq!(promoted, vec![1], "local 1 must promote under force");
@@ -9914,6 +10153,189 @@ mod tests {
         assert_eq!(map.get(&3), Some(&Reg::S10));
     }
 
+    // ─────────── RQ-63-RVGLOBAL (#242): WASM globals ───────────
+
+    /// A module context with ONE imported global (index 0) and three defined
+    /// globals: i32 (op index 1, slot 0), i64 (op index 2, slot 4..12) and an
+    /// IMMUTABLE i32 (op index 3, slot 12) — the dense #643 layout.
+    fn globals_ctx_1163() -> RvGlobalsCtx {
+        RvGlobalsCtx {
+            emitted: true,
+            num_imported: 1,
+            widths: vec![4, 8, 4],
+            mutable: vec![true, true, false],
+        }
+    }
+
+    fn sel_globals(
+        ops: &[WasmOp],
+        num_params: u32,
+        ctx: &RvGlobalsCtx,
+    ) -> Result<Vec<RiscVOp>, SelectorError> {
+        select_with_module(
+            ops,
+            num_params,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            &[],
+            &[],
+            ctx,
+        )
+        .map(|s| s.ops)
+    }
+
+    fn la_globals(out: &[RiscVOp]) -> Option<Reg> {
+        out.iter().find_map(|op| match op {
+            RiscVOp::La { rd, symbol } if symbol == crate::globals::GLOBALS_SYMBOL => Some(*rd),
+            _ => None,
+        })
+    }
+
+    /// `global.get` of an i32 global: `la base, __synth_globals` then ONE
+    /// `lw` at the global's DENSE slot offset (op index 3 → defined 2 →
+    /// offset 4 + 8 = 12), the loaded value returned in a0.
+    #[test]
+    fn global_get_i32_lowers_to_la_plus_lw_at_dense_slot_1163() {
+        let out =
+            sel_globals(&[WasmOp::GlobalGet(3), WasmOp::End], 0, &globals_ctx_1163()).unwrap();
+        let base = la_globals(&out).expect("la __synth_globals");
+        assert!(
+            out.iter()
+                .any(|op| matches!(op, RiscVOp::Lw { rs1, imm: 12, .. } if *rs1 == base)),
+            "expected lw at slot 12 off the la base: {out:?}"
+        );
+        assert_eq!(
+            out.iter()
+                .filter(|op| matches!(op, RiscVOp::Lw { .. }))
+                .count(),
+            1,
+            "an i32 global is ONE word load"
+        );
+    }
+
+    /// `global.get` of an i64 global: a register PAIR loaded from `off` and
+    /// `off + 4` (slot 4 → words at 4 and 8), little-endian like `i64.load`.
+    #[test]
+    fn global_get_i64_loads_both_words_1163() {
+        let out =
+            sel_globals(&[WasmOp::GlobalGet(2), WasmOp::End], 0, &globals_ctx_1163()).unwrap();
+        let base = la_globals(&out).expect("la __synth_globals");
+        let imms: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Lw { rs1, imm, .. } if *rs1 == base => Some(*imm),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(imms, vec![4, 8], "lo word at 4, hi word at 8: {out:?}");
+    }
+
+    /// `global.set` of an i32 / i64 global: `sw` at the slot (pair for i64).
+    #[test]
+    fn global_set_stores_at_slot_and_pair_for_i64_1163() {
+        let ctx = globals_ctx_1163();
+        let out = sel_globals(
+            &[WasmOp::I32Const(5), WasmOp::GlobalSet(1), WasmOp::End],
+            0,
+            &ctx,
+        )
+        .unwrap();
+        let base = la_globals(&out).expect("la __synth_globals");
+        assert!(
+            out.iter()
+                .any(|op| matches!(op, RiscVOp::Sw { rs1, imm: 0, .. } if *rs1 == base)),
+            "expected sw at slot 0: {out:?}"
+        );
+        let out = sel_globals(
+            &[
+                WasmOp::I64Const(0x1122334455667788),
+                WasmOp::GlobalSet(2),
+                WasmOp::End,
+            ],
+            0,
+            &ctx,
+        )
+        .unwrap();
+        let base = la_globals(&out).expect("la __synth_globals");
+        let imms: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Sw { rs1, imm, .. } if *rs1 == base => Some(*imm),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(imms, vec![4, 8], "i64 set stores lo at 4, hi at 8: {out:?}");
+    }
+
+    /// Every refusal is BY NAME, and the fail-safe default (no module
+    /// context — the bare `select` probe, a hand-built driver) still declines:
+    /// code addressing a region nothing ships must not be emitted.
+    #[test]
+    fn global_access_declines_by_name_1163() {
+        // Fail-safe default: no substrate.
+        assert!(matches!(
+            select(&[WasmOp::GlobalGet(0), WasmOp::End], 0),
+            Err(SelectorError::GlobalNoSubstrate(0))
+        ));
+        let ctx = globals_ctx_1163();
+        // Imported global — reported as such even when a region exists.
+        assert!(matches!(
+            sel_globals(&[WasmOp::GlobalGet(0), WasmOp::End], 0, &ctx),
+            Err(SelectorError::ImportedGlobal(0))
+        ));
+        // ... and when NO region exists (a module importing globals and
+        // defining none) — the import is the cause, not the substrate.
+        let no_region = RvGlobalsCtx {
+            emitted: false,
+            num_imported: 1,
+            ..RvGlobalsCtx::default()
+        };
+        assert!(matches!(
+            sel_globals(&[WasmOp::GlobalGet(0), WasmOp::End], 0, &no_region),
+            Err(SelectorError::ImportedGlobal(0))
+        ));
+        // Past the defined globals.
+        assert!(matches!(
+            sel_globals(&[WasmOp::GlobalGet(4), WasmOp::End], 0, &ctx),
+            Err(SelectorError::GlobalOutOfRange { idx: 4, defined: 3 })
+        ));
+        // Writing an immutable global.
+        assert!(matches!(
+            sel_globals(
+                &[WasmOp::I32Const(1), WasmOp::GlobalSet(3), WasmOp::End],
+                0,
+                &ctx
+            ),
+            Err(SelectorError::ImmutableGlobalSet(3))
+        ));
+        // A v128-width slot.
+        let v128 = RvGlobalsCtx {
+            emitted: true,
+            widths: vec![16],
+            ..RvGlobalsCtx::default()
+        };
+        assert!(matches!(
+            sel_globals(&[WasmOp::GlobalGet(0), WasmOp::End], 0, &v128),
+            Err(SelectorError::GlobalSlotWidth { idx: 0, width: 16 })
+        ));
+        // A slot past the imm12 reach (512 i32 globals → the last at 2044,
+        // whose i64 twin would need 2048).
+        let wide = RvGlobalsCtx {
+            emitted: true,
+            widths: [vec![4u32; 511], vec![8]].concat(),
+            ..RvGlobalsCtx::default()
+        };
+        assert!(matches!(
+            sel_globals(&[WasmOp::GlobalGet(511), WasmOp::End], 0, &wide),
+            Err(SelectorError::ImmediateTooLarge { value: 2048, .. })
+        ));
+        assert!(
+            sel_globals(&[WasmOp::GlobalGet(510), WasmOp::End], 0, &wide).is_ok(),
+            "slot 2040 is still reachable"
+        );
+    }
+
     // ─────────── #472: RV32 cmp→select fusion (VCR-SEL-004 port) ───────────
 
     fn s_fuse(ops: &[WasmOp], num_params: u32, fuse: bool) -> Vec<RiscVOp> {
@@ -9927,6 +10349,7 @@ mod tests {
             &[],
             false,
             fuse,
+            &RvGlobalsCtx::default(),
         )
         .unwrap()
         .ops

@@ -465,7 +465,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 324783 \
+            --min-emulation-floor 324809 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1916,6 +1916,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Run RV32 data-segment full-boot oracle (#798, rv32imac)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rv32_data_798_boot_differential.py
+      # RQ-63-RVGLOBAL (#242): RV32 WASM globals — the same full-boot shape.
+      # synth emits the globals as a `.data` `__synth_globals` image reached
+      # via `la` HI20/LO12_I relocations; only a REAL link + boot makes that
+      # observable, so clang+lld link the object against synth's generated
+      # startup/linker script, unicorn boots from _reset (the startup's own
+      # .data copy seeds the globals) and 23 export executions across three
+      # fresh boots are compared against a wasmtime instance carrying the
+      # same state. RED on v0.62 (every global.get declined). Declares
+      # `emulations >= 26` (3 boots + 23 calls); the floor pin above moved
+      # by exactly that.
+      - name: Run RV32 globals full-boot oracle (RQ-63-RVGLOBAL, rv32imac)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rv32_globals_1163_boot_differential.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
