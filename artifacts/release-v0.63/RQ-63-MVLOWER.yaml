@@ -67,3 +67,20 @@ artifacts:
       verification-track: differential
       issue: "#1093"
       done-when: "manual: for each param-block shape either a lowering lands that makes the #1097 oracle's silent-wrong vectors CORRECT, or the shape is recorded as staying declined with the measured reason — no shape's decline is relaxed without passing that oracle"
+      deferred: >-
+        DEFERRED from v0.63 DELIBERATELY, and this one would have been unsafe
+        to land. Param-taking block types decline on every backend; lowering
+        them means relaxing the #1096 guard. But #1097's oracle records what
+        that guard protects against, with exact values: pre-#1096, if/ARM
+        `ipe(0)` returned 0xC0DE0003 — an UNINITIALIZED REGISTER canary —
+        and three more legs returned uninitialized-T2 or a mis-reconciled
+        back-edge join. Relaxing the guard without first making those four
+        vectors CORRECT re-introduces a silent wrong answer.
+        THE RELEASE'S OWN GATING RULE FORBIDS IT: every reach increment ships
+        with the oracle that makes the newly-accepted input safe, and the
+        oracle lands FIRST. Here the acceptance oracle already exists
+        (param_block_silent_1097_differential.py) and the LOWERING must be
+        proven against it — which is exactly the right shape for a v0.64 lane
+        and exactly the wrong thing to rush at the end of a release.
+        Deferring costs acceptance; landing it wrong would cost correctness,
+        and this release measured what that trade is worth (RQ-63-ACKDEFAULT).

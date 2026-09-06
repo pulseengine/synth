@@ -103,3 +103,19 @@ artifacts:
       verification-track: review
       issue: "#1136"
       done-when: "manual: a synth AADL model exists that parses under `spar parse` and carries at least the execution-on-target basics (memory regions, processor binding, MPU) plus timing properties traceable to --emit-wcet; what AADL cannot express is stated explicitly; and RQ-62-LOOPCONFORM counts steps 1-2 as a real step rather than an N/A"
+      deferred: >-
+        DEFERRED from v0.63, blocked UPSTREAM and not by capacity. spar#445 is
+        open: spar accepts undeclared property sets SILENTLY, so a synth model
+        would declare an execution contract spar reads nothing from — the
+        artifact would be green while asserting nothing, which is the vacuity
+        class this release spent its scope finding (RQ-63-FLOOREQ, #1113,
+        RQ-62-FLOORTIGHT). Building it now would produce a model that CANNOT
+        FAIL, and filing that as evidence is worse than filing nothing.
+        SECOND, INDEPENDENT BLOCKER, recorded so the first is not mistaken for
+        the only one: the AADL -> WIT generation is byte-identical today, so a
+        layout contract needs a SECOND codegen target before the model
+        constrains anything observable. Both must clear before this is
+        actionable; neither is synth's to clear.
+        This is the THIRD release running that feature-loop steps 1-2 are N/A
+        (#1136), which the loop's own rule says must be FILED rather than
+        waved off — it is, and it stays open with this reason attached.
