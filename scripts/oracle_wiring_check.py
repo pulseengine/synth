@@ -361,6 +361,16 @@ def main():
         help="fail if the summed `ci-checks: emulations` floors drop below N "
         "(the #910 ratchet; direction is UP)",
     )
+    ap.add_argument(
+        "--exact-emulation-floor",
+        type=int,
+        metavar="N",
+        help="RQ-63-FLOOREQ: fail unless the summed `ci-checks: emulations` "
+        "floors EQUAL N exactly — the invariant RQ-62-FLOORTIGHT wrote down "
+        "and nothing enforced. `--min-` is a LOWER BOUND, so an oracle that "
+        "lands without its same-PR bump re-opens slack silently; equality "
+        "makes that a red build.",
+    )
     args = ap.parse_args()
 
     root = repo_root()
@@ -394,6 +404,31 @@ def main():
             "VACUOUS — no `wired` oracle declares `ci-checks: emulations`; the "
             "execution population is unmeasured."
         )
+    # RQ-63-FLOOREQ (#910, v0.63). RQ-62-FLOORTIGHT tightened the VALUE
+    # (322754 -> 324646) and wrote the rule beside it — "keep this EQUAL to
+    # the declared total; a landing oracle bumps both in the same PR" — but
+    # shipped only the number. Measured on the v0.63 tree: raising one
+    # oracle's declared floor by 50 while leaving ci.yml untouched left
+    # oracle_wiring_check, claim_check AND status_evidence_check all at
+    # EXIT 0. `--min-` cannot see it, because declared > enforced satisfies a
+    # lower bound. That is the same defect one level up again: #1113 was a
+    # decline half invisible to its own oracle's floor, FLOORTIGHT was the
+    # summed ratchet below the summed declarations, and this is the RULE
+    # WRITTEN TO PREVENT RECURRENCE being unenforced. Equality closes it:
+    # there is no slack to drift into, in either direction.
+    if args.exact_emulation_floor is not None:
+        measured = summary["emulation_floor"]
+        if measured != args.exact_emulation_floor:
+            direction = "ABOVE" if measured > args.exact_emulation_floor else "BELOW"
+            fails.append(
+                f"check-floor EQUALITY BROKEN: summed `ci-checks: emulations` "
+                f"floors {measured} != pinned {args.exact_emulation_floor} "
+                f"({direction} by {abs(measured - args.exact_emulation_floor)}). "
+                f"If an oracle landed, bump the pin in the SAME PR — that is "
+                f"the RQ-62-FLOORTIGHT protocol. If an oracle LOST execution, "
+                f"that is the failure this gate exists to catch. Never widen "
+                f"the pin to make a build green."
+            )
     if args.min_emulation_floor is not None:
         if summary["emulation_floor"] < args.min_emulation_floor:
             fails.append(

@@ -462,10 +462,16 @@ jobs:
         # (mem_isolation_red_1145.py, declares 6). Keep this EQUAL to
         # `oracle_wiring_check.py`'s reported `emulations floor total`; when an
         # oracle legitimately lands, bump it in the SAME PR.
+        # RQ-63-FLOOREQ (v0.63): this is now ENFORCED, not conventional.
+        # `--exact-emulation-floor` fails on ANY inequality in either
+        # direction. The old `--min-` form was a LOWER BOUND, so a landing
+        # oracle whose author forgot the same-PR bump re-opened slack
+        # silently — measured on the v0.63 tree, a +50 drift left this gate,
+        # claim_check AND status_evidence_check all at exit 0.
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --min-emulation-floor 324845 \
+            --exact-emulation-floor 324845 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
