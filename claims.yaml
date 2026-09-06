@@ -2500,7 +2500,7 @@ claims:
     #     and Thumb-2); the red run on main measured 114 with 10 declined.
     #   RQ-63-A64STACK  (#1164): +13 for
     #     aarch64_call_valstack_rq63_differential.py.
-    text: "--min-emulation-floor PLACEHOLDER"
+    text: "--min-emulation-floor 324783"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
