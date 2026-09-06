@@ -226,8 +226,8 @@ def _export_skip(err):
     return int(m.group(1)), int(m.group(2)), _names(m.group(3))
 
 
-def classify(synth, module, backend, timeout, component=False):
-    rc, err = run_synth(synth, module, backend, [], timeout)
+def classify(synth, module, backend, timeout, component=False, extra=None):
+    rc, err = run_synth(synth, module, backend, list(extra or []), timeout)
     if rc is None:
         return {"verdict": "TIMEOUT", "reason": "timeout"}
     m = SKIP_WARN_RE.search(err)
@@ -620,6 +620,84 @@ def report_stratum(name, rows):
             print(f"    {fn_mods[reason]:4d} mod / {n:5d} fn  {reason}")
 
 
+
+# ---------------------------------------------------------------------------
+# RQ-63-LADDER (v0.63): acceptance is a function of INVOCATION, not one number.
+#
+# v0.62's census reported a single figure per backend measured with ONE fixed
+# invocation. That under-reports: `--embedder-data-init` / `--embedder-global-init`
+# are an ACKNOWLEDGEMENT of an embedder obligation (the #952/#1041/#1052
+# honest-refusal pattern), not a feature switch, and modules behind them compile
+# TODAY. So the honest report is a LADDER whose rungs are named and reported
+# SEPARATELY — never summed into one rate.
+#
+# The rungs are deliberately NOT all "accepts":
+#   default        no flags — what a consumer gets with no knowledge
+#   embedder-ack   the consumer acknowledges an embedder obligation
+#   allow-skipped  CATEGORICALLY DIFFERENT: a PARTIAL object is a third state,
+#                  not a pass. Counted, reported, and never folded into accepts.
+#   no-optimize    selector-path difference only
+#   NEVER          declines at every rung; attributed by primary_blocker()
+# ---------------------------------------------------------------------------
+LADDER_RUNGS = [
+    ("default", []),
+    ("embedder-ack", ["--embedder-data-init", "--embedder-global-init"]),
+    ("allow-skipped", ["--embedder-data-init", "--embedder-global-init",
+                       "--allow-skipped-exports"]),
+    ("no-optimize", ["--embedder-data-init", "--embedder-global-init",
+                     "--allow-skipped-exports", "--no-optimize"]),
+]
+ACCEPT_VERDICTS = {"ACCEPT_FULL", "ACCEPT_INTERNAL_SKIPS"}
+
+
+def ladder_classify(synth, module, backend, timeout, component=False):
+    """First rung at which the module is accepted, or NEVER.
+
+    Returns (rung_name, record). The record is the classify() result at the
+    rung that accepted, or at the LAST rung when none did — so the NEVER
+    bucket's primary_blocker() reflects the most permissive invocation, which
+    is the honest attribution: a blocker that survives every flag is a real
+    capability gap, not a missing acknowledgement."""
+    last = None
+    for name, extra in LADDER_RUNGS:
+        rec = classify(synth, module, backend, timeout,
+                       component=component, extra=extra)
+        last = rec
+        if rec.get("verdict") in ACCEPT_VERDICTS:
+            return name, rec
+        if rec.get("verdict") == "TIMEOUT":
+            return "TIMEOUT", rec
+    return "NEVER", last
+
+
+def report_ladder(backend, rows):
+    """Rungs printed SEPARATELY with the denominator beside them (#1095 rule),
+    and the NEVER bucket broken down by root cause."""
+    total = len(rows)
+    order = [n for n, _ in LADDER_RUNGS] + ["NEVER", "TIMEOUT"]
+    counts = Counter(r["rung"] for r in rows)
+    print(f"\n=== {backend}: acceptance LADDER over {total} modules ===")
+    print("    (rungs are SEPARATE, never summed — `allow-skipped` yields a")
+    print("     PARTIAL object, which is a third state and not an accept)")
+    cumulative = 0
+    for name in order:
+        n = counts.get(name, 0)
+        if name in ("NEVER", "TIMEOUT"):
+            print(f"  {name:<14} {n:>4}          of {total}")
+            continue
+        cumulative += n
+        pct = 100.0 * cumulative / total if total else 0.0
+        note = "  <- partial objects, NOT accepts" if name == "allow-skipped" else ""
+        print(f"  {name:<14} {n:>4}  (cum {cumulative:>4} = {pct:4.1f}%) of {total}{note}")
+    never = [r for r in rows if r["rung"] == "NEVER"]
+    if never:
+        print(f"\n  NEVER bucket ({len(never)}) by primary blocker — the real capability gaps:")
+        blockers = Counter(primary_blocker(r["record"]) or "(unattributed)"
+                           for r in never)
+        for reason, n in blockers.most_common(12):
+            print(f"    {n:>4}  {reason[:88]}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("roots", nargs="+", help=".wasm files or directories")
@@ -627,12 +705,47 @@ def main():
     ap.add_argument("--backend", default="arm")
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--json", help="write per-module records to this file")
+    ap.add_argument("--ladder", action="store_true",
+                    help="RQ-63-LADDER: report the flag-aware acceptance "
+                         "ladder (rungs reported separately, NEVER bucket "
+                         "attributed by root cause) instead of the #1017 "
+                         "single-invocation census")
     args = ap.parse_args()
 
     modules = discover(args.roots)
     if not modules:
         print("no .wasm modules found under the given roots", file=sys.stderr)
         return 2
+
+    if args.ladder:
+        # RQ-63-LADDER. Deliberately a SEPARATE path: the #1017 census below is
+        # exact about ONE invocation and is cited as such, so the ladder must
+        # not silently change what that census reports.
+        lrows = []
+        for path, data, digest in modules:
+            rung, rec = ladder_classify(
+                args.synth, path, args.backend, args.timeout,
+                component=is_component(data),
+            )
+            rec.update(path=str(path), sha256=digest[:16],
+                       component=is_component(data))
+            lrows.append({"path": str(path), "rung": rung,
+                          "component": is_component(data), "record": rec})
+        core = [r for r in lrows if not r["component"]]
+        comp = [r for r in lrows if r["component"]]
+        report_ladder(f"{args.backend} / core", core)
+        if comp:
+            report_ladder(f"{args.backend} / components", comp)
+        report_ladder(f"{args.backend} / ALL", lrows)
+        if args.json:
+            with open(args.json, "w") as fh:
+                json.dump([{k: v for k, v in r.items() if k != "record"}
+                           | {"verdict": r["record"].get("verdict"),
+                              "primary_blocker": primary_blocker(r["record"])
+                              if r["rung"] == "NEVER" else None}
+                           for r in lrows], fh, indent=1)
+            print(f"\nper-module ladder records written to {args.json}")
+        return 0
 
     rows = []
     for path, data, digest in modules:
