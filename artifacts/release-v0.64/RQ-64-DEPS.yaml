@@ -17,9 +17,18 @@ artifacts:
 
       TWO SEPARATE PROBLEMS, and conflating them is why they have sat:
 
-      1. THE HOLD IS CORRECT AND HAS NO EXIT. The rule says hold; nothing says
-         when or how a held bump is evaluated and released. So they accumulate.
-         `#1108` is fully green on a CURRENT base and is held by policy alone.
+      1. THE HOLD IS CORRECT AND ITS EXIT IS UNDER-SPECIFIED. **Corrected
+         2026-09-07 — the original framing here ("HAS NO EXIT") was too
+         strong, and is left visible rather than edited away.** The workflow
+         DOES state one, at `dependabot-auto-merge.yml:20`: "A hold is a delay,
+         never a block: merge a held bump BY HAND once the FULL suite is green
+         ... the discriminator is CI, not a maintainer's read of the diff."
+         That criterion is right. What it omitted is everything about the TREE
+         THE SUITE RAN ON — base freshness, what to do when the refresh
+         mechanism is gone, and what happens to a bump nobody ever evaluates.
+         A criterion that cannot be applied is why these accumulated, not the
+         absence of one. `#1108` is fully green on a CURRENT base and is held
+         by policy alone.
 
       2. THREE OF THEM ARE ON A BASE FROM BEFORE v0.62, so their single
          failure is uninterpretable — it may be the bump, it may be the eight
@@ -31,6 +40,34 @@ artifacts:
       decisions: what a held 0.x-minor bump needs before it can land (rebase,
       the full suite including the Z3 feature path, and a stated reason), and
       what happens to one that is never evaluated.
+
+      MEASURED 2026-09-07, AND IT CHANGES THE SHAPE OF THE FIX. The exit
+      everyone assumed exists — ask dependabot to rebase — is STRUCTURALLY
+      UNAVAILABLE on three of the four. Each carries a human
+      `Merge branch 'main' into dependabot/...` commit (`570cc34d`, `db05bfbc`,
+      `13aaf478`), and dependabot refuses to touch a branch with foreign
+      commits. It said so itself on all three at 06:05Z:
+
+        "Looks like this PR has been edited by someone other than Dependabot.
+         That means Dependabot can't rebase it - sorry!"
+
+      That is a ONE-WAY DOOR, not a transient decline: `@dependabot rebase`
+      will never work on these branches again. A well-intentioned merge —
+      almost certainly an attempt to make CI meaningful — permanently disabled
+      the mechanism for making CI meaningful. The remaining exits are
+      `@dependabot recreate` (discards the branch, rebuilds on current main,
+      restores bot management) or a human rebase.
+
+      SO THE HOLD HAD NO EXIT IN TWO SENSES AT ONCE: no POLICY saying when a
+      held bump is evaluated, and — on three of four — no MECHANISM to refresh
+      one even if the policy existed. Only the first was visible.
+
+      Attribution, re-derived rather than assumed: the sole red on all three is
+      `Rivet Federated Graph (advisory)`, which is GREEN on `main` at
+      `8862ee2f`. It is advisory AND measured on a tree whose merge-base is
+      `b552fb4c` (2026-09-03, pre-v0.63), so it attributes nothing to the bump
+      either way. A red on a stale base is not evidence about a dependency —
+      the v0.56 lesson (88 -> 14 -> 5 once measured against a baseline).
     status: proposed
     release: v0.64
     tags:
@@ -45,10 +82,19 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#965"
-      done-when: "manual: each of the four is rebased onto current main and either merged with its evaluation recorded or closed with a reason; and the MINORHOLD rule gains an exit condition saying what a held bump needs to land"
+      done-when: "manual: the MINORHOLD rule gains a written exit condition naming (a) the base-freshness precondition, (b) which feature-gated suites the dependency's own path requires, (c) the stated-reason obligation, and (d) what happens to a bump nobody evaluates; and each of the four held PRs is either landed under it or closed with a reason"
       verified-by: >-
-        PENDING. Required: re-run each on a CURRENT base before judging it —
-        a red on a v0.62-era base attributes nothing. `#1108` (z3) is the
-        cleanest test of the protocol: green on a current base, held purely by
-        policy, and the Z3 path is a SEPARATE `--features` build that a plain
-        `cargo test --workspace` never exercises (#836).
+        PARTIAL, and the partial part is named. ESTABLISHED: the rebase
+        mechanism is unavailable on #1106/#1107/#1110 (dependabot's own comment,
+        2026-09-07T06:05Z, on all three); their single red is advisory and
+        green on main, so it attributes nothing; their merge-base is
+        `b552fb4c`, four days and one release stale. `@dependabot recreate` was
+        requested on all three with the measurements recorded on each PR.
+        NOT YET ESTABLISHED: whether recreate actually fires (it had not after
+        ~30 minutes), and whether any of the four is safe to land — that needs
+        a CURRENT-base run, which is deliberately NOT being forced right now:
+        the CI queue stood at 166 jobs queued against 0 running, and three
+        full re-runs (~170 jobs) is the burst shape that produced the
+        documented org-wide stall. Capacity is a real constraint on when
+        evidence can be gathered, and pretending otherwise would make the
+        verdict worse, not sooner.

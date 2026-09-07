@@ -24,6 +24,36 @@
 # maintainer's read of the diff. Auto-merge, where enabled, still requires
 # every branch-protection gate to pass first, so a broken compatible bump
 # cannot land either.
+#
+# WHAT THAT EXIT WAS MISSING (#965 / RQ-64-DEPS, measured 2026-09-07). "Merge it
+# by hand once the full suite is green" is a correct criterion that is not
+# sufficient, because it says nothing about the tree the suite RAN ON:
+#
+#   1. BASE FRESHNESS IS PART OF "GREEN". A verdict measured on a stale base
+#      attributes nothing to the bump. Three held PRs (#1106/#1107/#1110) each
+#      showed exactly one red -- `Rivet Federated Graph (advisory)` -- which is
+#      GREEN on main, on trees whose merge-base was four days and one release
+#      old. Neither the red nor a green would have meant anything. Check
+#      `baseRefOid` against origin/main BEFORE reading any verdict.
+#
+#   2. THE REFRESH MECHANISM CAN BE GONE. Those same three carry a human
+#      `Merge branch 'main' into dependabot/...` commit, and dependabot refuses
+#      to rebase a branch with foreign commits -- permanently, not this once.
+#      So NEVER merge main into a dependabot branch to freshen it; that is the
+#      move that destroys the ability to freshen it. Use the bot's `recreate`
+#      command (it overwrites the branch from current main and restores bot
+#      management) or rebase by hand.
+#
+#   3. A BUMP NOBODY EVALUATES NEEDS A DISPOSITION, not silence. Held PRs
+#      accumulated for a week because nothing required an answer. Each release
+#      cycle, every held bump gets one of: landed under this exit, closed with
+#      a reason, or explicitly carried with the reason recorded. "Still open"
+#      is not a disposition.
+#
+# None of this loosens the hold. 0.x-minor is breaking under semver and the
+# ordeal 0.9->0.12 hang cost days; the hold stays. What changes is that the
+# exit is now stated precisely enough to be USED, which is what makes a hold a
+# delay rather than an accumulator.
 name: Dependabot Auto-Merge
 on: pull_request_target
 permissions:
