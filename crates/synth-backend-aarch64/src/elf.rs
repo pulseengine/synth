@@ -512,7 +512,7 @@ pub fn build_relocatable_object_full(
     debug_assert_eq!(out.len(), EHDR_SIZE);
 
     // Section data, in the order laid out above.
-    out.extend_from_slice(&text);
+    out.extend_from_slice(text);
     out.extend_from_slice(&symtab);
     out.extend_from_slice(&strtab);
     out.extend_from_slice(&shstrtab);

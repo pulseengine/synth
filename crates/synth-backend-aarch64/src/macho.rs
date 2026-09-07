@@ -247,7 +247,7 @@ pub fn build_macho_object_from_plan(plan: &ObjectPlan) -> Vec<u8> {
     }
     let nsyms = plan.symbols.len();
     let nundef = nsyms - ndefined;
-    while strtab.len() % 8 != 0 {
+    while !strtab.len().is_multiple_of(8) {
         strtab.push(0);
     }
     let symoff = align8(after_relocs);
@@ -279,15 +279,15 @@ pub fn build_macho_object_from_plan(plan: &ObjectPlan) -> Vec<u8> {
     push_u32(&mut out, nsects as u32);
     push_u32(&mut out, 0); // flags
     let section = |out: &mut Vec<u8>,
-                       sectname: &str,
-                       segname: &str,
-                       addr: u64,
-                       size: u64,
-                       offset: usize,
-                       align_log2: u32,
-                       reloff: usize,
-                       nreloc: usize,
-                       flags: u32| {
+                   sectname: &str,
+                   segname: &str,
+                   addr: u64,
+                   size: u64,
+                   offset: usize,
+                   align_log2: u32,
+                   reloff: usize,
+                   nreloc: usize,
+                   flags: u32| {
         push_name16(out, sectname);
         push_name16(out, segname);
         push_u64(out, addr);
@@ -396,16 +396,12 @@ mod tests {
         String::from_utf8(raw[..end].to_vec()).unwrap()
     }
 
+    /// (sectname, segname, addr, size, offset, align, reloff, nreloc, flags)
+    type SectionRow = (String, String, u64, u64, usize, u32, usize, usize, u32);
+
     /// Walk the load commands: (segment sections, symtab cmd offset, dysymtab
     /// cmd offset, build-version cmd offset).
-    fn load_commands(
-        obj: &[u8],
-    ) -> (
-        Vec<(String, String, u64, u64, usize, u32, usize, usize, u32)>,
-        usize,
-        usize,
-        usize,
-    ) {
+    fn load_commands(obj: &[u8]) -> (Vec<SectionRow>, usize, usize, usize) {
         let ncmds = u32_at(obj, 16) as usize;
         let mut off = HEADER_SIZE;
         let mut sections = Vec::new();
