@@ -17682,6 +17682,93 @@ mod tests {
         );
     }
 
+    /// #1189: the join register must never be a LIVE register-homed local's
+    /// home. Param 0 is homed in R0 (call-free function); the then-arm's bare
+    /// `local.get 0` used to push R0 itself, and the #313 reconciliation on
+    /// the else path was `mov r0, r1` — WRITING the param — so the
+    /// `local.get 0` after the join read the join value (ir0(0) = 18, want 9).
+    /// Now the then path copies the home into a temp before its `B if_end`,
+    /// and the else path reconciles into that temp; nothing before the join
+    /// writes R0. The same shape with NO read after the join (a dead home)
+    /// must emit no copy at all — those bytes are correct and stay frozen.
+    #[test]
+    fn if_result_join_never_targets_a_live_local_home_1189() {
+        use WasmOp::*;
+        let movs = |slice: &[ArmInstruction]| -> Vec<(Reg, Reg)> {
+            slice
+                .iter()
+                .filter_map(|i| match &i.op {
+                    ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rs),
+                    } => Some((*rd, *rs)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let labels = |instrs: &[ArmInstruction]| -> (usize, usize) {
+            let else_pos = instrs
+                .iter()
+                .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("else")))
+                .expect("else label present");
+            let end_pos = instrs
+                .iter()
+                .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("if_end")))
+                .expect("if_end label present");
+            (else_pos, end_pos)
+        };
+
+        // LIVE home: local 0 is read again after the join.
+        let live: Vec<WasmOp> = vec![
+            LocalGet(0),
+            If,
+            LocalGet(0),
+            Else,
+            I32Const(9),
+            End,
+            LocalGet(0),
+            I32Add,
+        ];
+        let instrs = fresh_selector()
+            .select_with_stack(&live, 1)
+            .expect("if-result over a live home must compile");
+        let (else_pos, end_pos) = labels(&instrs);
+        assert!(
+            !movs(&instrs[..end_pos])
+                .iter()
+                .any(|&(rd, _)| rd == Reg::R0),
+            "nothing before the join may write R0 (param 0's home): {:?}",
+            movs(&instrs[..end_pos])
+        );
+        let then_copy: Vec<(Reg, Reg)> = movs(&instrs[..else_pos])
+            .into_iter()
+            .filter(|&(rd, rs)| rs == Reg::R0 && rd != Reg::R0)
+            .collect();
+        assert_eq!(
+            then_copy.len(),
+            1,
+            "the then path copies the home into exactly one temp: {then_copy:?}"
+        );
+        let reconcile = movs(&instrs[else_pos + 1..end_pos]);
+        assert_eq!(reconcile.len(), 1, "one reconciliation MOV: {reconcile:?}");
+        assert_eq!(
+            reconcile[0].0, then_copy[0].0,
+            "the else path reconciles into the then-path temp, not the home"
+        );
+
+        // DEAD home: no read after the join — no copy, yesterday's bytes.
+        let dead: Vec<WasmOp> = vec![LocalGet(0), If, LocalGet(0), Else, I32Const(9), End];
+        let instrs = fresh_selector()
+            .select_with_stack(&dead, 1)
+            .expect("if-result over a dead home must compile");
+        let (else_pos, _) = labels(&instrs);
+        assert!(
+            movs(&instrs[..else_pos]).is_empty(),
+            "a dead home is not copied on the then path: {:?}",
+            movs(&instrs[..else_pos])
+        );
+    }
+
     /// #313: a control-flow-only / result-less `if/else` (arity 0) gets NO
     /// reconciliation move — results carried via locals, not the vstack. This
     /// is the byte-identity guarantee for the frozen fixtures (which have no
