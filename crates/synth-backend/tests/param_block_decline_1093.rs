@@ -39,30 +39,33 @@ fn params_if_ops() -> Vec<WasmOp> {
     ]
 }
 
+/// RQ-64-MVLOWER increment 2 (#1093): the #1093 repro LOWERS on
+/// `--relocatable` (the configuration the #1097 oracle executes — its
+/// LOWERED if/arm leg) and still declines, by name and never a panic, on the
+/// self-contained image path, which no oracle leg executes.
 #[test]
-fn arm_declines_param_if_on_both_paths_1093() {
+fn arm_declines_param_if_on_the_self_contained_path_and_lowers_it_relocatable_1093() {
     let backend = ArmBackend::new();
-    for relocatable in [false, true] {
-        let err = backend
-            .compile_function(
-                "params",
-                &params_if_ops(),
-                &config(vec![(2, 1)], relocatable),
-            )
-            .expect_err("a parameter-taking block type must decline loudly, never panic")
-            .to_string();
-        assert!(
-            err.contains("PARAMETER-taking block type") && err.contains("if #0 has type (2, 1)"),
-            "relocatable={relocatable}: decline must name the class/construct/arity; got: {err}"
-        );
-    }
+    let err = backend
+        .compile_function("params", &params_if_ops(), &config(vec![(2, 1)], false))
+        .expect_err("a parameter-taking block type must decline loudly, never panic")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("if #0 has type (2, 1)")
+            && err.contains("self-contained image path"),
+        "decline must name the class/construct/arity/path; got: {err}"
+    );
+    backend
+        .compile_function("params", &params_if_ops(), &config(vec![(2, 1)], true))
+        .expect("the #1093 if (param i32 i32) (result i32) + else repro lowers on --relocatable");
 }
 
 /// RQ-64-MVLOWER increment 1 (#1093): the choke point relaxes `block
 /// (param ..)` ONLY on `--relocatable` — the configuration the #1097 oracle
 /// executes (its LOWERED block/arm leg) — and keeps the full decline on the
 /// self-contained image path, which no oracle leg executes. `if (param ..)`
-/// stays declined on both.
+/// stays declined on the self-contained path too.
 #[test]
 fn arm_lowers_param_block_only_on_the_relocatable_path_rq64() {
     use WasmOp::*;

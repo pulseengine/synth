@@ -368,6 +368,13 @@ impl InstructionSelector {
         // (a `mov R_then, R_else` on the else path when they differ). Each
         // inner `Vec` is one if-block's then-arm results, top-most-last.
         let mut if_then_results: Vec<Vec<StackVal>> = Vec::new();
+        // RQ-64-MVLOWER (#1093): per open `if`, the block PARAMETER entries
+        // snapshotted at `If` (bottom→top) — empty for a parameter-free if,
+        // which keeps every existing lowering byte-identical. Re-pushed at
+        // `Else` so the else-arm starts from the same operand stack the
+        // then-arm did; the implicit else of an else-less if reconciles
+        // against them at `End`.
+        let mut if_params: Vec<Vec<StackVal>> = Vec::new();
 
         // Map of local index -> register
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
@@ -3670,8 +3677,44 @@ impl InstructionSelector {
                     // are whatever sits ABOVE this depth at `Else`. Reservation
                     // starts EMPTY — nothing needs protecting during the then-arm
                     // (it runs first); it is filled at `Else`.
-                    if_checkpoints.push(stack.len());
+                    //
+                    // RQ-64-MVLOWER (#1093): a PARAMETER-taking if consumes the
+                    // top `params` entries, so the checkpoint lands BELOW them
+                    // (the #1093 `split_off` panic was this checkpoint taken
+                    // above them) and those entries are snapshotted: they are
+                    // the else-arm's starting stack and the implicit else's
+                    // results. Every param must be register-resident — a
+                    // spilled/float entry declines loudly.
+                    let params_n = params as usize;
+                    if stack.len() < params_n {
+                        // Measured on spec if.wast `add64_u_saturated`: the
+                        // params come from a MULTI-VALUE call result, which
+                        // this selector does not model as N entries — so the
+                        // frame's inputs are not on the operand stack at all.
+                        return Err(synth_core::Error::synthesis(format!(
+                            "#1093: if with {params_n} parameter(s) opened on an \
+                             operand stack of depth {} — the frame's inputs are \
+                             not on the direct selector's operand stack (a \
+                             multi-value call result, or stack-polymorphic dead \
+                             code); declined rather than mis-reconciled",
+                            stack.len()
+                        )));
+                    }
+                    let cp = stack.len() - params_n;
+                    let param_vals: Vec<StackVal> = stack[cp..].to_vec();
+                    if let Some(v) = param_vals
+                        .iter()
+                        .find(|v| !matches!(v, StackVal::Reg { .. }))
+                    {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "#1093: if parameter {v:?} is not register-resident \
+                             — a spilled/float block parameter is not lowered \
+                             (declined rather than mis-reconciled)"
+                        )));
+                    }
+                    if_checkpoints.push(cp);
                     if_then_results.push(Vec::new());
+                    if_params.push(param_vals);
 
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
@@ -3705,10 +3748,46 @@ impl InstructionSelector {
                     // protection (the then-results were on the vstack) exactly,
                     // which is what keeps the else-arm allocation byte-identical.
                     if let Some(&cp) = if_checkpoints.last() {
-                        let then_results: Vec<StackVal> = stack.split_off(cp);
+                        let mut then_results: Vec<StackVal> = stack.split_off(cp);
+                        // RQ-64-MVLOWER (#1093), parameter-taking ifs only: a
+                        // then-result that aliases a register-homed local is
+                        // copied into a private temp here, on the then path,
+                        // so the else path's reconciliation never writes the
+                        // local (`canonicalize_then_results`; measured
+                        // red-first `ipq(0)` 16 want 8).
+                        if if_params.last().is_some_and(|p| !p.is_empty()) {
+                            let homes: Vec<Reg> = local_to_reg.values().copied().collect();
+                            let mut avoid = live_params.clone();
+                            for pv in if_params.last().into_iter().flatten() {
+                                if let StackVal::Reg { reg, .. } = pv {
+                                    avoid.push(*reg);
+                                }
+                            }
+                            let before = instructions.len();
+                            canonicalize_then_results(
+                                &mut then_results,
+                                &homes,
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &avoid,
+                                idx,
+                            )?;
+                            for _ in before..instructions.len() {
+                                cf.add_instruction();
+                            }
+                        }
                         if let Some(slot) = if_then_results.last_mut() {
                             *slot = then_results;
                         }
+                    }
+                    // RQ-64-MVLOWER (#1093): the else-arm starts from the SAME
+                    // operand stack the then-arm did — the block parameters,
+                    // still in the registers they held at `If` on this path
+                    // (no then-arm code executed). Empty for a param-free if.
+                    if let Some(pv) = if_params.last() {
+                        stack.extend(pv.iter().copied());
                     }
                     // End of then-block: jump to end of if
                     if let Some((_, end_label)) = if_labels.last() {
@@ -3756,15 +3835,86 @@ impl InstructionSelector {
                         let else_emitted = instructions
                             .iter()
                             .any(|i| matches!(&i.op, ArmOp::Label { name } if *name == else_label));
-                        if !else_emitted {
+                        let params_here = if_params.pop().unwrap_or_default();
+                        if !else_emitted && params_here.is_empty() {
                             // No else clause: emit else label (same as end).
-                            // A valid if-without-else has arity 0 (no result),
-                            // so there is nothing to reconcile (#313).
+                            // A valid parameter-free if-without-else has
+                            // arity 0 (no result), so there is nothing to
+                            // reconcile (#313).
                             instructions.push(ArmInstruction {
-                                op: ArmOp::Label { name: else_label },
+                                op: ArmOp::Label {
+                                    name: else_label.clone(),
+                                },
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
+                        } else if !else_emitted {
+                            // RQ-64-MVLOWER (#1093): an else-less PARAMETER-
+                            // taking if has type [t*] -> [t*] with an IMPLICIT
+                            // identity else, so the join has two arms after
+                            // all: the then-arm's results (above the
+                            // checkpoint, in its registers) and the pass-
+                            // through params (in theirs). The pre-#1096
+                            // lowering read the then-arm's register on the
+                            // false path — the 0xC0DE0003 uninitialized-
+                            // register vector. Lower it as an explicit else
+                            // whose body is empty: `B end` (then path skips
+                            // the movs), `else:`, `MOV R_then_i, R_param_i`,
+                            // then `end:` below.
+                            let cp = if_checkpoints.last().copied().unwrap_or(stack.len());
+                            let mut then_now: Vec<StackVal> = stack.split_off(cp.min(stack.len()));
+                            // An aliased then-result is copied out on the
+                            // then path first (`ipa(0)` 14 want 7, red-first).
+                            {
+                                let homes: Vec<Reg> = local_to_reg.values().copied().collect();
+                                let mut avoid = live_params.clone();
+                                for pv in &params_here {
+                                    if let StackVal::Reg { reg, .. } = pv {
+                                        avoid.push(*reg);
+                                    }
+                                }
+                                let before = instructions.len();
+                                canonicalize_then_results(
+                                    &mut then_now,
+                                    &homes,
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &avoid,
+                                    idx,
+                                )?;
+                                for _ in before..instructions.len() {
+                                    cf.add_instruction();
+                                }
+                            }
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::B {
+                                    label: end_label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label {
+                                    name: else_label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            let before = instructions.len();
+                            reconcile_implicit_else(
+                                &then_now,
+                                &params_here,
+                                &mut instructions,
+                                idx,
+                            )?;
+                            for _ in before..instructions.len() {
+                                cf.add_instruction();
+                            }
+                            // The merged results live in the then-arm's
+                            // registers on both paths.
+                            stack.extend(then_now);
                         }
                         // #313: reconcile the two arms onto a single set of
                         // result registers. The then-arm's results were captured

@@ -92,10 +92,10 @@ fn block_and_loop_params_decline_1093() {
 /// register landing reconciles the `br_if` edge into the join. The execution
 /// evidence is the oracle's LOWERED block/arm leg (14 vectors, fixture +
 /// extra + sub-shapes); this test pins the selector-level acceptance and
-/// that the relaxation is CONSTRUCT-scoped: `if`/`loop (param ..)` still
-/// decline on the same relocatable selector.
+/// that the relaxation is CONSTRUCT-scoped: `loop (param ..)` still
+/// declines on the same relocatable selector.
 #[test]
-fn block_params_lower_on_the_relocatable_direct_selector_rq64() {
+fn block_and_if_params_lower_on_the_relocatable_direct_selector_rq64() {
     use WasmOp::*;
     fn relocatable_selector(arity: Vec<(u8, u8)>) -> InstructionSelector {
         let db = RuleDatabase::with_standard_rules();
@@ -121,17 +121,32 @@ fn block_params_lower_on_the_relocatable_direct_selector_rq64() {
         .expect("block (param i32) (result i32) + br_if lowers on --relocatable (RQ-64-MVLOWER)");
     assert!(!instrs.is_empty());
 
-    // Construct-scoped: the same relocatable selector still declines `if` and
-    // `loop` parameter-taking types by name.
+    // RQ-64-MVLOWER increment 2: `if (param ..)` lowers on the same
+    // relocatable selector — else-less (the #1097 `ipe` shape whose false
+    // path returned 0xC0DE0003 pre-#1096) AND the #1093 two-param `if/else`
+    // repro that PANICKED at the `Else` split. Execution evidence: the
+    // oracle's LOWERED if/arm leg.
     let ipe = vec![I32Const(7), LocalGet(0), If, I32Const(42), I32Add, End, End];
-    let e = relocatable_selector(vec![(1, 1)])
+    relocatable_selector(vec![(1, 1)])
         .select_with_stack(&ipe, 1)
-        .expect_err("if (param ..) still declines on --relocatable")
-        .to_string();
-    assert!(
-        e.contains("if #0 has type (1, 1)") && e.contains("PARAMETER-taking block type"),
-        "{e}"
-    );
+        .expect("else-less if (param i32) (result i32) lowers on --relocatable (RQ-64 #2)");
+    let ipe2 = vec![
+        I32Const(1),
+        I32Const(2),
+        LocalGet(0),
+        If,
+        I32Add,
+        Else,
+        I32Sub,
+        End,
+        End,
+    ];
+    relocatable_selector(vec![(2, 1)])
+        .select_with_stack(&ipe2, 1)
+        .expect("the #1093 if (param i32 i32) (result i32) + else repro lowers (no panic)");
+
+    // Construct-scoped: `loop (param ..)` still declines on the relocatable
+    // selector by name.
     let lpb = vec![
         I32Const(0),
         Loop,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 33
+# ci-checks: emulations >= 53
 """#1097 (RQ-61-MVORACLE) — the silent-miscompile evidence behind the #1093
 parameter-taking block-type decline, promoted from a lane scratchpad into a
 permanent red-first oracle.
@@ -220,6 +220,14 @@ LOWERED = {
     # unconditional br from a nested if, br_table into nested param blocks,
     # a value below the params surviving the edge).
     ("block", "arm"): "ARM direct selector, --relocatable (RQ-64-MVLOWER #1)",
+    # RQ-64-MVLOWER increment 2: the ARM direct selector (--relocatable).
+    # The frame-entry checkpoint now lands BELOW the params (the #1093
+    # `split_off` panic was it landing above), the params are snapshotted
+    # for the else-arm / implicit else, and the else-less join is reconciled
+    # like a two-arm if (`B end; else: MOV R_then, R_param`) — hazardous
+    # register permutations decline loudly. This is the leg whose pinned
+    # 0xC0DE0003 (uninitialized R3) vector must now return wasmtime's 7.
+    ("if", "arm"): "ARM direct selector, --relocatable (RQ-64-MVLOWER #2)",
 }
 
 # Extra live probes for a lowered leg, beyond the fixture's vectors: the same
@@ -237,7 +245,16 @@ LIVE_EXTRA = {
 # expected value ALWAYS comes from wasmtime, live.
 LOWERED_WATS = {s: HERE / f"param_block_silent_1097_{s}_lowered.wat" for s in SHAPES}
 LOWERED_CASES = {
-    "if": [],
+    "if": [
+        ("ipe2", [0]), ("ipe2", [1]),   # the #1093 panicking repro (2 params + else)
+        ("ipv", [0]), ("ipv", [1]),     # void [i32] -> [] with else
+        ("ipb", [0]), ("ipb", [1]),     # a value below the params survives
+        ("ipf", [0]), ("ipf", [1]),     # else-less, result derived in place
+        ("ipl", [0]), ("ipl", [1]),     # nested in a block (param ..)
+        ("ipn", [0]), ("ipn", [1]),     # else-less [i32 i32] -> [i32 i32]
+        ("ipa", [5]), ("ipa", [0]),     # alias clobber, implicit else (RQ-64 finding)
+        ("ipq", [5]), ("ipq", [0]),     # alias clobber, explicit else + params
+    ],
     "block": [
         ("bp2", [0]), ("bp2", [1]),
         ("bpu", [0]), ("bpu", [1]),

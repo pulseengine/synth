@@ -700,7 +700,13 @@ pub fn arm_param_block_lowering(relocatable: bool) -> ParamBlockLowering {
             // measured correct on the #1097 fixture pre-#1096 and re-proven
             // on the LOWERED leg (fixture + extra + sub-shape vectors).
             block: true,
-            r#if: false,
+            // Increment 2 (RQ-64-MVLOWER): the frame-entry checkpoint lands
+            // BELOW the params, the params are snapshotted for the else-arm /
+            // implicit else, and the else-less join is reconciled like a two-
+            // arm if (hazardous permutations decline loudly). Proven on the
+            // LOWERED if/arm leg: the fixture's 0xC0DE0003 vector now returns
+            // wasmtime's 7, plus the extra probes and `_if_lowered.wat`.
+            r#if: true,
             r#loop: false,
         }
     } else {
@@ -751,10 +757,12 @@ pub fn param_block_decline_msg(backend: &str, what: &str, ord: usize, arity: (u8
         // frame-entry checkpoint is taken with the params still on the
         // operand stack, so they sit BELOW it.
         "if" => {
-            "the operand-stack checkpoint at frame entry cannot represent \
-             params consumed BELOW it (with an `else` the reconciliation split \
+            "the RV32 checkpoint at frame entry cannot represent params \
+             consumed BELOW it (with an `else` the reconciliation split \
              panics; without one the false path returns an uninitialized \
-             register)"
+             register — measured, #1097) and the ARM direct lowering is proven \
+             by the #1097 oracle only on --relocatable (RQ-64-MVLOWER); no \
+             other path has an execution-oracle leg"
         }
         "loop" => {
             "a back-edge must land the carried loop parameter(s) in the \
@@ -934,7 +942,7 @@ mod grow_zero_tests {
             arm_param_block_lowering(true),
             ParamBlockLowering {
                 block: true,
-                r#if: false,
+                r#if: true,
                 r#loop: false
             }
         );

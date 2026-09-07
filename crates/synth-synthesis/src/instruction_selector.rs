@@ -1229,6 +1229,153 @@ fn reconcile_if_result(
     }
 }
 
+/// RQ-64-MVLOWER (#1093): reconcile an ELSE-LESS parameter-taking `if`'s
+/// join. Its type is `[t*] -> [t*]` with an IMPLICIT identity else: on the
+/// false path the block PARAMETERS pass through unchanged — still in the
+/// registers they held at `If` (`params`, snapshotted there; no then-arm
+/// code ran) — while on the true path the results are the then-arm's
+/// (`then_results`). Emits `MOV R_then_i, R_param_i` on the ELSE path only
+/// (the caller places `B end_label` before the else label), via
+/// [`reconcile_if_result`]: the #313 two-arm reconciliation with the params
+/// standing in for the else-arm.
+///
+/// PARALLEL-MOVE HAZARD: the movs are sequential, so a destination that is
+/// also a LATER source would be clobbered before it is read (the swap
+/// `then=(R2,R1)`, `params=(R1,R2)`; or an i64 whose then-lo is the param's
+/// hi). The plan is checked BEFORE anything is emitted and such a permutation
+/// declines LOUDLY — it is exactly the "per-path multi-register shuffle" the
+/// aarch64 VCR-A64-CF-001 refusal names, and it needs its own oracle vector
+/// before it is worth a scratch register.
+fn reconcile_implicit_else(
+    then_results: &[StackVal],
+    params: &[StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    line: usize,
+) -> Result<()> {
+    if then_results.len() != params.len() {
+        return Err(synth_core::Error::synthesis(format!(
+            "#1093: an else-less parameter-taking if must fall through with \
+             its parameter arity ([t*] -> [t*]); then-arm left {} result(s) \
+             for {} parameter(s) — declined rather than mis-reconciled",
+            then_results.len(),
+            params.len()
+        )));
+    }
+    let mut moves: Vec<(Reg, Reg)> = Vec::new();
+    for (t, pv) in then_results.iter().zip(params.iter()) {
+        let (
+            StackVal::Reg {
+                reg: tl,
+                is_i64: ti,
+            },
+            StackVal::Reg {
+                reg: pl,
+                is_i64: pi,
+            },
+        ) = (t, pv)
+        else {
+            return Err(synth_core::Error::synthesis(
+                "#1093: else-less parameter-taking if with a spilled/float \
+                 parameter or then-result is not lowered (declined rather than \
+                 mis-reconciled)"
+                    .to_string(),
+            ));
+        };
+        if ti != pi {
+            return Err(synth_core::Error::synthesis(
+                "#1093: else-less if width mismatch between the then-arm result \
+                 and the pass-through parameter"
+                    .to_string(),
+            ));
+        }
+        if tl != pl {
+            moves.push((*tl, *pl));
+        }
+        if *ti {
+            let (th, ph) = (i64_pair_hi(*tl)?, i64_pair_hi(*pl)?);
+            if th != ph {
+                moves.push((th, ph));
+            }
+        }
+    }
+    for (k, &(dst, _)) in moves.iter().enumerate() {
+        if moves[k + 1..].iter().any(|&(_, src)| src == dst) {
+            return Err(synth_core::Error::synthesis(format!(
+                "#1093: else-less parameter-taking if needs a parallel register \
+                 shuffle ({dst:?} is both a join destination and a later \
+                 pass-through source) — declined rather than clobbered"
+            )));
+        }
+    }
+    for (t, pv) in then_results.iter().zip(params.iter()) {
+        reconcile_if_result(t, pv, instructions, line)?;
+    }
+    Ok(())
+}
+
+/// RQ-64-MVLOWER (#1093): a then-arm result that is a REGISTER-HOMED LOCAL's
+/// own register must not become a join destination. `select_with_stack`
+/// pushes a `local.get` of an R0..R3 parameter by ALIAS (the home register,
+/// no copy), so a then-arm ending in `local.get 0` yields R0 as its result —
+/// and the else path's `MOV R_then, R_else` would then overwrite the LOCAL
+/// for every later read. Measured red-first on this lane's own lowering:
+/// `ipa(0)` returned 14 (want 7), `ipq(0)` 16 (want 8). Each such result is
+/// copied into a private temp ON THE THEN PATH (the caller emits this before
+/// the then-path's `B end_label`) and the temp becomes the join register.
+///
+/// The PARAMETER-FREE #313 reconciliation has the same exposure on main
+/// (`(if (result i32) c (then (local.get 0)) (else (i32.const 9)))` followed
+/// by `local.get 0`: 18, want 9) and is deliberately NOT changed here — that
+/// fix moves bytes outside this lane's acceptance oracle and is reported for
+/// its own oracle-gated increment.
+fn canonicalize_then_results(
+    then_results: &mut [StackVal],
+    local_homes: &[Reg],
+    next_temp: &mut u8,
+    stack: &mut [StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    line: usize,
+) -> Result<()> {
+    let mut avoid = reserved.to_vec();
+    for v in then_results.iter() {
+        if let StackVal::Reg { reg, is_i64 } = v {
+            avoid.push(*reg);
+            if *is_i64 {
+                avoid.push(i64_pair_hi(*reg)?);
+            }
+        }
+    }
+    for v in then_results.iter_mut() {
+        let StackVal::Reg { reg, is_i64 } = *v else {
+            continue;
+        };
+        let hi_aliased = is_i64 && local_homes.contains(&i64_pair_hi(reg)?);
+        if !local_homes.contains(&reg) && !hi_aliased {
+            continue;
+        }
+        if is_i64 {
+            return Err(synth_core::Error::synthesis(
+                "#1093: an i64 register-homed local as a parameter-taking if's \
+                 then-result is not lowered (declined rather than clobbered)"
+                    .to_string(),
+            ));
+        }
+        let t = alloc_temp_or_spill(next_temp, stack, instructions, spill, &avoid, line)?;
+        instructions.push(ArmInstruction {
+            op: ArmOp::Mov {
+                rd: t,
+                op2: Operand2::Reg(reg),
+            },
+            source_line: Some(line),
+        });
+        avoid.push(t);
+        *v = StackVal::i32(t);
+    }
+    Ok(())
+}
+
 /// Pop the top operand, returning its `lo` register (#171). If the entry was
 /// spilled, reload it: allocate a fresh consecutive pair and emit
 /// `LDR lo,[sp,slot]; LDR hi,[sp,slot+4]`, freeing the slot.
@@ -19386,5 +19533,136 @@ mod tests {
             !touches_r9,
             "register-promoted SP global must not touch the R9 globals table: {out:#?}"
         );
+    }
+}
+
+/// RQ-64-MVLOWER (#1093): the implicit-else reconciliation's negative
+/// controls — the shapes it must REFUSE, with nothing emitted, so a hazardous
+/// permutation can never reach the encoder as a clobbering mov sequence.
+#[cfg(test)]
+mod rq64_implicit_else_tests {
+    use super::*;
+
+    fn r32(reg: Reg) -> StackVal {
+        StackVal::Reg { reg, is_i64: false }
+    }
+    fn r64(reg: Reg) -> StackVal {
+        StackVal::Reg { reg, is_i64: true }
+    }
+    fn movs(ins: &[ArmInstruction]) -> Vec<(Reg, Reg)> {
+        ins.iter()
+            .map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                } => (*rd, *rs),
+                other => panic!("only movs expected, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn disjoint_positions_emit_one_mov_each_in_order() {
+        let mut ins = Vec::new();
+        reconcile_implicit_else(
+            &[r32(Reg::R3), r32(Reg::R4)],
+            &[r32(Reg::R1), r32(Reg::R2)],
+            &mut ins,
+            0,
+        )
+        .unwrap();
+        assert_eq!(movs(&ins), vec![(Reg::R3, Reg::R1), (Reg::R4, Reg::R2)]);
+    }
+
+    #[test]
+    fn identity_position_emits_nothing() {
+        let mut ins = Vec::new();
+        reconcile_implicit_else(&[r32(Reg::R1)], &[r32(Reg::R1)], &mut ins, 0).unwrap();
+        assert!(ins.is_empty());
+    }
+
+    #[test]
+    fn swap_permutation_declines_loudly_and_emits_nothing() {
+        // then=(R2,R1), params=(R1,R2): `mov r2, r1` would clobber the second
+        // move's source before it is read.
+        let mut ins = Vec::new();
+        let e = reconcile_implicit_else(
+            &[r32(Reg::R2), r32(Reg::R1)],
+            &[r32(Reg::R1), r32(Reg::R2)],
+            &mut ins,
+            0,
+        )
+        .expect_err("a swap is a parallel-move hazard")
+        .to_string();
+        assert!(e.contains("parallel register shuffle"), "{e}");
+        assert!(ins.is_empty(), "nothing may be emitted before the refusal");
+    }
+
+    #[test]
+    fn i64_then_lo_equal_to_param_hi_declines_loudly() {
+        // param pair (R2:hi), then pair whose lo IS the param's hi: the lo mov
+        // clobbers the hi mov's source.
+        let p_lo = Reg::R2;
+        let t_lo = i64_pair_hi(p_lo).unwrap();
+        let mut ins = Vec::new();
+        let e = reconcile_implicit_else(&[r64(t_lo)], &[r64(p_lo)], &mut ins, 0)
+            .expect_err("overlapping i64 pairs are a parallel-move hazard")
+            .to_string();
+        assert!(e.contains("parallel register shuffle"), "{e}");
+        assert!(ins.is_empty());
+    }
+
+    /// The register-alias clobber (found red-first on this lane: `ipa(0)` 14
+    /// want 7): a then-result that IS a local's home register is copied into
+    /// a private temp on the then path; a non-aliased result is left alone
+    /// and nothing is emitted for it.
+    #[test]
+    fn aliased_then_result_is_copied_into_a_private_temp() {
+        let mut ins = Vec::new();
+        let mut stack: Vec<StackVal> = Vec::new();
+        let mut next_temp = 0u8;
+        let mut spill = SpillState::new(0);
+        // R0 is local 0's home (an aliased `local.get 0`); R5 is a plain temp.
+        let mut then = vec![r32(Reg::R0), r32(Reg::R5)];
+        canonicalize_then_results(
+            &mut then,
+            &[Reg::R0, Reg::R1],
+            &mut next_temp,
+            &mut stack,
+            &mut ins,
+            &mut spill,
+            &[Reg::R0, Reg::R1],
+            0,
+        )
+        .unwrap();
+        let m = movs(&ins);
+        assert_eq!(
+            m.len(),
+            1,
+            "exactly one copy, for the aliased result: {m:?}"
+        );
+        let (t, src) = m[0];
+        assert_eq!(src, Reg::R0);
+        assert!(
+            !matches!(t, Reg::R0 | Reg::R1 | Reg::R5),
+            "temp must be private: {t:?}"
+        );
+        assert_eq!(then[0], r32(t), "the join register is now the temp");
+        assert_eq!(then[1], r32(Reg::R5), "a non-aliased result is untouched");
+    }
+
+    #[test]
+    fn arity_and_width_mismatches_decline_loudly() {
+        let mut ins = Vec::new();
+        let e =
+            reconcile_implicit_else(&[r32(Reg::R3)], &[r32(Reg::R1), r32(Reg::R2)], &mut ins, 0)
+                .unwrap_err()
+                .to_string();
+        assert!(e.contains("parameter arity"), "{e}");
+        let e = reconcile_implicit_else(&[r64(Reg::R2)], &[r32(Reg::R1)], &mut ins, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("width mismatch"), "{e}");
+        assert!(ins.is_empty());
     }
 }

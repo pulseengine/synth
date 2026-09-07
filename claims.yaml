@@ -1508,9 +1508,46 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19233
+        value: 19530
         baseline: 17897
         waivers:
+          - to: 19530
+            reason: >-
+              RQ-64-MVLOWER (#1093) increment 2: +297 lines — `if (param ..)`
+              LOWERS on the ARM direct selector (--relocatable), the leg whose
+              pre-#1096 vector returned 0xC0DE0003 (an uninitialized register)
+              and now returns wasmtime's 7. This IS a hand-written lowering,
+              which is exactly what this ceiling exists to make visible: the
+              #313 frame-entry checkpoint now lands BELOW the block params
+              (the #1093 `split_off` panic was it landing above them), the
+              params are snapshotted at `If` and re-pushed at `Else` so the
+              else-arm starts from the then-arm's stack, and an else-less
+              param-taking if is joined like a two-arm if (`B end; else:
+              MOV R_then_i, R_param_i` via reconcile_implicit_else, which
+              plans the moves first and LOUD-declines any parallel-move
+              hazard — swap / i64 lo-hi overlap — with nothing emitted; five
+              negative-control unit tests pin that). While proving it, the
+              lane's own strengthened oracle found a REGISTER-ALIAS clobber
+              (`local.get` of an R0-R3 param pushes the HOME register by
+              alias, so a then-arm ending in `local.get 0` makes the join
+              write local 0 on the else path — `ipa(0)` 14 want 7, `ipq(0)`
+              16 want 8, red-first); `canonicalize_then_results` copies such
+              a then-result into a private temp on the then path, on the
+              parameter-taking paths only. The PARAMETER-FREE #313 join has
+              the same exposure on main (measured `al(0)` 18 want 9) and is
+              deliberately left as reported, since that fix moves bytes
+              outside this lane's oracle. Keyed on `params > 0`,
+              so every parameter-free if is byte-identical (whole-object
+              identity over scripts/repro/*.wat x 3 legs: 0 differing, 0
+              newly-declined; the only movement is the param-taking modules
+              becoming ACCEPTED on arm-reloc). Gated by the #1097 oracle's
+              LOWERED if/arm leg — 16 vectors, fixture + extra + 6 sub-shapes
+              incl. the #1093 panicking two-param if/else repro — all matching
+              wasmtime, refusals 5 -> 4 pinned in ci.yml. Nothing could be
+              deleted in exchange: the class had no lowering to retire, only
+              a decline (and before #1096, a panic and a silent miscompile).
+              Zero new wildcard arms (the helper uses `let .. else`, not a
+              `_ =>` fallback).
           - to: 19233
             reason: >-
               RQ-64-MVLOWER (#1093) increment 1: +6 lines — the selector-local
@@ -1795,7 +1832,14 @@ claims:
         # selector-local #1093 guard reads the per-construct/per-path policy
         # from synth-core (see the lines_code waiver); zero test-module
         # movement (the RQ-64 tests live in crates/*/tests).
-        value: 29879
+        # 29879 -> 30307 (RQ-64-MVLOWER increment 2, #1093): +297 code — the
+        # `if (param ..)` lowering (checkpoint below the params, param
+        # snapshot, implicit-else reconciliation, then-result alias
+        # canonicalization; see the lines_code waiver)
+        # + 131 test module — the reconcile_implicit_else /
+        # canonicalize_then_results negative-control tests
+        # (rq64_implicit_else_tests) in instruction_selector.rs.
+        value: 30307
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2623,13 +2667,15 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
-    # v0.64 — RQ-64-MVLOWER (#1093): +14 for
-    #   param_block_silent_1097_differential.py's LOWERED block/arm leg (2
-    #   fixture vectors now executed on the NEW object + 2 extra probes + 10
-    #   `_block_lowered.wat` sub-shape vectors). The fixture (red) half and
-    #   guard half are unchanged. Value RE-DERIVED from
-    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 324861.
-    text: "--exact-emulation-floor 324861"
+    # v0.64 — RQ-64-MVLOWER (#1093): +34 for
+    #   param_block_silent_1097_differential.py's two LOWERED ARM legs —
+    #   block/arm (2 fixture vectors now executed on the NEW object + 2 extra
+    #   probes + 10 `_block_lowered.wat` sub-shape vectors) and if/arm (2 + 2
+    #   + 14 `_if_lowered.wat` sub-shape vectors, incl. the fixture's
+    #   0xC0DE0003 vector now returning wasmtime's 7). The fixture (red) half
+    #   and guard half are unchanged. Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 324881.
+    text: "--exact-emulation-floor 324881"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
