@@ -80,8 +80,11 @@ artifacts:
         enforced rather than conventional.
       done-when: "contains:.github/workflows/ci.yml:--exact-emulation-floor"
       verified-by: >-
-        RED-FIRST, replaying the exact mutation that was GREEN before. With
-        one oracle's declared floor raised by 50 (a32_i64_615_differential.py,
+        RED-FIRST, replaying the exact mutation that was GREEN before. The
+        figures below are AT v0.63 — a transcript of what was executed then,
+        not a statement about the current floor, which moves with every
+        landing oracle and is pinned in ci.yml + claims.yaml. With one
+        oracle's declared floor raised by 50 (a32_i64_615_differential.py,
         352 -> 402) and ci.yml untouched:
           --min-emulation-floor  324845  EXIT=0   (the old gate, blind)
           --exact-emulation-floor 324845 EXIT=1   "EQUALITY BROKEN: summed

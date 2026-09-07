@@ -1,39 +1,58 @@
 artifacts:
   - id: RQ-64-FLOORPROSE
     type: system-req
-    title: "A live pinned value is copied into artifact PROSE, where nothing checks it — the third instance of one number in N places"
+    title: "PREMISE CORRECTED before implementation: the floor lockstep is TWO files, not three, and the artifact copy is a dated transcript that cannot go stale"
     description: >
-      Found by auditing what actually cost time during the v0.63 merge wave.
+      SCOPED FROM A WRONG PREMISE, AND CORRECTED BEFORE ANY WORK WAS DONE.
+      Recorded in full rather than quietly rewritten, because the error is the
+      same shape this release exists to catch and the correction is the result.
 
-      The emulation floor must move in lockstep across THREE files on every
-      oracle landing: `ci.yml` (the enforced value), `claims.yaml` (the
-      verbatim pin), and `RQ-63-FLOOREQ.yaml` (`verified-by:` prose). **All
-      four v0.63 lane rebases conflicted on it** — it was the single largest
-      merge cost of the release, and the resolution is not textual: neither
-      side's value describes the merged tree, so it must be RE-DERIVED from
-      `oracle_wiring_check.py` every time.
+      AS ORIGINALLY WRITTEN, this artifact claimed the emulation floor must
+      move in lockstep across THREE files — `ci.yml`, `claims.yaml`, and
+      `RQ-63-FLOOREQ.yaml`'s `verified-by:` prose — and that the third "goes
+      stale silently" because nothing checks it, making it the same defect as
+      `RQ-62-FLOORTIGHT`'s literal `done-when` one field over.
 
-      Two of the three are load-bearing and gated. The third is not: nothing
-      checks the artifact's prose copy, so the next oracle landing makes
-      `RQ-63-FLOOREQ`'s `verified-by: … 324845` silently wrong.
+      MEASURED BEFORE IMPLEMENTING. Every occurrence of the live value,
+      classified by its FRAMING rather than counted:
 
-      THAT IS THE SAME DEFECT ONE FIELD OVER. `RQ-62-FLOORTIGHT`'s `done-when`
-      pinned the literal `324646`, which its own protocol guaranteed would
-      move; it reddened on the first legitimate oracle and was re-pointed at
-      the invariant text. The `verified-by:` copy has the identical shape and
-      is WORSE, because a `done-when` at least fails loudly while prose just
-      rots.
+        claims.yaml               1   the verbatim pin — LIVE, gated
+        .github/workflows/ci.yml  1   the enforced value — LIVE, gated
+        RQ-63-FLOOREQ.yaml        3   all inside a RED-FIRST TRANSCRIPT of a
+                                      mutation test that was actually executed
 
-      THE GENERAL RULE THIS SHOULD SETTLE, so it is not rediscovered a fourth
-      time: an artifact records what was TRUE WHEN IT SHIPPED and must not
-      restate a value that continues to move. Where the live value matters,
-      the artifact should name the DERIVATION (`oracle_wiring_check.py`'s
-      reported total) or the pin that holds it, never the number.
+      THE LOCKSTEP IS TWO FILES, NOT THREE. And the artifact's three mentions
+      are a record of a measurement — "with the OLD floor the mutation was
+      EXIT=0; with the new one, EXIT=1" — which is TRUE FOREVER as a statement
+      about what was run at v0.63. It does not go stale; it becomes
+      HISTORICAL, which is exactly what a `verified-by:` is for. The rule this
+      artifact itself proposed — *an artifact records what was true when it
+      shipped* — is one the transcript already satisfies.
 
-      Cheap and adjacent: `scripts/repro/` is 402 files in one flat namespace,
-      findable only because each is named after its issue. Worth deciding
-      whether that stays deliberate — it has not cost anything measurable yet,
-      and is recorded here so the answer is a choice rather than an accident.
+      SO THE DEFECT DOES NOT EXIST, and implementing the fix would have
+      removed a legitimate measurement record to satisfy a rule it already
+      met. WHAT SURVIVES is two smaller and true things:
+
+      1. THE MERGE COST WAS REAL, AND THE DIAGNOSIS WAS OFF BY ONE. All four
+         v0.63 lane rebases did conflict on the floor — it was the largest
+         merge cost of the release — but on `ci.yml` and `claims.yaml`, the
+         two LIVE files. The artifact copy never caused a conflict. The
+         mitigation is unchanged and already practised: RE-DERIVE from
+         `oracle_wiring_check.py` on the merged tree, never merge the number
+         textually. Two files that must agree exactly IS the design (that is
+         RQ-63-FLOOREQ's equality), not a defect to remove.
+
+      2. A DATED TRANSCRIPT IS UNAMBIGUOUS; AN UNDATED ONE IS MERELY CORRECT.
+         A reader at v0.70 meets `324845` in the transcript and cannot tell at
+         a glance whether it is the value THEN or NOW. That is an ambiguity,
+         not staleness, and it is fixed by saying "at v0.63" beside it — which
+         is what this artifact now does instead of deleting the record.
+
+      HOW THE ERROR HAPPENED, since that is the transferable part: the artifact
+      was written from a `grep` for the literal, which returns occurrences and
+      cannot return FRAMING. Three hits in one file read as three copies; they
+      were one transcript. A count is not a diagnosis — the same lesson as
+      v0.63's "a blocker count is not a reach estimate", one domain over.
     status: proposed
     release: v0.64
     tags:
@@ -46,7 +65,7 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
-      priority: should
+      priority: could
       verification-track: review
       issue: "#910"
       done-when: "manual: no release artifact restates a live pinned value as a literal in prose; the floor's lockstep set is reduced to the enforced value and its pin; and the rule (an artifact records what was true when it shipped, never a moving value) is written where the next author will meet it"
