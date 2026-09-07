@@ -352,6 +352,10 @@ impl InstructionSelector {
         // `If`, after popping the condition). The result arity of an
         // `if (result …)` is observable as (vstack depth − checkpoint).
         let mut if_checkpoints: Vec<usize> = Vec::new();
+        // #1189: the op index of each open `If`, parallel to `if_checkpoints`,
+        // so `Else` can look up the if's matching `End` (`if_end_idx`) and ask
+        // whether a then-result's home register is still read past the join.
+        let mut if_start_idx: Vec<usize> = Vec::new();
         // #313: per-if-block reservation of the THEN-arm's result registers.
         // Captured at `Else` (the then-arm's results, popped off and truncated
         // back to the checkpoint so the else-arm starts from the same stack
@@ -548,6 +552,39 @@ impl InstructionSelector {
                 }
             }
             out
+        };
+
+        // #1189: which register-homed local (param, or a promoted local) owns
+        // each core register — both halves of an i64 pair — and where each
+        // open `If`'s `End` sits. `Else` uses the two to decide whether a
+        // then-arm result is a LIVE local's home register (see there).
+        let home_of: Vec<(Reg, u32)> = {
+            let mut v = Vec::new();
+            for &(p, r) in &param_regs {
+                v.push((r, p));
+                if i64_locals.contains(&p)
+                    && let Ok(hi) = i64_pair_hi(r)
+                {
+                    v.push((hi, p));
+                }
+            }
+            v
+        };
+        let if_end_idx: std::collections::HashMap<usize, usize> = {
+            let mut m = std::collections::HashMap::new();
+            let mut open: Vec<(bool, usize)> = Vec::new(); // (is_if, start)
+            for (i, op) in wasm_ops.iter().enumerate() {
+                if matches!(op, WasmOp::Block | WasmOp::Loop) {
+                    open.push((false, i));
+                } else if matches!(op, WasmOp::If) {
+                    open.push((true, i));
+                } else if matches!(op, WasmOp::End)
+                    && let Some((true, start)) = open.pop()
+                {
+                    m.insert(start, i);
+                }
+            }
+            m
         };
 
         // GI-FPU-002 (#619/#369): hard-float (AAPCS-VFP) f32 setup. Snapshot the
@@ -3665,6 +3702,7 @@ impl InstructionSelector {
                     // starts EMPTY — nothing needs protecting during the then-arm
                     // (it runs first); it is filled at `Else`.
                     if_checkpoints.push(stack.len());
+                    if_start_idx.push(idx);
                     if_then_results.push(Vec::new());
 
                     // CMP cond_reg, #0
@@ -3698,7 +3736,96 @@ impl InstructionSelector {
                     // clobber them — reproducing the buggy code's incidental
                     // protection (the then-results were on the vstack) exactly,
                     // which is what keeps the else-arm allocation byte-identical.
+                    //
+                    // #1189: a then-arm result that IS a register-homed local's
+                    // home register (`local.get` pushes the home uncopied) would
+                    // make the #313 join at `End` `mov R_home, R_else` — WRITING
+                    // the local on the else path (ir0(0) returned 18 for
+                    // wasmtime's 9: `mov r0, r1` then `adds r2, r0, r0`). Copy
+                    // such a result into a fresh temp on the THEN path, here,
+                    // immediately before the `B end_label`, so the join register
+                    // is never a live local's home. ONLY when the local is still
+                    // read after the if's `End` (`param_last_read`, already
+                    // loop-back-edge-extended by #663): a dead home is
+                    // clobbered harmlessly and keeps yesterday's bytes. Done
+                    // BEFORE `split_off` so the then-results are still
+                    // stack-live and the temp allocator cannot hand one out.
                     if let Some(&cp) = if_checkpoints.last() {
+                        let end_idx = if_start_idx
+                            .last()
+                            .and_then(|s| if_end_idx.get(s).copied())
+                            .unwrap_or(idx);
+                        for pos in cp..stack.len() {
+                            let StackVal::Reg { reg, is_i64 } = stack[pos] else {
+                                continue;
+                            };
+                            let mut halves = vec![reg];
+                            if is_i64 && let Ok(hi) = i64_pair_hi(reg) {
+                                halves.push(hi);
+                            }
+                            let live_home = halves.iter().any(|h| {
+                                home_of.iter().any(|&(r, p)| {
+                                    r == *h
+                                        && param_last_read
+                                            .get(&p)
+                                            .is_some_and(|&last| last > end_idx)
+                                })
+                            });
+                            if !live_home {
+                                continue;
+                            }
+                            let moves: Vec<(Reg, Reg)> = if is_i64 {
+                                let hi = i64_pair_hi(reg)?;
+                                let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &[],
+                                    &live_params,
+                                    idx,
+                                )?;
+                                vec![(dst_lo, reg), (dst_hi, hi)]
+                            } else {
+                                let dst = alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &live_params,
+                                    idx,
+                                )?;
+                                vec![(dst, reg)]
+                            };
+                            // Under exhaustion spilling (the retry rung) the
+                            // allocator may have spilled the very entry being
+                            // copied; its register still holds the value, but
+                            // the entry's slot bookkeeping would be orphaned by
+                            // an in-place rewrite. Decline honestly instead.
+                            if stack[pos] != (StackVal::Reg { reg, is_i64 }) {
+                                return Err(synth_core::Error::synthesis(
+                                    "#1189: then-arm result copy displaced by \
+                                     exhaustion spilling — function too complex; \
+                                     retried/skipped rather than miscompiled"
+                                        .to_string(),
+                                ));
+                            }
+                            let dst_lo = moves[0].0;
+                            for (rd, rs) in moves {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Mov {
+                                        rd,
+                                        op2: Operand2::Reg(rs),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
+                            stack[pos] = StackVal::Reg {
+                                reg: dst_lo,
+                                is_i64,
+                            };
+                        }
                         let then_results: Vec<StackVal> = stack.split_off(cp);
                         if let Some(slot) = if_then_results.last_mut() {
                             *slot = then_results;
@@ -3775,6 +3902,7 @@ impl InstructionSelector {
                         // control-flow-only if/else byte-identical to before).
                         let then_results = if_then_results.pop().unwrap_or_default();
                         let checkpoint = if_checkpoints.pop();
+                        if_start_idx.pop();
                         if else_emitted {
                             if let Some(cp) = checkpoint {
                                 // else-arm results above the checkpoint, in the

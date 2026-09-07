@@ -1,0 +1,125 @@
+artifacts:
+  - id: RQ-64-JOINALIAS
+    type: system-req
+    title: "SILENT MISCOMPILE: an if/else join register could alias a local's home register on the ARM direct selector — measured, oracle red-first, one-site fix, corpus byte-identical"
+    description: >
+      Found by the RQ-64-MVLOWER lane while strengthening the #1097 oracle
+      and reproduced by the coordinator on main (946cc304); filed as #1189.
+      NOT a multi-value defect: the then-arm of a plain `if (result i32)`
+      whose value is a bare `local.get` of a register-homed local pushes
+      the local's HOME REGISTER itself (uncopied), so the #313 join
+      `mov R_then, R_else` on the else path WRITES THE LOCAL. A later
+      `local.get` of that local then reads the join value:
+
+          c: mov  r0, r1     ; join writes r0 == local 0's home
+          e: adds r2, r0, r0 ; local.get 0 + join, BOTH r0     ir0(0)=18, want 9
+
+      Exit 0, no decline, no warning. The then-arm was right by accident
+      (r0 already held the wanted value), which is why every test taking
+      the then path passed. A silent wrong answer in the default
+      `--relocatable` ARM path is the exact failure this compiler exists to
+      prevent; the issue's blast radius was explicitly unmeasured, and the
+      measurement led the fix.
+
+      MEASURED BLAST RADIUS (18 shapes x 4 legs, one case table, main's
+      binary; the table is the oracle's docstring): the class is ONE SITE —
+      the then-arm result of a value-carrying if/else being a LIVE
+      register-homed local (param in R0..R3, or its i64 pair) on the ARM
+      DIRECT selector. That path is reached by every `--relocatable`
+      compile (#197) AND by every self-contained function the optimized
+      path declines and hands down (measured: `local.set` inside an arm,
+      an i64 param, a loop back-edge — identical bytes, identical wrong
+      answer). Both arms being homes copies local 1 INTO local 0; nested
+      joins alias twice; an else-arm `local.set` of the local is overwritten
+      by the join. NOT reached, each measured MATCH and pinned so the
+      boundary cannot move silently: a non-param local (promotion requires
+      every access at control-flow depth 0, so a then-arm read is always a
+      frame-slot reload into a fresh temp); an else-arm-only home read (the
+      home is only a SOURCE); a home dead after the join; `local.tee` (pushes
+      the tee'd temp); the #509 block join (fresh designated result
+      register); `loop (result)` (no join); a function with a `call`
+      (params frame-backed, #204/#193); ALL of RV32 (`local.get` copies a
+      param: `mv dst, a_n`); ALL of AArch64 (reconciliation into a reserved
+      slot, VCR-A64-CF-001).
+    status: implemented
+    release: v0.64
+    tags:
+      - correctness
+      - silent-miscompile
+      - arm
+      - direct-selector
+      - register-allocation
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1189"
+      landed: >-
+        PR #1190 (branch fix/join-alias-1189), two commits in the order the
+        rule demands. (1) `test(#1189)`: the oracle
+        `scripts/repro/join_alias_1189_differential.py` (+ fixtures
+        `join_alias_1189.wat`, `_i64.wat`, `_call.wat`, and the committed
+        `join_alias_1189_red_main.json` holding main's OWN objects for the
+        two ARM legs) wired as ci.yml job `join-alias-1189-oracle`
+        (`# ci-checks: emulations >= 223`, 74 fixture + 149 live entries),
+        with the emulation floor RE-DERIVED by `oracle_wiring_check.py`
+        (+223, ci.yml and claims.yaml in lockstep). (2) `fix(#1189)`: in
+        `select_with_stack` at `Else`, a then-arm result that is a
+        register-homed local's home (either half of an i64 pair), and whose
+        local is still read past the if's End (`param_last_read`, already
+        loop-back-edge-extended by #663), is copied into a fresh temp on the
+        THEN path immediately before the `B end_label`, so the join register
+        is never a live local's home; a dead home keeps yesterday's bytes.
+        Under exhaustion spilling a displaced copy declines honestly. Unit
+        test `if_result_join_never_targets_a_live_local_home_1189` (live
+        home: one then-path copy, the else path reconciles into it, nothing
+        before the join writes R0; dead home: no copy). No wildcard arm added
+        (the If->End pre-pass uses `matches!`; selector wildcard count
+        55 -> 55); `selector_lines_code` ceiling moved by waiver
+        (19227 -> 19355) because the class had NO handling to delete.
+      done-when: "contains:.github/workflows/ci.yml:join_alias_1189_differential.py"
+      verified-by: >-
+        RED-FIRST, on main's binary through the driver: `live vectors: 135
+        matched, 14 diverged (of 149)`, `RESULT: FAIL (14)`, every failure
+        NAMING its value — ARM relocatable ir0(0) -> 0x12 (wasmtime 0x9),
+        ir1(0,3)/ir2(0,0,3)/ir3(0,0,0,3) -> 0x12 (0xc), iboth(0,3) -> 0x9
+        (0x6), isets(0) -> 0x12 (0xe), inest(0,0) -> 0x12 (0x9),
+        inest(1,0) -> 0xe (0x8), bif(0) -> 0x12 (0x9), iloop(0,2) -> 0x12
+        (0x9), i64p(0) -> 0x12 (0x9); ARM self-contained isets/iloop/i64p
+        likewise; RV32 and AArch64 0 diverged. GREEN on the fix: `live
+        vectors: 149 matched, 0 diverged (of 149)`, `silent-wrong vectors:
+        14 (of 14 pinned)` (main's bytes still return the recorded wrong
+        values — the permanent proof the harness can see the defect),
+        `refusals: 1` (RV32's #312 i64-param decline, pinned as a decline,
+        not manufactured into a wrong answer), oracle_run
+        `emulations=223 wasmtime_calls=223 compiles=10`, RESULT: PASS. Every
+        expected value is wasmtime's, taken live; every unassigned register
+        is seeded with a self-naming canary. The new bytes for ir0 are
+        `mov r1, r0` on the then path and `mov r1, r2` on the else path, the
+        join in r1, `adds r3, r1, r0` reading local 0 from r0.
+        BYTE-IDENTITY, base (main f4780608) vs fix, both ARM paths, TWO
+        populations: (a) scripts/repro/*.wat, 180 modules — identical 117
+        (relocatable) / 151 (self-contained), differing 2 (the two NEW #1189
+        fixture modules only: +2 B per formerly-wrong i32 function, +4 B for
+        the i64 pair; the clean fixture functions iloc/ielse/idead/itee/
+        bbrif/bfall/lres and the call module are bit-identical), 0 newly
+        declined, 0 newly accepted; (b) 467 modules — the pinned 257-file
+        spec testsuite (submodule 34536735), tests/wast, tests/wat,
+        tests/fixtures and the repro corpus, compared PER FUNCTION from the
+        ELF symtab under `--allow-skipped-exports` so partial modules count
+        — identical 248 / 276, differing the same 2, 0 newly declined, 0
+        newly accepted. ALLOCATOR COST: zero on every pre-existing module
+        (no function grew, no spill or decline appeared); the temp is
+        allocated only in the shape that was miscompiled, and only while the
+        home is live past the join. Workspace `cargo test`, clippy
+        `-D warnings`, fmt, claim_check (62/62), oracle_wiring_check
+        (exact floor) and status_evidence_check green on the lane tree.
+        WHAT IS NOT VERIFIED, stated: the 805-module real-world census
+        corpus (#1017) is not on the lane machine, so the "zero allocator
+        cost" claim is measured on 467 local modules, not on it; the
+        call-module control runs on the two ARM legs only (its `bl`
+        relocation is resolved by the harness for Thumb; the mechanism it
+        controls for is ARM-direct-selector specific).

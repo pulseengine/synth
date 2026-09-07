@@ -1508,9 +1508,33 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19227
+        value: 19355
         baseline: 17897
         waivers:
+          - to: 19355
+            reason: >-
+              #1189 (silent miscompile): +128 lines — the if/else JOIN
+              register could be a register-homed LOCAL's home register on the
+              ARM direct selector (`local.get` pushes the home uncopied; the
+              #313 `mov R_then, R_else` then WROTE the local: ir0(0) returned
+              18 for wasmtime's 9, exit 0). select_with_stack now copies such
+              a then-arm result into a fresh temp on the then path at `Else`,
+              ONLY when the local is still read past the if's End
+              (`param_last_read`, #663-extended), so the join register is
+              never a live local's home. Not a lowering arm and no wildcard
+              (the If→End pre-pass uses `matches!`, wildcard count 55 -> 55).
+              Nothing could be deleted in exchange: the class had NO handling
+              (it miscompiled). Measured blast radius (18 shapes x 4 legs):
+              ARM direct selector only — both `--relocatable` and the
+              self-contained functions the optimized path hands down; RV32
+              copies params on local.get and AArch64 reconciles into a
+              reserved slot, both pinned MATCH. Byte-identity base vs fix
+              over scripts/repro/*.wat on both ARM paths: every module
+              identical except the two new #1189 fixture modules (+2 B per
+              formerly-wrong i32 function, +4 B for the i64 pair), 0 newly
+              declined, 0 newly accepted; the moved bytes are
+              execution-proven by join_alias_1189_differential.py (149/149
+              live vectors match wasmtime, red 14/149 on main).
           - to: 19227
             reason: >-
               RQ-62-MEMISOLATE (#1145): +14 lines — the memory-k
@@ -1772,7 +1796,7 @@ claims:
         # select_with_stack (memory k has no size register; a guard would
         # compare against the wrong memory's bound — see the lines_code
         # waiver); zero test-module movement.
-        value: 29873
+        value: 30088
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1830,7 +1854,10 @@ claims:
         # read_before_write_locals (waived above).
         # 91 -> 90 (RQ-59-SUBTRACT increment 6): the sws I64Extend family
         # match's `_ => unreachable!()` went with its deleted arm.
-        value: 90
+        # #1189: 90 -> 91 — the `_ => None` in the unit test
+        # `if_result_join_never_targets_a_live_local_home_1189`'s MOV filter
+        # (test region; the directed code-region count stays 55).
+        value: 91
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -2600,7 +2627,13 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
-    text: "--exact-emulation-floor 324847"
+    # v0.64 — #1189 (if/else join register aliasing a local's home register):
+    #   +223 for join_alias_1189_differential.py (74 fixture entries — main's
+    #   own bytes on the two ARM legs, 14 pinned SILENT-WRONG — plus 149 live
+    #   entries across ARM relocatable / ARM self-contained / RV32 / AArch64
+    #   and the call-containing control). Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 325070.
+    text: "--exact-emulation-floor 325070"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
