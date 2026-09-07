@@ -4761,16 +4761,29 @@ jobs:
           python-version: "3.x"
       - name: Install oracle deps
         run: pip install wasmtime pyelftools
-      - name: Install llvm (ld.lld for the reverse-refusal control)
-        run: brew install llvm
+      - name: Install lld (ld.lld for the reverse-refusal control)
+        # `lld`, NOT `llvm`: brew's llvm formula does not ship `ld.lld`, and
+        # `brew --prefix llvm` prints a path whether or not the formula is even
+        # installed — so the old `"$(brew --prefix llvm)/bin/ld.lld"` was a path
+        # that never exists. The `lld` formula provides it and symlinks it onto
+        # PATH. (Measured on an arm64 Darwin host with llvm 22.1.8 present:
+        # `/opt/homebrew/opt/llvm/bin/ld.lld` absent,
+        # `/opt/homebrew/opt/lld/bin/ld.lld` present.)
+        run: brew install lld
       - name: Assert this runner IS arm64 macOS with the host toolchain (the leg the claim is about)
+        # REQUIRE, do not probe: the oracle itself SKIPS its ld.lld
+        # reverse-refusal control when the tool is missing, and a skipped
+        # red-first control is the silent-skip failure this repo keeps finding.
+        # We control this runner, so the tool's absence is an ERROR here and the
+        # control stays non-vacuous.
         run: |
           set -euo pipefail
           uname -m | grep -qx arm64
           uname -s | grep -qx Darwin
           clang --version
           ld -v 2>&1 | head -1
-          "$(brew --prefix llvm)/bin/ld.lld" --version
+          command -v ld.lld
+          ld.lld --version
       - name: Run RQ-64-MACHO host-link oracle NATIVELY (Apple ld via clang; EXECUTED vs wasmtime)
         run: |
           set -euo pipefail
