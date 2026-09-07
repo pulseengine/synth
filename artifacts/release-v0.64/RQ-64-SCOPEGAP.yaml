@@ -64,8 +64,9 @@ artifacts:
       kernel recount 630 / 2), VER-001 "39 Qed", VER-002 "95 Qed",
       VCR-ISA-001 "9 admits", undated increment-log sentences in VCR-SEL-001
       / VCR-WASM-001 / SWVER-020 / SWVER-021, and VCR-X86-001's
-      undated-but-currently-equal "630 Qed" (the RQ-64-FLOORPROSE shape).
-      The rest of the
+      undated-but-currently-equal "630 Qed" (correct today and ambiguous to
+      a reader at v0.70 — the point RQ-64-FLOORPROSE's correction, #1178,
+      kept). The rest of the
       104 are threshold/ABI constants in requirements or measured results
       that ARE a verification record's content.
 
@@ -78,9 +79,12 @@ artifacts:
       a release window or evidence scoping these items lack, the false-red
       argument RQ-62-ROADMAPGATE already made. (c) rejected on the survey:
       stripping numbers destroys evidence to prevent staleness. "Pinned"
-      read as EQUALITY with the live pin rejected: it manufactures one more
-      lockstep copy per citing artifact, the merge cost RQ-64-FLOORPROSE
-      measured on v0.63. Enforced in status_evidence_check.py as S1 (an
+      read as EQUALITY with the live pin rejected: it turns every citing
+      topic artifact into one more LIVE file that must move with the number
+      — and RQ-64-FLOORPROSE's correction (#1178) measured that v0.63's
+      largest merge cost sat on exactly the LIVE files (ci.yml, claims.yaml),
+      never on a dated transcript. Enforced in status_evidence_check.py as
+      S1 (an
       undated repo-derived count in description or field prose) and S2 (an
       undated measured figure in a title) over every artifact with no
       version-shaped `release:` in a non-version-named topic file, with an

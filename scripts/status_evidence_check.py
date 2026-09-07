@@ -423,16 +423,21 @@ PROGRAMME_FLOOR = 379
 #     results that ARE a verification record's content ("13/13",
 #     "338/338"). Stripping evidence to prevent staleness is backwards.
 #   * "pinned" read as EQUALITY with the live derivation (the CLAUDE.md
-#     count-eq discipline) — every citing artifact becomes one more copy in
-#     a lockstep set, the merge-cost defect RQ-64-FLOORPROSE measured on
-#     v0.63 (four lane rebases conflicting on one number). A record dates;
-#     a pin lives in claims.yaml once.
+#     count-eq discipline) — every citing topic artifact becomes one more
+#     LIVE file that must move with the number. RQ-64-FLOORPROSE's
+#     correction (#1178) measured where v0.63's largest merge cost actually
+#     sat: on the two LIVE files of the emulation floor (ci.yml,
+#     claims.yaml), all four lane rebases — never on a dated artifact
+#     transcript. Equality here would grow exactly that set. A record
+#     dates; a pin lives in claims.yaml once — and FLOORPROSE's surviving
+#     rule ("say 'at v0.63' beside it") is S1 stated for one file.
 #
 #   S1: a citation of a REPO-DERIVED moving count — `N Qed`, `N Admitted` /
 #       `N admits`, the shape every measured instance took — in an unscoped
-#       artifact's description or any prose-valued `fields:` entry
-#       (RQ-64-FLOORPROSE's instance was a `verified-by:` field) must sit in
-#       a sentence carrying a temporal anchor. The failure names the live
+#       artifact's description or any prose-valued `fields:` entry (TR-005's
+#       `verification-criteria` and VER-001/002's `steps.coverage` were
+#       measured instances) must sit in a sentence carrying a temporal
+#       anchor. The failure names the live
 #       value from status.json so the reader sees the drift, but the VERDICT
 #       is dated-or-not, never equality (see the third rejection).
 #   S2: an unscoped artifact's TITLE — the surface every listing and query

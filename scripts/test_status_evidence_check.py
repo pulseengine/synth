@@ -1142,7 +1142,7 @@ class UnscopedStaleness1085(unittest.TestCase):
     "188 Qed / 52 Admitted"), the negative direction (dated sentences in
     every anchor form, version-named topic files, a version-shaped
     `release:`, release-scoped files, threshold percentages in
-    descriptions), the field-prose surface RQ-64-FLOORPROSE found, the
+    descriptions), the field-prose surface (TR-005, VER-001/002), the
     per-sentence framing that VCR-X86-001's shape needs, and the floor.
     Mutation-verified at authoring: deleting the S2 branch kills the title
     replay; deleting S1 kills the VG-002 replay and the fields test;
@@ -1302,7 +1302,7 @@ class UnscopedStaleness1085(unittest.TestCase):
         self.assertEqual(r[1], 0)
 
     def test_prose_fields_are_scanned_with_their_key_path(self):
-        # TR-005's shape (and RQ-64-FLOORPROSE's `verified-by:` instance):
+        # TR-005's and VER-001/002's shape:
         # the count lives in a field, flat or nested, not the description.
         fx = Fixture()
         self.topic(fx, "technical-requirements.yaml", [
