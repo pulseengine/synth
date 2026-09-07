@@ -114,6 +114,14 @@ payload, so the fix is a no-op there by construction. The instrument now
 asserts on every run that its printed rows sum to the modules they rank, and
 its `--self-test` (the two shapes above, a negative control) is CI-wired.
 
+Three totals for the same bucket exist and only one is the tool's: the v0.63
+table above transcribes 7 of the instrument's 12 rows (135 of 141); a pre-fix
+listing reviewed during v0.64 transcribed 9 (138); the instrument printed all
+12 (141) — replayed over the exact NEVER set, both v0.63.0's and main's
+pre-fix script print twelve rows. Those shortfalls are transcription, not
+tooling; the `12 rows sum to 141 = 141 modules ranked` line the report now
+prints is there so the next transcription can be checked against it.
+
 ### riscv (182)
 | n | blocker |
 |---|---------|

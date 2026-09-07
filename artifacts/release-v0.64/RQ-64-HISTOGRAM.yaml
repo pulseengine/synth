@@ -104,12 +104,12 @@ artifacts:
         — above the start-section and rule_i32_rotl gaps v0.63 listed ahead
         of it — and GI-FPU-002 falls 3 -> 1; the same four modules are
         re-attributed as in the plain census. Denominator stated: the arm
-        ladder was measured as four sorted corpus quarters per side
-        (61/61/61/60 modules, merged; 243 unique paths asserted; every
-        quarter report carries its own `sum invariant OK` lines) because one
-        full-corpus ladder pass runs ~110 min per side on this host —
-        per-module results are independent and deterministic, so the merge
-        is the same measurement.
+        ladder was measured TWICE per side — one full-corpus single pass
+        (~110 min each) and four sorted corpus quarters (61/61/61/60,
+        merged, 243 unique paths asserted) — and the two agree on every
+        module's rung and primary blocker (0 of 243 differ, both sides);
+        the full-pass reports carry the 12-row / 11-row NEVER tables above
+        with their `sum invariant OK` lines.
         (d) the census's SECOND ranking, "module-level decline reasons (top
         10)", ranked RAW text: on aarch64 core the #1102 refusal (64 of 86
         modules, across 59 singleton-ish rows) printed BELOW active-data
@@ -127,6 +127,34 @@ artifacts:
         histogram, so it cannot see this change and did not move; the
         `encode_operand2` merge is demonstrated where #1159 observed it —
         the corpus census, plain and ladder.
+        (f) RECONCILIATION of three arm NEVER totals (coordinator review):
+        the v0.63 doc table sums to 135, a held pre-fix listing to 138, the
+        tool to 141. Replayed the PRE-FIX script's own report_ladder over the
+        exact BEFORE NEVER set (each module's stored pre-fix blocker; no
+        synth re-run): it prints TWELVE rows summing to 141 — 71, 41, 7, 5,
+        4, 4 (0x624), 3, 2, 1 (call_indirect sidecar), 1 (LdrSym
+        "Thumb-N-only" — the pre-fix mask also ate the 2 in Thumb-2), 1
+        (0x5dc), 1 (no exports). The held nine rows are its first nine,
+        same order and counts; the three "missing" modules are rows 10-12.
+        Both v0.63.0 and pre-fix main print most_common(12) and the Counter
+        has 12 keys, so the shipped tool printed all twelve — 138 and 135
+        are TRANSCRIPTION cuts (9 of 12 rows; 7 of 12 rows), not tooling
+        losses. Consequently the new assertion does NOT go red on the
+        pre-fix bucketing (replayed: 12 rows, printed sum 141, invariant
+        OK) — correctly, because that report lost nothing; a cut forced to
+        top=9 now prints a `3 (+3 more rows below the top-9 cut)` row and
+        still closes at 141. The invariant is exactly as claimed — it covers
+        the primary histogram and `141` and the row population are one set
+        — and it cannot fail on a report that had no loss. The hypothesised
+        third mechanism (a fragment losing the plurality vote and falling
+        out of attribution) does not exist: 0 of 141 NEVER modules have an
+        empty primary blocker — `_modal` always returns a key when skip
+        reasons exist, the module-level reason is used otherwise, and the
+        unparsed case is a named string. So: the CUT hides rows (now
+        closes), FRAGMENTATION misranks (now masked), and TRANSCRIPTION
+        drops rows outside the tool (135, 138) — which the tool cannot fix
+        but the printed `N rows sum to M = M modules ranked` line now makes
+        checkable by whoever copies the table.
         (e) over-collapse audit: every MERGE the comparison produced was
         inspected — all are the one encode_operand2 message; reference
         identifiers (#1102, §4.5.5, VCR-MEM-002 — format-string constants
