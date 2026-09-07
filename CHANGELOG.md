@@ -5,6 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0] - 2026-09-07
+
+**The number you plan from.**
+
+The theme was the ranked histogram a release is scoped from — and the release
+found that the instrument was wrong in a way that had already shaped a previous
+plan. But the most important thing v0.64 did was not planned at all: while a
+lane was *strengthening an oracle*, it found a **silent miscompile on `main`**,
+and that outranked everything else in the queue.
+
+Scope grew 9 → 10 artifacts mid-release for that reason. Nine closed, one
+deferred with its reason recorded.
+
+### The unplanned finding — a silent wrong answer (#1189, fixed in #1190)
+
+An `if`/`else` join register could **be** a register-homed local's home
+register, so the join `mov` overwrote the local:
+
+```
+ c: mov  r0, r1      ; join writes r0 — which IS local 0's home
+ e: adds r2, r0, r0  ; local.get 0 + join, BOTH r0
+```
+
+`f(0)` returned **18** where wasmtime returns **9**. Exit 0, no decline, no
+warning.
+
+**Why it survived:** the *then*-arm is correct **by accident** — `r0` already
+holds the value the join wants, so the aliasing write is a no-op on that path.
+Every test taking the then-branch, or not re-reading the local after the join,
+passed cleanly.
+
+**How it was found:** not by a failing test. A lane strengthening the #1097
+oracle had its own first `if`-lowering inherit the same defect, and the sharper
+oracle caught it red. The base binary was only examined because of that.
+
+The blast radius was measured **before** anything was fixed (18 shapes × 4
+legs), and it corrected the issue's original scope **twice, both times wider**:
+the self-contained path is affected wherever the optimized selector declines and
+falls back; the class covers i64 params (both halves), nested ifs, and
+if-inside-block/loop. Clean rows were pinned with their *structural* reasons, so
+"these happen to work" became "these work for a stated reason a test watches".
+
+The fix copies a then-result into a fresh temp when it is a live local's home.
+Cost: one `mov` (+2 bytes i32, +4 i64). Byte-identity over **467 modules**: only
+the two new fixtures differ, 0 newly declined, 0 newly accepted, zero allocator
+cost. The oracle keeps **main's own wrong bytes** as a permanent red half
+(14/149 divergent, each named) alongside the live half, so a regression cannot
+quietly restore the old behaviour.
+
+**Forward-looking, and the best thing in the release:** RV32 has the same
+`mv rd_then, rd_else` join and is clean **only because `local.get` copies**. A
+future RV32 "alias params on the vstack" byte win would recreate this exact
+miscompile — and the oracle's RV32 legs now guard it. A trap set for an
+optimization nobody has written yet.
+
+### The instrument was wrong (#1159)
+
+The census blocker histogram masked decimal payloads but not hex, so
+`immediate 0x624` and `immediate 0x5dc` were separate rows while their decimals
+collapsed. A cause with a varying payload was systematically **under-ranked**.
+
+Measured on arm: `encode_operand2` non-rotated immediate went **4 modules at
+rank 5 → 9 at rank 3**, overtaking two other causes — in the very table v0.63
+was scoped from. More than 2× understated. riscv and aarch64 were identical
+before and after.
+
+Three distinct loss mechanisms are now named and separated: the **cut** hides
+rows, **fragmentation** misranks them, and **transcription** drops them outside
+the tool (v0.63's doc listed 7 of 12 rows). Only the second was the tool's.
+
+### Reach: the container, not the ISA (#242)
+
+- **arm64-Linux** was true by accident and is now claimed and gated: the
+  `--relocatable` object is linked by a real host linker and **executed** —
+  natively on `ubuntu-24.04-arm`, under qemu-user, and under unicorn — against
+  wasmtime-first values, with red-first controls that refuse an `EM_ARM` object
+  and an `elf_x86_64` emulation *by name*.
+- **Mach-O** now emits an `MH_OBJECT` for `CPU_TYPE_ARM64` that Apple's `ld`
+  links and macOS executes 17/17 vs wasmtime. Both containers render **one
+  `ObjectPlan`**, so a second writer *disagreeing* with the first is
+  unrepresentable rather than merely tested — 141 modules byte-identical, and
+  the `.text` bytes are literally the same in both containers.
+
+### Gates that could not fail, and one that caught its author
+
+- **#910 (FLOORPROSE):** a live pinned value could be restated in artifact prose
+  where nothing checked it. The new rule derives the live floor from `ci.yml`
+  and fails on any release artifact restating it — proven in three directions,
+  including **blinding the rule** (renaming the gate flag), which makes it
+  *fail* rather than report a clean tree. And a fourth nobody constructed: **the
+  rule fired on its own author**, because the obvious way to write the
+  artifact's `verified-by` quoted the live floor.
+- **#1085 (SCOPEGAP):** 293 unscoped artifacts, of which **nine** restated
+  moving repo-derived counts as undated present-tense fact — eight of them
+  six-month-stale proof counts, sitting behind a green gate for at least eight
+  releases. Now pinned as an **equality** after the churn was measured (two
+  moves in seven intervals), so drift in either direction is a visible diff.
+- **#1057 (CFOBLIG):** the WASM half of the Block/End obligation landed
+  (630 → 645 Qed, zero new admits, nothing named `*_correct`), and the ARM half
+  was **deliberately refused**: the fragment that *is* statable against today's
+  `ArmSemantics` would have been green across every closed control-flow
+  miscompile (#483, #500, #509, #740, #930). A proof that passes over five known
+  miscompiles is misleading evidence, not weak evidence. The obstruction is
+  stated and kernel-pinned instead. It also pinned a falsehood the model already
+  asserted: that a counting loop's body runs once.
+
+### Dependencies: a hold that finally caught something (#965)
+
+The MINORHOLD rule *did* have an exit — "merge by hand once the full suite is
+green" — but it said nothing about **the tree the suite ran on**, which is what
+made it unusable. Three things were added: base freshness is part of "green";
+the refresh mechanism can be **permanently** gone (merging main *into* a
+dependabot branch destroys the ability to freshen it); and a bump nobody
+evaluates needs a disposition, because "still open" is not one.
+
+Four held bumps, **four different outcomes**, each on its own evidence. The z3
+bump was **declined** — it breaks the required Bazel build, attributable because
+three sibling bumps on the same base were green. That is the **first time the
+enforced hold has stopped a breaking 0.x-minor before it landed**; the rule was
+written after ordeal 0.9→0.12 hung CI for days and had never been falsified.
+
+### Corrections
+
+- The release plan claimed `VG-009` had drifted to a superseded 1.6 % figure.
+  **It had not.** Its only "1.6" is the tail of `41.6 %`, a line-coverage figure
+  correctly dated "measured at v0.54.0". The claim came from a grep for `1.6`,
+  which returns occurrences and cannot return framing. `VCR-REACH-002` had
+  drifted; `VG-009` had not.
+- The #1189 issue as filed said the miscompile was `--relocatable`-only and its
+  blast radius unmeasured. Both were corrected by the lane's measurement.
+
+### Deferred, with the reason recorded
+
+**`RQ-64-ARCHMODEL`** stays `proposed`. spar#445 — "spar accepts property
+associations from UNDECLARED property sets silently" — is still open with no
+activity since 2026-09-03, re-verified at cut time. This is an **external**
+blocker, not a scope deferral: nothing went stale and nothing got harder. It
+cannot proceed because the tool it depends on silently accepts input it should
+refuse. Fourth consecutive release recording feature-loop steps 1–2 as N/A,
+tracked by #1136.
+
 ## [0.63.0] - 2026-09-06
 
 **Raise the percentage, and say which percentage.**
