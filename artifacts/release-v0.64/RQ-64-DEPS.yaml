@@ -33,8 +33,13 @@ artifacts:
       what happens to one that is never evaluated.
     status: proposed
     release: v0.64
-    tags: [dependencies, process, hold]
-    links: [{type: derives-from, target: BR-001}]
+    tags:
+      - dependencies
+      - process
+      - hold
+    links:
+      - type: derives-from
+        target: BR-001
     fields:
       req-type: process
       priority: should

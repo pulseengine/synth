@@ -32,8 +32,14 @@ artifacts:
       format — and it exercises exactly the oracle shape MACHO will need.
     status: proposed
     release: v0.64
-    tags: [reach, host-native, aarch64, claim]
-    links: [{type: derives-from, target: BR-001}]
+    tags:
+      - reach
+      - host-native
+      - aarch64
+      - claim
+    links:
+      - type: derives-from
+        target: BR-001
     fields:
       req-type: functional
       priority: must

@@ -36,8 +36,14 @@ artifacts:
       and is recorded here so the answer is a choice rather than an accident.
     status: proposed
     release: v0.64
-    tags: [claims, drift, single-source, merge-cost]
-    links: [{type: derives-from, target: BR-001}]
+    tags:
+      - claims
+      - drift
+      - single-source
+      - merge-cost
+    links:
+      - type: derives-from
+        target: BR-001
     fields:
       req-type: process
       priority: should

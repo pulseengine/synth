@@ -47,8 +47,14 @@ artifacts:
       OBLIGATIONS did not.
     status: proposed
     release: v0.64
-    tags: [traceability, gate, scope, staleness]
-    links: [{type: derives-from, target: BR-001}]
+    tags:
+      - traceability
+      - gate
+      - scope
+      - staleness
+    links:
+      - type: derives-from
+        target: BR-001
     fields:
       req-type: process
       priority: must

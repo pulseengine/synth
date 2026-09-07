@@ -27,8 +27,14 @@ artifacts:
       defect is that the ORDER is untrustworthy, and order is now the product.
     status: proposed
     release: v0.64
-    tags: [census, measurement, ranking, planning]
-    links: [{type: derives-from, target: BR-001}]
+    tags:
+      - census
+      - measurement
+      - ranking
+      - planning
+    links:
+      - type: derives-from
+        target: BR-001
     fields:
       req-type: process
       priority: must
