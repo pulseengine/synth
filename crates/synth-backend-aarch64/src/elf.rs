@@ -87,6 +87,214 @@ fn push_u64(v: &mut Vec<u8>, x: u64) {
     v.extend_from_slice(&x.to_le_bytes());
 }
 
+/// RQ-64-MACHO: where a planned symbol lives. `Text`/`Data` are section
+/// classes shared by every container this backend can write (ELF `.text` /
+/// `.data`, Mach-O `__TEXT,__text` / `__DATA,__data`); `Undefined` is the
+/// #1017 import external the host linker resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolPlace {
+    Text,
+    Data,
+    Undefined,
+}
+
+/// RQ-64-MACHO: one symbol of the container-independent plan, in emission
+/// order. `value` is the offset within its section (`0` for `Undefined`);
+/// `is_object` selects the OBJECT (vs FUNC) type in containers that type
+/// symbols.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedSymbol {
+    pub name: String,
+    pub is_object: bool,
+    pub place: SymbolPlace,
+    pub value: u64,
+    pub size: u64,
+}
+
+/// RQ-64-MACHO: one resolved relocation — a `.text` offset, the backend's
+/// relocation kind, and the index of its target in [`ObjectPlan::symbols`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedReloc {
+    pub offset: u64,
+    pub kind: RelocKind,
+    pub symbol: usize,
+}
+
+/// RQ-64-MACHO: the container-independent object PLAN — everything a
+/// relocatable object says, before any container says it.
+///
+/// This is the single source both writers consume: [`build_relocatable_object_full`]
+/// (ELF `ET_REL`) and [`crate::macho::build_macho_object_full`] (Mach-O
+/// `MH_OBJECT`). The `.text` bytes, the `.data` bytes, the symbol list (order,
+/// type, section, offset, size) and the resolved relocation list are computed
+/// ONCE here, so the two containers cannot disagree on any of them by
+/// construction — the byte-identity the RQ-64-MACHO oracle then checks from the
+/// outside (`scripts/repro/macho_host_link_rq64_differential.py`) is a property
+/// of this function, not of two writers happening to agree. A second
+/// hand-written copy of the symbol-ordering or #1013 rules in the Mach-O
+/// writer would be exactly the mirror the North Star forbids.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectPlan {
+    /// All function bodies concatenated in order, no padding (A64 bodies are
+    /// whole words already).
+    pub text: Vec<u8>,
+    /// The synth-emitted `.data` image (empty when the module has no globals).
+    pub data: Vec<u8>,
+    /// Symbols in emission order: every function's aliases (function order,
+    /// `func_N` first), then the `.data` symbols, then the referenced
+    /// undefined externals in first-listed order.
+    pub symbols: Vec<PlannedSymbol>,
+    /// Relocations in function order, offsets rebased to `.text`.
+    pub relocs: Vec<PlannedReloc>,
+}
+
+/// Compute the [`ObjectPlan`] for `functions` + `data` + `undefined_externals`.
+/// The rules (symbol order, first-occurrence name resolution, the #1017
+/// external allowlist, the #1013 unplaced-symbol refusal) are the ELF
+/// builder's, moved here unchanged — the ELF output of every module is
+/// byte-identical to the pre-plan builder (gated by the RQ-64-MACHO lane's
+/// 140-object corpus diff and this file's tests).
+pub fn plan_object(
+    functions: &[ElfFunction],
+    data: &DataBlob,
+    undefined_externals: &[String],
+) -> Result<ObjectPlan, BackendError> {
+    // --- .text: concatenated bodies; record each function's .text offset. ---
+    let mut text: Vec<u8> = Vec::new();
+    let mut func_off: Vec<u64> = Vec::new();
+    for f in functions {
+        // A64 instructions are 4-byte aligned; bodies are whole words already.
+        func_off.push(text.len() as u64);
+        text.extend_from_slice(&f.code);
+    }
+    let have_data = !data.bytes.is_empty();
+
+    // --- symbols: one per (function, symbol-alias), then .data, then externals.
+    // A name → index map so relocations resolve by symbol name; the FIRST
+    // occurrence of a duplicated name wins (the pre-plan `or_insert` rule).
+    let mut symbols: Vec<PlannedSymbol> = Vec::new();
+    let mut sym_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut push_sym = |name: &str,
+                        is_object: bool,
+                        place: SymbolPlace,
+                        value: u64,
+                        size: u64,
+                        symbols: &mut Vec<PlannedSymbol>| {
+        sym_index.entry(name.to_string()).or_insert(symbols.len());
+        symbols.push(PlannedSymbol {
+            name: name.to_string(),
+            is_object,
+            place,
+            value,
+            size,
+        });
+    };
+    for (i, f) in functions.iter().enumerate() {
+        let off = func_off[i];
+        let size = f.code.len() as u64;
+        // #851 lane L3: the funcref table is DATA in `.text` — type it OBJECT so
+        // the object does not claim a branch-table blob is a callable function.
+        for sym in &f.symbols {
+            push_sym(sym, f.is_object, SymbolPlace::Text, off, size, &mut symbols);
+        }
+    }
+    // #851 lane L3: synth-emitted `.data` symbols (the globals region base).
+    if have_data {
+        for (name, off) in &data.symbols {
+            let size = data.bytes.len() as u64 - off.min(&(data.bytes.len() as u64));
+            push_sym(name, true, SymbolPlace::Data, *off, size, &mut symbols);
+        }
+    }
+    // #1017: undefined externals — the ARM `add_undefined_symbol` shape. Only
+    // externals a relocation actually references are emitted, in first-listed
+    // order; a name this object already places is skipped (the reloc binds to
+    // the placed symbol, ARM parity).
+    {
+        let referenced: std::collections::HashSet<&str> = functions
+            .iter()
+            .flat_map(|f| &f.relocations)
+            .map(|r| r.symbol.as_str())
+            .collect();
+        // Defined-name set derived from the same inputs `push_sym` consumed
+        // (reading `sym_index` here would conflict with the closure's capture).
+        let defined: std::collections::HashSet<&str> = functions
+            .iter()
+            .flat_map(|f| &f.symbols)
+            .map(|s| s.as_str())
+            .chain(data.symbols.iter().map(|(n, _)| n.as_str()))
+            .collect();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for name in undefined_externals {
+            if referenced.contains(name.as_str())
+                && !defined.contains(name.as_str())
+                && seen.insert(name.as_str())
+            {
+                push_sym(name, false, SymbolPlace::Undefined, 0, 0, &mut symbols);
+            }
+        }
+    }
+
+    // --- relocations, rebased to .text and resolved to a symbol index. ---
+    let mut relocs: Vec<PlannedReloc> = Vec::new();
+    for (i, f) in functions.iter().enumerate() {
+        for r in &f.relocations {
+            // A relocation against a symbol this object does not place: silently
+            // dropping it would ship the unrelocated placeholder — `bl #0`
+            // branches to itself, `adrp #0` addresses the WRONG page (a silent
+            // miscompile, not a link error). This is NOT an internal invariant
+            // (#1013): it is reachable from ordinary input whenever a retained
+            // function calls a function the backend loud-declined (gale's
+            // httparse corpus repro: a VCR-A64-CF-001 `br_table` decline of
+            // `func_0`, called by `parse`). Refuse via `Err` — the #952 clean
+            // non-zero exit with a reason naming the symbol — never a panic,
+            // which reads as a synth bug and exits 101. (#1017: undefined
+            // externals now EXIST in this builder, but only for the driver's
+            // explicit allowlist — the module's imported functions. A symbol
+            // that is neither placed nor allowlisted, i.e. a loud-declined
+            // LOCAL callee, keeps this refusal.)
+            //
+            // #1168: this message used to assert "the symbol was declined
+            // earlier; see the preceding warning" — a CAUSE, not an
+            // observation. On the .wast exports-only merge the callee was
+            // never declined, just never compiled, and there was no preceding
+            // warning: the message named one that did not exist and sent the
+            // investigator down the wrong path. The builder only knows the
+            // symbol is unplaced; it says exactly that and lists the two ways
+            // it can happen. The driver-level gate (#1102/#1168 in
+            // synth-cli) normally refuses both before this builder runs, so
+            // reaching this branch means a target slipped that gate.
+            let Some(&sidx) = sym_index.get(&r.symbol) else {
+                return Err(BackendError::CompilationFailed(format!(
+                    "aarch64 ELF builder: relocation at .text+{} targets symbol \
+                     '{}', which this object does not place — refusing to ship an \
+                     unrelocated placeholder (#851/#1013). The symbol is neither a \
+                     function this object defines nor an allowlisted import: \
+                     either the function was loud-declined (then a 'skipping \
+                     function' warning precedes this) or it was never compiled \
+                     into this object at all (#1168 — no warning precedes this; \
+                     the reachable-callgraph closure should have retained it). \
+                     The driver-level #1102/#1168 gate normally refuses both \
+                     before this builder runs.",
+                    func_off[i] + r.offset as u64,
+                    r.symbol
+                )));
+            };
+            relocs.push(PlannedReloc {
+                offset: func_off[i] + r.offset as u64,
+                kind: r.kind,
+                symbol: sidx,
+            });
+        }
+    }
+
+    Ok(ObjectPlan {
+        text,
+        data: data.bytes.clone(),
+        symbols,
+        relocs,
+    })
+}
+
 /// Build an `EM_AARCH64` `ET_REL` object exposing each function's symbols as
 /// GLOBAL `STT_FUNC` in `.text`, plus a `.rela.text` for any call relocations.
 /// Data-free shorthand for [`build_relocatable_object_with_data`] — a module
@@ -146,14 +354,10 @@ pub fn build_relocatable_object_full(
     data: &DataBlob,
     undefined_externals: &[String],
 ) -> Result<Vec<u8>, BackendError> {
-    // --- .text: concatenated bodies; record each function's .text offset. ---
-    let mut text: Vec<u8> = Vec::new();
-    let mut func_off: Vec<u64> = Vec::new();
-    for f in functions {
-        // A64 instructions are 4-byte aligned; bodies are whole words already.
-        func_off.push(text.len() as u64);
-        text.extend_from_slice(&f.code);
-    }
+    // RQ-64-MACHO: everything below the container line comes from the ONE plan
+    // the Mach-O writer also consumes — see `plan_object`.
+    let plan = plan_object(functions, data, undefined_externals)?;
+    let text = &plan.text;
 
     let have_data = !data.bytes.is_empty();
     // Section indices. [0]=NULL [1]=.text [2]=.symtab [3]=.strtab [4]=.shstrtab;
@@ -162,141 +366,56 @@ pub fn build_relocatable_object_full(
     // module has relocations.
     let idx_data: u16 = 5;
 
-    // --- .strtab + .symtab: one GLOBAL symbol per (function, symbol-alias). ---
+    // --- .strtab + .symtab: one GLOBAL symbol per planned symbol, plan order. ---
     // st_info = (bind << 4) | type; GLOBAL=1, so FUNC(2) → 0x12 and OBJECT(1) →
-    // 0x11. shndx = 1 (.text) for code, `idx_data` for the `.data` symbols.
-    // Also build a name → symbol-index map so relocations resolve by symbol name.
+    // 0x11. shndx = 1 (.text) for code, `idx_data` for the `.data` symbols,
+    // 0 (SHN_UNDEF) for the #1017 externals. Plan index i is ELF symbol
+    // index i+1 (index 0 is the null symbol).
     let mut strtab: Vec<u8> = vec![0];
     let mut symtab: Vec<u8> = Vec::new();
     symtab.extend_from_slice(&[0u8; SYM_SIZE]); // null symbol at index 0
-    let mut sym_index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut next_sym_idx: u32 = 1;
-    let mut push_sym =
-        |name: &str, info: u8, shndx: u16, value: u64, size: u64, strtab: &mut Vec<u8>| {
-            let name_off = strtab.len() as u32;
-            strtab.extend_from_slice(name.as_bytes());
-            strtab.push(0);
-            push_u32(&mut symtab, name_off); // st_name
-            symtab.push(info); // st_info
-            symtab.push(0); // st_other
-            push_u16(&mut symtab, shndx); // st_shndx
-            push_u64(&mut symtab, value); // st_value
-            push_u64(&mut symtab, size); // st_size
-            sym_index.entry(name.to_string()).or_insert(next_sym_idx);
-            next_sym_idx += 1;
-        };
-    for (i, f) in functions.iter().enumerate() {
-        let off = func_off[i];
-        let size = f.code.len() as u64;
-        // #851 lane L3: the funcref table is DATA in `.text` — type it OBJECT so
-        // the object does not claim a branch-table blob is a callable function.
+    for f in &plan.symbols {
+        let name_off = strtab.len() as u32;
+        strtab.extend_from_slice(f.name.as_bytes());
+        strtab.push(0);
+        // #851 lane L3: the funcref table and the `.data` region are OBJECT.
         let info = if f.is_object { 0x11 } else { 0x12 };
-        for sym in &f.symbols {
-            push_sym(sym, info, 1, off, size, &mut strtab);
-        }
-    }
-    // #851 lane L3: synth-emitted `.data` symbols (the globals region base).
-    if have_data {
-        for (name, off) in &data.symbols {
-            let size = data.bytes.len() as u64 - off.min(&(data.bytes.len() as u64));
-            push_sym(name, 0x11, idx_data, *off, size, &mut strtab);
-        }
-    }
-    // #1017: undefined externals — GLOBAL `STT_FUNC` at `SHN_UNDEF` (0), the
-    // ARM `add_undefined_symbol` shape. Only externals a relocation actually
-    // references are emitted, in first-listed order; a name this object already
-    // places is skipped (the reloc binds to the placed symbol, ARM parity).
-    {
-        let referenced: std::collections::HashSet<&str> = functions
-            .iter()
-            .flat_map(|f| &f.relocations)
-            .map(|r| r.symbol.as_str())
-            .collect();
-        // Defined-name set derived from the same inputs `push_sym` consumed
-        // (reading `sym_index` here would conflict with the closure's capture).
-        let defined: std::collections::HashSet<&str> = functions
-            .iter()
-            .flat_map(|f| &f.symbols)
-            .map(|s| s.as_str())
-            .chain(data.symbols.iter().map(|(n, _)| n.as_str()))
-            .collect();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for name in undefined_externals {
-            if referenced.contains(name.as_str())
-                && !defined.contains(name.as_str())
-                && seen.insert(name.as_str())
-            {
-                push_sym(name, 0x12, 0, 0, 0, &mut strtab);
-            }
-        }
+        let shndx: u16 = match f.place {
+            SymbolPlace::Text => 1,
+            SymbolPlace::Data => idx_data,
+            SymbolPlace::Undefined => 0,
+        };
+        push_u32(&mut symtab, name_off); // st_name
+        symtab.push(info); // st_info
+        symtab.push(0); // st_other
+        push_u16(&mut symtab, shndx); // st_shndx
+        push_u64(&mut symtab, f.value); // st_value
+        push_u64(&mut symtab, f.size); // st_size
     }
 
-    // --- .rela.text: one entry per code relocation (rebased to .text). ---
+    // --- .rela.text: one entry per planned relocation. ---
     // ELF64 packs r_info = (sym_index << 32) | type (sym in the HIGH word).
     let mut rela: Vec<u8> = Vec::new();
-    for (i, f) in functions.iter().enumerate() {
-        for r in &f.relocations {
-            // NO wildcard: a relocation kind this backend cannot express must
-            // fail loudly here rather than be silently dropped (which would ship
-            // an unrelocated `bl #0` / `adrp #0` — a branch-to-self or a wrong
-            // address, the silent-miscompile class).
-            let r_type = match r.kind {
-                RelocKind::AArch64Call26 => R_AARCH64_CALL26,
-                RelocKind::AArch64Jump26 => R_AARCH64_JUMP26,
-                RelocKind::AArch64AdrPrelPgHi21 => R_AARCH64_ADR_PREL_PG_HI21,
-                RelocKind::AArch64AddAbsLo12Nc => R_AARCH64_ADD_ABS_LO12_NC,
-                other => panic!(
-                    "aarch64 ELF builder cannot emit relocation kind {other:?} \
-                     (#851): only the four AArch64 kinds are expressible"
-                ),
-            };
-            // A relocation against a symbol this object does not place: silently
-            // dropping it would ship the unrelocated placeholder — `bl #0`
-            // branches to itself, `adrp #0` addresses the WRONG page (a silent
-            // miscompile, not a link error). This is NOT an internal invariant
-            // (#1013): it is reachable from ordinary input whenever a retained
-            // function calls a function the backend loud-declined (gale's
-            // httparse corpus repro: a VCR-A64-CF-001 `br_table` decline of
-            // `func_0`, called by `parse`). Refuse via `Err` — the #952 clean
-            // non-zero exit with a reason naming the symbol — never a panic,
-            // which reads as a synth bug and exits 101. (#1017: undefined
-            // externals now EXIST in this builder, but only for the driver's
-            // explicit allowlist — the module's imported functions. A symbol
-            // that is neither placed nor allowlisted, i.e. a loud-declined
-            // LOCAL callee, keeps this refusal.)
-            //
-            // #1168: this message used to assert "the symbol was declined
-            // earlier; see the preceding warning" — a CAUSE, not an
-            // observation. On the .wast exports-only merge the callee was
-            // never declined, just never compiled, and there was no preceding
-            // warning: the message named one that did not exist and sent the
-            // investigator down the wrong path. The builder only knows the
-            // symbol is unplaced; it says exactly that and lists the two ways
-            // it can happen. The driver-level gate (#1102/#1168 in
-            // synth-cli) normally refuses both before this builder runs, so
-            // reaching this branch means a target slipped that gate.
-            let Some(&sidx) = sym_index.get(&r.symbol) else {
-                return Err(BackendError::CompilationFailed(format!(
-                    "aarch64 ELF builder: relocation at .text+{} targets symbol \
-                     '{}', which this object does not place — refusing to ship an \
-                     unrelocated placeholder (#851/#1013). The symbol is neither a \
-                     function this object defines nor an allowlisted import: \
-                     either the function was loud-declined (then a 'skipping \
-                     function' warning precedes this) or it was never compiled \
-                     into this object at all (#1168 — no warning precedes this; \
-                     the reachable-callgraph closure should have retained it). \
-                     The driver-level #1102/#1168 gate normally refuses both \
-                     before this builder runs.",
-                    func_off[i] + r.offset as u64,
-                    r.symbol
-                )));
-            };
-            let r_offset = func_off[i] + r.offset as u64;
-            let r_info = ((sidx as u64) << 32) | (r_type as u64);
-            push_u64(&mut rela, r_offset);
-            push_u64(&mut rela, r_info);
-            push_u64(&mut rela, 0); // r_addend = 0
-        }
+    for r in &plan.relocs {
+        // NO wildcard: a relocation kind this backend cannot express must
+        // fail loudly here rather than be silently dropped (which would ship
+        // an unrelocated `bl #0` / `adrp #0` — a branch-to-self or a wrong
+        // address, the silent-miscompile class).
+        let r_type = match r.kind {
+            RelocKind::AArch64Call26 => R_AARCH64_CALL26,
+            RelocKind::AArch64Jump26 => R_AARCH64_JUMP26,
+            RelocKind::AArch64AdrPrelPgHi21 => R_AARCH64_ADR_PREL_PG_HI21,
+            RelocKind::AArch64AddAbsLo12Nc => R_AARCH64_ADD_ABS_LO12_NC,
+            other => panic!(
+                "aarch64 ELF builder cannot emit relocation kind {other:?} \
+                 (#851): only the four AArch64 kinds are expressible"
+            ),
+        };
+        let sidx = r.symbol as u64 + 1;
+        let r_info = (sidx << 32) | (r_type as u64);
+        push_u64(&mut rela, r.offset);
+        push_u64(&mut rela, r_info);
+        push_u64(&mut rela, 0); // r_addend = 0
     }
     let have_rela = !rela.is_empty();
 
