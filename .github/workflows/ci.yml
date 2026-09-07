@@ -500,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 324847 \
+            --exact-emulation-floor 325070 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3114,6 +3114,70 @@ jobs:
           grep -Eq '^refusals: [1-9][0-9]*$' pbs1097.txt
           grep -Eq '^silent-wrong vectors: 4 \(of 4 pinned\); match vectors: [1-9][0-9]*$' pbs1097.txt
           grep -q '^RESULT: PASS' pbs1097.txt
+      # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  join-alias-1189-oracle:
+    name: "if/else join-register / local-home alias oracle (#1189, main's bytes + live)"
+    # #1189: on the ARM direct selector (`--relocatable`, and every
+    # self-contained function the optimized path hands down) the then-arm of
+    # an `if (result)` can leave a register-homed LOCAL's home register as its
+    # result, and the #313 join `mov R_then, R_else` then WRITES the local —
+    # ir0(0) returned 18 for wasmtime's 9, exit 0, no decline. The committed
+    # fixture holds main's (f4780608) own objects for the two ARM legs; every
+    # run re-executes them under unicorn and requires the 14 measured
+    # SILENT-WRONG vectors to return EXACTLY the recorded wrong values (the
+    # permanent proof this harness can see the defect). The live half runs
+    # the current compiler on all four legs (ARM relocatable, ARM
+    # self-contained, RV32, AArch64) plus the call-containing control, and
+    # every vector must match wasmtime — the clean shapes (non-param local,
+    # else-only home read, dead-after-join, #509 block join, loop result,
+    # local.tee, call-containing function; all of RV32 and AArch64) are
+    # pinned MATCH so the measured boundary cannot move silently. RV32's
+    # refusal of the i64-param module (#312 via #952) is pinned as a
+    # recorded decline, not manufactured into a wrong answer.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth (riscv feature — the RV32 leg needs it)
+        run: cargo build --features riscv -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run #1189 join-alias oracle (fixture red half + live four-leg half)"
+        # `set -euo pipefail` per #890. The `ci-checks: emulations >= 223`
+        # floor counts 74 fixture + 149 live unicorn entries; it CANNOT see
+        # the wrong/match partition, the RV32 decline (#1113 — a refused
+        # compile emulates nothing) or a live leg dropped in favour of the
+        # fixture, so each carries an in-script floor and the greps below pin
+        # the printed counts (the #1112 pattern): a red half that stopped
+        # demonstrating the miscompile, or a live half that stopped covering
+        # a leg, must not stay green.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/join_alias_1189_differential.py | tee ja1189.txt
+          grep -Eq '^refusals: 1$' ja1189.txt
+          grep -Eq '^silent-wrong vectors: 14 \(of 14 pinned\); fixture match vectors: [1-9][0-9]*$' ja1189.txt
+          grep -Eq '^live vectors: 149 matched, 0 diverged \(of 149\)$' ja1189.txt
+          grep -q '^RESULT: PASS' ja1189.txt
       # #910: close the job with what it EXECUTED.
       - name: Differential evidence ledger (#910)
         if: always()

@@ -2600,7 +2600,13 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
-    text: "--exact-emulation-floor 324847"
+    # v0.64 — #1189 (if/else join register aliasing a local's home register):
+    #   +223 for join_alias_1189_differential.py (74 fixture entries — main's
+    #   own bytes on the two ARM legs, 14 pinned SILENT-WRONG — plus 149 live
+    #   entries across ARM relocatable / ARM self-contained / RV32 / AArch64
+    #   and the call-containing control). Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 325070.
+    text: "--exact-emulation-floor 325070"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
