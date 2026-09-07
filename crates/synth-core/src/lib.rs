@@ -35,7 +35,8 @@ pub use wasm_decoder::{
     TableGuards, WasmMemory, decode_wasm_functions, decode_wasm_module,
 };
 pub use wasm_op::{
-    WasmOp, count_params_heuristic, find_param_block_type, param_block_decline_msg,
+    ParamBlockLowering, WasmOp, arm_param_block_lowering, count_params_heuristic,
+    find_param_block_type, find_unlowered_param_block_type, param_block_decline_msg,
     referenced_locals, rewrite_memory_grow_zero,
 };
 pub use wsc_facts::{FactKind, WSC_FACTS_SECTION_NAME, WscFact, WscFactsParse, parse_wsc_facts};

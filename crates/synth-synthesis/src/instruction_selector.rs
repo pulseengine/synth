@@ -435,6 +435,14 @@ struct BlockLabel {
     /// are declined loudly (the direct selector does not do multi-value).
     results: u8,
     result_reg: Option<Reg>,
+    /// RQ-64-MVLOWER (#1093) increment 3: a parameter-taking LOOP's designated
+    /// HEADER registers, one per loop parameter (bottom→top), fixed at `Loop`
+    /// and reserved for the loop's extent (the per-op `live_params`
+    /// reservation, like `result_reg`). Every back-edge moves its carried
+    /// values into them before jumping, so the header always finds its
+    /// parameters where the body's first read expects them. Empty for a
+    /// block/if and for a parameter-free loop (legacy lowering, byte-identical).
+    param_regs: Vec<Reg>,
 }
 
 /// #509: at a `br`/`br_if`/`br_table` edge, land the carried value in the
@@ -476,12 +484,63 @@ fn edge_value_move(
     };
     if is_loop {
         if params > 0 {
-            return Err(synth_core::Error::synthesis(format!(
-                "#509: br to a loop header with {params} loop parameter(s) — \
-                 value-carrying backward branches are not supported by the \
-                 direct selector (declined rather than dropping the carried \
-                 value)"
-            )));
+            // RQ-64-MVLOWER (#1093) increment 3: land the carried loop
+            // parameters — the top `params` operand-stack entries, PEEKED —
+            // in the header's designated registers. The moves are planned
+            // first and a parallel-move hazard (a destination that is a later
+            // source) declines LOUDLY, exactly like the if join.
+            let n = params as usize;
+            let param_regs = block_labels[target_idx].param_regs.clone();
+            if param_regs.len() != n {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#1093: loop header designates {} register(s) for {n} \
+                     parameter(s) — declined rather than mis-landed",
+                    param_regs.len()
+                )));
+            }
+            if stack.len() < n {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#1093: br to a loop header with {n} parameter(s) on an \
+                     operand stack of depth {} — the carried values are not on \
+                     the direct selector's operand stack (a multi-value call \
+                     result, or stack-polymorphic dead code); declined rather \
+                     than mis-landed",
+                    stack.len()
+                )));
+            }
+            let base = stack.len() - n;
+            let mut moves: Vec<(Reg, Reg)> = Vec::new();
+            for (i, &dst) in param_regs.iter().enumerate() {
+                let StackVal::Reg { reg, is_i64: false } = stack[base + i] else {
+                    return Err(synth_core::Error::synthesis(
+                        "#1093: an i64/spilled/float value carried to a loop \
+                         header is not lowered (declined rather than mis-landed)"
+                            .to_string(),
+                    ));
+                };
+                if reg != dst {
+                    moves.push((dst, reg));
+                }
+            }
+            for (k, &(dst, _)) in moves.iter().enumerate() {
+                if moves[k + 1..].iter().any(|&(_, src)| src == dst) {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#1093: a loop back-edge needs a parallel register \
+                         shuffle ({dst:?} is both a header destination and a \
+                         later carried source) — declined rather than clobbered"
+                    )));
+                }
+            }
+            for (dst, src) in moves {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Mov {
+                        rd: dst,
+                        op2: Operand2::Reg(src),
+                    },
+                    source_line: Some(line),
+                });
+            }
+            return Ok(());
         }
         return Ok(()); // plain loop back-edge — carries nothing
     }
@@ -1227,6 +1286,184 @@ fn reconcile_if_result(
                 .to_string(),
         )),
     }
+}
+
+/// RQ-64-MVLOWER (#1093): reconcile an ELSE-LESS parameter-taking `if`'s
+/// join. Its type is `[t*] -> [t*]` with an IMPLICIT identity else: on the
+/// false path the block PARAMETERS pass through unchanged — still in the
+/// registers they held at `If` (`params`, snapshotted there; no then-arm
+/// code ran) — while on the true path the results are the then-arm's
+/// (`then_results`). Emits `MOV R_then_i, R_param_i` on the ELSE path only
+/// (the caller places `B end_label` before the else label), via
+/// [`reconcile_if_result`]: the #313 two-arm reconciliation with the params
+/// standing in for the else-arm.
+///
+/// PARALLEL-MOVE HAZARD: the movs are sequential, so a destination that is
+/// also a LATER source would be clobbered before it is read (the swap
+/// `then=(R2,R1)`, `params=(R1,R2)`; or an i64 whose then-lo is the param's
+/// hi). The plan is checked BEFORE anything is emitted and such a permutation
+/// declines LOUDLY — it is exactly the "per-path multi-register shuffle" the
+/// aarch64 VCR-A64-CF-001 refusal names, and it needs its own oracle vector
+/// before it is worth a scratch register.
+fn reconcile_implicit_else(
+    then_results: &[StackVal],
+    params: &[StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    line: usize,
+) -> Result<()> {
+    if then_results.len() != params.len() {
+        return Err(synth_core::Error::synthesis(format!(
+            "#1093: an else-less parameter-taking if must fall through with \
+             its parameter arity ([t*] -> [t*]); then-arm left {} result(s) \
+             for {} parameter(s) — declined rather than mis-reconciled",
+            then_results.len(),
+            params.len()
+        )));
+    }
+    let mut moves: Vec<(Reg, Reg)> = Vec::new();
+    for (t, pv) in then_results.iter().zip(params.iter()) {
+        let (
+            StackVal::Reg {
+                reg: tl,
+                is_i64: ti,
+            },
+            StackVal::Reg {
+                reg: pl,
+                is_i64: pi,
+            },
+        ) = (t, pv)
+        else {
+            return Err(synth_core::Error::synthesis(
+                "#1093: else-less parameter-taking if with a spilled/float \
+                 parameter or then-result is not lowered (declined rather than \
+                 mis-reconciled)"
+                    .to_string(),
+            ));
+        };
+        if ti != pi {
+            return Err(synth_core::Error::synthesis(
+                "#1093: else-less if width mismatch between the then-arm result \
+                 and the pass-through parameter"
+                    .to_string(),
+            ));
+        }
+        if tl != pl {
+            moves.push((*tl, *pl));
+        }
+        if *ti {
+            let (th, ph) = (i64_pair_hi(*tl)?, i64_pair_hi(*pl)?);
+            if th != ph {
+                moves.push((th, ph));
+            }
+        }
+    }
+    for (k, &(dst, _)) in moves.iter().enumerate() {
+        if moves[k + 1..].iter().any(|&(_, src)| src == dst) {
+            return Err(synth_core::Error::synthesis(format!(
+                "#1093: else-less parameter-taking if needs a parallel register \
+                 shuffle ({dst:?} is both a join destination and a later \
+                 pass-through source) — declined rather than clobbered"
+            )));
+        }
+    }
+    for (t, pv) in then_results.iter().zip(params.iter()) {
+        reconcile_if_result(t, pv, instructions, line)?;
+    }
+    Ok(())
+}
+
+/// #1189 (and RQ-64-MVLOWER's implicit-else join): the join register must
+/// never be a LIVE register-homed local's home. `select_with_stack` pushes a
+/// `local.get` of a register-homed local by ALIAS (the home register, no
+/// copy), so a then-arm ending in `local.get 0` yields R0 as its result — and
+/// the else path's `MOV R_then, R_else` reconciliation would then WRITE the
+/// local for every read after the join (measured: `ir0(0)` 18, want 9; the
+/// parameter-taking `ipq(0)` 16 want 8 and else-less `ipa(0)` 14 want 7).
+///
+/// For every then-result entry in `stack[cp..]` whose register — either half
+/// of an i64 pair — is the home of a local still read AFTER the if's `End`
+/// (`param_last_read[p] > end_idx`; a dead home is clobbered harmlessly and
+/// keeps yesterday's bytes), copy it into a fresh temp ON THE THEN PATH
+/// (the caller emits this before the then path's `B end_label`) and rewrite
+/// the entry in place. Called with the entries still stack-live, so the temp
+/// allocator cannot hand one of them out. Returns the number of instructions
+/// emitted so the caller's control-flow accounting stays exact.
+///
+/// ONE mechanism for both joins: `Else` (every if, #1190) and the RQ-64
+/// implicit else of an else-less parameter-taking if at `End`.
+fn copy_live_home_then_results(
+    stack: &mut [StackVal],
+    cp: usize,
+    end_idx: usize,
+    home_of: &[(Reg, u32)],
+    param_last_read: &std::collections::HashMap<u32, usize>,
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    live_params: &[Reg],
+    line: usize,
+) -> Result<usize> {
+    let before = instructions.len();
+    for pos in cp..stack.len() {
+        let StackVal::Reg { reg, is_i64 } = stack[pos] else {
+            continue;
+        };
+        let mut halves = vec![reg];
+        if is_i64 && let Ok(hi) = i64_pair_hi(reg) {
+            halves.push(hi);
+        }
+        let live_home = halves.iter().any(|h| {
+            home_of.iter().any(|&(r, p)| {
+                r == *h && param_last_read.get(&p).is_some_and(|&last| last > end_idx)
+            })
+        });
+        if !live_home {
+            continue;
+        }
+        let moves: Vec<(Reg, Reg)> = if is_i64 {
+            let hi = i64_pair_hi(reg)?;
+            let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                next_temp,
+                stack,
+                instructions,
+                spill,
+                &[],
+                live_params,
+                line,
+            )?;
+            vec![(dst_lo, reg), (dst_hi, hi)]
+        } else {
+            let dst =
+                alloc_temp_or_spill(next_temp, stack, instructions, spill, live_params, line)?;
+            vec![(dst, reg)]
+        };
+        // Under exhaustion spilling (the retry rung) the allocator may have
+        // spilled the very entry being copied; its register still holds the
+        // value, but the entry's slot bookkeeping would be orphaned by an
+        // in-place rewrite. Decline honestly instead.
+        if stack[pos] != (StackVal::Reg { reg, is_i64 }) {
+            return Err(synth_core::Error::synthesis(
+                "#1189: then-arm result copy displaced by exhaustion spilling — \
+                 function too complex; retried/skipped rather than miscompiled"
+                    .to_string(),
+            ));
+        }
+        let dst_lo = moves[0].0;
+        for (rd, rs) in moves {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                },
+                source_line: Some(line),
+            });
+        }
+        stack[pos] = StackVal::Reg {
+            reg: dst_lo,
+            is_i64,
+        };
+    }
+    Ok(instructions.len() - before)
 }
 
 /// Pop the top operand, returning its `lo` register (#171). If the entry was
@@ -19473,5 +19710,97 @@ mod tests {
             !touches_r9,
             "register-promoted SP global must not touch the R9 globals table: {out:#?}"
         );
+    }
+}
+
+/// RQ-64-MVLOWER (#1093): the implicit-else reconciliation's negative
+/// controls — the shapes it must REFUSE, with nothing emitted, so a hazardous
+/// permutation can never reach the encoder as a clobbering mov sequence.
+#[cfg(test)]
+mod rq64_implicit_else_tests {
+    use super::*;
+
+    fn r32(reg: Reg) -> StackVal {
+        StackVal::Reg { reg, is_i64: false }
+    }
+    fn r64(reg: Reg) -> StackVal {
+        StackVal::Reg { reg, is_i64: true }
+    }
+    fn movs(ins: &[ArmInstruction]) -> Vec<(Reg, Reg)> {
+        ins.iter()
+            .map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                } => (*rd, *rs),
+                other => panic!("only movs expected, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn disjoint_positions_emit_one_mov_each_in_order() {
+        let mut ins = Vec::new();
+        reconcile_implicit_else(
+            &[r32(Reg::R3), r32(Reg::R4)],
+            &[r32(Reg::R1), r32(Reg::R2)],
+            &mut ins,
+            0,
+        )
+        .unwrap();
+        assert_eq!(movs(&ins), vec![(Reg::R3, Reg::R1), (Reg::R4, Reg::R2)]);
+    }
+
+    #[test]
+    fn identity_position_emits_nothing() {
+        let mut ins = Vec::new();
+        reconcile_implicit_else(&[r32(Reg::R1)], &[r32(Reg::R1)], &mut ins, 0).unwrap();
+        assert!(ins.is_empty());
+    }
+
+    #[test]
+    fn swap_permutation_declines_loudly_and_emits_nothing() {
+        // then=(R2,R1), params=(R1,R2): `mov r2, r1` would clobber the second
+        // move's source before it is read.
+        let mut ins = Vec::new();
+        let e = reconcile_implicit_else(
+            &[r32(Reg::R2), r32(Reg::R1)],
+            &[r32(Reg::R1), r32(Reg::R2)],
+            &mut ins,
+            0,
+        )
+        .expect_err("a swap is a parallel-move hazard")
+        .to_string();
+        assert!(e.contains("parallel register shuffle"), "{e}");
+        assert!(ins.is_empty(), "nothing may be emitted before the refusal");
+    }
+
+    #[test]
+    fn i64_then_lo_equal_to_param_hi_declines_loudly() {
+        // param pair (R2:hi), then pair whose lo IS the param's hi: the lo mov
+        // clobbers the hi mov's source.
+        let p_lo = Reg::R2;
+        let t_lo = i64_pair_hi(p_lo).unwrap();
+        let mut ins = Vec::new();
+        let e = reconcile_implicit_else(&[r64(t_lo)], &[r64(p_lo)], &mut ins, 0)
+            .expect_err("overlapping i64 pairs are a parallel-move hazard")
+            .to_string();
+        assert!(e.contains("parallel register shuffle"), "{e}");
+        assert!(ins.is_empty());
+    }
+
+    #[test]
+    fn arity_and_width_mismatches_decline_loudly() {
+        let mut ins = Vec::new();
+        let e =
+            reconcile_implicit_else(&[r32(Reg::R3)], &[r32(Reg::R1), r32(Reg::R2)], &mut ins, 0)
+                .unwrap_err()
+                .to_string();
+        assert!(e.contains("parameter arity"), "{e}");
+        let e = reconcile_implicit_else(&[r64(Reg::R2)], &[r32(Reg::R1)], &mut ins, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("width mismatch"), "{e}");
+        assert!(ins.is_empty());
     }
 }

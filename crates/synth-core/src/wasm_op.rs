@@ -645,6 +645,93 @@ pub fn find_param_block_type(
     wasm_ops: &[WasmOp],
     block_arity: &[(u8, u8)],
 ) -> Option<(&'static str, usize, (u8, u8))> {
+    find_unlowered_param_block_type(wasm_ops, block_arity, ParamBlockLowering::DECLINED)
+}
+
+/// RQ-64-MVLOWER (#1093): which parameter-taking constructs a given codegen
+/// path has PROVEN it lowers — proven meaning the #1097 acceptance oracle
+/// (`scripts/repro/param_block_silent_1097_differential.py`) lists that
+/// (construct, backend) leg as `LOWERED` and executes every one of its
+/// vectors, the pinned pre-#1096 silent-wrong ones included, against
+/// wasmtime. Everything not set here declines exactly as before. The policy
+/// lives HERE, once, and every guard site derives from it, so the backend
+/// choke point and the selector-local guard cannot drift apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParamBlockLowering {
+    /// `block (param ..)` lowers on this path.
+    pub block: bool,
+    /// `if (param ..)` lowers on this path.
+    pub r#if: bool,
+    /// `loop (param ..)` lowers on this path.
+    pub r#loop: bool,
+}
+
+impl ParamBlockLowering {
+    /// The pre-RQ-64 reading: every parameter-taking construct declines.
+    pub const DECLINED: Self = Self {
+        block: false,
+        r#if: false,
+        r#loop: false,
+    };
+
+    fn lowers(self, what: &str) -> bool {
+        match what {
+            "block" => self.block,
+            "if" => self.r#if,
+            "loop" => self.r#loop,
+            _ => false,
+        }
+    }
+}
+
+/// RQ-64-MVLOWER: the ARM policy, keyed on the ONE configuration the #1097
+/// oracle executes — `--relocatable` (#197: the direct selector, ET_REL leaf
+/// objects the oracle's loader runs under unicorn). The self-contained image
+/// path (optimized selector, or the direct selector via `--no-optimize` /
+/// the #509 value-carry routing) has NO oracle leg executing its images, so
+/// it keeps the full decline: the same selector code is not the same
+/// evidence, and the guard is relaxed on evidence only.
+pub fn arm_param_block_lowering(relocatable: bool) -> ParamBlockLowering {
+    if relocatable {
+        ParamBlockLowering {
+            // Increment 1 (RQ-64-MVLOWER): block params are plain operand-
+            // stack entries and #509's designated-result-register landing
+            // already reconciles every forward edge into the join —
+            // measured correct on the #1097 fixture pre-#1096 and re-proven
+            // on the LOWERED leg (fixture + extra + sub-shape vectors).
+            block: true,
+            // Increment 2 (RQ-64-MVLOWER): the frame-entry checkpoint lands
+            // BELOW the params, the params are snapshotted for the else-arm /
+            // implicit else, and the else-less join is reconciled like a two-
+            // arm if (hazardous permutations decline loudly). Proven on the
+            // LOWERED if/arm leg: the fixture's 0xC0DE0003 vector now returns
+            // wasmtime's 7, plus the extra probes and `_if_lowered.wat`.
+            r#if: true,
+            // Increment 3 (RQ-64-MVLOWER): a parameter-taking loop gets a
+            // private header register per parameter, reserved for the loop's
+            // extent and written by every back-edge (the if/block designated-
+            // register idea at the loop HEADER). Proven on the LOWERED
+            // loop/arm leg: the RV32-pinned lpb(3) vector (2, want 10) plus
+            // extra probes and `_loop_lowered.wat` (two params, a value below
+            // the param, unconditional back-edge + forward exit, an aliased
+            // r0 as the loop param).
+            r#loop: true,
+        }
+    } else {
+        ParamBlockLowering::DECLINED
+    }
+}
+
+/// #1093 / RQ-64-MVLOWER — like [`find_param_block_type`], but a construct
+/// the path has proven (`lowered`) is skipped: the first parameter-taking
+/// `Block`/`Loop`/`If` that is NOT lowered on this path is returned for the
+/// decline message; `None` when every parameter-taking frame is lowered (or
+/// there is none).
+pub fn find_unlowered_param_block_type(
+    wasm_ops: &[WasmOp],
+    block_arity: &[(u8, u8)],
+    lowered: ParamBlockLowering,
+) -> Option<(&'static str, usize, (u8, u8))> {
     if block_arity.iter().all(|&(p, _)| p == 0) {
         return None; // fast path: no parameter-taking type anywhere
     }
@@ -657,7 +744,7 @@ pub fn find_param_block_type(
             _ => continue,
         };
         let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
-        if arity.0 != 0 {
+        if arity.0 != 0 && !lowered.lowers(what) {
             return Some((what, ord, arity));
         }
         ord += 1;
@@ -673,12 +760,34 @@ pub fn find_param_block_type(
 /// the aarch64 VCR-A64-CF-001 message so cross-backend decline-parity probes
 /// can use one predicate for all three.
 pub fn param_block_decline_msg(backend: &str, what: &str, ord: usize, arity: (u8, u8)) -> String {
+    let why = match what {
+        // Still-declined on every path (RQ-64-MVLOWER increment 1): the
+        // frame-entry checkpoint is taken with the params still on the
+        // operand stack, so they sit BELOW it.
+        "if" => {
+            "the RV32 checkpoint at frame entry cannot represent params \
+             consumed BELOW it (with an `else` the reconciliation split \
+             panics; without one the false path returns an uninitialized \
+             register — measured, #1097) and the ARM direct lowering is proven \
+             by the #1097 oracle only on --relocatable (RQ-64-MVLOWER); no \
+             other path has an execution-oracle leg"
+        }
+        "loop" => {
+            "the RV32 back-edge mis-reconciles the header value (measured \
+             lpb(3) = 2, want 10, #1097) and the ARM direct lowering is proven \
+             by the #1097 oracle only on --relocatable (RQ-64-MVLOWER); no \
+             other path has an execution-oracle leg"
+        }
+        _ => {
+            "the RV32 checkpoint drops the carried parameter on a branch edge \
+             (measured, #1097) and the ARM direct lowering is proven by the \
+             #1097 oracle only on --relocatable (RQ-64-MVLOWER); no other path \
+             has an execution-oracle leg"
+        }
+    };
     format!(
         "{what} #{ord} has type {arity:?} — a PARAMETER-taking block type \
-         (multi-value) is not lowered on {backend}: the operand-stack \
-         checkpoint at frame entry cannot represent params consumed BELOW it \
-         (with an `else` the reconciliation split panics; without one, or on \
-         a branch edge, the join value is silently wrong); loud-declining \
+         (multi-value) is not lowered on {backend}: {why}; loud-declining \
          (#1093, the aarch64 VCR-A64-CF-001 refusal ported)"
     )
 }
@@ -778,5 +887,77 @@ mod grow_zero_tests {
         assert!(msg.contains("PARAMETER-taking block type"));
         assert!(msg.contains("if #0 has type (2, 1)"));
         assert!(msg.contains("#1093"));
+    }
+
+    // ── RQ-64-MVLOWER: the per-construct, per-path relaxation ──────────────
+    #[test]
+    fn unlowered_predicate_skips_only_the_lowered_construct() {
+        use WasmOp::*;
+        // block #0 (1,1), then if #1 (1,1)
+        let ops = vec![
+            I32Const(7),
+            Block,
+            LocalGet(0),
+            BrIf(0),
+            End,
+            I32Const(7),
+            LocalGet(0),
+            If,
+            I32Const(1),
+            I32Add,
+            End,
+            End,
+        ];
+        let arity = vec![(1, 1), (1, 1)];
+        // Fully declined: the FIRST parameter-taking frame is reported.
+        assert_eq!(
+            find_unlowered_param_block_type(&ops, &arity, ParamBlockLowering::DECLINED),
+            Some(("block", 0, (1, 1)))
+        );
+        assert_eq!(
+            find_param_block_type(&ops, &arity),
+            Some(("block", 0, (1, 1))),
+            "the legacy entry point is the all-declined reading"
+        );
+        // block lowered: the if is the first UNLOWERED frame, ordinal intact.
+        let block_only = ParamBlockLowering {
+            block: true,
+            ..ParamBlockLowering::DECLINED
+        };
+        assert_eq!(
+            find_unlowered_param_block_type(&ops, &arity, block_only),
+            Some(("if", 1, (1, 1)))
+        );
+        // everything lowered: nothing to decline.
+        let all = ParamBlockLowering {
+            block: true,
+            r#if: true,
+            r#loop: true,
+        };
+        assert_eq!(find_unlowered_param_block_type(&ops, &arity, all), None);
+        // A param-free table never fires regardless of policy.
+        assert_eq!(
+            find_unlowered_param_block_type(&ops, &[(0, 1), (0, 1)], ParamBlockLowering::DECLINED),
+            None
+        );
+    }
+
+    #[test]
+    fn arm_policy_is_keyed_on_the_oracle_covered_configuration() {
+        // --relocatable is the ONE configuration the #1097 oracle executes:
+        // increment 1 lowers `block` there and nothing else, and nothing
+        // anywhere else.
+        assert_eq!(
+            arm_param_block_lowering(true),
+            ParamBlockLowering {
+                block: true,
+                r#if: true,
+                r#loop: true
+            }
+        );
+        assert_eq!(
+            arm_param_block_lowering(false),
+            ParamBlockLowering::DECLINED
+        );
     }
 }

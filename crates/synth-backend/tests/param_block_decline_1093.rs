@@ -39,23 +39,96 @@ fn params_if_ops() -> Vec<WasmOp> {
     ]
 }
 
+/// RQ-64-MVLOWER increment 2 (#1093): the #1093 repro LOWERS on
+/// `--relocatable` (the configuration the #1097 oracle executes — its
+/// LOWERED if/arm leg) and still declines, by name and never a panic, on the
+/// self-contained image path, which no oracle leg executes.
 #[test]
-fn arm_declines_param_if_on_both_paths_1093() {
+fn arm_declines_param_if_on_the_self_contained_path_and_lowers_it_relocatable_1093() {
     let backend = ArmBackend::new();
-    for relocatable in [false, true] {
-        let err = backend
-            .compile_function(
-                "params",
-                &params_if_ops(),
-                &config(vec![(2, 1)], relocatable),
-            )
-            .expect_err("a parameter-taking block type must decline loudly, never panic")
-            .to_string();
-        assert!(
-            err.contains("PARAMETER-taking block type") && err.contains("if #0 has type (2, 1)"),
-            "relocatable={relocatable}: decline must name the class/construct/arity; got: {err}"
-        );
-    }
+    let err = backend
+        .compile_function("params", &params_if_ops(), &config(vec![(2, 1)], false))
+        .expect_err("a parameter-taking block type must decline loudly, never panic")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("if #0 has type (2, 1)")
+            && err.contains("self-contained image path"),
+        "decline must name the class/construct/arity/path; got: {err}"
+    );
+    backend
+        .compile_function("params", &params_if_ops(), &config(vec![(2, 1)], true))
+        .expect("the #1093 if (param i32 i32) (result i32) + else repro lowers on --relocatable");
+}
+
+/// RQ-64-MVLOWER increment 1 (#1093): the choke point relaxes `block
+/// (param ..)` ONLY on `--relocatable` — the configuration the #1097 oracle
+/// executes (its LOWERED block/arm leg) — and keeps the full decline on the
+/// self-contained image path, which no oracle leg executes. `if (param ..)`
+/// stays declined on the self-contained path too.
+#[test]
+fn arm_lowers_param_block_only_on_the_relocatable_path_rq64() {
+    use WasmOp::*;
+    // (i32.const 7) (block (param i32) (result i32) (local.get 0) (br_if 0)
+    //   (i32.const 42) (i32.add)) — the #1097 `bpb` shape.
+    let bpb = vec![
+        I32Const(7),
+        Block,
+        LocalGet(0),
+        BrIf(0),
+        I32Const(42),
+        I32Add,
+        End,
+        End,
+    ];
+    let backend = ArmBackend::new();
+    backend
+        .compile_function("bpb", &bpb, &config(vec![(1, 1)], true))
+        .expect("block (param i32) (result i32) lowers on --relocatable (RQ-64-MVLOWER)");
+    let err = backend
+        .compile_function("bpb", &bpb, &config(vec![(1, 1)], false))
+        .expect_err("the self-contained image path has no oracle leg and keeps the decline")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("block #0 has type (1, 1)")
+            && err.contains("self-contained image path"),
+        "got: {err}"
+    );
+}
+
+/// RQ-64-MVLOWER increment 3 (#1093): `loop (param ..)` lowers on
+/// `--relocatable` (the oracle's LOWERED loop/arm leg) and declines by name
+/// on the self-contained image path.
+#[test]
+fn arm_lowers_param_loop_only_on_the_relocatable_path_rq64() {
+    use WasmOp::*;
+    // (i32.const 7) (loop (param i32) (result i32) (i32.const 1) (i32.add)
+    //   (local.get 0) (br_if 0)) — the #1097 `lpb` shape.
+    let lpb = vec![
+        I32Const(7),
+        Loop,
+        I32Const(1),
+        I32Add,
+        LocalGet(0),
+        BrIf(0),
+        End,
+        End,
+    ];
+    let backend = ArmBackend::new();
+    backend
+        .compile_function("lpb", &lpb, &config(vec![(1, 1)], true))
+        .expect("loop (param i32) (result i32) lowers on --relocatable (RQ-64-MVLOWER #3)");
+    let err = backend
+        .compile_function("lpb", &lpb, &config(vec![(1, 1)], false))
+        .expect_err("the self-contained image path has no oracle leg and keeps the decline")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("loop #0 has type (1, 1)")
+            && err.contains("self-contained image path"),
+        "got: {err}"
+    );
 }
 
 #[test]

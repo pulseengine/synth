@@ -39,9 +39,15 @@ impl InstructionSelector {
         // is silently wrong). Guards direct library callers who set
         // `block_arity`; the CLI paths are declined in `compile_wasm_to_arm`.
         // Mechanism + measured matrix: `synth_core::find_param_block_type`.
-        if let Some((what, ord, arity)) =
-            synth_core::find_param_block_type(wasm_ops, &self.block_arity)
-        {
+        // RQ-64-MVLOWER: relaxed per construct from the ONE synth-core policy
+        // (`arm_param_block_lowering`), keyed on the oracle-covered
+        // `--relocatable` configuration — same derivation as the backend
+        // choke point, so the two guards cannot disagree.
+        if let Some((what, ord, arity)) = synth_core::find_unlowered_param_block_type(
+            wasm_ops,
+            &self.block_arity,
+            synth_core::arm_param_block_lowering(self.relocatable),
+        ) {
             return Err(synth_core::Error::synthesis(
                 synth_core::param_block_decline_msg("the ARM selector", what, ord, arity),
             ));
@@ -366,6 +372,13 @@ impl InstructionSelector {
         // (a `mov R_then, R_else` on the else path when they differ). Each
         // inner `Vec` is one if-block's then-arm results, top-most-last.
         let mut if_then_results: Vec<Vec<StackVal>> = Vec::new();
+        // RQ-64-MVLOWER (#1093): per open `if`, the block PARAMETER entries
+        // snapshotted at `If` (bottom→top) — empty for a parameter-free if,
+        // which keeps every existing lowering byte-identical. Re-pushed at
+        // `Else` so the else-arm starts from the same operand stack the
+        // then-arm did; the implicit else of an else-less if reconciles
+        // against them at `End`.
+        let mut if_params: Vec<Vec<StackVal>> = Vec::new();
 
         // Map of local index -> register
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
@@ -771,6 +784,11 @@ impl InstructionSelector {
                 if let Some(r) = bl.result_reg {
                     live_params.push(r);
                 }
+                // RQ-64-MVLOWER increment 3: a parameter-taking loop's header
+                // registers, for the loop's extent (same argument as
+                // `result_reg`: only the back-edge writes them, only the
+                // header reads them).
+                live_params.extend(bl.param_regs.iter().copied());
             }
             // #881 (VCR-RA-004): the VFP pressure guard — rung-only (inert in
             // every default compile). Control ops reset the straight-line
@@ -3640,6 +3658,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None, // allocated lazily at the first br edge
+                        param_regs: Vec::new(),
                     });
                     // No ARM code emitted at block entry (label at end)
                 }
@@ -3649,6 +3668,72 @@ impl InstructionSelector {
                     let (params, results) =
                         self.block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
                     ctrl_ord += 1;
+                    // RQ-64-MVLOWER (#1093) increment 3: a PARAMETER-taking
+                    // loop gets a PRIVATE header register per parameter,
+                    // reserved for the loop's extent and written by every
+                    // back-edge (`edge_value_move`), so the header always
+                    // finds its parameters in the same registers. An entry
+                    // donates its own register when it is private (a plain
+                    // temp held by no other operand-stack entry); one that
+                    // aliases a register-homed local, or is shared, is copied
+                    // out first (the RQ-64 alias-clobber class, `lpa`).
+                    let params_n = params as usize;
+                    let mut param_regs: Vec<Reg> = Vec::with_capacity(params_n);
+                    if params_n > 0 {
+                        if stack.len() < params_n {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "#1093: loop with {params_n} parameter(s) opened on \
+                                 an operand stack of depth {} — the frame's inputs \
+                                 are not on the direct selector's operand stack (a \
+                                 multi-value call result, or stack-polymorphic dead \
+                                 code); declined rather than mis-reconciled",
+                                stack.len()
+                            )));
+                        }
+                        let base = stack.len() - params_n;
+                        let homes: Vec<Reg> = local_to_reg.values().copied().collect();
+                        for i in 0..params_n {
+                            let StackVal::Reg { reg, is_i64: false } = stack[base + i] else {
+                                return Err(synth_core::Error::synthesis(format!(
+                                    "#1093: loop parameter {:?} is not an i32 in a \
+                                     register — an i64/spilled/float loop parameter \
+                                     is not lowered (declined rather than \
+                                     mis-reconciled)",
+                                    stack[base + i]
+                                )));
+                            };
+                            let shared = stack.iter().enumerate().any(|(j, v)| {
+                                j != base + i
+                                    && matches!(v, StackVal::Reg { reg: r, is_i64 }
+                                        if *r == reg
+                                            || (*is_i64 && i64_pair_hi(*r).ok() == Some(reg)))
+                            });
+                            if !homes.contains(&reg) && !shared && !param_regs.contains(&reg) {
+                                param_regs.push(reg);
+                                continue;
+                            }
+                            let mut avoid = live_params.clone();
+                            avoid.extend(param_regs.iter().copied());
+                            let t = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &avoid,
+                                idx,
+                            )?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: t,
+                                    op2: Operand2::Reg(reg),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            stack[base + i] = StackVal::i32(t);
+                            param_regs.push(t);
+                        }
+                    }
                     cf.enter_block(BlockType::Loop);
                     block_labels.push(BlockLabel {
                         label: label.clone(), // start label
@@ -3657,6 +3742,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        param_regs,
                     });
                     // Emit loop start label
                     instructions.push(ArmInstruction {
@@ -3695,15 +3781,52 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        param_regs: Vec::new(),
                     });
                     // #313: checkpoint the operand-stack depth (the condition is
                     // already popped). The then-arm runs from here; its results
                     // are whatever sits ABOVE this depth at `Else`. Reservation
                     // starts EMPTY — nothing needs protecting during the then-arm
                     // (it runs first); it is filled at `Else`.
-                    if_checkpoints.push(stack.len());
+                    //
+                    // RQ-64-MVLOWER (#1093): a PARAMETER-taking if consumes the
+                    // top `params` entries, so the checkpoint lands BELOW them
+                    // (the #1093 `split_off` panic was this checkpoint taken
+                    // above them) and those entries are snapshotted: they are
+                    // the else-arm's starting stack and the implicit else's
+                    // results. Every param must be register-resident — a
+                    // spilled/float entry declines loudly.
+                    let params_n = params as usize;
+                    if stack.len() < params_n {
+                        // Measured on spec if.wast `add64_u_saturated`: the
+                        // params come from a MULTI-VALUE call result, which
+                        // this selector does not model as N entries — so the
+                        // frame's inputs are not on the operand stack at all.
+                        return Err(synth_core::Error::synthesis(format!(
+                            "#1093: if with {params_n} parameter(s) opened on an \
+                             operand stack of depth {} — the frame's inputs are \
+                             not on the direct selector's operand stack (a \
+                             multi-value call result, or stack-polymorphic dead \
+                             code); declined rather than mis-reconciled",
+                            stack.len()
+                        )));
+                    }
+                    let cp = stack.len() - params_n;
+                    let param_vals: Vec<StackVal> = stack[cp..].to_vec();
+                    if let Some(v) = param_vals
+                        .iter()
+                        .find(|v| !matches!(v, StackVal::Reg { .. }))
+                    {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "#1093: if parameter {v:?} is not register-resident \
+                             — a spilled/float block parameter is not lowered \
+                             (declined rather than mis-reconciled)"
+                        )));
+                    }
+                    if_checkpoints.push(cp);
                     if_start_idx.push(idx);
                     if_then_results.push(Vec::new());
+                    if_params.push(param_vals);
 
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
@@ -3751,85 +3874,40 @@ impl InstructionSelector {
                     // BEFORE `split_off` so the then-results are still
                     // stack-live and the temp allocator cannot hand one out.
                     if let Some(&cp) = if_checkpoints.last() {
+                        // #1189: the join register must never be a LIVE
+                        // register-homed local's home — one mechanism,
+                        // `copy_live_home_then_results`, shared with the
+                        // RQ-64 implicit-else join at `End`.
                         let end_idx = if_start_idx
                             .last()
                             .and_then(|s| if_end_idx.get(s).copied())
                             .unwrap_or(idx);
-                        for pos in cp..stack.len() {
-                            let StackVal::Reg { reg, is_i64 } = stack[pos] else {
-                                continue;
-                            };
-                            let mut halves = vec![reg];
-                            if is_i64 && let Ok(hi) = i64_pair_hi(reg) {
-                                halves.push(hi);
-                            }
-                            let live_home = halves.iter().any(|h| {
-                                home_of.iter().any(|&(r, p)| {
-                                    r == *h
-                                        && param_last_read
-                                            .get(&p)
-                                            .is_some_and(|&last| last > end_idx)
-                                })
-                            });
-                            if !live_home {
-                                continue;
-                            }
-                            let moves: Vec<(Reg, Reg)> = if is_i64 {
-                                let hi = i64_pair_hi(reg)?;
-                                let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                                    &mut next_temp,
-                                    &mut stack,
-                                    &mut instructions,
-                                    &mut spill,
-                                    &[],
-                                    &live_params,
-                                    idx,
-                                )?;
-                                vec![(dst_lo, reg), (dst_hi, hi)]
-                            } else {
-                                let dst = alloc_temp_or_spill(
-                                    &mut next_temp,
-                                    &mut stack,
-                                    &mut instructions,
-                                    &mut spill,
-                                    &live_params,
-                                    idx,
-                                )?;
-                                vec![(dst, reg)]
-                            };
-                            // Under exhaustion spilling (the retry rung) the
-                            // allocator may have spilled the very entry being
-                            // copied; its register still holds the value, but
-                            // the entry's slot bookkeeping would be orphaned by
-                            // an in-place rewrite. Decline honestly instead.
-                            if stack[pos] != (StackVal::Reg { reg, is_i64 }) {
-                                return Err(synth_core::Error::synthesis(
-                                    "#1189: then-arm result copy displaced by \
-                                     exhaustion spilling — function too complex; \
-                                     retried/skipped rather than miscompiled"
-                                        .to_string(),
-                                ));
-                            }
-                            let dst_lo = moves[0].0;
-                            for (rd, rs) in moves {
-                                instructions.push(ArmInstruction {
-                                    op: ArmOp::Mov {
-                                        rd,
-                                        op2: Operand2::Reg(rs),
-                                    },
-                                    source_line: Some(idx),
-                                });
-                                cf.add_instruction();
-                            }
-                            stack[pos] = StackVal::Reg {
-                                reg: dst_lo,
-                                is_i64,
-                            };
+                        let emitted = copy_live_home_then_results(
+                            &mut stack,
+                            cp,
+                            end_idx,
+                            &home_of,
+                            &param_last_read,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        for _ in 0..emitted {
+                            cf.add_instruction();
                         }
                         let then_results: Vec<StackVal> = stack.split_off(cp);
                         if let Some(slot) = if_then_results.last_mut() {
                             *slot = then_results;
                         }
+                    }
+                    // RQ-64-MVLOWER (#1093): the else-arm starts from the SAME
+                    // operand stack the then-arm did — the block parameters,
+                    // still in the registers they held at `If` on this path
+                    // (no then-arm code executed). Empty for a param-free if.
+                    if let Some(pv) = if_params.last() {
+                        stack.extend(pv.iter().copied());
                     }
                     // End of then-block: jump to end of if
                     if let Some((_, end_label)) = if_labels.last() {
@@ -3877,15 +3955,85 @@ impl InstructionSelector {
                         let else_emitted = instructions
                             .iter()
                             .any(|i| matches!(&i.op, ArmOp::Label { name } if *name == else_label));
-                        if !else_emitted {
+                        let params_here = if_params.pop().unwrap_or_default();
+                        if !else_emitted && params_here.is_empty() {
                             // No else clause: emit else label (same as end).
-                            // A valid if-without-else has arity 0 (no result),
-                            // so there is nothing to reconcile (#313).
+                            // A valid parameter-free if-without-else has
+                            // arity 0 (no result), so there is nothing to
+                            // reconcile (#313).
                             instructions.push(ArmInstruction {
-                                op: ArmOp::Label { name: else_label },
+                                op: ArmOp::Label {
+                                    name: else_label.clone(),
+                                },
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
+                        } else if !else_emitted {
+                            // RQ-64-MVLOWER (#1093): an else-less PARAMETER-
+                            // taking if has type [t*] -> [t*] with an IMPLICIT
+                            // identity else, so the join has two arms after
+                            // all: the then-arm's results (above the
+                            // checkpoint, in its registers) and the pass-
+                            // through params (in theirs). The pre-#1096
+                            // lowering read the then-arm's register on the
+                            // false path — the 0xC0DE0003 uninitialized-
+                            // register vector. Lower it as an explicit else
+                            // whose body is empty: `B end` (then path skips
+                            // the movs), `else:`, `MOV R_then_i, R_param_i`,
+                            // then `end:` below.
+                            let cp = if_checkpoints
+                                .last()
+                                .copied()
+                                .unwrap_or(stack.len())
+                                .min(stack.len());
+                            // #1189 at the implicit-else join: a then-result
+                            // that is a LIVE local's home is copied out on the
+                            // then path first (`end_idx` is this very op) —
+                            // the same mechanism `Else` uses (`ipa(0)` 14
+                            // want 7, red-first, before it was shared).
+                            let emitted = copy_live_home_then_results(
+                                &mut stack,
+                                cp,
+                                idx,
+                                &home_of,
+                                &param_last_read,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            for _ in 0..emitted {
+                                cf.add_instruction();
+                            }
+                            let then_now: Vec<StackVal> = stack.split_off(cp);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::B {
+                                    label: end_label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label {
+                                    name: else_label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            let before = instructions.len();
+                            reconcile_implicit_else(
+                                &then_now,
+                                &params_here,
+                                &mut instructions,
+                                idx,
+                            )?;
+                            for _ in before..instructions.len() {
+                                cf.add_instruction();
+                            }
+                            // The merged results live in the then-arm's
+                            // registers on both paths.
+                            stack.extend(then_now);
                         }
                         // #313: reconcile the two arms onto a single set of
                         // result registers. The then-arm's results were captured

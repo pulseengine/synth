@@ -165,17 +165,32 @@ EXPECTED_DECLINES = {
     "f64_369.wat": "f64 surface as a whole on the relocatable path",
     "float_select_return_782.wat": "f64 select + f64 return",
     "i64_float_conv_869.wat": "i64<->f32/f64 conversions",
-    # #1097: these three are the #1096 parameter-taking block-type class and
-    # decline BY DESIGN — the decline's necessity is what
-    # param_block_silent_1097_differential.py exists to demonstrate (four
-    # silent-wrong legs re-executed from the pre-#1096 compiler's own bytes
-    # on every CI run). Do NOT take them off this list by lowering the
-    # shapes without passing that oracle first. The sibling
-    # param_block_silent_1097_guard.wat (supported neighbours) COMPILES and
-    # is deliberately absent here.
-    "param_block_silent_1097_block.wat": "#1096 param-taking block type (block+br_if), declined by design",
-    "param_block_silent_1097_if.wat": "#1096 param-taking block type (else-less if), declined by design",
-    "param_block_silent_1097_loop.wat": "#1096 param-taking block type (loop back-edge), declined by design",
+    # #1097 / RQ-64-MVLOWER (#1093): the three parameter-taking block-type
+    # fixtures — param_block_silent_1097_{block,if,loop}.wat — USED TO SIT
+    # HERE as "#1096 ... declined by design", under a guard that read: "Do
+    # NOT take them off this list by lowering the shapes without passing
+    # that oracle first." THAT PRECONDITION WAS DISCHARGED by RQ-64-MVLOWER
+    # (PR #1188), deliberately, not eroded: the oracle the guard named,
+    # param_block_silent_1097_differential.py, was STRENGTHENED first
+    # (red-first per leg — a leg declared LOWERED on the previous binary
+    # fails, exit 1) and now asserts `lowered legs: 3 (vectors: 51)` where it
+    # asserted `refusals: 6`, for block/if/loop on the ARM direct selector at
+    # `--relocatable` — precisely the path THIS sweep compiles. That
+    # assertion, pinned exactly in ci.yml, is what replaces the three list
+    # entries as the thing keeping the shapes honest: the fixture's pinned
+    # silent-wrong vectors (if/ARM `ipe(0)` = 0xC0DE0003, an uninitialized
+    # register, pre-#1096) must now equal wasmtime on the NEW object, and the
+    # RED half re-executing the pre-#1096 bytes is untouched. The three
+    # fixtures now COMPILE here and are executed in Phase B like every other
+    # module, as are their `_lowered.wat` sub-shape siblings — a second,
+    # independent execution oracle over the same lowerings.
+    #
+    # STILL DECLINED, and NOT this sweep's path: every shape on the ARM
+    # self-contained image path (no oracle leg executes those images), on
+    # RV32 (no arity plumbing; its checkpoint drops the carried param) and
+    # on AArch64 (VCR-A64-CF-001) — those guards stand, with the reason in
+    # the message. The sibling param_block_silent_1097_guard.wat (supported
+    # neighbours) has always compiled and is deliberately absent here.
     "rv32_br_value_931.wat": "i64 br-with-value",
     "trunc_sat_782.wat": "f64 and i64 saturating truncations",
     "vfp_spill_881.wat": "f64 spill shapes",
