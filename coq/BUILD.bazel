@@ -116,6 +116,18 @@ rocq_library(
     deps = [":base", ":common", ":wasm_values", ":wasm_instructions"],
 )
 
+# RQ-64-CFOBLIG (#1057): the WASM side of the Block/End correspondence —
+# Block/Loop/Br/End_ constructors get a nesting-aware, fuel-bounded
+# structured executor (exec_wasm_blocks) over the SHIPPED flat op stream,
+# proven to coincide with exec_wasm_seq on programs without them. WASM-only
+# by design: nothing here is a correspondence claim.
+rocq_library(
+    name = "wasm_blocks",
+    srcs = ["Synth/WASM/WasmBlocks.v"],
+    include_path = "Synth",
+    deps = [":base", ":common", ":wasm_values", ":wasm_instructions", ":wasm_semantics"],
+)
+
 # VCR-WASM-001 (#242, Track B): WasmCert-Coq source-semantics anchor.
 # WasmCertReference.v transcribes WasmCert-Coq's i32.add rule (= CompCert
 # Int.add) into synth's I32 primitives with line-level provenance;
@@ -339,6 +351,7 @@ rocq_proof_test(
     name = "rocq_proofs",
     deps = [
         ":correctness_complete",
+        ":wasm_blocks",
         ":extraction",
         ":arm_refinement",
         ":sail_arm_bridge",

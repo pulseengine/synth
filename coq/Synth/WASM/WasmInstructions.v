@@ -197,7 +197,36 @@ Inductive wasm_instr : Type :=
      [exec_wasm_seq] (WasmSemantics.v), the smallest label-stack-free
      representation that can state a correspondence with the ARM
      branch-taking executor [exec_program_br]. *)
-  | BrIf : nat -> wasm_instr.
+  | BrIf : nat -> wasm_instr
+
+  (* Structured control flow — the block-structure boundary itself
+     (#1057, RQ-64-CFOBLIG). One constructor per shipped op, mirroring
+     [WasmOp::Block] / [WasmOp::Loop] / [WasmOp::Br(u32)] / [WasmOp::End]
+     (synth-core/src/wasm_op.rs) in the FLAT op-stream form the compiler
+     consumes: a block is delimited by [Block]/[Loop] and its matching
+     [End_], not nested as an AST — so [End_] is a first-class instruction
+     with a row of its own in the proof inventory (gale's largest uncovered
+     kind, 64 of 180 instances at v0.60).
+
+     [End_] carries a trailing underscore ONLY because [End] is a reserved
+     Rocq vernacular keyword (Section/Module [End]); it names [WasmOp::End]
+     and nothing else. scripts/proof_inventory.py's constructor<->variant
+     join accepts exactly that keyword escape.
+
+     The flat per-instruction executor [exec_wasm_instr] DECLINES all four
+     (its catch-all): a block boundary has no meaning without the enclosing
+     structure, and a [Br] is always a control transfer the one-state-in/
+     one-state-out shape cannot represent (#615 class). Their executable
+     semantics live in the structured, nesting-aware executor
+     [exec_wasm_blocks] (WasmBlocks.v). Blocks are VOID (no blocktype): a
+     value-carrying block — the #509 arity side-table and the lazily
+     allocated result register the shipped [End] arm moves into — is not
+     modeled; see BlockEndObligation.v for why that is an obstruction and
+     not an omission. *)
+  | Block : wasm_instr
+  | Loop : wasm_instr
+  | Br : nat -> wasm_instr
+  | End_ : wasm_instr.
 
 (** ** WebAssembly Programs *)
 
