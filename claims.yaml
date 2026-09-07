@@ -1508,9 +1508,28 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19227
+        value: 19233
         baseline: 17897
         waivers:
+          - to: 19233
+            reason: >-
+              RQ-64-MVLOWER (#1093) increment 1: +6 lines — the selector-local
+              #1093 guard now READS the per-construct, per-path policy from
+              synth-core (`find_unlowered_param_block_type` with
+              `arm_param_block_lowering(self.relocatable)`) instead of the
+              all-declined predicate, so `block (param ..)` is accepted on the
+              `--relocatable` configuration the #1097 oracle executes. NOT a
+              lowering arm — the lowering itself adds ZERO selector lines:
+              block params are plain operand-stack entries and the existing
+              #509 designated-result-register landing reconciles every
+              forward edge, which is why the pre-#1096 fixture already
+              matched on this leg. Gated by the oracle's LOWERED block/arm leg
+              (14 vectors incl. the fixture's, all matching wasmtime; refusals
+              6 -> 5 pinned in ci.yml) and whole-object byte-identity over
+              scripts/repro/*.wat x 3 legs (the only movement is the two
+              block-param modules becoming ACCEPTED on arm-reloc). Nothing
+              could be deleted in exchange: the class had no lowering to
+              retire, only a decline to scope.
           - to: 19227
             reason: >-
               RQ-62-MEMISOLATE (#1145): +14 lines — the memory-k
@@ -1772,7 +1791,11 @@ claims:
         # select_with_stack (memory k has no size register; a guard would
         # compare against the wrong memory's bound — see the lines_code
         # waiver); zero test-module movement.
-        value: 29873
+        # 29873 -> 29879 (RQ-64-MVLOWER increment 1, #1093): +6 code — the
+        # selector-local #1093 guard reads the per-construct/per-path policy
+        # from synth-core (see the lines_code waiver); zero test-module
+        # movement (the RQ-64 tests live in crates/*/tests).
+        value: 29879
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2600,7 +2623,13 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
-    text: "--exact-emulation-floor 324847"
+    # v0.64 — RQ-64-MVLOWER (#1093): +14 for
+    #   param_block_silent_1097_differential.py's LOWERED block/arm leg (2
+    #   fixture vectors now executed on the NEW object + 2 extra probes + 10
+    #   `_block_lowered.wat` sub-shape vectors). The fixture (red) half and
+    #   guard half are unchanged. Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 324861.
+    text: "--exact-emulation-floor 324861"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

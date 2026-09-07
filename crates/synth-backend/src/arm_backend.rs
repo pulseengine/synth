@@ -348,11 +348,25 @@ fn compile_wasm_to_arm(
     // Checked on the driver's ORIGINAL stream, which is what the ordinal
     // side-table was built against. Empty side-table (hand-built op streams)
     // ⇒ never fires ⇒ byte-identical for every existing caller.
-    if let Some((what, ord, arity)) =
-        synth_core::find_param_block_type(wasm_ops, &config.current_func_block_arity)
-    {
+    //
+    // RQ-64-MVLOWER (#1093): the guard is relaxed PER CONSTRUCT and PER PATH,
+    // from the one policy in synth-core (`arm_param_block_lowering`), on the
+    // configuration the #1097 oracle executes — `--relocatable`. The
+    // self-contained image path keeps the full decline: no oracle leg
+    // executes its images, so there is no evidence to relax on.
+    let lowered = synth_core::arm_param_block_lowering(config.relocatable);
+    if let Some((what, ord, arity)) = synth_core::find_unlowered_param_block_type(
+        wasm_ops,
+        &config.current_func_block_arity,
+        lowered,
+    ) {
         return Err(synth_core::param_block_decline_msg(
-            "the ARM selector",
+            if config.relocatable {
+                "the ARM direct selector (--relocatable)"
+            } else {
+                "the ARM selector (self-contained image path — no #1097 oracle \
+                 leg executes it)"
+            },
             what,
             ord,
             arity,

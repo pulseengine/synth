@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 19
+# ci-checks: emulations >= 33
 """#1097 (RQ-61-MVORACLE) — the silent-miscompile evidence behind the #1093
 parameter-taking block-type decline, promoted from a lane scratchpad into a
 permanent red-first oracle.
@@ -210,7 +210,17 @@ GUARD_CASES = [("gie", [0]), ("gie", [1]), ("gbr", [0]), ("gbr", [1])]
 # here must still decline cleanly. Add a leg here in the SAME PR as the
 # compiler change that relaxes it — never before (red), never after (a guard
 # relaxed with nothing asserting the lowering is the #1093 shape again).
-LOWERED = {}
+LOWERED = {
+    # RQ-64-MVLOWER increment 1: the ARM direct selector (--relocatable).
+    # Block params are plain operand-stack entries and #509's designated-
+    # result-register landing reconciles every forward edge into the join;
+    # the pre-#1096 fixture already matched on this leg (its decline was
+    # conservative), and the LOWERED run re-proves it on the fixture vectors,
+    # the extra probes and the `_block_lowered.wat` sub-shapes (two params,
+    # unconditional br from a nested if, br_table into nested param blocks,
+    # a value below the params surviving the edge).
+    ("block", "arm"): "ARM direct selector, --relocatable (RQ-64-MVLOWER #1)",
+}
 
 # Extra live probes for a lowered leg, beyond the fixture's vectors: the same
 # export with more arguments — both signs and the i32 wrap boundary. Executed
@@ -228,7 +238,12 @@ LIVE_EXTRA = {
 LOWERED_WATS = {s: HERE / f"param_block_silent_1097_{s}_lowered.wat" for s in SHAPES}
 LOWERED_CASES = {
     "if": [],
-    "block": [],
+    "block": [
+        ("bp2", [0]), ("bp2", [1]),
+        ("bpu", [0]), ("bpu", [1]),
+        ("bpt", [0]), ("bpt", [1]), ("bpt", [2]), ("bpt", [5]),
+        ("bpd", [0]), ("bpd", [1]),
+    ],
     "loop": [],
 }
 

@@ -39,9 +39,15 @@ impl InstructionSelector {
         // is silently wrong). Guards direct library callers who set
         // `block_arity`; the CLI paths are declined in `compile_wasm_to_arm`.
         // Mechanism + measured matrix: `synth_core::find_param_block_type`.
-        if let Some((what, ord, arity)) =
-            synth_core::find_param_block_type(wasm_ops, &self.block_arity)
-        {
+        // RQ-64-MVLOWER: relaxed per construct from the ONE synth-core policy
+        // (`arm_param_block_lowering`), keyed on the oracle-covered
+        // `--relocatable` configuration — same derivation as the backend
+        // choke point, so the two guards cannot disagree.
+        if let Some((what, ord, arity)) = synth_core::find_unlowered_param_block_type(
+            wasm_ops,
+            &self.block_arity,
+            synth_core::arm_param_block_lowering(self.relocatable),
+        ) {
             return Err(synth_core::Error::synthesis(
                 synth_core::param_block_decline_msg("the ARM selector", what, ord, arity),
             ));

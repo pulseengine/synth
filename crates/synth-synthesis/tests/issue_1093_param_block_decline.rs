@@ -68,10 +68,11 @@ fn if_without_else_and_params_declines_1093() {
     assert!(msg.contains("PARAMETER-taking block type"), "got: {msg}");
 }
 
-/// `block (param ..)` and `loop (param ..)` decline as a class — the
-/// branch-free shape happens to be correct today, but a branch edge into the
-/// same type mis-reconciles, and telling the two apart would be a new
-/// predicate with its own proof burden (see `find_param_block_type`).
+/// `block (param ..)` and `loop (param ..)` decline on the NON-relocatable
+/// selector (the self-contained image configuration, which no #1097 oracle
+/// leg executes), and `loop (param ..)` declines everywhere: a back-edge
+/// would have to land the carried parameter in the header's registers
+/// (#509), which the selector does not do yet (RQ-64-MVLOWER).
 #[test]
 fn block_and_loop_params_decline_1093() {
     use WasmOp::*;
@@ -82,6 +83,73 @@ fn block_and_loop_params_decline_1093() {
     let loop_ops = vec![I32Const(0), Loop, I32Const(1), I32Add, End, End];
     let msg = select_err(&loop_ops, 1, vec![(1, 1)]);
     assert!(msg.contains("loop #0 has type (1, 1)"), "got: {msg}");
+}
+
+/// RQ-64-MVLOWER increment 1 (#1093): on the RELOCATABLE direct selector —
+/// the configuration `scripts/repro/param_block_silent_1097_differential.py`
+/// executes under unicorn against wasmtime — `block (param ..)` LOWERS: the
+/// params are plain operand-stack entries and #509's designated-result-
+/// register landing reconciles the `br_if` edge into the join. The execution
+/// evidence is the oracle's LOWERED block/arm leg (14 vectors, fixture +
+/// extra + sub-shapes); this test pins the selector-level acceptance and
+/// that the relaxation is CONSTRUCT-scoped: `if`/`loop (param ..)` still
+/// decline on the same relocatable selector.
+#[test]
+fn block_params_lower_on_the_relocatable_direct_selector_rq64() {
+    use WasmOp::*;
+    fn relocatable_selector(arity: Vec<(u8, u8)>) -> InstructionSelector {
+        let db = RuleDatabase::with_standard_rules();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_block_arity(arity);
+        sel.set_relocatable(true);
+        sel
+    }
+    // (i32.const 7) (block (param i32) (result i32) (local.get 0) (br_if 0)
+    //   (i32.const 42) (i32.add)) — the #1097 `bpb` shape.
+    let bpb = vec![
+        I32Const(7),
+        Block,
+        LocalGet(0),
+        BrIf(0),
+        I32Const(42),
+        I32Add,
+        End,
+        End,
+    ];
+    let instrs = relocatable_selector(vec![(1, 1)])
+        .select_with_stack(&bpb, 1)
+        .expect("block (param i32) (result i32) + br_if lowers on --relocatable (RQ-64-MVLOWER)");
+    assert!(!instrs.is_empty());
+
+    // Construct-scoped: the same relocatable selector still declines `if` and
+    // `loop` parameter-taking types by name.
+    let ipe = vec![I32Const(7), LocalGet(0), If, I32Const(42), I32Add, End, End];
+    let e = relocatable_selector(vec![(1, 1)])
+        .select_with_stack(&ipe, 1)
+        .expect_err("if (param ..) still declines on --relocatable")
+        .to_string();
+    assert!(
+        e.contains("if #0 has type (1, 1)") && e.contains("PARAMETER-taking block type"),
+        "{e}"
+    );
+    let lpb = vec![
+        I32Const(0),
+        Loop,
+        I32Const(1),
+        I32Add,
+        LocalGet(0),
+        BrIf(0),
+        End,
+        End,
+    ];
+    let e = relocatable_selector(vec![(1, 1)])
+        .select_with_stack(&lpb, 1)
+        .expect_err("loop (param ..) still declines on --relocatable")
+        .to_string();
+    assert!(
+        e.contains("loop #0 has type (1, 1)") && e.contains("PARAMETER-taking block type"),
+        "{e}"
+    );
 }
 
 /// Negative control — the guard must NOT widen the refusal: a (0, 1)

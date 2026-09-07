@@ -58,6 +58,42 @@ fn arm_declines_param_if_on_both_paths_1093() {
     }
 }
 
+/// RQ-64-MVLOWER increment 1 (#1093): the choke point relaxes `block
+/// (param ..)` ONLY on `--relocatable` — the configuration the #1097 oracle
+/// executes (its LOWERED block/arm leg) — and keeps the full decline on the
+/// self-contained image path, which no oracle leg executes. `if (param ..)`
+/// stays declined on both.
+#[test]
+fn arm_lowers_param_block_only_on_the_relocatable_path_rq64() {
+    use WasmOp::*;
+    // (i32.const 7) (block (param i32) (result i32) (local.get 0) (br_if 0)
+    //   (i32.const 42) (i32.add)) — the #1097 `bpb` shape.
+    let bpb = vec![
+        I32Const(7),
+        Block,
+        LocalGet(0),
+        BrIf(0),
+        I32Const(42),
+        I32Add,
+        End,
+        End,
+    ];
+    let backend = ArmBackend::new();
+    backend
+        .compile_function("bpb", &bpb, &config(vec![(1, 1)], true))
+        .expect("block (param i32) (result i32) lowers on --relocatable (RQ-64-MVLOWER)");
+    let err = backend
+        .compile_function("bpb", &bpb, &config(vec![(1, 1)], false))
+        .expect_err("the self-contained image path has no oracle leg and keeps the decline")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("block #0 has type (1, 1)")
+            && err.contains("self-contained image path"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn arm_keeps_the_void_reading_without_a_side_table_1093() {
     // The same guard must never fire for the legacy all-void reading (empty
