@@ -58,8 +58,8 @@ artifacts:
       verification-track: differential
       issue: "#1189"
       landed: >-
-        Branch fix/join-alias-1189, two commits in the order the rule
-        demands. (1) `test(#1189)`: the oracle
+        PR #1190 (branch fix/join-alias-1189), two commits in the order the
+        rule demands. (1) `test(#1189)`: the oracle
         `scripts/repro/join_alias_1189_differential.py` (+ fixtures
         `join_alias_1189.wat`, `_i64.wat`, `_call.wat`, and the committed
         `join_alias_1189_red_main.json` holding main's OWN objects for the
