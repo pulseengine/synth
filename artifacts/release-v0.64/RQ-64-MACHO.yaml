@@ -10,7 +10,7 @@ artifacts:
 
       DEFERRAL REASON AS RECORDED AT v0.63:
       DEFERRED from v0.63 on scope. The analysis stands and is unchanged: `-b aarch64 --relocatable` already emits a SysV ELF ET_REL with global symbols and AAPCS64, so arm64 Linux links a normal library TODAY, and macOS needs a Mach-O writer over IDENTICAL instruction bytes — no new ISA, no new proofs, the cheapest breadth available. WHAT IT STILL NEEDS, and why it was not rushed: the gating rule this release enforced on every reach increment (RQ-62-REACH — the oracle lands FIRST) applies here too, and the oracle is an EXECUTION one: link the emitted Mach-O with the host linker and RUN it against wasmtime, plus a byte-identity check of `.text` against the ELF path. That is a real lane, not a flag flip. Shipping a container without it would mean claiming a new output format on "it assembles", which is the standard this release rejected four times. The arm64-Linux ELF path this artifact OBSERVES to already work is still undocumented and ungated — true by accident, cited nowhere. That half is cheap and should lead the v0.64 increment.
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - reach
@@ -31,5 +31,38 @@ artifacts:
   \ the object links with the host linker into a loadable library and the linked code\
   \ EXECUTES with results matching wasmtime; the emitted .text is byte-identical to\
   \ the ELF path for the same module"
+      landed: >-
+        PR #1184 — the ObjectPlan refactor (140/140 ELF objects byte-identical),
+        the `--object-format macho` writer, the red-first byte-identity sweep
+        and the native arm64-macOS host-link oracle, all wired in ci.yml.
       verified-by: >-
-        PENDING — carried unchanged from RQ-63-MACHO.
+        All three done-when parts are implemented and CI-GATED. Provenance is
+        split deliberately, because the lane that built this was terminated
+        mid-step by an API session limit and the coordinator finished it:
+
+        MEASURED BY THE LANE, reported in its commits and to be confirmed by
+        CI rather than taken on trust here: `--object-format macho` emits a
+        CPU_TYPE_ARM64 MH_OBJECT; Apple ld links it and macOS EXECUTES it
+        17/17 against wasmtime-first values; the ELF corpus stays 140/140
+        byte-identical across the ObjectPlan refactor.
+
+        VERIFIED BY THE COORDINATOR, on the tree rebased past #1179: the
+        rebase conflict in `main.rs` was resolved keeping BOTH link hints
+        (Mach-O, aarch64-ELF and the ARM default are now three branches, and
+        every needle from both sides was counted present), `cargo check
+        -p synth-cli --features riscv` compiles, the wired `ci.yml` PARSES at
+        59 jobs, claim_check is 60/60, oracle_wiring exits 0 at the pinned
+        floor with 190 scripts / 182 wired / 0 unwired debt, status_evidence
+        exits 0, and rivet is at main's 40-error baseline.
+
+        THE STRUCTURAL POINT, which outlives the numbers: the Mach-O writer
+        does NOT re-derive symbol ordering or the #1013 rules. Both containers
+        render one `ObjectPlan`, so a second container DISAGREEING with the
+        first is unrepresentable rather than merely tested against — the same
+        move VCR-ISA-001 (#667) made for the selector's Rocq model, and the
+        structural answer to the divergence class #1180 belongs to.
+
+        NOT CLAIMED: co-linking two synth Mach-O objects. #1180 records that
+        the aarch64 ELF writer emits every `func_N` as STB_GLOBAL; whether
+        Mach-O shares that shape is unmeasured here and is not asserted
+        either way.

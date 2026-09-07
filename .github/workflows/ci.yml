@@ -1424,6 +1424,30 @@ jobs:
           [ "$n" -ge 60 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_decline_538.py
+      - name: Run RQ-64-MACHO container byte-identity oracle (ELF vs --object-format macho, every accepted repo module)
+        # The CONTAINER increment's host-independent half. For the fixture and
+        # every `.wat` under scripts/repro + tests the aarch64 backend accepts,
+        # BOTH containers are emitted and `.text == __text`, `.data == __data`,
+        # the symbols (under Darwin's `_`) and the relocation SET (CALL26/
+        # JUMP26 -> BRANCH26, PG_HI21 -> PAGE21, LO12 -> PAGEOFF12) must be
+        # IDENTICAL, and the acceptance decision must AGREE — the writer lays
+        # Mach-O around the ELF plan, and this is the outside check that it
+        # does. The identity mutation control (a bit flipped in __text must be
+        # reported) runs here too. Linking with the macOS host linker and
+        # EXECUTING against wasmtime needs an arm64-Darwin host and runs in
+        # `macho-host-link-native`; on this runner that leg is an explicit,
+        # printed skip and the counters below say what DID run.
+        # NON-VACUITY: >= 100 byte-identical modules (the sweep ran, not just
+        # the fixture), zero disagreements, the mutation verdict and the
+        # driver floor `compiles >= 100`; `set -euo pipefail` per #890.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/macho_host_link_rq64_differential.py | tee macho-identity.txt
+          grep -Eq '^byte-identical modules: [1-9][0-9]{2,}$' macho-identity.txt
+          grep -q '^acceptance disagreements: 0$' macho-identity.txt
+          grep -q '^identity mutation: detected$' macho-identity.txt
+          grep -q '^RESULT: PASS' macho-identity.txt
       - name: Run RQ-64-ARM64LINUX host-link oracle (ld.lld -m aarch64linux + EXECUTED under qemu-user and unicorn, vs wasmtime)
         # The arm64-Linux host-library CLAIM, end to end: the `--relocatable`
         # object is linked by a REAL host linker against a generated
@@ -1461,7 +1485,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 17
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 18
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)
@@ -4697,3 +4721,96 @@ jobs:
             # stable branch-population surface — without it the inventory
             # behind a floor movement cannot be audited from the artifact.
             target/mcdc/instrumented.wasm.witness.json
+  macho-host-link-native:
+    name: Mach-O host-link oracle, NATIVE arm64-macOS (RQ-64-MACHO)
+    # The claim is "`--object-format macho` links with the macOS host linker
+    # and the linked code runs with results matching wasmtime".
+    # `aarch64-oracle` checks the container is byte-identical to the ELF one
+    # on every accepted module (host-independent); this job is the thing
+    # itself: an arm64 macOS runner (macos-latest is arm64 — the
+    # `aarch64-native-matrix` precedent) builds synth, links the object with
+    # Apple ld through the clang driver against a GENERATED C harness
+    # (`-arch arm64 -ffixed-x28`, an x28 shim, libSystem, ad-hoc signed) and
+    # RUNS it natively against wasmtime-first values (REQUIRE_NATIVE=1 — any
+    # other host is RED, never a skip). RED-FIRST controls run every time:
+    # the ELF twin of the SAME module must be refused by Apple ld (`unknown
+    # file type` — the container is the blocker, measured), a missing
+    # `_host_add` refused by name, the Mach-O refused by ld.lld, and the
+    # mutated object linked and run must mismatch. The #1180 `_func_1`
+    # co-link collision is pinned. NOT a required check (#1179 precedent: a
+    # runner pool GitHub cannot schedule must not be able to deadlock
+    # merges); it is the evidence the feature-matrix row cites.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install oracle deps
+        run: pip install wasmtime pyelftools
+      - name: Install lld (ld.lld for the reverse-refusal control)
+        # `lld`, NOT `llvm`: brew's llvm formula does not ship `ld.lld`, and
+        # `brew --prefix llvm` prints a path whether or not the formula is even
+        # installed — so the old `"$(brew --prefix llvm)/bin/ld.lld"` was a path
+        # that never exists. The `lld` formula provides it and symlinks it onto
+        # PATH. (Measured on an arm64 Darwin host with llvm 22.1.8 present:
+        # `/opt/homebrew/opt/llvm/bin/ld.lld` absent,
+        # `/opt/homebrew/opt/lld/bin/ld.lld` present.)
+        run: brew install lld
+      - name: Assert this runner IS arm64 macOS with the host toolchain (the leg the claim is about)
+        # REQUIRE, do not probe: the oracle itself SKIPS its ld.lld
+        # reverse-refusal control when the tool is missing, and a skipped
+        # red-first control is the silent-skip failure this repo keeps finding.
+        # We control this runner, so the tool's absence is an ERROR here and the
+        # control stays non-vacuous.
+        run: |
+          set -euo pipefail
+          uname -m | grep -qx arm64
+          uname -s | grep -qx Darwin
+          clang --version
+          ld -v 2>&1 | head -1
+          command -v ld.lld
+          ld.lld --version
+      - name: Run RQ-64-MACHO host-link oracle NATIVELY (Apple ld via clang; EXECUTED vs wasmtime)
+        run: |
+          set -euo pipefail
+          # No LLD= override: `brew --prefix llvm` names a path that does NOT exist,
+          # because the llvm formula ships llvm-objcopy and clang but NOT ld.lld
+          # (measured on an arm64 Darwin host with llvm 22.1.8 installed). The `lld`
+          # formula installed above puts `ld.lld` on PATH, which is where the oracle's
+          # find_tool looks by default. The OBJCOPY="$(brew --prefix llvm)/bin/
+          # llvm-objcopy" in aarch64-native-matrix is CORRECT and deliberately left
+          # alone: that binary IS in the llvm formula. Class swept, one instance bad.
+          SYNTH=./target/debug/synth REQUIRE_NATIVE=1 \
+            python scripts/oracle_run.py scripts/repro/macho_host_link_rq64_differential.py | tee macho-native.txt
+          grep -Eq '^byte-identical modules: [1-9][0-9]{2,}$' macho-native.txt
+          grep -q '^acceptance disagreements: 0$' macho-native.txt
+          grep -q '^identity mutation: detected$' macho-native.txt
+          # The native leg ran, and it is the ONLY leg this job exists for.
+          grep -Eq '^executions: [1-9][0-9]*$' macho-native.txt
+          grep -Eq '^native-abi runs: 1$' macho-native.txt
+          # ELF twin refused by Apple ld + missing import + ld.lld refuses the Mach-O.
+          grep -q '^host-linker refusals: 3$' macho-native.txt
+          grep -q 'ok   the ELF twin (same bytes, wrong container) into Apple ld: refused' macho-native.txt
+          grep -q '^mutation: detected$' macho-native.txt
+          grep -q '^RESULT: PASS' macho-native.txt
+      # #910: close the job with what it EXECUTED (one oracle, by design).
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+

@@ -356,6 +356,20 @@ enum Commands {
         #[arg(long)]
         relocatable: bool,
 
+        /// RQ-64-MACHO: the CONTAINER of the relocatable object. `elf` (the
+        /// default, every backend) or `macho` — a Mach-O `MH_OBJECT` for
+        /// `CPU_TYPE_ARM64` that Apple's `ld` links; `-b aarch64` only, and
+        /// REFUSED loudly on any other backend (no other backend has a
+        /// Mach-O writer). The instruction bytes, the `.data` image, the
+        /// symbols (under Darwin's `_` prefix) and the relocation set are the
+        /// ELF object's, laid around ONE shared plan — checked byte for byte
+        /// and executed on macOS against wasmtime by
+        /// scripts/repro/macho_host_link_rq64_differential.py. The embedder
+        /// contract (x28 = linear-memory base, no startup emitted) is the
+        /// arm64-Linux one: docs/embedder-abi-relocatable-aarch64-macho.md.
+        #[arg(long, value_enum, default_value_t = ObjectFormatArg::Elf)]
+        object_format: ObjectFormatArg,
+
         /// RQ-59-DATASEG (#1041): declare that the EMBEDDER populates memory
         /// 0's active data segments at instantiation (from the wasm module it
         /// already holds), so the ARM relocatable object may ship WITHOUT
@@ -752,6 +766,7 @@ fn main() -> Result<()> {
             link,
             builtins,
             relocatable,
+            object_format,
             embedder_data_init,
             embedder_global_init,
             native_pointer_abi,
@@ -775,6 +790,16 @@ fn main() -> Result<()> {
             // which `-b` their target needs).
             let backend_explicit = backend.is_some();
             let backend = backend.unwrap_or_else(|| "arm".to_string());
+            // RQ-64-MACHO: `--object-format macho` exists for exactly one
+            // backend. Refuse anywhere else rather than silently emitting ELF
+            // under a flag that says otherwise (the #865 silent-no-op class).
+            if object_format == ObjectFormatArg::Macho && backend != "aarch64" {
+                anyhow::bail!(
+                    "--object-format macho is only available with -b aarch64 (the \
+                     AArch64 backend is the only one with a Mach-O writer); the \
+                     '{backend}' backend emits ELF only"
+                );
+            }
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec =
                 resolve_target_spec(target.as_deref(), cortex_m, &backend, backend_explicit)?;
@@ -843,6 +868,7 @@ fn main() -> Result<()> {
                 verify,
                 &target_spec,
                 relocatable,
+                object_format,
                 embedder_data_init,
                 embedder_global_init,
                 native_pointer_abi,
@@ -1530,6 +1556,16 @@ fn parse_volatile_segments(raw: &[String]) -> Result<Vec<VolatileRange>> {
     Ok(ranges)
 }
 
+/// RQ-64-MACHO: the `--object-format` CLI value. See the flag doc on
+/// `Commands::Compile`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ObjectFormatArg {
+    /// ELF `ET_REL` (every backend; byte-identical to every pre-v0.64 compile).
+    Elf,
+    /// Mach-O `MH_OBJECT`, `CPU_TYPE_ARM64` — `-b aarch64` only.
+    Macho,
+}
+
 /// #687: the `--stack-layout` CLI value. See the flag doc on `Commands::Compile`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum StackLayoutArg {
@@ -1695,6 +1731,10 @@ fn compile_command(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    // RQ-64-MACHO: the object container (`--object-format`); `Elf` unless the
+    // user asked for Mach-O, which the dispatcher has already restricted to
+    // `-b aarch64`.
+    object_format: ObjectFormatArg,
     // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
     // memory 0's active data segments; suppresses the relocatable-path refusal.
     embedder_data_init: bool,
@@ -1790,6 +1830,7 @@ fn compile_command(
             verify,
             target_spec,
             relocatable,
+            object_format,
             embedder_data_init,
             embedder_global_init,
             native_pointer_abi,
@@ -2220,7 +2261,7 @@ fn compile_command(
         // container differs. Discriminate on backend name, not target family:
         // `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a family
         // check would misroute it into the ARM builder.
-        build_aarch64_elf(&code, &func_name)?
+        build_aarch64_elf(&code, &func_name, object_format)?
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         // #871: the single-function RISC-V wrapper carries no relocation
         // plumbing — a function whose code contains external-call
@@ -2322,7 +2363,15 @@ fn compile_command(
 
     println!("Compiled {} to {}", func_name, output.display());
     println!("  Code size: {} bytes", code.len());
-    println!("  ELF size: {} bytes", elf_data.len());
+    println!(
+        "  {} size: {} bytes",
+        if object_format == ObjectFormatArg::Macho {
+            "Mach-O"
+        } else {
+            "ELF"
+        },
+        elf_data.len()
+    );
     println!("\nInspect with: synth disasm {}", output.display());
 
     // Run translation validation if requested
@@ -3365,6 +3414,10 @@ fn compile_all_exports(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    // RQ-64-MACHO: the object container (`--object-format`); `Elf` unless the
+    // user asked for Mach-O, which the dispatcher has already restricted to
+    // `-b aarch64`.
+    object_format: ObjectFormatArg,
     // RQ-59-DATASEG (#1041): `--embedder-data-init` — the embedder populates
     // memory 0's active data segments; suppresses the relocatable-path refusal.
     embedder_data_init: bool,
@@ -5180,6 +5233,7 @@ fn compile_all_exports(
             substrate,
             a64_plan_inputs.num_imported_funcs,
             &a64_plan_inputs.import_func_symbols,
+            object_format,
         )?
     } else if is_riscv {
         // #798 (the RV32 analogue of #758; found by the VCR-VER-003 phase-2
@@ -5447,18 +5501,41 @@ fn compile_all_exports(
         output.display()
     );
     println!("  Total code size: {} bytes", total_code);
-    println!("  ELF size: {} bytes", elf_data.len());
+    println!(
+        "  {} size: {} bytes",
+        if object_format == ObjectFormatArg::Macho {
+            "Mach-O"
+        } else {
+            "ELF"
+        },
+        elf_data.len()
+    );
     if produced_relocatable {
         println!(
             "  Relocations: {} (requires linking with Kiln bridge)",
             total_relocs
         );
-        println!("  ELF type: relocatable object (ET_REL)");
-        if backend.name() == "aarch64" {
+        // Three containers, three toolchains. Merged in the RQ-64-MACHO rebase:
+        // #1179 added the aarch64-ELF arm, RQ-64-MACHO the Mach-O arm; both are
+        // kept, neither supersedes the other.
+        if object_format == ObjectFormatArg::Macho {
+            // RQ-64-MACHO: name the toolchain the CI oracle
+            // (macho_host_link_rq64_differential.py) actually links and
+            // executes with, and the one precondition the embedder owns.
+            println!("  Mach-O type: relocatable object (MH_OBJECT, CPU_TYPE_ARM64)");
+            println!(
+                "\n  Link with: clang -arch arm64 -o prog host.o shim.o {}\n  \
+                 (Apple ld; symbols carry the Darwin `_` prefix: wasm export `f` is \
+                 `_f`). The embedder sets x28 = linear-memory base before the first \
+                 export; see docs/embedder-abi-relocatable-aarch64-macho.md",
+                output.display()
+            );
+        } else if backend.name() == "aarch64" {
             // RQ-64-ARM64LINUX: this object is a SysV ELF64 for EM_AARCH64 —
             // a host library, not firmware. Name the toolchain the CI oracle
             // (arm64_linux_host_link_rq64_differential.py) actually links
             // and executes with, and the one precondition the embedder owns.
+            println!("  ELF type: relocatable object (ET_REL)");
             println!(
                 "\n  Link with: ld.lld -m aarch64linux -static -o prog start.o host.o {}\n  \
                  (or: clang -target aarch64-unknown-linux-gnu -fuse-ld=lld …). The \
@@ -5467,6 +5544,7 @@ fn compile_all_exports(
                 output.display()
             );
         } else {
+            println!("  ELF type: relocatable object (ET_REL)");
             println!(
                 "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
                 output.display()
@@ -8692,13 +8770,45 @@ fn build_multi_func_riscv_elf(
 /// #546: emit a single-function `EM_AARCH64` ELF64 (`ET_REL`) object via the
 /// AArch64 backend's own emitter, instead of wrapping the A64 `.text` in the ARM
 /// (EM_ARM/ELF32) container. Mirrors `build_riscv_elf` — the per-backend ELF path.
-fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
-    use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
-    Ok(build_relocatable_object(&[A64ElfFunction::code(
+fn build_aarch64_elf(
+    code: &[u8],
+    func_name: &str,
+    object_format: ObjectFormatArg,
+) -> Result<Vec<u8>> {
+    use synth_backend_aarch64::elf::{DataBlob, ElfFunction as A64ElfFunction};
+    let funcs = [A64ElfFunction::code(
         vec![func_name.to_string()],
         code.to_vec(),
         Vec::new(),
-    )])?)
+    )];
+    Ok(build_aarch64_object(
+        &funcs,
+        &DataBlob::default(),
+        &[],
+        object_format,
+    )?)
+}
+
+/// RQ-64-MACHO: the ONE place the container is chosen. Both writers consume
+/// the same `ObjectPlan` (`synth_backend_aarch64::elf::plan_object`), so the
+/// `.text`/`.data`/symbol/relocation content cannot differ between them; the
+/// oracle (`macho_host_link_rq64_differential.py`) checks that from outside.
+fn build_aarch64_object(
+    funcs: &[synth_backend_aarch64::elf::ElfFunction],
+    data: &synth_backend_aarch64::elf::DataBlob,
+    undefined_externals: &[String],
+    object_format: ObjectFormatArg,
+) -> std::result::Result<Vec<u8>, synth_core::backend::BackendError> {
+    match object_format {
+        ObjectFormatArg::Elf => synth_backend_aarch64::elf::build_relocatable_object_full(
+            funcs,
+            data,
+            undefined_externals,
+        ),
+        ObjectFormatArg::Macho => {
+            synth_backend_aarch64::macho::build_macho_object_full(funcs, data, undefined_externals)
+        }
+    }
 }
 
 /// #546: emit a multi-function `EM_AARCH64` ELF64 (`ET_REL`) object exposing one
@@ -8711,10 +8821,9 @@ fn build_multi_func_aarch64_elf(
     // from the same `PlanInputs` snapshot the substrate was planned from.
     num_imported_funcs: u32,
     import_func_symbols: &[String],
+    object_format: ObjectFormatArg,
 ) -> Result<Vec<u8>> {
-    use synth_backend_aarch64::elf::{
-        ElfFunction as A64ElfFunction, build_relocatable_object_full,
-    };
+    use synth_backend_aarch64::elf::ElfFunction as A64ElfFunction;
     let a64_funcs: Vec<A64ElfFunction> = funcs
         .iter()
         .map(|f| {
@@ -8760,10 +8869,11 @@ fn build_multi_func_aarch64_elf(
     // retained function calling a loud-declined one) is a CLEAN refusal —
     // `Err` here propagates to the #952-style non-zero exit with the reason
     // naming the declined symbol, never a panic/exit-101.
-    Ok(build_relocatable_object_full(
+    Ok(build_aarch64_object(
         &a64_funcs,
         &substrate.globals,
         import_func_symbols,
+        object_format,
     )?)
 }
 

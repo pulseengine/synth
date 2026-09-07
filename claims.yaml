@@ -1927,9 +1927,25 @@ claims:
         # v0.61 RQ-61-FUZZWINDOW (#1055): 60 -> 59 — issue_103_i64_aapcs.rs
         # no longer says "mirrors" (the first-read checker doc it described
         # was replaced by the while-live invariant, stated in its own terms).
-        value: 59
+        value: 60
         baseline: 57
         waivers:
+          - to: 60
+            reason: >-
+              RQ-64-MACHO (#242): 59 -> 60. Two new files contain the word
+              "mirror", and BOTH use it to say they are NOT one — the
+              heuristic's over-count class in a new form. elf.rs's ObjectPlan
+              doc says a second hand-written copy of the symbol-ordering rules
+              in the Mach-O writer "would be exactly the mirror the North Star
+              forbids", which is the REASON the shared plan exists; the Mach-O
+              differential says "a hand-mirrored pair would drift", which is
+              why it generates the C harness and the wasmtime call sequence
+              from ONE case table. The obligation population did not grow:
+              this change REMOVED the possibility of a second container writer
+              disagreeing with the first (140/140 objects byte-identical), and
+              the count rose because that removal is documented. Rewording to
+              dodge the proxy would delete the explanation and leave the metric
+              happy, which is the wrong trade.
           - to: 60
             reason: >-
               RQ-58-SPLIT (#242) unit 2: the select_with_stack.rs relocation

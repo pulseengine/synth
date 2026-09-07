@@ -45,6 +45,7 @@
 pub mod backend;
 pub mod elf;
 pub mod encoder;
+pub mod macho;
 pub mod selector;
 pub mod substrate;
 

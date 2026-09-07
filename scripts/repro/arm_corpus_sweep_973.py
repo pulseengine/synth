@@ -153,6 +153,15 @@ EXPECTED_DECLINES = {
     # Measured against main's binary: `1 of 14 functions were skipped (not in
     # output): f64_scale`. The RATCHET below reddens the day it compiles.
     "arm64_linux_host_link_rq64.wat": "f64 export needs a double-precision FPU (GI-FPU-002)",
+    # RQ-64-MACHO (#242), same shape and same cause as its arm64-Linux sibling
+    # above: the Mach-O host-link fixture carries an `f64_scale` export, which
+    # on the ARM default target hits GI-FPU-002 phase 2 (scalar f64 requires a
+    # double-precision FPU), so `--all-exports` would ship a partial object and
+    # synth correctly refuses under #952. Measured against the branch binary at
+    # `--target cortex-m4`: "skipping function 'f64_scale' ... GI-FPU-002 phase
+    # 2" then "1 of 12 requested export(s) were skipped". The RATCHET below
+    # reddens the day it compiles.
+    "macho_host_link_rq64.wat": "f64 export needs a double-precision FPU (GI-FPU-002)",
     "f64_369.wat": "f64 surface as a whole on the relocatable path",
     "float_select_return_782.wat": "f64 select + f64 return",
     "i64_float_conv_869.wat": "i64<->f32/f64 conversions",
