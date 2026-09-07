@@ -31,8 +31,18 @@
 #      topic files, including SIX `must` items and the VCR-TQ-001/TQ-002 tool
 #      qualification pair the North Star calls the moat — get no evidence
 #      check, no delivery attribution, and no staleness gate.
-#      Two have already drifted: VG-009 and VCR-REACH-002 still say aarch64
-#      accepts 1.6 % when v0.63 measured 20.2 % on the local corpus.
+#      One has already drifted: VCR-REACH-002 still says aarch64 accepts 1.6 %
+#      when v0.63 measured 20.2 % on the local corpus.
+#      CORRECTED 2026-09-07 (RQ-64-SCOPEGAP measured it): this plan ALSO named
+#      VG-009, and that was wrong. VG-009's only "1.6" is the tail of "41.6 %",
+#      a line-coverage figure for synth-backend-riscv/src/backend.rs, framed
+#      "measured at v0.54.0" — correctly dated history, not a drifted
+#      acceptance figure. The claim came from a grep for `1.6`, which returns
+#      OCCURRENCES and cannot return FRAMING. Left visible rather than edited
+#      away: the scoping error is the same shape the artifact is about.
+#      The real population is eight artifacts restating the repo's own proof
+#      counts as undated present-tense fact ("188 Qed / 52 Admitted", six
+#      months stale) — a different and larger class than the one named here.
 #      They are not a backlog anyone chose. They are what falls through the gap
 #      between the two systems.
 #
