@@ -4787,7 +4787,14 @@ jobs:
       - name: Run RQ-64-MACHO host-link oracle NATIVELY (Apple ld via clang; EXECUTED vs wasmtime)
         run: |
           set -euo pipefail
-          SYNTH=./target/debug/synth REQUIRE_NATIVE=1 LLD="$(brew --prefix llvm)/bin/ld.lld" \
+          # No LLD= override: `brew --prefix llvm` names a path that does NOT exist,
+          # because the llvm formula ships llvm-objcopy and clang but NOT ld.lld
+          # (measured on an arm64 Darwin host with llvm 22.1.8 installed). The `lld`
+          # formula installed above puts `ld.lld` on PATH, which is where the oracle's
+          # find_tool looks by default. The OBJCOPY="$(brew --prefix llvm)/bin/
+          # llvm-objcopy" in aarch64-native-matrix is CORRECT and deliberately left
+          # alone: that binary IS in the llvm formula. Class swept, one instance bad.
+          SYNTH=./target/debug/synth REQUIRE_NATIVE=1 \
             python scripts/oracle_run.py scripts/repro/macho_host_link_rq64_differential.py | tee macho-native.txt
           grep -Eq '^byte-identical modules: [1-9][0-9]{2,}$' macho-native.txt
           grep -q '^acceptance disagreements: 0$' macho-native.txt
