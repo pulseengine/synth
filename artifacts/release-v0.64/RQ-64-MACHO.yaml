@@ -31,6 +31,10 @@ artifacts:
   \ the object links with the host linker into a loadable library and the linked code\
   \ EXECUTES with results matching wasmtime; the emitted .text is byte-identical to\
   \ the ELF path for the same module"
+      landed: >-
+        PR #1184 — the ObjectPlan refactor (140/140 ELF objects byte-identical),
+        the `--object-format macho` writer, the red-first byte-identity sweep
+        and the native arm64-macOS host-link oracle, all wired in ci.yml.
       verified-by: >-
         All three done-when parts are implemented and CI-GATED. Provenance is
         split deliberately, because the lane that built this was terminated
