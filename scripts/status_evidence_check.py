@@ -852,6 +852,79 @@ def _live_status(root: Path) -> dict:
         return {}
 
 
+# ---- RQ-64-FLOORPROSE (#910): a LIVE pinned value may not be restated in
+# release-artifact prose ------------------------------------------------------
+#
+# The emulation floor is enforced as an EQUALITY between exactly TWO files:
+# `.github/workflows/ci.yml` (`--exact-emulation-floor N`) and `claims.yaml`
+# (SYNTH-ORACLE-CHECK-FLOORS-910-CI, which pins the ci.yml string verbatim).
+# Both move together in the PR that moves the floor, and RQ-63-FLOOREQ made that
+# an equality so neither can drift.
+#
+# A THIRD copy in an artifact's prose is not in that lockstep and nothing checks
+# it, so it rots the moment the floor moves — silently, behind a green gate.
+# That is the #910 class one level out from the gate itself.
+#
+# THE RULE IS ABOUT THE *LIVE* VALUE, NOT THE DIGITS. A SUPERSEDED floor quoted
+# as dated history is legitimate and must stay legible: RQ-63-FLOOREQ's
+# `verified-by` transcribes a red-first run at 324845 and says in as many words
+# "The figures below are AT v0.63 — a transcript of what was executed then, not
+# a statement about the current floor." A transcript of a past run cannot go
+# stale. Only a restatement of the number that is live RIGHT NOW can, because it
+# silently becomes wrong the next time the floor legitimately moves.
+#
+# NON-VACUITY: if the live floor cannot be derived from ci.yml, or the artifact
+# glob matches nothing, that is a FAILURE and not a quiet pass — a rule that
+# cannot see its subject must say so (#1113 / RQ-63-FLOOREQ).
+LIVE_FLOOR_RE = re.compile(r"--exact-emulation-floor\s+(\d+)")
+
+
+def check_live_floor_prose(root: Path) -> tuple[int, str | None, int, list[str]]:
+    """Return (artifacts_scanned, live_floor, restatements, failures)."""
+    ci = root / ".github" / "workflows" / "ci.yml"
+    if not ci.is_file():
+        return (0, None, 0, [
+            "floor-prose: .github/workflows/ci.yml is missing, so the live "
+            "floor cannot be derived and this rule cannot run — a rule that "
+            "cannot see its subject FAILS rather than passing quietly"
+        ])
+    m = LIVE_FLOOR_RE.search(ci.read_text(encoding="utf-8", errors="replace"))
+    if not m:
+        return (0, None, 0, [
+            "floor-prose: no `--exact-emulation-floor N` found in ci.yml. "
+            "Either the gate was removed (which RQ-63-FLOOREQ forbids) or its "
+            "spelling changed and THIS rule went blind; both are failures"
+        ])
+    live = m.group(1)
+
+    scanned, hits = 0, []
+    for path in sorted(root.glob("artifacts/release-v*/*.yaml")):
+        scanned += 1
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if live in line:
+                hits.append(f"{path.relative_to(root)}:{lineno}")
+
+    fails: list[str] = []
+    if scanned == 0:
+        fails.append(
+            "floor-prose: the artifacts/release-v*/ glob matched NO files, so "
+            "nothing was scanned. A zero-population scan is pattern rot, not a "
+            "clean tree"
+        )
+    if hits:
+        fails.append(
+            f"floor-prose: the LIVE enforced floor {live} is restated as a "
+            f"literal in release-artifact prose at {', '.join(hits)}. That copy "
+            f"is NOT in the ci.yml <-> claims.yaml lockstep, so it rots the next "
+            f"time the floor legitimately moves and nothing would notice. Cite "
+            f"the DERIVATION (`oracle_wiring_check.py`'s reported total) or "
+            f"quote a SUPERSEDED value with its release, the way "
+            f"RQ-63-FLOOREQ's transcript does — never the live number."
+        )
+    return (scanned, live, len(hits), fails)
+
+
 def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
                    expected: int | None = STALENESS_CITATIONS):
     """S-rules (#1085 / RQ-64-SCOPEGAP): an artifact with no release is a
@@ -1346,10 +1419,12 @@ def main() -> int:
             check_programme(args.root)
         (s_unscoped, s_citations, s_undated, s_failures) = \
             check_unscoped(args.root)
+        (fp_scanned, fp_live, fp_hits, fp_failures) = \
+            check_live_floor_prose(args.root)
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
-    failures = failures + p_failures + s_failures
+    failures = failures + p_failures + s_failures + fp_failures
 
     for w in warnings:
         print(w)
@@ -1370,6 +1445,11 @@ def main() -> int:
     print(
         f"programme-staleness: {s_unscoped} unscoped artifacts, "
         f"{s_citations} figure citations scanned, {s_undated} undated"
+    )
+    print(
+        f"floor-prose: {fp_scanned} release artifacts scanned, live floor "
+        f"{fp_live if fp_live is not None else 'UNDERIVABLE'} restated "
+        f"{fp_hits} times"
     )
     if window_label is None:
         print("status-evidence-window: SKIPPED — release window not "
