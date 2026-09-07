@@ -3106,12 +3106,15 @@ jobs:
         # the grep below pins its printed count (the #1112 pattern). The
         # silent-wrong partition is likewise pinned in-script AND grepped:
         # a red half that stopped demonstrating the miscompile must not
-        # stay green.
+        # stay green. RQ-64-MVLOWER (#1093): `refusals:` and `lowered legs:`
+        # are pinned EXACTLY — a leg moves from one count to the other only
+        # in the PR that relaxes its guard, together with its oracle vectors.
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py | tee pbs1097.txt
-          grep -Eq '^refusals: [1-9][0-9]*$' pbs1097.txt
+          grep -Eq '^refusals: 6$' pbs1097.txt
+          grep -Eq '^lowered legs: 0 \(vectors: 0\)$' pbs1097.txt
           grep -Eq '^silent-wrong vectors: 4 \(of 4 pinned\); match vectors: [1-9][0-9]*$' pbs1097.txt
           grep -q '^RESULT: PASS' pbs1097.txt
       # #910: close the job with what it EXECUTED.

@@ -50,20 +50,42 @@ general-purpose register the ABI does not assign is seeded with a canary that
 NAMES it (0xC0DE0000 | index), so "returned an uninitialized register" is
 legible from the value itself rather than inferred.
 
-GREEN HALF (current compiler): all six legs (3 shapes x 2 backends) must
-decline CLEANLY — exit != 0, NOT the panic exit 101, no "panicked at" in
-stderr, the shared #1093 needle "PARAMETER-taking block type" present, and NO
-object file written. The guard module (supported neighbours: plain
-`if (result)`, value-carrying forward `br_if`) must still COMPILE on both
-backends and match wasmtime — the decline covers the class, not everything.
+GREEN HALF (current compiler): every leg (3 shapes x 2 backends) is in
+exactly ONE of two modes, and the mode is declared in `LOWERED` below:
 
-WHAT THE `# ci-checks: emulations >= 19` FLOOR CAN AND CANNOT SEE. It counts
-unicorn entries: 11 fixture (red) emulations + 8 guard (live) emulations. It
-CANNOT see the decline half — a refused compile emulates nothing (#1113), so
-deleting the green half would leave the floor met. That half therefore
-carries its own in-script floor (refusals == 6, non-zero exit otherwise) and
-ci.yml greps the `refusals:` line (the #1112 pattern). The floor also cannot
-see that the four wrong vectors stayed wrong — that is the in-script
+  DECLINED (the default): the leg must decline CLEANLY — exit != 0, NOT the
+  panic exit 101, no "panicked at" in stderr, the shared #1093 needle
+  "PARAMETER-taking block type" present, and NO object file written.
+
+  LOWERED (RQ-64-MVLOWER, #1093 — the guard relaxed for that leg): the leg
+  must COMPILE (exit 0, object written, no panic) and EVERY vector for it
+  must equal live wasmtime on the NEW object — the fixture's pinned
+  SILENT-WRONG vectors above (this is the "make the silent-wrong vectors
+  CORRECT" clause of the artifact's done-when), the pinned MATCH vectors,
+  the extra live probes in `LIVE_EXTRA`, and the additional sub-shapes in
+  that construct's `_lowered.wat` module. A lowered leg with no vector to
+  execute FAILS (non-vacuity). The RED half is untouched by this mode: the
+  pre-#1096 bytes stay pinned wrong forever, so the repo keeps demonstrating
+  what the guard protected against even after the guard is gone for a leg.
+
+  Listing a leg in `LOWERED` BEFORE its lowering lands turns this run red
+  (the compile declines) — the red-first order the release's gating rule
+  requires. A leg is relaxed in the compiler ONLY together with its
+  `LOWERED` entry here, in the same PR.
+
+The guard module (supported neighbours: plain `if (result)`, value-carrying
+forward `br_if`) must still COMPILE on both backends and match wasmtime —
+the decline covers the class, not everything.
+
+WHAT THE `# ci-checks: emulations >= N` FLOOR CAN AND CANNOT SEE. It counts
+unicorn entries: 11 fixture (red) emulations + 8 guard (live) emulations +
+one per executed vector of every LOWERED leg. It CANNOT see the decline
+half — a refused compile emulates nothing (#1113), so deleting the green
+half would leave the floor met. That half therefore carries its own
+in-script floors (refusals == 6 - len(LOWERED), lowered legs == len(LOWERED),
+non-zero exit otherwise) and ci.yml greps the `refusals:` and
+`lowered legs:` lines (the #1112 pattern). The floor also cannot see that
+the four wrong vectors stayed wrong — that is the in-script
 `silent-wrong vectors == 4` partition check, which fails the run if a
 "wrong" vector starts matching wasmtime (fixture rot) or a MATCH vector
 stops matching.
@@ -181,6 +203,34 @@ RED_CASES = [
 EXPECTED_WRONG = sum(1 for *_x, (kind, _v) in RED_CASES if kind == "wrong")
 
 GUARD_CASES = [("gie", [0]), ("gie", [1]), ("gbr", [0]), ("gbr", [1])]
+
+# ── RQ-64-MVLOWER (#1093): legs whose decline has been RELAXED ─────────────
+# (shape, backend) -> the reason the relaxation is safe (which selector, which
+# PR). A leg here must compile and match wasmtime on EVERY vector; a leg not
+# here must still decline cleanly. Add a leg here in the SAME PR as the
+# compiler change that relaxes it — never before (red), never after (a guard
+# relaxed with nothing asserting the lowering is the #1093 shape again).
+LOWERED = {}
+
+# Extra live probes for a lowered leg, beyond the fixture's vectors: the same
+# export with more arguments — both signs and the i32 wrap boundary. Executed
+# only on lowered legs (a declined leg emits nothing to run).
+LIVE_EXTRA = {
+    "ipe": [[2], [0xFFFFFFFF]],
+    "bpb": [[2], [0xFFFFFFFF]],
+    "lpb": [[2], [5], [0xFFFFFFFF]],
+}
+
+# Additional SUB-SHAPES of a lowered construct, one module per construct so a
+# still-declined construct can never block a lowered one's module (#952: one
+# declined function fails the whole compile). Each is (export, args); the
+# expected value ALWAYS comes from wasmtime, live.
+LOWERED_WATS = {s: HERE / f"param_block_silent_1097_{s}_lowered.wat" for s in SHAPES}
+LOWERED_CASES = {
+    "if": [],
+    "block": [],
+    "loop": [],
+}
 
 COMPILE_ARGS = {
     "arm": ["--target", "cortex-m4", "--relocatable", "--all-exports"],
@@ -324,6 +374,63 @@ def capture(old_synth):
     return 0
 
 
+# ── RQ-64-MVLOWER: a LOWERED leg must compile and match wasmtime everywhere ──
+def run_lowered_leg(engine, shape, backend):
+    """Compile the leg's fixture module AND its `_lowered.wat` sub-shape
+    module with the CURRENT compiler and execute every vector: the fixture's
+    pinned wrong + match vectors (now all expected to match), `LIVE_EXTRA`,
+    and `LOWERED_CASES`. Returns (vectors executed, failures)."""
+    key = f"{shape}/{backend}"
+    n = bad = 0
+    pinned_wrong = {
+        (fn, tuple(args)): v
+        for s_, b_, fn, args, (kind, v) in RED_CASES
+        if s_ == shape and b_ == backend and kind == "wrong"
+    }
+    fixture_vectors = [
+        (fn, args) for s_, b_, fn, args, _ in RED_CASES
+        if s_ == shape and b_ == backend
+    ]
+    extra = [(fn, a) for fn, _ in fixture_vectors for a in LIVE_EXTRA.get(fn, [])]
+    seen = set()
+    vectors = []
+    for fn, args in fixture_vectors + extra:
+        if (fn, tuple(args)) not in seen:
+            seen.add((fn, tuple(args)))
+            vectors.append((fn, args))
+    modules = [(WATS[shape], vectors), (LOWERED_WATS[shape], LOWERED_CASES[shape])]
+    for wat, cases in modules:
+        if not wat.exists():
+            print(f"  FAIL {key} LOWERED: {wat.name} missing — a lowered leg "
+                  f"needs its sub-shape module")
+            return n, bad + 1
+        if not cases:
+            print(f"  FAIL {key} LOWERED: no vectors for {wat.name} — vacuous")
+            return n, bad + 1
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "lowered.o")
+            r = compile_module(SYNTH, wat, backend, out)
+            err = r.stderr + r.stdout
+            if r.returncode != 0 or not os.path.exists(out) or "panicked at" in err:
+                print(f"  FAIL {key} LOWERED: {wat.name} did not compile "
+                      f"(rc={r.returncode}):\n{err[-600:]}")
+                return n, bad + 1
+            syms, text = load_object(Path(out).read_bytes())
+        for fn, args in cases:
+            want = wasmtime_fn(engine, wat, fn)(args)
+            got, e = RUNNERS[backend](syms, text, fn, args)
+            ok = e == "" and got == want
+            n += 1
+            bad += not ok
+            gs = f"{got:#x}" if got is not None else e
+            was = pinned_wrong.get((fn, tuple(args)))
+            tag = (f" — was SILENT-WRONG {was:#010x} pre-#1096, now correct"
+                   if was is not None and ok else "")
+            print(f"  {'ok  ' if ok else 'FAIL'} {key} LOWERED {wat.name}: "
+                  f"{fn}{tuple(args)} -> {gs} (wasmtime: {want:#x}){tag}")
+    return n, bad
+
+
 # ── the oracle ──────────────────────────────────────────────────────────────
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--capture":
@@ -383,11 +490,20 @@ def main():
         print(f"  ok   loop_arm: declined pre-#1096 by #509 (rc="
               f"{la['declined_rc']}) — never silent, nothing to pin wrong")
 
-    # ── GREEN half: current compiler declines all six legs, cleanly ─────────
-    print("== green half: current compiler must decline (cleanly) ==")
+    # ── GREEN half: every leg is DECLINED (clean refusal) or LOWERED ───────
+    print("== green half: current compiler — declined legs refuse cleanly, "
+          "lowered legs execute correctly ==")
     refusals = 0
+    lowered_legs = lowered_vectors = 0
     for shape in SHAPES:
         for backend in BACKENDS:
+            if (shape, backend) in LOWERED:
+                n, bad = run_lowered_leg(engine, shape, backend)
+                fails += bad
+                lowered_vectors += n
+                if bad == 0 and n > 0:
+                    lowered_legs += 1
+                continue
             with tempfile.TemporaryDirectory() as td:
                 out = os.path.join(td, "out.o")
                 r = compile_module(SYNTH, WATS[shape], backend, out)
@@ -434,10 +550,15 @@ def main():
     # The emulations floor cannot see the decline half (#1113: a refused
     # compile emulates nothing) nor the wrong/match partition. Both get
     # in-script floors; ci.yml greps the refusals line (#1112 pattern).
-    if refusals < len(SHAPES) * len(BACKENDS):
-        print(f"VACUOUS: refusals={refusals}, want "
-              f"{len(SHAPES) * len(BACKENDS)} — the decline half asserted "
-              f"less than the full matrix")
+    want_refusals = len(SHAPES) * len(BACKENDS) - len(LOWERED)
+    if refusals != want_refusals:
+        print(f"VACUOUS: refusals={refusals}, want {want_refusals} — the "
+              f"decline half asserted a different matrix than LOWERED "
+              f"declares")
+        return 1
+    if lowered_legs != len(LOWERED):
+        print(f"VACUOUS: lowered legs={lowered_legs}, want {len(LOWERED)} — "
+              f"a relaxed leg did not execute every vector correctly")
         return 1
     if wrong_seen != EXPECTED_WRONG:
         print(f"VACUOUS: silent-wrong vectors={wrong_seen}, want "
@@ -449,6 +570,7 @@ def main():
         return 1
 
     print(f"\nrefusals: {refusals}")
+    print(f"lowered legs: {lowered_legs} (vectors: {lowered_vectors})")
     print(f"silent-wrong vectors: {wrong_seen} (of {EXPECTED_WRONG} pinned); "
           f"match vectors: {match_seen}")
     if fails:
