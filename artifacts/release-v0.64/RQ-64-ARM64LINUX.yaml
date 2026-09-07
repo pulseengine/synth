@@ -30,7 +30,7 @@ artifacts:
       path end to end, and write the claim down where a consumer will find it.
       Splitting them means the claim can land without waiting on a new object
       format — and it exercises exactly the oracle shape MACHO will need.
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - reach
@@ -45,14 +45,77 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#242"
-      done-when: "manual: an oracle links a synth-emitted aarch64 ET_REL with a host linker for arm64-linux and EXECUTES it, comparing results against wasmtime; the capability is stated in the feature matrix with the preconditions (x28 linear-memory base, no startup emitted) named beside it"
+      landed: >-
+        PR #TBD (branch feat/arm64linux-1178). Oracle
+        `scripts/repro/arm64_linux_host_link_rq64_differential.py` + fixture
+        `arm64_linux_host_link_rq64.wat` (`# ci-checks: emulations >= 2`),
+        CI-wired TWICE: in `aarch64-oracle` (ubuntu-latest, x86-64) with
+        `REQUIRE_QEMU=1` — the linked image runs under qemu-user-static, an
+        ELF loader + syscall layer that is not the oracle's — and in the NEW
+        `arm64-linux-native` job on the GitHub-hosted `ubuntu-24.04-arm`
+        runner with `REQUIRE_NATIVE=1`, where the linked image simply RUNS
+        (no emulator anywhere; a non-arm64/non-Linux host is red, never a
+        skip). `--exact-emulation-floor` and SYNTH-ORACLE-CHECK-FLOORS-910-CI
+        moved in lockstep (re-derived from `oracle_wiring_check.py`, not
+        added); `aarch64-oracle`'s `--min-oracles` 16 -> 17.
+        `docs/embedder-abi-relocatable-aarch64.md`: the embedder contract,
+        every fact cited to the emitting `file:line`, split fixed / chosen /
+        incidental, pinned by SYNTH-EMBEDDER-ABI-RELOCATABLE-AARCH64-RQ64.
+        FEATURE_MATRIX template row extended with the claim, the
+        precondition and the measured limitation; README crate row names it.
+        `crates/synth-cli/src/main.rs`: the post-compile "Link with:
+        arm-none-eabi-ld … kiln_bridge.o" hint, printed for aarch64 objects
+        too, now names `ld.lld -m aarch64linux` and the x28 precondition.
+      done-when: "contains:.github/workflows/ci.yml:arm64_linux_host_link_rq64_differential.py"
       verified-by: >-
-        PENDING. The gating rule applies (RQ-62-REACH — the oracle lands
-        FIRST), and here it is unusually cheap because the host toolchain is
-        the reference: link with the system linker and RUN. Red-first is
-        available by pointing the oracle at a deliberately broken object.
-        NOTE the precondition that must be stated rather than assumed: the
-        embedder sets `x28`, and synth emits no startup — the same contract
-        v0.62's embedder ABI doc records for `--relocatable` on ARM. A claim
-        that omits it would repeat the #1131 failure, where an integrator
-        conformed correctly BY LUCK, twice.
+        THE ORACLE, end to end, exactly the done-when: `ld.lld -m aarch64linux
+        -static` links `_start` (asm: `adrp/add x28, linmem`, then `bl
+        harness_main`) + a GENERATED freestanding C harness (derived from the
+        oracle's own case table so the C sequence and the wasmtime sequence
+        cannot drift; `-target aarch64-unknown-linux-gnu -ffreestanding
+        -nostdlib -ffixed-x28`; only `write` + `exit_group` syscalls) + the
+        synth object. The image is checked with pyelftools (ET_EXEC,
+        EM_AARCH64, ELFOSABI_SYSV, 0 undefined, 0 `.rela` sections, all 28
+        synth symbols present) and EXECUTED against wasmtime-first values:
+        17 compares crossing every boundary — host->synth in w/x/d registers,
+        synth->host through the SHN_UNDEF import bound to C by the linker,
+        synth->synth CALL26 to a non-exported local, linear memory through
+        x28 checked from BOTH sides (synth stores / C reads `base+16`; C
+        writes / synth loads), globals in synth's own `.data` persisting
+        across calls, call_indirect through the emitted funcref table, a
+        value below an import call's args, memory.size. Measured locally
+        (host arm64-Darwin, unicorn leg): `executions: 17`, `host-linker
+        refusals: 3`, `mutation: detected`, `co-link workaround runs: 1`,
+        RESULT: PASS; oracle_run: emulations=3 wasmtime_calls=15 compiles=3.
+        RED-FIRST, three ways, all measured: an EM_ARM (Thumb-2) object into
+        `-m aarch64linux` -> `is incompatible with aarch64linux`; the aarch64
+        object into `-m elf_x86_64` -> `is incompatible with elf_x86_64`; a
+        harness without `host_add` -> `undefined symbol: host_add` (each must
+        be exit != 0 AND carry the linker's own needle); plus a MUTATION
+        control: bit 30 of `add`'s first instruction flipped in the LINKED
+        image (ADD -> SUB) reports `add -> 0xffffffff (wasmtime 0x7)` — the
+        differential can fail. The mutation transcript is in the PR body.
+        HOST HONESTY: this repo's developers are on arm64-Darwin, where the
+        image cannot run natively; the unicorn leg reproduces the Linux ELF
+        loader contract in ~30 lines and is stated as such. That is why CI
+        carries the two legs that are NOT the oracle's own: qemu-user (an
+        independent loader + syscall implementation) and the native
+        `ubuntu-24.04-arm` runner. WHAT IS NOT VERIFIED, written into the
+        oracle and the doc: traps (`brk #0` = SIGTRAP on Linux; placement is
+        the sibling unicorn oracles' job), dynamic linking / PIE, libc.
+        NEGATIVE FINDING, measured and pinned by the oracle: `func_N` is
+        emitted GLOBAL on aarch64 (elf.rs `0x12`; LOCAL on ARM since #656),
+        so two independently compiled synth aarch64 objects CANNOT be linked
+        into one program — `ld.lld: error: duplicate symbol: func_1`. Not
+        fixed here (it changes symtab ordering/`sh_info` in the ELF writer
+        and every aarch64 oracle's expectations should move under review);
+        the workaround `llvm-objcopy --regex --localize-symbol='func_[0-9]+'`
+        is executed by the oracle (co-link succeeds, all 17 values still
+        match) and documented. The pin is bidirectional: a writer change that
+        makes `func_N` LOCAL reddens the oracle until the doc is corrected.
+        PRECONDITION STATED, not assumed (#1131): x28 = linear-memory base,
+        set once before the first export, never written by emitted code,
+        preserved by anything called out to (AAPCS64 callee-saved) — and the
+        thing the ARM doc has no analogue for: the bounds limit is a BAKED
+        IMMEDIATE (`MemBounds::Software { limit_bytes }`), so the region must
+        be at least the declared size and no register can say otherwise.

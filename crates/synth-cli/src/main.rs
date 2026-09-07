@@ -5454,10 +5454,24 @@ fn compile_all_exports(
             total_relocs
         );
         println!("  ELF type: relocatable object (ET_REL)");
-        println!(
-            "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
-            output.display()
-        );
+        if backend.name() == "aarch64" {
+            // RQ-64-ARM64LINUX: this object is a SysV ELF64 for EM_AARCH64 —
+            // a host library, not firmware. Name the toolchain the CI oracle
+            // (arm64_linux_host_link_rq64_differential.py) actually links
+            // and executes with, and the one precondition the embedder owns.
+            println!(
+                "\n  Link with: ld.lld -m aarch64linux -static -o prog start.o host.o {}\n  \
+                 (or: clang -target aarch64-unknown-linux-gnu -fuse-ld=lld …). The \
+                 embedder sets x28 = linear-memory base before the first export; \
+                 see docs/embedder-abi-relocatable-aarch64.md",
+                output.display()
+            );
+        } else {
+            println!(
+                "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
+                output.display()
+            );
+        }
     } else if has_relocations {
         // Standalone executable whose internal `BL func_N` calls were resolved
         // directly (no linker). Report them as patched, not pending (#170).

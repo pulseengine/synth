@@ -2532,7 +2532,13 @@ claims:
     #     and Thumb-2); the red run on main measured 114 with 10 declined.
     #   RQ-63-A64STACK  (#1164): +13 for
     #     aarch64_call_valstack_rq63_differential.py.
-    text: "--exact-emulation-floor 324845"
+    # v0.64 — RQ-64-ARM64LINUX: +2 for
+    #   arm64_linux_host_link_rq64_differential.py (one whole-image unicorn
+    #   run of the ld.lld-linked arm64-Linux harness + one of the mutated
+    #   image; the co-link workaround leg runs a third when llvm-objcopy is
+    #   present and is not counted in the floor). Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
+    text: "--exact-emulation-floor 324847"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
@@ -2739,6 +2745,78 @@ claims:
       - kind: count-eq                       # cannot drift pairwise
         pattern: 'R10 = linear-memory size in BYTES, and R9 = globals-table'
         glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+
+  # RQ-64-ARM64LINUX: the AArch64 counterpart. `-b aarch64 --relocatable` is a
+  # SysV ELF64 ET_REL that a stock host linker turns into a normal arm64-Linux
+  # static program — PROVEN per commit by
+  # scripts/repro/arm64_linux_host_link_rq64_differential.py (ld.lld
+  # -m aarch64linux link + execution vs wasmtime: natively on the
+  # ubuntu-24.04-arm runner, under qemu-user, under unicorn). The doc states
+  # the contract with file:line citations; these pins bind its load-bearing
+  # sentences to the emitter so an emitter change reddens the doc, and pin
+  # the one MEASURED LIMITATION (GLOBAL `func_N`) in the direction that makes
+  # a fix visible: the day the writer emits it LOCAL, `expect: 1` on the
+  # `0x12` binding line fails and the doc's collision section must go.
+  - id: SYNTH-EMBEDDER-ABI-RELOCATABLE-AARCH64-RQ64
+    doc: docs/embedder-abi-relocatable-aarch64.md
+    text: "| **x28** | Linear-memory (memory 0) base address | Embedder, before any export runs | Embedder | (b) chosen |"
+    evidence:
+      - kind: count-eq                       # the base register IS x28
+        pattern: 'const LINMEM_BASE: Reg = 28;'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        expect: 1
+      - kind: count-eq                       # the temp universe is x9..x15
+        pattern: 'const TEMPS: \[Reg; 7\] = \[9, 10, 11, 12, 13, 14, 15\];'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        expect: 1                            # (doc: x19..x27 "never touched")
+      - kind: count-eq                       # FP temps are v16..v23
+        pattern: 'const FTEMPS: \[FReg; 8\] = \[16, 17, 18, 19, 20, 21, 22, 23\];'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        expect: 1                            # (doc: v8..v15 "never touched")
+      - kind: count-min                      # the bounds limit is a BAKED
+        pattern: 'limit_bytes: config\.linear_memory_bytes as u64'   # immediate
+        glob: ['crates/synth-backend-aarch64/src/backend.rs']        # (doc: "no
+        min: 1                                                       # size register")
+      - kind: count-min                      # traps are `brk #0`: OOB, /0,
+        pattern: 'enc::brk\(0\)'             # INT_MIN/-1, the §4.4.8 guards
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        min: 5                               # (doc: "SIGTRAP on Linux")
+      - kind: count-min                      # active data segments REFUSED
+        pattern: 'does not materialize data segments'
+        glob: ['crates/synth-backend-aarch64/src/backend.rs']
+        min: 1
+      - kind: count-eq                       # globals: a synth-EMITTED .data
+        pattern: 'pub const GLOBALS_SYMBOL: &str = "__synth_globals";'   # symbol,
+        glob: ['crates/synth-backend-aarch64/src/substrate.rs']         # not a
+        expect: 1                                                       # register
+      - kind: count-eq                       # code symbols are GLOBAL (0x12) —
+        pattern: 'let info = if f\.is_object \{ 0x11 \} else \{ 0x12 \};'   # the
+        glob: ['crates/synth-backend-aarch64/src/elf.rs']                  # func_N
+        expect: 1                            # co-link collision the doc records
+      - kind: verbatim                       # ...and the doc records it
+        text: "duplicate symbol: func_1"
+      - kind: verbatim                       # the only accepted target
+        text: "`--target cortex-a53` is the only `-b aarch64` target"
+      - kind: count-eq                       # ...which the CLI enforces
+        pattern: '"aarch64" => Some\("cortex-a53"\),'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # the CLI's post-compile hint names
+        pattern: 'Link with: ld\.lld -m aarch64linux'   # the exercised linker
+        glob: ['crates/synth-cli/src/main.rs']         # (doc: "The CLI's
+        expect: 1                                      # post-compile hint")
+      - kind: file-exists                    # the oracle the doc cites
+        path: scripts/repro/arm64_linux_host_link_rq64_differential.py
+      - kind: file-exists
+        path: scripts/repro/arm64_linux_host_link_rq64.wat
+      - kind: count-eq                       # the oracle is wired in BOTH jobs
+        pattern: 'oracle_run\.py scripts/repro/arm64_linux_host_link_rq64_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 2
+      - kind: count-eq                       # ...one of them the NATIVE runner
+        pattern: 'runs-on: ubuntu-24\.04-arm'
+        glob: ['.github/workflows/ci.yml']
         expect: 1
 
   # RQ-62-VERIFYEMBED (#1132): the EMBEDDER side of the contract above, made
