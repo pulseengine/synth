@@ -68,7 +68,7 @@ artifacts:
       `b552fb4c` (2026-09-03, pre-v0.63), so it attributes nothing to the bump
       either way. A red on a stale base is not evidence about a dependency —
       the v0.56 lesson (88 -> 14 -> 5 once measured against a baseline).
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - dependencies
@@ -83,7 +83,8 @@ artifacts:
       verification-track: review
       issue: "#965"
       landed: >-
-        PR #1186 — increment 1 of 2. The MINORHOLD exit condition gains the
+        PR #1186 (the exit condition) and the four dispositions below. Both
+        halves of the done-when are now discharged. Increment 1 of 2 was: The MINORHOLD exit condition gains the
         three things it omitted (base freshness as part of "green", the
         permanently-lost refresh mechanism, and the disposition obligation),
         plus the measured requirement that a dependabot command be PLAIN TEXT.
@@ -93,17 +94,46 @@ artifacts:
         not happened.
       done-when: "manual: the MINORHOLD rule gains a written exit condition naming (a) the base-freshness precondition, (b) which feature-gated suites the dependency's own path requires, (c) the stated-reason obligation, and (d) what happens to a bump nobody evaluates; and each of the four held PRs is either landed under it or closed with a reason"
       verified-by: >-
-        PARTIAL, and the partial part is named. ESTABLISHED: the rebase
-        mechanism is unavailable on #1106/#1107/#1110 (dependabot's own comment,
-        2026-09-07T06:05Z, on all three); their single red is advisory and
-        green on main, so it attributes nothing; their merge-base is
-        `b552fb4c`, four days and one release stale. `@dependabot recreate` was
-        requested on all three with the measurements recorded on each PR.
-        NOT YET ESTABLISHED: whether recreate actually fires (it had not after
-        ~30 minutes), and whether any of the four is safe to land — that needs
-        a CURRENT-base run, which is deliberately NOT being forced right now:
-        the CI queue stood at 166 jobs queued against 0 running, and three
-        full re-runs (~170 jobs) is the burst shape that produced the
-        documented org-wide stall. Capacity is a real constraint on when
-        evidence can be gathered, and pretending otherwise would make the
-        verdict worse, not sooner.
+        BOTH CLAUSES DISCHARGED.
+
+        CLAUSE 1 — the exit condition (PR #1186). The premise was corrected
+        first: MINORHOLD DID state an exit ("merge a held bump BY HAND once the
+        FULL suite is green"). What it omitted was everything about THE TREE THE
+        SUITE RAN ON, which is what made it unusable. Three things added:
+        (a) base freshness is part of "green"; (b) the refresh mechanism can be
+        permanently gone — merging main INTO a dependabot branch is the move
+        that destroys the ability to freshen it; (c) a bump nobody evaluates
+        needs a disposition, because "still open" is not one. Plus the measured
+        requirement that a dependabot command be PLAIN TEXT: a backticked
+        `@dependabot recreate` sat unread on three PRs for over half an hour,
+        and the same command unformatted was acted on within minutes. That was
+        established by probing ONE PR before repeating it — which is what made
+        it a measurement rather than a guess.
+
+        CLAUSE 2 — four dispositions, four different outcomes, each on its own
+        evidence rather than on a policy:
+          #1106 wit-parser 0.257.1 -> 0.258.0  MERGED. Parsing layer
+            (synth-frontend); cannot reach the selector or encoder. 9/9 by name.
+          #1107 rivet action 0.34.0 -> 0.35.0  MERGED. One line in a
+            NON-required workflow. The rivet BINARY is pinned separately inside
+            the action's `with:` (`rivet-version: v0.23.0`) and the required
+            `Rivet Validation` context has its own pin in ci.yml — so this bump
+            cannot change the verdict of the job that validates synth's own
+            artifacts. Distinguishing the action version from the tool version
+            IS this evaluation.
+          #1108 z3 0.20.2 -> 0.21.0            CLOSED, declined. Breaks the
+            required `Bazel Build & Proofs` at `Build Rust via Bazel`, and the
+            attribution is measured: that job is success on main and pass on
+            all THREE sibling bumps sharing the same base. It also pulls
+            z3-sys 0.11 -> 0.13, which links the system libz3. FIRST TIME the
+            enforced hold has stopped a breaking 0.x-minor before it landed —
+            the rule was written after ordeal 0.9->0.12 hung CI for days (#849)
+            and had never before been falsified.
+          #1110 wast 257.0.1 -> 258.0.0        MERGED. Its `Kani Verification`
+            red was NOT waved through: the failing STEP was `Install Kani` (the
+            installer, not a verification result) and Kani was green on main, so
+            it was environmental — but it still blocked, correctly, because only
+            codecov is advisory. It cleared on re-run.
+
+        Every merged bump: base freshness verified BEFORE the verdict was read,
+        9/9 required contexts green by name, PR-head-vs-merged diff 0 lines.
