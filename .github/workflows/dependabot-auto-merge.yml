@@ -44,6 +44,16 @@
 #      command (it overwrites the branch from current main and restores bot
 #      management) or rebase by hand.
 #
+#      AND THE COMMAND MUST BE PLAIN TEXT. Measured 2026-09-07: `@dependabot
+#      recreate` posted inside BACKTICKS was silently ignored on three PRs for
+#      over half an hour; the identical command posted UNFORMATTED on #1106 was
+#      acted on within minutes, and #1107/#1110 followed once reposted plain. A
+#      code-span `@dependabot ...` is not parsed as a command, and the failure
+#      is indistinguishable from "the bot is slow" — which is how it was
+#      misdiagnosed here until a one-PR probe settled it. Probe on ONE before
+#      repeating a command on all of them; that is what made this a measurement
+#      rather than a guess.
+#
 #   3. A BUMP NOBODY EVALUATES NEEDS A DISPOSITION, not silence. Held PRs
 #      accumulated for a week because nothing required an answer. Each release
 #      cycle, every held bump gets one of: landed under this exit, closed with
