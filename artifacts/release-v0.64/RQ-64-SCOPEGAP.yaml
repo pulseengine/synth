@@ -122,3 +122,13 @@ artifacts:
         replay, every anchor form, per-sentence framing, ARM immediates, field
         prose, dated-by-construction exemptions, floor, live-tree green)
         mutation-verified; ci.yml pins `programme-staleness: ... 0 undated`.
+        Review on #1182 then found the POPULATION half was a lower bound
+        pinned at live (34): pattern rot reddened (13 scanned, S-VACUOUS, exit
+        1) but a citation landing without its bump could not. Replaced by an
+        EQUALITY (STALENESS_CITATIONS = 34, S-DRIFT red in both directions),
+        ledger-pinned as SYNTH-STATUS-EVIDENCE-STALENESS-CITATIONS-1085 (the
+        value AND the `!=` check); churn measured v0.56.0..v0.63.0 = 30, 30,
+        30, 31, 31, 31, 31, 32 (two moves in seven release intervals);
+        transcript: Qed-pattern rot -> 13 scanned, exit 1 BELOW; declared 33
+        -> exit 1 ABOVE; live 34 = 34, exit 0; 10/10 mutations killed;
+        claim_check 60/60.

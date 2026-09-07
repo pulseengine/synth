@@ -293,7 +293,8 @@ found the defect in checking machinery):
     the derivation instead of the number. S1 enforces that for the
     repo-derived proof counts, S2 for any measured figure in a TITLE;
     a version-named topic file or a version-shaped `release:` is dated
-    by construction; an S-VACUOUS floor pins the citations scanned.
+    by construction; the citations scanned are pinned as an EQUALITY
+    (S-DRIFT, red in both directions — RQ-63-FLOOREQ one surface over).
 
 Exit 0 iff no rule fires. Prints `status-evidence:`, `programme-status:`
 and `programme-staleness:` summary lines the CI step greps as
@@ -448,8 +449,10 @@ PROGRAMME_FLOOR = 379
 #   version, and every artifact in a topic file whose NAME carries one
 #   (`sys-verification-v0.60.yaml` records what was true at v0.60 exactly
 #   as a release-v*/ file does). Release-scoped files are R7/R8's surface.
-#   S-VACUOUS: a floor on figure citations scanned — pattern rot reds
-#   instead of quietly scanning nothing.
+#   S-DRIFT: the figure citations scanned are pinned as an EQUALITY
+#   (STALENESS_CITATIONS): below is lost reach (pattern rot, a file
+#   invisible), above is a citation that landed without its same-PR
+#   bump. A lower bound cannot see declared drifting (RQ-63-FLOOREQ).
 #
 # What S-rules do NOT judge, stated rather than silent: whether a dated
 # figure is the RIGHT history; whether the anchor genuinely dates the
@@ -478,9 +481,16 @@ TITLE_FIGURE = re.compile(
 )
 TOPIC_FILE_VERSION = re.compile(r"v\d+\.\d+")
 SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[^a-z\s])")
-# Figure citations the live scan must find (measured at authoring, after
-# the corrections landed). Red only BELOW; raise it when it drifts far.
-STALENESS_FLOOR = 34
+# Figure citations the live scan must find — an EQUALITY, red in BOTH
+# directions (RQ-63-FLOOREQ: a lower bound cannot see declared drifting).
+# Below: the scan lost reach — pattern rot, a file invisible to it. Above:
+# a citation landed without its same-PR bump. Measured churn v0.56.0 ->
+# v0.63.0: 30, 30, 30, 31, 31, 31, 31, 32 — two moves in seven release
+# intervals — so equality costs a one-line bump every few releases. Move
+# it in the PR that moves it; claims.yaml pins this line verbatim
+# (SYNTH-STATUS-EVIDENCE-STALENESS-CITATIONS-1085) so every movement is
+# a visible ledger diff, and pins that the `!=` check itself stays wired.
+STALENESS_CITATIONS = 34
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
@@ -843,12 +853,14 @@ def _live_status(root: Path) -> dict:
 
 
 def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
-                   floor: int = STALENESS_FLOOR):
+                   expected: int | None = STALENESS_CITATIONS):
     """S-rules (#1085 / RQ-64-SCOPEGAP): an artifact with no release is a
     RECORD — a moving repo-derived count it cites must be dated in the same
     sentence (S1), and its title may not carry an undated measured figure
     (S2). Version-named topic files and version-shaped `release:` fields
     are dated by construction; release-v*/ files are R7/R8's surface.
+    `expected` is the declared citation count (None: not checked — a
+    fixture); the live scan must EQUAL it.
 
     -> (unscoped_artifacts, citations_scanned, undated, failures).
     Raises DuplicateKeyError like the other scans (same strict loader)."""
@@ -926,13 +938,23 @@ def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
                                 f"(vX.Y / #NNN / YYYY-MM-DD) or name the "
                                 f"derivation instead of the number (#1085)"
                             )
-    if citations < floor:
-        failures.append(
-            f"S-VACUOUS: only {citations} figure citations scanned across "
-            f"{unscoped} unscoped artifacts (floor {floor}) — pattern rot "
-            f"or files invisible to the scan; the floor never comes down "
-            f"to pass"
-        )
+    if expected is not None and citations != expected:
+        if citations < expected:
+            failures.append(
+                f"S-DRIFT: {citations} figure citations scanned across "
+                f"{unscoped} unscoped artifacts, BELOW the declared "
+                f"{expected} — the scan lost reach (pattern rot, or a "
+                f"file invisible to it); the declaration never comes down "
+                f"to pass without the reason written beside it (#1085)"
+            )
+        else:
+            failures.append(
+                f"S-DRIFT: {citations} figure citations scanned across "
+                f"{unscoped} unscoped artifacts, ABOVE the declared "
+                f"{expected} — a citation landed without its same-PR bump "
+                f"of STALENESS_CITATIONS; move the declaration in the PR "
+                f"that moved the count (#1085)"
+            )
     return unscoped, citations, undated, failures
 
 

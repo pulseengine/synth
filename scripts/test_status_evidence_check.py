@@ -92,7 +92,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from status_evidence_check import (  # noqa: E402
     PROGRAMME_FLOOR,
     RELEASE_GLOB,
-    STALENESS_FLOOR,
+    STALENESS_CITATIONS,
     RELEASE_VERSION,
     REPO_ROOT,
     DuplicateKeyError,
@@ -1143,11 +1143,12 @@ class UnscopedStaleness1085(unittest.TestCase):
     every anchor form, version-named topic files, a version-shaped
     `release:`, release-scoped files, threshold percentages in
     descriptions), the field-prose surface (TR-005, VER-001/002), the
-    per-sentence framing that VCR-X86-001's shape needs, and the floor.
+    per-sentence framing that VCR-X86-001's shape needs, and the declared
+    citation count as an EQUALITY (RQ-63-FLOOREQ one surface over).
     Mutation-verified at authoring: deleting the S2 branch kills the title
     replay; deleting S1 kills the VG-002 replay and the fields test;
-    dropping the sentence split kills the adjacent-sentence test; zeroing
-    the floor path kills the floor test."""
+    dropping the sentence split kills the adjacent-sentence test; disabling
+    the equality check, or weakening it to `<`, kills the equality test."""
 
     ROADMAP = "verified-codegen-roadmap.yaml"
 
@@ -1182,7 +1183,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             "modules",
             "Measured on 805 REAL-WORLD wasm modules (#1017): ARM 531/805 "
             "(66 %), AArch64 13 (1.6 %).")])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertTrue(self.s_has(r, "S2 VCR-REACH-002"), self.s_fails(r))
         self.assertTrue(self.s_has(r, "`1.6%`"), self.s_fails(r))
         self.assertEqual(len(self.s_fails(r)), 1, self.s_fails(r))
@@ -1196,7 +1197,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             "VG-002", "Rocq proofs — float admits outstanding",
             "The Rocq proof suite has 188 Qed and 52 Admitted theorems. All "
             "52 admits are in VFP floating-point semantics.")])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         fails = self.s_fails(r)
         self.assertTrue(self.s_has(r, "S1 VG-002: undated `188 Qed`"), fails)
         self.assertTrue(self.s_has(r, "S1 VG-002: undated `52 Admitted`"),
@@ -1216,7 +1217,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             self.art("A", "t", "The suite has 188 Qed."),
             self.art("B", "t", "The suite has 630 Qed."),
         ])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertTrue(self.s_has(r, "the live derivation is 630 "
                                       "(artifacts/status.json `rocq_qed`)"),
                         self.s_fails(r))
@@ -1236,7 +1237,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             self.art("C", "t", "FIRST MEASUREMENT (2026-06-20, built green): "
                                "7 Qed / 0 Admitted."),
         ])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertEqual(self.s_fails(r), [])
         self.assertEqual(r[1], 5)  # every citation was scanned, none undated
 
@@ -1250,7 +1251,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             "Measured 2026-09-06 at v0.62.0. THE PROOF SUITE IS ARM-SPECIFIC. "
             "630 Qed across ArmSemantics.v and the generated theorems. That "
             "is the failure the v0.58 correction names.")])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertTrue(self.s_has(r, "S1 VCR-X86-001: undated `630 Qed`"),
                         self.s_fails(r))
 
@@ -1260,7 +1261,7 @@ class UnscopedStaleness1085(unittest.TestCase):
         fx = Fixture()
         self.topic(fx, self.ROADMAP, [self.art(
             "A", "t", "One dead `movw #3` remains beside the 188 Qed.")])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertTrue(self.s_has(r, "S1 A: undated `188 Qed`"),
                         self.s_fails(r))
 
@@ -1277,7 +1278,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             self.art("D", "Reach — 77 modules blocked on call discipline"),
             self.art("E", "Plain title, no figure at all"),
         ])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         fails = self.s_fails(r)
         self.assertFalse(self.s_has(r, "S2 A"), fails)
         self.assertTrue(self.s_has(r, "S2 B: title carries the measured "
@@ -1297,7 +1298,7 @@ class UnscopedStaleness1085(unittest.TestCase):
             "NFR-001", "Performance",
             "Synth shall achieve at least 80% of native performance and code "
             "size less than 120% of native.")])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertEqual(self.s_fails(r), [])
         self.assertEqual(r[1], 0)
 
@@ -1315,7 +1316,7 @@ class UnscopedStaleness1085(unittest.TestCase):
                 "steps": {"coverage": "T2 tier (95 Qed when written, "
                                       "2026-03-17)"}}),
         ])
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         fails = self.s_fails(r)
         self.assertTrue(self.s_has(r, "S1 TR-005: undated `188 Qed` in "
                                       "artifacts/technical-requirements.yaml "
@@ -1352,28 +1353,40 @@ class UnscopedStaleness1085(unittest.TestCase):
              "fields": {"issue": "#1017",
                         "done-when": "manual: reason",
                         "verified-by": "basis"}}], stamp=False)
-        r = check_unscoped(fx.root, floor=0)
+        r = check_unscoped(fx.root, expected=None)
         self.assertEqual(self.s_fails(r), [])
         # VER060-002 is unscoped-but-dated (counted, not scanned); VCR-A is
         # unscoped; VCR-RA-001 and the release artifact are not unscoped.
         self.assertEqual(r[0], 2)
 
-    def test_floor_reds_below(self):
-        # Non-vacuity: pattern rot that scans nothing must red, never pass.
+    def test_declared_count_is_an_equality(self):
+        # RQ-63-FLOOREQ one surface over: BELOW is lost reach (pattern rot),
+        # ABOVE is a citation that landed without its bump, EQUAL is green.
+        # A lower bound would pass the second direction silently — which is
+        # what the first version of this rule did (floor 34, review #1182).
         fx = Fixture()
         self.topic(fx, self.ROADMAP, [self.art(
-            "A", "t", "Increment 1 landed (#1155): 7 Qed.")])
-        r = check_unscoped(fx.root, floor=10)
-        self.assertTrue(self.s_has(r, "S-VACUOUS"), self.s_fails(r))
-        self.assertEqual(self.s_fails(check_unscoped(fx.root, floor=1)), [])
+            "A", "t", "Increment 1 landed (#1155): 7 Qed / 0 Admitted.")])
+        below = check_unscoped(fx.root, expected=3)
+        above = check_unscoped(fx.root, expected=1)
+        equal = check_unscoped(fx.root, expected=2)
+        self.assertTrue(self.s_has(below, "S-DRIFT")
+                        and self.s_has(below, "BELOW the declared 3"),
+                        self.s_fails(below))
+        self.assertTrue(self.s_has(above, "S-DRIFT")
+                        and self.s_has(above, "ABOVE the declared 1"),
+                        self.s_fails(above))
+        self.assertEqual(self.s_fails(equal), [])
+        self.assertEqual(equal[1], 2)
 
     def test_live_repo_is_green_and_meets_the_floor(self):
-        # The live anchor: the real repo passes with the DEFAULT floor, the
-        # floor is not slack, and the corrected corpus has zero undated.
+        # The live anchor: the real repo passes with the DEFAULT declared
+        # count, which EQUALS the live scan (no slack in either direction),
+        # and the corrected corpus has zero undated.
         unscoped, citations, undated, failures = check_unscoped(REPO_ROOT)
         self.assertEqual(failures, [])
-        self.assertGreaterEqual(citations, STALENESS_FLOOR)
-        self.assertGreater(STALENESS_FLOOR, 0)
+        self.assertEqual(citations, STALENESS_CITATIONS)
+        self.assertGreater(STALENESS_CITATIONS, 0)
         self.assertEqual(undated, 0)
         self.assertGreater(unscoped, 200)
 
