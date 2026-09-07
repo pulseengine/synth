@@ -53,7 +53,7 @@ artifacts:
       cannot return FRAMING. Three hits in one file read as three copies; they
       were one transcript. A count is not a diagnosis — the same lesson as
       v0.63's "a blocker count is not a reach estimate", one domain over.
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - claims
@@ -70,7 +70,42 @@ artifacts:
       issue: "#910"
       done-when: "manual: no release artifact restates a live pinned value as a literal in prose; the floor's lockstep set is reduced to the enforced value and its pin; and the rule (an artifact records what was true when it shipped, never a moving value) is written where the next author will meet it"
       verified-by: >-
-        PENDING. The check is mechanical and should be added rather than
-        promised: grep the release artifacts for the live floor literal and
-        fail if any carries it, the way SYNTH-ORACLE-CHECK-FLOORS-910-CI
-        already pins the ci.yml occurrence.
+        IMPLEMENTED, and the check was ADDED rather than promised, which is
+        what the PENDING note asked for. `check_live_floor_prose()` in
+        `status_evidence_check.py` DERIVES the live floor from ci.yml's
+        `--exact-emulation-floor N` and fails if any `artifacts/release-v*/`
+        file restates that literal; ci.yml greps the emitted `floor-prose:`
+        line, so the rule cannot silently stop running.
+
+        THE RULE IS ABOUT THE LIVE VALUE, NOT THE DIGITS — the distinction the
+        corrected premise turns on. A superseded floor quoted as dated history
+        is legitimate and stays legible.
+
+        RED-FIRST, THREE DIRECTIONS, each executed:
+        (1) the live floor planted in an artifact -> EXIT 1, naming the exact
+        file:line, summary `restated 1 times`.
+        (2) RQ-63-FLOOREQ's THREE occurrences of the SUPERSEDED 324845, framed
+        "AT v0.63 — a transcript of what was executed then" -> EXIT 0,
+        `restated 0 times`. The dated transcript is untouched, which is the
+        behaviour the premise correction demanded.
+        (3) THE RULE BLINDED: rename the gate flag to `--min-emulation-floor`
+        and the live floor stops being derivable -> EXIT 1, "no
+        `--exact-emulation-floor N` found in ci.yml ... THIS rule went blind",
+        summary `live floor UNDERIVABLE`. It REFUSES TO PASS when it cannot
+        see its subject rather than reporting a clean tree; a zero-population
+        glob fails the same way.
+
+        Measured on the merged tree: 50 release artifacts scanned, 0
+        restatements of the live floor. The lockstep set stays the ENFORCED two
+        files (ci.yml + claims.yaml); this rule keeps a third from quietly
+        joining it.
+
+        THE RULE FIRED ON ITS OWN AUTHOR, and that is recorded rather than
+        exempted. The first draft of this very `verified-by` quoted the live
+        floor as a literal while describing the measurement, and
+        status_evidence_check went RED naming this file and line. The number is
+        now cited by its DERIVATION (`oracle_wiring_check.py`'s reported total,
+        pinned in ci.yml and claims.yaml) instead of copied. That is a fourth
+        red-first demonstration nobody had to construct: the rule is not
+        special-cased for the artifact that introduced it, and the obvious way
+        to write this field was the defect.

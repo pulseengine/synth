@@ -415,6 +415,13 @@ jobs:
           # grep asserts the scan ran and the undated half is zero.
           grep -qE '^programme-staleness: [1-9][0-9]* unscoped artifacts, [1-9][0-9]* figure citations scanned, 0 undated$' \
             /tmp/status-evidence.log
+          # #910 (RQ-64-FLOORPROSE): the live floor must be DERIVABLE (never
+          # `UNDERIVABLE`, which means the rule went blind), the scan must have
+          # covered a real population (never 0 artifacts), and no release
+          # artifact may restate the live value (`restated 0 times`). A
+          # superseded floor quoted as dated history does not match, by design.
+          grep -qE '^floor-prose: [1-9][0-9]* release artifacts scanned, live floor [0-9]+ restated 0 times$' \
+            /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
       # replays all seven measured miss instances — reconstructed from the
