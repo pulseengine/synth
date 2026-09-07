@@ -88,13 +88,20 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **8 manual** — a ceiling (`count-max`). A ninth needs a conversation, not a
-  commit. The eighth (RQ-59-PARTIALCENSUS, `partial_census_1017.py`, #1017) had
-  that conversation: it is a census scoped to MEASURE AND STOP, with no expected
-  value and no verdict for CI to fail on, over a real-world corpus CI does not
-  carry — wiring it would mean inventing an assertion the artifact was scoped
-  not to make. The reasoning, and what would make it the wrong call, is recorded
-  next to the pin in `claims.yaml`.
+- **7 manual** — a ceiling (`count-max`). An eighth needs a conversation, not a
+  commit. There WAS an eighth for five releases (RQ-59-PARTIALCENSUS,
+  `partial_census_1017.py`, #1017): a census scoped to MEASURE AND STOP, with no
+  expected value and no verdict for CI to fail on, over a real-world corpus CI
+  does not carry. The note beside its pin in `claims.yaml` said what would make
+  that the wrong call — "if the census ever grows an expected value or a
+  pass/fail verdict, it must be wired" — and RQ-64-HISTOGRAM (#1159) did exactly
+  that: the fix for the fragmenting blocker histogram gave the script a
+  hermetic `--self-test` (numeric-payload mask on the two wild shapes, the
+  printed-rows sum invariant with a negative control). So it is `wired` now,
+  its `ci-checks: stdout` floor binding the assertion COUNT, and the ceiling
+  fell back to 7. The census modes of that file are unchanged: still a local
+  measurement, still no verdict about synth — only the instrument's self-check
+  is a gate.
 - **0 unwired** — a ceiling of zero. Any new un-wired oracle is a **red build**,
   not a silent backlog entry.
 

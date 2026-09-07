@@ -25,7 +25,7 @@ artifacts:
 
       No published number is wrong — the totals sum correctly, verified. The
       defect is that the ORDER is untrustworthy, and order is now the product.
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - census
@@ -41,11 +41,123 @@ artifacts:
       verification-track: review
       issue: "#1159"
       done-when: "manual: numeric payloads (hex and decimal immediates, offsets, sizes) are masked by the collapse so one cause is one row; the histogram's rows still sum to the decline count; and the `encode_operand2` rows merge to a single entry on both the spec census and the corpus ladder"
+      landed: >-
+        PR #1181: the numeric mask extended IN `normalize_reason` (the
+        one place every reason — per-function skip AND module-level — passes
+        through; `collapse_instance_lists` never sees a skip reason, which is
+        what the `immediate 0x5dc` message is), a single `module_reason`
+        pipeline for both module-level rankings, `print_ranked` asserting the
+        printed-rows sum invariant, `--self-test` with a negative control —
+        and that self-test WIRED: the script's `ci-status` moved from
+        `manual (measurement)` to `wired` (claim-check job, via oracle_run
+        with a `ci-checks: stdout` floor on the assertion COUNT, 14), because
+        the claims.yaml note beside the manual ceiling said a census that
+        grows a verdict must be wired, and a self-test that never runs guards
+        nothing. Manual ceiling 8 -> 7 (claims.yaml, ORACLE_WIRING.md). The
+        census MODES are unchanged: still a local measurement, no verdict
+        about synth. Red-first shown both ways: the mask reverted to the
+        pre-#1159 rule fails assertion 2 (exit 1); the evidence line renamed
+        still exits 0 but oracle_run refuses it on the floor (measured 0 of
+        14) — and the discriminator is permanent, as assertion 1 (the old
+        rule must still keep the two wild shapes apart).
       verified-by: >-
-        PENDING. Required: (a) masking demonstrated on the two known
-        fragmenting cases, with the before/after row counts published; (b) the
-        sum-to-decline-count invariant asserted, not just observed — a collapse
-        that loses rows is worse than one that fragments them; (c) re-run both
-        censuses and state whether any RANKING changed, because a fix that
-        reorders the priority list is the whole point and a fix that does not
-        needs explaining.
+        FULL 243-MODULE CORPUS (MANIFEST.sha256 verified 243/243), synth built
+        at 8862ee2f (no Rust changed since v0.63.0, so the compiler is the one
+        RQ-63-LADDER measured), BOTH census modes, all three backends, BEFORE
+        (script as on main) vs AFTER (this change); per-module verdicts and
+        rungs IDENTICAL between the two runs (0 diffs, 0 TIMEOUT anywhere at
+        120 s), so only the bucketing moved.
+        (a) masking: `encode_operand2: immediate 0x624 (N)` (4) and
+        `... 0x5dc (N)` (1) are ONE row, `immediate 0xN (N)` — and it counts 6,
+        not 5: a third arm-core module (stat-dev-ino) carried the SAME cause
+        split FIVE ways (0xee4/0x5b8/0xf28/0xf14/0x5d4, one function each) and
+        had lost the per-module modal vote to #929 at 4. That is the
+        under-ranking one level down: `_modal()` is a plurality vote, and a
+        fragmented cause loses it even when it is the module's largest.
+        (b) sum invariant: `print_ranked` asserts printed rows == modules
+        ranked on EVERY histogram (exit 3, never a warning); `--self-test`
+        proves it can fail (2 rows for 3 modules; an empty key) and that a
+        top-N cut still closes through an explicit remainder row.
+        (c) RANKING CHANGED — arm, both strata, plain census. Core (110
+        non-accepted): #929 AAPCS i64-pair 16 -> 15 and out of its tie for
+        3rd with active-data (16); encode_operand2 4 -> 6 (rank 5, +50 %).
+        Components (106): encode_operand2 had NO ROW AT ALL (each fragment
+        lost its module's vote) -> 3 modules at rank 7, ABOVE GI-FPU-002 which
+        falls 4 -> 2 (rank 7 -> 8); register exhaustion 27 -> 26. Per-module
+        evidence: yolo_inference_{release,debug} — 84 functions behind ~20
+        distinct immediates (largest fragment 6) vs 58 for GI-FPU-002;
+        sockets-tcp-connect 10 (8 immediates) vs 8 register exhaustion. The
+        merged cause is the arm_encoder.rs `encode_operand2` Err whose own
+        comment calls it an INTERNAL selector bug (large constants must go
+        through MOVW/MOVT) — the ranking now says it is 2x the size the v0.63
+        plan saw. riscv and aarch64: zero merges, zero rank moves in both
+        modes — the raw records carry NO hex payload (surveyed across every
+        field), so the no-op there is by construction, not luck.
+        LADDER (RQ-63-LADDER's own arm table: NEVER = 141 of 243, rungs
+        27 / 72 / 3 / 0 reproduced exactly, zero rung diffs between the two
+        runs): BEFORE 71 register exhaustion, 41 #929, 7 start section,
+        5 rule_i32_rotl, 4 call_indirect, 4 `encode_operand2 0x624`,
+        3 GI-FPU-002, 2 decode, 1, 1, 1 `encode_operand2 0x5dc`, 1 = 141 in
+        12 rows. AFTER 70, 40, 9 `encode_operand2 0xN`, 7 start, 5 rotl,
+        4 call_indirect, 2 decode, 1, 1, 1, 1 GI-FPU-002 = 141 in 11 rows.
+        The non-rotated-immediate class moves from RANK 5 (4) to RANK 3 (9)
+        — above the start-section and rule_i32_rotl gaps v0.63 listed ahead
+        of it — and GI-FPU-002 falls 3 -> 1; the same four modules are
+        re-attributed as in the plain census. Denominator stated: the arm
+        ladder was measured TWICE per side — one full-corpus single pass
+        (~110 min each) and four sorted corpus quarters (61/61/61/60,
+        merged, 243 unique paths asserted) — and the two agree on every
+        module's rung and primary blocker (0 of 243 differ, both sides);
+        the full-pass reports carry the 12-row / 11-row NEVER tables above
+        with their `sum invariant OK` lines.
+        (d) the census's SECOND ranking, "module-level decline reasons (top
+        10)", ranked RAW text: on aarch64 core the #1102 refusal (64 of 86
+        modules, across 59 singleton-ish rows) printed BELOW active-data
+        (17), and the top-10 cut silently dropped 60/78, 35/103, 58/86 and
+        42/107 modules from view. Same one pipeline now: rows 70->5, 45->4,
+        68->6, 52->5, remainder row when cut. It changes no published number
+        (the primary histogram re-attributes #952/#1102 to the skip reason
+        behind them) but it was an untrustworthy ORDER the instrument
+        printed.
+        Spec census (scripts/spec_compile_census.py, 257 files, 3 backends,
+        same binary): RESULT PASS, PINS / FAMILY_OK_PINS / AT_LEAST_ONE_EXPORT
+        all unchanged (arm 22/62/130/17, riscv 12/62/140/17, aarch64
+        27/30/109/65 ok/partial/all_declined/module_decline; 84/74/57). Stated
+        precisely: that script emits exact-pinned BUCKET COUNTS and no
+        histogram, so it cannot see this change and did not move; the
+        `encode_operand2` merge is demonstrated where #1159 observed it —
+        the corpus census, plain and ladder.
+        (f) RECONCILIATION of three arm NEVER totals (coordinator review):
+        the v0.63 doc table sums to 135, a held pre-fix listing to 138, the
+        tool to 141. Replayed the PRE-FIX script's own report_ladder over the
+        exact BEFORE NEVER set (each module's stored pre-fix blocker; no
+        synth re-run): it prints TWELVE rows summing to 141 — 71, 41, 7, 5,
+        4, 4 (0x624), 3, 2, 1 (call_indirect sidecar), 1 (LdrSym
+        "Thumb-N-only" — the pre-fix mask also ate the 2 in Thumb-2), 1
+        (0x5dc), 1 (no exports). The held nine rows are its first nine,
+        same order and counts; the three "missing" modules are rows 10-12.
+        Both v0.63.0 and pre-fix main print most_common(12) and the Counter
+        has 12 keys, so the shipped tool printed all twelve — 138 and 135
+        are TRANSCRIPTION cuts (9 of 12 rows; 7 of 12 rows), not tooling
+        losses. Consequently the new assertion does NOT go red on the
+        pre-fix bucketing (replayed: 12 rows, printed sum 141, invariant
+        OK) — correctly, because that report lost nothing; a cut forced to
+        top=9 now prints a `3 (+3 more rows below the top-9 cut)` row and
+        still closes at 141. The invariant is exactly as claimed — it covers
+        the primary histogram and `141` and the row population are one set
+        — and it cannot fail on a report that had no loss. The hypothesised
+        third mechanism (a fragment losing the plurality vote and falling
+        out of attribution) does not exist: 0 of 141 NEVER modules have an
+        empty primary blocker — `_modal` always returns a key when skip
+        reasons exist, the module-level reason is used otherwise, and the
+        unparsed case is a named string. So: the CUT hides rows (now
+        closes), FRAGMENTATION misranks (now masked), and TRANSCRIPTION
+        drops rows outside the tool (135, 138) — which the tool cannot fix
+        but the printed `N rows sum to M = M modules ranked` line now makes
+        checkable by whoever copies the table.
+        (e) over-collapse audit: every MERGE the comparison produced was
+        inspected — all are the one encode_operand2 message; reference
+        identifiers (#1102, §4.5.5, VCR-MEM-002 — format-string constants
+        that cannot vary per instance) and digit-bearing op/register/function
+        names (I64Store32, R11, func_25, RV32) are preserved by the mask, so
+        no two causes were merged. The line: mask VALUES, never IDENTIFIERS.

@@ -86,6 +86,42 @@ flag is a genuine gap and not a missing acknowledgement.
 | 4 | `encode_operand2` non-rotated immediate |
 | 3 | `GI-FPU-002` scalar f32 without an FPU |
 
+#### arm (141), re-attributed under RQ-64-HISTOGRAM (#1159, v0.64)
+
+The table above is the v0.63 measurement as its instrument printed it. That
+instrument did not mask HEX payloads, so `encode_operand2`'s non-rotated
+immediates fragmented one row per value (`0x624` 4, `0x5dc` 1) and — the
+under-ranking one level down — inside four more modules each fragment lost
+`_modal()`'s plurality vote to a cause that happened to carry no varying
+payload (`yolo_inference_{release,debug}`: 84 functions across ~20 immediates,
+largest fragment 6, vs 58 for `GI-FPU-002`). Same binary, same corpus, rungs
+identical (27 / 72 / 3 / 141), only the bucketing fixed:
+
+| n | blocker |
+|---|---------|
+| 70 | register exhaustion — no free callee-saved register to hold a call result while reloading a preserved param |
+| 40 | `#929` AAPCS: an i64 call argument needs an even-aligned register PAIR |
+| **9** | **`encode_operand2` non-rotated immediate** — was 4 + 1 in two rows, plus four modules attributed elsewhere; rank 5 → 3 |
+| 7 | start section — no backend invokes it |
+| 5 | `rule_i32_rotl` side condition |
+| 4 | `call_indirect` type/table mismatch |
+| 2 | WASM decode failure |
+| 1 | `GI-FPU-002` scalar f32 without an FPU — was 3 |
+| 1 · 1 · 1 | `call_indirect` type-id sidecar · `LdrSym` Thumb-2-only · no exports |
+
+The riscv and aarch64 tables below are unchanged: their records carry no hex
+payload, so the fix is a no-op there by construction. The instrument now
+asserts on every run that its printed rows sum to the modules they rank, and
+its `--self-test` (the two shapes above, a negative control) is CI-wired.
+
+Three totals for the same bucket exist and only one is the tool's: the v0.63
+table above transcribes 7 of the instrument's 12 rows (135 of 141); a pre-fix
+listing reviewed during v0.64 transcribed 9 (138); the instrument printed all
+12 (141) — replayed over the exact NEVER set, both v0.63.0's and main's
+pre-fix script print twelve rows. Those shortfalls are transcription, not
+tooling; the `12 rows sum to 141 = 141 modules ranked` line the report now
+prints is there so the next transcription can be checked against it.
+
 ### riscv (182)
 | n | blocker |
 |---|---------|

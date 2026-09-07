@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# ci-status: manual (measurement) — RQ-59-PARTIALCENSUS (#1017) is a CENSUS, scoped by the maintainer to MEASURE and STOP: it re-derives the one-function-blocks-module share over a corpus's full decline set so the --allow-partial decision has a number instead of an intuition. It has no expected values and no verdict, so there is nothing for CI to fail on, and its input is a local real-world corpus CI does not carry. The behaviour it measures — that a declined function declines its whole module — is gated by the wired decline-honesty oracles, not by this report.
+# ci-status: wired — `--self-test` (RQ-64-HISTOGRAM, #1159) runs in the required `claim-check` job: a hermetic check of the INSTRUMENT (the numeric-payload mask on the two fragmenting shapes observed in the wild, the printed-rows sum invariant and its negative control) that needs no corpus and asserts nothing about synth. The census modes themselves are still a local MEASUREMENT (RQ-59-PARTIALCENSUS #1017: no expected value, no verdict about the compiler, over a real-world corpus CI does not carry; the behaviour they measure is gated by the wired decline-honesty oracles). This file was `manual (measurement)` until the self-test gave it a verdict CI can fail on — the note beside the manual ceiling in claims.yaml named that as exactly the moment it must be wired.
+# ci-checks: stdout /^self-test OK: (\d+) assertions/ >= 14
 """RQ-59-PARTIALCENSUS (#1017): re-derive the one-function-blocks-module share
 over the FULL decline set of a corpus, per module — not just the top-12 decline
 reasons #1017's lower bound covered.
@@ -37,6 +38,20 @@ WHAT THIS SCRIPT MEASURES, per module, on one backend (default: arm):
      cause is the per-function declines behind them — are attributed to the
      modal per-function skip reason synth's own stderr names, when it names
      one.  Still a measurement: no expected values, no verdict.
+  f. (RQ-64-HISTOGRAM, #1159) NUMERIC payloads — hex AND decimal immediates,
+     offsets, sizes — are masked by the one normalization every reason passes
+     through, so `immediate 0x624` and `immediate 0x5dc` are ONE row (before
+     this, the decimal collapsed and the hex did not, and a cause with a
+     varying payload was systematically UNDER-RANKED against one without —
+     in the histogram v0.63 was scoped from).  And every ranked view now
+     ASSERTS on each run that its printed rows sum to the modules they rank
+     (a collapse that loses rows is worse than one that fragments them);
+     `--self-test` exercises the mask on the two shapes observed in the wild
+     and proves the sum check can fail (negative control) — and it is WIRED
+     (claim-check job), because a self-test that never runs guards nothing.
+     The assertion is about the REPORT's integrity, never about synth: the
+     census modes still carry no expected value and no verdict on the
+     compiler.
 
 This script only ever RUNS synth and READS its stderr; it changes no compile
 behaviour.  It is the measurement, not the feature (#1017 / RQ-59-PARTIALCENSUS).
@@ -93,9 +108,50 @@ def normalize_reason(reason):
             if reason.startswith(p):
                 reason = reason[len(p):]
                 changed = True
-    # Collapse per-instance specifics (indices, offsets) so reasons bucket.
-    reason = re.sub(r"\b\d+\b", "N", reason)
+    # Collapse per-instance NUMERIC payloads (indices, offsets, sizes,
+    # immediates) so reasons bucket by CAUSE, not by the value that happened
+    # to trigger it.  This is THE numeric mask — it runs on every reason
+    # (per-function skip reasons AND module-level errors) before any other
+    # collapse, so a payload class added here is masked on every path.
+    #
+    # Hex FIRST (#1159 / RQ-64-HISTOGRAM): `\b\d+\b` alone leaves `0x5dc`
+    # intact because the `x` glues the digits into one word, which is exactly
+    # how `immediate 0x5dc (1500)` printed as `immediate 0x5dc (N)` — the
+    # decimal collapsed, the hex not — and one cause fragmented into one row
+    # per distinct immediate, under-ranking it against every cause with no
+    # varying payload.  Hex and decimal collapse to DIFFERENT tokens
+    # (`0xN` / `N`) so the message shape stays readable; a bare `0x` prefix
+    # with no digits is not a number and is left alone.  Identifiers that
+    # merely CONTAIN digits (`i32`, `R11`, `func_25`, `RV32`, `imm12`) are
+    # not word-bounded numbers and survive, so op/register/function identity
+    # — which IS cause identity — is never masked.  The same line is drawn
+    # for REFERENCE identifiers a message carries as literal text — an issue
+    # (`#1102`), a spec section (`§4.5.5`), a roadmap id (`VCR-MEM-002`):
+    # they are format-string constants, so they cannot vary per instance and
+    # masking them can only lose identity, never merge a fragment.  One
+    # tokenizing pass: a reference (`#`/`§` followed by a dotted number, or
+    # `<letter>-<digits>`) is kept whole; a hex literal becomes `0xN`; a bare
+    # decimal becomes `N`.  A NEGATIVE payload like ` -4` still masks because
+    # the hyphen there follows whitespace, not a letter.  The mask is
+    # idempotent (`0xN` and `N` match nothing), so re-normalizing an already-
+    # normalized reason is the identity — which is what lets a --json
+    # record's `skip_reasons` (normalized at capture) be re-ranked offline by
+    # the same function without re-fragmenting.
+    reason = NUMERIC_PAYLOAD_RE.sub(_mask_numeric, reason)
     return reason.strip()[:160]
+
+
+NUMERIC_PAYLOAD_RE = re.compile(
+    r"(?P<ref>[#§]\d[\d.]*|[A-Za-z]-\d+)"
+    r"|(?P<hex>\b0[xX][0-9A-Fa-f]+\b)"
+    r"|(?P<dec>\b\d+\b)"
+)
+
+
+def _mask_numeric(m):
+    if m.group("ref") is not None:
+        return m.group("ref")
+    return "0xN" if m.group("hex") is not None else "N"
 EXCLUDE_PARTS = {"target", ".git", "node_modules", "worktrees", ".claude"}
 
 # Histogram bins for fraction-of-functions-compiled, chosen so the two poles
@@ -436,8 +492,12 @@ def collapse_instance_lists(reason):
     histogram row: the #1102 dangling-reloc symbol list ('func_25' ->
     'func_20', ...), the #952 skipped-export name list, and the global-
     initializer dump all differ per module while naming the same class.
-    Applied AFTER normalize_reason (digits already collapsed to N).  The full
-    per-module text is preserved in the --json records."""
+    Applied AFTER normalize_reason, which is THE numeric mask (decimal AND
+    hex payloads already collapsed to `N` / `0xN`, #1159) — this function
+    collapses only the LIST-shaped payloads the numeric mask cannot, and is
+    reached only by module-level reasons, so a new payload CLASS belongs in
+    normalize_reason unless it is list-shaped.  The full per-module text is
+    preserved in the --json records."""
     reason = re.sub(r"DECLINED: .*$", "DECLINED: <symbol list>", reason)
     reason = re.sub(
         r"skipped \(not in the output object\): .*$",
@@ -454,6 +514,70 @@ def _modal(skip_reasons):
     return max(skip_reasons.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+def module_reason(rec):
+    """The normalized, list-collapsed MODULE-LEVEL error of a record: ONE
+    pipeline (strip the CLI's `Error: ` wrapper, mask numeric payloads,
+    collapse instance lists) so every ranked view of module-level reasons —
+    the primary-blocker histogram and the module-level top-10 — buckets
+    identically.  Two copies of this chain would be the second-source-of-
+    truth shape #1159 was filed against."""
+    reason = rec.get("reason", "?")
+    if reason.startswith("Error: "):
+        reason = reason[len("Error: "):]
+    return collapse_instance_lists(normalize_reason(reason))
+
+
+def print_ranked(blockers, expected, what, top=None, width=None):
+    """Print a ranked histogram AND assert the SUM INVARIANT on what was
+    PRINTED (#1159 / RQ-64-HISTOGRAM): the rows a reader sees must sum to
+    the number of modules they rank.  A collapse that LOSES rows is worse
+    than one that fragments them — fragmentation under-ranks a cause, loss
+    hides it — so this is checked on every run, not observed once.
+
+    The invariant is stated over the PRINTED rows, not the Counter (a Counter
+    over one key per module sums by construction, so asserting that would be
+    a check that cannot fail): a `top` cut prints its remainder as an
+    explicit row so the visible sum still closes, and a `width` cut under
+    which two DISTINCT causes would print identically is refused by printing
+    those rows in full (the reader would otherwise see what looks like one
+    fragmented cause, or one cause where there are two).  Exit 3 on
+    violation: a histogram whose rows do not sum is not a measurement, it is
+    a defect in the instrument.  This asserts nothing about synth and pins
+    no expected value, so the script stays a MEASUREMENT (ci-status:
+    manual) — the check is on the report, not on the compiler."""
+    total = sum(blockers.values())
+    bad = [k for k in blockers if not isinstance(k, str) or not k.strip()]
+    ranked = blockers.most_common()
+    shown = ranked if top is None else ranked[:top]
+    rest = [] if top is None else ranked[top:]
+    labels = [k if width is None else k[:width] for k, _ in shown]
+    if len(set(labels)) != len(labels):
+        labels = [k for k, _ in shown]  # the width cut collided: print in full
+    printed = 0
+    for (_, n), label in zip(shown, labels):
+        print(f"    {n:4d}  {label}")
+        printed += n
+    if rest:
+        rest_n = sum(n for _, n in rest)
+        print(
+            f"    {rest_n:4d}  (+{len(rest)} more rows below the top-{top} "
+            f"cut — counted so the rows still sum)"
+        )
+        printed += rest_n
+    if bad or printed != total or total != expected:
+        print(
+            f"HISTOGRAM SUM INVARIANT VIOLATED ({what}): printed rows sum to "
+            f"{printed}, counter to {total}, modules ranked {expected}"
+            + (f"; empty bucket keys: {bad!r}" if bad else ""),
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    print(
+        f"    ---- {len(shown) + (1 if rest else 0)} rows sum to {printed} "
+        f"= {expected} modules ranked (sum invariant OK)"
+    )
+
+
 def primary_blocker(rec):
     """One PRIMARY blocker per non-accepted module (RQ-62-REACH increment 1).
 
@@ -468,10 +592,7 @@ def primary_blocker(rec):
     """
     v = rec["verdict"]
     if v == "DECLINE_MODULE_LEVEL":
-        reason = rec.get("reason", "?")
-        if reason.startswith("Error: "):
-            reason = reason[len("Error: "):]
-        reason = collapse_instance_lists(normalize_reason(reason))
+        reason = module_reason(rec)
         sr = rec.get("skip_reasons") or {}
         if sr and (
             "requested export(s) were skipped" in reason
@@ -523,18 +644,14 @@ def report_stratum(name, rows):
         )
     # RQ-62-REACH increment 1: ranked blocker histogram — one PRIMARY blocker
     # per non-accepted module, ranked by modules blocked.
-    blockers = Counter(
-        primary_blocker(r)
-        for r in rows
-        if not r["verdict"].startswith("ACCEPT")
-    )
+    non_accepted = [r for r in rows if not r["verdict"].startswith("ACCEPT")]
+    blockers = Counter(primary_blocker(r) for r in non_accepted)
     if blockers:
         print(
             "  ranked blocker histogram (one PRIMARY blocker per "
             "non-accepted module):"
         )
-        for reason, n in blockers.most_common():
-            print(f"    {n:4d}  {reason}")
+        print_ranked(blockers, len(non_accepted), f"{name}: blocker histogram")
     declines = [r for r in rows if r["verdict"].startswith("DECLINE")]
     skip_only = [r for r in rows if r["verdict"] == "DECLINE_SKIP_ONLY"]
     if declines:
@@ -596,13 +713,15 @@ def report_stratum(name, rows):
             f"currently DROPPED silently; 'accept' here means the functions "
             f"compiled, NOT that the image is complete"
         )
-    mod_reasons = Counter(
-        r.get("reason", "?") for r in rows if r["verdict"] == "DECLINE_MODULE_LEVEL"
-    )
+    # Same pipeline as the histogram (module_reason): this list is ALSO a
+    # ranking, and it printed RAW reasons until #1159 — so it fragmented on
+    # every payload the histogram had already learned to collapse.
+    mod_level = [r for r in rows if r["verdict"] == "DECLINE_MODULE_LEVEL"]
+    mod_reasons = Counter(module_reason(r) for r in mod_level)
     if mod_reasons:
         print("  module-level decline reasons (top 10):")
-        for reason, n in mod_reasons.most_common(10):
-            print(f"    {n:4d}  {reason}")
+        print_ranked(mod_reasons, len(mod_level),
+                     f"{name}: module-level reasons", top=10)
     # Aggregate per-FUNCTION skip reasons over the skip-only declines — the
     # "full decline set" #1017's top-12 lower bound could not see.  Counted in
     # (modules affected, functions skipped) pairs so one huge module cannot
@@ -722,13 +841,116 @@ def report_ladder(backend, rows):
         print(f"\n  NEVER bucket ({len(never)}) by primary blocker — the real capability gaps:")
         blockers = Counter(primary_blocker(r["record"]) or "(unattributed)"
                            for r in never)
-        for reason, n in blockers.most_common(12):
-            print(f"    {n:>4}  {reason[:88]}")
+        # The top-12 cut and the 88-column width are DISPLAY choices; the
+        # sum invariant (#1159) is asserted over what is printed, so the cut
+        # carries an explicit remainder row and a width collision prints in
+        # full rather than showing two causes as one.
+        print_ranked(blockers, len(never), f"{backend}: NEVER bucket",
+                     top=12, width=88)
+
+
+def self_test():
+    """`--self-test`: the instrument's own checks (#1159 / RQ-64-HISTOGRAM),
+    WIRED in the required `claim-check` job (see the ci-status / ci-checks
+    header).  (1) the two fragmenting shapes observed in the wild collapse to
+    ONE key — and, RED-FIRST kept permanently, are DISTINCT under the
+    pre-#1159 rule, so the merge check is known to discriminate; (2) the mask
+    is idempotent; (3) digit-bearing IDENTIFIERS survive, so op/register/
+    function identity is never masked; (4) list collapse still composes after
+    the numeric mask; (5) a NEGATIVE control — the sum invariant must be able
+    to fail, or it is not a check — and a top-cut positive control whose
+    remainder row closes the sum.  Runs no synth, needs no corpus.  Prints the
+    COUNT of assertions executed; the `ci-checks: stdout` floor binds that
+    count, so a self-test whose body stopped running cannot pass green."""
+    import contextlib
+    import io
+
+    n = [0]
+
+    def check(cond, what):
+        n[0] += 1
+        if not cond:
+            raise AssertionError(f"self-test assertion {n[0]} FAILED: {what}")
+
+    rot = ("encode_operand2: immediate {} ({}) is not an ARM32 rotated "
+           "immediate — the selector must materialize large constants via "
+           "MOVW/MOVT")
+    raw_a, raw_b = rot.format("0x624", 1572), rot.format("0x5dc", 1500)
+    # (1) RED-FIRST, permanent: the PRE-#1159 rule (bare decimals only) keeps
+    # these two shapes APART.  If a future edit removes the hex payload from
+    # the shapes, this fails and the merge check below is known to have gone
+    # vacuous — a self-test that passes on both the broken and the fixed mask
+    # would be the same defect one level down.
+    def old_rule(s):
+        return re.sub(r"\b\d+\b", "N", s)
+    check(old_rule(raw_a) != old_rule(raw_b),
+          "pre-#1159 rule no longer fragments the two wild shapes")
+    a, b = normalize_reason(raw_a), normalize_reason(raw_b)
+    check(a == b == rot.format("0xN", "N"), f"hex shapes did not merge: {a!r} vs {b!r}")
+    check(normalize_reason(a) == a, "numeric mask is not idempotent")
+    check(normalize_reason("0xDEADbeef at 0X10 vs 0x") == "0xN at 0xN vs 0x",
+          "hex case / bare-prefix handling")
+    ident = "i32.add: R11 clobbered in func_25 on RV32 (imm12) via 0x"
+    check(normalize_reason(ident) == ident,
+          f"identifier masked: {normalize_reason(ident)!r}")
+    check(normalize_reason("offset 4096 (0x1000) exceeds imm12 at #952")
+          == "offset N (0xN) exceeds imm12 at #952",
+          "decimal + hex payload beside an issue reference")
+    refs = "multi-memory (#406) per WASM Core §4.5.5 (VCR-MEM-002 phase 1)"
+    check(normalize_reason(refs)
+          == "multi-memory (#406) per WASM Core §4.5.5 (VCR-MEM-002 phase N)",
+          f"reference identifiers: {normalize_reason(refs)!r}")
+    check(normalize_reason("offset -4 and 7-3") == "offset -N and N-N",
+          "negative / arithmetic payloads")
+    lst = normalize_reason(
+        "Error: 3 retained function(s) relocate against DECLINED: 'func_25' "
+        "-> 'func_20' (0x10)")
+    check(collapse_instance_lists(lst)
+          == "Error: N retained function(s) relocate against DECLINED: "
+             "<symbol list>",
+          f"list collapse after numeric mask: {collapse_instance_lists(lst)!r}")
+
+    # (5) negative controls: the sum invariant must EXIT 3 on a violation.
+    def expect_exit3(counter, expected, what):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                print_ranked(counter, expected, what)
+        except SystemExit as e:
+            check(e.code == 3, f"{what}: exit {e.code}, not 3")
+        else:
+            check(False, f"{what}: sum invariant did not fire")
+
+    expect_exit3(Counter({"a": 1, "b": 1}), 3,
+                 "self-test negative (2 rows for 3 modules)")
+    expect_exit3(Counter({"": 2}), 2, "self-test negative (empty bucket key)")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        print_ranked(Counter({"a": 3, "b": 2, "c": 1}), 6, "self-test cut",
+                     top=1, width=1)
+    out = buf.getvalue()
+    check("(+2 more rows below the top-1 cut" in out,
+          f"remainder row missing under a top cut: {out!r}")
+    check("2 rows sum to 6 = 6 modules ranked" in out,
+          f"printed sum did not close under a top cut: {out!r}")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        print_ranked(Counter({"same-prefix-A": 1, "same-prefix-B": 1}), 2,
+                     "self-test width collision", width=8)
+    check("same-prefix-A" in buf.getvalue(),
+          f"width collision not printed in full: {buf.getvalue()!r}")
+    print(f"self-test OK: {n[0]} assertions — numeric mask (hex+decimal), "
+          "red-first discriminator, idempotence, identifier survival, list "
+          "collapse, sum-invariant negative + cut controls")
+    return 0
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("roots", nargs="+", help=".wasm files or directories")
+    ap.add_argument("roots", nargs="*", help=".wasm files or directories")
+    ap.add_argument("--self-test", action="store_true",
+                    help="RQ-64-HISTOGRAM: run the instrument's own checks "
+                         "(numeric mask, sum-invariant negative control); "
+                         "runs no synth, needs no corpus")
     ap.add_argument("--synth", default="target/debug/synth")
     ap.add_argument("--backend", default="arm")
     ap.add_argument("--timeout", type=float, default=120.0)
@@ -740,6 +962,10 @@ def main():
                          "single-invocation census")
     args = ap.parse_args()
 
+    if args.self_test:
+        return self_test()
+    if not args.roots:
+        ap.error("at least one ROOT is required (or --self-test)")
     modules = discover(args.roots)
     if not modules:
         print("no .wasm modules found under the given roots", file=sys.stderr)

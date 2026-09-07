@@ -2419,15 +2419,24 @@ claims:
         # What would make this the WRONG call: if the census ever grows an
         # expected value or a pass/fail verdict, it stops being a measurement
         # and must be wired instead of counted here.
+        #
+        # 8 -> 7 (RQ-64-HISTOGRAM #1159). That is what happened: the #1159 fix
+        # gave partial_census_1017.py a `--self-test` (the hex numeric-payload
+        # mask on the two wild shapes, the printed-rows sum invariant with a
+        # negative control) — an expected value and a verdict about the
+        # INSTRUMENT, hermetic and corpus-free. Per the sentence above it is
+        # now `wired` (claim-check job, `ci-checks: stdout` assertion-count
+        # floor); the census MODES are unchanged and still measure without a
+        # verdict about synth. The ceiling falls with it, as the rule says.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 8
+        max: 7
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
         max: 0
       - kind: verbatim                       # the doc must carry the manual budget
-        text: "**8 manual**"
+        text: "**7 manual**"
       - kind: verbatim
         text: "**0 unwired**"
 

@@ -493,6 +493,25 @@ jobs:
                 f"entries asserted across "
                 f"{s['checks_by_mode']['emulations']['scripts']} of them).")
           PY
+      # RQ-64-HISTOGRAM (#1159): the census INSTRUMENT's self-test — the hex
+      # numeric-payload mask on the two shapes that fragmented the ranked
+      # blocker histogram in the wild, and the printed-rows sum invariant
+      # with its negative control. Hermetic (no corpus, no synth binary), so
+      # it lives in this required job. The census modes of the same script
+      # remain a local measurement; only `--self-test` is a gate. Driven by
+      # oracle_run so the `ci-checks: stdout` floor (assertion COUNT) is
+      # enforced — a self-test whose body stopped running cannot pass green.
+      - name: Census instrument self-test — hex mask + sum invariant (RQ-64-HISTOGRAM, #1159)
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_run.py \
+            scripts/repro/partial_census_1017.py --self-test | tee /tmp/census-selftest.log
+          grep -qE '^self-test OK: [0-9]+ assertions' /tmp/census-selftest.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
       # The GitHub About surface (description + topics) is pinned verbatim in
       # claims.yaml's repo_metadata section. API/network failure = LOUD SKIP
       # (exit 0) so a flake can't block merges; a real mismatch = red.
