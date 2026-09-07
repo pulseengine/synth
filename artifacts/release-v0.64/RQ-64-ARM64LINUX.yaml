@@ -46,7 +46,9 @@ artifacts:
       verification-track: differential
       issue: "#242"
       landed: >-
-        PR #1179 (branch feat/arm64linux-1178, commit 07be5001). Oracle
+        PR #1179 (branch feat/arm64linux-1178, commit 917e0bd8 after the
+        coordinator's rebase onto 7b8b7e36; sweep fix in a follow-up commit).
+        Oracle
         `scripts/repro/arm64_linux_host_link_rq64_differential.py` + fixture
         `arm64_linux_host_link_rq64.wat` (`# ci-checks: emulations >= 2`),
         CI-wired TWICE: in `aarch64-oracle` (ubuntu-latest, x86-64) with
