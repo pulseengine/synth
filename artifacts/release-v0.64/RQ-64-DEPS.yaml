@@ -82,6 +82,15 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#965"
+      landed: >-
+        PR #1186 — increment 1 of 2. The MINORHOLD exit condition gains the
+        three things it omitted (base freshness as part of "green", the
+        permanently-lost refresh mechanism, and the disposition obligation),
+        plus the measured requirement that a dependabot command be PLAIN TEXT.
+        The artifact stays `proposed` because the second half of its done-when
+        — a disposition for each of the four held PRs — is not done. Flipping
+        to `implemented` on half the criterion would claim an outcome that has
+        not happened.
       done-when: "manual: the MINORHOLD rule gains a written exit condition naming (a) the base-freshness precondition, (b) which feature-gated suites the dependency's own path requires, (c) the stated-reason obligation, and (d) what happens to a bump nobody evaluates; and each of the four held PRs is either landed under it or closed with a reason"
       verified-by: >-
         PARTIAL, and the partial part is named. ESTABLISHED: the rebase
