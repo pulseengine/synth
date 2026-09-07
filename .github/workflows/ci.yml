@@ -500,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 324881 \
+            --exact-emulation-floor 324898 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3113,8 +3113,8 @@ jobs:
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/param_block_silent_1097_differential.py | tee pbs1097.txt
-          grep -Eq '^refusals: 4$' pbs1097.txt
-          grep -Eq '^lowered legs: 2 \(vectors: 34\)$' pbs1097.txt
+          grep -Eq '^refusals: 3$' pbs1097.txt
+          grep -Eq '^lowered legs: 3 \(vectors: 51\)$' pbs1097.txt
           grep -Eq '^silent-wrong vectors: 4 \(of 4 pinned\); match vectors: [1-9][0-9]*$' pbs1097.txt
           grep -q '^RESULT: PASS' pbs1097.txt
       # #910: close the job with what it EXECUTED.

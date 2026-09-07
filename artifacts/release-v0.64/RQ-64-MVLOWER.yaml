@@ -10,7 +10,7 @@ artifacts:
 
       DEFERRAL REASON AS RECORDED AT v0.63:
       DEFERRED from v0.63 DELIBERATELY, and this one would have been unsafe to land. Param-taking block types decline on every backend; lowering them means relaxing the #1096 guard. But #1097's oracle records what that guard protects against, with exact values: pre-#1096, if/ARM `ipe(0)` returned 0xC0DE0003 — an UNINITIALIZED REGISTER canary — and three more legs returned uninitialized-T2 or a mis-reconciled back-edge join. Relaxing the guard without first making those four vectors CORRECT re-introduces a silent wrong answer. THE RELEASE'S OWN GATING RULE FORBIDS IT: every reach increment ships with the oracle that makes the newly-accepted input safe, and the oracle lands FIRST. Here the acceptance oracle already exists (param_block_silent_1097_differential.py) and the LOWERING must be proven against it — which is exactly the right shape for a v0.64 lane and exactly the wrong thing to rush at the end of a release. Deferring costs acceptance; landing it wrong would cost correctness, and this release measured what that trade is worth (RQ-63-ACKDEFAULT).
-    status: proposed
+    status: implemented
     release: v0.64
     tags:
       - reach
@@ -31,4 +31,118 @@ artifacts:
   \ the measured reason \u2014 no shape's decline is relaxed without passing that\
   \ oracle"
       verified-by: >-
-        PENDING — carried unchanged from RQ-63-MVLOWER.
+        IMPLEMENTED PER SHAPE, each branch of the done-when taken where the
+        measurement put it. The acceptance oracle is the existing
+        `scripts/repro/param_block_silent_1097_differential.py`, STRENGTHENED
+        first (red-first at every step) rather than paralleled: it gained a
+        per-leg LOWERED mode — a listed (shape, backend) leg must compile and
+        every vector for it must equal live wasmtime on the NEW object: the
+        fixture's pinned silent-wrong vectors, its match vectors, extra live
+        probes (both signs + the i32 wrap boundary) and a per-construct
+        `_lowered.wat` sub-shape module; a lowered leg with nothing to execute
+        FAILS. The RED half (pre-#1096 bytes pinned wrong) is untouched, and
+        `refusals:` / `lowered legs:` are pinned EXACTLY in ci.yml, so a leg
+        moves between the two counts only in the PR that relaxes its guard.
+        Negative control before any relaxation: declaring block/arm lowered
+        with no compiler change fails (`VACUOUS: lowered legs=0, want 1`).
+
+        THE GUARD IS A POLICY, NOT A PREDICATE: `synth_core::ParamBlockLowering`
+        + `arm_param_block_lowering(relocatable)` +
+        `find_unlowered_param_block_type`, defined once and read by both ARM
+        guard sites, keyed on the ONE configuration the oracle executes
+        (`--relocatable`, #197: the direct selector, ET_REL leaf objects run
+        under unicorn).
+
+        VERDICT PER SHAPE (ARM direct selector, --relocatable):
+        block (param ..) — LOWERED. Params are plain operand-stack entries and
+          #509's designated-result-register landing already reconciles every
+          forward edge; the pre-#1096 fixture matched for that reason (its
+          decline was conservative). 14/14 vectors: fixture bpb(1)/bpb(0),
+          extra probes, and sub-shapes (two params + br_if, unconditional br
+          to an outer param block, br_table into nested param blocks, a value
+          below the params surviving the edge). ZERO selector lines.
+        if (param ..) — LOWERED. The #313 frame-entry checkpoint now lands
+          BELOW the params (the #1093 `split_off` panic was it landing above),
+          the params are snapshotted at `If` and re-pushed at `Else`, and an
+          else-less param-taking if is joined like a two-arm if (`B end;
+          else: MOV R_then_i, R_param_i`, moves PLANNED first, a parallel-move
+          hazard — swap, i64 lo/hi overlap — LOUD-declines with nothing
+          emitted). THE ARTIFACT'S VECTOR: pre-#1096 `ipe(0)` returned
+          0xC0DE0003 (uninitialized R3); it now returns wasmtime's 7. 16/16
+          vectors incl. the #1093 panicking two-param if/else repro, a void
+          if (param) with else, a value below the params, an if (param)
+          nested in a block (param), a two-param/two-result else-less if.
+        loop (param ..) — LOWERED. A parameter-taking loop gets a PRIVATE
+          header register per parameter, fixed at `Loop` (an entry donates
+          its own register when private; an aliased or shared one is copied
+          out), reserved for the loop's extent like #509's `result_reg`, and
+          written by every back-edge with the same planned-move hazard check.
+          This RETIRES the #509 "br to a loop header with N loop parameter(s)"
+          refusal on this path. 17/17 vectors: the RV32-pinned lpb(3) (2, want
+          10) is 10 on ARM, extra probes, two params, a value below the
+          param, unconditional back-edge + forward exit, an aliased r0 as the
+          loop param with local 0 read after.
+        ALL THREE SHAPES on the ARM self-contained image path (optimized
+          selector, or the direct selector via --no-optimize / the #509
+          value-carry routing) — STILL DECLINED, measured reason: no #1097
+          oracle leg executes those images (the harness loads ET_REL leaf
+          objects), so there is no evidence to relax on; the same selector
+          code is not the same evidence. The decline names the path.
+        ALL THREE SHAPES on RV32 — STILL DECLINED, measured reasons: the RV32
+          selector has NO blocktype-arity plumbing at all (`block_arity`
+          reaches only the backend guard), its `reconcile_br_edge` carries
+          `vstack[entry..]` with `entry` recorded ABOVE the params so a
+          param frame's br_if "carries nothing" (the pinned uninit-T2 vector
+          bpb(1)), its loop back-edge mis-reconciles the header (lpb(3) 2,
+          want 10), and `compile_function_with_opts` is MC/DC-pinned at 10
+          branches, so the guard call's shape cannot move without a re-pin.
+          The ARM design ports (private header registers, checkpoint below
+          the params, `canonicalize_edge_value` already exists there) but
+          each leg needs its own green run first; none was attempted.
+        AArch64 — STILL DECLINED (VCR-A64-CF-001's own single-slot
+          reconciliation design; no oracle leg).
+        A param-taking if/loop whose inputs are not on the operand stack
+          (spec if.wast `add64_u_saturated`: a multi-value CALL result, which
+          the direct selector models as one entry) — STILL DECLINED, loudly,
+          with that reason named; multi-value call results themselves already
+          fail the `check_no_underflow` pre-flight (measured, both backends).
+
+        FOUND WHILE PROVING IT — a REGISTER-ALIAS clobber, and it is on main:
+        `local.get` of an R0..R3 parameter pushes the HOME register by alias,
+        so a then-arm ending in `local.get 0` makes the join's else-path MOV
+        write LOCAL 0. Adding such vectors to the oracle went RED on this
+        lane's first if-lowering (`ipa(0)` 14 want 7; `ipq(0)` 16 want 8);
+        `canonicalize_then_results` copies an aliased then-result into a
+        private temp on the then path and both are green. The PARAMETER-FREE
+        #313 join has the identical exposure on main — measured on the base
+        binary (16721807), relocatable ARM: `(func (param i32) (result i32)
+        (if (result i32) (local.get 0) (then (local.get 0)) (else (i32.const
+        9))) (local.get 0) (i32.add))` returns 18 for argument 0, wasmtime 9
+        — exit 0, silent. Deliberately NOT fixed here: it moves bytes outside
+        this lane's acceptance oracle and needs its own red-first oracle and
+        byte accounting. Reported for scoping.
+
+        BYTE-IDENTITY, base (16721807) vs the lane tree, scripts/repro/*.wat
+        x 3 legs (arm-reloc, arm-self, rv32-reloc), whole-object compare:
+        356 identical / 0 differing / 0 newly-declined / 6 newly-ACCEPTED
+        (the six param-taking modules, arm-reloc only). Every parameter-free
+        construct is byte-identical; the lowerings are keyed on `params > 0`.
+
+        REACH, measured on the spec suite's if.wast (--relocatable): base
+        skipped 16 functions, 8 of them PARAMETER-taking declines; now 13
+        skipped and 0 param-taking declines — 5 of the 8 lower, 2 fall
+        through to the pre-existing #509 "br to a result-typed if/else join"
+        decline, 1 to the multi-value-call-result decline above.
+
+        Counts: refusals 6 -> 3 and lowered legs 0 -> 3 (51 vectors), pinned
+        in ci.yml; the oracle's emulation header rose accordingly and the
+        exact emulation floor was RE-DERIVED from `oracle_wiring_check.py`
+        on the lane tree and moved in ci.yml + claims.yaml together (never
+        computed by adding deltas). Ratchets: selector_lines_code grew in
+        three waived steps, each reason naming what the lines are and that
+        nothing could be deleted in exchange (the class had no lowering to
+        retire); wildcard arms UNCHANGED (55/90 — `let .. else` and
+        `matches!`, no `_ =>`). 11 new unit tests (policy predicate, path-
+        keyed policy, relocatable-only acceptance per construct, and the
+        reconcile/canonicalize negative controls: swap, i64 overlap, arity
+        and width mismatch, aliased then-result copied to a private temp).

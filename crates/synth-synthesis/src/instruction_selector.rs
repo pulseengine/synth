@@ -435,6 +435,14 @@ struct BlockLabel {
     /// are declined loudly (the direct selector does not do multi-value).
     results: u8,
     result_reg: Option<Reg>,
+    /// RQ-64-MVLOWER (#1093) increment 3: a parameter-taking LOOP's designated
+    /// HEADER registers, one per loop parameter (bottom→top), fixed at `Loop`
+    /// and reserved for the loop's extent (the per-op `live_params`
+    /// reservation, like `result_reg`). Every back-edge moves its carried
+    /// values into them before jumping, so the header always finds its
+    /// parameters where the body's first read expects them. Empty for a
+    /// block/if and for a parameter-free loop (legacy lowering, byte-identical).
+    param_regs: Vec<Reg>,
 }
 
 /// #509: at a `br`/`br_if`/`br_table` edge, land the carried value in the
@@ -476,12 +484,63 @@ fn edge_value_move(
     };
     if is_loop {
         if params > 0 {
-            return Err(synth_core::Error::synthesis(format!(
-                "#509: br to a loop header with {params} loop parameter(s) — \
-                 value-carrying backward branches are not supported by the \
-                 direct selector (declined rather than dropping the carried \
-                 value)"
-            )));
+            // RQ-64-MVLOWER (#1093) increment 3: land the carried loop
+            // parameters — the top `params` operand-stack entries, PEEKED —
+            // in the header's designated registers. The moves are planned
+            // first and a parallel-move hazard (a destination that is a later
+            // source) declines LOUDLY, exactly like the if join.
+            let n = params as usize;
+            let param_regs = block_labels[target_idx].param_regs.clone();
+            if param_regs.len() != n {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#1093: loop header designates {} register(s) for {n} \
+                     parameter(s) — declined rather than mis-landed",
+                    param_regs.len()
+                )));
+            }
+            if stack.len() < n {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#1093: br to a loop header with {n} parameter(s) on an \
+                     operand stack of depth {} — the carried values are not on \
+                     the direct selector's operand stack (a multi-value call \
+                     result, or stack-polymorphic dead code); declined rather \
+                     than mis-landed",
+                    stack.len()
+                )));
+            }
+            let base = stack.len() - n;
+            let mut moves: Vec<(Reg, Reg)> = Vec::new();
+            for (i, &dst) in param_regs.iter().enumerate() {
+                let StackVal::Reg { reg, is_i64: false } = stack[base + i] else {
+                    return Err(synth_core::Error::synthesis(
+                        "#1093: an i64/spilled/float value carried to a loop \
+                         header is not lowered (declined rather than mis-landed)"
+                            .to_string(),
+                    ));
+                };
+                if reg != dst {
+                    moves.push((dst, reg));
+                }
+            }
+            for (k, &(dst, _)) in moves.iter().enumerate() {
+                if moves[k + 1..].iter().any(|&(_, src)| src == dst) {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#1093: a loop back-edge needs a parallel register \
+                         shuffle ({dst:?} is both a header destination and a \
+                         later carried source) — declined rather than clobbered"
+                    )));
+                }
+            }
+            for (dst, src) in moves {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Mov {
+                        rd: dst,
+                        op2: Operand2::Reg(src),
+                    },
+                    source_line: Some(line),
+                });
+            }
+            return Ok(());
         }
         return Ok(()); // plain loop back-edge — carries nothing
     }

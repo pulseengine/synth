@@ -707,7 +707,15 @@ pub fn arm_param_block_lowering(relocatable: bool) -> ParamBlockLowering {
             // LOWERED if/arm leg: the fixture's 0xC0DE0003 vector now returns
             // wasmtime's 7, plus the extra probes and `_if_lowered.wat`.
             r#if: true,
-            r#loop: false,
+            // Increment 3 (RQ-64-MVLOWER): a parameter-taking loop gets a
+            // private header register per parameter, reserved for the loop's
+            // extent and written by every back-edge (the if/block designated-
+            // register idea at the loop HEADER). Proven on the LOWERED
+            // loop/arm leg: the RV32-pinned lpb(3) vector (2, want 10) plus
+            // extra probes and `_loop_lowered.wat` (two params, a value below
+            // the param, unconditional back-edge + forward exit, an aliased
+            // r0 as the loop param).
+            r#loop: true,
         }
     } else {
         ParamBlockLowering::DECLINED
@@ -765,9 +773,10 @@ pub fn param_block_decline_msg(backend: &str, what: &str, ord: usize, arity: (u8
              other path has an execution-oracle leg"
         }
         "loop" => {
-            "a back-edge must land the carried loop parameter(s) in the \
-             header's registers, which no selector does yet (#509 value-\
-             carrying backward branch; the RV32 join was measured wrong)"
+            "the RV32 back-edge mis-reconciles the header value (measured \
+             lpb(3) = 2, want 10, #1097) and the ARM direct lowering is proven \
+             by the #1097 oracle only on --relocatable (RQ-64-MVLOWER); no \
+             other path has an execution-oracle leg"
         }
         _ => {
             "the RV32 checkpoint drops the carried parameter on a branch edge \
@@ -943,7 +952,7 @@ mod grow_zero_tests {
             ParamBlockLowering {
                 block: true,
                 r#if: true,
-                r#loop: false
+                r#loop: true
             }
         );
         assert_eq!(

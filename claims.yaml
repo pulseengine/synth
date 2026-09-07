@@ -1508,9 +1508,36 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19530
+        value: 19663
         baseline: 17897
         waivers:
+          - to: 19663
+            reason: >-
+              RQ-64-MVLOWER (#1093) increment 3: +133 lines — `loop (param ..)`
+              LOWERS on the ARM direct selector (--relocatable). A parameter-
+              taking loop gets a PRIVATE header register per parameter
+              (`BlockLabel::param_regs`), fixed at `Loop` — an entry donates
+              its own register when it is a plain temp held by no other
+              operand-stack entry, and is copied out first when it aliases a
+              register-homed local or is shared (the RQ-64 alias-clobber
+              class, `lpa`) — reserved for the loop's extent by the per-op
+              `live_params` reservation exactly like #509's `result_reg`, and
+              written by every back-edge in `edge_value_move`, which plans
+              the moves and LOUD-declines a parallel-move hazard with nothing
+              emitted. Keyed on `params > 0`: parameter-free loops are
+              byte-identical (whole-object identity over scripts/repro/*.wat
+              x 3 legs: 0 differing, 0 newly-declined; the only movement is
+              the six param-taking modules becoming ACCEPTED on arm-reloc).
+              Gated by the #1097 oracle's LOWERED loop/arm leg — 17 vectors:
+              the RV32-pinned lpb(3) (2, want 10) now 10 on ARM, extra
+              probes, and `_loop_lowered.wat` (two params, a value below the
+              param, unconditional back-edge + forward exit, an aliased r0 as
+              the loop param) — all matching wasmtime; refusals 4 -> 3 pinned
+              in ci.yml. This RETIRES the #509 "br to a loop header with N
+              loop parameter(s)" refusal arm on this path (the landing
+              replaces it); nothing else could be deleted — the class had no
+              lowering, only that refusal. Zero new wildcard arms (the
+              shared-register check is a `matches!` guard).
           - to: 19530
             reason: >-
               RQ-64-MVLOWER (#1093) increment 2: +297 lines — `if (param ..)`
@@ -1839,7 +1866,11 @@ claims:
         # + 131 test module — the reconcile_implicit_else /
         # canonicalize_then_results negative-control tests
         # (rq64_implicit_else_tests) in instruction_selector.rs.
-        value: 30307
+        # 30307 -> 30440 (RQ-64-MVLOWER increment 3, #1093): +133 code — the
+        # `loop (param ..)` lowering (private header registers, back-edge
+        # landing, reservation; see the lines_code waiver)
+        # + 0 test module.
+        value: 30440
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2667,15 +2698,16 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
-    # v0.64 — RQ-64-MVLOWER (#1093): +34 for
-    #   param_block_silent_1097_differential.py's two LOWERED ARM legs —
+    # v0.64 — RQ-64-MVLOWER (#1093): +51 for
+    #   param_block_silent_1097_differential.py's three LOWERED ARM legs —
     #   block/arm (2 fixture vectors now executed on the NEW object + 2 extra
-    #   probes + 10 `_block_lowered.wat` sub-shape vectors) and if/arm (2 + 2
-    #   + 14 `_if_lowered.wat` sub-shape vectors, incl. the fixture's
-    #   0xC0DE0003 vector now returning wasmtime's 7). The fixture (red) half
-    #   and guard half are unchanged. Value RE-DERIVED from
-    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 324881.
-    text: "--exact-emulation-floor 324881"
+    #   probes + 10 `_block_lowered.wat` sub-shape vectors), if/arm (2 + 2 +
+    #   14 `_if_lowered.wat`, incl. the fixture's 0xC0DE0003 vector now
+    #   returning wasmtime's 7) and loop/arm (the 3 RV32-pinned lpb vectors
+    #   + 3 extra + 11 `_loop_lowered.wat`). The fixture (red) half and guard
+    #   half are unchanged. Value RE-DERIVED from `oracle_wiring_check.py`
+    #   on the lane tree: 324847 -> 324898.
+    text: "--exact-emulation-floor 324898"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

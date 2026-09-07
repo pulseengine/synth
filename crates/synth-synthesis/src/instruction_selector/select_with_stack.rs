@@ -747,6 +747,11 @@ impl InstructionSelector {
                 if let Some(r) = bl.result_reg {
                     live_params.push(r);
                 }
+                // RQ-64-MVLOWER increment 3: a parameter-taking loop's header
+                // registers, for the loop's extent (same argument as
+                // `result_reg`: only the back-edge writes them, only the
+                // header reads them).
+                live_params.extend(bl.param_regs.iter().copied());
             }
             // #881 (VCR-RA-004): the VFP pressure guard — rung-only (inert in
             // every default compile). Control ops reset the straight-line
@@ -3616,6 +3621,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None, // allocated lazily at the first br edge
+                        param_regs: Vec::new(),
                     });
                     // No ARM code emitted at block entry (label at end)
                 }
@@ -3625,6 +3631,72 @@ impl InstructionSelector {
                     let (params, results) =
                         self.block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
                     ctrl_ord += 1;
+                    // RQ-64-MVLOWER (#1093) increment 3: a PARAMETER-taking
+                    // loop gets a PRIVATE header register per parameter,
+                    // reserved for the loop's extent and written by every
+                    // back-edge (`edge_value_move`), so the header always
+                    // finds its parameters in the same registers. An entry
+                    // donates its own register when it is private (a plain
+                    // temp held by no other operand-stack entry); one that
+                    // aliases a register-homed local, or is shared, is copied
+                    // out first (the RQ-64 alias-clobber class, `lpa`).
+                    let params_n = params as usize;
+                    let mut param_regs: Vec<Reg> = Vec::with_capacity(params_n);
+                    if params_n > 0 {
+                        if stack.len() < params_n {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "#1093: loop with {params_n} parameter(s) opened on \
+                                 an operand stack of depth {} — the frame's inputs \
+                                 are not on the direct selector's operand stack (a \
+                                 multi-value call result, or stack-polymorphic dead \
+                                 code); declined rather than mis-reconciled",
+                                stack.len()
+                            )));
+                        }
+                        let base = stack.len() - params_n;
+                        let homes: Vec<Reg> = local_to_reg.values().copied().collect();
+                        for i in 0..params_n {
+                            let StackVal::Reg { reg, is_i64: false } = stack[base + i] else {
+                                return Err(synth_core::Error::synthesis(format!(
+                                    "#1093: loop parameter {:?} is not an i32 in a \
+                                     register — an i64/spilled/float loop parameter \
+                                     is not lowered (declined rather than \
+                                     mis-reconciled)",
+                                    stack[base + i]
+                                )));
+                            };
+                            let shared = stack.iter().enumerate().any(|(j, v)| {
+                                j != base + i
+                                    && matches!(v, StackVal::Reg { reg: r, is_i64 }
+                                        if *r == reg
+                                            || (*is_i64 && i64_pair_hi(*r).ok() == Some(reg)))
+                            });
+                            if !homes.contains(&reg) && !shared && !param_regs.contains(&reg) {
+                                param_regs.push(reg);
+                                continue;
+                            }
+                            let mut avoid = live_params.clone();
+                            avoid.extend(param_regs.iter().copied());
+                            let t = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &avoid,
+                                idx,
+                            )?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: t,
+                                    op2: Operand2::Reg(reg),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            stack[base + i] = StackVal::i32(t);
+                            param_regs.push(t);
+                        }
+                    }
                     cf.enter_block(BlockType::Loop);
                     block_labels.push(BlockLabel {
                         label: label.clone(), // start label
@@ -3633,6 +3705,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        param_regs,
                     });
                     // Emit loop start label
                     instructions.push(ArmInstruction {
@@ -3671,6 +3744,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        param_regs: Vec::new(),
                     });
                     // #313: checkpoint the operand-stack depth (the condition is
                     // already popped). The then-arm runs from here; its results

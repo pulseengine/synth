@@ -97,6 +97,40 @@ fn arm_lowers_param_block_only_on_the_relocatable_path_rq64() {
     );
 }
 
+/// RQ-64-MVLOWER increment 3 (#1093): `loop (param ..)` lowers on
+/// `--relocatable` (the oracle's LOWERED loop/arm leg) and declines by name
+/// on the self-contained image path.
+#[test]
+fn arm_lowers_param_loop_only_on_the_relocatable_path_rq64() {
+    use WasmOp::*;
+    // (i32.const 7) (loop (param i32) (result i32) (i32.const 1) (i32.add)
+    //   (local.get 0) (br_if 0)) — the #1097 `lpb` shape.
+    let lpb = vec![
+        I32Const(7),
+        Loop,
+        I32Const(1),
+        I32Add,
+        LocalGet(0),
+        BrIf(0),
+        End,
+        End,
+    ];
+    let backend = ArmBackend::new();
+    backend
+        .compile_function("lpb", &lpb, &config(vec![(1, 1)], true))
+        .expect("loop (param i32) (result i32) lowers on --relocatable (RQ-64-MVLOWER #3)");
+    let err = backend
+        .compile_function("lpb", &lpb, &config(vec![(1, 1)], false))
+        .expect_err("the self-contained image path has no oracle leg and keeps the decline")
+        .to_string();
+    assert!(
+        err.contains("PARAMETER-taking block type")
+            && err.contains("loop #0 has type (1, 1)")
+            && err.contains("self-contained image path"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn arm_keeps_the_void_reading_without_a_side_table_1093() {
     // The same guard must never fire for the legacy all-void reading (empty

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 53
+# ci-checks: emulations >= 70
 """#1097 (RQ-61-MVORACLE) — the silent-miscompile evidence behind the #1093
 parameter-taking block-type decline, promoted from a lane scratchpad into a
 permanent red-first oracle.
@@ -228,6 +228,14 @@ LOWERED = {
     # register permutations decline loudly. This is the leg whose pinned
     # 0xC0DE0003 (uninitialized R3) vector must now return wasmtime's 7.
     ("if", "arm"): "ARM direct selector, --relocatable (RQ-64-MVLOWER #2)",
+    # RQ-64-MVLOWER increment 3: the ARM direct selector (--relocatable).
+    # A parameter-taking loop gets a PRIVATE header register per parameter,
+    # reserved for the loop's extent and written by every back-edge (#509's
+    # designated-result-register idea at the loop HEADER). ARM never had a
+    # pinned silent vector here — pre-#1096 it declined via #509 — so this
+    # leg's fixture vectors are the ones the RV32 fixture pinned (lpb(3)
+    # was 2, want 10, on RV32) plus the extra probes and `_loop_lowered.wat`.
+    ("loop", "arm"): "ARM direct selector, --relocatable (RQ-64-MVLOWER #3)",
 }
 
 # Extra live probes for a lowered leg, beyond the fixture's vectors: the same
@@ -261,7 +269,12 @@ LOWERED_CASES = {
         ("bpt", [0]), ("bpt", [1]), ("bpt", [2]), ("bpt", [5]),
         ("bpd", [0]), ("bpd", [1]),
     ],
-    "loop": [],
+    "loop": [
+        ("lp2", [0]), ("lp2", [3]), ("lp2", [4]),   # TWO loop params around the back-edge
+        ("lpd", [0]), ("lpd", [3]),                 # a value below the param survives
+        ("lpx", [0]), ("lpx", [1]), ("lpx", [3]),   # unconditional back-edge + forward exit
+        ("lpa", [0]), ("lpa", [1]), ("lpa", [3]),   # the param is an aliased r0 (local 0 read after)
+    ],
 }
 
 COMPILE_ARGS = {
@@ -419,9 +432,11 @@ def run_lowered_leg(engine, shape, backend):
         for s_, b_, fn, args, (kind, v) in RED_CASES
         if s_ == shape and b_ == backend and kind == "wrong"
     }
+    # Every vector the fixture pinned for this SHAPE on ANY backend: a leg
+    # that never had red vectors of its own (loop/arm declined via #509
+    # pre-#1096) still executes its sibling's silent-wrong arguments.
     fixture_vectors = [
-        (fn, args) for s_, b_, fn, args, _ in RED_CASES
-        if s_ == shape and b_ == backend
+        (fn, args) for s_, _b, fn, args, _ in RED_CASES if s_ == shape
     ]
     extra = [(fn, a) for fn, _ in fixture_vectors for a in LIVE_EXTRA.get(fn, [])]
     seen = set()

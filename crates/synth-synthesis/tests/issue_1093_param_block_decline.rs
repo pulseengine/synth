@@ -92,10 +92,9 @@ fn block_and_loop_params_decline_1093() {
 /// register landing reconciles the `br_if` edge into the join. The execution
 /// evidence is the oracle's LOWERED block/arm leg (14 vectors, fixture +
 /// extra + sub-shapes); this test pins the selector-level acceptance and
-/// that the relaxation is CONSTRUCT-scoped: `loop (param ..)` still
-/// declines on the same relocatable selector.
+/// that every construct of the class now lowers there.
 #[test]
-fn block_and_if_params_lower_on_the_relocatable_direct_selector_rq64() {
+fn param_block_types_lower_on_the_relocatable_direct_selector_rq64() {
     use WasmOp::*;
     fn relocatable_selector(arity: Vec<(u8, u8)>) -> InstructionSelector {
         let db = RuleDatabase::with_standard_rules();
@@ -145,10 +144,12 @@ fn block_and_if_params_lower_on_the_relocatable_direct_selector_rq64() {
         .select_with_stack(&ipe2, 1)
         .expect("the #1093 if (param i32 i32) (result i32) + else repro lowers (no panic)");
 
-    // Construct-scoped: `loop (param ..)` still declines on the relocatable
-    // selector by name.
+    // RQ-64-MVLOWER increment 3: `loop (param ..)` lowers on the same
+    // relocatable selector — the #1097 `lpb` shape (a conditional back-edge
+    // carrying the accumulator) and a TWO-parameter loop. Execution evidence:
+    // the oracle's LOWERED loop/arm leg.
     let lpb = vec![
-        I32Const(0),
+        I32Const(7),
         Loop,
         I32Const(1),
         I32Add,
@@ -157,14 +158,24 @@ fn block_and_if_params_lower_on_the_relocatable_direct_selector_rq64() {
         End,
         End,
     ];
-    let e = relocatable_selector(vec![(1, 1)])
+    relocatable_selector(vec![(1, 1)])
         .select_with_stack(&lpb, 1)
-        .expect_err("loop (param ..) still declines on --relocatable")
-        .to_string();
-    assert!(
-        e.contains("loop #0 has type (1, 1)") && e.contains("PARAMETER-taking block type"),
-        "{e}"
-    );
+        .expect("loop (param i32) (result i32) + back-edge lowers on --relocatable (RQ-64 #3)");
+    let lp2 = vec![
+        I32Const(0),
+        I32Const(3),
+        Loop, // (param i32 i32) (result i32 i32)
+        I32Add,
+        I32Const(1),
+        LocalGet(0),
+        BrIf(0),
+        End,
+        Drop,
+        End,
+    ];
+    relocatable_selector(vec![(2, 2)])
+        .select_with_stack(&lp2, 1)
+        .expect("a two-parameter loop lowers on --relocatable (RQ-64 #3)");
 }
 
 /// Negative control — the guard must NOT widen the refusal: a (0, 1)
