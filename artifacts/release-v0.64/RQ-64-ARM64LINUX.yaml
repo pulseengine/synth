@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-64-ARM64LINUX
+    type: system-req
+    title: "synth already emits a linkable arm64-Linux library — true BY ACCIDENT, cited nowhere, gated by nothing"
+    description: >
+      Named as a residual in v0.63's RQ-63-MACHO deferral and promoted here
+      because it is the cheapest real capability claim available and it is
+      currently unclaimed.
+
+      Verified on the v0.63 tree:
+
+        $ synth compile m.wat -b aarch64 --target cortex-a53 \
+              --relocatable --all-exports -o host.o
+        $ file host.o
+        host.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV)
+        $ nm host.o
+        0000000000000000 T f
+
+      A SysV ELF `ET_REL` for `EM_AARCH64` with real global symbols and
+      AAPCS64 argument passing. **On arm64 Linux that links into a normal
+      static library today** — Graviton, arm64 CI runners, arm64 containers.
+
+      IT IS TRUE BY ACCIDENT. No document claims it, no oracle links the
+      object with a host linker on that target, and no test executes the
+      result. So it can regress silently, and no consumer can be told it
+      works. A capability nobody claims is a capability nobody can use.
+
+      SCOPE IS DELIBERATELY THE CHEAP HALF of the container story. RQ-64-MACHO
+      is the Mach-O writer for macOS; this is only: prove the arm64-Linux ELF
+      path end to end, and write the claim down where a consumer will find it.
+      Splitting them means the claim can land without waiting on a new object
+      format — and it exercises exactly the oracle shape MACHO will need.
+    status: proposed
+    release: v0.64
+    tags: [reach, host-native, aarch64, claim]
+    links: [{type: derives-from, target: BR-001}]
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: an oracle links a synth-emitted aarch64 ET_REL with a host linker for arm64-linux and EXECUTES it, comparing results against wasmtime; the capability is stated in the feature matrix with the preconditions (x28 linear-memory base, no startup emitted) named beside it"
+      verified-by: >-
+        PENDING. The gating rule applies (RQ-62-REACH — the oracle lands
+        FIRST), and here it is unusually cheap because the host toolchain is
+        the reference: link with the system linker and RUN. Red-first is
+        available by pointing the oracle at a deliberately broken object.
+        NOTE the precondition that must be stated rather than assumed: the
+        embedder sets `x28`, and synth emits no startup — the same contract
+        v0.62's embedder ABI doc records for `--relocatable` on ARM. A claim
+        that omits it would repeat the #1131 failure, where an integrator
+        conformed correctly BY LUCK, twice.

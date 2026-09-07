@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-64-FLOORPROSE
+    type: system-req
+    title: "A live pinned value is copied into artifact PROSE, where nothing checks it — the third instance of one number in N places"
+    description: >
+      Found by auditing what actually cost time during the v0.63 merge wave.
+
+      The emulation floor must move in lockstep across THREE files on every
+      oracle landing: `ci.yml` (the enforced value), `claims.yaml` (the
+      verbatim pin), and `RQ-63-FLOOREQ.yaml` (`verified-by:` prose). **All
+      four v0.63 lane rebases conflicted on it** — it was the single largest
+      merge cost of the release, and the resolution is not textual: neither
+      side's value describes the merged tree, so it must be RE-DERIVED from
+      `oracle_wiring_check.py` every time.
+
+      Two of the three are load-bearing and gated. The third is not: nothing
+      checks the artifact's prose copy, so the next oracle landing makes
+      `RQ-63-FLOOREQ`'s `verified-by: … 324845` silently wrong.
+
+      THAT IS THE SAME DEFECT ONE FIELD OVER. `RQ-62-FLOORTIGHT`'s `done-when`
+      pinned the literal `324646`, which its own protocol guaranteed would
+      move; it reddened on the first legitimate oracle and was re-pointed at
+      the invariant text. The `verified-by:` copy has the identical shape and
+      is WORSE, because a `done-when` at least fails loudly while prose just
+      rots.
+
+      THE GENERAL RULE THIS SHOULD SETTLE, so it is not rediscovered a fourth
+      time: an artifact records what was TRUE WHEN IT SHIPPED and must not
+      restate a value that continues to move. Where the live value matters,
+      the artifact should name the DERIVATION (`oracle_wiring_check.py`'s
+      reported total) or the pin that holds it, never the number.
+
+      Cheap and adjacent: `scripts/repro/` is 402 files in one flat namespace,
+      findable only because each is named after its issue. Worth deciding
+      whether that stays deliberate — it has not cost anything measurable yet,
+      and is recorded here so the answer is a choice rather than an accident.
+    status: proposed
+    release: v0.64
+    tags: [claims, drift, single-source, merge-cost]
+    links: [{type: derives-from, target: BR-001}]
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#910"
+      done-when: "manual: no release artifact restates a live pinned value as a literal in prose; the floor's lockstep set is reduced to the enforced value and its pin; and the rule (an artifact records what was true when it shipped, never a moving value) is written where the next author will meet it"
+      verified-by: >-
+        PENDING. The check is mechanical and should be added rather than
+        promised: grep the release artifacts for the live floor literal and
+        fail if any carries it, the way SYNTH-ORACLE-CHECK-FLOORS-910-CI
+        already pins the ci.yml occurrence.

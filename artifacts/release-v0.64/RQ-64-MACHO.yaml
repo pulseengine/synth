@@ -1,0 +1,28 @@
+artifacts:
+  - id: RQ-64-MACHO
+    type: system-req
+    title: "Shipping synth output as a normal host library is blocked by the CONTAINER, not the\
+  \ ISA \u2014 aarch64 already emits linkable objects, just not Mach-O"
+    description: >
+      CARRIED FROM v0.63, where it was deferred with the reason below. The
+      substance is unchanged; see RQ-63-MACHO for the full analysis, which is
+      not restated here so there is one source for it.
+
+      DEFERRAL REASON AS RECORDED AT v0.63:
+      DEFERRED from v0.63 on scope. The analysis stands and is unchanged: `-b aarch64 --relocatable` already emits a SysV ELF ET_REL with global symbols and AAPCS64, so arm64 Linux links a normal library TODAY, and macOS needs a Mach-O writer over IDENTICAL instruction bytes — no new ISA, no new proofs, the cheapest breadth available. WHAT IT STILL NEEDS, and why it was not rushed: the gating rule this release enforced on every reach increment (RQ-62-REACH — the oracle lands FIRST) applies here too, and the oracle is an EXECUTION one: link the emitted Mach-O with the host linker and RUN it against wasmtime, plus a byte-identity check of `.text` against the ELF path. That is a real lane, not a flag flip. Shipping a container without it would mean claiming a new output format on "it assembles", which is the standard this release rejected four times. The arm64-Linux ELF path this artifact OBSERVES to already work is still undocumented and ungated — true by accident, cited nowhere. That half is cheap and should lead the v0.64 increment.
+    status: proposed
+    release: v0.64
+    tags: ['reach', 'container', 'macho', 'host-native', 'aarch64']
+    links: [{type: derives-from, target: BR-001}]
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      carried-from: RQ-63-MACHO
+      done-when: "manual: synth emits a Mach-O MH_OBJECT for CPU_TYPE_ARM64 behind an explicit flag;\
+  \ the object links with the host linker into a loadable library and the linked code\
+  \ EXECUTES with results matching wasmtime; the emitted .text is byte-identical to\
+  \ the ELF path for the same module"
+      verified-by: >-
+        PENDING — carried unchanged from RQ-63-MACHO.
