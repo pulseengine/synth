@@ -282,8 +282,22 @@ found the defect in checking machinery):
     tracked by RQ-* release artifacts; backfilling 39 done-when signatures
     would be a hand-written mirror — the DECLARE_SINCE reasoning).
 
-Exit 0 iff no rule fires. Prints `status-evidence:` and `programme-status:`
-summary lines the CI step greps as non-vacuity anchors, and a
+(6) UNSCOPED-ARTIFACT STALENESS (S1/S2, #1085 / RQ-64-SCOPEGAP) — see the
+    comment block at STALENESS_ANCHOR. (5) widened the SCOPE to every
+    artifact yaml but not the OBLIGATIONS: an artifact with no `release:`
+    (293 of 400 at authoring, across 25 topic files) got a legal-status
+    check and nothing else, and figures the repo DERIVES elsewhere were
+    restated in those files as undated present-tense fact and rotted in
+    place. The decision: an unscoped artifact is a RECORD — it cites a
+    moving figure only AS HISTORY (dated in the same sentence) or names
+    the derivation instead of the number. S1 enforces that for the
+    repo-derived proof counts, S2 for any measured figure in a TITLE;
+    a version-named topic file or a version-shaped `release:` is dated
+    by construction; an S-VACUOUS floor pins the citations scanned.
+
+Exit 0 iff no rule fires. Prints `status-evidence:`, `programme-status:`
+and `programme-staleness:` summary lines the CI step greps as
+non-vacuity anchors, and a
 `status-evidence-window:` line pinning that the R4-issue/R10 window scan
 actually ran (SKIPPED there fails the CI grep, so the loud skip cannot
 become the quiet pass).
@@ -293,6 +307,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import re
 import subprocess
 import sys
@@ -372,6 +387,95 @@ PROGRAMME_GLOB = (
     "artifacts/release-v*/*.yml"
 )
 PROGRAMME_FLOOR = 379
+
+# ---- Unscoped-artifact staleness (S-rules, #1085 / RQ-64-SCOPEGAP) ---------
+#
+# RQ-62-ROADMAPGATE widened the SCOPE (P1/P2 reach every artifact yaml) but
+# not the OBLIGATIONS: an artifact with no `release:` — 293 of the 400 at
+# authoring, across 25 topic files: the stakeholder/system/technical
+# requirements, architecture, the verification measures, the gale/zephyr/
+# loom integration records, the VCR roadmap — is checked for a legal status
+# and NOTHING else. Measured consequence: figures the repo DERIVES and
+# ratchets elsewhere (claims.yaml -> artifacts/status.json) were restated in
+# those files as undated present-tense fact and rotted in place. `VG-002`,
+# `ARCH-004`, `SWVER-005`, `TR-005` still said "188 Qed / 52 Admitted"
+# (2026-03-17 numbers; the kernel recount is 630 / 2), `VER-001`/`VER-002`
+# "39"/"95 Qed", and `VCR-REACH-002`'s TITLE asserted "1.6% AArch64
+# acceptance" as if current after v0.63 published a ladder measuring 20.2 %
+# on the reachable corpus. (The artifact's other named instance, `VG-009`,
+# is NOT one: its only "1.6" is the substring of "41.6 %", a line-coverage
+# figure explicitly "measured at v0.54.0" — a grep hit, not a stale claim.)
+#
+# THE DECISION, recorded so it is not re-litigated: an unscoped artifact is
+# a RECORD. It may cite a measured, moving figure only AS HISTORY — in a
+# sentence that says WHEN (a release version, an issue/PR number, an ISO
+# date) — or it names the derivation (`artifacts/status.json`'s field, the
+# script that emits it) instead of the number. Never an undated literal
+# that continues to move. Rejected, with the measurement that rejected it:
+#   * `release: backlog` on every unscoped artifact — mislabels the
+#     requirements base (BR-001 is the trace root, not backlog work) and
+#     buys no rule: every R-rule presumes a release window or evidence
+#     scoping these items have none of, so each would need an exemption —
+#     the false-red shape RQ-62-ROADMAPGATE already refused.
+#   * "topic files are narrative; strip every number" — 104 of the 293
+#     carry a figure token and most are load-bearing: threshold/ABI
+#     constants in requirements ("at least 80%", "64 KiB") and the measured
+#     results that ARE a verification record's content ("13/13",
+#     "338/338"). Stripping evidence to prevent staleness is backwards.
+#   * "pinned" read as EQUALITY with the live derivation (the CLAUDE.md
+#     count-eq discipline) — every citing artifact becomes one more copy in
+#     a lockstep set, the merge-cost defect RQ-64-FLOORPROSE measured on
+#     v0.63 (four lane rebases conflicting on one number). A record dates;
+#     a pin lives in claims.yaml once.
+#
+#   S1: a citation of a REPO-DERIVED moving count — `N Qed`, `N Admitted` /
+#       `N admits`, the shape every measured instance took — in an unscoped
+#       artifact's description or any prose-valued `fields:` entry
+#       (RQ-64-FLOORPROSE's instance was a `verified-by:` field) must sit in
+#       a sentence carrying a temporal anchor. The failure names the live
+#       value from status.json so the reader sees the drift, but the VERDICT
+#       is dated-or-not, never equality (see the third rejection).
+#   S2: an unscoped artifact's TITLE — the surface every listing and query
+#       renders, always read as present tense — may not carry an undated
+#       measured figure: a percentage, an N/M ratio, or a count of a
+#       derived/measured unit (`52 VFP/float admits`, `77 modules`).
+#   Dated by construction, hence exempt: an artifact whose `release:` is a
+#   version, and every artifact in a topic file whose NAME carries one
+#   (`sys-verification-v0.60.yaml` records what was true at v0.60 exactly
+#   as a release-v*/ file does). Release-scoped files are R7/R8's surface.
+#   S-VACUOUS: a floor on figure citations scanned — pattern rot reds
+#   instead of quietly scanning nothing.
+#
+# What S-rules do NOT judge, stated rather than silent: whether a dated
+# figure is the RIGHT history; whether the anchor genuinely dates the
+# figure beside it (an incidental `#NNN` in the same sentence passes — the
+# 3-digit minimum only keeps ARM immediates like `#3`/`#16` from dating a
+# sentence); and percentages in DESCRIPTIONS — a threshold ("shall achieve
+# at least 80%") and a measurement are not mechanically separable, and the
+# six threshold percentages in the requirements base would be false reds.
+# Those stay human-reviewed; the one measured description-level acceptance
+# figure (VCR-REACH-002) was already dated by its issue.
+STALENESS_ANCHOR = re.compile(
+    r"\bv\d+\.\d+(?:\.\d+)?\b"     # a release version
+    r"|#\d{3,}\b"                    # an issue / PR number
+    r"|\b20\d\d-\d\d-\d\d\b"       # an ISO date
+)
+DERIVED_FIGURES = (
+    # (label, artifacts/status.json key, prose pattern)
+    ("Qed", "rocq_qed", re.compile(r"\b\d[\d,]*\s?Qed\b")),
+    ("Admitted", "rocq_admitted",
+     re.compile(r"\b\d[\d,]*\s?(?:Admitted|admits?)\b")),
+)
+TITLE_FIGURE = re.compile(
+    r"\d+(?:[.,]\d+)?\s?%"
+    r"|\b\d+\s?/\s?\d+\b"
+    r"|\b\d[\d,]*(?:\s+\S+){0,3}\s+(?:Qed|Admitted|admits?|modules?)\b"
+)
+TOPIC_FILE_VERSION = re.compile(r"v\d+\.\d+")
+SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[^a-z\s])")
+# Figure citations the live scan must find (measured at authoring, after
+# the corrections landed). Red only BELOW; raise it when it drifts far.
+STALENESS_FLOOR = 34
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
@@ -699,6 +803,132 @@ def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
             f"never comes down to pass"
         )
     return files_scanned, checked, missing, illegal, failures
+
+
+def _prose_fields(fields, prefix: str = "fields"):
+    """Every string under `fields:` with its dotted key path — S1 scans
+    prose wherever an artifact keeps it."""
+    out = []
+    if isinstance(fields, dict):
+        for k, v in fields.items():
+            out.extend(_prose_fields(v, f"{prefix}.{k}"))
+    elif isinstance(fields, list):
+        for i, v in enumerate(fields):
+            out.extend(_prose_fields(v, f"{prefix}[{i}]"))
+    elif isinstance(fields, str):
+        out.append((prefix, fields))
+    return out
+
+
+def _sentences(text: str) -> list[str]:
+    flat = re.sub(r"\s+", " ", text).strip()
+    return [s for s in SENTENCE_BREAK.split(flat) if s]
+
+
+def _live_status(root: Path) -> dict:
+    """artifacts/status.json — the claim-check-derived numbers. Read for the
+    failure MESSAGE only (so the reader sees the drift); absence is not a
+    verdict either way."""
+    try:
+        doc = json.loads((root / "artifacts" / "status.json")
+                         .read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
+                   floor: int = STALENESS_FLOOR):
+    """S-rules (#1085 / RQ-64-SCOPEGAP): an artifact with no release is a
+    RECORD — a moving repo-derived count it cites must be dated in the same
+    sentence (S1), and its title may not carry an undated measured figure
+    (S2). Version-named topic files and version-shaped `release:` fields
+    are dated by construction; release-v*/ files are R7/R8's surface.
+
+    -> (unscoped_artifacts, citations_scanned, undated, failures).
+    Raises DuplicateKeyError like the other scans (same strict loader)."""
+    failures: list[str] = []
+    live = _live_status(root)
+    paths = set()
+    for pattern in programme_glob.split(","):
+        paths.update(glob.glob(str(root / pattern.strip())))
+    unscoped = 0
+    citations = 0
+    undated = 0
+    for p in sorted(paths):
+        path = Path(p)
+        if path.name == "_release.yaml":
+            continue
+        rel = path.relative_to(root).as_posix() if path.is_relative_to(root) \
+            else path.name
+        if RELEASE_VERSION.search(rel):
+            continue
+        file_dated = bool(TOPIC_FILE_VERSION.search(path.name))
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
+        arts = [
+            a for a in ((doc.get("artifacts") or []) if isinstance(doc, dict)
+                        else [])
+            if isinstance(a, dict) and "id" in a
+        ]
+        for art in arts:
+            if FIELD_VERSION.match(str(art.get("release") or "").strip()):
+                continue
+            unscoped += 1
+            if file_dated:
+                continue
+            art_id = str(art["id"])
+            # -- S2: the title.
+            title = str(art.get("title") or "")
+            for m in TITLE_FIGURE.finditer(title):
+                citations += 1
+                if not STALENESS_ANCHOR.search(title):
+                    undated += 1
+                    failures.append(
+                        f"S2 {art_id}: title carries the measured figure "
+                        f"`{m.group(0)}` with no date in {rel} — a title is "
+                        f"the surface every listing renders and is always "
+                        f"read as present tense; date it in the title "
+                        f"(vX.Y / #NNN / YYYY-MM-DD) or move the figure into "
+                        f"a dated sentence (#1085)"
+                    )
+                    break
+            # -- S1: description + every prose-valued field.
+            units = [("description", str(art.get("description") or ""))]
+            units.extend(_prose_fields(art.get("fields")))
+            for where, text in units:
+                for sentence in _sentences(text):
+                    anchored = None
+                    for _label, key, pat in DERIVED_FIGURES:
+                        for m in pat.finditer(sentence):
+                            citations += 1
+                            if anchored is None:
+                                anchored = bool(
+                                    STALENESS_ANCHOR.search(sentence))
+                            if anchored:
+                                continue
+                            undated += 1
+                            live_val = live.get(key)
+                            drift = (
+                                f"; the live derivation is {live_val} "
+                                f"(artifacts/status.json `{key}`)"
+                                if live_val is not None else ""
+                            )
+                            failures.append(
+                                f"S1 {art_id}: undated `{m.group(0)}` in "
+                                f"{rel} ({where}) — a moving, repo-derived "
+                                f"count restated as present-tense fact"
+                                f"{drift}; date it in the same sentence "
+                                f"(vX.Y / #NNN / YYYY-MM-DD) or name the "
+                                f"derivation instead of the number (#1085)"
+                            )
+    if citations < floor:
+        failures.append(
+            f"S-VACUOUS: only {citations} figure citations scanned across "
+            f"{unscoped} unscoped artifacts (floor {floor}) — pattern rot "
+            f"or files invisible to the scan; the floor never comes down "
+            f"to pass"
+        )
+    return unscoped, citations, undated, failures
 
 
 def check(root: Path, release_glob: str, subjects: list[str],
@@ -1087,10 +1317,12 @@ def main() -> int:
                   args.delivery_floor, window_subjects=window)
         (p_files, p_checked, p_missing, p_illegal, p_failures) = \
             check_programme(args.root)
+        (s_unscoped, s_citations, s_undated, s_failures) = \
+            check_unscoped(args.root)
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
-    failures = failures + p_failures
+    failures = failures + p_failures + s_failures
 
     for w in warnings:
         print(w)
@@ -1107,6 +1339,10 @@ def main() -> int:
         f"programme-status: {p_checked} artifacts across {p_files} artifact "
         f"files status-checked, {p_missing} missing status, {p_illegal} "
         f"illegal status"
+    )
+    print(
+        f"programme-staleness: {s_unscoped} unscoped artifacts, "
+        f"{s_citations} figure citations scanned, {s_undated} undated"
     )
     if window_label is None:
         print("status-evidence-window: SKIPPED — release window not "
