@@ -47,7 +47,19 @@ artifacts:
         through; `collapse_instance_lists` never sees a skip reason, which is
         what the `immediate 0x5dc` message is), a single `module_reason`
         pipeline for both module-level rankings, `print_ranked` asserting the
-        printed-rows sum invariant, `--self-test` with a negative control.
+        printed-rows sum invariant, `--self-test` with a negative control —
+        and that self-test WIRED: the script's `ci-status` moved from
+        `manual (measurement)` to `wired` (claim-check job, via oracle_run
+        with a `ci-checks: stdout` floor on the assertion COUNT, 14), because
+        the claims.yaml note beside the manual ceiling said a census that
+        grows a verdict must be wired, and a self-test that never runs guards
+        nothing. Manual ceiling 8 -> 7 (claims.yaml, ORACLE_WIRING.md). The
+        census MODES are unchanged: still a local measurement, no verdict
+        about synth. Red-first shown both ways: the mask reverted to the
+        pre-#1159 rule fails assertion 2 (exit 1); the evidence line renamed
+        still exits 0 but oracle_run refuses it on the floor (measured 0 of
+        14) — and the discriminator is permanent, as assertion 1 (the old
+        rule must still keep the two wild shapes apart).
       verified-by: >-
         FULL 243-MODULE CORPUS (MANIFEST.sha256 verified 243/243), synth built
         at 8862ee2f (no Rust changed since v0.63.0, so the compiler is the one
@@ -81,7 +93,23 @@ artifacts:
         plan saw. riscv and aarch64: zero merges, zero rank moves in both
         modes — the raw records carry NO hex payload (surveyed across every
         field), so the no-op there is by construction, not luck.
-        LADDER-TBD
+        LADDER (RQ-63-LADDER's own arm table: NEVER = 141 of 243, rungs
+        27 / 72 / 3 / 0 reproduced exactly, zero rung diffs between the two
+        runs): BEFORE 71 register exhaustion, 41 #929, 7 start section,
+        5 rule_i32_rotl, 4 call_indirect, 4 `encode_operand2 0x624`,
+        3 GI-FPU-002, 2 decode, 1, 1, 1 `encode_operand2 0x5dc`, 1 = 141 in
+        12 rows. AFTER 70, 40, 9 `encode_operand2 0xN`, 7 start, 5 rotl,
+        4 call_indirect, 2 decode, 1, 1, 1, 1 GI-FPU-002 = 141 in 11 rows.
+        The non-rotated-immediate class moves from RANK 5 (4) to RANK 3 (9)
+        — above the start-section and rule_i32_rotl gaps v0.63 listed ahead
+        of it — and GI-FPU-002 falls 3 -> 1; the same four modules are
+        re-attributed as in the plain census. Denominator stated: the arm
+        ladder was measured as four sorted corpus quarters per side
+        (61/61/61/60 modules, merged; 243 unique paths asserted; every
+        quarter report carries its own `sum invariant OK` lines) because one
+        full-corpus ladder pass runs ~110 min per side on this host —
+        per-module results are independent and deterministic, so the merge
+        is the same measurement.
         (d) the census's SECOND ranking, "module-level decline reasons (top
         10)", ranked RAW text: on aarch64 core the #1102 refusal (64 of 86
         modules, across 59 singleton-ish rows) printed BELOW active-data

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# ci-status: manual (measurement) — RQ-59-PARTIALCENSUS (#1017) is a CENSUS, scoped by the maintainer to MEASURE and STOP: it re-derives the one-function-blocks-module share over a corpus's full decline set so the --allow-partial decision has a number instead of an intuition. It has no expected values and no verdict, so there is nothing for CI to fail on, and its input is a local real-world corpus CI does not carry. The behaviour it measures — that a declined function declines its whole module — is gated by the wired decline-honesty oracles, not by this report.
+# ci-status: wired — `--self-test` (RQ-64-HISTOGRAM, #1159) runs in the required `claim-check` job: a hermetic check of the INSTRUMENT (the numeric-payload mask on the two fragmenting shapes observed in the wild, the printed-rows sum invariant and its negative control) that needs no corpus and asserts nothing about synth. The census modes themselves are still a local MEASUREMENT (RQ-59-PARTIALCENSUS #1017: no expected value, no verdict about the compiler, over a real-world corpus CI does not carry; the behaviour they measure is gated by the wired decline-honesty oracles). This file was `manual (measurement)` until the self-test gave it a verdict CI can fail on — the note beside the manual ceiling in claims.yaml named that as exactly the moment it must be wired.
+# ci-checks: stdout /^self-test OK: (\d+) assertions/ >= 14
 """RQ-59-PARTIALCENSUS (#1017): re-derive the one-function-blocks-module share
 over the FULL decline set of a corpus, per module — not just the top-12 decline
 reasons #1017's lower bound covered.
@@ -46,9 +47,11 @@ WHAT THIS SCRIPT MEASURES, per module, on one backend (default: arm):
      ASSERTS on each run that its printed rows sum to the modules they rank
      (a collapse that loses rows is worse than one that fragments them);
      `--self-test` exercises the mask on the two shapes observed in the wild
-     and proves the sum check can fail (negative control).  The assertion is
-     about the REPORT's integrity, never about synth: still no expected
-     value, still no verdict on the compiler.
+     and proves the sum check can fail (negative control) — and it is WIRED
+     (claim-check job), because a self-test that never runs guards nothing.
+     The assertion is about the REPORT's integrity, never about synth: the
+     census modes still carry no expected value and no verdict on the
+     compiler.
 
 This script only ever RUNS synth and READS its stderr; it changes no compile
 behaviour.  It is the measurement, not the feature (#1017 / RQ-59-PARTIALCENSUS).
@@ -847,67 +850,97 @@ def report_ladder(backend, rows):
 
 
 def self_test():
-    """`--self-test`: the instrument's own checks (#1159 / RQ-64-HISTOGRAM).
-    (1) the two fragmenting shapes observed in the wild collapse to ONE key;
-    (2) the mask is idempotent; (3) digit-bearing IDENTIFIERS survive, so
-    op/register/function identity is never masked; (4) list collapse still
-    composes after the numeric mask; (5) a NEGATIVE control — the sum
-    invariant must be able to fail, or it is not a check — and a top-cut
-    positive control whose remainder row closes the sum.  Runs no synth."""
+    """`--self-test`: the instrument's own checks (#1159 / RQ-64-HISTOGRAM),
+    WIRED in the required `claim-check` job (see the ci-status / ci-checks
+    header).  (1) the two fragmenting shapes observed in the wild collapse to
+    ONE key — and, RED-FIRST kept permanently, are DISTINCT under the
+    pre-#1159 rule, so the merge check is known to discriminate; (2) the mask
+    is idempotent; (3) digit-bearing IDENTIFIERS survive, so op/register/
+    function identity is never masked; (4) list collapse still composes after
+    the numeric mask; (5) a NEGATIVE control — the sum invariant must be able
+    to fail, or it is not a check — and a top-cut positive control whose
+    remainder row closes the sum.  Runs no synth, needs no corpus.  Prints the
+    COUNT of assertions executed; the `ci-checks: stdout` floor binds that
+    count, so a self-test whose body stopped running cannot pass green."""
     import contextlib
     import io
+
+    n = [0]
+
+    def check(cond, what):
+        n[0] += 1
+        if not cond:
+            raise AssertionError(f"self-test assertion {n[0]} FAILED: {what}")
 
     rot = ("encode_operand2: immediate {} ({}) is not an ARM32 rotated "
            "immediate — the selector must materialize large constants via "
            "MOVW/MOVT")
-    a = normalize_reason(rot.format("0x624", 1572))
-    b = normalize_reason(rot.format("0x5dc", 1500))
-    assert a == b == rot.format("0xN", "N"), (a, b)
-    assert normalize_reason(a) == a, "numeric mask is not idempotent"
-    assert normalize_reason("0xDEADbeef at 0X10 vs 0x") == "0xN at 0xN vs 0x"
+    raw_a, raw_b = rot.format("0x624", 1572), rot.format("0x5dc", 1500)
+    # (1) RED-FIRST, permanent: the PRE-#1159 rule (bare decimals only) keeps
+    # these two shapes APART.  If a future edit removes the hex payload from
+    # the shapes, this fails and the merge check below is known to have gone
+    # vacuous — a self-test that passes on both the broken and the fixed mask
+    # would be the same defect one level down.
+    def old_rule(s):
+        return re.sub(r"\b\d+\b", "N", s)
+    check(old_rule(raw_a) != old_rule(raw_b),
+          "pre-#1159 rule no longer fragments the two wild shapes")
+    a, b = normalize_reason(raw_a), normalize_reason(raw_b)
+    check(a == b == rot.format("0xN", "N"), f"hex shapes did not merge: {a!r} vs {b!r}")
+    check(normalize_reason(a) == a, "numeric mask is not idempotent")
+    check(normalize_reason("0xDEADbeef at 0X10 vs 0x") == "0xN at 0xN vs 0x",
+          "hex case / bare-prefix handling")
     ident = "i32.add: R11 clobbered in func_25 on RV32 (imm12) via 0x"
-    assert normalize_reason(ident) == ident, normalize_reason(ident)
-    assert (normalize_reason("offset 4096 (0x1000) exceeds imm12 at #952")
-            == "offset N (0xN) exceeds imm12 at #952")
+    check(normalize_reason(ident) == ident,
+          f"identifier masked: {normalize_reason(ident)!r}")
+    check(normalize_reason("offset 4096 (0x1000) exceeds imm12 at #952")
+          == "offset N (0xN) exceeds imm12 at #952",
+          "decimal + hex payload beside an issue reference")
     refs = "multi-memory (#406) per WASM Core §4.5.5 (VCR-MEM-002 phase 1)"
-    assert (normalize_reason(refs)
-            == "multi-memory (#406) per WASM Core §4.5.5 (VCR-MEM-002 phase N)")
-    assert normalize_reason("offset -4 and 7-3") == "offset -N and N-N"
+    check(normalize_reason(refs)
+          == "multi-memory (#406) per WASM Core §4.5.5 (VCR-MEM-002 phase N)",
+          f"reference identifiers: {normalize_reason(refs)!r}")
+    check(normalize_reason("offset -4 and 7-3") == "offset -N and N-N",
+          "negative / arithmetic payloads")
     lst = normalize_reason(
         "Error: 3 retained function(s) relocate against DECLINED: 'func_25' "
         "-> 'func_20' (0x10)")
-    assert (collapse_instance_lists(lst)
-            == "Error: N retained function(s) relocate against DECLINED: "
-               "<symbol list>"), collapse_instance_lists(lst)
-    # (5) negative control: 2 rows for 3 modules must exit 3.
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            print_ranked(Counter({"a": 1, "b": 1}), 3, "self-test negative")
-    except SystemExit as e:
-        assert e.code == 3, e.code
-    else:
-        raise AssertionError("sum invariant did not fire on a 2-vs-3 mismatch")
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            print_ranked(Counter({"": 2}), 2, "self-test empty key")
-    except SystemExit as e:
-        assert e.code == 3, e.code
-    else:
-        raise AssertionError("sum invariant accepted an empty bucket key")
+    check(collapse_instance_lists(lst)
+          == "Error: N retained function(s) relocate against DECLINED: "
+             "<symbol list>",
+          f"list collapse after numeric mask: {collapse_instance_lists(lst)!r}")
+
+    # (5) negative controls: the sum invariant must EXIT 3 on a violation.
+    def expect_exit3(counter, expected, what):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                print_ranked(counter, expected, what)
+        except SystemExit as e:
+            check(e.code == 3, f"{what}: exit {e.code}, not 3")
+        else:
+            check(False, f"{what}: sum invariant did not fire")
+
+    expect_exit3(Counter({"a": 1, "b": 1}), 3,
+                 "self-test negative (2 rows for 3 modules)")
+    expect_exit3(Counter({"": 2}), 2, "self-test negative (empty bucket key)")
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         print_ranked(Counter({"a": 3, "b": 2, "c": 1}), 6, "self-test cut",
                      top=1, width=1)
     out = buf.getvalue()
-    assert "(+2 more rows below the top-1 cut" in out, out
-    assert "2 rows sum to 6 = 6 modules ranked" in out, out
+    check("(+2 more rows below the top-1 cut" in out,
+          f"remainder row missing under a top cut: {out!r}")
+    check("2 rows sum to 6 = 6 modules ranked" in out,
+          f"printed sum did not close under a top cut: {out!r}")
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         print_ranked(Counter({"same-prefix-A": 1, "same-prefix-B": 1}), 2,
                      "self-test width collision", width=8)
-    assert "same-prefix-A" in buf.getvalue(), buf.getvalue()
-    print("self-test OK: numeric mask (hex+decimal), idempotence, identifier "
-          "survival, list collapse, sum-invariant negative + cut controls")
+    check("same-prefix-A" in buf.getvalue(),
+          f"width collision not printed in full: {buf.getvalue()!r}")
+    print(f"self-test OK: {n[0]} assertions — numeric mask (hex+decimal), "
+          "red-first discriminator, idempotence, identifier survival, list "
+          "collapse, sum-invariant negative + cut controls")
     return 0
 
 
