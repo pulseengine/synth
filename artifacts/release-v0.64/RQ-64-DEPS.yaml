@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-64-DEPS
+    type: system-req
+    title: "Four dependabot PRs held for a week, three on bases so stale their CI verdict is meaningless"
+    description: >
+      Measured 2026-09-07. Four PRs open since 2026-08-31:
+
+        #1106  wit-parser 0.257.1 -> 0.258.0   base b552fb4c (v0.62-era)  1 fail
+        #1107  rivet      0.34.0  -> 0.35.0    base b552fb4c              1 fail
+        #1110  wast       257.0.1 -> 258.0.0   base b552fb4c              1 fail
+        #1108  z3         0.20.2  -> 0.21.0    base 506ef987  63 pass 0 fail
+
+      All four are 0.x-MINOR bumps, which `SYNTH-DEPENDABOT-MINORHOLD-ENFORCED-965`
+      holds by policy: under semver a 0.x minor is BREAKING, and this rule
+      exists because ordeal 0.9 -> 0.12 auto-merged as "minor" and hung Test
+      and Z3 for four to six hours across several days (#849).
+
+      TWO SEPARATE PROBLEMS, and conflating them is why they have sat:
+
+      1. THE HOLD IS CORRECT AND HAS NO EXIT. The rule says hold; nothing says
+         when or how a held bump is evaluated and released. So they accumulate.
+         `#1108` is fully green on a CURRENT base and is held by policy alone.
+
+      2. THREE OF THEM ARE ON A BASE FROM BEFORE v0.62, so their single
+         failure is uninterpretable — it may be the bump, it may be the eight
+         intervening merges. **Attribution needs a baseline** (the v0.56
+         lesson: 88 -> 14 -> 5 once measured against main rather than guessed).
+         A red on a stale base is not evidence about the bump.
+
+      What this artifact must produce is the missing protocol, not four merge
+      decisions: what a held 0.x-minor bump needs before it can land (rebase,
+      the full suite including the Z3 feature path, and a stated reason), and
+      what happens to one that is never evaluated.
+    status: proposed
+    release: v0.64
+    tags:
+      - dependencies
+      - process
+      - hold
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#965"
+      done-when: "manual: each of the four is rebased onto current main and either merged with its evaluation recorded or closed with a reason; and the MINORHOLD rule gains an exit condition saying what a held bump needs to land"
+      verified-by: >-
+        PENDING. Required: re-run each on a CURRENT base before judging it —
+        a red on a v0.62-era base attributes nothing. `#1108` (z3) is the
+        cleanest test of the protocol: green on a current base, held purely by
+        policy, and the Z3 path is a SEPARATE `--features` build that a plain
+        `cargo test --workspace` never exercises (#836).

@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-64-HISTOGRAM
+    type: system-req
+    title: "The ranked blocker histogram under-ranks any cause with a varying payload — and it is now what releases are scoped from"
+    description: >
+      #1159, filed at the v0.62 close-out, observed again from a second
+      direction while building v0.63's acceptance ladder, and promoted to
+      `must` here because v0.63 changed what the histogram is FOR.
+
+      `collapse_instance_lists()` exists so one CAUSE buckets as one row —
+      symbol lists, export names and initializer dumps are collapsed. It does
+      not mask NUMERIC payloads, so `encode_operand2: immediate 0x624` and
+      `... 0x5dc` count as separate causes. Observed from the spec census
+      (#1159) and independently from the corpus ladder, where a NEVER blocker
+      printed as `immediate 0x5dc (N)` — a decimal collapsed, the hex not.
+
+      WHY IT IS `must` NOW AND WAS `note` BEFORE. v0.63 established that a
+      blocker count is not a reach estimate: the census records only the FIRST
+      decline per function, so the ranked histogram is the ONLY signal about
+      what to fix next. v0.63 was scoped from that ranking and two of three
+      capability lanes returned near-zero reach — ARMI64OFF cleared 46 modules
+      and gained none. A cause fragmented across N rows is systematically
+      under-ranked against one with no varying payload, so the ranking that
+      the next release plans from is biased in a direction nobody can see.
+
+      No published number is wrong — the totals sum correctly, verified. The
+      defect is that the ORDER is untrustworthy, and order is now the product.
+    status: proposed
+    release: v0.64
+    tags:
+      - census
+      - measurement
+      - ranking
+      - planning
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1159"
+      done-when: "manual: numeric payloads (hex and decimal immediates, offsets, sizes) are masked by the collapse so one cause is one row; the histogram's rows still sum to the decline count; and the `encode_operand2` rows merge to a single entry on both the spec census and the corpus ladder"
+      verified-by: >-
+        PENDING. Required: (a) masking demonstrated on the two known
+        fragmenting cases, with the before/after row counts published; (b) the
+        sum-to-decline-count invariant asserted, not just observed — a collapse
+        that loses rows is worse than one that fragments them; (c) re-run both
+        censuses and state whether any RANKING changed, because a fix that
+        reorders the priority list is the whole point and a fix that does not
+        needs explaining.

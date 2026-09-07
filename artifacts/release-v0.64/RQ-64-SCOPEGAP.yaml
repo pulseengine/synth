@@ -1,0 +1,70 @@
+artifacts:
+  - id: RQ-64-SCOPEGAP
+    type: system-req
+    title: "synth has TWO artifact systems and one of them is unread — 124 artifacts get a status check and nothing else"
+    description: >
+      Measured while planning v0.64, and it explains a class of drift rather
+      than one instance.
+
+      `status_evidence_check` reports two populations:
+
+        status-evidence:    97 artifacts across 42 RELEASE files
+        programme-status:  391 artifacts across 67 artifact files
+
+      The first gets the full R-rules — R2 (claiming a status needs evidence),
+      R4 (the delivery commit must be acknowledged), R7/R8 (evidence belongs to
+      the release), R10 (every delivery commit is attributable). The second
+      gets P0–P2 only: the status key must exist and be legal. That is all.
+
+      So **124 artifacts carry no `release:` field**, live in 30 top-level
+      topic files (`cross-compilation.yaml`, `gale-integration.yaml`,
+      `verified-codegen-roadmap.yaml`, …), and are invisible to every release
+      query the planning skill defines. Among them are SIX `must` items,
+      including **VCR-TQ-001 and VCR-TQ-002 — tool qualification across
+      DO-178C / IEC 61508**, which the North Star names as the moat that
+      certification actually consumes.
+
+      THEY HAVE ALREADY DRIFTED, and nothing could have caught it: `VG-009`
+      and `VCR-REACH-002` still state aarch64 accepts **1.6 %** of real
+      modules. v0.63 measured 20.2 % on the reachable corpus and published a
+      full ladder. Two artifacts assert a superseded figure inside a repo whose
+      whole discipline is that load-bearing numbers are pinned.
+
+      THIS IS NOT "TRIAGE THE BACKLOG". The 124 are not a backlog anyone chose;
+      they are what falls through the gap between two systems, and adding a
+      `release:` to each would only move the problem. The decision this
+      artifact forces is: **what obligations does an UNSCOPED artifact carry?**
+      Plausible answers, to be chosen deliberately rather than drifted into:
+      (a) unscoped artifacts get a staleness rule — any measured figure they
+      cite must be pinned or dated; (b) they get folded into the release system
+      with an explicit `release: backlog`; (c) the topic files are declared
+      NARRATIVE and stripped of measured numbers entirely, so nothing in them
+      can go stale.
+
+      The v0.62 precedent applies: RQ-62-ROADMAPGATE brought the roadmap's 39
+      artifacts into P0–P2 scope after finding two with no status key at all.
+      This is the same finding one rule-tier up — the scope widened, the
+      OBLIGATIONS did not.
+    status: proposed
+    release: v0.64
+    tags:
+      - traceability
+      - gate
+      - scope
+      - staleness
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: review
+      issue: "#1085"
+      done-when: "manual: a decision is recorded about what obligations an artifact with no `release:` carries, that decision is enforced by a rule in status_evidence_check.py, and the two known drifted artifacts (VG-009, VCR-REACH-002) are corrected or brought under it"
+      verified-by: >-
+        PENDING. Required, and red-first is cheap because the corpus of two is
+        already measured: whatever rule is chosen must FLAG `VG-009` and
+        `VCR-REACH-002` before they are fixed, and pass after. A rule that does
+        not flag both has not addressed the reported thing — the same
+        red-first-is-free argument RQ-62-ROADMAPGATE used on its own corpus of
+        two statusless VCR-WCET items.

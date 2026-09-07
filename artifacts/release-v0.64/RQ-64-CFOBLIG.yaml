@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-64-CFOBLIG
+    type: system-req
+    title: "The Block/End correspondence obligation \u2014 where all 180 of gale's remaining\
+  \ uncovered instances live"
+    description: >
+      CARRIED FROM v0.63, where it was deferred with the reason below. The
+      substance is unchanged; see RQ-63-CFOBLIG for the full analysis, which is
+      not restated here so there is one source for it.
+
+      DEFERRAL REASON AS RECORDED AT v0.63:
+      DEFERRED from v0.63 on scope, stated rather than quietly dropped. This is Rocq proof work on the Block/End correspondence obligation — the shape behind 64 of gale's 180 uncovered instructions — and it is neither started nor blocked. v0.63's capacity went to the reach lanes and to four defects found while cutting it (#1167 A32 wrong-address, #1168 unlinkable objects, #1171 non-determinism, RQ-63-FLOOREQ), three of which were silent miscompiles that outranked planned work. NOT DEFERRED FOR A BAD REASON: no measurement here went stale and nothing about it got harder. It is simply unstarted, and shipping a partial correspondence obligation would put a T3/admitted claim into the proof ledger to make a release look complete — the ledger is CI-gated precisely so that cannot happen quietly.
+    status: proposed
+    release: v0.64
+    tags:
+      - proofs
+      - control-flow
+      - rocq
+      - consumer-contract
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: proof
+      issue: "#1057"
+      carried-from: RQ-63-CFOBLIG
+      done-when: "manual: either Block/End carry a kernel-checked correspondence obligation reflected\
+  \ semantically in proof-inventory.json, or the obstruction is stated precisely enough\
+  \ to be VCR-ISA-001 input \u2014 with no existence-only theorem named `*_correct`"
+      verified-by: >-
+        PENDING — carried unchanged from RQ-63-CFOBLIG.

@@ -1,0 +1,48 @@
+# v0.64 — "The number you plan from."
+#
+# v0.63 shipped its capability work and then produced a result that invalidates
+# how the next release would otherwise be scoped:
+#
+#   RQ-63-ARMI64OFF cleared a 46-module blocker and gained ZERO reach.
+#   RQ-63-A64STACK cleared 77 and gained 3.
+#   aarch64's MemoryCopy went 45 -> 106 WITHOUT ANYONE TOUCHING MemoryCopy.
+#
+# A BLOCKER COUNT IS NOT A REACH ESTIMATE. The census records only the FIRST
+# decline per function, so clearing a top blocker reveals the next layer rather
+# than adding its count. v0.63 was scoped from exactly those counts and two of
+# its three capability lanes returned near-zero reach as a result.
+#
+# So v0.64's first job is not more capability. It is making the ranking
+# trustworthy enough to spend a release on — and closing the two places where
+# the planning substrate silently lies.
+#
+# THE TWO SUBSTRATE DEFECTS, both measured while planning this release:
+#
+#   1. THE HISTOGRAM UNDER-RANKS (#1159). `collapse_instance_lists()` does not
+#      mask numeric payloads, so one cause fragments across N rows
+#      (`immediate 0x624` and `0x5dc` count separately). The histogram's job is
+#      RANKING and a fragmented cause is systematically under-ranked. Observed
+#      independently from both the spec census and the corpus ladder.
+#
+#   2. SYNTH HAS TWO ARTIFACT SYSTEMS AND ONE OF THEM IS UNREAD.
+#      status_evidence_check sees 97 artifacts across 42 RELEASE files with the
+#      full R-rules. programme-status sees 391 across 67 files with ONE rule:
+#      the status must be legal. So 124 artifacts — living in 30 top-level
+#      topic files, including SIX `must` items and the VCR-TQ-001/TQ-002 tool
+#      qualification pair the North Star calls the moat — get no evidence
+#      check, no delivery attribution, and no staleness gate.
+#      Two have already drifted: VG-009 and VCR-REACH-002 still say aarch64
+#      accepts 1.6 % when v0.63 measured 20.2 % on the local corpus.
+#      They are not a backlog anyone chose. They are what falls through the gap
+#      between the two systems.
+#
+# CARRIED FROM v0.63, unchanged in substance: MACHO, MVLOWER, CFOBLIG and
+# ARCHMODEL, each with the deferral reason already recorded on the v0.63
+# artifact. ARCHMODEL remains blocked upstream on spar#445 and its recurring
+# N/A (#1136) is now in its FOURTH release.
+#
+# THE GATING RULE CARRIES UNCHANGED from RQ-62-REACH: every reach increment
+# ships with the oracle that makes the newly-accepted input safe, and the
+# oracle lands FIRST. v0.63 honoured it four times and declined MVLOWER on it.
+#
+# Comments only; artifacts live in RQ-64-*.yaml siblings.
