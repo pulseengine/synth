@@ -84,9 +84,17 @@ the tool (v0.63's doc listed 7 of 12 rows). Only the second was the tool's.
   and an `elf_x86_64` emulation *by name*.
 - **Mach-O** now emits an `MH_OBJECT` for `CPU_TYPE_ARM64` that Apple's `ld`
   links and macOS executes 17/17 vs wasmtime. Both containers render **one
-  `ObjectPlan`**, so a second writer *disagreeing* with the first is
-  unrepresentable rather than merely tested — 141 modules byte-identical, and
-  the `.text` bytes are literally the same in both containers.
+  `ObjectPlan`**, so for everything the plan carries — text, data, symbol order,
+  values and placement, relocation targets — a second writer cannot disagree.
+  The `.text` bytes are literally identical in both containers (the oracle
+  derives the count on each run; it reported 144 on the release tree).
+
+  **Scoped honestly, after the cold review:** the plan does **not** carry symbol
+  *binding*. `elf.rs` hard-codes `STB_GLOBAL` and `macho.rs` marks every symbol
+  `N_EXT` independently, so a #1180 fix applied to one writer alone would make
+  them diverge with nothing structural preventing it. Calling this "the
+  structural answer to #1180" was an overstatement — #1180 *is* binding, which
+  is the one thing the shared plan does not cover.
 
 ### Gates that could not fail, and one that caught its author
 
@@ -97,10 +105,12 @@ the tool (v0.63's doc listed 7 of 12 rows). Only the second was the tool's.
   *fail* rather than report a clean tree. And a fourth nobody constructed: **the
   rule fired on its own author**, because the obvious way to write the
   artifact's `verified-by` quoted the live floor.
-- **#1085 (SCOPEGAP):** 293 unscoped artifacts, of which **nine** restated
-  moving repo-derived counts as undated present-tense fact — eight of them
-  six-month-stale proof counts, sitting behind a green gate for at least eight
-  releases. Now pinned as an **equality** after the churn was measured (two
+- **#1085 (SCOPEGAP):** 293 unscoped artifacts. Two counts, distinguished here
+  because an earlier draft blurred them (cold review): the rule's red-first run
+  flagged **23 undated citations across 13 artifacts**; of those, **nine** are
+  the shape the artifact is named for — one acceptance title plus **eight**
+  artifacts restating the repo's own proof counts as undated present-tense fact,
+  six months stale behind a green gate. Now pinned as an **equality** after the churn was measured (two
   moves in seven intervals), so drift in either direction is a visible diff.
 - **#1057 (CFOBLIG):** the WASM half of the Block/End obligation landed
   (630 → 645 Qed, zero new admits, nothing named `*_correct`), and the ARM half
@@ -120,11 +130,38 @@ the refresh mechanism can be **permanently** gone (merging main *into* a
 dependabot branch destroys the ability to freshen it); and a bump nobody
 evaluates needs a disposition, because "still open" is not one.
 
-Four held bumps, **four different outcomes**, each on its own evidence. The z3
-bump was **declined** — it breaks the required Bazel build, attributable because
-three sibling bumps on the same base were green. That is the **first time the
-enforced hold has stopped a breaking 0.x-minor before it landed**; the rule was
-written after ordeal 0.9→0.12 hung CI for days and had never been falsified.
+Three bumps landed, each with its reason recorded. The fourth (z3 0.20.2 →
+0.21.0) is **undetermined**, and the story I first published about it was wrong.
+
+**Retracted before the tag, by this release's own cold review.** I closed that
+bump as "breaks the required Bazel build", attributing it to `z3-sys` linking the
+system libz3. `crates/BUILD.bazel:167-170` says there is **no z3-sys in the Bazel
+graph at all** — the mechanism I described could not occur. The actual failure
+was a **504 Gateway Time-out** fetching `bazel-skylib`; Bazel never compiled
+anything and the log contains zero occurrences of "z3". My "three siblings on the
+same base" was also wrong; their merge-bases differed.
+
+The job logs were not retrievable through the API, and rather than record the
+honest verdict — *unattributable, needs a re-run* — I reasoned from the job's
+**name** plus a plausible mechanism and wrote it up as measurement. This repo
+already has a "read the failure name, not the count" rule; the correction is that
+it extends to the failure's **content**, and when that is unavailable the answer
+is "unknown", not an inference. The bump is neither exonerated nor convicted; it
+has been sent for recreate and a real verdict.
+
+### The subtraction metric moved the wrong way (#242)
+
+Stated because the North Star says it must be, and an earlier draft of these
+notes omitted it — found by the cold review.
+
+`selector_lines_code` went **19227 → 19740 (+513)** against a baseline of 17897
+that the ratchet says must FALL. Every increment is waivered with a written
+reason (the #1189 fix had no handling to delete — the class *miscompiled*; the
+param-block lowering added a policy read; the Mach-O work added a container
+writer), and the wildcard count in the lowering code held at 55. But the
+direction is the direction: this release ADDED hand-maintained selector lines and
+deleted none, which is exactly what the ratchet exists to make visible rather
+than comfortable.
 
 ### Corrections
 
@@ -133,8 +170,11 @@ written after ordeal 0.9→0.12 hung CI for days and had never been falsified.
   correctly dated "measured at v0.54.0". The claim came from a grep for `1.6`,
   which returns occurrences and cannot return framing. `VCR-REACH-002` had
   drifted; `VG-009` had not.
-- The #1189 issue as filed said the miscompile was `--relocatable`-only and its
-  blast radius unmeasured. Both were corrected by the lane's measurement.
+- The #1189 issue as filed listed the self-contained path, other backends and
+  other shapes as **unmeasured** under "Not claimed"; the lane's measurement
+  filled that in and found the self-contained path affected. An earlier draft of
+  these notes said the issue had claimed `--relocatable`-**only**. It had not —
+  it declined to claim either way, which is a different and better thing.
 
 ### Deferred, with the reason recorded
 

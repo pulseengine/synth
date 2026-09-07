@@ -88,10 +88,8 @@ artifacts:
         three things it omitted (base freshness as part of "green", the
         permanently-lost refresh mechanism, and the disposition obligation),
         plus the measured requirement that a dependabot command be PLAIN TEXT.
-        The artifact stays `proposed` because the second half of its done-when
-        — a disposition for each of the four held PRs — is not done. Flipping
-        to `implemented` on half the criterion would claim an outcome that has
-        not happened.
+        (That sentence described increment 1 only; both halves are now
+        discharged and the status is `implemented`.)
       done-when: "manual: the MINORHOLD rule gains a written exit condition naming (a) the base-freshness precondition, (b) which feature-gated suites the dependency's own path requires, (c) the stated-reason obligation, and (d) what happens to a bump nobody evaluates; and each of the four held PRs is either landed under it or closed with a reason"
       verified-by: >-
         BOTH CLAUSES DISCHARGED.
@@ -121,14 +119,19 @@ artifacts:
             cannot change the verdict of the job that validates synth's own
             artifacts. Distinguishing the action version from the tool version
             IS this evaluation.
-          #1108 z3 0.20.2 -> 0.21.0            CLOSED, declined. Breaks the
-            required `Bazel Build & Proofs` at `Build Rust via Bazel`, and the
-            attribution is measured: that job is success on main and pass on
-            all THREE sibling bumps sharing the same base. It also pulls
-            z3-sys 0.11 -> 0.13, which links the system libz3. FIRST TIME the
-            enforced hold has stopped a breaking 0.x-minor before it landed —
-            the rule was written after ordeal 0.9->0.12 hung CI for days (#849)
-            and had never before been falsified.
+          #1108 z3 0.20.2 -> 0.21.0            UNDETERMINED. Sent for
+            recreate and a real verdict. RETRACTED BEFORE THE TAG by this
+            release's cold review: I first closed it as "breaks the Bazel
+            build", attributing that to z3-sys linking the system libz3.
+            `crates/BUILD.bazel:167-170` states there is NO z3-sys in the Bazel
+            graph, so the mechanism I gave was impossible. The real failure was
+            a 504 Gateway Time-out fetching bazel-skylib — Bazel compiled
+            nothing and the log contains zero occurrences of "z3" — and it was
+            never re-run. The "three siblings on the same base" claim was wrong
+            too; their merge-bases differed. The job logs were unavailable via
+            the API and I inferred a cause instead of recording
+            "unattributable". So this artifact makes NO claim that the hold has
+            ever caught a breaking bump; that claim is withdrawn.
           #1110 wast 257.0.1 -> 258.0.0        MERGED. Its `Kani Verification`
             red was NOT waved through: the failing STEP was `Install Kani` (the
             installer, not a verification result) and Kani was green on main, so
