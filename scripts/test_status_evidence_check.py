@@ -98,6 +98,7 @@ from status_evidence_check import (  # noqa: E402
     DuplicateKeyError,
     StrictLoader,
     check,
+    check_live_floor_prose,
     check_programme,
     check_unscoped,
 )
@@ -1389,6 +1390,75 @@ class UnscopedStaleness1085(unittest.TestCase):
         self.assertGreater(STALENESS_CITATIONS, 0)
         self.assertEqual(undated, 0)
         self.assertGreater(unscoped, 200)
+
+
+class FloorProseRule(unittest.TestCase):
+    """RQ-64-FLOORPROSE (#910) — check_live_floor_prose.
+
+    Added after v0.64's cold review observed the rule shipped with ZERO unit
+    tests: its three-direction red-first was a one-time manual transcript, and a
+    transcript is not a test. The rule's own subject is "a live pinned value
+    that nothing checks", so shipping it unchecked was the defect it describes.
+    """
+
+    def _tree(self, floor="324847", prose="hi"):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        wf = root / ".github" / "workflows"
+        wf.mkdir(parents=True)
+        (wf / "ci.yml").write_text(
+            "jobs:\n  x:\n    steps:\n      - run: |\n"
+            f"          python3 scripts/oracle_wiring_check.py --exact-emulation-floor {floor}\n"
+        )
+        d = root / "artifacts" / "release-v0.64"
+        d.mkdir(parents=True)
+        (d / "RQ-64-X.yaml").write_text(
+            f"artifacts:\n  - id: RQ-64-X\n    description: {prose}\n"
+        )
+        return root
+
+    def test_clean_tree_passes(self):
+        scanned, live, hits, fails = check_live_floor_prose(self._tree())
+        self.assertEqual((live, hits, fails), ("324847", 0, []))
+        self.assertEqual(scanned, 1)
+
+    def test_restated_live_floor_fails_and_names_the_file(self):
+        root = self._tree(prose="the floor is 324847 today")
+        _, _, hits, fails = check_live_floor_prose(root)
+        self.assertEqual(hits, 1)
+        self.assertTrue(fails, "a restated LIVE floor must fail")
+        self.assertIn("RQ-64-X.yaml", fails[0])
+
+    def test_superseded_floor_does_not_fire(self):
+        """A DIFFERENT value is dated history and cannot rot — the distinction
+        the corrected premise in #1178 turns on."""
+        root = self._tree(prose="at v0.63 the floor was 324845")
+        _, _, hits, fails = check_live_floor_prose(root)
+        self.assertEqual((hits, fails), (0, []))
+
+    def test_blinded_rule_fails_rather_than_reporting_clean(self):
+        """Rename the gate flag and the rule cannot derive its subject. It must
+        FAIL, never report a clean tree (#1113 non-vacuity)."""
+        root = self._tree()
+        ci = root / ".github" / "workflows" / "ci.yml"
+        ci.write_text(ci.read_text().replace("--exact-emulation-floor",
+                                             "--min-emulation-floor"))
+        _, live, _, fails = check_live_floor_prose(root)
+        self.assertIsNone(live)
+        self.assertTrue(fails, "a blinded rule must fail")
+
+    def test_zero_population_fails(self):
+        """An empty artifact glob is pattern rot, not a clean tree."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        wf = root / ".github" / "workflows"
+        wf.mkdir(parents=True)
+        (wf / "ci.yml").write_text("x: --exact-emulation-floor 1234\n")
+        scanned, _, _, fails = check_live_floor_prose(root)
+        self.assertEqual(scanned, 0)
+        self.assertTrue(fails, "a zero-population scan must fail")
 
 
 if __name__ == "__main__":
