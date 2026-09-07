@@ -11,6 +11,33 @@ artifacts:
 
       DEFERRAL REASON AS RECORDED AT v0.63:
       DEFERRED from v0.63, blocked UPSTREAM and not by capacity. spar#445 is open: spar accepts undeclared property sets SILENTLY, so a synth model would declare an execution contract spar reads nothing from — the artifact would be green while asserting nothing, which is the vacuity class this release spent its scope finding (RQ-63-FLOOREQ, #1113, RQ-62-FLOORTIGHT). Building it now would produce a model that CANNOT FAIL, and filing that as evidence is worse than filing nothing. SECOND, INDEPENDENT BLOCKER, recorded so the first is not mistaken for the only one: the AADL -> WIT generation is byte-identical today, so a layout contract needs a SECOND codegen target before the model constrains anything observable. Both must clear before this is actionable; neither is synth's to clear. This is the THIRD release running that feature-loop steps 1-2 are N/A (#1136), which the loop's own rule says must be FILED rather than waved off — it is, and it stays open with this reason attached.
+
+      DEFERRED FROM v0.64, and the reason is unchanged from v0.63 because the
+      BLOCKER is unchanged. spar#445 — "spar accepts property associations from
+      UNDECLARED property sets silently" — is still OPEN with no activity since
+      2026-09-03, verified at v0.64 cut time rather than carried forward from
+      the v0.63 record.
+
+      This is an EXTERNAL blocker in a sibling repository, which is a different
+      kind of deferral from the three v0.63 carried into this release: nothing
+      here went stale, nothing got harder, and no measurement expired. It cannot
+      proceed because the tool it depends on silently ACCEPTS input it should
+      refuse — and building an architecture model on a parser that will not tell
+      you when you got it wrong produces exactly the unfalsifiable artifact this
+      programme exists to avoid.
+
+      FOURTH CONSECUTIVE RELEASE recording feature-loop steps 1-2 (spar AADL ->
+      WIT) as N/A. That recurrence is tracked by #1136 and is not waved off: the
+      loop's own rule says a recurring N/A is a backlog item, not an exemption,
+      and the precedent it cites paid off — witness MC/DC was N/A four releases
+      running, was filed as #912, and #978 made it real.
+
+      Worth stating because it is easy to miss: the conformance gate does NOT
+      accept this prose as evidence. `loop_conformance_check` derives its step
+      1-2 slot as NA-FILED only when a release-SCOPED artifact exists. So the
+      N/A is discharged by this artifact being FILED and SCOPED, not by anyone
+      asserting "synth is a Rust compiler, not AADL-architected" — which is
+      true, and has never been examined, which is the point of #1136.
     status: proposed
     release: v0.64
     tags:
