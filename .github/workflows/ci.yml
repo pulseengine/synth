@@ -310,6 +310,14 @@ jobs:
       # already-REQUIRED claim-check job for the standing reason above.
       - name: Proof-inventory manifest freshness (RQ-60-CFOBLIG, #1057)
         run: python3 scripts/proof_inventory.py --check
+      # RQ-64-CFOBLIG (#1057): the constructor<->variant join now carries ONE
+      # Rocq-keyword escape (`End_` -> `End`, because `End` is reserved). An
+      # escape that strips underscores is one step from the alias table the
+      # join exists to forbid, so both branches are unit-driven: the keyword
+      # joins, a non-keyword trailing underscore still refuses, and the real
+      # tree's `End` row is keyed by op with the real constructor name.
+      - name: Unit-test the proof-inventory join (RQ-64-CFOBLIG, #1057)
+        run: python3 scripts/test_proof_inventory.py
       # #890: the ORACLE-WIRING gate. scripts/repro/*.py are the execution
       # oracles; 69 of 150 were referenced by no workflow at all and nothing
       # distinguished "manual by design" from "forgotten". Every script now

@@ -116,6 +116,18 @@ rocq_library(
     deps = [":base", ":common", ":wasm_values", ":wasm_instructions"],
 )
 
+# RQ-64-CFOBLIG (#1057): the WASM side of the Block/End correspondence —
+# Block/Loop/Br/End_ constructors get a nesting-aware, fuel-bounded
+# structured executor (exec_wasm_blocks) over the SHIPPED flat op stream,
+# proven to coincide with exec_wasm_seq on programs without them. WASM-only
+# by design: nothing here is a correspondence claim.
+rocq_library(
+    name = "wasm_blocks",
+    srcs = ["Synth/WASM/WasmBlocks.v"],
+    include_path = "Synth",
+    deps = [":base", ":common", ":wasm_values", ":wasm_instructions", ":wasm_semantics"],
+)
+
 # VCR-WASM-001 (#242, Track B): WasmCert-Coq source-semantics anchor.
 # WasmCertReference.v transcribes WasmCert-Coq's i32.add rule (= CompCert
 # Int.add) into synth's I32 primitives with line-level provenance;
@@ -316,6 +328,29 @@ rocq_library(
     deps = _CORRECTNESS_FULL_DEPS + [":arm_flag_lemmas"],
 )
 
+# RQ-64-CFOBLIG (#1057): the Block/End correspondence obligation STATED and
+# its obstruction PINNED — kernel-checked lemmas about what the current ARM
+# executor does with B / BL / backward BCondOffset (it falls through), plus a
+# concrete counting loop the model executes exactly once. No correctness
+# theorem, nothing named *_correct: when VCR-ISA-001 closes a gap the matching
+# lemma here stops compiling, which is the intended red-first signal.
+rocq_library(
+    name = "block_end_obligation",
+    srcs = ["Synth/Synth/BlockEndObligation.v"],
+    include_path = "Synth",
+    deps = [
+        ":base",
+        ":common",
+        ":arm_state",
+        ":arm_instructions",
+        ":arm_semantics",
+        ":wasm_values",
+        ":wasm_instructions",
+        ":wasm_semantics",
+        ":wasm_blocks",
+    ],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
@@ -339,6 +374,8 @@ rocq_proof_test(
     name = "rocq_proofs",
     deps = [
         ":correctness_complete",
+        ":wasm_blocks",
+        ":block_end_obligation",
         ":extraction",
         ":arm_refinement",
         ":sail_arm_bridge",

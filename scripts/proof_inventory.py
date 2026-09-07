@@ -61,6 +61,16 @@ model_coverage_audit.py / #867 shape):
   constructor with no shipped op (a rename, a model-only addition) is a loud
   red, never a silently dropped row.
 
+  The ONE exception is a language fact, not a convention (RQ-64-CFOBLIG,
+  #1057): `End` is a reserved Rocq vernacular keyword (`Section`/`Module`
+  `End`), so the model cannot spell the constructor for `WasmOp::End` and
+  spells it `End_`. `constructor_op` strips exactly one trailing underscore
+  from a constructor whose stem is in ROCQ_RESERVED_WORDS and nothing else —
+  `Foo_` for a non-reserved `Foo` still REFUSES (test_proof_inventory.py
+  drives both branches), so the escape cannot grow into an alias table. The
+  manifest row keeps `"constructor": "End_"` (the real Rocq name) under
+  `"op": "End"`.
+
   Binding — by what the statement APPLIES, never by deriving a name: a
   Theorem/Lemma/Example DISCHARGES a constructor C when its STATEMENT (the
   text between the name and `Proof`, comment-stripped) BOTH
@@ -95,8 +105,15 @@ model_coverage_audit.py / #867 shape):
                           "qed" if >= 1 binding theorem ends `Qed.`;
                           "admitted" if bindings exist but none reach Qed;
                           "absent" if a constructor exists but nothing binds
-                          (today: none — every constructor is bound at least
-                          at existence tier).
+                          — MODELED BUT UNPROVEN. Since RQ-64-CFOBLIG that is
+                          the honest row for Block/Loop/Br/End: the WASM side
+                          has executable semantics (coq/Synth/WASM/
+                          WasmBlocks.v) and no theorem relates them to ARM
+                          code, because the ARM model cannot state the
+                          obligation yet — the obstruction is pinned by
+                          kernel-checked lemmas in coq/Synth/Synth/
+                          BlockEndObligation.v. One tier ABOVE "unmodeled",
+                          still uncovered for a consumer.
     result_correspondence true iff >= 1 Qed'd binding theorem is
                           result-correspondence — the honest per-op frontier
                           (69 of the 138 modeled ops today are existence-only
@@ -201,6 +218,24 @@ def wasm_instr_constructors(text):
     return names
 
 
+# Rocq vernacular keywords that collide with a shipped WasmOp variant name.
+# A constructor cannot be spelled with one, so the model appends a single
+# underscore and this join strips it — for these stems ONLY.
+ROCQ_RESERVED_WORDS = frozenset({"End"})
+
+
+def constructor_op(constructor):
+    """The WasmOp variant a wasm_instr constructor names.
+
+    Identity for every constructor except the keyword escape: `End_` -> `End`.
+    `Foo_` for a non-reserved `Foo` is returned UNCHANGED, so it fails the
+    exact-name join and the generator refuses — the escape is not an alias
+    mechanism."""
+    if constructor.endswith("_") and constructor[:-1] in ROCQ_RESERVED_WORDS:
+        return constructor[:-1]
+    return constructor
+
+
 def wasm_op_variants(text):
     """Top-level variant names of `pub enum WasmOp`, in declaration order.
 
@@ -297,7 +332,8 @@ def build():
 
     # The model join is exact-name over two PARSED artifacts. A constructor
     # that names no shipped op would silently drop a row — refuse instead.
-    orphans = [c for c in constructors if c not in set(ops)]
+    op_set = set(ops)
+    orphans = [c for c in constructors if constructor_op(c) not in op_set]
     if orphans:
         raise SystemExit(
             f"proof_inventory: wasm_instr constructor(s) with no WasmOp "
@@ -316,11 +352,18 @@ def build():
             if ARM_SIDE.search(stmt):
                 blocks.append((name, stmt, term, rel))
 
-    modeled_set = set(constructors)
+    # op -> its Rocq constructor (identity except the keyword escape).
+    constructor_of = {constructor_op(c): c for c in constructors}
+    if len(constructor_of) != len(constructors):
+        raise SystemExit(
+            "proof_inventory: two wasm_instr constructors name the same "
+            "WasmOp variant — the join is ambiguous, refusing to green"
+        )
     entries = []
     for op in ops:
-        modeled = op in modeled_set
+        modeled = op in constructor_of
         if modeled:
+            ctor = constructor_of[op]
             thms = [
                 {
                     "name": name,
@@ -329,7 +372,7 @@ def build():
                     "strength": strength(stmt),
                 }
                 for name, stmt, term, rel in blocks
-                if anchors_constructor(stmt, op)
+                if anchors_constructor(stmt, ctor)
             ]
             thms.sort(key=lambda t: (t["file"], t["name"]))
             if any(t["terminator"] == "Qed" for t in thms):
@@ -349,7 +392,7 @@ def build():
         entries.append(
             {
                 "op": op,
-                "constructor": op if modeled else None,
+                "constructor": constructor_of[op] if modeled else None,
                 "modeled": modeled,
                 "status": status,
                 "result_correspondence": result,
@@ -397,7 +440,8 @@ def build():
             "accepted function is decoded into; rows are modeled:true iff a "
             "wasm_instr constructor of the same name exists in "
             "coq/Synth/WASM/WasmInstructions.v (also parsed; every constructor "
-            "must name a variant or generation refuses)",
+            "must name a variant or generation refuses — the single exception "
+            "is the Rocq-keyword escape End_ for End, a language fact)",
             "binding": "a theorem discharges a constructor when its STATEMENT "
             "applies exec_wasm_instr / compile_wasm_to_arm / singleton "
             "exec_wasm_seq to that constructor AND runs the ARM-side executor "
@@ -427,6 +471,14 @@ def build():
                 "`_ => None` and can produce no instance for a consumer to "
                 "meet. MultiMemory is decoder-synthesized (a non-zero-memory-"
                 "index wrapper), not a wasm opcode itself.",
+                '"status": "absent" means the Rocq model HAS the constructor '
+                "but no theorem relates it to ARM code — modeled, unproven. "
+                "For Block/Loop/Br/End (RQ-64-CFOBLIG, #1057) the WASM-side "
+                "semantics are executable (coq/Synth/WASM/WasmBlocks.v) and "
+                "the ARM-side obligation is stated with its obstruction "
+                "pinned by kernel-checked lemmas "
+                "(coq/Synth/Synth/BlockEndObligation.v): one tier above "
+                '"unmodeled", still uncovered for a consumer.',
                 '"result_correspondence": false with status "qed" means the '
                 "op is proven to EXECUTE (the T2 tier of coq/STATUS.md) but "
                 "no Qed'd theorem pins its result — the honest per-op "

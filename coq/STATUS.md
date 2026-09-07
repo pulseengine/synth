@@ -1,6 +1,21 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-08-27 (RQ-60-CFOBLIG #1057 increment 1: the WASM model
+**Last Updated: 2026-09-07 (RQ-64-CFOBLIG #1057: the Block/End correspondence
+obligation — WASM half LANDED, ARM half STATED with its obstruction PINNED.
+`WasmInstructions.v` gains `Block`/`Loop`/`Br`/`End_` (the flat op-stream
+form the compiler consumes; `End_` because `End` is a reserved Rocq keyword)
+and `WasmBlocks.v` gives them a nesting-aware, unwinding, fuel-bounded
+structured executor `exec_wasm_blocks`, proven to coincide with
+`exec_wasm_seq` on programs without them (11 Qed incl. computed non-vacuity:
+the same block lands with and without its tail depending only on the branch
+constant; a counting loop iterates). NO ARM correspondence theorem was added,
+by decision: `BlockEndObligation.v` (4 Qed, nothing named `*_correct`) pins
+with the kernel that the current executor runs `B`/`BL` as fall-throughs,
+runs a backward `BCondOffset` as a fall-through, and executes a counting
+loop's body exactly once — and writes the five obstructions (O1-O5) down as
+VCR-ISA-001 input; see the "Block/End correspondence" section below.
+recount 645 Qed / 2 Admitted. Previous entry 2026-08-27, RQ-60-CFOBLIG #1057
+increment 1: the WASM model
 gains its FIRST control-flow constructor — `BrIf` (label depth, mirroring the
 shipped `WasmOp::BrIf(u32)`) — with executable semantics on two levels:
 `exec_wasm_instr` takes the fall-through case and DECLINES a taken branch
@@ -12,7 +27,7 @@ outcome. The correspondence obligation is DISCHARGED: `brif_correct`
 takes the ARM branch iff the WASM side branches, against the same
 `exec_program_pc`/`exec_program_br` executor as the #73 div/rem trap guards,
 plus two exec_program_br non-vacuity corollaries (same code, condition value
-alone flips Some/None). recount 630 Qed / 2 Admitted. Previous entry
+alone flips Some/None). recount then 630 / 2. Previous entry
 2026-08-21, RQ-59-SUBTRACT #242 increment 6: 6 new rule
 theorems (the sign-extension family — i32.extend8_s/16_s via new SXTB/SXTH
 model instructions, i64.extend8/16/32_s via new narrow pseudo-ops, semantics
@@ -41,6 +56,56 @@ The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
 re-derive `Qed.`/`Admitted.`/`admit.` counts from `coq/Synth/**/*.v` on every
 commit. When a proof lands, update this file, README.md, CLAUDE.md AND
 `claims.yaml` in the same PR.
+
+## Block/End correspondence — obligation stated, obstruction pinned (RQ-64-CFOBLIG #1057, 2026-09-07)
+
+**What landed.** The WASM half of the obligation gale's #1057 measurement
+asked for (`End` 64, `Block` 38, `Br` 7, `Call` 31 of their 180 uncovered
+instances at v0.60). `WasmInstructions.v` gains `Block`, `Loop`, `Br : nat`,
+`End_` — one constructor per shipped `WasmOp` variant in the FLAT op-stream
+form the compiler consumes, so `End` is a first-class instruction with its own
+inventory row (`End_` only because `End` is a reserved Rocq keyword; the
+inventory's join strips exactly that escape and nothing else,
+`scripts/test_proof_inventory.py`). `WasmBlocks.v` gives them semantics:
+`split_block` (nesting-aware scan to the matching `End_`), `unwind_to` (a taken
+branch restores the target block's entry stack — `br` is stack-polymorphic),
+and the fuel-bounded `exec_wasm_blocks` (Block consumes `WBranch 0` and resumes
+after `End_`, Loop re-enters, deeper branches propagate decremented, `Br` is an
+unconditional `WBranch`, a stray `End_` is `None`). `exec_wasm_blocks_structured_free`
+proves it IS `exec_wasm_seq` on programs without the four constructors, so the
+executor every existing theorem and `brif_correct` are stated against is
+unchanged by construction. Void blocks only; `exec_wasm_instr` and
+`compile_wasm_to_arm` DECLINE all four (catch-all / `[UDF 255]`), never a
+silent no-op.
+
+**What did NOT land, and why that is the deliverable (done-when branch B).**
+No ARM correspondence theorem for Block/End. `BlockEndObligation.v` states the
+obligation — under a simulation relation, the ARM run of a compiled block
+structure reaches exactly the index the compiler resolved for the WASM outcome,
+in a state related to the WASM state AFTER unwinding, with the landing index
+DERIVED from the compiled layout (a free offset collapses to `brif_correct`) —
+and pins with the kernel why `ArmSemantics.v` cannot state it today:
+
+| # | Obstruction | Pinned by | Would-have-missed |
+|---|---|---|---|
+| O1 | `exec_program_pc` intercepts only `BCondOffset`; `B`/`BL` write the PC REGISTER while the executor advances its INDEX (two disjoint program counters). Shipped `Br` = `B label`; gale's `Call` rows share the shape | `exec_program_pc_B_not_taken`, `exec_program_pc_BL_not_taken` | every `br`, every call |
+| O2 | `pc + 1 + Z.to_nat off` with `off < 0` is `pc + 1` — a backward branch's taken and not-taken targets coincide; the fuel budget `S (length prog)` assumes forward-only | `exec_program_pc_bcond_backward_falls_through`, `arm_count_loop_body_runs_once` (the model runs `ADD;CMP #10;BNE -3`'s body ONCE; `WasmBlocks.v`'s `ex_loop_counts_down_to_zero` iterates) | every `loop` back-edge |
+| O3 | the model's pc is an instruction index; `arm_backend.rs` resolves labels to BYTE offsets by summing the real encoder's sizes (Label = 0 B) until 16/32-bit widths converge | measured (shipped resolver); no lemma can pin a representation gap | #483 (mid-instruction landing), #740 (halved `B<c>.W`) |
+| O4 | `state_correspondence` (Compilation.v:692) is defined and used by ZERO theorem statements; `compile_wasm_program = flat_map compile_wasm_to_arm` composes lowerings that each assume operands in R0/R1 | measured (`grep`, 1 definition / 0 statements) | anything spanning a block body |
+| O5 | the arity-1 join register is chosen lazily at the first branch edge (`result_reg`, `edge_value_move`); `End` emits a `MOV` only then — an atomic `compile_wasm_to_arm End_ = []` would be the #1021 popcnt shape | measured (`select_with_stack.rs`) | #509, #930 |
+
+**VCR-ISA-001 input, in dependence order:** (a) a byte-addressed executor with
+an encoder-derived size function admitting negative offsets, in which
+`B`/`BL`/`BCondOffset` are all executor-visible — O1, O2, O3 are ONE decision;
+(b) step-counted fuel and the re-check of every `exec_program_pc` site
+(ArmSemantics 20, CorrectnessI32 27, CorrectnessBrIf 11, Compilation 1);
+(c) a simulation relation preserved across instructions (the register-
+parametric framework #73 named); (d) blocktype arity and the join register.
+The forward/void/index-granular fragment is statable today and was
+deliberately NOT proven: a green Qed blind to #483, #500, #509, #740 and #930
+is the overclaim RQ-64-CFOBLIG forbids. `proof-inventory.json` reflects this
+semantically: Block/Loop/Br/End moved from `unmodeled` to `absent` (modeled,
+unproven) — one tier up, still uncovered for a consumer.
 
 ## ISA-model basis — the #682-class trusted base (#867)
 
@@ -262,7 +327,7 @@ and predates the VcrSelRules (76), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 630 Qed / 2 Admitted (+2 admit.) across all files** (recount 2026-08-27, CI-gated via `claims.yaml`)
+**Total: 645 Qed / 2 Admitted (+2 admit.) across all files** (recount 2026-09-07, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -527,8 +592,8 @@ All fully proved (Qed); no new axioms.
 
 ## Per-File Breakdown
 
-Recount 2026-08-27, RQ-60-CFOBLIG increment 1 (`grep -c 'Qed\.'` / `'Admitted\.'`
-per file; the per-file rows below sum EXACTLY to the CI-gated headline 630 / 2):
+Recount 2026-09-07, RQ-64-CFOBLIG (`grep -c 'Qed\.'` / `'Admitted\.'`
+per file; the per-file rows below sum EXACTLY to the CI-gated headline 645 / 2):
 
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
@@ -551,6 +616,8 @@ per file; the per-file rows below sum EXACTLY to the CI-gated headline 630 / 2):
 | ArmSemantics.v | 14 | 0 | Infra |
 | SailArmBridge.v | 92 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
 | WasmSemantics.v | 9 | 0 | Infra (+3 RQ-60-CFOBLIG: `exec_wasm_seq_brif_free` pins the new branch-observable executor to `exec_wasm_program` on branch-free programs, + the `exec_wasm_seq` taken/not-taken unfolding pair) |
+| WasmBlocks.v | 11 | 0 | Infra (RQ-64-CFOBLIG #1057, WASM-only by design: `split_block_block_free`, `exec_wasm_blocks_structured_free` — the structured executor IS `exec_wasm_seq` on programs without Block/Loop/Br/End_ —, the Block taken/fallthrough/outer + Loop re-enter + Br unfolding lemmas, and four computed non-vacuity examples: the same block lands with an unwound empty stack vs a 7 on top depending only on the branch constant, a counting loop reaches local 0 = 0, and with fuel for one pass it declines rather than reporting a one-iteration result) |
+| BlockEndObligation.v | 4 | 0 | Infra — MODEL-GAP PINS, not correctness (RQ-64-CFOBLIG #1057, nothing named `*_correct`): `exec_program_pc_B_not_taken`, `exec_program_pc_BL_not_taken` (the index executor runs an unconditional branch / a call as a fall-through, writing only the PC register), `exec_program_pc_bcond_backward_falls_through` (a negative offset's taken and not-taken targets coincide), and `arm_count_loop_body_runs_once` (ADD;CMP #10;BNE -3 exits with R0 = 1 under `exec_program_br`). Each stops compiling when VCR-ISA-001 closes its gap — the intended red-first signal |
 | Compilation.v | 5 | 0 | Infra (#166: `ex_compile_simple_add` + `ex_compile_increment_local` discharged via `vm_compute`) |
 | Base.v | 4 | 0 | Infra |
 | StateMonad.v | 3 | 0 | Infra |
@@ -659,8 +726,8 @@ Every op family the shipped ARM selectors lower, as of increment 6
 | bulk memory (memory.copy/fill), memory.size/grow | 4 | 0 | 0 | 4 |
 | locals/globals (get/set/tee) | 5 | 0 | 5 | 0 |
 | parametric (drop/select/nop) | 3 | **1** | 2 | 0 |
-| control flow (block/loop/br/br_if/return/call/…) | ~10 | 0 | 0 | ~10 |
-| **Total (≈)** | **155** | **60 (39%)** | **81 (52%)** | **14 (9%)** |
+| control flow (block/loop/br/br_if/return/call/…) | ~10 | 0 | 1 (`br_if`: `brif_correct`, RQ-60) | ~9 (block/loop/br/end are MODELED WASM-side since RQ-64-CFOBLIG but carry no ARM obligation — blocked, see "Block/End correspondence" above; return/call/br_table/if/else unmodeled) |
+| **Total (≈)** | **155** | **60 (39%)** | **82 (53%)** | **13 (8%)** |
 
 ¹ pseudo-op tier: `i32.popcnt`, `i64.eqz`, the ten binary i64 comparisons,
 the VCR-ISA-001 wave-2 i64 shapes (`clz`/`ctz`/`popcnt`, `mul`/`shl`/`shr_u`/

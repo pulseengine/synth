@@ -810,9 +810,46 @@ claims:
       - kind: count-eq
         pattern: '"modeled": false'
         glob: ['artifacts/proof-inventory.json']
-        expect: 141
+        expect: 137                          # 141 -> 137: Block/Loop/Br/End_ modeled (RQ-64-CFOBLIG)
       - kind: file-exists
         path: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
+
+  # RQ-64-CFOBLIG (#1057): the Block/End correspondence obligation's
+  # OBSTRUCTION RECORD. Done-when branch B — "the obstruction is stated
+  # precisely enough to be VCR-ISA-001 input, with no existence-only theorem
+  # named *_correct". The record must not rot silently in EITHER direction:
+  # if the four model-gap lemmas stop being exactly four (a gap closed, or a
+  # pin was quietly deleted), if any theorem in the two new files acquires a
+  # *_correct name, if an Admitted/admit sneaks in, or if the manifest's
+  # "absent" rows stop being exactly the four structured control-flow ops
+  # (a theorem bound one of them — the record must be revisited in the SAME
+  # PR), this goes red.
+  - id: SYNTH-BLOCKEND-OBSTRUCTION-1057
+    doc: coq/STATUS.md
+    text: "obligation stated, obstruction pinned (RQ-64-CFOBLIG #1057"
+    evidence:
+      - kind: file-exists
+        path: coq/Synth/Synth/BlockEndObligation.v
+      - kind: file-exists
+        path: coq/Synth/WASM/WasmBlocks.v
+      - kind: count-eq                       # the four model-gap pins, exactly
+        pattern: 'Qed\.'
+        glob: ['coq/Synth/Synth/BlockEndObligation.v']
+        expect: 4
+      - kind: count-max                      # no correctness NAME on a non-correctness file
+        pattern: '^(?:Theorem|Lemma|Example)\s+\w*_correct\b'
+        glob: ['coq/Synth/Synth/BlockEndObligation.v', 'coq/Synth/WASM/WasmBlocks.v']
+        max: 0
+      - kind: count-max                      # and no admits, in as many words
+        pattern: 'Admitted\.|^\s*admit\.'
+        glob: ['coq/Synth/Synth/BlockEndObligation.v', 'coq/Synth/WASM/WasmBlocks.v']
+        max: 0
+      - kind: count-eq                       # modeled-but-unproven rows: Block/Loop/Br/End
+        pattern: '"status": "absent"'
+        glob: ['artifacts/proof-inventory.json']
+        expect: 4
+      - kind: verbatim                       # the decision, in STATUS.md's own words
+        text: "deliberately NOT proven"
 
   - id: SYNTH-A32-TRIPWIRE-UNIVERSE
     doc: scripts/templates/feature_matrix.md.tmpl
@@ -959,12 +996,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "630 Qed / 2 Admitted"
+    text: "645 Qed / 2 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 630
+        expect: 645
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -972,16 +1009,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "630 Qed / 2 Admitted"
+    text: "645 Qed / 2 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '630 Qed / 2 Admitted'
+        pattern: '645 Qed / 2 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 630
+        expect: 645
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']

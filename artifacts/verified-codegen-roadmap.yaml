@@ -843,6 +843,46 @@ artifacts:
       exists to surface. Still open (why not implemented): PC-indexed
       executor (the trap-guard admits, this item's core motivation),
       MUL/UMULL/CLZ/RBIT/memory/branches, and the whole RISC-V half.
+
+      INPUT FROM RQ-64-CFOBLIG (2026-09-07, #1057) — the Block/End
+      correspondence obligation is STATED against this item and its
+      obstruction is PINNED by kernel-checked lemmas in
+      coq/Synth/Synth/BlockEndObligation.v, each of which stops compiling
+      when its gap closes (the intended red-first signal). The gaps, in the
+      order they must be closed: (O1) exec_program_pc intercepts only
+      BCondOffset — B and BL execute as fall-throughs, writing the PC
+      REGISTER while the executor advances its INDEX (two disjoint program
+      counters; the shipped `Br` is `B label`, and gale's `Call` rows share
+      the shape); (O2) a BACKWARD BCondOffset is indistinguishable from
+      fall-through (Z.to_nat of a negative offset is 0), so no loop
+      back-edge is representable — a three-instruction counting loop's body
+      executes exactly once in the model while WasmBlocks.v's structured
+      executor iterates it; (O3) the model's pc is an instruction INDEX
+      while the shipped resolver (arm_backend.rs) sums the real encoder's
+      BYTE sizes over variable-length Thumb-2 with Label at 0 bytes — the
+      closed #483 mid-instruction landing and #740 halved-offset
+      miscompiles are invisible at index granularity, the #1021 popcnt
+      shape one level up; (O4) state_correspondence (Compilation.v) is
+      defined and used by no theorem statement, so nothing spanning a
+      block body can be related; (O5) the arity-1 join register is chosen
+      by the allocator at the first branch edge (select_with_stack.rs
+      result_reg / edge_value_move), where #509 and #930 lived. What this
+      item must therefore supply, in dependence order: a byte-addressed
+      executor with an encoder-derived size function admitting negative
+      offsets in which B/BL/BCondOffset are all executor-visible (O1-O3
+      are ONE decision); a step-counted fuel discipline with every
+      exec_program_pc call site re-checked (ArmSemantics, CorrectnessI32,
+      CorrectnessBrIf, Compilation); a simulation relation preserved across
+      instructions (the register-parametric framework #73 named) before
+      any body-spanning theorem; blocktype arity and the join register in
+      the model (VCR-RA/VCR-DEC territory as much as ISA modelling). The
+      WASM half is done and kernel-checked (coq/Synth/WASM/WasmBlocks.v:
+      Block/Loop/Br/End_ with a nesting-aware, unwinding, fuel-bounded
+      structured executor proven to coincide with exec_wasm_seq on
+      programs without them); the forward/void/index-granular fragment of
+      the ARM side is statable today and was deliberately NOT proven,
+      because a green theorem blind to every closed control-flow
+      miscompile would be the overclaim the artifact forbids.
     status: approved
     tags: [semantics, sail, isa, trust, rocq, track-b, unblocks-admits]
     links:

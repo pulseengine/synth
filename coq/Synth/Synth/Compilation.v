@@ -564,6 +564,21 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
          compiler actually emits after label resolution — and its
          obligation is [brif_correct] (CorrectnessBrIf.v). *)
       [UDF 255]
+
+  | Block | Loop | Br _ | End_ =>
+      (* LOUD DECLINE, not a lowering (#1057, RQ-64-CFOBLIG): the shipped
+         lowering of a block boundary is a zero-size label plus, for a
+         branched-to value block, a result-register move whose register
+         is chosen by the allocator at the first branch edge; the shipped
+         [Br] is an unconditional [B <label>] that the model's branch-
+         taking executor [exec_program_pc] does not intercept, and a loop
+         back-edge is a BACKWARD offset that executor cannot represent.
+         None of that is expressible per instruction — emitting [] here
+         would be the #615 silent-NOP class one level up (a block whose
+         branches never land). The structured WASM-side semantics are
+         [exec_wasm_blocks] (WasmBlocks.v); the ARM-side obligation is
+         STATED, and its obstruction pinned, in BlockEndObligation.v. *)
+      [UDF 255]
   end.
 
 (** ** br_if lowering shape (#1057, RQ-60-CFOBLIG increment 1) **)

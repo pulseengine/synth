@@ -23,6 +23,7 @@ Synth/ARM/SailArmBridge.v
 Synth/WASM/WasmValues.v
 Synth/WASM/WasmInstructions.v
 Synth/WASM/WasmSemantics.v
+Synth/WASM/WasmBlocks.v
 Synth/WASM/WasmCertReference.v
 Synth/WASM/WasmCertBridge.v
 
@@ -39,6 +40,7 @@ Synth/Synth/CorrectnessF64.v
 Synth/Synth/CorrectnessConversions.v
 Synth/Synth/CorrectnessMemory.v
 Synth/Synth/CorrectnessBrIf.v
+Synth/Synth/BlockEndObligation.v
 Synth/Synth/CorrectnessComplete.v
 
 # Extraction
