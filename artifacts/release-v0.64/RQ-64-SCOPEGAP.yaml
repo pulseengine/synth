@@ -108,6 +108,7 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1085"
+      landed: "PR #1182"
       done-when: "contains:scripts/test_status_evidence_check.py:test_replay_vcr_reach_002_title_figure_is_red"
       verified-by: >-
         Red-first transcript on the untouched tree: 23 undated citations across
