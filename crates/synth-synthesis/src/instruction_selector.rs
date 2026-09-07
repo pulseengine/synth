@@ -1372,67 +1372,98 @@ fn reconcile_implicit_else(
     Ok(())
 }
 
-/// RQ-64-MVLOWER (#1093): a then-arm result that is a REGISTER-HOMED LOCAL's
-/// own register must not become a join destination. `select_with_stack`
-/// pushes a `local.get` of an R0..R3 parameter by ALIAS (the home register,
-/// no copy), so a then-arm ending in `local.get 0` yields R0 as its result —
-/// and the else path's `MOV R_then, R_else` would then overwrite the LOCAL
-/// for every later read. Measured red-first on this lane's own lowering:
-/// `ipa(0)` returned 14 (want 7), `ipq(0)` 16 (want 8). Each such result is
-/// copied into a private temp ON THE THEN PATH (the caller emits this before
-/// the then-path's `B end_label`) and the temp becomes the join register.
+/// #1189 (and RQ-64-MVLOWER's implicit-else join): the join register must
+/// never be a LIVE register-homed local's home. `select_with_stack` pushes a
+/// `local.get` of a register-homed local by ALIAS (the home register, no
+/// copy), so a then-arm ending in `local.get 0` yields R0 as its result — and
+/// the else path's `MOV R_then, R_else` reconciliation would then WRITE the
+/// local for every read after the join (measured: `ir0(0)` 18, want 9; the
+/// parameter-taking `ipq(0)` 16 want 8 and else-less `ipa(0)` 14 want 7).
 ///
-/// The PARAMETER-FREE #313 reconciliation has the same exposure on main
-/// (`(if (result i32) c (then (local.get 0)) (else (i32.const 9)))` followed
-/// by `local.get 0`: 18, want 9) and is deliberately NOT changed here — that
-/// fix moves bytes outside this lane's acceptance oracle and is reported for
-/// its own oracle-gated increment.
-fn canonicalize_then_results(
-    then_results: &mut [StackVal],
-    local_homes: &[Reg],
+/// For every then-result entry in `stack[cp..]` whose register — either half
+/// of an i64 pair — is the home of a local still read AFTER the if's `End`
+/// (`param_last_read[p] > end_idx`; a dead home is clobbered harmlessly and
+/// keeps yesterday's bytes), copy it into a fresh temp ON THE THEN PATH
+/// (the caller emits this before the then path's `B end_label`) and rewrite
+/// the entry in place. Called with the entries still stack-live, so the temp
+/// allocator cannot hand one of them out. Returns the number of instructions
+/// emitted so the caller's control-flow accounting stays exact.
+///
+/// ONE mechanism for both joins: `Else` (every if, #1190) and the RQ-64
+/// implicit else of an else-less parameter-taking if at `End`.
+fn copy_live_home_then_results(
+    stack: &mut Vec<StackVal>,
+    cp: usize,
+    end_idx: usize,
+    home_of: &[(Reg, u32)],
+    param_last_read: &std::collections::HashMap<u32, usize>,
     next_temp: &mut u8,
-    stack: &mut [StackVal],
     instructions: &mut Vec<ArmInstruction>,
     spill: &mut SpillState,
-    reserved: &[Reg],
+    live_params: &[Reg],
     line: usize,
-) -> Result<()> {
-    let mut avoid = reserved.to_vec();
-    for v in then_results.iter() {
-        if let StackVal::Reg { reg, is_i64 } = v {
-            avoid.push(*reg);
-            if *is_i64 {
-                avoid.push(i64_pair_hi(*reg)?);
-            }
-        }
-    }
-    for v in then_results.iter_mut() {
-        let StackVal::Reg { reg, is_i64 } = *v else {
+) -> Result<usize> {
+    let before = instructions.len();
+    for pos in cp..stack.len() {
+        let StackVal::Reg { reg, is_i64 } = stack[pos] else {
             continue;
         };
-        let hi_aliased = is_i64 && local_homes.contains(&i64_pair_hi(reg)?);
-        if !local_homes.contains(&reg) && !hi_aliased {
+        let mut halves = vec![reg];
+        if is_i64 && let Ok(hi) = i64_pair_hi(reg) {
+            halves.push(hi);
+        }
+        let live_home = halves.iter().any(|h| {
+            home_of.iter().any(|&(r, p)| {
+                r == *h && param_last_read.get(&p).is_some_and(|&last| last > end_idx)
+            })
+        });
+        if !live_home {
             continue;
         }
-        if is_i64 {
+        let moves: Vec<(Reg, Reg)> = if is_i64 {
+            let hi = i64_pair_hi(reg)?;
+            let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                next_temp,
+                stack,
+                instructions,
+                spill,
+                &[],
+                live_params,
+                line,
+            )?;
+            vec![(dst_lo, reg), (dst_hi, hi)]
+        } else {
+            let dst =
+                alloc_temp_or_spill(next_temp, stack, instructions, spill, live_params, line)?;
+            vec![(dst, reg)]
+        };
+        // Under exhaustion spilling (the retry rung) the allocator may have
+        // spilled the very entry being copied; its register still holds the
+        // value, but the entry's slot bookkeeping would be orphaned by an
+        // in-place rewrite. Decline honestly instead.
+        if stack[pos] != (StackVal::Reg { reg, is_i64 }) {
             return Err(synth_core::Error::synthesis(
-                "#1093: an i64 register-homed local as a parameter-taking if's \
-                 then-result is not lowered (declined rather than clobbered)"
+                "#1189: then-arm result copy displaced by exhaustion spilling — \
+                 function too complex; retried/skipped rather than miscompiled"
                     .to_string(),
             ));
         }
-        let t = alloc_temp_or_spill(next_temp, stack, instructions, spill, &avoid, line)?;
-        instructions.push(ArmInstruction {
-            op: ArmOp::Mov {
-                rd: t,
-                op2: Operand2::Reg(reg),
-            },
-            source_line: Some(line),
-        });
-        avoid.push(t);
-        *v = StackVal::i32(t);
+        let dst_lo = moves[0].0;
+        for (rd, rs) in moves {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                },
+                source_line: Some(line),
+            });
+        }
+        stack[pos] = StackVal::Reg {
+            reg: dst_lo,
+            is_i64,
+        };
     }
-    Ok(())
+    Ok(instructions.len() - before)
 }
 
 /// Pop the top operand, returning its `lo` register (#171). If the entry was
@@ -17888,6 +17919,93 @@ mod tests {
         );
     }
 
+    /// #1189: the join register must never be a LIVE register-homed local's
+    /// home. Param 0 is homed in R0 (call-free function); the then-arm's bare
+    /// `local.get 0` used to push R0 itself, and the #313 reconciliation on
+    /// the else path was `mov r0, r1` — WRITING the param — so the
+    /// `local.get 0` after the join read the join value (ir0(0) = 18, want 9).
+    /// Now the then path copies the home into a temp before its `B if_end`,
+    /// and the else path reconciles into that temp; nothing before the join
+    /// writes R0. The same shape with NO read after the join (a dead home)
+    /// must emit no copy at all — those bytes are correct and stay frozen.
+    #[test]
+    fn if_result_join_never_targets_a_live_local_home_1189() {
+        use WasmOp::*;
+        let movs = |slice: &[ArmInstruction]| -> Vec<(Reg, Reg)> {
+            slice
+                .iter()
+                .filter_map(|i| match &i.op {
+                    ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rs),
+                    } => Some((*rd, *rs)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let labels = |instrs: &[ArmInstruction]| -> (usize, usize) {
+            let else_pos = instrs
+                .iter()
+                .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("else")))
+                .expect("else label present");
+            let end_pos = instrs
+                .iter()
+                .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("if_end")))
+                .expect("if_end label present");
+            (else_pos, end_pos)
+        };
+
+        // LIVE home: local 0 is read again after the join.
+        let live: Vec<WasmOp> = vec![
+            LocalGet(0),
+            If,
+            LocalGet(0),
+            Else,
+            I32Const(9),
+            End,
+            LocalGet(0),
+            I32Add,
+        ];
+        let instrs = fresh_selector()
+            .select_with_stack(&live, 1)
+            .expect("if-result over a live home must compile");
+        let (else_pos, end_pos) = labels(&instrs);
+        assert!(
+            !movs(&instrs[..end_pos])
+                .iter()
+                .any(|&(rd, _)| rd == Reg::R0),
+            "nothing before the join may write R0 (param 0's home): {:?}",
+            movs(&instrs[..end_pos])
+        );
+        let then_copy: Vec<(Reg, Reg)> = movs(&instrs[..else_pos])
+            .into_iter()
+            .filter(|&(rd, rs)| rs == Reg::R0 && rd != Reg::R0)
+            .collect();
+        assert_eq!(
+            then_copy.len(),
+            1,
+            "the then path copies the home into exactly one temp: {then_copy:?}"
+        );
+        let reconcile = movs(&instrs[else_pos + 1..end_pos]);
+        assert_eq!(reconcile.len(), 1, "one reconciliation MOV: {reconcile:?}");
+        assert_eq!(
+            reconcile[0].0, then_copy[0].0,
+            "the else path reconciles into the then-path temp, not the home"
+        );
+
+        // DEAD home: no read after the join — no copy, yesterday's bytes.
+        let dead: Vec<WasmOp> = vec![LocalGet(0), If, LocalGet(0), Else, I32Const(9), End];
+        let instrs = fresh_selector()
+            .select_with_stack(&dead, 1)
+            .expect("if-result over a dead home must compile");
+        let (else_pos, _) = labels(&instrs);
+        assert!(
+            movs(&instrs[..else_pos]).is_empty(),
+            "a dead home is not copied on the then path: {:?}",
+            movs(&instrs[..else_pos])
+        );
+    }
+
     /// #313: a control-flow-only / result-less `if/else` (arity 0) gets NO
     /// reconciliation move — results carried via locals, not the vstack. This
     /// is the byte-identity guarantee for the frozen fixtures (which have no
@@ -19669,45 +19787,6 @@ mod rq64_implicit_else_tests {
             .to_string();
         assert!(e.contains("parallel register shuffle"), "{e}");
         assert!(ins.is_empty());
-    }
-
-    /// The register-alias clobber (found red-first on this lane: `ipa(0)` 14
-    /// want 7): a then-result that IS a local's home register is copied into
-    /// a private temp on the then path; a non-aliased result is left alone
-    /// and nothing is emitted for it.
-    #[test]
-    fn aliased_then_result_is_copied_into_a_private_temp() {
-        let mut ins = Vec::new();
-        let mut stack: Vec<StackVal> = Vec::new();
-        let mut next_temp = 0u8;
-        let mut spill = SpillState::new(0);
-        // R0 is local 0's home (an aliased `local.get 0`); R5 is a plain temp.
-        let mut then = vec![r32(Reg::R0), r32(Reg::R5)];
-        canonicalize_then_results(
-            &mut then,
-            &[Reg::R0, Reg::R1],
-            &mut next_temp,
-            &mut stack,
-            &mut ins,
-            &mut spill,
-            &[Reg::R0, Reg::R1],
-            0,
-        )
-        .unwrap();
-        let m = movs(&ins);
-        assert_eq!(
-            m.len(),
-            1,
-            "exactly one copy, for the aliased result: {m:?}"
-        );
-        let (t, src) = m[0];
-        assert_eq!(src, Reg::R0);
-        assert!(
-            !matches!(t, Reg::R0 | Reg::R1 | Reg::R5),
-            "temp must be private: {t:?}"
-        );
-        assert_eq!(then[0], r32(t), "the join register is now the temp");
-        assert_eq!(then[1], r32(Reg::R5), "a non-aliased result is untouched");
     }
 
     #[test]

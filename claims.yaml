@@ -1508,9 +1508,47 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19663
+        value: 19740
         baseline: 17897
         waivers:
+          - to: 19740
+            reason: >-
+              MERGE of two landed growths on one tree (#1188 RQ-64-MVLOWER
+              increments 1-3, waived at 19233/19530/19663 below, and #1189
+              on main, waived at 19355 below): each is a real, separate
+              growth with its own reason, and a waiver is bound to the exact
+              value the ceiling reached, so the merged value gets its own.
+              It is LESS than the two deltas summed: both lanes independently
+              built the same then-result alias copy at the if join, and the
+              merge kept #1189's liveness-gated one as the single mechanism
+              (`copy_live_home_then_results`, shared by `Else` and the RQ-64
+              implicit-else join at `End`) and deleted the RQ-64 duplicate.
+              Value RE-DERIVED on the merged tree; wildcard code arms
+              unchanged.
+          - to: 19355
+            reason: >-
+              #1189 (silent miscompile): +128 lines — the if/else JOIN
+              register could be a register-homed LOCAL's home register on the
+              ARM direct selector (`local.get` pushes the home uncopied; the
+              #313 `mov R_then, R_else` then WROTE the local: ir0(0) returned
+              18 for wasmtime's 9, exit 0). select_with_stack now copies such
+              a then-arm result into a fresh temp on the then path at `Else`,
+              ONLY when the local is still read past the if's End
+              (`param_last_read`, #663-extended), so the join register is
+              never a live local's home. Not a lowering arm and no wildcard
+              (the If→End pre-pass uses `matches!`, wildcard count 55 -> 55).
+              Nothing could be deleted in exchange: the class had NO handling
+              (it miscompiled). Measured blast radius (18 shapes x 4 legs):
+              ARM direct selector only — both `--relocatable` and the
+              self-contained functions the optimized path hands down; RV32
+              copies params on local.get and AArch64 reconciles into a
+              reserved slot, both pinned MATCH. Byte-identity base vs fix
+              over scripts/repro/*.wat on both ARM paths: every module
+              identical except the two new #1189 fixture modules (+2 B per
+              formerly-wrong i32 function, +4 B for the i64 pair), 0 newly
+              declined, 0 newly accepted; the moved bytes are
+              execution-proven by join_alias_1189_differential.py (149/149
+              live vectors match wasmtime, red 14/149 on main).
           - to: 19663
             reason: >-
               RQ-64-MVLOWER (#1093) increment 3: +133 lines — `loop (param ..)`
@@ -1558,12 +1596,13 @@ claims:
               (`local.get` of an R0-R3 param pushes the HOME register by
               alias, so a then-arm ending in `local.get 0` makes the join
               write local 0 on the else path — `ipa(0)` 14 want 7, `ipq(0)`
-              16 want 8, red-first); `canonicalize_then_results` copies such
-              a then-result into a private temp on the then path, on the
-              parameter-taking paths only. The PARAMETER-FREE #313 join has
-              the same exposure on main (measured `al(0)` 18 want 9) and is
-              deliberately left as reported, since that fix moves bytes
-              outside this lane's oracle. Keyed on `params > 0`,
+              16 want 8, red-first); the lane's own copy of such a
+              then-result into a private temp was SUPERSEDED on merge by the
+              #1189 mechanism that landed on main for the parameter-free
+              case (the same defect, measured `al(0)` 18 want 9): ONE
+              liveness-gated helper, `copy_live_home_then_results`, now
+              serves both the `Else` join and the RQ-64 implicit-else join.
+              Keyed on `params > 0`,
               so every parameter-free if is byte-identical (whole-object
               identity over scripts/repro/*.wat x 3 legs: 0 differing, 0
               newly-declined; the only movement is the param-taking modules
@@ -1870,7 +1909,12 @@ claims:
         # `loop (param ..)` lowering (private header registers, back-edge
         # landing, reservation; see the lines_code waiver)
         # + 0 test module.
-        value: 30440
+        # 30088 (#1189 on main) + the RQ-64-MVLOWER lines above, merged: the
+        # value below is the whole-family count RE-DERIVED on the merged tree
+        # (the RQ-64 then-result alias copy is now the shared #1189
+        # mechanism, `copy_live_home_then_results`, so the merged code is
+        # smaller than the two deltas summed).
+        value: 30565
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -1928,7 +1972,10 @@ claims:
         # read_before_write_locals (waived above).
         # 91 -> 90 (RQ-59-SUBTRACT increment 6): the sws I64Extend family
         # match's `_ => unreachable!()` went with its deleted arm.
-        value: 90
+        # #1189: 90 -> 91 — the `_ => None` in the unit test
+        # `if_result_join_never_targets_a_live_local_home_1189`'s MOV filter
+        # (test region; the directed code-region count stays 55).
+        value: 91
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -2707,7 +2754,17 @@ claims:
     #   + 3 extra + 11 `_loop_lowered.wat`). The fixture (red) half and guard
     #   half are unchanged. Value RE-DERIVED from `oracle_wiring_check.py`
     #   on the lane tree: 324847 -> 324898.
-    text: "--exact-emulation-floor 324898"
+    # v0.64 — #1189 (if/else join register aliasing a local's home register):
+    #   +223 for join_alias_1189_differential.py (74 fixture entries — main's
+    #   own bytes on the two ARM legs, 14 pinned SILENT-WRONG — plus 149 live
+    #   entries across ARM relocatable / ARM self-contained / RV32 / AArch64
+    #   and the call-containing control). Value RE-DERIVED from
+    #   `oracle_wiring_check.py` on the lane tree: 324847 -> 325070.
+    # v0.64 MERGE (#1188 + #1190 on one tree): the two additions above landed
+    #   separately (+51 RQ-64-MVLOWER, +223 #1189); the value below is
+    #   RE-DERIVED from `oracle_wiring_check.py` on the MERGED tree, never
+    #   computed by adding the two deltas.
+    text: "--exact-emulation-floor 325121"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

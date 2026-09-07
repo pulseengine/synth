@@ -358,6 +358,10 @@ impl InstructionSelector {
         // `If`, after popping the condition). The result arity of an
         // `if (result …)` is observable as (vstack depth − checkpoint).
         let mut if_checkpoints: Vec<usize> = Vec::new();
+        // #1189: the op index of each open `If`, parallel to `if_checkpoints`,
+        // so `Else` can look up the if's matching `End` (`if_end_idx`) and ask
+        // whether a then-result's home register is still read past the join.
+        let mut if_start_idx: Vec<usize> = Vec::new();
         // #313: per-if-block reservation of the THEN-arm's result registers.
         // Captured at `Else` (the then-arm's results, popped off and truncated
         // back to the checkpoint so the else-arm starts from the same stack
@@ -561,6 +565,39 @@ impl InstructionSelector {
                 }
             }
             out
+        };
+
+        // #1189: which register-homed local (param, or a promoted local) owns
+        // each core register — both halves of an i64 pair — and where each
+        // open `If`'s `End` sits. `Else` uses the two to decide whether a
+        // then-arm result is a LIVE local's home register (see there).
+        let home_of: Vec<(Reg, u32)> = {
+            let mut v = Vec::new();
+            for &(p, r) in &param_regs {
+                v.push((r, p));
+                if i64_locals.contains(&p)
+                    && let Ok(hi) = i64_pair_hi(r)
+                {
+                    v.push((hi, p));
+                }
+            }
+            v
+        };
+        let if_end_idx: std::collections::HashMap<usize, usize> = {
+            let mut m = std::collections::HashMap::new();
+            let mut open: Vec<(bool, usize)> = Vec::new(); // (is_if, start)
+            for (i, op) in wasm_ops.iter().enumerate() {
+                if matches!(op, WasmOp::Block | WasmOp::Loop) {
+                    open.push((false, i));
+                } else if matches!(op, WasmOp::If) {
+                    open.push((true, i));
+                } else if matches!(op, WasmOp::End)
+                    && let Some((true, start)) = open.pop()
+                {
+                    m.insert(start, i);
+                }
+            }
+            m
         };
 
         // GI-FPU-002 (#619/#369): hard-float (AAPCS-VFP) f32 setup. Snapshot the
@@ -3787,6 +3824,7 @@ impl InstructionSelector {
                         )));
                     }
                     if_checkpoints.push(cp);
+                    if_start_idx.push(idx);
                     if_then_results.push(Vec::new());
                     if_params.push(param_vals);
 
@@ -3821,37 +3859,45 @@ impl InstructionSelector {
                     // clobber them — reproducing the buggy code's incidental
                     // protection (the then-results were on the vstack) exactly,
                     // which is what keeps the else-arm allocation byte-identical.
+                    //
+                    // #1189: a then-arm result that IS a register-homed local's
+                    // home register (`local.get` pushes the home uncopied) would
+                    // make the #313 join at `End` `mov R_home, R_else` — WRITING
+                    // the local on the else path (ir0(0) returned 18 for
+                    // wasmtime's 9: `mov r0, r1` then `adds r2, r0, r0`). Copy
+                    // such a result into a fresh temp on the THEN path, here,
+                    // immediately before the `B end_label`, so the join register
+                    // is never a live local's home. ONLY when the local is still
+                    // read after the if's `End` (`param_last_read`, already
+                    // loop-back-edge-extended by #663): a dead home is
+                    // clobbered harmlessly and keeps yesterday's bytes. Done
+                    // BEFORE `split_off` so the then-results are still
+                    // stack-live and the temp allocator cannot hand one out.
                     if let Some(&cp) = if_checkpoints.last() {
-                        let mut then_results: Vec<StackVal> = stack.split_off(cp);
-                        // RQ-64-MVLOWER (#1093), parameter-taking ifs only: a
-                        // then-result that aliases a register-homed local is
-                        // copied into a private temp here, on the then path,
-                        // so the else path's reconciliation never writes the
-                        // local (`canonicalize_then_results`; measured
-                        // red-first `ipq(0)` 16 want 8).
-                        if if_params.last().is_some_and(|p| !p.is_empty()) {
-                            let homes: Vec<Reg> = local_to_reg.values().copied().collect();
-                            let mut avoid = live_params.clone();
-                            for pv in if_params.last().into_iter().flatten() {
-                                if let StackVal::Reg { reg, .. } = pv {
-                                    avoid.push(*reg);
-                                }
-                            }
-                            let before = instructions.len();
-                            canonicalize_then_results(
-                                &mut then_results,
-                                &homes,
-                                &mut next_temp,
-                                &mut stack,
-                                &mut instructions,
-                                &mut spill,
-                                &avoid,
-                                idx,
-                            )?;
-                            for _ in before..instructions.len() {
-                                cf.add_instruction();
-                            }
+                        // #1189: the join register must never be a LIVE
+                        // register-homed local's home — one mechanism,
+                        // `copy_live_home_then_results`, shared with the
+                        // RQ-64 implicit-else join at `End`.
+                        let end_idx = if_start_idx
+                            .last()
+                            .and_then(|s| if_end_idx.get(s).copied())
+                            .unwrap_or(idx);
+                        let emitted = copy_live_home_then_results(
+                            &mut stack,
+                            cp,
+                            end_idx,
+                            &home_of,
+                            &param_last_read,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        for _ in 0..emitted {
+                            cf.add_instruction();
                         }
+                        let then_results: Vec<StackVal> = stack.split_off(cp);
                         if let Some(slot) = if_then_results.last_mut() {
                             *slot = then_results;
                         }
@@ -3935,33 +3981,32 @@ impl InstructionSelector {
                             // whose body is empty: `B end` (then path skips
                             // the movs), `else:`, `MOV R_then_i, R_param_i`,
                             // then `end:` below.
-                            let cp = if_checkpoints.last().copied().unwrap_or(stack.len());
-                            let mut then_now: Vec<StackVal> = stack.split_off(cp.min(stack.len()));
-                            // An aliased then-result is copied out on the
-                            // then path first (`ipa(0)` 14 want 7, red-first).
-                            {
-                                let homes: Vec<Reg> = local_to_reg.values().copied().collect();
-                                let mut avoid = live_params.clone();
-                                for pv in &params_here {
-                                    if let StackVal::Reg { reg, .. } = pv {
-                                        avoid.push(*reg);
-                                    }
-                                }
-                                let before = instructions.len();
-                                canonicalize_then_results(
-                                    &mut then_now,
-                                    &homes,
-                                    &mut next_temp,
-                                    &mut stack,
-                                    &mut instructions,
-                                    &mut spill,
-                                    &avoid,
-                                    idx,
-                                )?;
-                                for _ in before..instructions.len() {
-                                    cf.add_instruction();
-                                }
+                            let cp = if_checkpoints
+                                .last()
+                                .copied()
+                                .unwrap_or(stack.len())
+                                .min(stack.len());
+                            // #1189 at the implicit-else join: a then-result
+                            // that is a LIVE local's home is copied out on the
+                            // then path first (`end_idx` is this very op) —
+                            // the same mechanism `Else` uses (`ipa(0)` 14
+                            // want 7, red-first, before it was shared).
+                            let emitted = copy_live_home_then_results(
+                                &mut stack,
+                                cp,
+                                idx,
+                                &home_of,
+                                &param_last_read,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            for _ in 0..emitted {
+                                cf.add_instruction();
                             }
+                            let then_now: Vec<StackVal> = stack.split_off(cp);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::B {
                                     label: end_label.clone(),
@@ -4005,6 +4050,7 @@ impl InstructionSelector {
                         // control-flow-only if/else byte-identical to before).
                         let then_results = if_then_results.pop().unwrap_or_default();
                         let checkpoint = if_checkpoints.pop();
+                        if_start_idx.pop();
                         if else_emitted {
                             if let Some(cp) = checkpoint {
                                 // else-arm results above the checkpoint, in the
