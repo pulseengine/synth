@@ -2,7 +2,7 @@
   "_meta": {
     "binding": "a theorem discharges a constructor when its STATEMENT applies exec_wasm_instr / compile_wasm_to_arm / singleton exec_wasm_seq to that constructor AND runs the ARM-side executor (exec_program / _br / _pc) \u2014 bound by what the statement APPLIES, never by deriving a name (the fused-vs-underscored naming split, brif_correct included, is deliberately irrelevant here)",
     "cross_check": {
-      "rocq_qed_total": 630,
+      "rocq_qed_total": 645,
       "wasm_op_total": 279
     },
     "generated_by": "scripts/proof_inventory.py (re-run it; do not hand-edit)",
@@ -12,13 +12,14 @@
       "Theorem names are NOT unique across files (i64_shl_correct names two different statements); the (file, name) pair is the key. Do not match on names.",
       "\"modeled\": false means the Rocq model has NO constructor for this op \u2014 no correctness obligation is even statable about it yet. That is the honest per-op frontier one tier below \"existence-only\": unproved because unmodeled, stated as a row instead of as a missing row (#1057).",
       "Universe scope: WasmOp is every op an ACCEPTED module can carry, not every op wasm 3.0 defines \u2014 an operator with no WasmOp variant loud-skips its function at the decoder's `_ => None` and can produce no instance for a consumer to meet. MultiMemory is decoder-synthesized (a non-zero-memory-index wrapper), not a wasm opcode itself.",
+      "\"status\": \"absent\" means the Rocq model HAS the constructor but no theorem relates it to ARM code \u2014 modeled, unproven. For Block/Loop/Br/End (RQ-64-CFOBLIG, #1057) the WASM-side semantics are executable (coq/Synth/WASM/WasmBlocks.v) and the ARM-side obligation is stated with its obstruction pinned by kernel-checked lemmas (coq/Synth/Synth/BlockEndObligation.v): one tier above \"unmodeled\", still uncovered for a consumer.",
       "\"result_correspondence\": false with status \"qed\" means the op is proven to EXECUTE (the T2 tier of coq/STATUS.md) but no Qed'd theorem pins its result \u2014 the honest per-op frontier. strength is a semantic classification of each statement, not a reading of its name: some *_correct names carry existence-only statements.",
       "Consumers: read this file (fetch it from the tagged tree, e.g. raw.githubusercontent.com/pulseengine/synth/<tag>/artifacts/proof-inventory.json) instead of deriving theorem names from rule kinds \u2014 29 of the 138 constructors have fused names a CamelCase->snake_case guess misses, and the suffix conventions do not delimit the proof surface.",
       "v1 -> v2: the row key is \"op\" and the universe is the shipped WasmOp enum; \"constructor\" remains on every row (null when unmodeled), so a consumer keyed on constructor reads v2 unchanged for every modeled op."
     ],
     "issue": 1057,
     "schema": "synth-proof-inventory-v2",
-    "universe": "WasmOp variants (crates/synth-core/src/wasm_op.rs), parsed from the file in declaration order \u2014 the shipped IR every accepted function is decoded into; rows are modeled:true iff a wasm_instr constructor of the same name exists in coq/Synth/WASM/WasmInstructions.v (also parsed; every constructor must name a variant or generation refuses)"
+    "universe": "WasmOp variants (crates/synth-core/src/wasm_op.rs), parsed from the file in declaration order \u2014 the shipped IR every accepted function is decoded into; rows are modeled:true iff a wasm_instr constructor of the same name exists in coq/Synth/WASM/WasmInstructions.v (also parsed; every constructor must name a variant or generation refuses \u2014 the single exception is the Rocq-keyword escape End_ for End, a language fact)"
   },
   "entries": [
     {
@@ -914,27 +915,27 @@
       "theorems": []
     },
     {
-      "constructor": null,
-      "modeled": false,
+      "constructor": "Block",
+      "modeled": true,
       "op": "Block",
       "result_correspondence": false,
-      "status": "unmodeled",
+      "status": "absent",
       "theorems": []
     },
     {
-      "constructor": null,
-      "modeled": false,
+      "constructor": "Loop",
+      "modeled": true,
       "op": "Loop",
       "result_correspondence": false,
-      "status": "unmodeled",
+      "status": "absent",
       "theorems": []
     },
     {
-      "constructor": null,
-      "modeled": false,
+      "constructor": "Br",
+      "modeled": true,
       "op": "Br",
       "result_correspondence": false,
-      "status": "unmodeled",
+      "status": "absent",
       "theorems": []
     },
     {
@@ -1146,11 +1147,11 @@
       "theorems": []
     },
     {
-      "constructor": null,
-      "modeled": false,
+      "constructor": "End_",
+      "modeled": true,
       "op": "End",
       "result_correspondence": false,
-      "status": "unmodeled",
+      "status": "absent",
       "theorems": []
     },
     {
@@ -3683,10 +3684,11 @@
     }
   ],
   "summary": {
-    "modeled": 138,
+    "absent": 4,
+    "modeled": 142,
     "qed": 138,
     "result_correspondence": 63,
     "total": 279,
-    "unmodeled": 141
+    "unmodeled": 137
   }
 }
