@@ -42,7 +42,7 @@ artifacts:
       issue: "#1159"
       done-when: "manual: numeric payloads (hex and decimal immediates, offsets, sizes) are masked by the collapse so one cause is one row; the histogram's rows still sum to the decline count; and the `encode_operand2` rows merge to a single entry on both the spec census and the corpus ladder"
       landed: >-
-        PR-HISTOGRAM-TBD: the numeric mask extended IN `normalize_reason` (the
+        PR #1181: the numeric mask extended IN `normalize_reason` (the
         one place every reason — per-function skip AND module-level — passes
         through; `collapse_instance_lists` never sees a skip reason, which is
         what the `immediate 0x5dc` message is), a single `module_reason`
