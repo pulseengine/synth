@@ -401,6 +401,20 @@ jobs:
           # by the exit code above; this grep asserts the scan happened.
           grep -qE '^programme-status: [1-9][0-9]* artifacts across [1-9][0-9]* artifact files status-checked, 0 missing status, 0 illegal status$' \
             /tmp/status-evidence.log
+          # #1085 (RQ-64-SCOPEGAP): the unscoped-artifact staleness scan
+          # must have RUN over a real population and found every figure
+          # citation dated — a moving repo-derived count restated as
+          # undated present-tense fact is the drift class this pins
+          # (VG-002's "188 Qed / 52 Admitted" sat six months behind a
+          # green gate; the kernel recount was 630 / 2). The POPULATION
+          # half is deliberately NOT a regex here: the citation count is
+          # an EQUALITY inside the script (STALENESS_CITATIONS, S-DRIFT
+          # red in both directions) whose value and `!=` check are
+          # ledger-pinned (SYNTH-STATUS-EVIDENCE-STALENESS-CITATIONS-1085),
+          # so a drift is a red exit AND a `failures` count above — this
+          # grep asserts the scan ran and the undated half is zero.
+          grep -qE '^programme-staleness: [1-9][0-9]* unscoped artifacts, [1-9][0-9]* figure citations scanned, 0 undated$' \
+            /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
       # replays all seven measured miss instances — reconstructed from the

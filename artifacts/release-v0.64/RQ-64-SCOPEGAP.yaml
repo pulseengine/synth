@@ -45,7 +45,55 @@ artifacts:
       artifacts into P0–P2 scope after finding two with no status key at all.
       This is the same finding one rule-tier up — the scope widened, the
       OBLIGATIONS did not.
-    status: proposed
+
+      CORRECTION AT IMPLEMENTATION (2026-09-07), kept beside the finding
+      rather than edited into it: VG-009 is NOT a drifted acceptance figure.
+      Its only "1.6" is the substring of "41.6 %" — a LINE-COVERAGE number
+      the artifact frames as "measured at v0.54.0", unchanged since #918.
+      That is a grep hit on a correctly dated historical figure, exactly the
+      framing error this artifact warns against; a rule that flagged it
+      would be a false red, so none does. The measured corpus is ONE
+      acceptance instance — VCR-REACH-002's TITLE, undated present tense
+      over a description already dated by #1017 — plus the class the survey
+      found beside it. Survey: 293 unscoped artifacts (124 is the
+      NON-CLAIMING subset; 169 more are implemented/verified), 104 carrying
+      a figure token, and every genuinely stale one has ONE shape: a
+      REPO-DERIVED proof count restated as undated present-tense fact —
+      VG-002 /
+      ARCH-004 / SWVER-005 / TR-005 "188 Qed / 52 Admitted" (2026-03 numbers;
+      kernel recount 630 / 2), VER-001 "39 Qed", VER-002 "95 Qed",
+      VCR-ISA-001 "9 admits", undated increment-log sentences in VCR-SEL-001
+      / VCR-WASM-001 / SWVER-020 / SWVER-021, and VCR-X86-001's
+      undated-but-currently-equal "630 Qed" (correct today and ambiguous to
+      a reader at v0.70 — the point RQ-64-FLOORPROSE's correction, #1178,
+      kept). The rest of the
+      104 are threshold/ABI constants in requirements or measured results
+      that ARE a verification record's content.
+
+      DECISION: (a), narrowed to what is mechanically decidable — an
+      unscoped artifact is a RECORD: it cites a moving figure only as DATED
+      history (a version, an issue/PR number or an ISO date in the same
+      sentence) or names the derivation instead of the number. (b) rejected:
+      `release: backlog` mislabels the requirements base (BR-001 is the
+      trace root, not backlog work) and buys no rule — every R-rule presumes
+      a release window or evidence scoping these items lack, the false-red
+      argument RQ-62-ROADMAPGATE already made. (c) rejected on the survey:
+      stripping numbers destroys evidence to prevent staleness. "Pinned"
+      read as EQUALITY with the live pin rejected: it turns every citing
+      topic artifact into one more LIVE file that must move with the number
+      — and RQ-64-FLOORPROSE's correction (#1178) measured that v0.63's
+      largest merge cost sat on exactly the LIVE files (ci.yml, claims.yaml),
+      never on a dated transcript. Enforced in status_evidence_check.py as
+      S1 (an
+      undated repo-derived count in description or field prose) and S2 (an
+      undated measured figure in a title) over every artifact with no
+      version-shaped `release:` in a non-version-named topic file, with an
+      S-VACUOUS floor and a CI-pinned `programme-staleness:` line.
+      Description-level percentages stay human-reviewed: a threshold
+      ("shall achieve at least 80%") and a measurement are not mechanically
+      separable, and six threshold percentages in the requirements base
+      would be false reds. Stated as a residual, not a gap closed.
+    status: implemented
     release: v0.64
     tags:
       - traceability
@@ -60,11 +108,27 @@ artifacts:
       priority: must
       verification-track: review
       issue: "#1085"
-      done-when: "manual: a decision is recorded about what obligations an artifact with no `release:` carries, that decision is enforced by a rule in status_evidence_check.py, and the two known drifted artifacts (VG-009, VCR-REACH-002) are corrected or brought under it"
+      landed: "PR #1182"
+      done-when: "contains:scripts/test_status_evidence_check.py:test_replay_vcr_reach_002_title_figure_is_red"
       verified-by: >-
-        PENDING. Required, and red-first is cheap because the corpus of two is
-        already measured: whatever rule is chosen must FLAG `VG-009` and
-        `VCR-REACH-002` before they are fixed, and pass after. A rule that does
-        not flag both has not addressed the reported thing — the same
-        red-first-is-free argument RQ-62-ROADMAPGATE used on its own corpus of
-        two statusless VCR-WCET items.
+        Red-first transcript on the untouched tree: 23 undated citations across
+        13 unscoped artifacts, exit 1 — S2 on the titles of VCR-REACH-002 and
+        VG-002; S1 on VG-002 x3, ARCH-004 x2, SWVER-005, SWVER-020, SWVER-021,
+        TR-005, VER-001 x2, VER-002 x2, VCR-SEL-001 x2, VCR-ISA-001 x3,
+        VCR-WASM-001 x2, VCR-X86-001. After the corrections: 34 citations
+        scanned, 0 undated, exit 0. VG-009 flagged neither before nor after,
+        by design (see CORRECTION). rivet validate unchanged at the 40-error /
+        349-warning baseline; claim_check 59/59; 12 new unit tests (corpus
+        replay, every anchor form, per-sentence framing, ARM immediates, field
+        prose, dated-by-construction exemptions, floor, live-tree green)
+        mutation-verified; ci.yml pins `programme-staleness: ... 0 undated`.
+        Review on #1182 then found the POPULATION half was a lower bound
+        pinned at live (34): pattern rot reddened (13 scanned, S-VACUOUS, exit
+        1) but a citation landing without its bump could not. Replaced by an
+        EQUALITY (STALENESS_CITATIONS = 34, S-DRIFT red in both directions),
+        ledger-pinned as SYNTH-STATUS-EVIDENCE-STALENESS-CITATIONS-1085 (the
+        value AND the `!=` check); churn measured v0.56.0..v0.63.0 = 30, 30,
+        30, 31, 31, 31, 31, 32 (two moves in seven release intervals);
+        transcript: Qed-pattern rot -> 13 scanned, exit 1 BELOW; declared 33
+        -> exit 1 ABOVE; live 34 = 34, exit 0; 10/10 mutations killed;
+        claim_check 60/60.

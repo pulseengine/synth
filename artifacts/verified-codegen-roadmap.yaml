@@ -385,8 +385,9 @@ artifacts:
       generated_lowering_is_up_to_date); select_default's seven arms delegate
       behind SYNTH_SEL_DSL (default OFF ⇒ original hand-written body,
       byte-identical by construction). Rocq: coq/Synth/Synth/VcrSelRules.v —
-      7 Qed / 0 Admitted, 1:1 rule<->theorem naming, tier-A discharged by
-      synth_binop_proof_poly verbatim, rotl by the pilot's stepped proof with
+      7 Qed / 0 Admitted at that landing (2026-07-07), 1:1 rule<->theorem
+      naming, tier-A discharged by synth_binop_proof_poly verbatim, rotl by
+      the pilot's stepped proof with
       the rs<>rn hypothesis. Coverage gate wired: //coq:verify_proofs is now a
       test_suite = rocq_proofs + vcr_sel_rules_coverage (manifest
       coq/vcr_sel_rules.manifest pinned to RULES by a cargo test; missing
@@ -791,9 +792,10 @@ artifacts:
       executor with no program counter — BCondOffset is a literal no-op
       (ArmSemantics.v ~715, "No-op in sequential model"). So every trap-guarded
       lowering (CMP; BCondOffset; UDF; <op> — i32 div/rem, the 4 i32_div*/rem*
-      admits + their i64 analogues, the bulk of coq/STATUS.md's 9 admits) CANNOT
-      be discharged: the model can't express "skip the UDF when the divisor is
-      non-zero". A real-control-flow executor (PC-indexed, which a Sail-derived
+      admits + their i64 analogues, the bulk of coq/STATUS.md's 9 admits as
+      of 2026-06-20) CANNOT be discharged: the model can't express "skip the
+      UDF when the divisor is non-zero". A real-control-flow executor
+      (PC-indexed, which a Sail-derived
       model supplies natively) is the precondition. This also gates VCR-SEL-001
       coverage of the control-flow op class (div/rem) — straight-line and
       scratch-using ops generalize without it, control-flow ops do not.
@@ -807,8 +809,9 @@ artifacts:
       v8.5 snapshot needed ~40 GB RAM on Coq 8.9.1) — incompatible with the
       hermetic Rocq 9 Bazel toolchain and CI. WORKING ALTERNATIVE LANDED:
       per-instruction transcribe-and-bridge — coq/Synth/ARM/SailArmBridge.v
-      (in //coq:verify_proofs, 23 Qed / 0 Admitted) hand-transcribes
-      AddWithCarry + the AArch32 ADD/CMP register-form execute clauses from
+      (in //coq:verify_proofs, 23 Qed / 0 Admitted at the 2026-07-08 spike)
+      hand-transcribes AddWithCarry + the AArch32 ADD/CMP register-form
+      execute clauses from
       sail-arm @ 1bf2e5574ba9 with file:line provenance, and proves
       ArmSemantics.v's ADD/ADDS/CMP ≡ the transcription on registers AND all
       four NZCV flags (the six hand-written compute_*_flag definitions equal
@@ -903,8 +906,9 @@ artifacts:
         analogue of SailArmBridge.v (VCR-ISA-001): coq/Synth/WASM/
         WasmCertReference.v transcribes WasmCert-Coq's i32.add operational rule
         (= CompCert Int.add, repr(unsigned x + unsigned y)) into synth's I32
-        primitives with line-level provenance; WasmCertBridge.v proves (2 Qed,
-        real — not reflexivity) that synth's exec_wasm_instr I32Add refines
+        primitives with line-level provenance; WasmCertBridge.v proves (2 Qed
+        at v0.45, real — not reflexivity) that synth's exec_wasm_instr I32Add
+        refines
         that INDEPENDENT reference. Non-vacuous: the reference is phrased only
         in repr/unsigned/Z, never I32.add/exec_wasm_instr, so a wrong add
         semantics fails the proof; the raw-vs-normalized (Zplus_mod) gap is
@@ -950,7 +954,8 @@ artifacts:
         ruleset — the generic mechanism the coqutil/hammer/smpl hard-coded attrs
         lacked. The hook is INERT as shipped: NO extra_coq_package tag is
         declared, zero repos are emitted, //coq:verify_proofs stays GREEN and
-        the 536 Qed are untouched. The REAL WasmCert-Coq dep is NOT wired,
+        the 536 Qed of the v0.48 suite are untouched. The REAL WasmCert-Coq
+        dep is NOT wired,
         because it is refused by CI's no-unfree-dependency policy: re-verified
         2026-07-17 by nix eval against pin 88d3861a — coqPackages.wasmcert is
         version 2.2.0 (meta.license MIT, free) but PROPAGATES coqPackages.
@@ -4501,13 +4506,23 @@ artifacts:
 
   - id: VCR-REACH-002
     type: sw-req
-    title: "Reach is part of correctness — 1.6% AArch64 acceptance on real modules"
+    title: "Reach is part of correctness — AArch64 accepted 1.6% of the 805-module real corpus at v0.59 (#1017)"
     description: >
-      Measured on 805 REAL-WORLD wasm modules (#1017 — toolchain output plus
-      wasm.directory components, NOT spec fixtures): ARM 531/805 (66 %),
-      RISC-V 113 (14 %), AArch64 13 (1.6 %). A proof about input the compiler
-      REFUSES is worth nothing, so acceptance belongs in the North Star beside
-      correctness.
+      Measured at v0.59 on 805 REAL-WORLD wasm modules (#1017 — toolchain
+      output plus wasm.directory components, NOT spec fixtures): ARM 531/805
+      (66 %), RISC-V 113 (14 %), AArch64 13 (1.6 %). A proof about input the
+      compiler REFUSES is worth nothing, so acceptance belongs in the North
+      Star beside correctness.
+
+      SUPERSEDED FIGURE, kept as history (RQ-64-SCOPEGAP, #1085): the 1.6 %
+      above is the v0.59 #1017 measurement on the 805-module corpus. v0.63
+      re-measured the 243-module REACHABLE corpus and published a LADDER
+      rather than one rate (docs/status/ACCEPTANCE_LADDER.md, measured
+      2026-09-06): AArch64 49/243 (20.2 %) on the default invocation, arm
+      27 (11.1 %) rising to 99 (40.7 %) once the embedder obligation is
+      acknowledged, riscv 50 (20.6 %). Different denominators — not a trend
+      line — and the live number is the ladder's, re-measured per release
+      by scripts/repro/partial_census_1017.py --ladder, never restated here.
 
       RANKED BLOCKERS, and the research finding that none needs invention:
         ~121 modules  AArch64 import dispatch (#851) — and 88 of 101 real
@@ -4665,8 +4680,9 @@ artifacts:
          blockers (call value-stack discipline 77 modules, MemoryCopy 45) are
          not x86-specific — they would be re-encountered, not inherited.
 
-      2. THE PROOF SUITE IS ARM-SPECIFIC. 630 Qed across `ArmSemantics.v`,
-         `SailArmBridge.v` and the 80 generated selector-rule theorems. x86
+      2. THE PROOF SUITE IS ARM-SPECIFIC. 630 Qed at v0.62.0 across
+         `ArmSemantics.v`, `SailArmBridge.v` and the 80 generated
+         selector-rule theorems. x86
          arrives with none of it, so every x86 lowering is unverified by
          construction. That is precisely the failure the v0.58 correction
          names — building the verified path alongside the unverified one, and

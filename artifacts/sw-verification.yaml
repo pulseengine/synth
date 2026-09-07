@@ -93,7 +93,8 @@ artifacts:
     description: >
       Tests verifying the verification infrastructure itself: Z3 SMT
       translation validation with bit-vector reasoning and configurable
-      timeouts, Rocq proof compilation (188 Qed), and proptest
+      timeouts, Rocq proof compilation (188 Qed when recorded, 2026-03-17;
+      the live count is artifacts/status.json `rocq_qed`), and proptest
       property-based testing integration. Ensures all three verification
       backends produce correct results and integrate into the build.
     status: implemented
@@ -512,11 +513,13 @@ artifacts:
       steps:
         run: "bazel test //coq:verify_proofs"
         coverage: >
-          coq/Synth/WASM/WasmCertBridge.v (104 Qed: i32 + i64 op-level and
-          executor-level refinement lemmas + encoding/bit-level/rotate-boundary
-          helpers) against coq/Synth/WASM/WasmCertReference.v; re-derived Qed
-          total 591 CI-gated by scripts/claim_check.py (claims.yaml
-          wasmcert_bridge_qed flows to artifacts/status.json)
+          coq/Synth/WASM/WasmCertBridge.v (104 Qed at the 2026-07-17 recount:
+          i32 + i64 op-level and executor-level refinement lemmas +
+          encoding/bit-level/rotate-boundary helpers) against
+          coq/Synth/WASM/WasmCertReference.v; the suite total (591 at that
+          recount) is re-derived and CI-gated by scripts/claim_check.py
+          (claims.yaml wasmcert_bridge_qed / rocq_qed flow to
+          artifacts/status.json)
 
   - id: SWVER-021
     type: sw-verification
@@ -549,7 +552,8 @@ artifacts:
         coverage: >
           coq/Synth/WASM/WasmSemantics.v (six i64 arithmetic/bitwise arms wired
           via pop2_i64 / VI64) + coq/Synth/WASM/WasmCertBridge.v (six
-          i64_*_exec_refines_wasmcert theorems, +6 Qed → 591 total); frozen
+          i64_*_exec_refines_wasmcert theorems, +6 Qed → 591 total at the
+          2026-07-17 recount); frozen
           10/10 confirms the semantics-model change does not alter compiled bytes
 
   # ---------------------------------------------------------------------------

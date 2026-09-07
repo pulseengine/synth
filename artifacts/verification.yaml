@@ -11,9 +11,11 @@ artifacts:
     type: sys-verification
     title: Rocq T1 result-correspondence proofs
     description: >
-      39 Qed proofs in Rocq establishing result-correspondence between
-      WebAssembly instruction semantics and the compiled ARM instruction
-      sequences. Each proof shows that for a given WASM operation, the
+      Rocq proofs establishing result-correspondence between WebAssembly
+      instruction semantics and the compiled ARM instruction sequences (39
+      Qed when written, 2026-03-17; the live per-tier matrix is
+      coq/STATUS.md and the suite total artifacts/status.json `rocq_qed`).
+      Each proof shows that for a given WASM operation, the
       compiled ARM code produces the exact same result value. Covers all
       i32 arithmetic, division, comparison, bit-manipulation, and
       shift/rotate operations.
@@ -31,15 +33,17 @@ artifacts:
         - coq/Synth/ proof suite compiles
       steps:
         build: "bazel test //coq:verify_proofs"
-        coverage: "39 Qed — see coq/STATUS.md for full matrix"
+        coverage: "T1 tier — coq/STATUS.md holds the live per-tier matrix (39 Qed when written, 2026-03-17)"
 
   - id: VER-002
     type: sys-verification
     title: Rocq T2 existence proofs
     description: >
-      95 Qed proofs in Rocq establishing existence — that the compiled ARM
-      instruction sequence terminates and produces some result for each
-      covered WASM operation. Weaker than T1 (no value correspondence) but
+      Rocq proofs establishing existence — that the compiled ARM instruction
+      sequence terminates and produces some result for each covered WASM
+      operation (95 Qed when written, 2026-03-17; the live per-tier matrix
+      is coq/STATUS.md and the suite total artifacts/status.json
+      `rocq_qed`). Weaker than T1 (no value correspondence) but
       covers more operations including i64 and conversion instructions.
     status: implemented
     tags: [rocq, formal-verification, t2-proofs]
@@ -52,7 +56,7 @@ artifacts:
         - Rocq 9 installed (via Nix or local)
       steps:
         build: "bazel test //coq:verify_proofs"
-        coverage: "95 Qed — see coq/STATUS.md for full matrix"
+        coverage: "T2 tier — coq/STATUS.md holds the live per-tier matrix (95 Qed when written, 2026-03-17)"
 
   - id: VER-003
     type: sys-verification

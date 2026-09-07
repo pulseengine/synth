@@ -115,4 +115,6 @@ artifacts:
       priority: must
       verification-criteria: >
         Z3 validation passes for all compiled test cases; Rocq proofs
-        compile without errors (188 Qed); proptest suites pass.
+        compile without errors (the kernel-checked count is derived into
+        artifacts/status.json `rocq_qed`; 188 Qed when written, 2026-03-17);
+        proptest suites pass.

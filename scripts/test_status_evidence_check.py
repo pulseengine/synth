@@ -92,12 +92,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from status_evidence_check import (  # noqa: E402
     PROGRAMME_FLOOR,
     RELEASE_GLOB,
+    STALENESS_CITATIONS,
     RELEASE_VERSION,
     REPO_ROOT,
     DuplicateKeyError,
     StrictLoader,
     check,
     check_programme,
+    check_unscoped,
 )
 import yaml  # noqa: E402
 
@@ -1130,6 +1132,263 @@ class ProgrammeStatus1133(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertGreaterEqual(checked, PROGRAMME_FLOOR)
         self.assertEqual((missing, illegal), (0, 0))
+
+
+class UnscopedStaleness1085(unittest.TestCase):
+    """S-rules (#1085 / RQ-64-SCOPEGAP): an artifact with no `release:` is a
+    RECORD — a moving repo-derived count it cites must be dated in the same
+    sentence (S1), and its title may not carry an undated measured figure
+    (S2). Replays the measured corpus (VCR-REACH-002's title and VG-002's
+    "188 Qed / 52 Admitted"), the negative direction (dated sentences in
+    every anchor form, version-named topic files, a version-shaped
+    `release:`, release-scoped files, threshold percentages in
+    descriptions), the field-prose surface (TR-005, VER-001/002), the
+    per-sentence framing that VCR-X86-001's shape needs, and the declared
+    citation count as an EQUALITY (RQ-63-FLOOREQ one surface over).
+    Mutation-verified at authoring: deleting the S2 branch kills the title
+    replay; deleting S1 kills the VG-002 replay and the fields test;
+    dropping the sentence split kills the adjacent-sentence test; disabling
+    the equality check, or weakening it to `<`, kills the equality test."""
+
+    ROADMAP = "verified-codegen-roadmap.yaml"
+
+    @staticmethod
+    def s_fails(result):
+        return result[3]
+
+    def s_has(self, result, needle):
+        return any(needle in f for f in self.s_fails(result))
+
+    @staticmethod
+    def topic(fx, name, artifacts):
+        fx.raw(name, yaml.safe_dump({"artifacts": artifacts}))
+
+    @staticmethod
+    def art(art_id, title, description="", fields=None, **extra):
+        a = {"id": art_id, "type": "sw-req", "status": "proposed",
+             "title": title, "description": description, "links": []}
+        if fields is not None:
+            a["fields"] = fields
+        a.update(extra)
+        return a
+
+    def test_replay_vcr_reach_002_title_figure_is_red(self):
+        # The reported instance: a percentage in a TITLE with no date, over
+        # a description whose own figure IS dated by its issue — so S2 is
+        # the only rule that can see it, and it must.
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [self.art(
+            "VCR-REACH-002",
+            "Reach is part of correctness — 1.6% AArch64 acceptance on real "
+            "modules",
+            "Measured on 805 REAL-WORLD wasm modules (#1017): ARM 531/805 "
+            "(66 %), AArch64 13 (1.6 %).")])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertTrue(self.s_has(r, "S2 VCR-REACH-002"), self.s_fails(r))
+        self.assertTrue(self.s_has(r, "`1.6%`"), self.s_fails(r))
+        self.assertEqual(len(self.s_fails(r)), 1, self.s_fails(r))
+
+    def test_replay_vg_002_undated_derived_counts_are_red(self):
+        # The class the survey found beside it: proof counts asserted as
+        # present-tense fact in 2026-03 and never touched (kernel recount
+        # at authoring 630 / 2). One red per citation; nothing else fires.
+        fx = Fixture()
+        self.topic(fx, "verification-gaps.yaml", [self.art(
+            "VG-002", "Rocq proofs — float admits outstanding",
+            "The Rocq proof suite has 188 Qed and 52 Admitted theorems. All "
+            "52 admits are in VFP floating-point semantics.")])
+        r = check_unscoped(fx.root, expected=None)
+        fails = self.s_fails(r)
+        self.assertTrue(self.s_has(r, "S1 VG-002: undated `188 Qed`"), fails)
+        self.assertTrue(self.s_has(r, "S1 VG-002: undated `52 Admitted`"),
+                        fails)
+        self.assertTrue(self.s_has(r, "S1 VG-002: undated `52 admits`"), fails)
+        self.assertEqual(len(fails), 3, fails)
+        self.assertEqual((r[0], r[1], r[2]), (1, 3, 3))
+
+    def test_failure_names_the_live_derivation_but_does_not_judge_by_it(self):
+        # The message shows the drift from status.json; the VERDICT is
+        # dated-or-not — an undated count EQUAL to the live value is still
+        # red (the lockstep-copy rejection).
+        fx = Fixture()
+        fx.evidence("artifacts/status.json",
+                    '{"rocq_qed": 630, "rocq_admitted": 2}')
+        self.topic(fx, self.ROADMAP, [
+            self.art("A", "t", "The suite has 188 Qed."),
+            self.art("B", "t", "The suite has 630 Qed."),
+        ])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertTrue(self.s_has(r, "the live derivation is 630 "
+                                      "(artifacts/status.json `rocq_qed`)"),
+                        self.s_fails(r))
+        self.assertTrue(self.s_has(r, "S1 B: undated `630 Qed`"),
+                        self.s_fails(r))
+        self.assertEqual(len(self.s_fails(r)), 2, self.s_fails(r))
+
+    def test_dated_sentence_is_green_in_every_anchor_form(self):
+        # VG-009's shape (a version), an increment log (a PR number), a
+        # measurement note (an ISO date) — all history, none red.
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [
+            self.art("A", "t", "Consequence, measured at v0.54.0: backend.rs "
+                               "41.6 %, and 188 Qed then."),
+            self.art("B", "t", "Increment 1 landed (#1155): 7 Qed / 0 "
+                               "Admitted, byte-identical."),
+            self.art("C", "t", "FIRST MEASUREMENT (2026-06-20, built green): "
+                               "7 Qed / 0 Admitted."),
+        ])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertEqual(self.s_fails(r), [])
+        self.assertEqual(r[1], 5)  # every citation was scanned, none undated
+
+    def test_anchor_must_share_the_sentence(self):
+        # VCR-X86-001's shape: the paragraph is dated three sentences up and
+        # an incidental version sits one sentence down; the count's OWN
+        # sentence says nothing about when. Framing is per sentence.
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [self.art(
+            "VCR-X86-001", "t",
+            "Measured 2026-09-06 at v0.62.0. THE PROOF SUITE IS ARM-SPECIFIC. "
+            "630 Qed across ArmSemantics.v and the generated theorems. That "
+            "is the failure the v0.58 correction names.")])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertTrue(self.s_has(r, "S1 VCR-X86-001: undated `630 Qed`"),
+                        self.s_fails(r))
+
+    def test_arm_immediates_do_not_date_a_sentence(self):
+        # `#3` / `#16` are ARM immediates in this repo's prose, not issue
+        # numbers; the 3-digit minimum keeps them from anchoring anything.
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [self.art(
+            "A", "t", "One dead `movw #3` remains beside the 188 Qed.")])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertTrue(self.s_has(r, "S1 A: undated `188 Qed`"),
+                        self.s_fails(r))
+
+    def test_title_figures_ratio_percent_and_count(self):
+        # VER060-008's shape (a ratio dated in the title) is green; the
+        # same title undated is red; VG-002's own title — the count within
+        # three words of its unit — is red.
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [
+            self.art("A", "Fused cascade — 5/5 stages export (#1069, "
+                          "2026-08-27)"),
+            self.art("B", "Fused cascade — 5/5 stages export"),
+            self.art("C", "Rocq proofs — 52 VFP/float admits outstanding"),
+            self.art("D", "Reach — 77 modules blocked on call discipline"),
+            self.art("E", "Plain title, no figure at all"),
+        ])
+        r = check_unscoped(fx.root, expected=None)
+        fails = self.s_fails(r)
+        self.assertFalse(self.s_has(r, "S2 A"), fails)
+        self.assertTrue(self.s_has(r, "S2 B: title carries the measured "
+                                      "figure `5/5`"), fails)
+        self.assertTrue(self.s_has(r, "`52 VFP/float admits`"), fails)
+        self.assertTrue(self.s_has(r, "`77 modules`"), fails)
+        self.assertFalse(self.s_has(r, "S2 E"), fails)
+        self.assertEqual(len(fails), 3, fails)
+
+    def test_threshold_percent_in_description_is_not_judged(self):
+        # NFR-001 / BR-002's shape: a requirement threshold is not a
+        # measurement, and a threshold and a measurement are not
+        # mechanically separable — so S-rules do not judge description-
+        # level percentages at all (stated residual, human-reviewed).
+        fx = Fixture()
+        self.topic(fx, "nonfunctional-requirements.yaml", [self.art(
+            "NFR-001", "Performance",
+            "Synth shall achieve at least 80% of native performance and code "
+            "size less than 120% of native.")])
+        r = check_unscoped(fx.root, expected=None)
+        self.assertEqual(self.s_fails(r), [])
+        self.assertEqual(r[1], 0)
+
+    def test_prose_fields_are_scanned_with_their_key_path(self):
+        # TR-005's and VER-001/002's shape:
+        # the count lives in a field, flat or nested, not the description.
+        fx = Fixture()
+        self.topic(fx, "technical-requirements.yaml", [
+            self.art("TR-005", "t", "Synth shall integrate Rocq.", fields={
+                "verification-criteria": "Rocq proofs compile without errors "
+                                         "(188 Qed); proptest suites pass."}),
+            self.art("VER-002", "t", "Existence proofs.", fields={
+                "steps": {"coverage": "95 Qed — see coq/STATUS.md"}}),
+            self.art("OK", "t", "Fine.", fields={
+                "steps": {"coverage": "T2 tier (95 Qed when written, "
+                                      "2026-03-17)"}}),
+        ])
+        r = check_unscoped(fx.root, expected=None)
+        fails = self.s_fails(r)
+        self.assertTrue(self.s_has(r, "S1 TR-005: undated `188 Qed` in "
+                                      "artifacts/technical-requirements.yaml "
+                                      "(fields.verification-criteria)"), fails)
+        self.assertTrue(self.s_has(r, "S1 VER-002: undated `95 Qed`"), fails)
+        self.assertTrue(self.s_has(r, "(fields.steps.coverage)"), fails)
+        self.assertFalse(self.s_has(r, "S1 OK"), fails)
+        self.assertEqual(len(fails), 2, fails)
+
+    def test_dated_by_construction_is_exempt(self):
+        # A version-named topic file (sys-verification-v0.60.yaml records
+        # what was true at v0.60), a version-shaped `release:` field, and a
+        # release-scoped file (R7/R8's surface) are outside S-rules — and
+        # only the genuinely unscoped artifact is counted as such.
+        fx = Fixture()
+        self.topic(fx, "sys-verification-v0.60.yaml", [self.art(
+            "VER060-002", "BrIf discharged", "Kernel recount 630 Qed / 2 "
+            "Admitted at delivery.")])
+        self.topic(fx, self.ROADMAP, [
+            self.art("VCR-RA-001", "t", "Verified with 188 Qed.",
+                     release="v0.24.0"),
+            self.art("VCR-A", "t", "Proposed, no figures.", release=None),
+        ])
+        # stamp=False: NO `release:` field, so only the PATH can exempt it —
+        # a release-scoped file is R7/R8's surface even when its field is
+        # missing (that is R8's red, not a second S-rule red).
+        fx.release("release-v0.60/RQ-60-A64IMPORT.yaml", [
+            {"id": "RQ-60-A64IMPORT", "type": "system-req",
+             "status": "implemented",
+             "title": "AArch64 accepts 1.6% of real modules — import dispatch "
+                      "is the top blocker",
+             "description": "Measured on 805 modules: 13 (1.6 %).",
+             "links": [{"type": "derives-from", "target": "BR-001"}],
+             "fields": {"issue": "#1017",
+                        "done-when": "manual: reason",
+                        "verified-by": "basis"}}], stamp=False)
+        r = check_unscoped(fx.root, expected=None)
+        self.assertEqual(self.s_fails(r), [])
+        # VER060-002 is unscoped-but-dated (counted, not scanned); VCR-A is
+        # unscoped; VCR-RA-001 and the release artifact are not unscoped.
+        self.assertEqual(r[0], 2)
+
+    def test_declared_count_is_an_equality(self):
+        # RQ-63-FLOOREQ one surface over: BELOW is lost reach (pattern rot),
+        # ABOVE is a citation that landed without its bump, EQUAL is green.
+        # A lower bound would pass the second direction silently — which is
+        # what the first version of this rule did (floor 34, review #1182).
+        fx = Fixture()
+        self.topic(fx, self.ROADMAP, [self.art(
+            "A", "t", "Increment 1 landed (#1155): 7 Qed / 0 Admitted.")])
+        below = check_unscoped(fx.root, expected=3)
+        above = check_unscoped(fx.root, expected=1)
+        equal = check_unscoped(fx.root, expected=2)
+        self.assertTrue(self.s_has(below, "S-DRIFT")
+                        and self.s_has(below, "BELOW the declared 3"),
+                        self.s_fails(below))
+        self.assertTrue(self.s_has(above, "S-DRIFT")
+                        and self.s_has(above, "ABOVE the declared 1"),
+                        self.s_fails(above))
+        self.assertEqual(self.s_fails(equal), [])
+        self.assertEqual(equal[1], 2)
+
+    def test_live_repo_is_green_and_meets_the_floor(self):
+        # The live anchor: the real repo passes with the DEFAULT declared
+        # count, which EQUALS the live scan (no slack in either direction),
+        # and the corrected corpus has zero undated.
+        unscoped, citations, undated, failures = check_unscoped(REPO_ROOT)
+        self.assertEqual(failures, [])
+        self.assertEqual(citations, STALENESS_CITATIONS)
+        self.assertGreater(STALENESS_CITATIONS, 0)
+        self.assertEqual(undated, 0)
+        self.assertGreater(unscoped, 200)
 
 
 if __name__ == "__main__":

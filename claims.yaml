@@ -2561,6 +2561,36 @@ claims:
         text: "ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl"
 
   # ---------------------------------------------------------------------------
+  # #1085 / RQ-64-SCOPEGAP — the unscoped-artifact staleness scan's
+  # POPULATION is pinned as an EQUALITY, RQ-63-FLOOREQ one surface over: a
+  # lower bound cannot see declared drifting. scripts/status_evidence_check.py
+  # reds (S-DRIFT) when the figure citations it scans across the ~293
+  # unscoped artifacts differ from STALENESS_CITATIONS in EITHER direction —
+  # below is lost reach (pattern rot, a file invisible to the scan), above
+  # is a citation that landed without its same-PR bump. The first version
+  # of the rule shipped a lower bound pinned at live (review on #1182 caught
+  # it). Measured churn v0.56.0 -> v0.63.0: 30, 30, 30, 31, 31, 31, 31, 32
+  # — two moves in seven release intervals — so equality costs a one-line
+  # bump every few releases. This pin binds the constant's exact value so
+  # every movement is a visible claims.yaml diff in the PR that caused it;
+  # the count-eq evidence pins that the `!=` check itself is still wired (a
+  # check quietly weakened back to `<` would pass a verbatim pin on the
+  # number alone). When the count moves: update the constant, the reason
+  # beside it, and this pin — same diff.
+  - id: SYNTH-STATUS-EVIDENCE-STALENESS-CITATIONS-1085
+    doc: scripts/status_evidence_check.py
+    text: "STALENESS_CITATIONS = 34"
+    evidence:
+      - kind: count-eq                       # the equality check is wired
+        pattern: 'citations != expected'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 1
+      - kind: count-eq                       # and CI greps the summary line
+        pattern: 'programme-staleness: \[1-9\]'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+
+  # ---------------------------------------------------------------------------
   # #1100 / RQ-61-MCDCFLOOR — the MC/DC report-side floors move ONLY through
   # the gate's own re-statement ledger. The floors are layout-coupled through
   # witness's DWARF decision reconstruction (upstream witness#208): adding

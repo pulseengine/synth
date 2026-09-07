@@ -31,12 +31,27 @@ artifacts:
 
   - id: VG-002
     type: system-req
-    title: "Rocq proofs — 52 VFP/float admits outstanding"
+    title: "Rocq proofs — 52 VFP/float admits outstanding at authoring (2026-03-27, #66); since closed over AXIOMATIZED float semantics"
     description: >
-      The Rocq proof suite has 188 Qed and 52 Admitted theorems. All 52
-      admits are in VFP floating-point semantics (f32/f64 operations).
-      Only i32 operations have T1 result-correspondence proofs. i64, f32,
-      f64, and SIMD instruction selection has NO mechanized proofs.
+      At authoring (2026-03-27, #66) the Rocq proof suite had 188 Qed and 52
+      Admitted theorems, all 52 admits in VFP floating-point semantics
+      (f32/f64 operations); only i32 operations had T1 result-correspondence
+      proofs, and i64, f32, f64 and SIMD instruction selection had NO
+      mechanized proofs.
+
+      SUPERSEDED — and the gap MOVED rather than vanished (RQ-64-SCOPEGAP,
+      #1085, which found this record restating those counts as
+      present-tense fact). The live counts are DERIVED, not restated here:
+      artifacts/status.json `rocq_qed` / `rocq_admitted` /
+      `arm_semantics_axioms`, re-derived by scripts/claim_check.py on every
+      commit. Per coq/STATUS.md the VFP-dependent admits (48 by its Phase 5
+      note; 52 as counted here) were closed by modelling the VFP bit-level
+      operations as AXIOMS inside ArmSemantics.v (21 VFP axioms within its
+      axiom surface), so the float story is "proved over an axiomatized
+      model"; the remaining Admitted are the ArmRefinement.v
+      simplified-to-Sail placeholders; i64 reached T1 parity with i32 in
+      v0.11.0. The
+      residual this gap now names is de-axiomatizing the float semantics.
     status: approved
     tags: [verification-gap, rocq, float]
     links:
@@ -55,8 +70,7 @@ artifacts:
     fields:
       req-type: non-functional
       priority: must
-      verified-count: 188
-      admitted-count: 52
+      measured-at: "2026-03-27 (#66): 188 Qed / 52 Admitted — the live counts are artifacts/status.json rocq_qed / rocq_admitted, never restated here (RQ-64-SCOPEGAP)"
       verification-track: rocq
 
   - id: VG-003
@@ -110,8 +124,11 @@ artifacts:
     description: >
       The verification guide recommends coq_of_rust to translate critical
       Rust code into Rocq for formal verification. The ARM encoder
-      (arm_encoder.rs, ~6000 lines) and instruction selector
-      (instruction_selector.rs, ~6000 lines) have not been translated.
+      (arm_encoder.rs, ~6000 lines at authoring, 2026-03-27 #66) and
+      instruction selector (instruction_selector.rs, ~6000 lines then; its
+      live size is ratcheted in claims.yaml and surfaces as
+      `selector_lines_total` in artifacts/status.json) have not been
+      translated.
       The existing Rocq proofs verify a separate Rocq model of
       compile_wasm_to_arm, not the actual Rust implementation.
     status: proposed
