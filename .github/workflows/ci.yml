@@ -471,7 +471,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 324845 \
+            --exact-emulation-floor 324847 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1178,6 +1178,13 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools
+      - name: Install host linker + qemu-user (RQ-64-ARM64LINUX host-link oracle)
+        # A REAL linker for arm64-linux (ld.lld), clang for the freestanding C
+        # harness (`-target aarch64-unknown-linux-gnu`, no sysroot needed),
+        # llvm-objcopy for the pinned co-link workaround leg, and qemu-user so
+        # the linked image ALSO runs under an ELF loader + syscall layer that
+        # is not the oracle's own.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lld clang llvm qemu-user-static
       - name: Run m1 integer-core execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_add_538_differential.py
       - name: Run m2 broadened i32+i64 ALU execution oracle
@@ -1377,6 +1384,33 @@ jobs:
           [ "$n" -ge 60 ]
       - name: Run decline-matrix honesty oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_m2_decline_538.py
+      - name: Run RQ-64-ARM64LINUX host-link oracle (ld.lld -m aarch64linux + EXECUTED under qemu-user and unicorn, vs wasmtime)
+        # The arm64-Linux host-library CLAIM, end to end: the `--relocatable`
+        # object is linked by a REAL host linker against a generated
+        # freestanding C harness (the import `host_add` defined in C, `x28`
+        # set once in `_start`, `-ffixed-x28`), the image is checked
+        # (ET_EXEC/EM_AARCH64/SYSV, 0 undefined, 0 .rela), and EXECUTED —
+        # under unicorn with the Linux loader's semantics, and under
+        # qemu-user (REQUIRE_QEMU=1: an independent loader + syscall layer;
+        # its absence is RED, not a skip). Every value is wasmtime-first.
+        # RED-FIRST built in: an EM_ARM object, an elf_x86_64 emulation and
+        # a missing import must each be REFUSED by the linker by name, and a
+        # bit flipped in the linked image must be a reported mismatch.
+        # The GLOBAL-`func_N` co-link collision is PINNED (so a writer change
+        # that fixes it reddens this step until the doc moves), and the
+        # objcopy workaround must link and run.
+        # NON-VACUITY: executions, refusals, qemu runs, workaround runs and
+        # the mutation verdict are all asserted; `set -euo pipefail` per #890.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth REQUIRE_QEMU=1 \
+            python scripts/oracle_run.py scripts/repro/arm64_linux_host_link_rq64_differential.py | tee arm64linux.txt
+          grep -Eq '^executions: [1-9][0-9]*$' arm64linux.txt
+          grep -Eq '^host-linker refusals: [1-9][0-9]*$' arm64linux.txt
+          grep -Eq '^native-abi runs: [1-9][0-9]*$' arm64linux.txt
+          grep -Eq '^co-link workaround runs: [1-9][0-9]*$' arm64linux.txt
+          grep -q '^mutation: detected$' arm64linux.txt
+          grep -q '^RESULT: PASS' arm64linux.txt
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -1387,7 +1421,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 16
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 17
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)
@@ -1467,6 +1501,70 @@ jobs:
       # early exit leaves the ledger short, which is a red job rather than
       # a quietly smaller number. Also writes the measured totals to the
       # step summary, per unit, never summed.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  arm64-linux-native:
+    name: arm64-Linux host-link oracle, NATIVE (RQ-64-ARM64LINUX)
+    # The claim is "links into a normal arm64-Linux static library and runs".
+    # The unicorn and qemu-user legs in `aarch64-oracle` emulate that; this
+    # job is the thing itself: a GitHub-hosted arm64-Linux runner builds
+    # synth, links the object with the distro's ld.lld, and RUNS the linked
+    # image with no emulator anywhere (REQUIRE_NATIVE=1 — a non-arm64 or
+    # non-Linux host is RED, never a skip). Same oracle, same wasmtime-first
+    # expected values; the unicorn leg still runs here too, so the
+    # `# ci-checks: emulations` floor holds on every invocation.
+    # NOT a required check (a new runner pool must not be able to deadlock
+    # merges — see the branch-protection note); it is the evidence the
+    # feature-matrix row cites.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          # Keyed by ARCH as well as OS: the x86-64 jobs' `target/` is not
+          # reusable here and a restored one would only be rebuilt.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - name: Install host linker (lld, clang, llvm-objcopy)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lld clang llvm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install oracle deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Assert this runner IS arm64 Linux (the leg the claim is about)
+        run: |
+          set -euo pipefail
+          uname -m | grep -qx aarch64
+          uname -s | grep -qx Linux
+          ld.lld --version
+      - name: Run RQ-64-ARM64LINUX host-link oracle NATIVELY (no emulator; vs wasmtime)
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth REQUIRE_NATIVE=1 \
+            python scripts/oracle_run.py scripts/repro/arm64_linux_host_link_rq64_differential.py | tee arm64linux-native.txt
+          grep -Eq '^executions: [1-9][0-9]*$' arm64linux-native.txt
+          grep -Eq '^host-linker refusals: [1-9][0-9]*$' arm64linux-native.txt
+          # The native leg ran, and it is the ONLY leg this job exists for.
+          grep -q 'ok   native arm64-linux:' arm64linux-native.txt
+          grep -Eq '^native-abi runs: [1-9][0-9]*$' arm64linux-native.txt
+          grep -Eq '^co-link workaround runs: [1-9][0-9]*$' arm64linux-native.txt
+          grep -q '^mutation: detected$' arm64linux-native.txt
+          grep -q '^RESULT: PASS' arm64linux-native.txt
+      # #910: close the job with what it EXECUTED (one oracle, by design).
       - name: Differential evidence ledger (#910)
         if: always()
         run: |

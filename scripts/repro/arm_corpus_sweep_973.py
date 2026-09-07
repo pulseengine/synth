@@ -73,6 +73,7 @@ Run (needs wasmtime + unicorn + pyelftools — no wabt):
   SYNTH=./target/debug/synth python scripts/repro/arm_corpus_sweep_973.py
 """
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -142,6 +143,16 @@ EXPECTED_DECLINES = {
     "aarch64_m3_floats_538.wat": "f64 arithmetic set (aarch64-shaped fixture)",
     "aarch64_m4_trunc_minmax_538.wat": "f64 trunc + f32/f64 min/max/copysign",
     "aarch64_surface_851.wat": "i64 self-call return",
+    # RQ-64-ARM64LINUX (v0.64). The arm64-LINUX host-link fixture (an aarch64
+    # ET_REL linked by ld.lld and executed against wasmtime — its own oracle is
+    # arm64_linux_host_link_rq64_differential.py). Its `f64_scale` export
+    # exists to cross the AAPCS64 C boundary in d-registers; on the ARM
+    # target scalar f64 needs a double-precision FPU (GI-FPU-002), so that one
+    # of its 14 functions is skipped and `--all-exports` correctly refuses
+    # under #952 rather than shipping an object missing a public entry point.
+    # Measured against main's binary: `1 of 14 functions were skipped (not in
+    # output): f64_scale`. The RATCHET below reddens the day it compiles.
+    "arm64_linux_host_link_rq64.wat": "f64 export needs a double-precision FPU (GI-FPU-002)",
     "f64_369.wat": "f64 surface as a whole on the relocatable path",
     "float_select_return_782.wat": "f64 select + f64 return",
     "i64_float_conv_869.wat": "i64<->f32/f64 conversions",
@@ -313,6 +324,33 @@ def compile_arm(wat, out):
     return p.returncode, (p.stderr or "") + (p.stdout or "")
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def decline_reason(log, width=140):
+    """The human-facing reason for a `#952` decline.
+
+    `compile_arm` returns stderr THEN stdout, so the former
+    `log.strip().splitlines()[-1]` was always the LAST LINE OF STDOUT — a
+    `INFO   12 bytes of machine code` tracing line — while the actual
+    `Error: #952: …` sat on stderr and was never shown. Every NEW DECLINE this
+    sweep ever reported displayed a tracing line instead of the reason
+    (surfaced by RQ-64-ARM64LINUX's fixture, v0.64). The `"#952" in log`
+    classification was always right; only what a human was shown was wrong.
+    Prefer the first `Error:` line, then the line naming #952, and fall back
+    to the last line only when neither exists. ANSI colour codes are
+    stripped — `^[[2m`/`^[[32m` in a failure message is noise under time
+    pressure."""
+    lines = [ln for ln in (ANSI_RE.sub("", raw).strip() for raw in log.splitlines()) if ln]
+    for ln in lines:
+        if ln.startswith("Error:"):
+            return ln[:width]
+    for ln in lines:
+        if "#952" in ln:
+            return ln[:width]
+    return (lines[-1] if lines else "")[:width]
+
+
 def encode_thm_bl(pc_at_reloc, target):
     off = (target - (pc_at_reloc + 4)) & 0x01FFFFFF
     s = (off >> 24) & 1
@@ -411,7 +449,7 @@ def main():
             compiled.append(wat.name)
             objects[wat.name] = out
         elif "#952" in log or "no functions compiled successfully" in log:
-            declined[wat.name] = log.strip().splitlines()[-1][:140]
+            declined[wat.name] = decline_reason(log)
         else:
             unexpected.append((wat.name, rc, log.strip()[-300:]))
 
