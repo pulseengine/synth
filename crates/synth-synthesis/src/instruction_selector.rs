@@ -1392,7 +1392,7 @@ fn reconcile_implicit_else(
 /// ONE mechanism for both joins: `Else` (every if, #1190) and the RQ-64
 /// implicit else of an else-less parameter-taking if at `End`.
 fn copy_live_home_then_results(
-    stack: &mut Vec<StackVal>,
+    stack: &mut [StackVal],
     cp: usize,
     end_idx: usize,
     home_of: &[(Reg, u32)],
