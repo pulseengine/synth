@@ -430,6 +430,15 @@ jobs:
           # superseded floor quoted as dated history does not match, by design.
           grep -qE '^floor-prose: [1-9][0-9]* release artifacts scanned, live floor [0-9]+ restated 0 times$' \
             /tmp/status-evidence.log
+          # #1183 (RQ-65-FLOORSHAPE): the release anchor must have been
+          # RE-DERIVED from git on this checkout — both counts numeric (never
+          # `UNDERIVABLE`) and the anchor at most one minor behind the
+          # window (lag 0 or 1). The two hand-pinned population floors this
+          # replaced sat at 28 against 67 and 379 against 408; a shallow
+          # checkout, a missing tag, or a regex/glob that finds less than
+          # the tag held is a red exit above AND fails this match.
+          grep -qE '^status-evidence-anchor: v[0-9]+\.[0-9]+\.[0-9]+ — [1-9][0-9]* delivery commits \(pinned [1-9][0-9]*\), [1-9][0-9]* artifacts \(pinned [1-9][0-9]*\), lag [01]$' \
+            /tmp/status-evidence.log
       # The gate that polices the statuses does not get to be the unchecked
       # one (six releases running found the defect in the CHECKER). This
       # replays all seven measured miss instances — reconstructed from the

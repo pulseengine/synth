@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### The floor that could lose half its history and stay green (#1183, RQ-65-FLOORSHAPE)
+
+`status_evidence_check.py` guarded its own scan population with two hand-pinned
+lower bounds, and both had only ever lagged: `DELIVERY_FLOOR` sat at **28
+against a live 67**, `PROGRAMME_FLOOR` at 379 against 408. Measured on `main`:
+a `git clone --depth=79` kept the gate **green** while dropping 39 of the 67
+delivery commits — every one from v0.56 through v0.61. (The issue's canonical
+`--depth=30` case was already red on the old gate — 4 hits — so the
+demonstration was run at the depth where the old gate was actually blind.)
+
+Equality at HEAD, the RQ-63-FLOOREQ / RQ-64-SCOPEGAP fix, was measured and
+rejected for these two: across v0.56.0..v0.64.0 the delivery count moved **65
+times in 11 release intervals** and the programme count 31 times (against the
+2-in-7 that made equality cheap for `STALENESS_CITATIONS`), so it would cost a
+`claims.yaml` bump in essentially every delivery PR.
+
+What ships instead pins the part of each count that is **constant between
+releases** — delivery commits reachable from the previous minor's tag,
+artifacts in the tree at that tag — as an equality **re-derived from git on
+every run** (`ANCHOR_TAG = "v0.64.0"`, 67 / 401): a shallow checkout, a missing
+tag, or a regex/glob that finds less than the tag held is red; the live floors
+are *derived* from the anchor, so slack is one release's growth instead of
+unbounded; and the anchor must be the release window's own previous tag (one
+minor of lag warns with the lines to paste, two is red), so the once-per-release
+move is forced rather than remembered. The programme count additionally gets
+per-file rules (P3: every yaml under `artifacts/` is one the glob scans; P4:
+every scanned yaml contributes an artifact) because a sum floor structurally
+cannot see one file going invisible. Red-first transcript, churn table and
+mutation counts: `scripts/repro/floorshape_1183_gate.md`.
+
 ## [0.64.0] - 2026-09-07
 
 **The number you plan from.**

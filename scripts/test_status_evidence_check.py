@@ -90,6 +90,10 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    ANCHOR_DELIVERY,
+    ANCHOR_PROGRAMME,
+    ANCHOR_TAG,
+    PROGRAMME_DELETED_SINCE_ANCHOR,
     PROGRAMME_FLOOR,
     RELEASE_GLOB,
     STALENESS_CITATIONS,
@@ -97,12 +101,22 @@ from status_evidence_check import (  # noqa: E402
     REPO_ROOT,
     DuplicateKeyError,
     StrictLoader,
+    anchor_delivery_count,
+    anchor_programme_count,
     check,
+    check_anchor,
     check_live_floor_prose,
     check_programme,
     check_unscoped,
+    first_parent_subjects,
+    git_history_state,
+    load_release_artifacts,
+    release_window_subjects,
 )
+import status_evidence_check as sec  # noqa: E402
 import yaml  # noqa: E402
+import re  # noqa: E402
+from unittest import mock  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Real first-parent commit subjects from main (verbatim), one per measured
@@ -1127,12 +1141,322 @@ class ProgrammeStatus1133(unittest.TestCase):
 
     def test_live_repo_is_green_and_meets_the_floor(self):
         # The live anchor: the real repo passes with the DEFAULT floor,
-        # and the floor is not slack (checked >= PROGRAMME_FLOOR must
-        # hold on the tree this test ships with).
+        # and the floor is DERIVED from the release anchor (#1183), never
+        # hand-pinned — checked >= PROGRAMME_FLOOR must hold on the tree
+        # this test ships with, and the slack is one release's growth.
         files, checked, missing, illegal, failures = check_programme(REPO_ROOT)
         self.assertEqual(failures, [])
         self.assertGreaterEqual(checked, PROGRAMME_FLOOR)
+        self.assertEqual(PROGRAMME_FLOOR,
+                         ANCHOR_PROGRAMME - PROGRAMME_DELETED_SINCE_ANCHOR)
         self.assertEqual((missing, illegal), (0, 0))
+
+
+class ProgrammeVisibility1183(unittest.TestCase):
+    """P3/P4 (#1183 / RQ-65-FLOORSHAPE): what a SUM floor structurally cannot
+    see — one file going invisible behind growth elsewhere — is caught per
+    file. P3: every yaml under artifacts/ at any depth is one the glob
+    scans. P4: every scanned yaml contributes >= 1 artifact (R0 generalized
+    past release files). Measured at authoring: 89 of 89 visible, only the
+    comments-only _release.yaml files empty, so the rules cost nothing today
+    and the first violation is caught. Mutation-verified: deleting the P3
+    walk kills the subdir test; deleting the P4 branch kills the
+    artifact-less tests; the exemptions each have a control."""
+
+    ROADMAP = "verified-codegen-roadmap.yaml"
+
+    def roadmap(self, fx):
+        fx.raw(self.ROADMAP, yaml.safe_dump({"artifacts": [
+            {"id": "VCR-001", "type": "system-req", "title": "t",
+             "status": "proposed", "links": []}]}))
+
+    @staticmethod
+    def p_fails(result):
+        return result[4]
+
+    def test_yaml_in_unscanned_subdir_is_p3(self):
+        fx = Fixture()
+        self.roadmap(fx)
+        fx.raw("stpa/hazards.yaml", yaml.safe_dump({"artifacts": [
+            {"id": "H-1", "type": "hazard", "title": "t", "status": "draft",
+             "links": []}]}))
+        fails = self.p_fails(check_programme(fx.root, floor=0))
+        self.assertTrue(any(f.startswith("P3 artifacts/stpa/hazards.yaml")
+                            for f in fails), fails)
+
+    def test_artifactless_topic_yaml_is_p4(self):
+        # A keyed yaml with no `artifacts:` and an EMPTY yaml: both are the
+        # #1064 shape (rivet skips them silently); both red, never skipped.
+        fx = Fixture()
+        self.roadmap(fx)
+        fx.raw("notes.yaml", "notes:\n  - free text\n")
+        fx.raw("empty.yml", "")
+        fails = self.p_fails(check_programme(fx.root, floor=0))
+        self.assertTrue(any(f.startswith("P4 artifacts/notes.yaml")
+                            for f in fails), fails)
+        self.assertTrue(any(f.startswith("P4 artifacts/empty.yml")
+                            for f in fails), fails)
+
+    def test_exemptions_do_not_double_report(self):
+        # _release.yaml is comments-only by contract (R0's surface), the
+        # roadmap's emptiness is P0, and a release file's emptiness is R0:
+        # none of them is ALSO a P4.
+        fx = Fixture()
+        fx.raw(self.ROADMAP, "requirements:\n  - id: VCR-001\n")
+        fx.raw("release-v0.65/_release.yaml", "# comments only\n")
+        fx.raw("release-v0.65/RQ-65-X.yaml", "requirements:\n  - id: X\n")
+        fails = self.p_fails(check_programme(fx.root, floor=0))
+        self.assertFalse(any(f.startswith("P4") for f in fails), fails)
+        self.assertTrue(any(f.startswith("P0") for f in fails), fails)
+
+    def test_live_repo_has_no_invisible_or_empty_yaml(self):
+        fails = self.p_fails(check_programme(REPO_ROOT))
+        self.assertFalse([f for f in fails if f[:2] in ("P3", "P4")], fails)
+
+
+class AnchorFixture(Fixture):
+    """A real git repo shaped like main around a release tag (#1183): two
+    artifacts delivered id-first BEFORE v0.64.0, one after, in the
+    per-requirement layout so the R4-issue/R10 window derives v0.64.0 as the
+    previous tag. Anchor truth at v0.64.0: 2 delivery commits, 3 artifacts
+    (roadmap + two release artifacts); live at HEAD: 3 and 4."""
+
+    ROADMAP = "verified-codegen-roadmap.yaml"
+
+    def build(self):
+        self.git("init", "-q", "-b", "main")
+        self.raw(self.ROADMAP, yaml.safe_dump({"artifacts": [
+            {"id": "VCR-001", "type": "system-req", "title": "t",
+             "status": "proposed", "links": []}]}))
+        self.raw("release-v0.64/_release.yaml", "# comments only\n")
+        self.release("release-v0.64/RQ-64-A.yaml",
+                     [art("RQ-64-A", "implemented")])
+        self.release("release-v0.64/RQ-64-B.yaml",
+                     [art("RQ-64-B", "implemented")])
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "plan(v0.64): scope")
+        self.git("commit", "-q", "--allow-empty", "-m", "RQ-64-A (#1): a")
+        self.git("commit", "-q", "--allow-empty", "-m", "RQ-64-B (#2): b")
+        self.git("tag", "v0.64.0")
+        self.release("release-v0.65/RQ-65-C.yaml",
+                     [art("RQ-65-C", "proposed")])
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "plan(v0.65): scope")
+        self.git("commit", "-q", "--allow-empty", "-m", "chore: noise")
+        self.git("commit", "-q", "--allow-empty", "-m", "RQ-65-C (#3): c")
+        return self
+
+    def clone(self, depth=None):
+        """`git clone [--depth N]` of the fixture — the SAME operation a
+        shallow CI checkout performs, not a hand-truncated subjects list."""
+        td = tempfile.TemporaryDirectory()
+        self._clones = getattr(self, "_clones", []) + [td]
+        dst = Path(td.name) / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", *(["--depth", str(depth)] if depth else []),
+             f"file://{self.root}", str(dst)],
+            check=True, capture_output=True,
+        )
+        return dst
+
+
+def anchor(root, live_delivery=3, live_programme=4, window="v0.64.0", **kw):
+    arts, _ = load_release_artifacts(root, RELEASE_GLOB)
+    by_id = {a[2] for a in arts}
+    kw.setdefault("tag", "v0.64.0")
+    kw.setdefault("delivery", 2)
+    kw.setdefault("programme", 3)
+    return check_anchor(root, by_id, live_delivery, live_programme, window,
+                        **kw)
+
+
+def a_fails(result):
+    return result[4]
+
+
+def a_has(result, needle):
+    return any(needle in f for f in a_fails(result))
+
+
+class AnchorRule1183(unittest.TestCase):
+    """A0-A3 (#1183 / RQ-65-FLOORSHAPE): the delivery and programme
+    populations are pinned as EQUALITIES at the previous minor's tag and
+    re-derived from git on every run. The shallow direction is exercised by
+    an actual `git clone --depth` of the fixture (the CI failure shape), at
+    three depths: tag unreachable, tag reachable but ancestry truncated,
+    and ancestry complete but still declared shallow. Both pin directions,
+    instrument rot (id regex, release glob), anchor currency (lag 0/1/2,
+    ahead, major, underivable), the waiver channel, and the live repo.
+    Mutation-verified at authoring — see the artifact's verified-by."""
+
+    def test_full_history_is_green_and_exact(self):
+        fx = AnchorFixture().build()
+        d, p, lag, warns, fails = anchor(fx.root)
+        self.assertEqual(fails, [])
+        self.assertEqual(warns, [])
+        self.assertEqual((d, p, lag), (2, 3, 0))
+
+    def test_full_clone_is_green(self):
+        # The control for the shallow clones: the same clone operation
+        # without --depth reproduces the exact anchor.
+        fx = AnchorFixture().build()
+        d, p, lag, warns, fails = anchor(fx.clone())
+        self.assertEqual(fails, [], fails)
+        self.assertEqual((d, p), (2, 3))
+
+    def test_shallow_clone_tag_unreachable_is_red(self):
+        # --depth 2: the tag is beyond the boundary. Both derivations fail
+        # LOUDLY; nothing skips.
+        fx = AnchorFixture().build()
+        r = anchor(fx.clone(depth=2))
+        self.assertIsNone(r[0])
+        self.assertIsNone(r[1])
+        self.assertTrue(a_has(r, "history is SHALLOW"), a_fails(r))
+        self.assertTrue(a_has(r, "A1 anchor v0.64.0: `git log"), a_fails(r))
+        self.assertTrue(a_has(r, "A2 anchor v0.64.0: `git archive"),
+                        a_fails(r))
+
+    def test_shallow_clone_truncated_ancestry_is_red(self):
+        # --depth 4: the tag IS reachable, `git log v0.64.0` silently
+        # returns 1 of the 2 delivery commits — the canonical loss. A1 reds
+        # BELOW; A2 does NOT (a tree is complete however shallow the
+        # ancestry — the programme anchor is shallow-insensitive by design).
+        fx = AnchorFixture().build()
+        r = anchor(fx.clone(depth=4))
+        self.assertEqual(r[0], 1)
+        self.assertEqual(r[1], 3)
+        self.assertTrue(a_has(r, "1 id-first delivery commits reachable"),
+                        a_fails(r))
+        self.assertTrue(a_has(r, "BELOW by 1"), a_fails(r))
+        self.assertFalse(a_has(r, "A2"), a_fails(r))
+
+    def test_shallow_clone_with_equal_count_is_still_red(self):
+        # --depth 5: the count happens to EQUAL the pin over a truncated
+        # ancestry. An equality that holds by luck over a repository that
+        # declares itself shallow is not evidence — red on the declaration.
+        fx = AnchorFixture().build()
+        r = anchor(fx.clone(depth=5))
+        self.assertEqual(r[0], 2)
+        self.assertTrue(a_has(r, "history is SHALLOW"), a_fails(r))
+        self.assertFalse(a_has(r, "!= pinned"), a_fails(r))
+
+    def test_pin_below_and_above_are_both_red(self):
+        # RQ-63-FLOOREQ's discipline: --exact at N-1 and N+1 each red.
+        fx = AnchorFixture().build()
+        self.assertTrue(a_has(anchor(fx.root, delivery=1), "ABOVE by 1"))
+        self.assertTrue(a_has(anchor(fx.root, delivery=3), "BELOW by 1"))
+        self.assertTrue(a_has(anchor(fx.root, programme=2),
+                              "A2 anchor v0.64.0: 3 artifacts"))
+        self.assertTrue(a_has(anchor(fx.root, programme=2), "ABOVE by 1"))
+        self.assertTrue(a_has(anchor(fx.root, programme=4), "BELOW by 1"))
+
+    def test_id_regex_rot_is_red(self):
+        # The instrument narrows (a future id format the regex misses):
+        # the tag's ancestry has not changed, the count has — A1 BELOW.
+        fx = AnchorFixture().build()
+        with mock.patch.object(sec, "ARTIFACT_ID",
+                               re.compile(r"^(RQ-99-[A-Z0-9]+)\b")):
+            r = anchor(fx.root)
+        self.assertEqual(r[0], 0)
+        self.assertTrue(a_has(r, "A1 anchor v0.64.0: 0 id-first"), a_fails(r))
+
+    def test_release_glob_rot_is_red(self):
+        # The programme glob loses the release-v*/ layout: the tag's tree
+        # has not changed, the scan finds 1 of 3 — A2 BELOW. A sum floor at
+        # HEAD with one release of slack could not see this.
+        fx = AnchorFixture().build()
+        real = sec.glob.glob
+
+        def rotted(pat, **kw):
+            return [] if "release-v" in pat else real(pat, **kw)
+
+        with mock.patch.object(sec.glob, "glob", side_effect=rotted):
+            r = anchor(fx.root)
+        self.assertEqual(r[1], 1)
+        self.assertTrue(a_has(r, "A2 anchor v0.64.0: 1 artifacts"), a_fails(r))
+        self.assertTrue(a_has(r, "BELOW by 2"), a_fails(r))
+
+    def test_lag_one_warns_with_the_values_to_paste(self):
+        # The next minor is tagged; the anchor trails by one. Not red: the
+        # post-tag PR moves it, and the warning carries the three derived
+        # lines so the move is a paste, not a measurement.
+        fx = AnchorFixture().build()
+        fx.git("tag", "v0.65.0")
+        d, p, lag, warns, fails = anchor(fx.root, window="v0.65.0")
+        self.assertEqual(fails, [], fails)
+        self.assertEqual(lag, 1)
+        self.assertEqual(len(warns), 1, warns)
+        self.assertIn('ANCHOR_TAG = "v0.65.0"', warns[0])
+        self.assertIn("ANCHOR_DELIVERY = 3", warns[0])
+        self.assertIn("ANCHOR_PROGRAMME = 4", warns[0])
+
+    def test_lag_two_is_red(self):
+        fx = AnchorFixture().build()
+        r = anchor(fx.root, window="v0.66.0")
+        self.assertEqual(r[2], 2)
+        self.assertTrue(a_has(r, "2 minors behind"), a_fails(r))
+
+    def test_anchor_ahead_major_and_underivable_are_red(self):
+        fx = AnchorFixture().build()
+        self.assertTrue(a_has(anchor(fx.root, window="v0.63.0"), "AHEAD"))
+        self.assertTrue(a_has(anchor(fx.root, window="v1.0.0"), "MAJOR"))
+        self.assertTrue(a_has(anchor(fx.root, window=None), "underivable"))
+        self.assertTrue(a_has(anchor(fx.root, tag="v0.64"),
+                              "must be a vX.Y.Z"))
+
+    def test_waiver_channel_cannot_stand(self):
+        # A declared deletion the live count does not need is a standing
+        # licence (the ratchet engine's dead-waiver rule); a negative one is
+        # not a count. A NEEDED declaration is not judged here (P-VACUOUS
+        # is check_programme's).
+        fx = AnchorFixture().build()
+        self.assertTrue(a_has(anchor(fx.root, deleted=1), "DEAD waiver"))
+        self.assertTrue(a_has(anchor(fx.root, deleted=-1),
+                              "not a deletion count"))
+        self.assertFalse(a_has(anchor(fx.root, deleted=1, live_programme=2),
+                               "A3"))
+
+    def test_live_delivery_below_anchor_is_red(self):
+        fx = AnchorFixture().build()
+        self.assertTrue(a_has(anchor(fx.root, live_delivery=1),
+                              "A3: live delivery scan 1 < anchor 2"))
+
+    def test_no_git_is_red_not_skipped(self):
+        fx = Fixture()
+        fx.release("release-v0.64/RQ-64-A.yaml",
+                   [art("RQ-64-A", "implemented")])
+        r = anchor(fx.root)
+        self.assertTrue(a_has(r, "history is NO-GIT"), a_fails(r))
+        self.assertIsNone(r[0])
+
+    def test_live_repo_anchor_is_exact_and_current(self):
+        # The pinned constants EQUAL this repository's own derivation at
+        # ANCHOR_TAG (no slack in either direction), and the anchor is the
+        # window's previous tag or at most one minor behind it.
+        self.assertEqual(git_history_state(REPO_ROOT), "ok",
+                         "the live anchor needs full history and tags")
+        arts, _ = load_release_artifacts(REPO_ROOT, RELEASE_GLOB)
+        by_id = {a[2] for a in arts}
+        self.assertEqual(anchor_delivery_count(REPO_ROOT, by_id, ANCHOR_TAG),
+                         ANCHOR_DELIVERY)
+        self.assertEqual(anchor_programme_count(REPO_ROOT, ANCHOR_TAG),
+                         ANCHOR_PROGRAMME)
+        live_delivery = sum(
+            1 for s in first_parent_subjects(REPO_ROOT)
+            if (m := sec.ARTIFACT_ID.match(s)) and m.group(1) in by_id)
+        live_programme = check_programme(REPO_ROOT, floor=0)[1]
+        window = None
+        for cand in sorted({a[1] for a in arts}, reverse=True):
+            if cand > (0, 0):
+                window = release_window_subjects(REPO_ROOT, cand)[0]
+                if window is not None:
+                    break
+        d, p, lag, warns, fails = check_anchor(
+            REPO_ROOT, by_id, live_delivery, live_programme, window)
+        self.assertEqual(fails, [], fails)
+        self.assertIn(lag, (0, 1), (window, lag))
+        self.assertGreater(ANCHOR_DELIVERY, 0)
+        self.assertGreater(ANCHOR_PROGRAMME, 0)
 
 
 class UnscopedStaleness1085(unittest.TestCase):

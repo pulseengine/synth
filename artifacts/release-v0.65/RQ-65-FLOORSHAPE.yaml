@@ -40,7 +40,56 @@ artifacts:
       AND PROVE IT DISCRIMINATES: simulate a shallow checkout (`git fetch
       --depth=30`) and show the gate reddens. A floor nobody has watched fire
       is a floor we are guessing at.
-    status: proposed
+
+      CORRECTION AT IMPLEMENTATION (2026-09-09), kept beside the finding
+      rather than edited into it. Re-derived on main: live 67 delivery
+      commits (not 64) against the pinned 28, 408 artifacts (not 400)
+      against 379. And the canonical case above is WRONG about the old gate:
+      only 4 of the last 30 first-parent commits are id-first, so a
+      `--depth=30` clone scores 4 and the old floor of 28 ALREADY reddened
+      it. The old gate's real blind window was first-parent depth 79..203 —
+      28 hits are first reached at depth 79 — where a clone passes while
+      losing 39 of the 67 delivery commits and every one from v0.56-v0.61.
+      The red-first below is therefore run at depth 79 (old green, new red)
+      as well as at 30 (both red), because a demonstration on a depth the
+      old gate already caught would prove nothing about the new shape.
+
+      THE MEASUREMENT, with the checker's own instruments at every release
+      tag v0.56.0..v0.64.0 and HEAD (scripts/floorshape_1183_churn.py):
+      delivery 2, 2, 3, 3, 10, 26, 37, 53, 61, 64, 67, 67 — 65 moves in 11
+      release intervals (0/1/0/7/16/11/16/8/3/3/0); programme 275, 287, 289,
+      290, 301, 322, 331, 367, 385, 391, 401, 408 — 31 moves in 11 intervals
+      (2/1/1/2/3/2/7/7/3/2/1), never a decrease at any of the 129
+      first-parent commits touching artifacts/. Against STALENESS_CITATIONS'
+      2 moves in 7 intervals, an equality at HEAD would cost 6 delivery bumps
+      and 3 programme bumps per release, each a claims.yaml diff on the
+      most merge-contended file (the RQ-64-FLOORPROSE measurement).
+
+      THE SHAPE CHOSEN, per count. What is CONSTANT between releases is
+      pinned as an equality and re-derived from git on every run: main
+      history is immutable and shipped release artifacts are frozen, so
+      "id-first delivery commits reachable from the previous minor's tag"
+      (A1, ANCHOR_DELIVERY) and "artifacts in the tree at that tag" (A2,
+      ANCHOR_PROGRAMME) cannot change until the tag does. Below = truncated
+      history or instrument rot; above = rewritten history; a repository
+      declaring itself shallow is red outright. The live floors are DERIVED
+      from the anchor (A3): slack is one release's growth, bounded and
+      measured, instead of unbounded. The move is once per release and
+      FORCED (A0): the anchor must be the window's own previous tag, one
+      minor of lag warns with the three lines to paste, two is red. The two
+      counts differ in one respect and get one extra rule for it: the
+      programme count is tree-derived, so a shallow checkout cannot touch
+      it and its loss class is a single file going invisible — which a SUM
+      floor structurally cannot see behind growth elsewhere. So it gets
+      per-file rules instead: P3 (every yaml under artifacts/ at any depth
+      is one the glob scans) and P4 (every scanned yaml contributes >= 1
+      artifact, R0 generalized). Measured 89/89 visible and only the five
+      comments-only _release.yaml empty, so both cost nothing today. The
+      `direction: track` and relative-floor candidates were rejected on the
+      measurement: track is the equality at HEAD (the churn above), and a
+      relative floor derived with the same instrument cannot see that
+      instrument rot — a rotted regex lowers both sides.
+    status: implemented
     release: v0.65
     tags:
       - gate
@@ -54,7 +103,44 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1183"
-      done-when: "manual: the churn of both counts is measured across v0.56-v0.65; a shape is chosen with the measurement as its justification; and the chosen floor is shown to REDDEN on a simulated shallow checkout"
+      landed: >-
+        PR #PENDING — status_evidence_check.py gains the release anchor
+        (ANCHOR_TAG / ANCHOR_DELIVERY / ANCHOR_PROGRAMME, rules A0-A3, the
+        `status-evidence-anchor:` summary line) and the per-file P3/P4
+        visibility rules; DELIVERY_FLOOR and PROGRAMME_FLOOR become
+        derivations of the anchor; claims.yaml pins the anchor's three lines
+        verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183); ci.yml greps the
+        anchor line; scripts/floorshape_1183_churn.py is the
+        measurement, scripts/repro/floorshape_1183_gate.md the transcript.
+      done-when: "contains:scripts/test_status_evidence_check.py:test_shallow_clone_truncated_ancestry_is_red"
       verified-by: >-
-        PENDING. The red-first demonstration is the deliverable, not the
-        number: `git fetch --depth=30` must make the gate fail.
+        RED-FIRST ON THE REAL REPOSITORY (2026-09-09), old = the checker as
+        on origin/main (DELIVERY_FLOOR 28), new = this one, both run with
+        --root against a `git clone --depth` of the same tree. depth 30 (30
+        first-parent commits): old EXIT 1 (`only 4 delivery commits matched
+        (floor 28)`), new EXIT 1. depth 79: old EXIT 0 with `28 delivery
+        commits matched, 0 failures` — 39 of 67 lost, every v0.56-v0.61
+        delivery, green; new EXIT 1 with `A1 anchor v0.64.0: history is
+        SHALLOW`, `28 id-first delivery commits reachable from the tag !=
+        pinned ANCHOR_DELIVERY 67 (BELOW by 39)`, A0 underivable, A3. Full
+        clone: both EXIT 0, `status-evidence-anchor: v0.64.0 — 67 delivery
+        commits (pinned 67), 401 artifacts (pinned 401), lag 0`. Both pin
+        directions on the fixture repo, RQ-63-FLOOREQ's discipline: delivery
+        pinned 1 -> `ABOVE by 1`, 3 -> `BELOW by 1`; programme 2 -> ABOVE, 4
+        -> BELOW. Instrument rot: the id regex narrowed -> A1 `0 id-first`
+        BELOW; the release glob dropped -> A2 `1 artifacts` BELOW by 2 on an
+        unchanged tag tree. 19 new unit tests (77 -> 96, unittest), the
+        shallow direction by an ACTUAL `git clone --depth` of a tagged
+        fixture at three depths — tag unreachable (A1+A2 underivable), tag
+        reachable but ancestry truncated (A1 BELOW, A2 green: a tree is
+        complete however shallow the ancestry), count equal but declared
+        shallow (red on the declaration) — plus a full-clone control, lag
+        0/1/2, ahead, major, underivable, the dead-waiver rule, no-git, and
+        the live repo exact. Ten checker mutations (drop the shallow red /
+        A1 / A2 / P3 / P4 / lag-2 / dead-waiver / A3-delivery, mis-copy the
+        anchor 67 -> 66, hand-pin PROGRAMME_FLOOR 379 again) killed
+        3/3/2/1/1/1/1/1/1/1 tests, each the one that claims it; checker
+        restored byte-identical. Churn measured as described (repro script
+        re-run end to end). claim_check green with the new pin; rivet
+        validate at the local 40-error baseline before and after; ci.yml
+        pins the anchor line.
