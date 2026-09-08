@@ -113,7 +113,14 @@ def unicorn_mem0(code, base, faddr, lin_base, sel):
     foff = (faddr & ~1) - base
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     mu.mem_map(CODE, 0x20000)
-    mu.mem_map(lin_base, LIN_SIZE)
+    # RQ-65-PARITY (#1203): `__linear_memory_base` is now wasm byte 0 as the
+    # functions address it (0x2000_0100 under the default layout, 0x100 into
+    # the SRAM page — the base the startup seeds into R11 and the optimized
+    # path materializes), so the unicorn window is the page-aligned span
+    # that CONTAINS [lin_base, lin_base + LIN_SIZE); R11 and every read
+    # below stay symbol-relative, unchanged.
+    win_lo = lin_base & ~0xFFF
+    mu.mem_map(win_lo, ((lin_base + LIN_SIZE + 0xFFF) & ~0xFFF) - win_lo)
     mu.mem_map(STK - 0x10000, 0x20000)
     mu.mem_map(RET & ~0xFFF, 0x1000)
     mu.mem_write(CODE, code)

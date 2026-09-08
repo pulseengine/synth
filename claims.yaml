@@ -2768,7 +2768,17 @@ claims:
     #   separately (+51 RQ-64-MVLOWER, +223 #1189); the value below is
     #   RE-DERIVED from `oracle_wiring_check.py` on the MERGED tree, never
     #   computed by adding the two deltas.
-    text: "--exact-emulation-floor 325122"
+    # v0.65 — RQ-65-PARITY (#197): +20000 for
+    #   selector_parity_197_differential.py — every module of tests/wast +
+    #   the spec-testsuite submodule compiled on BOTH shipped selectors and
+    #   every assertion both accept executed on both images through their
+    #   own shipped Reset_Handler (20,750 emulator entries measured at
+    #   authoring; the declared floor sits under it). Value RE-DERIVED from
+    #   `oracle_wiring_check.py` AFTER rebasing onto the tree carrying
+    #   RQ-65-FUNCN's +1: 325122 -> 345122. (The lane measured 345121
+    #   against the pre-FUNCN 325121; the value is re-derived on the
+    #   merged tree, never carried textually across a rebase.)
+    text: "--exact-emulation-floor 345122"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

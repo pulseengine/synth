@@ -500,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 325122 \
+            --exact-emulation-floor 345122 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -1088,6 +1088,69 @@ jobs:
           # script so neither can go quiet alone.
           grep -qE '^#928 CHECKS=[0-9]+/[1-9][0-9]{2,}' /tmp/wastconf.log
           grep -q '^RESULT: PASS' /tmp/wastconf.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  selector-parity-oracle:
+    name: selector parity — optimized vs direct vs wasmtime over the spec corpus (#197)
+    # RQ-65-PARITY (#197). synth ships TWO lowering paths over the same WASM
+    # semantics — the optimized `ir_to_arm` path and the direct
+    # `select_with_stack` path — and until this job they had never been
+    # compared. Every module in tests/wast/ + the official spec test suite is
+    # compiled BOTH ways (default vs --no-optimize, otherwise identical) and
+    # every assertion both images accept is executed on both, through each
+    # image's OWN shipped Reset_Handler under unicorn, and held to wasmtime.
+    # The first run found #1203 (fixed with it), #1204, #1205, #1206 — all
+    # silent, exit-0, default-configuration miscompiles the direct-only #928
+    # oracle could not see. The open three are PINNED by exact count inside
+    # the script (a pin that moves is red), so this job is green only when
+    # the divergence set is exactly the recorded one.
+    #
+    # `submodules: recursive` is load-bearing: the spec suite is a submodule
+    # and the script hard-fails on an empty corpus rather than passing 0/0.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps (reference engine PINNED)
+        # The exact-count pins inside the script are measured against ONE
+        # reference engine. wasmtime-py 46 could not parse the suite's
+        # br_table.wast (module declined, 125 assertions never ran); 48
+        # parses it and found five more shared-wrong shapes. A floating
+        # `pip install wasmtime` would move the pinned population on the
+        # next release — pin it, and move the pin deliberately.
+        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools
+      - name: Selector parity over the spec corpus (#197)
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/selector_parity_197_differential.py | tee /tmp/parity.log
+          # NON-VACUITY, asserted here as well as inside the script (its four
+          # floors: modules both accepted, assertions compared, optimized-path
+          # functions, byte-differing functions) so neither can go quiet alone.
+          grep -qE '^#197 CHECKS=[0-9]+/[1-9][0-9]{3,} assertions in parity over [1-9][0-9]{2,} modules' /tmp/parity.log
+          grep -q '^RESULT: PASS' /tmp/parity.log
       - name: Differential evidence ledger (#910)
         if: always()
         run: |

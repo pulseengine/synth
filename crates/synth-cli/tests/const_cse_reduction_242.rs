@@ -65,13 +65,23 @@ mod artifact_guard;
 /// verified) and UNCHANGED by the default-on flip — the opt-out path is the
 /// pre-flip default. Re-bless ONLY when an intentional optimized-path lowering
 /// change is made — a surprise failure here means the opt-out rollback drifted.
-const GOLDEN_OFF_TEXT_FNV1A: u64 = 0xa68a_a2da_e5af_e4a7;
+///
+/// RE-PIN (#1203, RQ-65-PARITY): both hashes moved by exactly ONE byte — the
+/// self-contained startup's `MOVW R11` immediate (Reset_Handler+11), now the
+/// function-visible base 0x2000_0100 instead of the raw SRAM start, so a
+/// mixed optimized/direct image no longer addresses wasm byte N at two SRAM
+/// addresses. `.text` includes the startup blob; every function body and both
+/// lengths are unchanged (base-vs-branch comparison over all 183
+/// scripts/repro/*.wat in the parity lane: self-contained images differ in
+/// that one startup byte only). Not an optimized-path lowering change.
+const GOLDEN_OFF_TEXT_FNV1A: u64 = 0xb6ec_ede1_3187_b077;
 const GOLDEN_OFF_TEXT_LEN: usize = 576;
 
 /// Golden FNV-1a-64 of the SHIPPED-DEFAULT optimized-path `.text` for
 /// `const_cse.wat` (const-CSE on). Pinned at flip time, AFTER
 /// `const_cse_differential.py` re-ran green on these exact bytes.
-const GOLDEN_DEFAULT_TEXT_FNV1A: u64 = 0x9577_c583_bc14_5a46;
+/// RE-PIN (#1203): same one startup byte as above; see that note.
+const GOLDEN_DEFAULT_TEXT_FNV1A: u64 = 0x1ae8_eb2b_ba6c_99b6;
 const GOLDEN_DEFAULT_TEXT_LEN: usize = 452;
 
 fn synth() -> &'static str {

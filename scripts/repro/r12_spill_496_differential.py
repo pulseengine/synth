@@ -92,7 +92,15 @@ def load(elf):
 def run_unicorn(code, base, faddr, lin_base, lin_writes, args):
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     mu.mem_map(CODE, 0x20000)
-    mu.mem_map(lin_base, LIN_SIZE)
+    # RQ-65-PARITY (#1203): `__linear_memory_base` is now wasm byte 0 as the
+    # functions address it (0x2000_0100 under the default layout — the base
+    # the startup seeds into R11 AND the absolute base the optimized path
+    # materializes, so the two resolve to the SAME bytes, which is what this
+    # oracle's "absolute and R11-relative both resolve" relies on). That base
+    # is 0x100 into the SRAM page, so map the page-aligned span containing
+    # [lin_base, lin_base + LIN_SIZE); R11 and the writes stay symbol-relative.
+    win_lo = lin_base & ~0xFFF
+    mu.mem_map(win_lo, ((lin_base + LIN_SIZE + 0xFFF) & ~0xFFF) - win_lo)
     mu.mem_map(STK - 0x8000, 0x10000)
     mu.mem_map(RET & ~0xFFF, 0x1000)
     mu.mem_write(CODE, code)
