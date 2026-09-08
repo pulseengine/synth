@@ -1022,12 +1022,34 @@ jobs:
         # rather than reporting a silent pass — an unreachable gate that prints
         # nothing is the class this release exists to remove.
         #
-        # NOTE (updated by #1095): this target tree still references
-        # `tests/spec-testsuite` ZERO times — but that is no longer the gap it
-        # recorded. The official-suite compile census the docs advertise is
-        # produced by `.github/workflows/spec-suite.yml` (the only workflow
-        # that checks out the submodule), exact-pinned in
-        # `scripts/spec_compile_census.py` with a 257-file non-vacuity floor.
+        # NOTE (updated by #1095, CORRECTED by #1217 in v0.65): this target
+        # tree still references `tests/spec-testsuite` ZERO times — but the
+        # gap that recorded is only HALF closed, and the previous wording
+        # closed it entirely. Two halves, kept apart on purpose:
+        #
+        #   COMPILE half — `.github/workflows/spec-suite.yml` produces the
+        #   official-suite census the docs advertise, exact-pinned in
+        #   `scripts/spec_compile_census.py` with a 257-file non-vacuity
+        #   floor. That script's own header says what it is: "a compile
+        #   CENSUS, not a pass rate". It executes NOTHING — zero emulator
+        #   references in the file — so it cannot see a module that compiles
+        #   cleanly and then computes the wrong answer.
+        #
+        #   BEHAVIOURAL half — closed in v0.65 by RQ-65-PARITY (#197),
+        #   `scripts/repro/selector_parity_197_differential.py`, wired below
+        #   in this same workflow. It compiles every suite module on BOTH
+        #   shipped selectors, boots both images through their own shipped
+        #   Reset_Handler under unicorn, and compares against wasmtime. Its
+        #   first run found eleven defects (#1204-#1215) that the census had
+        #   been green on for its entire existence — because every one of
+        #   them compiles fine.
+        #
+        # Consequence for this comment's own history: `spec-suite.yml` is NO
+        # LONGER "the only workflow that checks out the submodule" — the
+        # parity job below does too (`submodules: recursive`). That clause was
+        # true when written and false the moment #1216 landed, which is why a
+        # comment asserting a uniqueness property is a maintenance liability.
+        # Assert what the gate MEASURES, not what is unique about it.
         # `|| rc=$?`, NOT a bare `rc=$?` on the next line: GitHub runs `run:`
         # under `bash -e`, so a non-zero `bazel test` aborts the step BEFORE the
         # capture — which is exactly how the first attempt at this fix failed,
