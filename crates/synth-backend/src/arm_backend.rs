@@ -1014,7 +1014,33 @@ fn compile_wasm_to_arm(
         || has_rbw_local
     {
         if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
-            eprintln!("[path-debug] direct (pre-gate)");
+            // RQ-65-PARITY (#197): name WHICH pre-gate predicate diverted the
+            // function and which function it was, so the selector-parity
+            // oracle can record every "only one path accepted this" case with
+            // its reason instead of a bare count. The leading text is kept
+            // verbatim — the #377/#1021 harnesses match on it.
+            let reasons: Vec<&str> = [
+                (config.no_optimize, "no-optimize"),
+                (config.relocatable, "relocatable"),
+                (has_br_table, "br-table"),
+                (has_value_carry, "value-carry"),
+                (has_wide_param, "wide-param"),
+                (has_float_sig, "float-sig"),
+                (has_global_access, "wide-global-access"),
+                (has_fact_div_elide, "fact-elide"),
+                (has_rbw_local, "rbw-local"),
+            ]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| *name)
+            .collect();
+            eprintln!(
+                "[path-debug] direct (pre-gate) func={} reasons={}",
+                config
+                    .current_func_index
+                    .map_or("?".to_string(), |i| i.to_string()),
+                reasons.join(",")
+            );
         }
         (select_direct()?, false)
     } else {
@@ -1058,7 +1084,12 @@ fn compile_wasm_to_arm(
         {
             Ok(arm_ops) => {
                 if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
-                    eprintln!("[path-debug] optimized (ir_to_arm ok)");
+                    eprintln!(
+                        "[path-debug] optimized (ir_to_arm ok) func={}",
+                        config
+                            .current_func_index
+                            .map_or("?".to_string(), |i| i.to_string())
+                    );
                 }
                 (
                     arm_ops
@@ -1078,7 +1109,12 @@ fn compile_wasm_to_arm(
             // correctly, just without IR-level optimization.
             Err(e) => {
                 if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
-                    eprintln!("[path-debug] direct (fallback: {e})");
+                    eprintln!(
+                        "[path-debug] direct (fallback: {e}) func={}",
+                        config
+                            .current_func_index
+                            .map_or("?".to_string(), |i| i.to_string())
+                    );
                 }
                 (select_direct()?, false)
             }
