@@ -104,7 +104,7 @@ artifacts:
       verification-track: review
       issue: "#1183"
       landed: >-
-        PR #PENDING — status_evidence_check.py gains the release anchor
+        PR #1220 — status_evidence_check.py gains the release anchor
         (ANCHOR_TAG / ANCHOR_DELIVERY / ANCHOR_PROGRAMME, rules A0-A3, the
         `status-evidence-anchor:` summary line) and the per-file P3/P4
         visibility rules; DELIVERY_FLOOR and PROGRAMME_FLOOR become
