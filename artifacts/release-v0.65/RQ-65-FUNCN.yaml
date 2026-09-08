@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-65-FUNCN
+    type: system-req
+    title: "Two synth aarch64 objects cannot be co-linked — func_N is STB_GLOBAL, and v0.64 shipped the host-library story that needs it"
+    description: >
+      #1180. `crates/synth-backend-aarch64/src/elf.rs` builds `st_info` as a
+      literal — `0x12` = (STB_GLOBAL << 4) | STT_FUNC — for every function
+      symbol, including the internal `func_N` that are pure implementation
+      detail. ARM has had `SymbolBinding::Local` with ELF-correct locals-first
+      ordering since #656. The consequence:
+
+        ld.lld: error: duplicate symbol: func_1
+
+      WHY NOW, AND NOT BEFORE: v0.64 shipped the host-library story — arm64
+      Linux linked and EXECUTED under three loaders, and a Mach-O MH_OBJECT
+      that Apple's ld links and macOS runs 17/17 vs wasmtime. "Ship synth
+      output as a normal host library" is now demonstrated for ONE object.
+      This is the next thing standing between that and a library anyone can
+      actually use two of.
+
+      MEASURED, NOT ASSUMED: the #1189 oracle co-links two objects after
+      `llvm-objcopy --regex --localize-symbol='func_[0-9]+'` and all 17
+      wasmtime-first comparisons still match — so the code and relocations are
+      already correct and the binding is the ONLY obstacle. v0.64's Mach-O work
+      also confirmed the shape is shared across containers: two Mach-O objects
+      collide on `_func_1` exactly as the ELF pair does.
+
+      DO NOT IMPLEMENT IT TWICE. #656 already solved locals-first ordering and
+      `sh_info` for ARM. A second hand-written copy in the aarch64 writer is
+      the mirror the North Star forbids — and v0.64's `ObjectPlan` refactor
+      already established the shared-plan pattern for exactly this. Note the
+      cold review's finding: the plan does NOT currently carry binding, which
+      is why a fix applied to one writer alone would make the containers
+      diverge. Adding binding TO THE PLAN is the shape that closes both.
+
+      The #1179 and #1190 oracles pin the current behaviour bidirectionally, so
+      a fix reddens them until the documented limitation moves in the same PR.
+      That is deliberate: move the pin and the doc together.
+    status: proposed
+    release: v0.65
+    tags:
+      - reach
+      - aarch64
+      - host-library
+      - cross-backend-divergence
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1180"
+      done-when: "manual: internal func_N are emitted STB_LOCAL (or the Mach-O equivalent) with ELF locals-first ordering honoured; two synth aarch64 objects co-link and EXECUTE without the objcopy workaround; the binding decision lives in the shared ObjectPlan rather than being implemented per-writer; and the #1179/#1190 pins plus their docs move in the same PR"
+      verified-by: >-
+        PENDING. The existing co-link oracles are the acceptance test — they
+        currently pin the FAILURE, so a correct fix turns them red and the
+        change must move pin and documentation together.

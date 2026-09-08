@@ -1,0 +1,61 @@
+# v0.65 — "How much of this is correct by accident?"
+#
+# The question comes straight out of v0.64's worst finding. #1189 was a SILENT
+# MISCOMPILE on main: an if/else join register could BE a register-homed local's
+# home register, so the join `mov` overwrote the local — f(0) returned 18 where
+# wasmtime returns 9, exit 0, no decline.
+#
+# IT SURVIVED BECAUSE THE THEN-ARM IS CORRECT BY ACCIDENT. `r0` already held the
+# value the join wanted, so the aliasing write was a no-op on that path. Every
+# test taking the then-branch, or not re-reading the local after the join,
+# passed cleanly. And it was found by a lane STRENGTHENING AN ORACLE — not by
+# anything failing.
+#
+# That leaves the question nobody in this repo has asked:
+#
+#   WHAT FRACTION OF THE CODE GENERATOR IS COVERED BY AN ORACLE THAT WOULD
+#   NOTICE IF IT WERE WRONG?
+#
+# synth has ~19,740 selector lines, 191 repro scripts, 61 CI jobs, an emulation
+# floor of 325,121 and 645 Qed. Nobody knows what share of the EMITTED-CODE
+# DECISIONS any of that would actually catch. The honest answer may be
+# embarrassing; this project ships embarrassing numbers on purpose.
+#
+# THE HEADLINE DELIVERABLE is a published oracle-coverage percentage for the
+# selector, derived by MUTATION: flip a decision, run the whole oracle suite,
+# count what SURVIVES. A surviving mutant is codegen that could be wrong today
+# with nothing to tell us. That number becomes what v0.66 is scoped from — the
+# same way v0.64 discovered the instrument it planned from was wrong.
+#
+# WHY THIS COMPOSES WITH THE NORTH STAR, both invariants turned on the
+# verification apparatus itself:
+#
+#   "Derive what you check against from the artifact you ship" — synth SHIPS a
+#   second selector (`select_default` vs `select_with_stack`, #197) and has
+#   NEVER differentially compared them. Endive's entire correctness model is
+#   "the compiler passes all the same specs as the interpreter"; we have the
+#   second engine already built and unused as an oracle.
+#
+#   "Reach is part of correctness" — an oracle covering 40 % of decisions is a
+#   proof about 40 % of the compiler.
+#
+# AND IT GIVES THE SUBTRACTION RATCHET ITS FIRST PRINCIPLED TARGET LIST. The
+# ceiling that must FALL went 19227 -> 19740 in v0.64. Every surviving mutant is
+# either UNTESTED (add the oracle) or DEAD (delete the code). v0.58 proved
+# deletion works when gated on byte-identity; this supplies the list.
+#
+# FALSIFIABLE IN THE GOOD DIRECTION TOO: if the survival rate comes back near
+# zero, that is a strong result and the release says so plainly. A survey that
+# can only produce bad news is not a survey.
+#
+# HONEST RISKS, recorded before the work rather than after:
+#   - Mutation-testing a compiler is expensive; each mutant is a full oracle
+#     run. Expect SAMPLING — state the sample and its confidence, never fake
+#     exhaustiveness.
+#   - Some survivors will be legitimately unreachable code, not gaps. The
+#     classification is part of the deliverable, not an afterthought.
+#   - PARITY will surface divergences that are INTENDED selector differences.
+#     Those get recorded with reasons; "fixing" them would be wrong.
+#
+# Scope: 6 new + 1 carried. ARCHMODEL carries again — spar#445 remains open, an
+# EXTERNAL blocker, re-verified at plan time.

@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-65-MVPCORE
+    type: system-req
+    title: "MVP core is 14 of 114 files on arm — the scalar foundation of a compiler claiming mechanized correctness"
+    description: >
+      From synth's OWN generated census (`docs/status/SPEC_FAMILY_CENSUS.md`,
+      v0.63): MVP core 14/114 arm, 11 riscv, 21 aarch64.
+
+      Not SIMD. Not GC. Not exception handling. THE CORE — the scalar
+      instruction set every other family is built on, and the only family where
+      a compiler carrying 645 Qed has no excuse for a low number.
+
+      WHY THIS IS THE RIGHT REACH TARGET and the exotic families are not: the
+      family census (RQ-63-FAMILY) exists precisely because a single acceptance
+      percentage hides which capability is missing. SIMD at 0/59 and GC at 0/16
+      are honest declines of features synth has never claimed. MVP core at
+      14/114 is different in kind — it is the surface the proofs are ABOUT.
+
+      A CAUTION THIS RELEASE MUST CARRY, learned the hard way in v0.63: A
+      BLOCKER COUNT IS NOT A REACH ESTIMATE. RQ-63-ARMI64OFF cleared a
+      46-module blocker and gained ZERO reach; RQ-63-A64STACK cleared 77 and
+      gained 3. The census records only the FIRST decline per function, so
+      clearing a top blocker reveals the next layer rather than adding its
+      count. Scope from the ranking v0.64's RQ-64-HISTOGRAM corrected, and
+      MEASURE the delta rather than predicting it.
+
+      Pairs deliberately with RQ-65-MUTANTS: reach and oracle coverage are the
+      same question asked from two directions. Accepting more input while
+      knowing less about whether the lowering is watched would be the wrong
+      trade, and the mutation survey is what keeps this honest.
+    status: proposed
+    release: v0.65
+    tags:
+      - reach
+      - census
+      - mvp-core
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1017"
+      done-when: "manual: the top MVP-core blockers are each closed with an execution oracle or declined with a measured reason; the family census MVP-core row is re-derived and the delta REPORTED (including if it is zero); no reach increment lands without the oracle that makes the newly-accepted input safe"
+      verified-by: >-
+        PENDING. Report the measured delta, not the blocker count cleared.
+        v0.63 is the precedent for why those differ.
