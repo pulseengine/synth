@@ -1,0 +1,106 @@
+artifacts:
+  - id: RQ-65-DECLINE
+    type: system-req
+    title: "Turn the optimized path's SILENT WRONG ANSWERS into LOUD DECLINES — the mechanism already exists and half of it was already written"
+    description: >
+      ADDED MID-RELEASE, after RQ-65-PARITY executed the spec suite for the
+      first time and found eleven defects. v0.65 cannot safely land eleven
+      codegen fixes — each needs red-first plus byte-identity — but several do
+      not need a lowering at all. They need a DECLINE, and the decline
+      mechanism is already there.
+
+      THE EVIDENCE THIS IS THE RIGHT SHAPE, from the tree itself
+      (`optimizer_bridge.rs`, the #372 guard):
+
+        "the optimized path also has no IR opcode for full-width
+         `i64.load`/`i64.store` — IT WOULD DROP THEM TO A STUB (`ld64` -> `bx
+         lr`). Decline so the backend falls back to the direct selector, which
+         lowers them to a correct lo/hi register-pair access."
+
+      That comment describes #1208 EXACTLY — "drop them to a stub (`bx lr`)" is
+      the measured symptom, 90 assertions returning garbage on spec
+      `address.wast` m1. The predicate matches `I64Load | I64Store` and nothing
+      else, so the NARROW forms — `i64.load8/16/32_{s,u}` — fall straight
+      through into the stub the comment warns about. The failure mode was
+      known, documented, and fixed for half the family.
+
+      SO THE FIX IS AN EXTENSION OF AN EXISTING GUARD, not new lowering: two
+      lines of predicate, a fallback that is already proven correct for the
+      full-width siblings, and a decline reason in the same voice as #120/#188/
+      #372/#374.
+
+      SCOPE — per defect, decide and SAY WHICH:
+        (a) DECLINE IS CORRECT AND SUFFICIENT: the direct selector already
+            lowers the shape correctly, so falling back is a complete fix. This
+            is the #1208 case and probably others.
+        (b) DECLINE IS CORRECT BUT COSTS REACH: falling back is right but the
+            module then compiles on the slower path or declines outright.
+            Record the reach cost measured, not estimated.
+        (c) DECLINE IS NOT ENOUGH: the direct selector is ALSO wrong (#1209,
+            #1210, #1211, #1214, #1215 are wrong on BOTH), so there is nothing
+            correct to fall back to. Those are NOT this artifact's work — say
+            so and leave them pinned for the next release.
+
+      WHY THIS IS THE RIGHT TRADE FOR THIS COMPILER, and not a cop-out: synth's
+      stated differentiator is LOUD-DECLINE-OVER-SILENT-MISCOMPILE. A function
+      that returns whatever was in R0:R1 is the exact opposite of that. Trading
+      acceptance for honesty is the trade this project says it makes; here it
+      is, with the numbers.
+
+      AND THE DOC CLAIM IS ALREADY FALSE, MEASURED — this artifact owns that
+      too, because it is the same defect seen from the doc side. ARCHITECTURE.md
+      states the honesty rule as "a construct without a lowering **declines
+      loudly** with a machine reason - never silent wrong code". Compiled on
+      main (af819788), a module whose whole body is `local.get 0; i64.load8_u`:
+
+        optimized (default)       .text body = e12fff1e  -- `bx lr`, and that
+                                  is the ENTIRE function
+        direct (`--no-optimize`)  push / add ip,fp,r0 / ldrb r0,[ip] /
+                                  mov r2,#0 / ... -- a real zero-extended load
+                                  into the lo/hi pair
+
+      exit 0, no decline, no warning. A construct without a lowering producing
+      silent wrong code is the sentence's own excluded case.
+
+      THE LEDGER PIN COULD NOT HAVE CAUGHT IT, which is the structural half and
+      the reason this is recorded rather than quietly fixed.
+      `SYNTH-ARCH-LOUD-DECLINE` binds the phrase "declines loudly" to evidence
+      that `fn is_intentionally_ignored` exists in `wasm_decoder.rs`. The
+      decoder decodes `i64.load8_u` perfectly well; the failure is one layer
+      down, in LOWERING. The evidence lives in a different layer than the
+      property it asserts, so the pin is green BY CONSTRUCTION -- "could this
+      check fail?" applied to the honesty claim itself, and the answer is no.
+
+      SO THE DELIVERABLE INCLUDES re-pointing that pin at evidence that CAN
+      fail on a lowering-layer silent miscompile (the decline predicate this
+      work extends, or the RQ-65-PARITY pin counts for the shapes involved),
+      and correcting the ARCHITECTURE.md sentence if a class-(c) residual
+      leaves it overbroad. Per the standing rule: when evidence genuinely
+      weakened, the PUBLIC CLAIM changes -- never the ledger.
+
+      NOT A LICENCE TO DECLINE BROADLY. Every decline costs reach, and reach is
+      part of correctness (the North Star's second invariant). Each one must
+      name the defect it prevents and the fallback that makes it safe. A
+      decline added without a measured defect behind it is a reach regression
+      wearing a safety costume.
+    status: proposed
+    release: v0.65
+    tags:
+      - correctness
+      - decline-honesty
+      - optimized-path
+      - miscompile-class
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1208"
+      done-when: "manual: every optimized-path-only defect from RQ-65-PARITY is classified (a) decline sufficient, (b) decline with a MEASURED reach cost, or (c) both selectors wrong so decline is not enough; every (a) and (b) lands a decline with a machine reason and the RQ-65-PARITY pin moves from wrong-answer to declined in the same PR; reach delta reported as measured; and SYNTH-ARCH-LOUD-DECLINE is re-pointed at evidence that could fail on a LOWERING-layer silent miscompile, with the ARCHITECTURE.md honesty sentence corrected if a residual leaves it overbroad"
+      verified-by: >-
+        PENDING. Red-first is inherited and free: RQ-65-PARITY pins each defect
+        by exact (file, module, function, kind) count, so a decline that
+        actually fires MOVES the pin — and the pin moving is the evidence. Byte
+        identity is required for every module NOT affected by the new declines.
