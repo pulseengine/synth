@@ -36,7 +36,7 @@ artifacts:
       The #1179 and #1190 oracles pin the current behaviour bidirectionally, so
       a fix reddens them until the documented limitation moves in the same PR.
       That is deliberate: move the pin and the doc together.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - reach
@@ -51,8 +51,65 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1180"
-      done-when: "manual: internal func_N are emitted STB_LOCAL (or the Mach-O equivalent) with ELF locals-first ordering honoured; two synth aarch64 objects co-link and EXECUTE without the objcopy workaround; the binding decision lives in the shared ObjectPlan rather than being implemented per-writer; and the #1179/#1190 pins plus their docs move in the same PR"
+      done-when: "contains:crates/synth-backend-aarch64/src/elf.rs:pub binding: SymbolBinding,"
       verified-by: >-
-        PENDING. The existing co-link oracles are the acceptance test — they
-        currently pin the FAILURE, so a correct fix turns them red and the
-        change must move pin and documentation together.
+        IMPLEMENTED. WHERE BINDING LIVES: `synth_core::backend::SymbolBinding`
+        + `locals_first()` are the ONE definition of the enum and of the
+        ELF/Mach-O locals-first partition — the ARM ELF32 builder
+        (`ElfBuilder::build`, #656) now applies that helper instead of its
+        own sort (its `SymbolBinding` is a re-export; ARM output byte-identical,
+        113 default + 133 relocatable corpus objects). `PlannedSymbol::binding`
+        is assigned ONCE in `plan_object` (synth-invented names — `func_N`,
+        `__synth_globals`, `__synth_func_table` — LOCAL; wasm exports and
+        imports GLOBAL) and the plan is ordered locals-first with every
+        relocation index remapped; both writers READ `ObjectPlan::local_count()`
+        (ELF `sh_info`, Mach-O `LC_DYSYMTAB`) and neither sorts nor decides.
+        WIDER THAN THE ISSUE, MEASURED FIRST: two modules that both carry
+        globals + a funcref table ALSO collided on `__synth_globals` and
+        `__synth_func_table` (ELF ld.lld and Mach-O Apple ld alike), and
+        still did after `func_N` alone was localized — so the rule is "every
+        synth-invented name", not `func_N`; deliberate divergence from ARM
+        (which keeps `__synth_globals` GLOBAL for its R9 contract) written
+        into the doc. BYTES: over 200 repo modules x 4 flavours, 144 aarch64
+        ELF + 144 Mach-O objects differ ONLY in the symbol table (`.text`,
+        `.data` and the relocation SET by target name identical; the r_info
+        symbol INDEX and `.strtab` order move with the permutation), 0 newly
+        declined, 0 newly accepted. RED-FIRST ON THE PINS: the unmodified
+        v0.64 oracles run against the fixed binary went red exactly there —
+        ELF `synth.o + second.o: LINKED — the pinned collision did not
+        occur`, Mach-O `symbol _func_1 is not N_EXT` — before pin and doc
+        moved together. ACCEPTANCE, measured on the lane tree (host
+        arm64-Darwin): `arm64_linux_host_link_rq64_differential.py` —
+        both objects define the three formerly-colliding names, both
+        STB_LOCAL with sh_info at the first non-local; `synth.o + second.o:
+        LINKED (no objcopy)`; the co-linked image EXECUTES under unicorn,
+        `23 of 23 values match wasmtime (17 from synth.o + 6 from
+        second.o)`; binding red-first: `synth.o + synth.o` refused on its 12
+        GLOBAL exports with no invented name among the duplicates, and
+        `func_N` re-globalized in both objects by `llvm-objcopy
+        --globalize-symbol` brings `duplicate symbol: func_1` back;
+        `executions: 17`, `co-link runs: 1`, `binding red-first: refused`,
+        `mutation: detected`, RESULT: PASS; oracle_run emulations=3 (the
+        oracle's declared floor raised 2 -> 3, and the live `emulations floor
+        total` is whatever `oracle_wiring_check.py` reports on the merged
+        tree — re-derived there, +1 over the superseded v0.64 value 325121,
+        never restated here).
+        `macho_host_link_rq64_differential.py` (REQUIRE_NATIVE=1): 145
+        byte-identical incl. per-symbol BINDING (STB_LOCAL <-> N_EXT clear,
+        LC_DYSYMTAB local range == the non-N_EXT prefix); NEW binding
+        mutation control `N_EXT set on _func_1: binding disagreement
+        reported`; `synth.o + second.o: LINKED (Apple ld, no objcopy)`, nm
+        sees all 36 wanted symbols, `co-linked image executed natively: 23
+        of 23 values match wasmtime`; `binding red-first: refused`;
+        RESULT: PASS, compiles=403. Fixture shared by both oracles:
+        `scripts/repro/colink_second_rq65.wat`. CI: both Linux jobs require
+        `binding red-first: refused`, the native arm64 job `co-link runs: 2`
+        (unicorn + native), both Mach-O jobs `binding mutation: detected`,
+        the macOS job `co-link runs: 1`. RESIDUAL, measured and NOT fixed
+        here: RISC-V's own writer emits every symbol STB_GLOBAL, so two RV32
+        objects collide on `func_0` (ARM co-links) — it has no shared plan
+        to carry the binding into and is filed as a follow-up, not folded
+        in. Unit tests: `func_n_local_exports_and_imports_global_locals_first_sh_info_1180`,
+        `two_plans_both_define_func_1_local_1180`,
+        `binding_is_the_plans_in_both_containers_1180`,
+        `symbols_carry_the_darwin_prefix_and_partition_locals_extdef_undef`.

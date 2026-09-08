@@ -24,7 +24,10 @@ where the target host is:
      and require: the acceptance decision agrees (a container flag must not
      change what compiles), `__TEXT,__text` == `.text` byte for byte,
      `__DATA,__data` == `.data`, the symbol table maps 1:1 (`name` ->
-     `_name`, same section class, same offset), and the relocation SET maps
+     `_name`, same section class, same offset, and — RQ-65-FUNCN, #1180 —
+     the same BINDING: ELF `STB_LOCAL` <-> `N_EXT` clear, `STB_GLOBAL` <->
+     `N_EXT` set, with `LC_DYSYMTAB`'s local range exactly the non-`N_EXT`
+     prefix), and the relocation SET maps
      1:1 under the ELF->Mach-O type map (`R_AARCH64_CALL26`/`JUMP26` ->
      `ARM64_RELOC_BRANCH26`, `ADR_PREL_PG_HI21` -> `PAGE21`,
      `ADD_ABS_LO12_NC` -> `PAGEOFF12`; every one `r_extern`, `r_length`=2,
@@ -35,7 +38,11 @@ where the target host is:
      by a library, so the leg runs on the Linux CI runner too.
   2. MUTATION CONTROL on the identity leg: bit 30 of `add`'s first
      instruction is flipped in the Mach-O `__text` and the identity check
-     must REPORT it — a check that cannot fail is not a check (#1113).
+     must REPORT it — a check that cannot fail is not a check (#1113). And a
+     BINDING mutation control (RQ-65-FUNCN): `N_EXT` is set on `_func_1` in
+     the Mach-O `nlist` and the identity check must report the binding
+     disagreement with the ELF twin — the check that would have caught a
+     writer deciding binding on its own.
   3. On an arm64-Darwin host (`REQUIRE_NATIVE=1` makes any other host RED,
      never a skip): GENERATE a C harness FROM THE CASE TABLE BELOW (one
      source for the C call sequence and the wasmtime call sequence — a
@@ -58,10 +65,19 @@ where the target host is:
      `-m aarch64linux` must be refused the same way (the containers are
      mutually exclusive, not one a superset); and the MUTATED object from
      step 2 is linked and run and the differential must report a mismatch.
-  5. CO-LINK LIMITATION, pinned (#1180): `func_N` is GLOBAL, so two synth
-     aarch64 objects — Mach-O exactly like ELF — collide in one link
-     (`duplicate symbol '_func_1'`). Pinned so the day the writer changes the
-     binding this goes red and the doc moves; not fixed here.
+  5. CO-LINK (RQ-65-FUNCN, #1180), on the Darwin leg: a SECOND synth Mach-O
+     — `colink_second_rq65.wat`, shaped to define its OWN `_func_1`,
+     `___synth_globals` and `___synth_func_table` (the three names two synth
+     objects used to collide on; RED if either object lacks one, RED if any
+     is `N_EXT`) — is linked into the SAME executable with `synth.o` by
+     Apple `ld`, with no objcopy step, checked with `nm`, and EXECUTED with
+     every value from BOTH objects compared against wasmtime in one combined
+     harness. RED-FIRST: `synth.o` linked with ITSELF must be refused on its
+     GLOBAL exports (`duplicate symbol '_add'`) with NO invented name among
+     the duplicates — the same linker, in the same link, still refuses
+     duplicates; the locals are what it does not see. Before RQ-65-FUNCN
+     this step pinned `duplicate symbol '_func_1'` as a documented
+     limitation; the pin moved with the doc in the same PR.
 
 WHAT IT DOES NOT VERIFY (stated so the claim cannot outrun its instrument):
   * WASM traps — every case is non-trapping on purpose; `brk #0` is SIGTRAP
@@ -82,6 +98,7 @@ Run (needs the synth binary; on macOS additionally clang/ld/nm and wasmtime):
 
 import os
 import platform
+import re
 import shutil
 import struct
 import subprocess
@@ -95,7 +112,13 @@ from elftools.elf.elffile import ELFFile
 HERE = Path(__file__).parent
 REPO = HERE.parent.parent
 WAT = HERE / "macho_host_link_rq64.wat"
+# RQ-65-FUNCN: the second object of the co-link leg (shared with the ELF
+# oracle, so both containers prove the same two-object claim).
+SECOND_WAT = HERE / "colink_second_rq65.wat"
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
+
+# The names two synth objects used to collide on (#1180), Darwin-prefixed.
+CLASH = ["_func_1", "___synth_globals", "___synth_func_table"]
 
 M32 = (1 << 32) - 1
 M64 = (1 << 64) - 1
@@ -147,6 +170,24 @@ CASES = [
      "memory.size is the declared-minimum constant"),
 ]
 
+# RQ-65-FUNCN: the second object's cases, run AFTER `CASES` in the combined
+# harness (labels unique across both tables; the ELF oracle's table, so the
+# two containers' co-link values can be read side by side).
+SECOND_CASES = [
+    ("call", "b_g", "g", ["i32"], [41], "i32",
+     "second object: synth -> host, BRANCH26 bound to the SAME C host_add"),
+    ("call", "b_acc1", "acc_b", ["i32"], [1], "i32",
+     "second object's OWN ___synth_globals (collided when N_EXT)"),
+    ("call", "b_acc10", "acc_b", ["i32"], [10], "i32",
+     "...and it persists across calls, separately from the first object's"),
+    ("call", "b_disp_triple", "disp_b", ["i32", "i32"], [0, 7], "i32",
+     "second object's OWN ___synth_func_table (collided when N_EXT)"),
+    ("call", "b_disp_neg", "disp_b", ["i32", "i32"], [1, 7], "i32",
+     "slot 1 of the second table"),
+    ("call", "b_chain", "chain_b", ["i32"], [5], "i32",
+     "second object's _func_1/_func_2 via BRANCH26 — non-N_EXT labels, resolved in-object"),
+]
+
 CTYPE = {"i32": "int32_t", "i64": "int64_t", "f64": "double"}
 
 # The shim: x28 is callee-saved under the Apple arm64 ABI exactly as under
@@ -177,16 +218,16 @@ def c_literal(ty, v):
     return f"dfrom(0x{v & M64:x}ull)"
 
 
-def gen_harness_c(with_host_add=True):
-    """The C harness, derived from CASES. Emits `label=<16 hex>` per case."""
+def gen_harness_c(with_host_add=True, cases=CASES):
+    """The C harness, derived from `cases`. Emits `label=<16 hex>` per case."""
     decls = {}
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, _, export, argtys, _, rty, _ = c
             args = ", ".join(CTYPE[t] for t in argtys) or "void"
             decls[export] = f"extern {CTYPE[rty]} {export}({args});"
     body = []
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, label, export, argtys, args, rty, _ = c
             call = f"{export}({', '.join(c_literal(t, a) for t, a in zip(argtys, args))})"
@@ -258,9 +299,9 @@ def norm(ty, r):
     return struct.unpack("<Q", struct.pack("<d", r))[0]
 
 
-def wasmtime_expected():
+def wasmtime_expected(wat=WAT, cases=CASES):
     engine = wasmtime.Engine()
-    module = wasmtime.Module.from_file(engine, str(WAT))
+    module = wasmtime.Module.from_file(engine, str(wat))
     store = wasmtime.Store(engine)
     linker = wasmtime.Linker(engine)
     i32 = wasmtime.ValType.i32()
@@ -268,18 +309,19 @@ def wasmtime_expected():
                        lambda a, b: to_signed("i32", (a + b) & M32))
     inst = linker.instantiate(store, module)
     ex = inst.exports(store)
-    mem = ex["memory"]
     out = []
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, label, export, argtys, args, rty, _ = c
             r = ex[export](store, *[to_signed(t, a) for t, a in zip(argtys, args)])
             out.append((label, norm(rty, r)))
         elif c[0] == "peek":
             _, label, addr, _ = c
+            mem = ex["memory"]
             out.append((label, struct.unpack("<I", bytes(mem.read(store, addr, addr + 4)))[0]))
         elif c[0] == "poke":
             _, label, addr, byte, _ = c
+            mem = ex["memory"]
             mem.write(store, bytes([byte]), addr)
             out.append((label, byte))
     return out
@@ -343,7 +385,10 @@ def read_elf(path):
             cls = "data"
         else:
             cls = f"other:{shndx}"
-        syms[sy.name] = (cls, sy["st_value"])
+        # RQ-65-FUNCN: the binding is part of the identity — STB_LOCAL must
+        # come out as N_EXT-clear in the Mach-O, STB_GLOBAL as N_EXT-set.
+        bind = "local" if sy["st_info"]["bind"] == "STB_LOCAL" else "global"
+        syms[sy.name] = (cls, sy["st_value"], bind)
     relocs = set()
     rela = f.get_section_by_name(".rela.text")
     if rela is not None:
@@ -427,6 +472,7 @@ def parse_macho(data):
             mo["build_version"] = {"platform": plat, "minos": minos, "sdk": sdk,
                                    "ntools": ntools}
         off += cmdsize
+    mo["symtab"] = symtab_cmd
     if symtab_cmd:
         symoff, nsyms, stroff, strsize = symtab_cmd
         strtab = data[stroff:stroff + strsize]
@@ -450,12 +496,13 @@ def macho_view(mo):
     ordinal = {i + 1: s["name"] for i, s in enumerate(mo["sections"])}
     syms = {}
     for sy in mo["symbols"]:
+        bind = "global" if sy["type"] & N_EXT else "local"
         if (sy["type"] & N_TYPE) == N_UNDF:
-            syms[sy["name"]] = ("undef", 0)
+            syms[sy["name"]] = ("undef", 0, bind)
         elif (sy["type"] & N_TYPE) == N_SECT:
             sec = secs[ordinal[sy["sect"]]]
             cls = {"__text": "text", "__data": "data"}.get(sec["name"], sec["name"])
-            syms[sy["name"]] = (cls, sy["value"] - sec["addr"])
+            syms[sy["name"]] = (cls, sy["value"] - sec["addr"], bind)
     relocs = set()
     problems = []
     if text is not None:
@@ -510,12 +557,21 @@ def check_macho_structure(mo):
             p.append(f"LC_DYSYMTAB ranges do not tile the {n} symbols: {d}")
         for i, sy in enumerate(mo["symbols"]):
             undef = (sy["type"] & N_TYPE) == N_UNDF
+            ext = bool(sy["type"] & N_EXT)
             in_undef_range = d["iundefsym"] <= i < d["iundefsym"] + d["nundefsym"]
             if undef != in_undef_range:
                 p.append(f"symbol {sy['name']} ({'undef' if undef else 'defined'}) "
                          f"sits outside its LC_DYSYMTAB range")
-            if not (sy["type"] & N_EXT):
-                p.append(f"symbol {sy['name']} is not N_EXT (synth emits GLOBAL only)")
+            # RQ-65-FUNCN: the LC_DYSYMTAB local range must be EXACTLY the
+            # non-N_EXT symbols (locals first), and an undefined symbol must
+            # be external — the Mach-O half of the ELF locals-first/sh_info
+            # rule, read off the plan by the writer.
+            in_local_range = d["ilocalsym"] <= i < d["ilocalsym"] + d["nlocalsym"]
+            if (not ext) != in_local_range:
+                p.append(f"symbol {sy['name']} ({'N_EXT' if ext else 'local'}) "
+                         f"{'sits outside' if not ext else 'sits inside'} the LC_DYSYMTAB local range")
+            if undef and not ext:
+                p.append(f"undefined symbol {sy['name']} is not N_EXT")
     return p
 
 
@@ -535,9 +591,13 @@ def identity_problems(elf, mv):
     if want_syms != mv["syms"]:
         only_elf = sorted(set(want_syms) - set(mv["syms"]))
         only_mo = sorted(set(mv["syms"]) - set(want_syms))
-        diff = sorted(k for k in set(want_syms) & set(mv["syms"]) if want_syms[k] != mv["syms"][k])
+        both = set(want_syms) & set(mv["syms"])
+        diff = sorted(k for k in both if want_syms[k][:2] != mv["syms"][k][:2])
+        bind_diff = sorted(f"{k}: ELF {want_syms[k][2]} vs Mach-O {mv['syms'][k][2]}"
+                           for k in both if want_syms[k][:2] == mv["syms"][k][:2]
+                           and want_syms[k][2] != mv["syms"][k][2])
         p.append(f"symbols differ: only-ELF={only_elf} only-MachO={only_mo} "
-                 f"class/offset-differ={diff}")
+                 f"class/offset-differ={diff} binding-differs={bind_diff}")
     want_relocs = set()
     for off, ty, name in elf["relocs"]:
         mty, pcrel = ELF_TO_MACHO_RELOC[ty]
@@ -556,6 +616,26 @@ def compare_containers(elf_path, macho_path):
     return check_macho_structure(mo) + identity_problems(elf, mv), elf, mo
 
 
+def mutate_binding(data, name):
+    """RQ-65-FUNCN mutation control: set N_EXT on the nlist entry of `name`
+    (a writer deciding binding on its own would look exactly like this)."""
+    mo = parse_macho(data)
+    symoff = mo["symtab"][0]
+    out = bytearray(data)
+    for i, sy in enumerate(mo["symbols"]):
+        if sy["name"] == name:
+            out[symoff + 16 * i + 4] |= N_EXT
+            return bytes(out)
+    raise KeyError(name)
+
+
+def defined_names(mo, local_only=False):
+    """Section-defined symbol names of a parsed Mach-O (optionally only the
+    non-N_EXT ones)."""
+    return {s["name"] for s in mo["symbols"]
+            if (s["type"] & N_TYPE) == N_SECT and (not local_only or not (s["type"] & N_EXT))}
+
+
 # --------------------------------------------------------------------------
 def parse_lines(stdout):
     got = []
@@ -570,7 +650,7 @@ def parse_lines(stdout):
     return got, None
 
 
-def compare(tag, stdout, exit_code, expected, verbose=True):
+def compare(tag, stdout, exit_code, expected, verbose=True, cases=CASES):
     """Diff the harness output against wasmtime. Returns (#ok, #fail)."""
     if exit_code != 0:
         print(f"  FAIL [{tag}] exit status {exit_code} != 0 "
@@ -585,7 +665,7 @@ def compare(tag, stdout, exit_code, expected, verbose=True):
               f"has {len(expected)}")
         return 0, 1
     ok = fail = 0
-    for (gl, gv), (el, ev), case in zip(got, expected, CASES):
+    for (gl, gv), (el, ev), case in zip(got, expected, cases):
         why = case[-1]
         good = gl == el and gv == ev
         if good:
@@ -701,11 +781,30 @@ def main():
               f"{'identity mismatch reported' if id_detected else 'NOT DETECTED — the check is vacuous'}")
         if not id_detected:
             fails += 1
+        # RQ-65-FUNCN: can the identity check see a BINDING disagreement? Set
+        # N_EXT on `_func_1` in the Mach-O (the ELF twin says STB_LOCAL): the
+        # per-symbol identity must report it, and the LC_DYSYMTAB local range
+        # now holds an external symbol, which the structure check must also
+        # report.
+        print("== binding mutation control (can the identity check see a writer "
+              "deciding binding on its own?) ==")
+        mutated_b = tmp / "mutated_binding.o"
+        mutated_b.write_bytes(mutate_binding(mo_obj.read_bytes(), "_func_1"))
+        bprobs, _, _ = compare_containers(elf_obj, mutated_b)
+        bind_detected = any("_func_1" in p and ("binding" in p or "local range" in p)
+                            for p in bprobs)
+        print(f"  {'ok  ' if bind_detected else 'FAIL'} N_EXT set on `_func_1` in the nlist: "
+              f"{'binding disagreement reported' if bind_detected else 'NOT DETECTED — the binding check is vacuous'}")
+        if bind_detected:
+            print(f"       {next(p for p in bprobs if '_func_1' in p)[:160]}")
+        else:
+            fails += 1
 
         # ---- 4. the Darwin leg: host link + native execution -----------------
         is_darwin_arm64 = platform.system() == "Darwin" and platform.machine() == "arm64"
-        executions = refusals = native_runs = 0
+        executions = refusals = native_runs = colink_runs = 0
         exec_detected = None
+        binding_control = "not-run"
         clang = find_tool("CLANG", "clang")
         nm = find_tool("NM", "nm")
         if is_darwin_arm64 and clang and nm:
@@ -818,29 +917,92 @@ def main():
                 if not exec_detected:
                     fails += 1
 
-            # ---- 7. co-link limitation (#1180 shape, pinned) ------------------
-            print("== co-link limitation (pinned, #1180: two synth objects collide on "
-                  "_func_N in Mach-O exactly as in ELF) ==")
-            second = tmp / "second.wat"
-            second.write_text(
-                '(module\n'
-                '  (import "env" "host_add" (func $h (param i32 i32) (result i32)))\n'
-                '  (func (export "g") (param i32) (result i32)\n'
-                '    (call $h (local.get 0) (i32.const 1))))\n')
+            # ---- 7. co-link (RQ-65-FUNCN, #1180): two synth Mach-O objects ----
+            # Before RQ-65-FUNCN every symbol was N_EXT and this step PINNED
+            # `duplicate symbol '_func_1'`. The plan now carries binding, so a
+            # second object that defines all three formerly-colliding names
+            # itself links unaided with Apple ld — and the pair must EXECUTE.
+            print("== co-link (RQ-65-FUNCN): synth.o + second.o — its own _func_1, "
+                  "___synth_globals, ___synth_func_table — link UNAIDED (Apple ld) "
+                  "and execute ==")
             second_obj = tmp / "second.o"
-            r = compile_synth(second, second_obj, "macho")
+            r = compile_synth(SECOND_WAT, second_obj, "macho")
+            if r.returncode != 0 or "skipping" in r.stderr or not second_obj.exists():
+                print(f"RED: the second object failed/declined:\n{r.stdout}\n{r.stderr}")
+                return 1
+            mo2 = parse_macho(second_obj.read_bytes())
+            probs2 = check_macho_structure(mo2)
+            for p in probs2:
+                print(f"  FAIL second.o structure: {p}")
+            fails += len(probs2)
+            # Non-vacuity: the collision surface must EXIST in both objects,
+            # and be non-N_EXT in both.
+            missing = [c for c in CLASH if c not in defined_names(mo) or c not in defined_names(mo2)]
+            if missing:
+                print(f"  FAIL both objects must define {CLASH}; missing: {missing}")
+                fails += 1
+            ext_clash = [c for c in CLASH
+                         if c not in defined_names(mo, local_only=True)
+                         or c not in defined_names(mo2, local_only=True)]
+            if ext_clash:
+                print(f"  FAIL these must be non-N_EXT in both objects: {ext_clash}")
+                fails += 1
+            if not missing and not ext_clash:
+                print(f"  ok   both objects define {CLASH}, all non-N_EXT "
+                      f"(synth.o: {len(defined_names(mo, True))} local / "
+                      f"{len(defined_names(mo)) - len(defined_names(mo, True))} external defined; "
+                      f"second.o: {len(defined_names(mo2, True))} / "
+                      f"{len(defined_names(mo2)) - len(defined_names(mo2, True))})")
+            (tmp / "colink.c").write_text(gen_harness_c(cases=CASES + SECOND_CASES))
+            r = run([clang] + cflags + [str(tmp / "colink.c"), "-o", str(tmp / "colink.o")])
             if r.returncode != 0:
-                print(f"  FAIL could not build the second object:\n{r.stderr}")
-                fails += 1
-            r = run(link + [str(tmp / "colink"), str(tmp / "shim.o"), str(tmp / "harness.o"),
+                print(f"RED: clang failed on colink.c:\n{r.stderr}")
+                return 1
+            colink_img = tmp / "colink"
+            r = run(link + [str(colink_img), str(tmp / "shim.o"), str(tmp / "colink.o"),
                             str(mo_obj), str(second_obj)])
-            collided = r.returncode != 0 and "duplicate symbol" in r.stderr and "_func_1" in r.stderr
-            print(f"  {'ok  ' if collided else 'FAIL'} synth.o + second.o: "
-                  f"{'refused' if r.returncode else 'LINKED'} — "
-                  f"{'`duplicate symbol _func_1` as pinned (#1180)' if collided else 'the pinned collision did not occur: update the doc and #1180'}")
-            if not collided:
+            if r.returncode != 0:
+                print(f"  FAIL synth.o + second.o: REFUSED (exit {r.returncode}) — "
+                      f"{r.stderr.strip()[:300]}")
                 fails += 1
-                print(f"       stderr: {r.stderr.strip()[:300]}")
+            else:
+                print("  ok   synth.o + second.o: LINKED (Apple ld, no objcopy)")
+                rc, defined_c, undefined_c = nm_symbols(nm, colink_img)
+                want_c = want | defined_names(mo2)
+                missing_c = sorted(want_c - defined_c)
+                if rc != 0 or missing_c:
+                    print(f"  FAIL co-linked image: nm exit {rc}, missing {missing_c}")
+                    fails += 1
+                else:
+                    print(f"  image: MH_EXECUTE, nm sees all {len(want_c)} wanted symbols "
+                          f"from both objects")
+                expected2 = wasmtime_expected(SECOND_WAT, SECOND_CASES)
+                both = CASES + SECOND_CASES
+                r = subprocess.run([str(colink_img)], capture_output=True)
+                ok_c, bad_c = compare("co-linked", r.stdout, r.returncode,
+                                      expected + expected2, verbose=True, cases=both)
+                fails += bad_c
+                colink_runs = 1
+                print(f"  {'ok  ' if not bad_c else 'FAIL'} co-linked image executed "
+                      f"natively: {ok_c} of {len(both)} values match wasmtime "
+                      f"({len(CASES)} from synth.o + {len(SECOND_CASES)} from second.o)")
+
+            # ---- 7b. binding red-first: synth.o with ITSELF — the same linker
+            #          refuses its GLOBAL exports and does not see its locals. --
+            print("== binding red-first (the same linker, the same object twice: "
+                  "N_EXT duplicates refused, non-N_EXT labels not seen) ==")
+            r = run(link + [str(tmp / "twice"), str(tmp / "shim.o"), str(tmp / "harness.o"),
+                            str(mo_obj), str(mo_obj)])
+            dup_names = re.findall(r"duplicate symbol '([^']+)'", r.stderr)
+            invented_dups = [n for n in dup_names
+                             if n.startswith("_func_") or n.startswith("___synth_")]
+            twice_ok = r.returncode != 0 and "_add" in dup_names and not invented_dups
+            binding_control = "refused" if twice_ok else "LINKED"
+            print(f"  {'ok  ' if twice_ok else 'FAIL'} synth.o + synth.o: "
+                  f"{'refused' if r.returncode else 'LINKED'} — duplicates {sorted(dup_names)}"
+                  f"{'' if not invented_dups else ' — INVENTED NAMES COLLIDED'}")
+            if not twice_ok:
+                fails += 1
         elif os.environ.get("REQUIRE_NATIVE") == "1":
             print(f"  FAIL REQUIRE_NATIVE=1 but host is {platform.system()}/"
                   f"{platform.machine()} clang={clang} nm={nm}")
@@ -853,9 +1015,12 @@ def main():
         print(f"\nbyte-identical modules: {identical + (0 if problems else 1)}")
         print(f"acceptance disagreements: {disagree}")
         print(f"identity mutation: {'detected' if id_detected else 'undetected'}")
+        print(f"binding mutation: {'detected' if bind_detected else 'undetected'}")
         print(f"executions: {executions}")
         print(f"host-linker refusals: {refusals}")
         print(f"native-abi runs: {native_runs}")
+        print(f"co-link runs: {colink_runs}")
+        print(f"binding red-first: {binding_control}")
         print(f"mutation: {'detected' if exec_detected else ('undetected' if exec_detected is False else 'not-run')}")
         if fails:
             print(f"RESULT: FAIL ({fails})")

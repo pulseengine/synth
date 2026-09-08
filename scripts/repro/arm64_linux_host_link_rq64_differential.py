@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 2
+# ci-checks: emulations >= 3
 """RQ-64-ARM64LINUX — the arm64-LINUX host-library claim, linked by a REAL host
-linker and EXECUTED, against wasmtime.
+linker and EXECUTED, against wasmtime. Since RQ-65-FUNCN (#1180) also the
+TWO-OBJECT claim: a second synth object links into the same program unaided.
 
 THE CLAIM THIS ORACLE GATES. `synth compile -b aarch64 --relocatable` emits a
 SysV ELF64 `ET_REL` for `EM_AARCH64` with AAPCS64 calls. Before v0.64 that
@@ -50,6 +51,26 @@ WHAT IT DOES, in the order a consumer would:
      a MUTATION control: bit 30 of `add`'s first instruction is flipped in the
      LINKED image (ADD-shifted-reg -> SUB) and the differential must report a
      mismatch — a check that cannot fail is not a check (#1113).
+  7. CO-LINK (RQ-65-FUNCN, #1180). A SECOND synth object —
+     `colink_second_rq65.wat`, shaped to define its OWN `func_1`,
+     `__synth_globals` and `__synth_func_table` (the three names two synth
+     objects used to collide on; the leg is RED if either object lacks one)
+     — is linked into the SAME program with `synth.o`, with NO objcopy step.
+     Both objects are checked first: those names are STB_LOCAL, the exports
+     and the import STB_GLOBAL, `.symtab` locals-first with `sh_info` at the
+     first non-local. The co-linked image is checked like the single one and
+     EXECUTED under unicorn (and natively on arm64-Linux) with every value
+     from BOTH objects compared against wasmtime, in one combined harness.
+     RED-FIRST, twice, because the binding is the whole mechanism: (a)
+     `synth.o` linked with ITSELF must be refused on its GLOBAL exports
+     (`duplicate symbol: add`) with NO `func_1` / `__synth_` name among the
+     duplicates — the same linker, in the same link, still refuses
+     duplicates, and the locals are what it does not see; (b) with `func_N`
+     re-globalized in both objects by `llvm-objcopy --globalize-symbol`, the
+     v0.64 collision must RETURN (`duplicate symbol: func_1`). Before
+     RQ-65-FUNCN this step pinned that collision as a documented limitation
+     and executed the `--localize-symbol` workaround; the pin moved with the
+     doc in the same PR.
 
 WHAT IT DOES NOT VERIFY (stated so the claim cannot outrun its instrument):
   * WASM traps. Every case is non-trapping on purpose — a trap is `brk #0`,
@@ -86,7 +107,14 @@ from unicorn import arm64_const as A
 
 HERE = Path(__file__).parent
 WAT = HERE / "arm64_linux_host_link_rq64.wat"
+# RQ-65-FUNCN: the second object of the co-link leg (shared with the Mach-O
+# oracle, so both containers prove the same two-object claim).
+SECOND_WAT = HERE / "colink_second_rq65.wat"
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
+
+# The names two synth objects used to collide on (#1180). The co-link leg
+# requires BOTH objects to define all three, so it cannot pass vacuously.
+CLASH = ["func_1", "__synth_globals", "__synth_func_table"]
 
 M32 = (1 << 32) - 1
 M64 = (1 << 64) - 1
@@ -144,6 +172,24 @@ CASES = [
      "memory.size is the declared-minimum constant"),
 ]
 
+# RQ-65-FUNCN: the second object's cases, run AFTER `CASES` in the combined
+# harness (labels must stay unique across both tables). Each one goes through
+# a name that used to collide.
+SECOND_CASES = [
+    ("call", "b_g", "g", ["i32"], [41], "i32",
+     "second object: synth -> host, CALL26 bound to the SAME C host_add"),
+    ("call", "b_acc1", "acc_b", ["i32"], [1], "i32",
+     "second object's OWN __synth_globals (collided when GLOBAL)"),
+    ("call", "b_acc10", "acc_b", ["i32"], [10], "i32",
+     "...and it persists across calls, separately from the first object's"),
+    ("call", "b_disp_triple", "disp_b", ["i32", "i32"], [0, 7], "i32",
+     "second object's OWN __synth_func_table (collided when GLOBAL)"),
+    ("call", "b_disp_neg", "disp_b", ["i32", "i32"], [1, 7], "i32",
+     "slot 1 of the second table"),
+    ("call", "b_chain", "chain_b", ["i32"], [5], "i32",
+     "second object's func_1/func_2 via CALL26 — LOCAL labels, resolved in-object"),
+]
+
 CTYPE = {"i32": "int32_t", "i64": "int64_t", "f64": "double"}
 
 START_S = """\
@@ -170,16 +216,16 @@ def c_literal(ty, v):
     return f"dfrom(0x{v & M64:x}ull)"
 
 
-def gen_harness_c(with_host_add=True):
-    """The C harness, derived from CASES. Emits `label=<16 hex>` per case."""
+def gen_harness_c(with_host_add=True, cases=CASES):
+    """The C harness, derived from `cases`. Emits `label=<16 hex>` per case."""
     decls = {}
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, _, export, argtys, _, rty, _ = c
             args = ", ".join(CTYPE[t] for t in argtys) or "void"
             decls[export] = f"extern {CTYPE[rty]} {export}({args});"
     body = []
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, label, export, argtys, args, rty, _ = c
             call = f"{export}({', '.join(c_literal(t, a) for t, a in zip(argtys, args))})"
@@ -253,9 +299,9 @@ def norm(ty, r):
     return struct.unpack("<Q", struct.pack("<d", r))[0]
 
 
-def wasmtime_expected():
+def wasmtime_expected(wat=WAT, cases=CASES):
     engine = wasmtime.Engine()
-    module = wasmtime.Module.from_file(engine, str(WAT))
+    module = wasmtime.Module.from_file(engine, str(wat))
     store = wasmtime.Store(engine)
     linker = wasmtime.Linker(engine)
     i32 = wasmtime.ValType.i32()
@@ -263,18 +309,19 @@ def wasmtime_expected():
                        lambda a, b: to_signed("i32", (a + b) & M32))
     inst = linker.instantiate(store, module)
     ex = inst.exports(store)
-    mem = ex["memory"]
     out = []
-    for c in CASES:
+    for c in cases:
         if c[0] == "call":
             _, label, export, argtys, args, rty, _ = c
             r = ex[export](store, *[to_signed(t, a) for t, a in zip(argtys, args)])
             out.append((label, norm(rty, r)))
         elif c[0] == "peek":
             _, label, addr, _ = c
+            mem = ex["memory"]
             out.append((label, struct.unpack("<I", bytes(mem.read(store, addr, addr + 4)))[0]))
         elif c[0] == "poke":
             _, label, addr, byte, _ = c
+            mem = ex["memory"]
             mem.write(store, bytes([byte]), addr)
             out.append((label, byte))
     return out
@@ -349,6 +396,42 @@ def synth_object_symbols(path):
     return defined, undefined
 
 
+def check_bindings(path):
+    """RQ-65-FUNCN: the binding contract of ONE synth object, read back with
+    pyelftools (an independent reader). Every name synth invents (`func_N`,
+    `__synth_*`) must be STB_LOCAL; every export and the import STB_GLOBAL;
+    all locals must precede all non-locals; `.symtab` sh_info must be the
+    index of the first non-local. Returns (problems, locals, globals)."""
+    f = ELFFile(open(path, "rb"))
+    symtab = f.get_section_by_name(".symtab")
+    problems, locals_, globals_ = [], [], []
+    first_nonlocal = None
+    for i, sy in enumerate(symtab.iter_symbols()):
+        if i == 0:
+            continue  # the null symbol
+        bind = sy["st_info"]["bind"]
+        invented = sy.name.startswith("func_") or sy.name.startswith("__synth_")
+        if bind == "STB_LOCAL":
+            locals_.append(sy.name)
+            if not invented:
+                problems.append(f"{sy.name} is STB_LOCAL but is not a synth-invented name")
+            if first_nonlocal is not None:
+                problems.append(f"STB_LOCAL {sy.name} at index {i} follows a non-local "
+                                f"(ELF requires locals first)")
+        else:
+            globals_.append(sy.name)
+            if first_nonlocal is None:
+                first_nonlocal = i
+            if invented:
+                problems.append(f"{sy.name} is {bind}; synth-invented names must be STB_LOCAL")
+            if bind != "STB_GLOBAL":
+                problems.append(f"{sy.name} is {bind}, expected STB_GLOBAL")
+    want_info = first_nonlocal if first_nonlocal is not None else symtab.num_symbols()
+    if symtab["sh_info"] != want_info:
+        problems.append(f".symtab sh_info {symtab['sh_info']} != first non-local index {want_info}")
+    return problems, locals_, globals_
+
+
 def emu_linux(path):
     """Load `path` the way the arm64 Linux kernel does and run it under
     unicorn, servicing write(1) and exit/exit_group. Returns
@@ -412,7 +495,7 @@ def parse_lines(stdout):
     return got, None
 
 
-def compare(tag, stdout, exit_code, fault, expected, verbose=True):
+def compare(tag, stdout, exit_code, fault, expected, verbose=True, cases=CASES):
     """Diff the harness output against wasmtime. Returns (#ok, #fail)."""
     if fault is not None:
         print(f"  FAIL [{tag}] the image FAULTED: {fault}")
@@ -429,7 +512,7 @@ def compare(tag, stdout, exit_code, fault, expected, verbose=True):
               f"has {len(expected)}")
         return 0, 1
     ok = fail = 0
-    for (gl, gv), (el, ev), case in zip(got, expected, CASES):
+    for (gl, gv), (el, ev), case in zip(got, expected, cases):
         why = case[-1]
         good = gl == el and gv == ev
         if good:
@@ -607,67 +690,141 @@ def main():
         if not detected:
             fails += 1
 
-        # ---- 7. co-link limitation (pinned, measured) -----------------------
-        # aarch64 emits `func_N` GLOBAL (elf.rs `0x12`), unlike ARM where #656
-        # made it LOCAL — so two independently-compiled synth aarch64 objects
-        # COLLIDE in one program. Pinned here so the day the writer changes
-        # the binding this leg goes red and the doc gets corrected, instead of
-        # the doc asserting a limitation that no longer exists.
-        print("== co-link limitation (pinned: two synth objects collide on "
-              "func_N; the objcopy workaround must link AND run) ==")
-        second = tmp / "second.wat"
-        second.write_text(
-            '(module\n'
-            '  (import "env" "host_add" (func $h (param i32 i32) (result i32)))\n'
-            '  (func (export "g") (param i32) (result i32)\n'
-            '    (call $h (local.get 0) (i32.const 1))))\n')
+        # ---- 7. co-link (RQ-65-FUNCN, #1180): two synth objects, one program --
+        # Before RQ-65-FUNCN aarch64 emitted `func_N` GLOBAL (elf.rs `0x12`) and
+        # this leg PINNED the resulting `duplicate symbol: func_1` refusal plus
+        # an objcopy workaround. The plan now carries binding: `func_N`,
+        # `__synth_globals` and `__synth_func_table` are STB_LOCAL, so a second
+        # object that defines ALL THREE itself links unaided — and the
+        # co-linked image must EXECUTE with every value from BOTH objects
+        # matching wasmtime. Two red-first controls follow, because the binding
+        # is the whole mechanism.
+        print("== co-link (RQ-65-FUNCN): synth.o + second.o — its own func_1, "
+              "__synth_globals, __synth_func_table — link UNAIDED and execute ==")
         second_obj = tmp / "second.o"
-        r = compile_synth(second, str(second_obj))
+        r = compile_synth(SECOND_WAT, str(second_obj))
+        if r.returncode != 0 or "skipping" in r.stderr or not second_obj.exists():
+            print(f"RED: the second object failed/declined:\n{r.stdout}\n{r.stderr}")
+            return 1
+        defined2, undefined2 = synth_object_symbols(second_obj)
+        # Non-vacuity: the collision surface must EXIST in both objects.
+        missing = [s for s in CLASH if s not in defined or s not in defined2]
+        if missing:
+            print(f"  FAIL both objects must define {CLASH}; missing: {missing}")
+            fails += 1
+        else:
+            print(f"  ok   both objects define {CLASH} (the v0.64 collision surface)")
+        if undefined2 != ["host_add"]:
+            print(f"  FAIL second.o's only undefined symbol must be host_add, got {undefined2}")
+            fails += 1
+        # The binding contract, read back from each object by pyelftools.
+        for tag_o, path in (("synth.o", obj), ("second.o", second_obj)):
+            probs, loc, glob = check_bindings(path)
+            for p in probs:
+                print(f"  FAIL {tag_o} binding: {p}")
+            fails += len(probs)
+            if not probs:
+                print(f"  ok   {tag_o}: {len(loc)} STB_LOCAL (func_N/__synth_*), "
+                      f"{len(glob)} STB_GLOBAL (exports + import), locals first, "
+                      f"sh_info = first non-local")
+        # One combined harness: the fixture's cases, then the second object's.
+        (tmp / "colink.c").write_text(gen_harness_c(cases=CASES + SECOND_CASES))
+        r = run([clang] + cflags + [str(tmp / "colink.c"), "-o", str(tmp / "colink.o")])
         if r.returncode != 0:
-            print(f"  FAIL could not build the second object:\n{r.stderr}")
+            print(f"RED: clang failed on colink.c:\n{r.stderr}")
+            return 1
+        colink_img = tmp / "colink.elf"
+        r = run(ldargs + ["-o", str(colink_img), str(tmp / "start.o"),
+                          str(tmp / "colink.o"), str(obj), str(second_obj)])
+        colink_runs = 0
+        if r.returncode != 0:
+            print(f"  FAIL synth.o + second.o: REFUSED (exit {r.returncode}) — "
+                  f"{r.stderr.strip()[:300]}")
             fails += 1
-        r = run(ldargs + ["-o", str(tmp / "colink.elf"), str(tmp / "start.o"),
-                          str(tmp / "harness.o"), str(obj), str(second_obj)])
-        collided = r.returncode != 0 and "duplicate symbol: func_1" in r.stderr
-        print(f"  {'ok  ' if collided else 'FAIL'} synth.o + second.o: "
-              f"{'refused' if r.returncode else 'LINKED'} — "
-              f"{'`duplicate symbol: func_1` as pinned' if collided else 'the pinned collision did not occur: update docs/embedder-abi-relocatable-aarch64.md'}")
-        if not collided:
+        else:
+            print("  ok   synth.o + second.o: LINKED (no objcopy)")
+            want2 = want + defined2
+            problems, present2, _ = check_image(colink_img, want2)
+            for p in problems:
+                print(f"  FAIL co-linked image: {p}")
+            fails += len(problems)
+            if not problems:
+                print(f"  image: ET_EXEC EM_AARCH64 SYSV, {len(present2)} symbols, "
+                      f"both objects' symbols present, 0 undefined, 0 .rela sections")
+            expected2 = wasmtime_expected(SECOND_WAT, SECOND_CASES)
+            both = CASES + SECOND_CASES
+            out_c, ec_c, fault_c = emu_linux(colink_img)
+            ok_c, bad_c = compare("co-linked", out_c, ec_c, fault_c, expected + expected2,
+                                  verbose=True, cases=both)
+            fails += bad_c
+            colink_runs += 1
+            print(f"  {'ok  ' if not bad_c else 'FAIL'} co-linked image executed: "
+                  f"{ok_c} of {len(both)} values match wasmtime "
+                  f"({len(CASES)} from synth.o + {len(SECOND_CASES)} from second.o)")
+            if is_linux_arm64:
+                os.chmod(colink_img, 0o755)
+                r = subprocess.run([str(colink_img)], capture_output=True)
+                ok_n, bad_n = compare("co-linked native", r.stdout, r.returncode, None,
+                                      expected + expected2, verbose=False, cases=both)
+                same = r.stdout == out_c
+                print(f"  {'ok  ' if not bad_n and same else 'FAIL'} co-linked image "
+                      f"natively: exit {r.returncode}, {ok_n} values match wasmtime, "
+                      f"stdout {'==' if same else '!='} unicorn leg")
+                fails += bad_n + (0 if same else 1)
+                colink_runs += 1
+
+        # ---- 7b. binding red-first: the LOCAL binding is what makes the link
+        #          possible — show the SAME linker still refuses duplicates. ----
+        print("== binding red-first (the same linker, the same objects: GLOBAL "
+              "duplicates are refused, LOCAL labels are not seen) ==")
+        # (a) synth.o with ITSELF: every export collides, no invented name does.
+        r = run(ldargs + ["-o", str(tmp / "twice.elf"), str(tmp / "start.o"),
+                          str(tmp / "harness.o"), str(obj), str(obj)])
+        dup_names = [line.split("duplicate symbol: ", 1)[1].strip()
+                     for line in r.stderr.splitlines() if "duplicate symbol: " in line]
+        invented_dups = [n for n in dup_names if n.startswith("func_") or n.startswith("__synth_")]
+        twice_ok = (r.returncode != 0 and "add" in dup_names and not invented_dups)
+        print(f"  {'ok  ' if twice_ok else 'FAIL'} synth.o + synth.o: "
+              f"{'refused' if r.returncode else 'LINKED'} — duplicates {sorted(dup_names)}"
+              f"{'' if not invented_dups else ' — INVENTED NAMES COLLIDED'}")
+        if not twice_ok:
             fails += 1
+        # (b) re-globalize func_N in BOTH objects: the v0.64 collision returns.
         objcopy = find_tool("OBJCOPY", "llvm-objcopy", "llvm-objcopy-21",
                             "llvm-objcopy-20", "llvm-objcopy-19", "llvm-objcopy-18")
-        colink_runs = 0
+        binding_control = "skipped"
         if objcopy:
-            local_obj = tmp / "synth_local.o"
-            r = run([objcopy, "--regex", "--localize-symbol=func_[0-9]+",
-                     str(obj), str(local_obj)])
-            r2 = run(ldargs + ["-o", str(tmp / "colink2.elf"), str(tmp / "start.o"),
-                               str(tmp / "harness.o"), str(local_obj), str(second_obj)])
-            if r.returncode != 0 or r2.returncode != 0:
-                print(f"  FAIL workaround: objcopy exit {r.returncode}, link exit "
-                      f"{r2.returncode}\n{r.stderr}{r2.stderr}")
+            g1, g2 = tmp / "synth_glob.o", tmp / "second_glob.o"
+            r1 = run([objcopy, "--regex", "--globalize-symbol=func_[0-9]+", str(obj), str(g1)])
+            r2 = run([objcopy, "--regex", "--globalize-symbol=func_[0-9]+",
+                      str(second_obj), str(g2)])
+            if r1.returncode != 0 or r2.returncode != 0:
+                print(f"  FAIL objcopy --globalize-symbol failed:\n{r1.stderr}{r2.stderr}")
                 fails += 1
+                binding_control = "objcopy-failed"
             else:
-                # synth.o's OWN intra-object CALL26/JUMP26 relocations bind to
-                # the now-LOCAL func_N — every value must still match.
-                out_c, ec_c, fault_c = emu_linux(tmp / "colink2.elf")
-                ok_c, bad_c = compare("co-linked", out_c, ec_c, fault_c, expected,
-                                      verbose=False)
-                print(f"  {'ok  ' if not bad_c else 'FAIL'} workaround "
-                      f"`llvm-objcopy --regex --localize-symbol='func_[0-9]+'`: "
-                      f"co-link succeeds, {ok_c} values still match wasmtime")
-                fails += bad_c
-                colink_runs += 1
+                r = run(ldargs + ["-o", str(tmp / "glob.elf"), str(tmp / "start.o"),
+                                  str(tmp / "colink.o"), str(g1), str(g2)])
+                refused = r.returncode != 0 and "duplicate symbol: func_1" in r.stderr
+                binding_control = "refused" if refused else "LINKED"
+                print(f"  {'ok  ' if refused else 'FAIL'} func_N re-globalized in both "
+                      f"(`llvm-objcopy --regex --globalize-symbol='func_[0-9]+'`): "
+                      f"{'refused, `duplicate symbol: func_1` — the v0.64 collision returns' if refused else 'LINKED — the binding is NOT what prevents the collision'}")
+                if not refused:
+                    fails += 1
         else:
-            print("  skip workaround leg: no llvm-objcopy on PATH")
+            print("  skip re-globalize control: no llvm-objcopy on PATH "
+                  "(CI installs it and requires `binding red-first: refused`)")
 
-        if executions == 0 or refusals == 0:
-            print(f"VACUOUS: executions={executions} refusals={refusals}")
+        if executions == 0 or refusals == 0 or colink_runs == 0:
+            print(f"VACUOUS: executions={executions} refusals={refusals} "
+                  f"colink_runs={colink_runs}")
             return 1
         print(f"\nexecutions: {executions}")
         print(f"host-linker refusals: {refusals}")
         print(f"native-abi runs: {native_runs}")
-        print(f"co-link workaround runs: {colink_runs}")
+        print(f"co-link runs: {colink_runs}")
+        print(f"binding red-first: {binding_control}")
         print(f"mutation: {'detected' if detected else 'undetected'}")
         if fails:
             print(f"RESULT: FAIL ({fails})")
