@@ -34,7 +34,7 @@ artifacts:
       difference — and the record is part of the deliverable, because an
       unexplained divergence list is how a parity oracle becomes noise nobody
       reads.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - oracle
@@ -51,7 +51,47 @@ artifacts:
       issue: "#197"
       done-when: "manual: both selectors are run over the spec corpus and every module both ACCEPT is compared on emitted behaviour; each divergence is either a fixed bug or a recorded intended difference with its reason; the comparison is CI-wired with a non-vacuity floor on modules compared"
       verified-by: >-
-        PENDING. Red-first is mandatory and cheap here: plant a divergence
-        (mutate one selector only) and the oracle must name the module and the
-        disagreeing value. A parity check that has never been watched
-        discriminate is a parity check nobody has tested.
+        IMPLEMENTED, with one correction to the framing above: `select_default`
+        is `select_with_stack`'s `_ =>` fallthrough (its own header says so),
+        not a third shipped path — the two SHIPPED engines are the optimized
+        `ir_to_arm` path and the direct `select_with_stack` path, and those
+        are what `scripts/repro/selector_parity_197_differential.py` compares
+        (same module, default flags vs `--no-optimize`). Every module of
+        tests/wast + the spec-testsuite submodule + two own fixtures is
+        compiled on both legs (per-function accept/decline recorded with
+        synth's machine reason and the path each function really took), and
+        every assertion both images accept is executed in lock-step on
+        wasmtime and on BOTH images, each booted through its own shipped
+        Reset_Handler under unicorn; value/trap, R9-R11/SP preservation and
+        the linear-memory image are compared. Wired as the
+        `selector-parity-oracle` job (submodules: recursive; driven by
+        oracle_run.py with a `ci-checks: emulations` floor — the summed
+        floor is re-derived by oracle_wiring_check.py, never restated here)
+        plus four in-script non-vacuity floors (modules both accepted,
+        assertions compared, optimized-path functions, byte-differing
+        functions). MEASURED on the final tree: 328 modules both
+        accepted (166 mixed-path), 19020 assertions on all
+        three engines, 1479 of 2391 common functions with
+        differing bytes. Every divergence is either fixed or recorded with a
+        reason: #1203 (startup R11 seed 0x100 below the optimized base —
+        mixed images aliased wasm memory; FIXED here, witness fixture red on
+        main) and eight open findings pinned by exact count with their issue
+        so the oracle is red when a pin moves — #1204 R11 clobbered by the
+        optimized path, #1205 value-if with constant arms, #1206 loop label
+        after the decrement, #1207 invalid module accepted, #1208 narrow i64
+        loads lower to an empty body, #1209 memory64 silently accepted,
+        #1210 value live across a call lost on both selectors, #1211
+        call_indirect ignores the table index; intended differences (f32
+        signatures accepted only by the optimized path on soft-float, import
+        stubs, memory.grow's legal failure, the OOB-trap envelope) recorded
+        with reasons. RED-FIRST DONE: a planted `select` arm swap in
+        `select_with_stack` (direct only) was named by module, function,
+        arguments and both values (`control_select.wast m0
+        select_i32(0xa,0x14,0x1): wasmtime=0xa optimized=0xa direct=0x14`,
+        10 assertions, exit 1) — transcript in the PR; a first plant in the
+        `cmn` residual compare arm was an EQUIVALENT mutant for this corpus
+        (bytes identical), recorded as a MUTANTS data point. Seam
+        byte-identity vs origin/main over all 183 scripts/repro/*.wat:
+        `--relocatable` 132 identical / 0 differing; self-contained 156
+        differing, every one exactly the #1203 fix's one startup byte with
+        all function bodies identical.

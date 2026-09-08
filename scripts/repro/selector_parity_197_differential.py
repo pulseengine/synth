@@ -1154,6 +1154,13 @@ def main() -> int:
         if key[0] in ran_files and key not in actual_pins:
             fails.append(f"PINNED DIVERGENCE VANISHED: {key[0]} m{key[1]} {key[2]} {key[3]} "
                          f"(pinned {n}, {issue}) — the fix landed? move the pin, close on the release")
+    # A harness exception is not a verdict: the oracle did NOT evaluate that
+    # module. Green with a swallowed exception is the #911 shape, so any
+    # count here is red (measured cause at authoring: the synth binary being
+    # relinked by a concurrent `cargo test` in the same target dir).
+    herr = [f"{r.file} m{r.idx}: {r.decline}" for r in runs if r.decline.startswith("harness-error")]
+    if herr:
+        fails.append(f"HARNESS ERROR on {len(herr)} module(s) — not evaluated: " + "; ".join(herr[:5]))
     hard = unpinned
     print(f"  pinned known divergences: {pinned_ok} assertion(s) across "
           f"{len([k for k in actual_pins if k in KNOWN])} pins; unpinned: {unpinned}")
