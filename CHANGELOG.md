@@ -146,8 +146,20 @@ honest verdict — *unattributable, needs a re-run* — I reasoned from the job'
 **name** plus a plausible mechanism and wrote it up as measurement. This repo
 already has a "read the failure name, not the count" rule; the correction is that
 it extends to the failure's **content**, and when that is unavailable the answer
-is "unknown", not an inference. The bump is neither exonerated nor convicted; it
-has been sent for recreate and a real verdict.
+is "unknown", not an inference.
+
+**RESOLVED IN v0.65, and the answer is the opposite of what I first published.**
+Two further things went wrong before it was settled, both recorded rather than
+tidied away: `@dependabot recreate` on a **closed** PR does nothing, so the
+"sent for recreate" written here was itself an unkept promise — a smaller
+instance of the same defect. The bump was therefore raised by hand (#1202) with
+**no prediction attached**, and CI answered: `Bazel Build & Proofs` **pass**,
+`Z3 Verification` **pass**, 9/9 required, zero failures. **z3 0.20.2 → 0.21.0
+does not break the Bazel build**; the 504 fetching `bazel-skylib` was the whole
+story. It is merged.
+
+So the hold has still never caught a breaking 0.x-minor. The rule remains
+unfalsified — which is the honest state, and is why claiming otherwise mattered.
 
 ### The subtraction metric moved the wrong way (#242)
 
