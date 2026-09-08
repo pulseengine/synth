@@ -7605,7 +7605,22 @@ fn build_multi_func_cortex_m_elf(
     let (startup_code, data_src_patch_off, r9_movw_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
-        linmem_base,
+        // RQ-65-PARITY (#197): R11 is seeded with the FUNCTION-VISIBLE base,
+        // not the raw SRAM start. The direct selector addresses linear memory
+        // `[R11, rN]`-relative while the optimized path materializes the
+        // absolute `func_visible_linmem_base`; a self-contained image ROUTES
+        // PER FUNCTION between the two (br_table, i64/float signatures,
+        // value-carrying branches, ... all divert to the direct selector), so
+        // with R11 = `linmem_base` the two halves of one image addressed
+        // wasm byte N at two different SRAM addresses 0x100 apart — a
+        // direct-routed load could not see an optimized store, and no
+        // direct-routed function could see the #758 data segments (copied to
+        // the function-visible base). Measured by the selector-parity oracle
+        // (`scripts/repro/selector_parity_197_differential.py`, which boots
+        // this very startup under unicorn) — `--no-optimize` read 0 where
+        // wasmtime reads 42 from a data segment, and a mixed image returned
+        // a stale 0 for a value the optimized half had just stored.
+        func_visible_linmem_base,
         target.has_fpu(),
         // #758: bytes to copy ROM→RAM at reset (0 = no copy loop emitted, the
         // blob is empty, and the startup is byte-identical to before).
@@ -8929,7 +8944,6 @@ fn build_cortex_m_elf(
     // #687: high keeps the historical fixed 128KB RAM (SP init at its top);
     // low reserves the stack at the SRAM bottom and shifts linmem/globals up,
     // growing RAM past 128KB only if stack + linmem + globals demand it.
-    let linmem_base = stack_layout.startup_linmem_base(ram_base);
     let ram_size: u32 = std::cmp::max(
         128 * 1024,
         (stack_layout.stack_reserve()
@@ -8964,7 +8978,9 @@ fn build_cortex_m_elf(
     let (startup_code, _data_src_patch_off, r9_movw_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
-        linmem_base,
+        // RQ-65-PARITY (#197): R11 = the function-visible base (see the
+        // multi-function builder for the measured mixed-image aliasing).
+        func_visible_linmem_base,
         target.has_fpu(),
         // #758: the single-function twin never carries data segments (the
         // caller loud-declines a data-carrying module before reaching here),
@@ -9169,17 +9185,25 @@ fn build_cortex_m_elf(
 ///
 /// # Memory Register Setup
 /// * R10 = memory_size (for bounds checking)
-/// * R11 = `linmem_base` (linear memory base — `0x20000000` under the default
-///   high stack layout; `0x20000000 + stack_size` under `--stack-layout=low`,
-///   #687)
+/// * R11 = `linmem_base` — the linear-memory base the DIRECT selector's
+///   `[R11, rN]` accesses use. Both self-contained builders now pass the
+///   FUNCTION-visible base here (`optimized_linmem_base` = `0x20000100`
+///   under the default high layout, `+ stack_size` under `--stack-layout=low`
+///   #687), so it EQUALS the absolute base the optimized path materializes
+///   and `= func_visible_linmem_base`. RQ-65-PARITY (#197): before that, R11
+///   was the raw SRAM start, 0x100 below the optimized base — and because a
+///   self-contained image routes per function between the two selectors, the
+///   two halves of one image addressed wasm byte N at two different SRAM
+///   addresses (measured: a direct-routed load returned a stale 0 for a
+///   value the optimized half had just stored; `--no-optimize` images could
+///   not see their #758 data segments at all).
 /// * R9  = `func_visible_linmem_base` + memory_size (globals table; only when
-///   globals exist). #761: this MUST be based on the FUNCTION-visible base
-///   (`optimized_linmem_base` = R11 + 0x100), NOT R11 itself — the compiled
-///   functions address their linear-memory page at R11 + 0x100 (the #687 gap),
-///   so `R11 + memory_size` would place the table 0x100 BELOW the page ceiling
-///   the functions can reach, and a store to the top 0x100 of the first page
-///   would silently ALIAS the globals table (`= data_copy_dst`, the same
-///   function-visible base the ROM copy uses).
+///   globals exist). #761: this MUST be based on the FUNCTION-visible base,
+///   NOT the raw SRAM start — historically R11 was 0x100 below it (the #687
+///   gap), so `R11 + memory_size` placed the table 0x100 BELOW the page
+///   ceiling the functions can reach, and a store to the top 0x100 of the
+///   first page silently ALIASED the globals table (`= data_copy_dst`, the
+///   same function-visible base the ROM copy uses).
 ///
 /// Returns `(blob, data_src_patch_off, r9_movw_off)`:
 /// * `data_src_patch_off` — when a #758 ROM→RAM data-copy loop was emitted, the
