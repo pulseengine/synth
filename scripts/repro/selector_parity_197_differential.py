@@ -171,9 +171,10 @@ LEGS = (("optimized", []), ("direct", ["--no-optimize"]))
 # FLOORS — non-vacuity. See the module docstring. Measured on the corpus at
 # authoring (tests/wast + own fixtures + spec-testsuite @ the pinned submodule
 # commit 3453673): modules both legs accepted 326 (164 mixed-path),
-# assertions executed on all three engines 15,593, optimized-path functions
-# 1,263, byte-differing functions 1,474 (of 2,384 common), emulator entries
-# 20,750. Floors sit a few percent under the measurement; raise them when the
+# assertions executed on all three engines 19,145 under wasmtime-py 48.0.0
+# (the CI-pinned reference engine; 46 cannot parse the suite's br_table.wast),
+# optimized-path functions 1,267, byte-differing functions 1,479 (of 2,391
+# common), emulator entries 27,362. Floors sit a few percent under the measurement; raise them when the
 # corpus grows, never lower them to green a run.
 # `--no-suite` (tests/wast + own fixtures) applies the smaller LOCAL floors so
 # a submodule-less checkout still runs and still cannot compare nothing.
@@ -283,6 +284,11 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     # position, wrong on both selectors.
     ('br.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 1),
     ('br_if.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 2),
+    ('br_table.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1215', 1),
+    ('br_table.wast', 0, 'as-loop-last', 'shared-wrong'): ('#1215', 1),
+    ('br_table.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1215', 1),
+    ('br_table.wast', 0, 'nested-br_table-value', 'shared-wrong'): ('#1215', 2),
+    ('br_table.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 5),
     ('func.wast', 0, 'break-br_table-nested-num', 'shared-wrong'): ('#1215', 1),
     ('func.wast', 0, 'break-br_table-num', 'shared-wrong'): ('#1215', 4),
     ('if.wast', 0, 'as-br_if-last', 'shared-wrong'): ('#1215', 1),

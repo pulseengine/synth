@@ -70,7 +70,7 @@ artifacts:
         plus four in-script non-vacuity floors (modules both accepted,
         assertions compared, optimized-path functions, byte-differing
         functions). MEASURED on the final tree: 328 modules both
-        accepted (166 mixed-path), 19020 assertions on all
+        accepted (166 mixed-path), 19145 assertions (under the pinned reference engine, wasmtime-py 48.0.0) on all
         three engines, 1479 of 2391 common functions with
         differing bytes. Every divergence is either fixed or recorded with a
         reason: #1203 (startup R11 seed 0x100 below the optimized base —
