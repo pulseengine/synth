@@ -2745,6 +2745,10 @@ claims:
     #   image; the co-link workaround leg runs a third when llvm-objcopy is
     #   present and is not counted in the floor). Value RE-DERIVED from
     #   `oracle_wiring_check.py` on the lane tree: 324845 -> 324847.
+    # v0.65 — RQ-65-FUNCN (#1180): +1 for the same oracle (2 -> 3): the
+    #   co-linked two-object image is now an UNCONDITIONAL unicorn run (no
+    #   objcopy needed to link it), so it enters the floor. Value RE-DERIVED
+    #   from `oracle_wiring_check.py` on the lane tree: 325121 -> 325122.
     # v0.64 — RQ-64-MVLOWER (#1093): +51 for
     #   param_block_silent_1097_differential.py's three LOWERED ARM legs —
     #   block/arm (2 fixture vectors now executed on the NEW object + 2 extra
@@ -2764,7 +2768,7 @@ claims:
     #   separately (+51 RQ-64-MVLOWER, +223 #1189); the value below is
     #   RE-DERIVED from `oracle_wiring_check.py` on the MERGED tree, never
     #   computed by adding the two deltas.
-    text: "--exact-emulation-floor 325121"
+    text: "--exact-emulation-floor 325122"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
@@ -3010,10 +3014,16 @@ claims:
   # -m aarch64linux link + execution vs wasmtime: natively on the
   # ubuntu-24.04-arm runner, under qemu-user, under unicorn). The doc states
   # the contract with file:line citations; these pins bind its load-bearing
-  # sentences to the emitter so an emitter change reddens the doc, and pin
-  # the one MEASURED LIMITATION (GLOBAL `func_N`) in the direction that makes
-  # a fix visible: the day the writer emits it LOCAL, `expect: 1` on the
-  # `0x12` binding line fails and the doc's collision section must go.
+  # sentences to the emitter so an emitter change reddens the doc. v0.64
+  # pinned the one MEASURED LIMITATION (GLOBAL `func_N`, the `0x12` literal)
+  # in the direction that makes a fix visible; RQ-65-FUNCN (#1180) made
+  # the fix and moved the pin in the same PR: the binding is now READ from
+  # the shared plan (`PlannedSymbol::binding`), `func_N`/`__synth_*` are
+  # STB_LOCAL, and the doc's collision section became a co-link claim the
+  # oracle EXECUTES (two objects, no objcopy). The pins below bind that
+  # sentence to the emitter line, the shared enum, the second-object fixture
+  # and the CI-required red-first control, so a writer that regrows its own
+  # binding decision reddens the doc again.
   - id: SYNTH-EMBEDDER-ABI-RELOCATABLE-AARCH64-RQ64
     doc: docs/embedder-abi-relocatable-aarch64.md
     text: "| **x28** | Linear-memory (memory 0) base address | Embedder, before any export runs | Embedder | (b) chosen |"
@@ -3046,12 +3056,31 @@ claims:
         pattern: 'pub const GLOBALS_SYMBOL: &str = "__synth_globals";'   # symbol,
         glob: ['crates/synth-backend-aarch64/src/substrate.rs']         # not a
         expect: 1                                                       # register
-      - kind: count-eq                       # code symbols are GLOBAL (0x12) —
-        pattern: 'let info = if f\.is_object \{ 0x11 \} else \{ 0x12 \};'   # the
-        glob: ['crates/synth-backend-aarch64/src/elf.rs']                  # func_N
-        expect: 1                            # co-link collision the doc records
-      - kind: verbatim                       # ...and the doc records it
-        text: "duplicate symbol: func_1"
+      - kind: count-eq                       # RQ-65-FUNCN: st_info is DERIVED
+        pattern: 'let info = \(\(f\.binding as u8\) << 4\) \| stt;'   # from the
+        glob: ['crates/synth-backend-aarch64/src/elf.rs']            # plan's
+        expect: 1                            # binding — no 0x12 literal left
+      - kind: count-eq                       # ...which the plan CARRIES
+        pattern: 'pub binding: SymbolBinding,'
+        glob: ['crates/synth-backend-aarch64/src/elf.rs']
+        expect: 1
+      - kind: count-eq                       # ...as the ONE shared enum
+        pattern: '^pub enum SymbolBinding \{'
+        glob: ['crates/synth-core/src/backend.rs']
+        expect: 1
+      - kind: count-eq                       # ...and the Mach-O writer reads
+        pattern: 'SymbolBinding::Local => 0,'  # the same field for N_EXT
+        glob: ['crates/synth-backend-aarch64/src/macho.rs']
+        expect: 1
+      - kind: verbatim                       # the doc's claim, EXECUTED by
+        text: "two synth aarch64 objects link into one program unaided"   # the
+      - kind: file-exists                    # oracle against this fixture
+        path: scripts/repro/colink_second_rq65.wat
+      - kind: count-eq                       # ...with the red-first control
+        pattern: "grep -q '\\^binding red-first: refused\\$'"   # REQUIRED in
+        glob: ['.github/workflows/ci.yml']                        # all three
+        expect: 3                            # host-link jobs (Linux, arm64-Linux
+                                             # native, macOS native)
       - kind: verbatim                       # the only accepted target
         text: "`--target cortex-a53` is the only `-b aarch64` target"
       - kind: count-eq                       # ...which the CLI enforces

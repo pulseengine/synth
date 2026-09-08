@@ -47,11 +47,14 @@
 //!   is `___synth_globals`, and an import `host_add` is the undefined
 //!   `_host_add` — so a C harness declares `extern int32_t add(int32_t,
 //!   int32_t);` and defines `host_add` exactly as it would for any other
-//!   object. Every symbol is `N_EXT` (the plan has no locals — `func_N` is
-//!   GLOBAL on this backend, see #1180: two synth objects collide in one
-//!   link here exactly as in ELF, `duplicate symbol '_func_1'`). The plan's
-//!   order already partitions defined-then-undefined, which is what the
-//!   `LC_DYSYMTAB` ranges require.
+//!   object. `N_EXT` is set exactly where the PLAN's binding says `Global`
+//!   (#1180 / RQ-65-FUNCN): a wasm export and an import are external;
+//!   `_func_N`, `___synth_globals` and `___synth_func_table` are not, so two
+//!   synth objects link into one program here exactly as in ELF (before
+//!   #1180 every symbol was `N_EXT` and the pair collided, `duplicate symbol
+//!   '_func_1'`). The plan's order is already locals-first and
+//!   defined-then-undefined — the `LC_DYSYMTAB` partition — so this writer
+//!   reads `plan.local_count()` and never sorts.
 //! * `__text` relocations, one per planned relocation, all `r_extern` with
 //!   `r_length` 2 (4 bytes):
 //!   `AArch64Call26`/`AArch64Jump26` → `ARM64_RELOC_BRANCH26` (pc-relative —
@@ -66,7 +69,7 @@
 //! ARM64, any platform but macOS, and anything about the ISA — the sibling
 //! unicorn oracles own that.
 
-use synth_core::backend::{BackendError, RelocKind};
+use synth_core::backend::{BackendError, RelocKind, SymbolBinding};
 
 use crate::elf::{DataBlob, ElfFunction, ObjectPlan, SymbolPlace, plan_object};
 
@@ -211,25 +214,45 @@ pub fn build_macho_object_from_plan(plan: &ObjectPlan) -> Vec<u8> {
         after_seg
     };
 
-    // --- symbols: nlist_64 in plan order (defined first, undefined last —
-    //     the plan's order, which LC_DYSYMTAB's ranges require) + strtab. ---
+    // --- symbols: nlist_64 in plan order (locals first, then external
+    //     defined, then undefined — the plan's order, which LC_DYSYMTAB's
+    //     ranges require) + strtab. ---
+    let nlocal = plan.local_count();
     let mut strtab: Vec<u8> = vec![0]; // index 0 is the empty name
     let mut nlist: Vec<u8> = Vec::with_capacity(plan.symbols.len() * NLIST_SIZE);
     let mut ndefined = 0usize;
     let mut seen_undefined = false;
-    for s in &plan.symbols {
+    for (i, s) in plan.symbols.iter().enumerate() {
         let n_strx = strtab.len() as u32;
         strtab.extend_from_slice(DARWIN_SYMBOL_PREFIX.as_bytes());
         strtab.extend_from_slice(s.name.as_bytes());
         strtab.push(0);
+        // #1180: `N_EXT` is the plan's binding — read here, decided in
+        // `plan_object`. No wildcard: a binding this container cannot express
+        // (`Weak` needs `N_WEAK_DEF`, which no plan produces) fails loudly.
+        let ext: u8 = match s.binding {
+            SymbolBinding::Local => 0,
+            SymbolBinding::Global => N_EXT,
+            SymbolBinding::Weak => {
+                panic!("aarch64 Mach-O writer cannot emit a Weak binding (no plan produces one)")
+            }
+        };
         let (n_type, n_sect, n_value) = match s.place {
-            SymbolPlace::Text => (N_SECT | N_EXT, 1u8, text_addr + s.value),
+            SymbolPlace::Text => (N_SECT | ext, 1u8, text_addr + s.value),
             SymbolPlace::Data => {
                 debug_assert!(have_data, "a .data symbol without .data bytes");
-                (N_SECT | N_EXT, 2u8, data_addr + s.value)
+                (N_SECT | ext, 2u8, data_addr + s.value)
             }
-            SymbolPlace::Undefined => (N_UNDF | N_EXT, NO_SECT, 0),
+            SymbolPlace::Undefined => {
+                assert_eq!(ext, N_EXT, "an undefined symbol must be external");
+                (N_UNDF | N_EXT, NO_SECT, 0)
+            }
         };
+        assert_eq!(
+            i < nlocal,
+            s.binding == SymbolBinding::Local,
+            "plan symbols must be locals-first (LC_DYSYMTAB partition)"
+        );
         if s.place == SymbolPlace::Undefined {
             seen_undefined = true;
         } else {
@@ -344,14 +367,15 @@ pub fn build_macho_object_from_plan(plan: &ObjectPlan) -> Vec<u8> {
     push_u32(&mut out, stroff as u32);
     push_u32(&mut out, strtab.len() as u32);
 
-    // LC_DYSYMTAB: locals [0,0), extdef [0, ndefined), undef [ndefined, nsyms);
-    // no table of contents, modules, referenced or indirect symbols.
+    // LC_DYSYMTAB: locals [0, nlocal), extdef [nlocal, ndefined), undef
+    // [ndefined, nsyms) — the plan's own partition (#1180); no table of
+    // contents, modules, referenced or indirect symbols.
     push_u32(&mut out, LC_DYSYMTAB);
     push_u32(&mut out, DYSYMTAB_CMD_SIZE as u32);
     push_u32(&mut out, 0); // ilocalsym
-    push_u32(&mut out, 0); // nlocalsym
-    push_u32(&mut out, 0); // iextdefsym
-    push_u32(&mut out, ndefined as u32);
+    push_u32(&mut out, nlocal as u32); // nlocalsym
+    push_u32(&mut out, nlocal as u32); // iextdefsym
+    push_u32(&mut out, (ndefined - nlocal) as u32); // nextdefsym
     push_u32(&mut out, ndefined as u32); // iundefsym
     push_u32(&mut out, nundef as u32);
     for _ in 0..12 {
@@ -562,18 +586,21 @@ mod tests {
     }
 
     #[test]
-    fn symbols_carry_the_darwin_prefix_and_partition_defined_then_undefined() {
+    fn symbols_carry_the_darwin_prefix_and_partition_locals_extdef_undef() {
         let (f, d, ext) = fixture();
         let obj = build_macho_object_full(&f, &d, &ext).unwrap();
         let syms = symbols(&obj);
+        // #1180: locals first (N_EXT clear — `func_N`, the table, the globals
+        // region), then the external defined export, then the undefined
+        // import. Before #1180 every entry here carried N_EXT.
         assert_eq!(
             syms,
             vec![
-                ("_func_1".to_string(), N_SECT | N_EXT, 1, 0),
+                ("_func_1".to_string(), N_SECT, 1, 0),
+                ("_func_2".to_string(), N_SECT, 1, 8),
+                ("___synth_func_table".to_string(), N_SECT, 1, 24),
+                ("___synth_globals".to_string(), N_SECT, 2, 32),
                 ("_run".to_string(), N_SECT | N_EXT, 1, 0),
-                ("_func_2".to_string(), N_SECT | N_EXT, 1, 8),
-                ("___synth_func_table".to_string(), N_SECT | N_EXT, 1, 24),
-                ("___synth_globals".to_string(), N_SECT | N_EXT, 2, 32),
                 ("_host_add".to_string(), N_UNDF | N_EXT, NO_SECT, 0),
             ]
         );
@@ -581,8 +608,47 @@ mod tests {
         let ranges: Vec<u32> = (0..6).map(|i| u32_at(&obj, dy + 8 + 4 * i)).collect();
         assert_eq!(
             ranges,
-            vec![0, 0, 0, 5, 5, 1],
+            vec![0, 4, 4, 1, 5, 1],
             "ilocal nlocal iextdef nextdef iundef nundef"
+        );
+    }
+
+    /// #1180 / RQ-65-FUNCN: the binding each container renders is the PLAN's,
+    /// symbol for symbol — ELF `st_info` bind nibble == Mach-O `N_EXT` ==
+    /// `PlannedSymbol::binding`. This is the property v0.64's cold review found
+    /// missing ("the plan does not carry binding"), now unrepresentable to
+    /// violate: neither writer has a binding decision of its own to drift.
+    #[test]
+    fn binding_is_the_plans_in_both_containers_1180() {
+        let (f, d, ext) = fixture();
+        let plan = plan_object(&f, &d, &ext).unwrap();
+        let mo = build_macho_object_full(&f, &d, &ext).unwrap();
+        let elf = build_relocatable_object_full(&f, &d, &ext).unwrap();
+        // ELF: `.symtab` follows `.text` at ehdr+64 in this writer's layout;
+        // 24-byte entries, st_info at +4, null entry first.
+        let symtab_off = 64 + plan.text.len();
+        let msyms = symbols(&mo);
+        assert_eq!(msyms.len(), plan.symbols.len());
+        for (i, p) in plan.symbols.iter().enumerate() {
+            let elf_bind = elf[symtab_off + (i + 1) * 24 + 4] >> 4;
+            let mo_ext = msyms[i].1 & N_EXT != 0;
+            assert_eq!(msyms[i].0, format!("_{}", p.name));
+            assert_eq!(elf_bind, p.binding as u8, "ELF binding of {}", p.name);
+            assert_eq!(
+                mo_ext,
+                p.binding == SymbolBinding::Global,
+                "Mach-O N_EXT of {}",
+                p.name
+            );
+        }
+        assert_eq!(plan.local_count(), 4);
+        assert!(
+            plan.symbols[..4]
+                .iter()
+                .all(|s| s.binding == SymbolBinding::Local)
+                && plan.symbols[4..]
+                    .iter()
+                    .all(|s| s.binding == SymbolBinding::Global)
         );
     }
 
@@ -656,7 +722,7 @@ mod tests {
         assert_eq!(
             symbols(&obj),
             vec![
-                ("_func_0".to_string(), N_SECT | N_EXT, 1, 0),
+                ("_func_0".to_string(), N_SECT, 1, 0), // #1180: the label is local
                 ("_f".to_string(), N_SECT | N_EXT, 1, 0),
             ]
         );

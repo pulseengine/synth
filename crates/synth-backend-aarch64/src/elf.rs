@@ -3,14 +3,15 @@
 //!
 //! Produces an `ET_REL` object for AArch64 (`e_machine = 183`) with a single
 //! `.text` (all function bodies concatenated), a `.symtab` exposing one or more
-//! `STT_FUNC`/`GLOBAL` symbols per function at its `.text` offset (each function
-//! carries a `func_N` symbol plus its export name when exported), the two string
-//! tables, and — when any function has a call relocation — a `.rela.text`
-//! section of `R_AARCH64_CALL26` entries so `bl func_N` sites are linkable
-//! (#851). The object is host-linkable on arm64 ELF targets and its `.text` is
-//! directly runnable under a native or emulated A64 core once relocated.
+//! `STT_FUNC` symbols per function at its `.text` offset (each function
+//! carries a LOCAL `func_N` label plus, when exported, its GLOBAL export name —
+//! #1180), the two string tables, and — when any function has a call
+//! relocation — a `.rela.text` section of `R_AARCH64_CALL26` entries so
+//! `bl func_N` sites are linkable (#851). The object is host-linkable on arm64
+//! ELF targets and its `.text` is directly runnable under a native or emulated
+//! A64 core once relocated.
 
-use synth_core::backend::{BackendError, CodeRelocation, RelocKind};
+use synth_core::backend::{BackendError, CodeRelocation, RelocKind, SymbolBinding, locals_first};
 
 /// R_AARCH64_CALL26 — the ELF relocation type for a `bl` 26-bit call site.
 const R_AARCH64_CALL26: u32 = 283;
@@ -25,9 +26,17 @@ const R_AARCH64_ADD_ABS_LO12_NC: u32 = 277;
 /// A compiled function to place in `.text`.
 #[derive(Debug, Clone)]
 pub struct ElfFunction {
-    /// Symbol name aliases for this function's `.text` offset. The first is the
-    /// canonical `func_N`; a distinct export name (if any) follows. All are
-    /// emitted as GLOBAL symbols pointing at the same body.
+    /// Symbol name aliases for this function's `.text` offset. The FIRST is
+    /// the canonical in-object label — `func_N` (N = wasm function index), or
+    /// `__synth_func_table` for the [`Self::is_object`] table — and is
+    /// planned LOCAL: it is what this object's own `CALL26`/`JUMP26`
+    /// relocations bind to (by symbol index), and it is the name a SECOND
+    /// synth object also defines, so it must not take part in cross-object
+    /// resolution (#1180 — the `duplicate symbol: func_1` class; ARM's #656
+    /// policy, ported into the shared plan). Any following aliases are wasm
+    /// EXPORT names and are planned GLOBAL — the names an embedder calls.
+    /// The driver upholds this order (`build_multi_func_aarch64_elf`); the
+    /// binding is assigned in [`plan_object`], once, for every container.
     pub symbols: Vec<String>,
     /// Function body machine code.
     pub code: Vec<u8>,
@@ -68,7 +77,10 @@ pub struct DataBlob {
     /// The `.data` bytes (little-endian, already laid out).
     pub bytes: Vec<u8>,
     /// `(symbol name, byte offset within `.data`)` — e.g.
-    /// `("__synth_globals", 0)`. Emitted as GLOBAL `STT_OBJECT`.
+    /// `("__synth_globals", 0)`. Emitted as LOCAL `STT_OBJECT` (#1180): the
+    /// region is reached only by this object's own `adrp`+`add :lo12:` pair,
+    /// no embedder register names it (unlike ARM's R9 contract), and a second
+    /// synth object carries its own `__synth_globals`.
     pub symbols: Vec<(String, u64)>,
 }
 
@@ -101,11 +113,14 @@ pub enum SymbolPlace {
 /// RQ-64-MACHO: one symbol of the container-independent plan, in emission
 /// order. `value` is the offset within its section (`0` for `Undefined`);
 /// `is_object` selects the OBJECT (vs FUNC) type in containers that type
-/// symbols.
+/// symbols; `binding` (#1180 / RQ-65-FUNCN) is whether the symbol takes part
+/// in cross-object resolution — ELF `STB_LOCAL`/`STB_GLOBAL`, Mach-O `N_EXT`
+/// clear/set — decided HERE so no writer decides it alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedSymbol {
     pub name: String,
     pub is_object: bool,
+    pub binding: SymbolBinding,
     pub place: SymbolPlace,
     pub value: u64,
     pub size: u64,
@@ -126,13 +141,22 @@ pub struct PlannedReloc {
 /// This is the single source both writers consume: [`build_relocatable_object_full`]
 /// (ELF `ET_REL`) and [`crate::macho::build_macho_object_full`] (Mach-O
 /// `MH_OBJECT`). The `.text` bytes, the `.data` bytes, the symbol list (order,
-/// type, section, offset, size) and the resolved relocation list are computed
-/// ONCE here, so the two containers cannot disagree on any of them by
+/// type, BINDING, section, offset, size) and the resolved relocation list are
+/// computed ONCE here, so the two containers cannot disagree on any of them by
 /// construction — the byte-identity the RQ-64-MACHO oracle then checks from the
 /// outside (`scripts/repro/macho_host_link_rq64_differential.py`) is a property
 /// of this function, not of two writers happening to agree. A second
-/// hand-written copy of the symbol-ordering or #1013 rules in the Mach-O
-/// writer would be exactly the mirror the North Star forbids.
+/// hand-written copy of the symbol-ordering, binding or #1013 rules in the
+/// Mach-O writer would be exactly the mirror the North Star forbids.
+///
+/// #1180 / RQ-65-FUNCN: binding was the one thing v0.64's plan did NOT carry
+/// (`elf.rs` hard-coded `STB_GLOBAL`, `macho.rs` set `N_EXT` on everything,
+/// independently), which is why two synth objects collided on `func_1` in
+/// both containers. It is now a field of every [`PlannedSymbol`], and the
+/// symbol ORDER is already locals-first (`synth_core::backend::locals_first`,
+/// the same function the ARM builder applies since #656), so a writer reads
+/// [`ObjectPlan::local_count`] for its partition (`sh_info` / `LC_DYSYMTAB`)
+/// and never sorts.
 #[derive(Debug, Clone, Default)]
 pub struct ObjectPlan {
     /// All function bodies concatenated in order, no padding (A64 bodies are
@@ -140,12 +164,37 @@ pub struct ObjectPlan {
     pub text: Vec<u8>,
     /// The synth-emitted `.data` image (empty when the module has no globals).
     pub data: Vec<u8>,
-    /// Symbols in emission order: every function's aliases (function order,
-    /// `func_N` first), then the `.data` symbols, then the referenced
-    /// undefined externals in first-listed order.
+    /// Symbols in emission order: the LOCAL symbols first (every function's
+    /// `func_N` label / the table, in function order, then the `.data`
+    /// symbols), then the GLOBAL ones (wasm export names in function order,
+    /// then the referenced undefined externals in first-listed order). This
+    /// is the stable locals-first permutation of the natural
+    /// (function-aliases, data, externals) order.
     pub symbols: Vec<PlannedSymbol>,
-    /// Relocations in function order, offsets rebased to `.text`.
+    /// Relocations in function order, offsets rebased to `.text`, `symbol`
+    /// indexing the locals-first [`Self::symbols`].
     pub relocs: Vec<PlannedReloc>,
+}
+
+impl ObjectPlan {
+    /// #1180: the number of `Local` symbols — the length of the locals-first
+    /// prefix of [`Self::symbols`]. ELF's `.symtab` `sh_info` is this `+ 1`
+    /// (the null symbol at index 0 counts as local); Mach-O's `LC_DYSYMTAB`
+    /// `nlocalsym` / `iextdefsym` are exactly this. Both writers READ it.
+    pub fn local_count(&self) -> usize {
+        let n = self
+            .symbols
+            .iter()
+            .take_while(|s| s.binding == SymbolBinding::Local)
+            .count();
+        debug_assert!(
+            self.symbols[n..]
+                .iter()
+                .all(|s| s.binding != SymbolBinding::Local),
+            "plan symbols must be locals-first"
+        );
+        n
+    }
 }
 
 /// Compute the [`ObjectPlan`] for `functions` + `data` + `undefined_externals`.
@@ -169,13 +218,27 @@ pub fn plan_object(
     }
     let have_data = !data.bytes.is_empty();
 
-    // --- symbols: one per (function, symbol-alias), then .data, then externals.
+    // --- symbols: one per (function, symbol-alias), then .data, then externals
+    // — collected in that natural order, then permuted locals-first below.
     // A name → index map so relocations resolve by symbol name; the FIRST
     // occurrence of a duplicated name wins (the pre-plan `or_insert` rule).
+    //
+    // #1180 / RQ-65-FUNCN — THE BINDING RULE, stated once for every container:
+    // a name synth INVENTS for its own addressing (`func_N`, the funcref
+    // table, `__synth_globals`) is LOCAL; a name the wasm module EXPOSES (an
+    // export) or REQUIRES (an import) is GLOBAL. Nothing outside the object
+    // needs the invented names — every reference to them is an in-object
+    // relocation binding by symbol index — and a second synth object carries
+    // the same invented names, so a GLOBAL binding made two objects a
+    // `duplicate symbol` refusal in ELF and Mach-O alike. This is ARM's #656
+    // policy ported to the plan, with one deliberate difference: ARM keeps
+    // `__synth_globals` GLOBAL because its embedder contract loads R9 with
+    // that address; this backend has no such register.
     let mut symbols: Vec<PlannedSymbol> = Vec::new();
     let mut sym_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut push_sym = |name: &str,
                         is_object: bool,
+                        binding: SymbolBinding,
                         place: SymbolPlace,
                         value: u64,
                         size: u64,
@@ -184,6 +247,7 @@ pub fn plan_object(
         symbols.push(PlannedSymbol {
             name: name.to_string(),
             is_object,
+            binding,
             place,
             value,
             size,
@@ -194,15 +258,39 @@ pub fn plan_object(
         let size = f.code.len() as u64;
         // #851 lane L3: the funcref table is DATA in `.text` — type it OBJECT so
         // the object does not claim a branch-table blob is a callable function.
-        for sym in &f.symbols {
-            push_sym(sym, f.is_object, SymbolPlace::Text, off, size, &mut symbols);
+        // #1180: `symbols[0]` is the in-object label (LOCAL); the rest are
+        // export names (GLOBAL) — see `ElfFunction::symbols`.
+        for (k, sym) in f.symbols.iter().enumerate() {
+            let binding = if k == 0 {
+                SymbolBinding::Local
+            } else {
+                SymbolBinding::Global
+            };
+            push_sym(
+                sym,
+                f.is_object,
+                binding,
+                SymbolPlace::Text,
+                off,
+                size,
+                &mut symbols,
+            );
         }
     }
-    // #851 lane L3: synth-emitted `.data` symbols (the globals region base).
+    // #851 lane L3: synth-emitted `.data` symbols (the globals region base) —
+    // LOCAL (#1180), reached only by this object's own adrp/add pair.
     if have_data {
         for (name, off) in &data.symbols {
             let size = data.bytes.len() as u64 - off.min(&(data.bytes.len() as u64));
-            push_sym(name, true, SymbolPlace::Data, *off, size, &mut symbols);
+            push_sym(
+                name,
+                true,
+                SymbolBinding::Local,
+                SymbolPlace::Data,
+                *off,
+                size,
+                &mut symbols,
+            );
         }
     }
     // #1017: undefined externals — the ARM `add_undefined_symbol` shape. Only
@@ -229,9 +317,37 @@ pub fn plan_object(
                 && !defined.contains(name.as_str())
                 && seen.insert(name.as_str())
             {
-                push_sym(name, false, SymbolPlace::Undefined, 0, 0, &mut symbols);
+                push_sym(
+                    name,
+                    false,
+                    SymbolBinding::Global,
+                    SymbolPlace::Undefined,
+                    0,
+                    0,
+                    &mut symbols,
+                );
             }
         }
+    }
+
+    // --- #1180: the locals-first order, from the ONE shared rule. ---
+    // ELF requires every STB_LOCAL before every non-local (`sh_info` = first
+    // non-local); Mach-O's LC_DYSYMTAB requires the same partition. Applying
+    // `synth_core::backend::locals_first` HERE — the function the ARM builder
+    // applies since #656 — means neither writer sorts, and the name → index
+    // map is rewritten through the permutation so every relocation below
+    // resolves against the emitted order. A stable sort keeps the natural
+    // order inside each class, and the undefined externals (all GLOBAL, pushed
+    // last) stay last, which is the defined-then-undefined half of the
+    // Mach-O partition.
+    let locals = locals_first(symbols.iter().map(|s| s.binding));
+    let symbols: Vec<PlannedSymbol> = locals
+        .order
+        .iter()
+        .map(|&old| symbols[old].clone())
+        .collect();
+    for idx in sym_index.values_mut() {
+        *idx = locals.old_to_new[*idx];
     }
 
     // --- relocations, rebased to .text and resolved to a symbol index. ---
@@ -366,11 +482,19 @@ pub fn build_relocatable_object_full(
     // module has relocations.
     let idx_data: u16 = 5;
 
-    // --- .strtab + .symtab: one GLOBAL symbol per planned symbol, plan order. ---
-    // st_info = (bind << 4) | type; GLOBAL=1, so FUNC(2) → 0x12 and OBJECT(1) →
-    // 0x11. shndx = 1 (.text) for code, `idx_data` for the `.data` symbols,
-    // 0 (SHN_UNDEF) for the #1017 externals. Plan index i is ELF symbol
-    // index i+1 (index 0 is the null symbol).
+    // --- .strtab + .symtab: one symbol per planned symbol, PLAN ORDER — which
+    // is already locals-first (`plan_object` applied the shared
+    // `locals_first`), so ELF's "every STB_LOCAL precedes every non-local,
+    // `sh_info` = index of the first non-local" holds by READING the plan,
+    // never by sorting here (#1180). ---
+    // st_info = (bind << 4) | type: the bind nibble IS `SymbolBinding`'s
+    // discriminant (LOCAL=0, GLOBAL=1) and the type nibble is FUNC(2) /
+    // OBJECT(1) — so a `func_N` label is 0x02, an export 0x12, the
+    // `__synth_globals` / funcref-table OBJECTs 0x01, an import 0x12 at
+    // SHN_UNDEF. shndx = 1 (.text) for code, `idx_data` for the `.data`
+    // symbols, 0 (SHN_UNDEF) for the #1017 externals. Plan index i is ELF
+    // symbol index i+1 (index 0 is the null symbol).
+    let symtab_sh_info = plan.local_count() as u32 + 1;
     let mut strtab: Vec<u8> = vec![0];
     let mut symtab: Vec<u8> = Vec::new();
     symtab.extend_from_slice(&[0u8; SYM_SIZE]); // null symbol at index 0
@@ -379,7 +503,9 @@ pub fn build_relocatable_object_full(
         strtab.extend_from_slice(f.name.as_bytes());
         strtab.push(0);
         // #851 lane L3: the funcref table and the `.data` region are OBJECT.
-        let info = if f.is_object { 0x11 } else { 0x12 };
+        // #1180: the binding is the PLAN's — read, never decided here.
+        let stt: u8 = if f.is_object { 1 } else { 2 };
+        let info = ((f.binding as u8) << 4) | stt;
         let shndx: u16 = match f.place {
             SymbolPlace::Text => 1,
             SymbolPlace::Data => idx_data,
@@ -545,7 +671,9 @@ pub fn build_relocatable_object_full(
     shdr(0, 0, 0, 0, 0, 0, 0, 0, 0);
     // [1] .text — PROGBITS, ALLOC|EXECINSTR (0x2|0x4), align 4
     shdr(n_text, 1, 0x6, text_off, text.len(), 0, 0, 4, 0);
-    // [2] .symtab — SYMTAB(2), link=.strtab(3), info=first-global(1), align 8
+    // [2] .symtab — SYMTAB(2), link=.strtab(3), info=first non-local symbol
+    // index (#1180: `plan.local_count() + 1`, the null symbol counting as
+    // local), align 8
     shdr(
         n_symtab,
         2,
@@ -553,7 +681,7 @@ pub fn build_relocatable_object_full(
         symtab_off,
         symtab.len(),
         3,
-        1,
+        symtab_sh_info,
         8,
         SYM_SIZE as u64,
     );
@@ -712,7 +840,9 @@ mod tests {
             let no = strtab.3 + u32::from_le_bytes(obj[b..b + 4].try_into().unwrap()) as usize;
             let end = obj[no..].iter().position(|c| *c == 0).unwrap() + no;
             if &obj[no..end] == b"__synth_globals" {
-                assert_eq!(obj[b + 4], 0x11, "globals symbol must be GLOBAL OBJECT");
+                // #1180: LOCAL (bind 0) OBJECT (type 1) — a second synth object
+                // carries its own `__synth_globals`.
+                assert_eq!(obj[b + 4], 0x01, "globals symbol must be LOCAL OBJECT");
                 assert_eq!(u16::from_le_bytes([obj[b + 6], obj[b + 7]]), data_idx);
                 found = true;
             }
@@ -782,7 +912,9 @@ mod tests {
             let no = strtab.3 + u32::from_le_bytes(obj[b..b + 4].try_into().unwrap()) as usize;
             let end = obj[no..].iter().position(|c| *c == 0).unwrap() + no;
             if &obj[no..end] == b"__synth_func_table" {
-                assert_eq!(obj[b + 4], 0x11, "table symbol must be GLOBAL OBJECT");
+                // #1180: LOCAL OBJECT — the table is reached only by this
+                // object's own adrp/add pair.
+                assert_eq!(obj[b + 4], 0x01, "table symbol must be LOCAL OBJECT");
                 found = true;
             }
         }
@@ -947,5 +1079,195 @@ mod tests {
             "unreferenced external is invisible"
         );
         assert_eq!(base, with_empty, "empty allowlist is byte-identical");
+    }
+
+    /// `.symtab` as `(name, st_info, st_shndx, st_value)` per non-null entry,
+    /// in emitted order, plus the section's `sh_info`.
+    fn symtab(obj: &[u8]) -> (Vec<(String, u8, u16, u64)>, u32) {
+        let secs = sections(obj);
+        let rd_u64 = |o: usize| u64::from_le_bytes(obj[o..o + 8].try_into().unwrap());
+        let shoff = rd_u64(40) as usize;
+        let sym_idx = secs.iter().position(|s| s.0 == ".symtab").unwrap();
+        let sh_info = u32::from_le_bytes(
+            obj[shoff + sym_idx * SHDR_SIZE + 44..shoff + sym_idx * SHDR_SIZE + 48]
+                .try_into()
+                .unwrap(),
+        );
+        let symtab = &secs[sym_idx];
+        let strtab = secs.iter().find(|s| s.0 == ".strtab").unwrap();
+        let mut out = Vec::new();
+        for i in 1..symtab.4 / SYM_SIZE {
+            let b = symtab.3 + i * SYM_SIZE;
+            let no = strtab.3 + u32::from_le_bytes(obj[b..b + 4].try_into().unwrap()) as usize;
+            let end = obj[no..].iter().position(|c| *c == 0).unwrap() + no;
+            out.push((
+                String::from_utf8_lossy(&obj[no..end]).into_owned(),
+                obj[b + 4],
+                u16::from_le_bytes([obj[b + 6], obj[b + 7]]),
+                rd_u64(b + 8),
+            ));
+        }
+        (out, sh_info)
+    }
+
+    /// #1180 / RQ-65-FUNCN: the binding rule, the locals-first order, `sh_info`
+    /// and the relocation remap across the permutation — on a fixture that
+    /// interleaves every class (an exported function, a non-exported helper,
+    /// the funcref table, a `.data` region, an import). Before #1180 every
+    /// symbol here was 0x12/0x11 and `sh_info` was 1, which is the
+    /// `duplicate symbol: func_1` collision when two such objects meet.
+    #[test]
+    fn func_n_local_exports_and_imports_global_locals_first_sh_info_1180() {
+        let obj = build_relocatable_object_full(
+            &[
+                ElfFunction::code(
+                    vec!["func_1".into(), "add".into()],
+                    vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6], // bl host_add; ret
+                    vec![CodeRelocation {
+                        offset: 0,
+                        symbol: "host_add".into(),
+                        kind: RelocKind::AArch64Call26,
+                    }],
+                ),
+                ElfFunction::code(
+                    vec!["func_2".into()],
+                    vec![0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91], // adrp; add
+                    vec![
+                        CodeRelocation {
+                            offset: 0,
+                            symbol: "__synth_globals".into(),
+                            kind: RelocKind::AArch64AdrPrelPgHi21,
+                        },
+                        CodeRelocation {
+                            offset: 4,
+                            symbol: "__synth_globals".into(),
+                            kind: RelocKind::AArch64AddAbsLo12Nc,
+                        },
+                    ],
+                ),
+                ElfFunction {
+                    symbols: vec!["__synth_func_table".into()],
+                    code: vec![1, 0, 0, 0, 0x00, 0x00, 0x00, 0x14], // [class 1][b func_1]
+                    relocations: vec![CodeRelocation {
+                        offset: 4,
+                        symbol: "func_1".into(),
+                        kind: RelocKind::AArch64Jump26,
+                    }],
+                    is_object: true,
+                },
+            ],
+            &DataBlob {
+                bytes: vec![0; 8],
+                symbols: vec![("__synth_globals".into(), 0)],
+            },
+            &["host_add".into()],
+        )
+        .expect("elf build");
+        let (syms, sh_info) = symtab(&obj);
+        let names: Vec<&str> = syms.iter().map(|s| s.0.as_str()).collect();
+        // Locals first (natural order within the class), then the export, then
+        // the import — the stable locals-first permutation of the natural
+        // (aliases, data, externals) order.
+        assert_eq!(
+            names,
+            vec![
+                "func_1",
+                "func_2",
+                "__synth_func_table",
+                "__synth_globals",
+                "add",
+                "host_add"
+            ]
+        );
+        let bind = |name: &str| syms.iter().find(|s| s.0 == name).unwrap().1 >> 4;
+        let ty = |name: &str| syms.iter().find(|s| s.0 == name).unwrap().1 & 0xF;
+        assert_eq!((bind("func_1"), ty("func_1")), (0, 2), "func_N: LOCAL FUNC");
+        assert_eq!(
+            (bind("func_2"), ty("func_2")),
+            (0, 2),
+            "helper label: LOCAL FUNC"
+        );
+        assert_eq!(
+            (bind("__synth_func_table"), ty("__synth_func_table")),
+            (0, 1),
+            "table: LOCAL OBJECT"
+        );
+        assert_eq!(
+            (bind("__synth_globals"), ty("__synth_globals")),
+            (0, 1),
+            "globals: LOCAL OBJECT"
+        );
+        assert_eq!((bind("add"), ty("add")), (1, 2), "export: GLOBAL FUNC");
+        assert_eq!(
+            (bind("host_add"), ty("host_add")),
+            (1, 2),
+            "import: GLOBAL FUNC"
+        );
+        assert_eq!(
+            syms.iter().find(|s| s.0 == "host_add").unwrap().2,
+            0,
+            "import at SHN_UNDEF"
+        );
+        // The ELF rule: every STB_LOCAL precedes every non-local, and sh_info
+        // is the index of the first non-local (null symbol = index 0).
+        let first_global = syms.iter().position(|s| s.1 >> 4 != 0).unwrap();
+        assert!(syms[first_global..].iter().all(|s| s.1 >> 4 != 0));
+        assert_eq!(sh_info, first_global as u32 + 1);
+        assert_eq!(sh_info, 5, "4 locals + the null symbol");
+        // The alias pair shares one address, LOCAL and GLOBAL alike.
+        assert_eq!(
+            syms.iter().find(|s| s.0 == "func_1").unwrap().3,
+            syms.iter().find(|s| s.0 == "add").unwrap().3
+        );
+        // Every relocation still names the RIGHT symbol after the permutation
+        // (r_info's symbol index is 1-based into the emitted table).
+        let secs = sections(&obj);
+        let rela = secs.iter().find(|s| s.0 == ".rela.text").unwrap();
+        let mut got = Vec::new();
+        for i in 0..rela.4 / RELA_SIZE {
+            let b = rela.3 + i * RELA_SIZE;
+            let off = u64::from_le_bytes(obj[b..b + 8].try_into().unwrap());
+            let info = u64::from_le_bytes(obj[b + 8..b + 16].try_into().unwrap());
+            got.push((
+                off,
+                (info & 0xFFFF_FFFF) as u32,
+                syms[(info >> 32) as usize - 1].0.clone(),
+            ));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (0, R_AARCH64_CALL26, "host_add".to_string()),
+                (8, R_AARCH64_ADR_PREL_PG_HI21, "__synth_globals".to_string()),
+                (12, R_AARCH64_ADD_ABS_LO12_NC, "__synth_globals".to_string()),
+                (20, R_AARCH64_JUMP26, "func_1".to_string()),
+            ]
+        );
+    }
+
+    /// #1180: two independently planned objects both define `func_1` — and
+    /// both plan it LOCAL, which is what lets a host linker take the pair.
+    /// (The link itself is the oracle's job; this pins the plan-level fact
+    /// each container renders.)
+    #[test]
+    fn two_plans_both_define_func_1_local_1180() {
+        let plan = |export: &str| {
+            plan_object(
+                &[ElfFunction::code(
+                    vec!["func_1".into(), export.into()],
+                    vec![0xC0, 0x03, 0x5F, 0xD6],
+                    vec![],
+                )],
+                &DataBlob::default(),
+                &[],
+            )
+            .unwrap()
+        };
+        for p in [plan("add"), plan("g")] {
+            let f1 = p.symbols.iter().find(|s| s.name == "func_1").unwrap();
+            assert_eq!(f1.binding, SymbolBinding::Local);
+            assert_eq!(p.local_count(), 1);
+            assert_eq!(p.symbols[1].binding, SymbolBinding::Global);
+        }
     }
 }

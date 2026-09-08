@@ -181,9 +181,10 @@ symptom is a wrong value on some other path, not a build error — the #1131
 
 ## What is NOT a precondition (synth emits it)
 
-- **Globals** live in synth's own `.data`, at the GLOBAL `STT_OBJECT` symbol
+- **Globals** live in synth's own `.data`, at the `STT_OBJECT` symbol
   `__synth_globals` (`crates/synth-backend-aarch64/src/substrate.rs:56-64`
-  layout — one 8-byte slot per global; the symbol emitted at `elf.rs:198-202`),
+  layout — one 8-byte slot per global; the symbol planned in `elf.rs`
+  `plan_object`, LOCAL since RQ-65-FUNCN — see "Symbols" below),
   **with their decoded constant initializers already in the bytes**. A normal
   static link places the section and the loader maps it; there is no globals
   register and nothing for the embedder to seed. Code reaches the region by
@@ -201,40 +202,47 @@ symptom is a wrong value on some other path, not a build error — the #1131
   segment bytes belong. There is therefore no `--embedder-data-init`
   promise on this path — the flag exists for the ARM relocatable contract.
 
-## Symbols, and the one collision to know about
+## Symbols: what the link sees, and what it does not
 
-- **Exports:** every locally-defined function is a GLOBAL `STT_FUNC` symbol
-  under its `func_N` name (N = full function index, imports first), and an
-  exported one additionally under its wasm export name at the same address
-  (`backend.rs:334-340`; the binding byte `0x12` at `elf.rs:193`). Read the
-  symbol table by section type (`SHT_SYMTAB`), not name.
+- **Exports:** an exported function is a GLOBAL `STT_FUNC` symbol under its
+  wasm export name (`backend.rs:334-340`); the binding is the plan's
+  (`elf.rs` `PlannedSymbol::binding`, rendered as `st_info = (bind << 4) |
+  type` in `build_relocatable_object_full`). Read the symbol table by
+  section type (`SHT_SYMTAB`), not name.
 - **Imports:** a called import becomes a GLOBAL `STT_FUNC` at `SHN_UNDEF`
-  under its wasm FIELD name (`elf.rs:205-229`, `backend.rs:405-410`, the
-  #1017 wasm2c/Wasker pattern), with an `R_AARCH64_CALL26` at each call
+  under its wasm FIELD name (`elf.rs` `plan_object`, `backend.rs:405-410`,
+  the #1017 wasm2c/Wasker pattern), with an `R_AARCH64_CALL26` at each call
   site. Define it in C with the matching AAPCS64 signature and the linker
   binds it; omit it and `ld.lld` refuses with `undefined symbol: host_add`
   (the oracle pins that refusal).
-- **`func_N` is GLOBAL here, LOCAL on ARM — and that means two synth aarch64
-  objects cannot be linked into one program.** Measured (the oracle pins it):
-
-  ```
-  ld.lld: error: duplicate symbol: func_1
-  >>> defined at synth.o:(func_1)
-  >>> defined at second.o:(g)
-  ```
-
-  The ARM builder emits the alias `STB_LOCAL` for exactly this reason (#656,
-  see the ARM document's `@`-hazard section). The aarch64 writer has not
-  been given the same treatment yet — noted as a residual on
-  RQ-64-ARM64LINUX, not fixed in the lane that found it, because it changes
-  symbol-table ordering (`sh_info`) in the ELF writer and every aarch64
-  oracle's expectations should move with it under review. **Workaround,
-  measured and executed by the oracle:** localize the alias in every object
-  but one before linking —
-  `llvm-objcopy --regex --localize-symbol='func_[0-9]+' in.o out.o` — the
-  object's own intra-object `CALL26`/`JUMP26` relocations still bind to the
-  now-local symbols and every value still matches wasmtime. (Do NOT
-  `--strip-symbol` them: the relocations need the symbols to exist.)
+- **Everything synth invents for its own addressing is LOCAL** (RQ-65-FUNCN,
+  #1180): the `func_N` call label every function carries (N = full function
+  index, imports first), the globals region `__synth_globals`, and the
+  funcref table `__synth_func_table` are `STB_LOCAL`, listed first in
+  `.symtab` with `sh_info` at the first non-local symbol (the ELF rule #656
+  established for ARM, now applied through the one shared
+  `synth_core::backend::locals_first`). They are still IN the symbol table —
+  `nm` shows `t func_1`, `d __synth_globals`, a debugger sees them — but
+  they take no part in cross-object resolution: this object's own
+  `CALL26`/`JUMP26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC` relocations bind to
+  them by symbol index, and nothing outside the object needs their names.
+  **Consequence, measured and EXECUTED by the oracle:
+  two synth aarch64 objects link into one program unaided** — the fixture
+  plus a second module (`scripts/repro/colink_second_rq65.wat`) that also defines its own
+  `func_1`, `__synth_globals` and `__synth_func_table`, linked by `ld.lld`
+  with no objcopy step, every value from BOTH objects matching wasmtime. The
+  `llvm-objcopy --localize-symbol` workaround the v0.64 edition of this
+  document recorded is no longer needed; the oracle now proves the opposite
+  direction too (re-globalizing `func_N` in both objects brings
+  `duplicate symbol: func_1` back). The Mach-O container makes the same
+  decision by construction — the binding is a field of the shared
+  `ObjectPlan`, not a per-writer choice — so `nm` on a `--object-format
+  macho` object shows `t _func_1`, `d ___synth_globals`, `T _add`.
+- **Deliberate divergence from ARM, so it is not "fixed" later:** ARM keeps
+  `__synth_globals` GLOBAL because its embedder contract loads R9 with that
+  address (`docs/embedder-abi-relocatable-arm.md`). This backend has no
+  globals register — code reaches the region by `adrp`+`add :lo12:` — so
+  the name is object-private here.
 - **The `@`-in-export-names hazard** from the ARM document applies unchanged
   to a C `__asm__` label here; the `objcopy --redefine-sym` workaround is
   the same.
