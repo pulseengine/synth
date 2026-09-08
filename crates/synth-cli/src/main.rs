@@ -8830,6 +8830,9 @@ fn build_multi_func_aarch64_elf(
             // #851: EVERY function gets a `func_N` symbol (the target of a direct
             // `bl` R_AARCH64_CALL26 reloc) plus its export name when it differs.
             // The `name` field is the export name when exported, else `func_N`.
+            // #1180: the ORDER is the contract — `symbols[0]` is the in-object
+            // label the plan binds LOCAL (ARM's #656 policy), the export name
+            // that follows is GLOBAL; see `ElfFunction::symbols`.
             let func_sym = format!("func_{}", f.wasm_index);
             let mut symbols = vec![func_sym.clone()];
             if f.name != func_sym {

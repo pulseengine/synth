@@ -699,6 +699,83 @@ pub struct CodeRelocation {
     pub kind: RelocKind,
 }
 
+/// Symbol BINDING — whether a symbol takes part in cross-object resolution
+/// (#656 ARM, #1180 / RQ-65-FUNCN aarch64).
+///
+/// This is a CONTAINER-INDEPENDENT concept, which is why it lives here and
+/// not in a writer: ELF spells it `STB_LOCAL` / `STB_GLOBAL` / `STB_WEAK` in
+/// `st_info`'s high nibble (the discriminants below are exactly those
+/// values), Mach-O spells `Local` as `N_EXT` CLEAR and `Global` as `N_EXT`
+/// SET on the `nlist_64`. The decision that a synth-invented name — a
+/// `func_N` call label, `__synth_globals`, `__synth_func_table` — is
+/// `Local` while a wasm export or import is `Global` is made ONCE, at the
+/// object PLAN, and every container reads it from there. Two independently
+/// compiled synth objects both define `func_1`; a `Global` binding made
+/// linking them into one program a `duplicate symbol` refusal, in every
+/// container (measured on ELF `ld.lld` and Mach-O Apple `ld`, #1180).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolBinding {
+    /// File-local: resolves relocations within its own object (they bind by
+    /// symbol INDEX, not by name) and is invisible to every other object.
+    Local = 0,
+    /// Visible to the link: the name an embedder calls, or the import it
+    /// defines.
+    Global = 1,
+    /// Weak (ELF `STB_WEAK`); no synth writer emits it today.
+    Weak = 2,
+}
+
+/// The locals-first symbol order, computed ONCE for every container that
+/// needs it (#656, #1180).
+///
+/// ELF requires every `STB_LOCAL` symbol to precede every non-local one in
+/// `.symtab`, with the section's `sh_info` = index of the first non-local.
+/// Mach-O's `LC_DYSYMTAB` requires the same partition (locals, then external
+/// defined, then undefined). The ARM ELF32 builder (`synth-backend`,
+/// `ElfBuilder::build`) and the aarch64 object plan (`synth-backend-aarch64`,
+/// `plan_object`) both apply THIS permutation, so the rule is written once —
+/// a second hand-written copy in a second writer is the mirror the North
+/// Star forbids, and the way the two backends diverged in the first place.
+///
+/// The permutation is a STABLE sort on `binding != Local`: with zero locals
+/// it is the identity, which is what keeps every pre-#656 / pre-#1180 object
+/// byte-identical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalsFirst {
+    /// `order[new] = old`: the symbol emitted at position `new` is the caller's
+    /// symbol `old`.
+    pub order: Vec<usize>,
+    /// `old_to_new[old] = new`: where the caller's symbol `old` landed. Every
+    /// relocation that names a symbol by index is rewritten through this.
+    pub old_to_new: Vec<usize>,
+    /// The number of `Local` symbols — the length of the local prefix. ELF's
+    /// `sh_info` is `local_count + 1` (the null symbol at index 0 counts as
+    /// local); Mach-O's `nlocalsym` is `local_count`.
+    pub local_count: usize,
+}
+
+/// Compute the [`LocalsFirst`] permutation for `bindings` (in the caller's
+/// current order).
+pub fn locals_first(bindings: impl IntoIterator<Item = SymbolBinding>) -> LocalsFirst {
+    let bindings: Vec<SymbolBinding> = bindings.into_iter().collect();
+    let mut order: Vec<usize> = (0..bindings.len()).collect();
+    // Stable: locals keep their relative order, and so do non-locals.
+    order.sort_by_key(|&i| bindings[i] != SymbolBinding::Local);
+    let mut old_to_new = vec![0usize; bindings.len()];
+    for (new, &old) in order.iter().enumerate() {
+        old_to_new[old] = new;
+    }
+    let local_count = bindings
+        .iter()
+        .filter(|b| **b == SymbolBinding::Local)
+        .count();
+    LocalsFirst {
+        order,
+        old_to_new,
+        local_count,
+    }
+}
+
 /// VCR-DBG-001: a per-instruction source map — `(machine_offset_within_code,
 /// wasm_op_index)` pairs, one per emitted machine instruction. A `None` op-index
 /// marks an instruction with no originating wasm op (prologue/epilogue, literal

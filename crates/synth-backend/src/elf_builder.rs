@@ -156,16 +156,11 @@ impl Section {
     }
 }
 
-/// Symbol binding
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SymbolBinding {
-    /// Local symbol
-    Local = 0,
-    /// Global symbol
-    Global = 1,
-    /// Weak symbol
-    Weak = 2,
-}
+/// Symbol binding — the container-independent enum from `synth_core`, shared
+/// with the aarch64 object plan since #1180 (one definition of LOCAL/GLOBAL,
+/// one `locals_first` rule). Re-exported so every
+/// `synth_backend::elf_builder::SymbolBinding` path keeps working unchanged.
+pub use synth_core::backend::SymbolBinding;
 
 /// Symbol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,20 +651,19 @@ impl ElfBuilder {
         // permutation, plus an old→new index map every relocation is rewritten
         // through. With zero local symbols (every pre-#656 object) the
         // permutation is the identity and `sh_info` stays 1 — byte-identical.
-        let mut sym_order: Vec<usize> = (0..self.symbols.len()).collect();
-        sym_order.sort_by_key(|&i| self.symbols[i].binding != SymbolBinding::Local);
+        //
+        // #1180: the permutation itself is `synth_core::backend::locals_first`,
+        // the ONE definition of the rule — the aarch64 object plan applies the
+        // same function, so the two backends cannot drift on it again.
+        let locals = synth_core::backend::locals_first(self.symbols.iter().map(|s| s.binding));
+        let sym_order: Vec<usize> = locals.order;
         // old_to_new[old_1based] = new_1based; index 0 (the null symbol) maps to 0.
         let mut old_to_new = vec![0u32; self.symbols.len() + 1];
-        for (new_pos, &old) in sym_order.iter().enumerate() {
-            old_to_new[old + 1] = new_pos as u32 + 1;
+        for (old, &new) in locals.old_to_new.iter().enumerate() {
+            old_to_new[old + 1] = new as u32 + 1;
         }
-        let local_count = self
-            .symbols
-            .iter()
-            .filter(|s| s.binding == SymbolBinding::Local)
-            .count();
         // The null symbol (index 0) counts as local, so first-global = locals + 1.
-        let symtab_sh_info = local_count as u32 + 1;
+        let symtab_sh_info = locals.local_count as u32 + 1;
         let remap_relocs = |relocs: &[Relocation]| -> Vec<Relocation> {
             relocs
                 .iter()
