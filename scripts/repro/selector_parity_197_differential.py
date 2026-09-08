@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 1
+# ci-checks: emulations >= 20000
 """RQ-65-PARITY (#197) — the two SHIPPED lowering paths, differentially compared.
 
 # The two engines
@@ -90,7 +90,12 @@ stopped compiling or an op that started declining — a regression to explain.
 # Known divergences are PINNED, by exact count, with their issue
 
 The first run found four defects in the default self-contained configuration
-(#1203 fixed alongside this oracle; #1204/#1205/#1206 open). An open finding
+on tests/wast alone (#1203 fixed alongside this oracle; #1204/#1205/#1206
+open) and four more on the spec suite — the first time the suite was ever
+EXECUTED against synth rather than compiled (#1208 optimized narrow i64
+loads lower to an empty body; #1209 memory64 accepted and silently wrong;
+#1210 a value live across a call inside a value-carrying block is lost on
+BOTH selectors; #1211 call_indirect ignores the table index). An open finding
 is pinned in KNOWN below as (file, module, function, kind) -> (issue, count):
 the oracle is RED when a pinned count MOVES in either direction — the fix
 landed (move the pin, close the issue on the release) or a new instance
@@ -157,14 +162,17 @@ LEGS = (("optimized", []), ("direct", ["--no-optimize"]))
 
 # ---------------------------------------------------------------------------
 # FLOORS — non-vacuity. See the module docstring. Measured on the corpus at
-# authoring (tests/wast + spec-testsuite @ the pinned submodule commit):
-#   modules both accepted 249, assertions compared 5,930, optimized-path
-#   functions 1,222, byte-differing functions 1,070.
-# `--no-suite` (tests/wast only) applies the smaller LOCAL floors so a
-# submodule-less checkout still runs and still cannot compare nothing.
+# authoring (tests/wast + own fixtures + spec-testsuite @ the pinned submodule
+# commit 3453673): modules both legs accepted 326 (164 mixed-path),
+# assertions executed on all three engines 15,593, optimized-path functions
+# 1,263, byte-differing functions 1,474 (of 2,384 common), emulator entries
+# 20,750. Floors sit a few percent under the measurement; raise them when the
+# corpus grows, never lower them to green a run.
+# `--no-suite` (tests/wast + own fixtures) applies the smaller LOCAL floors so
+# a submodule-less checkout still runs and still cannot compare nothing.
 # ---------------------------------------------------------------------------
-FLOORS_FULL = dict(modules_both=240, assertions_compared=5_800,
-                   optimized_funcs=1_150, differing_funcs=1_000)
+FLOORS_FULL = dict(modules_both=300, assertions_compared=14_500,
+                   optimized_funcs=1_150, differing_funcs=1_350)
 FLOORS_LOCAL = dict(modules_both=20, assertions_compared=200,
                     optimized_funcs=30, differing_funcs=20)
 
@@ -685,20 +693,17 @@ def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) 
             mr.decline = f"boot-fault:{name}:{e}"
             return mr
     # Lock-step: the three engines share one action sequence. An action that
-    # cannot be executed on ALL of them is executed on NONE — otherwise their
-    # states drift apart and every later comparison is noise. After such a
-    # skip the module is DESYNCED: any later action is counted `desync`, not
-    # compared. (A skipped `assert_exhaustion` desyncs nothing: it traps in
-    # wasmtime and mutates no state.)
-    desync = False
-
+    # cannot be executed on ALL of them (a declined shape) is executed on NONE
+    # — so the three stay consistent with EACH OTHER by construction, and the
+    # comparison that matters (legs vs wasmtime, leg vs leg) survives a skip.
+    # Only the .wast literal can be left behind by a skipped state mutation,
+    # and that is the informational `reference-vs-literal` count, never a
+    # verdict. The one asymmetric case — a trap wasmtime took and the legs did
+    # not — is tracked by `trap_miss`.
     for act in actions:
         kind = act[0]
         if kind == "assert_exhaustion":
             mr.declined["exhaustion"] += 1
-            continue
-        if desync:
-            mr.declined["desync"] += 1
             continue
         try:
             # `(invoke "f" …)` stands alone as a state-mutating step; the
@@ -730,7 +735,6 @@ def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) 
             words = marshal_args(args)
         except Decl as e:
             mr.declined[e.reason] += 1
-            desync = True
             continue
 
         result_words = 2 if results == ["i64"] else len(results)
@@ -767,7 +771,6 @@ def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) 
                 # reference disagrees with the spec text — harness-level
                 # anomaly, recorded loudly.
                 mr.declined["reference-no-trap"] += 1
-                desync = True
                 continue
             if o == d and o[0] not in ("trap", "fault"):
                 # Neither leg trapped (the compliance envelope — no OOB trap
@@ -988,7 +991,16 @@ def main() -> int:
             fails.append(f"NON-VACUITY: {k} = {measured[k]} < floor {floor}")
     # Pins: every gating divergence must be a KNOWN one at EXACTLY its pinned
     # count; every KNOWN pin whose file was in this run must still be there.
+    # A pin whose function is "*" covers a whole module (one class hitting
+    # every function of a spec module, e.g. the 30 narrow-load functions of
+    # address.wast m1) — still an exact count, over the module.
     ran_files = {f.name for f in files}
+    wild = {k for k in KNOWN if k[2] == "*"}
+    folded: Counter = Counter()
+    for (f, i, fn, kind), n in actual_pins.items():
+        wk = (f, i, "*", kind)
+        folded[wk if wk in wild else (f, i, fn, kind)] += n
+    actual_pins = folded
     pinned_ok = unpinned = 0
     for key, n in sorted(actual_pins.items()):
         if key in KNOWN and KNOWN[key][1] == n:

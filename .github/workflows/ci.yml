@@ -500,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 325122 \
+            --exact-emulation-floor 345122 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
