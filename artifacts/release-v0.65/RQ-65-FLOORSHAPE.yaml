@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-65-FLOORSHAPE
+    type: system-req
+    title: "DELIVERY_FLOOR is 28 against a live 64 — half the delivery history could vanish and the gate stays green"
+    description: >
+      #1183, surfaced by the RQ-64-SCOPEGAP lane while converting the staleness
+      citation floor to an equality, and deliberately NOT fixed there because
+      the answer is not the same.
+
+      Two non-vacuity floors in `status_evidence_check.py` carry large slack:
+
+        DELIVERY_FLOOR   pinned 28   live 64   (56 % slack)
+        PROGRAMME_FLOOR  pinned 379  live 400  (5 %)
+
+      `DELIVERY_FLOOR` exists to catch exactly the failure its own message
+      names — "shallow checkout or scan rot; the floor never comes down to
+      pass". At 28 against 64, MORE THAN HALF the delivery history could
+      disappear and the gate stays green. A shallow checkout fetching 30
+      commits is the canonical case and it would pass.
+
+      This belongs in v0.65 because it is the same question as the release
+      theme, asked of the gates instead of the codegen: how much could be wrong
+      without anyone noticing?
+
+      EQUALITY IS THE WRONG FIX HERE, and saying why matters. RQ-63-FLOOREQ
+      concluded the emulation floor's fix is equality not a bigger number, and
+      RQ-64-SCOPEGAP applied the same to STALENESS_CITATIONS — correctly,
+      because that count moved twice in seven release intervals. These two are
+      different in kind: both count things that GROW MONOTONICALLY with every
+      merge, so an equality pin would need bumping in essentially every PR.
+      That is churn that buys nothing and that people route around — the exact
+      failure the ratchet docs warn about ("a gate people cannot move honestly
+      is a gate they route around").
+
+      MEASURE THE CHURN FIRST, as SCOPEGAP did before choosing. Then pick a
+      shape that can see a real loss without churning: a ratcheting floor
+      raised automatically at release time (derived, not hand-maintained), a
+      RELATIVE floor against the previous release, or `direction: track`.
+
+      AND PROVE IT DISCRIMINATES: simulate a shallow checkout (`git fetch
+      --depth=30`) and show the gate reddens. A floor nobody has watched fire
+      is a floor we are guessing at.
+    status: proposed
+    release: v0.65
+    tags:
+      - gate
+      - non-vacuity
+      - ratchet
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1183"
+      done-when: "manual: the churn of both counts is measured across v0.56-v0.65; a shape is chosen with the measurement as its justification; and the chosen floor is shown to REDDEN on a simulated shallow checkout"
+      verified-by: >-
+        PENDING. The red-first demonstration is the deliverable, not the
+        number: `git fetch --depth=30` must make the gate fail.

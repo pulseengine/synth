@@ -1,0 +1,62 @@
+artifacts:
+  - id: RQ-65-MUTANTS
+    type: system-req
+    title: "Nobody knows what fraction of the code generator any oracle would catch being wrong — measure it by mutation"
+    description: >
+      THE HEADLINE ARTIFACT of v0.65, and the question #1189 forced.
+
+      That silent miscompile survived because the then-arm is correct BY
+      ACCIDENT: the join register already held the value the join wanted, so
+      the aliasing write was a no-op on that path. Every test taking the
+      then-branch passed. It was found by a lane STRENGTHENING an oracle, not
+      by anything failing.
+
+      So: synth has ~19,740 selector lines, 191 repro scripts, 61 CI jobs, an
+      emulation floor of 325,121 and 645 Qed — and NO MEASUREMENT of what share
+      of its emitted-code decisions that apparatus would catch if they were
+      wrong. The apparatus has never been pointed at itself.
+
+      THE METHOD: mutate a codegen DECISION (swap a register, invert a
+      condition, drop a copy, change an immediate, flip a fold guard), rebuild,
+      run the oracle suite, and record whether anything went red. A mutant that
+      SURVIVES is a line of codegen that could be wrong today with nothing to
+      tell us.
+
+      SAMPLING IS EXPECTED AND MUST BE STATED. Each mutant is a full oracle run;
+      an exhaustive sweep of a 19,740-line file is not affordable. State the
+      sampling frame, the sample size and what the number does and does not
+      support. An honest "we sampled N of M, survival rate R, here is the
+      frame" is the deliverable — a fabricated exhaustive claim is the failure
+      this release is about.
+
+      CLASSIFY EVERY SURVIVOR, because "survived" has three meanings and only
+      one of them is a gap: (a) UNTESTED — reachable codegen no oracle
+      exercises, which is the finding; (b) DEAD — unreachable, which is a
+      DELETION target and feeds the subtraction ratchet; (c) EQUIVALENT — the
+      mutation does not change emitted bytes, which is not a gap at all and
+      must not be counted as one.
+
+      NOT A CODE-QUALITY EXERCISE. The output is a NUMBER plus a classified
+      survivor list, published the way the acceptance rate is published. It
+      becomes what v0.66 is scoped from.
+    status: proposed
+    release: v0.65
+    tags:
+      - oracle
+      - mutation
+      - measurement
+      - north-star
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: differential
+      issue: "#1189"
+      done-when: "manual: a selector mutation survey exists with its sampling frame stated; a survival rate is published and CI-pinned; every survivor is classified untested / dead / equivalent; and the untested set is enumerated so v0.66 can be scoped from it"
+      verified-by: >-
+        PENDING. The survey must itself be red-first in the trivial direction:
+        a mutation known to be caught (e.g. the #1189 aliasing copy removed)
+        MUST be reported as killed, or the harness is measuring nothing. Report
+        that control alongside the rate.

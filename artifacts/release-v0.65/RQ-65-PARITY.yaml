@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-65-PARITY
+    type: system-req
+    title: "synth ships TWO selectors and has never compared them — the second engine is a free oracle we already built"
+    description: >
+      `select_default` and `select_with_stack` are two independent lowering
+      paths over the same WASM semantics (#197 makes the second the only path
+      for `--relocatable`). They have never been differentially compared.
+
+      This is the North Star's first invariant — "derive what you check against
+      from the artifact you ship" — pointed at something synth ALREADY SHIPS.
+      No new implementation, no hand-written mirror, no second source of truth
+      to drift: the second engine exists, is maintained, and is currently
+      unused as evidence.
+
+      PRIOR ART, and the reason this is worth doing rather than clever:
+      Endive (Bytecode Alliance, a JVM-native wasm runtime forked from Chicory)
+      makes exactly this its correctness model — its roadmap line is "Build-time
+      compiler passes all the same specs as interpreter", with separate public
+      pass badges for interpreter, compiler and WASI. Two engines, one external
+      spec suite, differential between them. They have full core-spec coverage
+      partly BECAUSE that oracle is cheap and total.
+
+      WHAT THIS IS NOT: it is not a claim that either selector is correct. Two
+      engines sharing a bug are invisible to parity, which is precisely why
+      this SUPPLEMENTS the wasmtime differential and the Rocq proofs rather
+      than replacing either. Its value is breadth at near-zero cost.
+
+      EXPECT INTENDED DIVERGENCE, and do not "fix" it. The two selectors have
+      different ABIs and different capability sets by design (#197: relocatable
+      forces the direct path; the optimized path declines and hands down). A
+      divergence is a finding ONLY if both paths accept a module and disagree
+      about the emitted behaviour. Everything else is a recorded, reasoned
+      difference — and the record is part of the deliverable, because an
+      unexplained divergence list is how a parity oracle becomes noise nobody
+      reads.
+    status: proposed
+    release: v0.65
+    tags:
+      - oracle
+      - differential
+      - selector
+      - north-star
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#197"
+      done-when: "manual: both selectors are run over the spec corpus and every module both ACCEPT is compared on emitted behaviour; each divergence is either a fixed bug or a recorded intended difference with its reason; the comparison is CI-wired with a non-vacuity floor on modules compared"
+      verified-by: >-
+        PENDING. Red-first is mandatory and cheap here: plant a divergence
+        (mutate one selector only) and the oracle must name the module and the
+        disagreeing value. A parity check that has never been watched
+        discriminate is a parity check nobody has tested.

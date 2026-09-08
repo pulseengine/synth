@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-65-ALIASCLASS
+    type: system-req
+    title: "#1189 closed ONE aliasing site — where else does synth push a home register uncopied?"
+    description: >
+      #1190 fixed the if/else join whose result register could BE a
+      register-homed local's home. The lane's measured blast radius (18 shapes
+      x 4 legs) is the reason this artifact exists rather than the fix being
+      the end of it — it corrected the issue's own scope TWICE, both times
+      WIDER, and it named the underlying mechanism rather than the instance:
+
+        `local.get` of a register-homed local pushes THE HOME REGISTER
+        UNCOPIED. Any later write to that register through a different path is
+        a silent overwrite of the local.
+
+      The if/else join was one consumer of that mechanism. The artifact's
+      question is how many others exist.
+
+      TWO MEASURED FACTS THAT MAKE THIS URGENT rather than tidy-up:
+
+      (1) The self-contained path was hit too, wherever the OPTIMIZED selector
+      declines and falls back to the direct one — so "relocatable-only" was
+      wrong, and the fallback edge is exactly where nobody looks.
+
+      (2) RV32 is clean ONLY BECAUSE `local.get` copies there. That is an
+      accident of implementation, not a design decision: a future RV32 "alias
+      params on the vstack" byte-saving optimization would recreate the exact
+      #1189 miscompile. #1190's oracle carries RV32 legs so that specific
+      change is now guarded — but the general shape is not.
+
+      THE DELIVERABLE IS AN ENUMERATION, not a refactor. Every site where a
+      home register reaches the operand stack uncopied, and for each one either
+      a guard or a PINNED STRUCTURAL REASON it is safe — the same treatment
+      #1190 gave its clean rows, which is what turned "these happen to work"
+      into "these work for a stated reason a test watches".
+
+      A NARROW RESULT IS A GOOD RESULT. If the enumeration finds the if/else
+      join was the only reachable consumer, say so with the evidence. What is
+      not acceptable is a broad rewrite of local handling justified by one
+      repro — that is how this project would inject the miscompiles it exists
+      to prevent.
+    status: proposed
+    release: v0.65
+    tags:
+      - correctness
+      - selector
+      - miscompile-class
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1189"
+      done-when: "manual: every site where a register-homed local reaches the operand stack uncopied is enumerated across all four legs (arm-reloc, arm-self-contained, RV32, AArch64); each is either guarded with an execution oracle or pinned with a structural reason it cannot alias; and any newly-found miscompile lands red-first"
+      verified-by: >-
+        PENDING. Any fix moves emitted bytes and therefore needs byte-identity
+        or an execution differential proving the new bytes correct — never an
+        explanation. #1190's oracle keeps main's own wrong bytes as a permanent
+        red half; extend that pattern rather than replacing it.

@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-65-ARCHMODEL
+    type: system-req
+    title: "Feature-loop steps 1-2 (spar AADL -> WIT) — carried again on an EXTERNAL blocker, re-verified at plan time"
+    description: >
+      CARRIED FROM v0.64, which carried it from v0.63. The substance is
+      unchanged; see RQ-63-ARCHMODEL for the analysis, which is not restated
+      here so there is one source for it.
+
+      BLOCKER RE-VERIFIED AT v0.65 PLAN TIME, not carried forward on the
+      previous record: spar#445 — "spar accepts property associations from
+      UNDECLARED property sets silently" — is still OPEN with no activity since
+      2026-09-03.
+
+      This is an EXTERNAL blocker in a sibling repository, and that is a
+      different kind of deferral from a scope decision. Nothing here went
+      stale, nothing got harder, no measurement expired. It cannot proceed
+      because the tool it depends on silently ACCEPTS input it should refuse —
+      and building an architecture model on a parser that will not tell you
+      when you got it wrong produces exactly the unfalsifiable artifact this
+      programme exists to avoid.
+
+      FIFTH CONSECUTIVE RELEASE recording steps 1-2 as N/A, tracked by #1136.
+      The loop's own rule says a recurring N/A is a backlog item, not an
+      exemption, and the precedent it cites paid off: witness MC/DC was N/A
+      four releases running, was filed as #912, and #978 made it real.
+
+      Worth restating because it is easy to miss: the conformance gate does NOT
+      accept this prose as evidence. `loop_conformance_check` derives its step
+      1-2 slot as NA-FILED only when a release-SCOPED artifact exists — so the
+      N/A is discharged by this artifact being FILED and SCOPED, never by
+      asserting "synth is a Rust compiler, not AADL-architected". That
+      assertion is true, and has still never been examined, which is the point
+      of #1136.
+
+      OBSERVED AT v0.64 AND WORTH CHECKING THIS RELEASE: the conformance check
+      resolved its step 1-2 slot by citing `RQ-63-ARCHMODEL` in
+      `artifacts/release-v0.63/`, not the v0.64 artifact. The slot was
+      satisfied either way, but a check that matches the FIRST
+      programme-scoped artifact rather than the one for the release under test
+      would let a future release inherit a satisfied slot without filing its
+      own. That is the "gate that cannot fail" shape and it should be measured.
+    status: proposed
+    release: v0.65
+    tags:
+      - spar
+      - recurring-na
+      - external-blocker
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1136"
+      carried-from: RQ-64-ARCHMODEL
+      done-when: "manual: either spar#445 closes and the AADL -> WIT path is exercised, or the deferral is recorded again with the blocker RE-VERIFIED at cut time; and separately, loop_conformance_check's step 1-2 slot is checked for whether it matches the artifact of the release under test rather than the first programme-scoped one"
+      verified-by: >-
+        PENDING — carried unchanged from RQ-64-ARCHMODEL, with the conformance
+        slot-matching question added as a measurable sub-item.
