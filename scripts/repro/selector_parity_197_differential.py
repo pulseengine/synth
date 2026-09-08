@@ -71,11 +71,16 @@ test suite submodule when present):
 
 # Declines (counted and named, never silent)
 
-  float-abi, i64-... (see DECL_* below), ref-type, multi-value, imports,
-  named-module, binary-module, start-function (#1046), stack-args,
+  float-abi, ref-type, multi-value, arity, stack-args (> 4 AAPCS words),
+  imports, named-module, binary-module, start-function (#1046),
   symbol-missing (one leg declined the function — the divergence record),
-  wasmtime-instantiate:<err>, desync (an earlier un-executable step left one
-  engine's state unknown), exhaustion (assert_exhaustion is never run).
+  symbol-unknown, wasmtime-instantiate:<err>, exhaustion (assert_exhaustion
+  is never run), reference-vs-literal (wasmtime disagrees with the .wast
+  literal — a fixture written for fresh-instance semantics; informational),
+  trap-parity-envelope (the legs disagree on HOW an out-of-bounds access
+  misbehaves — undefined under the default no-bounds-check envelope).
+  A declined action is skipped on ALL three engines, so they stay in
+  lock-step with each other and no later comparison is lost.
 
 # Non-vacuity, ratcheted
 
@@ -91,11 +96,13 @@ stopped compiling or an op that started declining — a regression to explain.
 
 The first run found four defects in the default self-contained configuration
 on tests/wast alone (#1203 fixed alongside this oracle; #1204/#1205/#1206
-open) and four more on the spec suite — the first time the suite was ever
+open) and seven more on the spec suite — the first time the suite was ever
 EXECUTED against synth rather than compiled (#1208 optimized narrow i64
 loads lower to an empty body; #1209 memory64 accepted and silently wrong;
 #1210 a value live across a call inside a value-carrying block is lost on
-BOTH selectors; #1211 call_indirect ignores the table index). An open finding
+BOTH selectors; #1211 call_indirect ignores the table index; #1213 i64
+select + wrap on the optimized path; #1214 i64 read-before-write local not
+zero-initialised; #1215 branch-in-operand br_table/br_if shapes). An open finding
 is pinned in KNOWN below as (file, module, function, kind) -> (issue, count):
 the oracle is RED when a pinned count MOVES in either direction — the fix
 landed (move the pin, close the issue on the release) or a new instance
@@ -181,25 +188,142 @@ FLOORS_LOCAL = dict(modules_both=20, assertions_compared=200,
 # Exact counts: a pin that moves in EITHER direction is red. See docstring.
 # ---------------------------------------------------------------------------
 KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
-    # #1205 — optimized path: comparison feeding `if (result i32)` with
-    # constant arms compares the constants and selects the compare operands.
-    ("anti_pinch.wast", 0, "check_jam", "parity-divergence/opt-wrong"): ("#1205", 7),
+    # #1204 — optimized path leaves R11 = 0/1 on return (callee-saved; the direct
+    # selector's memory base). Value right, the next direct-routed caller wrong —
+    # executed by the r11_clobber fixture's `caller`.
+    ('control_nested_select.wast', 0, 'nested_const_conds', 'contract-violation/optimized'): ('#1204', 4),
+    ('control_nested_select.wast', 0, 'nested_if_else', 'contract-violation/optimized'): ('#1204', 4),
+    ('int_literals.wast', 0, 'i64.inc_smin', 'contract-violation/optimized'): ('#1204', 1),
+    ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'contract-violation/optimized'): ('#1204', 3),
+    ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'parity-divergence/opt-wrong'): ('#1204', 1),
+    ('selector_parity_197_r11_clobber.wast', 0, 'leaf', 'contract-violation/optimized'): ('#1204', 2),
+    # #1205 — optimized path: value-`if` with constant arms and any computed
+    # condition compares the constants and yields a condition operand.
+    ('anti_pinch.wast', 0, 'check_jam', 'parity-divergence/opt-wrong'): ('#1205', 7),
+    ('load.wast', 0, 'as-if-cond', 'parity-divergence/opt-wrong'): ('#1205', 1),
+    ('local_tee.wast', 0, 'as-if-cond', 'parity-divergence/opt-wrong'): ('#1205', 1),
     # #1206 — optimized path: loop label placed after the decrement of a
     # pre-loop-defined local; countdown(5)/(10) never terminate.
-    ("control_loop.wast", 0, "countdown", "parity-divergence/opt-wrong"): ("#1206", 2),
-    # #1204 — optimized path leaves R11 = 0/1 on return (callee-saved; the
-    # direct selector's memory base). Value right, next caller wrong.
-    ("control_nested_select.wast", 0, "nested_if_else", "contract-violation/optimized"): ("#1204", 4),
-    ("control_nested_select.wast", 0, "nested_const_conds", "contract-violation/optimized"): ("#1204", 4),
-    # #1204, the consequence executed: `leaf` is nested_if_else; `caller` is
-    # direct-routed and loads through the clobbered R11 after calling it.
-    ("selector_parity_197_r11_clobber.wast", 0, "leaf", "contract-violation/optimized"): ("#1204", 2),
-    ("selector_parity_197_r11_clobber.wast", 0, "caller", "contract-violation/optimized"): ("#1204", 3),
-    ("selector_parity_197_r11_clobber.wast", 0, "caller", "parity-divergence/opt-wrong"): ("#1204", 1),
+    ('control_loop.wast', 0, 'countdown', 'parity-divergence/opt-wrong'): ('#1206', 2),
+    # #1208 — optimized path lowers i64.load8/16/32_{s,u} to an EMPTY body (bx lr);
+    # every narrow-load function of address.wast's i64 module, pinned per module.
+    ('address.wast', 1, '*', 'parity-divergence/opt-wrong'): ('#1208', 90),
+    # #1213 — optimized path: i64 select feeding i32.wrap_i64.
+    ('select.wast', 0, 'as-convert-operand', 'parity-divergence/opt-wrong'): ('#1213', 1),
+    # #1209 — memory64 modules accepted and silently wrong on both selectors
+    # (i64-offset data segments dropped; optimized mis-addresses i64 addresses).
+    # Whole-module pins per kind: one class hits every function.
+    ('address64.wast', 0, '*', 'shared-wrong'): ('#1209', 25),
+    ('address64.wast', 1, '*', 'shared-wrong'): ('#1209', 35),
+    ('float_memory64.wast', 0, '*', 'shared-wrong'): ('#1209', 1),
+    ('float_memory64.wast', 1, '*', 'shared-wrong'): ('#1209', 1),
+    ('float_memory64.wast', 2, '*', 'parity-divergence/memory-only'): ('#1209', 2),
+    ('float_memory64.wast', 2, '*', 'shared-wrong'): ('#1209', 1),
+    ('float_memory64.wast', 3, '*', 'shared-wrong'): ('#1209', 1),
+    ('float_memory64.wast', 4, '*', 'shared-wrong'): ('#1209', 1),
+    ('float_memory64.wast', 5, '*', 'shared-wrong'): ('#1209', 1),
+    ('load64.wast', 0, '*', 'parity-divergence/memory-only'): ('#1209', 6),
+    ('load64.wast', 0, '*', 'parity-divergence/opt-wrong'): ('#1209', 4),
+    ('memory64.wast', 9, '*', 'parity-divergence/memory-only'): ('#1209', 40),
+    ('memory64.wast', 9, '*', 'shared-wrong'): ('#1209', 1),
+    ('memory_copy64.wast', 0, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_copy64.wast', 0, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_copy64.wast', 1, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_copy64.wast', 1, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_copy64.wast', 2, '*', 'shared-wrong'): ('#1209', 11),
+    ('memory_copy64.wast', 2, '*', 'shared-wrong/memory'): ('#1209', 20),
+    ('memory_copy64.wast', 3, '*', 'shared-wrong'): ('#1209', 6),
+    ('memory_copy64.wast', 3, '*', 'shared-wrong/memory'): ('#1209', 25),
+    ('memory_copy64.wast', 4, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_copy64.wast', 4, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_copy64.wast', 5, '*', 'shared-wrong'): ('#1209', 11),
+    ('memory_copy64.wast', 5, '*', 'shared-wrong/memory'): ('#1209', 20),
+    ('memory_copy64.wast', 6, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_copy64.wast', 6, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_copy64.wast', 7, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_copy64.wast', 7, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_grow64.wast', 0, '*', 'parity-divergence/both-wrong-differently'): ('#1209', 2),
+    ('memory_grow64.wast', 0, '*', 'parity-divergence/opt-wrong'): ('#1209', 1),
+    ('memory_grow64.wast', 1, '*', 'shared-wrong'): ('#1209', 6),
+    ('memory_grow64.wast', 2, '*', 'shared-wrong'): ('#1209', 6),
+    ('memory_grow64.wast', 3, '*', 'shared-wrong'): ('#1209', 10),
+    ('memory_init64.wast', 0, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_init64.wast', 0, '*', 'shared-wrong/memory'): ('#1209', 22),
+    ('memory_init64.wast', 1, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_init64.wast', 1, '*', 'shared-wrong/memory'): ('#1209', 21),
+    ('memory_init64.wast', 2, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_init64.wast', 2, '*', 'shared-wrong/memory'): ('#1209', 21),
+    ('memory_init64.wast', 3, '*', 'shared-wrong'): ('#1209', 9),
+    ('memory_init64.wast', 3, '*', 'shared-wrong/memory'): ('#1209', 21),
+    # #1210 — a value live across a call inside a value-carrying block/if/loop is
+    # lost on BOTH selectors (parity-blind; caught by the wasmtime leg).
+    ('block.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 1),
+    ('block.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 1),
+    ('block.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 1),
+    ('block.wast', 0, 'multi', 'shared-wrong'): ('#1210', 1),
+    ('if.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 4),
+    ('if.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 2),
+    ('if.wast', 0, 'as-call_indirect-last', 'shared-wrong'): ('#1210', 1),
+    ('if.wast', 0, 'as-call_indirect-mid', 'shared-wrong'): ('#1210', 2),
+    ('if.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 2),
+    ('if.wast', 0, 'as-select-last', 'shared-wrong'): ('#1210', 2),
+    ('if.wast', 0, 'as-select-mid', 'shared-wrong'): ('#1210', 2),
+    ('local_tee.wast', 0, 'as-block-first', 'shared-wrong'): ('#1210', 1),
+    ('local_tee.wast', 0, 'as-block-mid', 'shared-wrong'): ('#1210', 1),
+    ('local_tee.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1210', 1),
+    ('local_tee.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1210', 1),
+    ('loop.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 1),
+    ('loop.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 1),
+    ('loop.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 1),
+    ('loop.wast', 0, 'multi', 'shared-wrong'): ('#1210', 1),
+    ('select.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1210', 2),
+    ('select.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1210', 2),
+    ('stack.wast', 0, 'not-quite-a-tree', 'shared-wrong'): ('#1210', 2),
+    # #1215 — br_table/br_if with a value-carrying branch or if in an operand
+    # position, wrong on both selectors.
+    ('br.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 1),
+    ('br_if.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 2),
+    ('func.wast', 0, 'break-br_table-nested-num', 'shared-wrong'): ('#1215', 1),
+    ('func.wast', 0, 'break-br_table-num', 'shared-wrong'): ('#1215', 4),
+    ('if.wast', 0, 'as-br_if-last', 'shared-wrong'): ('#1215', 1),
+    ('if.wast', 0, 'as-br_table-last', 'shared-wrong'): ('#1215', 2),
+    # #1214 — i64 read-before-write local not zero-initialised on either selector.
+    ('func.wast', 0, 'init-local-i64', 'shared-wrong'): ('#1214', 1),
+    # #1211 — call_indirect ignores a non-zero table index (wrong callee);
+    # elem.wast call_in_table lands on a non-code address.
+    ('call_indirect.wast', 1, 'call-1', 'shared-wrong'): ('#1211', 2),
+    ('call_indirect.wast', 1, 'call-2', 'shared-wrong'): ('#1211', 3),
+    ('call_indirect.wast', 1, 'call-3', 'shared-wrong'): ('#1211', 2),
+    ('elem.wast', 72, 'call_in_table', 'shared-wrong'): ('#1211', 1),
+    ('elem.wast', 73, 'call_in_table', 'shared-wrong'): ('#1211', 1),
+    ('elem.wast', 74, 'call_in_table', 'shared-wrong'): ('#1211', 1),
+    # memory.grow in a fixed-SRAM self-contained image returns -1 — a spec-LEGAL
+    # failure (#539 lineage), while wasmtime grows; the later `memory.size` and
+    # `check-memory-zero` results follow from it. Recorded with this reason, no
+    # issue: the divergence is a capability boundary, not a miscompile.
+    ('block.wast', 0, 'as-memory.grow-value', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('call.wast', 0, 'as-memory.grow-value', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('if.wast', 0, 'as-memory.grow-value', 'shared-wrong'): ('#539-grow-fails', 2),
+    ('load.wast', 0, 'as-memory.grow-size', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('local_tee.wast', 0, 'as-memory.grow-size', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('loop.wast', 0, 'as-memory.grow-value', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('memory_size.wast', 0, 'size', 'shared-wrong'): ('#539-grow-fails', 3),
+    ('memory_size.wast', 1, 'size', 'shared-wrong'): ('#539-grow-fails', 3),
+    ('memory_size.wast', 2, 'size', 'shared-wrong'): ('#539-grow-fails', 4),
+    ('memory_size.wast', 3, 'size', 'shared-wrong'): ('#539-grow-fails', 5),
+    ('nop.wast', 0, 'as-memory.grow-everywhere', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('nop.wast', 0, 'as-memory.grow-first', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('nop.wast', 0, 'as-memory.grow-last', 'shared-wrong'): ('#539-grow-fails', 1),
+    ('select.wast', 0, 'as-memory.grow-value', 'shared-wrong'): ('#539-grow-fails', 2),
 }
-# Divergence kinds that are recorded but never gate (the reference vs the
-# .wast literal is not a synth verdict; see the docstring).
-INFORMATIONAL_KINDS = {"reference-vs-literal"}
+# Divergence kinds that are recorded but never gate: the reference vs the
+# .wast literal is not a synth verdict; a mismatch AFTER an OOB trap the
+# default image does not honour is the envelope's state cascade (the legs
+# still agree with each other, which IS the parity check); and two legs
+# disagreeing on how an OOB access misbehaves (fault vs garbage value) is
+# undefined behaviour under `SafetyBounds::None`, not a lowering difference.
+INFORMATIONAL_KINDS = {"reference-vs-literal", "shared-wrong-after-trap-miss",
+                       "shared-wrong-after-trap-miss/memory", "trap-parity-envelope"}
 
 SKIP_RE = re.compile(r"warning: skipping function '((?:[^'\\]|\\.)*)': (.*)")
 PATH_RE = re.compile(
@@ -783,8 +907,21 @@ def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) 
                 mr.verdicts["ok"] += 1
                 # a trap leaves memory partially written on neither side
                 continue
+            # The legs DISAGREE about trapping. For an out-of-bounds access
+            # that is the envelope (no bounds check by default: whether the
+            # stray address faults or reads garbage depends on where each
+            # path's addressing lands) — recorded, not gated. Any other trap
+            # (div by zero, overflow, unreachable, table/element) is a guard
+            # one path emits and the other does not: a parity divergence.
+            msg = act[-1].text() if isinstance(act[-1], WastStr) else ""
+            if "out of bounds" in msg:
+                mr.verdicts["trap-parity-envelope"] += 1
+                mr.trap_miss = True
+                mr.divergences.append(dict(kind="trap-parity-envelope", func=fn, detail=detail))
+                continue
             mr.verdicts["parity-divergence"] += 1
-            mr.divergences.append(dict(kind="trap-parity", detail=detail + mem_note + vnote))
+            mr.divergences.append(dict(kind="parity-divergence/trap-parity", func=fn,
+                                       detail=detail + mem_note + vnote))
             continue
 
         if expect and w[0] == "ok":
