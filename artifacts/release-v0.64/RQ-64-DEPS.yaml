@@ -119,8 +119,13 @@ artifacts:
             cannot change the verdict of the job that validates synth's own
             artifacts. Distinguishing the action version from the tool version
             IS this evaluation.
-          #1108 z3 0.20.2 -> 0.21.0            UNDETERMINED. Sent for
-            recreate and a real verdict. RETRACTED BEFORE THE TAG by this
+          #1108 z3 0.20.2 -> 0.21.0            RESOLVED IN v0.65: the bump
+            is FINE and is merged. `@dependabot recreate` on a CLOSED PR does
+            nothing, so "sent for recreate" was itself an unkept promise; the
+            bump was raised by hand in #1202 with no prediction attached and CI
+            answered Bazel PASS, Z3 Verification PASS, 9/9 required, zero
+            failures. The hold has therefore still never caught a breaking
+            0.x-minor. Originally recorded as: RETRACTED BEFORE THE TAG by this
             release's cold review: I first closed it as "breaks the Bazel
             build", attributing that to z3-sys linking the system libz3.
             `crates/BUILD.bazel:167-170` states there is NO z3-sys in the Bazel
