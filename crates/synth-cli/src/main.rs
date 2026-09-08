@@ -8050,9 +8050,16 @@ fn build_multi_func_cortex_m_elf(
 
         elf_builder.add_section(linear_memory_section);
 
-        // Add symbol for linear memory base (useful for debugging)
+        // Add symbol for linear memory base (useful for debugging).
+        // RQ-65-PARITY (#1203): the symbol is WASM BYTE 0 as the compiled
+        // functions address it — the function-visible base the startup now
+        // seeds into R11 — not the SRAM start the `.linear_memory` RAM
+        // reservation begins at (0x100 below it under the default layout).
+        // The #418 oracle boots the shipped startup and requires
+        // `R11 == __linear_memory_base`; with the raw SRAM start here that
+        // assertion encoded the pre-#1203 contract.
         let mem_sym = Symbol::new("__linear_memory_base")
-            .with_value(ram_base)
+            .with_value(func_visible_linmem_base)
             .with_size(linear_memory_size)
             .with_binding(SymbolBinding::Global)
             .with_type(SymbolType::Object)

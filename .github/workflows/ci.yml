@@ -1133,8 +1133,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+      - name: Install emulation deps (reference engine PINNED)
+        # The exact-count pins inside the script are measured against ONE
+        # reference engine. wasmtime-py 46 could not parse the suite's
+        # br_table.wast (module declined, 125 assertions never ran); 48
+        # parses it and found five more shared-wrong shapes. A floating
+        # `pip install wasmtime` would move the pinned population on the
+        # next release — pin it, and move the pin deliberately.
+        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools
       - name: Selector parity over the spec corpus (#197)
         run: |
           set -euo pipefail
