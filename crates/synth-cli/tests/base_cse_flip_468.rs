@@ -152,19 +152,30 @@ fn func_sizes(elf: &[u8]) -> HashMap<String, usize> {
 /// differential sweep re-run green on the new bytes (incl.
 /// base_cse_differential.py + volatile_segment_543_differential.py, unicorn
 /// vs wasmtime) before re-pinning.
+///
+/// RE-PIN (#1203, RQ-65-PARITY): the self-contained startup now seeds R11
+/// with the function-visible linear-memory base (0x2000_0100) instead of
+/// the raw SRAM start — a mixed optimized/direct image addressed wasm byte N
+/// at two SRAM addresses 0x100 apart. `.text` here INCLUDES the startup
+/// blob, so all four hashes move by exactly ONE byte each (the `MOVW R11`
+/// immediate at Reset_Handler+11); every function body and every length is
+/// unchanged, proved over all 183 scripts/repro/*.wat by the parity lane's
+/// base-vs-branch byte comparison (156 self-contained images: startup-only,
+/// 1 byte; 132 relocatable images: identical). The base-CSE flip/rollback
+/// claim this gate pins is untouched by that byte.
 const GOLDENS: [(&str, &str, usize, &str, usize); 2] = [
     (
         "scripts/repro/redundant_base_materialization.wat",
-        "5bba0a12d79c6bf9667f863afd4ca6127b52b5d859368904b8f2530b2a40a7f4",
+        "8099bd3de7187cceca6aee714d2bf2da7fbf7b156233a1fb5b0a6c0bee7ebb55",
         226,
-        "7e4bbca6bc82dca2bd1fe1697baea4150a001561a605e3e5d48f78f038005e56",
+        "dfa4c2a5d201104ac0a495a2ec621273184d67c3edc6e345d5f3667fe2b765e0",
         328,
     ),
     (
         "scripts/repro/volatile_segment_543.wat",
-        "ca0da92e7d7328db90edcd250dbe568176358b0fc28d1b662205ceb3b928223d",
+        "3f22df1e50ce199575d6466471ef8226247e8455b71a7952c6744f5858f6cbfc",
         196,
-        "b63f4644cfeff637923230240ee665c8097055c56e4cca09f9ecfc7cfc247ecd",
+        "6e7b129da9f9e359d759299cde4ce0968fa1216b1772759d69e60d6cc6b80cbe",
         258,
     ),
 ];
