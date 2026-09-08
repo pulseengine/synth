@@ -44,6 +44,13 @@ artifacts:
     release: v0.65
     tags:
       - spar
+      - feature-loop          # REQUIRED by loop_conformance_check's steps-1-2
+                              # matcher (feature-loop + aadl|spar + an issue).
+                              # Without it this release's own filing is
+                              # INVISIBLE to the slot and an earlier release's
+                              # artifact silently discharges it — measured at
+                              # v0.65, where the unscoped matcher returned
+                              # RQ-63-ARCHMODEL for a v0.65 run.
       - recurring-na
       - external-blocker
     links:
