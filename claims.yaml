@@ -1154,15 +1154,39 @@ claims:
       - kind: verbatim
         text: "R12 (encoder scratch — never allocated)"
 
-  # The honesty rule the whole doc leans on: undecodable ops loud-skip.
+  # The honesty rule the whole doc leans on. RQ-65-DECLINE (v0.65, #1208):
+  # RE-POINTED. The evidence used to be `fn is_intentionally_ignored` in the
+  # DECODER — one layer ABOVE the property. The decoder decoded `i64.load8_u`
+  # perfectly well while the optimized LOWERING emitted `bx lr` for it (exit
+  # 0, no warning), so this pin was green BY CONSTRUCTION: "could this check
+  # fail?" applied to the honesty claim itself, and the answer was no. It now
+  # binds to the lowering layer, twice:
+  #   (1) the optimized path's decline sites, counted EXACTLY — reverting a
+  #       decline moves the count; adding one is a visible ledger diff;
+  #   (2) the selector-parity oracle's pinned optimized-path wrong answers,
+  #       counted EXACTLY. A silent miscompile on that path fails the parity
+  #       job as an UNPINNED divergence; the only way to green it without a
+  #       fix is to pin it as KNOWN, which moves this count — so the doc
+  #       sentence cannot stay green over a new wrong answer without a
+  #       same-PR ledger diff. The residual (#1204, #1206, #1209) is named
+  #       in the doc; when one is fixed, doc and ledger move together.
+  # Sensitivity was demonstrated at authoring by mutating both (transcript in
+  # the RQ-65-DECLINE PR): one decline site deleted -> red; one pin line
+  # added -> red.
   - id: SYNTH-ARCH-LOUD-DECLINE
     doc: ARCHITECTURE.md
     text: "declines loudly"
     evidence:
-      - kind: count-eq                       # the deliberate-ignore predicate
-        pattern: 'fn is_intentionally_ignored'
-        glob: ['crates/synth-core/src/wasm_decoder.rs']
-        expect: 1
+      - kind: count-eq                       # optimized-path decline sites (lowering layer)
+        pattern: 'optimized lowering path does not support'
+        glob: ['crates/synth-synthesis/src/optimizer_bridge.rs']
+        expect: 14
+      - kind: count-eq                       # pinned optimized-path wrong answers (the named residual)
+        pattern: "parity-divergence/opt-wrong'\\): \\('#"
+        glob: ['scripts/repro/selector_parity_197_differential.py']
+        expect: 4
+      - kind: verbatim
+        text: "pinned there by exact count with its issue"
 
   # ---------------------------------------------------------------------------
   # "verified"/"implemented" wording — bound to the roadmap yaml's status

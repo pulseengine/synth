@@ -41,7 +41,20 @@ It carries **four backends**:
   scripts, MPU configuration
 - Sound static WCET bounds (`--emit-wcet`)
 - The honesty rule: a construct without a lowering **declines loudly** with a
-  machine reason — never silent wrong code
+  machine reason — never silent wrong code. Enforced by execution, not
+  asserted: the two shipped ARM selectors are run against each other and
+  against wasmtime over the spec corpus
+  (`scripts/repro/selector_parity_197_differential.py`, CI job
+  `selector-parity-oracle`), and every wrong answer that oracle still sees is
+  pinned there by exact count with its issue — a pin that moves in either
+  direction is red. The rule was measured FALSE in v0.65 before that gate
+  existed: nine narrow i64 memory forms, an i64 `select` and a value-`if`
+  with a computed condition compiled exit-0 to wrong code on the optimized
+  path (#1208/#1213/#1205) and now decline to the direct selector
+  (RQ-65-DECLINE). What remains pinned is named, not hidden: two
+  optimized-path classes (#1204 an unsaved R11 write, #1206 a loop-carried
+  non-param local) and the shapes both selectors get wrong
+  (#1209/#1210/#1211/#1214/#1215).
 
 ### Synth and Loom
 

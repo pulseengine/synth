@@ -3170,6 +3170,85 @@ mod tests {
     // configuration that panicked pre-fix.
     // ========================================================================
 
+    /// RQ-65-DECLINE (#1208 / #1213 / #1205): a shape the optimized path
+    /// used to lower WRONG must now reach the direct selector through the
+    /// fallback, so the DEFAULT configuration is byte-identical to
+    /// `--no-optimize` on it — the selector-parity property
+    /// (`selector_parity_197_differential.py`), asserted at the unit level
+    /// for one instance of each declined class.
+    #[test]
+    fn test_rq65_declined_shapes_default_equals_no_optimize() {
+        let backend = ArmBackend::new();
+        let cases: Vec<(&str, Vec<WasmOp>)> = vec![
+            (
+                "ld8u",
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::I64Load8U {
+                        offset: 0,
+                        align: 0,
+                    },
+                ],
+            ),
+            (
+                "st16",
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::I64Const(7),
+                    WasmOp::I64Store16 {
+                        offset: 0,
+                        align: 1,
+                    },
+                ],
+            ),
+            (
+                "sel64",
+                vec![
+                    WasmOp::I64Const(1),
+                    WasmOp::I64Const(0),
+                    WasmOp::LocalGet(0),
+                    WasmOp::Select,
+                    WasmOp::I32WrapI64,
+                ],
+            ),
+            (
+                "vif",
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::LocalGet(1),
+                    WasmOp::I32GtS,
+                    WasmOp::If,
+                    WasmOp::I32Const(7),
+                    WasmOp::Else,
+                    WasmOp::I32Const(9),
+                    WasmOp::End,
+                ],
+            ),
+        ];
+        for (name, ops) in cases {
+            let default = backend
+                .compile_function(name, &ops, &CompileConfig::default())
+                .unwrap_or_else(|e| {
+                    panic!("{name}: default config must compile via the fallback: {e}")
+                });
+            let direct = backend
+                .compile_function(
+                    name,
+                    &ops,
+                    &CompileConfig {
+                        no_optimize: true,
+                        ..CompileConfig::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{name}: --no-optimize must compile: {e}"));
+            assert_eq!(
+                default.code, direct.code,
+                "{name}: the declined shape must be the direct selector's bytes"
+            );
+            assert!(default.code.len() > 2, "{name}: not the #1208 empty body");
+        }
+    }
+
     /// Pre-fix: this panicked with "vreg vN has no assigned ARM register and
     /// no spill slot" inside `ir_to_arm`. Post-fix: the optimized path declines
     /// the module and the backend falls back to direct selection, producing a
