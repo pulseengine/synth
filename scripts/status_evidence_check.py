@@ -171,7 +171,8 @@ Two independent derivations over `artifacts/release-v*.yaml`:
       count printed in the machine-read summary line. The skip cannot
       become the quiet-pass shape in CI: the CI step's summary grep pins
       `(0 skipped)` and >= 1 archaeology check performed, and a shallow
-      CI checkout already reds the DELIVERY_FLOOR before R7 is reached.
+      checkout already reds the release anchor (A1, #1183) before R7 is
+      reached.
 
     - R8 (the `release:` field must equal the file's version): this
       script derives an artifact's release from its PATH; rivet's
@@ -260,11 +261,14 @@ found the defect in checking machinery):
     must not validate with the parser that cannot see that defect. rivet
     remains the schema oracle; this loader only refuses to READ a file rivet
     would refuse.
-  * A DELIVERY_FLOOR pins the minimum id-first delivery commits the history
-    scan must find (28 at authoring). A shallow checkout, a broken regex, or
-    a wrong `git log` invocation therefore reds instead of scanning nothing
-    and passing. Only red BELOW the floor (the count grows with every
-    delivery); raise it when it drifts far from live.
+  * The id-first delivery commits the history scan must find are pinned as
+    an EQUALITY at the previous minor's release tag (A1, #1183 — see the
+    ANCHOR_TAG comment block): a shallow checkout, a broken regex, or a
+    wrong `git log` invocation reds instead of scanning nothing and passing,
+    and the pin cannot lag because the anchor moves with the tag. The live
+    count must be >= the anchor (A3), so the slack is one release's growth,
+    never more. Before #1183 this was a hand-pinned lower bound that sat at
+    28 against a live 67.
   * `scripts/test_status_evidence_check.py` replays all seven measured
     instances as committed fixtures, so the gate's ability to catch each is
     re-proven on every CI run, not asserted once at authoring.
@@ -280,7 +284,22 @@ found the defect in checking machinery):
     an item is scoped), R4/R10 (no release window exists), R1-R3/R9
     (programme items are long-lived records whose per-increment delivery is
     tracked by RQ-* release artifacts; backfilling 39 done-when signatures
-    would be a hand-written mirror — the DECLARE_SINCE reasoning).
+    would be a hand-written mirror — the DECLARE_SINCE reasoning). Since
+    #1183 the population is guarded per file (P3: every yaml under
+    artifacts/ is one the glob scans; P4: it contributes >= 1 artifact) and
+    the P-VACUOUS floor is derived from the release anchor (A3).
+
+(7) RELEASE-ANCHORED NON-VACUITY (A0-A3, #1183 / RQ-65-FLOORSHAPE) — see
+    the comment block at ANCHOR_TAG. The two population floors above were
+    hand-pinned lower bounds that only ever lagged (28 against 67; 379
+    against 408), and equality at HEAD was measured to cost a bump in
+    essentially every delivery PR. What IS constant between releases — the
+    delivery commits reachable from the previous minor's tag, the artifacts
+    in the tree at that tag — is pinned as an equality and RE-DERIVED FROM
+    GIT on every run (A1/A2); the live counts must not fall below it (A3);
+    and the anchor must be the window's own previous tag, at most one minor
+    behind (A0), so the once-per-release move is forced by the gate rather
+    than remembered.
 
 (6) UNSCOPED-ARTIFACT STALENESS (S1/S2, #1085 / RQ-64-SCOPEGAP) — see the
     comment block at STALENESS_ANCHOR. (5) widened the SCOPE to every
@@ -296,8 +315,8 @@ found the defect in checking machinery):
     by construction; the citations scanned are pinned as an EQUALITY
     (S-DRIFT, red in both directions — RQ-63-FLOOREQ one surface over).
 
-Exit 0 iff no rule fires. Prints `status-evidence:`, `programme-status:`
-and `programme-staleness:` summary lines the CI step greps as
+Exit 0 iff no rule fires. Prints `status-evidence:`, `programme-status:`,
+`programme-staleness:` and `status-evidence-anchor:` summary lines the CI step greps as
 non-vacuity anchors, and a
 `status-evidence-window:` line pinning that the R4-issue/R10 window scan
 actually ran (SKIPPED there fails the CI grep, so the loud skip cannot
@@ -307,6 +326,10 @@ become the quiet pass).
 from __future__ import annotations
 
 import argparse
+import io
+import os
+import tarfile
+import tempfile
 import glob
 import json
 import re
@@ -327,11 +350,80 @@ CLAIMING = {"implemented", "verified", "accepted"}
 # and backfilling evidence for them would itself be a hand-written mirror.
 DECLARE_SINCE = (0, 60)
 
-# Non-vacuity floor on id-first delivery commits found in first-parent
-# history. 28 measured on main at authoring (RQ-56-CITE .. RQ-60-VFPPRESSURE).
-# A measured value BELOW this means the scan did LESS work than reality holds
-# (shallow checkout, regex rot) — that is the defect; never lower it to pass.
-DELIVERY_FLOOR = 28
+# ---- Release-anchored non-vacuity (A-rules, #1183 / RQ-65-FLOORSHAPE) ------
+#
+# Two population counts guard this script against doing LESS work than
+# reality holds: the id-first delivery commits R4 finds in first-parent
+# history, and the artifacts the P-rules status-check. Until v0.65 each was a
+# hand-pinned lower bound that only ever LAGGED: DELIVERY_FLOOR sat at 28
+# against a live 67 (58 % slack — a first-parent checkout depth of 79 kept the
+# gate green while dropping 39 of the 67 delivery commits and every one from
+# v0.56-v0.61), PROGRAMME_FLOOR at 379 against 408.
+#
+# EQUALITY AT HEAD IS THE WRONG SHAPE FOR THESE TWO. RQ-63-FLOOREQ and
+# RQ-64-SCOPEGAP chose equality for a count that moved 2 times in 7 release
+# intervals. Measured v0.56.0 -> v0.64.0 -> HEAD with this script's own
+# instruments (scripts/floorshape_1183_churn.py; transcript in
+# scripts/repro/floorshape_1183_gate.md):
+#
+#   delivery   2, 2, 3, 3, 10, 26, 37, 53, 61, 64, 67, 67    65 moves / 11 intervals
+#   programme  275, 287, 289, 290, 301, 322, 331, 367, 385, 391, 401, 408
+#                                                             31 moves / 11 intervals
+#
+# An equality at HEAD costs a ledger bump in essentially every delivery PR —
+# churn that buys nothing, on the repo's most merge-contended file, and a
+# gate people cannot move honestly is a gate they route around.
+#
+# THE SHAPE: pin the part of each count that is CONSTANT between releases.
+# Main history is immutable and a shipped release's artifacts are frozen, so
+# "delivery commits reachable from the previous minor's tag" and "artifacts in
+# the tree AT that tag" cannot change until the tag changes. Both are pinned
+# as EQUALITIES, RE-DERIVED FROM GIT ON EVERY RUN against the anchor tag:
+#
+#   A1: id-first delivery commits reachable from ANCHOR_TAG == ANCHOR_DELIVERY.
+#       Below = truncated history (a shallow checkout) or instrument rot (the
+#       id regex or release glob finds less than it did); above = rewritten
+#       history or an orphan commit that acquired an artifact. A repository
+#       that declares itself SHALLOW is red outright — an equality that
+#       happens to hold over a truncated ancestry is not evidence.
+#   A2: artifacts the P-scan finds in `git archive ANCHOR_TAG artifacts` ==
+#       ANCHOR_PROGRAMME, run through the SAME glob/loader/filter as the live
+#       scan, so loader or glob rot shows as inequality on a tree that has
+#       not changed.
+#   A3: the live HEAD counts are >= the anchor (the pre-#1183 floors, now
+#       DERIVED from the anchor instead of hand-pinned): slack is bounded to
+#       exactly one release's growth — measured 0-16 delivery commits and
+#       1-36 artifacts per interval — instead of unbounded.
+#   P3/P4 (in check_programme): what a SUM floor structurally cannot see — a
+#       single file going invisible — is caught per file: every yaml under
+#       artifacts/ must be one the glob scans (P3) and must contribute >= 1
+#       artifact (P4, R0 generalized past release files). Measured at
+#       authoring: 89 of 89 visible, only the five comments-only
+#       _release.yaml empty. Zero churn: adding a file moves no number.
+#
+# THE MOVE IS ONCE PER RELEASE AND FORCED, NOT REMEMBERED (A0): the anchor must
+# be the previous minor's tag of the release being cut — the R4-issue/R10
+# window's own derivation. One minor of lag is a WARNING that prints the
+# three new lines to paste (the post-tag attestation PR is where the move
+# lands); two minors is red. The values are this script's own derivation, so
+# a wrong hand-copy fails A1/A2 in the same PR. claims.yaml pins the three
+# lines verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183) so every move is a
+# visible ledger diff, and pins that the `!=` checks stay wired.
+ANCHOR_TAG = "v0.64.0"
+ANCHOR_DELIVERY = 67
+ANCHOR_PROGRAMME = 401
+# A3-programme waiver channel, empty by construction: the programme count has
+# never decreased at any of the 129 first-parent commits touching artifacts/
+# since v0.56.0 (measured). A deliberate net deletion declares its size here
+# WITH the reason beside it; a declaration the live count does not need is a
+# DEAD waiver and red (the ratchet engine's rule). Reset to 0 when the anchor
+# moves — the new tag's count absorbs it.
+PROGRAMME_DELETED_SINCE_ANCHOR = 0
+
+# A3 (delivery): the live first-parent scan must hold at least what the anchor
+# tag held. Replays against truncated history may lower it EXPLICITLY on the
+# command line; CI never does.
+DELIVERY_FLOOR = ANCHOR_DELIVERY
 
 # Release artifacts live in a flat per-release file (<= v0.60 history) OR,
 # from v0.61, one file per requirement under artifacts/release-vX.YY/ with a
@@ -372,11 +464,12 @@ RELEASE_GLOB = (
 #
 # P1/P2 scan EVERY artifact-bearing yaml directly under artifacts/ plus the
 # release-v*/ dirs (release files included: R0-R10 never checked status
-# LEGALITY, only status/evidence agreement). A non-mapping or artifact-less
-# yaml other than the roadmap is skipped — top-level artifacts/ may
-# legitimately grow non-artifact yamls — and wholesale invisibility is
-# caught by the P-VACUOUS floor on artifacts checked (379 measured at
-# authoring; red only BELOW, raise it when it drifts far from live).
+# LEGALITY, only status/evidence agreement). Since #1183 an artifact-less
+# yaml is P4-red rather than skipped (measured: none exists; artifacts/ is an
+# artifact namespace and a silently skipped file is the #1064 shape), a yaml
+# the glob cannot see is P3-red, and the P-VACUOUS floor on artifacts checked
+# is DERIVED from the release anchor (A3, see ANCHOR_TAG) instead of
+# hand-pinned.
 LIFECYCLE = frozenset(
     {"draft", "proposed", "approved", "implemented", "verified", "accepted"}
 )
@@ -387,7 +480,9 @@ PROGRAMME_GLOB = (
     "artifacts/release-v*/*.yaml,"
     "artifacts/release-v*/*.yml"
 )
-PROGRAMME_FLOOR = 379
+# A3 (programme): derived, not pinned — what the anchor tag's tree held, less
+# any DECLARED deletion (#1183).
+PROGRAMME_FLOOR = ANCHOR_PROGRAMME - PROGRAMME_DELETED_SINCE_ANCHOR
 
 # ---- Unscoped-artifact staleness (S-rules, #1085 / RQ-64-SCOPEGAP) ---------
 #
@@ -749,6 +844,24 @@ def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
     paths = set()
     for pattern in programme_glob.split(","):
         paths.update(glob.glob(str(root / pattern.strip())))
+    # P3 (#1183): every yaml under artifacts/, at ANY depth, must be one the
+    # glob scans. A layout change that parks files where the glob does not
+    # look shrinks the population silently — a SUM floor cannot see one
+    # file's loss behind growth elsewhere, a per-file rule can. Measured at
+    # authoring: 89 of 89 visible.
+    art_dir = root / "artifacts"
+    visible = {os.path.normpath(p) for p in paths}
+    walked = {
+        os.path.normpath(str(p)) for p in art_dir.rglob("*")
+        if p.is_file() and p.suffix in (".yaml", ".yml")
+    } if art_dir.is_dir() else set()
+    for p in sorted(walked - visible):
+        rel = os.path.relpath(p, root)
+        failures.append(
+            f"P3 {rel}: yaml under artifacts/ that PROGRAMME_GLOB does not "
+            f"scan — invisible to every P-rule; widen the glob or move the "
+            f"file, never let the population shrink quietly (#1183)"
+        )
     files_scanned = 0
     checked = 0
     missing = 0
@@ -772,9 +885,22 @@ def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
             if isinstance(a, dict) and "id" in a
         ]
         if not arts:
-            # A non-artifact yaml at the top level is out of scope (the
-            # P-VACUOUS floor notices wholesale invisibility); the roadmap
-            # contributing zero is P0 below.
+            # The roadmap contributing zero is P0 below; a release file is
+            # R0's surface (load_release_artifacts). Anything else under
+            # artifacts/ that parses to zero artifacts is P4 (#1183): the
+            # #1064 invisible-file shape, red rather than skipped —
+            # measured, no such file exists, so the rule costs nothing and
+            # the first one to appear is caught.
+            if is_roadmap or RELEASE_VERSION.search(rel):
+                continue
+            keys = (", ".join(map(str, doc.keys())) if isinstance(doc, dict)
+                    else type(doc).__name__)
+            failures.append(
+                f"P4 {rel}: yaml under artifacts/ contributes ZERO artifacts "
+                f"under `artifacts:` (top-level: {keys}) — the #1064 "
+                f"invisible-file shape; an artifact file is red before it can "
+                f"hide, never skipped (#1183)"
+            )
             continue
         files_scanned += 1
         if is_roadmap:
@@ -814,10 +940,183 @@ def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
     if checked < floor:
         failures.append(
             f"P-VACUOUS: only {checked} artifacts status-checked "
-            f"(floor {floor}) — files invisible to the scan; the floor "
-            f"never comes down to pass"
+            f"(floor {floor}, derived from the {ANCHOR_TAG} anchor less "
+            f"{PROGRAMME_DELETED_SINCE_ANCHOR} declared deletions) — files "
+            f"invisible to the scan, or an undeclared deletion; the floor "
+            f"never comes down to pass (#1183)"
         )
     return files_scanned, checked, missing, illegal, failures
+
+
+# ---- Release-anchored non-vacuity (A-rules, #1183) ------------------------
+
+
+def anchor_delivery_count(root: Path, by_id, tag: str) -> int | None:
+    """Id-first FIRST-PARENT delivery commits reachable from `tag` whose id is
+    a release artifact in the tree at HEAD — the R4 scan, bounded at the
+    anchor. None when git cannot list the tag's ancestry (the tag is absent,
+    or beyond a shallow boundary)."""
+    rc, out = _git(root, "log", "--first-parent", "--format=%s", tag)
+    if rc != 0:
+        return None
+    return sum(
+        1 for s in out.splitlines()
+        if (m := ARTIFACT_ID.match(s)) and m.group(1) in by_id
+    )
+
+
+def anchor_programme_count(root: Path, tag: str) -> int | None:
+    """Artifacts the P-scan finds in the tree AT `tag` — `git archive` of its
+    artifacts/, run through the SAME glob, loader and filter as the live scan
+    so that instrument rot shows as an inequality on a tree that has not
+    changed. None when the tag's tree cannot be read."""
+    r = subprocess.run(
+        ["git", "-C", str(root), "archive", "--format=tar", tag, "artifacts"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+            try:
+                tf.extractall(td, filter="data")
+            except TypeError:  # pragma: no cover - pre-3.12 tarfile
+                tf.extractall(td)
+        try:
+            return check_programme(Path(td), floor=0)[1]
+        except DuplicateKeyError:
+            return None
+
+
+def check_anchor(root: Path, by_id, live_delivery: int, live_programme: int,
+                 window_label: str | None, tag: str = ANCHOR_TAG,
+                 delivery: int = ANCHOR_DELIVERY,
+                 programme: int = ANCHOR_PROGRAMME,
+                 deleted: int = PROGRAMME_DELETED_SINCE_ANCHOR):
+    """A0-A3 (#1183 / RQ-65-FLOORSHAPE) — see the ANCHOR_TAG comment block.
+
+    -> (derived_delivery, derived_programme, lag, warnings, failures).
+    `window_label` is the previous minor's tag the R4-issue/R10 window
+    derived (None = underivable). Derived counts are None when git could not
+    produce them; `lag` is how many minors the anchor trails the window (None
+    when that cannot be decided). Every underivable input is a FAILURE, never
+    a skip: a floor that cannot be re-derived is the vacuous case itself."""
+    warnings: list[str] = []
+    failures: list[str] = []
+    state = git_history_state(root)
+    if state != "ok":
+        failures.append(
+            f"A1 anchor {tag}: history is {state.upper()} — `git rev-parse "
+            f"--is-shallow-repository` says the ancestry is truncated (or "
+            f"there is no git at all), so no count over it is evidence; "
+            f"fetch-depth: 0 (#1183)"
+        )
+    d = anchor_delivery_count(root, by_id, tag) if state != "no-git" else None
+    p = anchor_programme_count(root, tag) if state != "no-git" else None
+    if d is None:
+        failures.append(
+            f"A1 anchor {tag}: `git log --first-parent {tag}` failed — the "
+            f"tag is not reachable (not fetched, or beyond a shallow "
+            f"boundary), so the delivery population cannot be re-derived "
+            f"(#1183)"
+        )
+    elif d != delivery:
+        side = "BELOW" if d < delivery else "ABOVE"
+        why = ("truncated history or instrument rot (ARTIFACT_ID / "
+               "RELEASE_GLOB finds less than it did)" if d < delivery else
+               "rewritten history, or an orphan commit acquired an artifact")
+        failures.append(
+            f"A1 anchor {tag}: {d} id-first delivery commits reachable from "
+            f"the tag != pinned ANCHOR_DELIVERY {delivery} ({side} by "
+            f"{abs(d - delivery)}) — {why}. This count is a CONSTANT until "
+            f"the anchor moves; do not re-pin it to pass (#1183)"
+        )
+    if p is None:
+        failures.append(
+            f"A2 anchor {tag}: `git archive {tag} artifacts` failed or the "
+            f"tree would not load — the programme population at the tag "
+            f"cannot be re-derived (#1183)"
+        )
+    elif p != programme:
+        side = "BELOW" if p < programme else "ABOVE"
+        failures.append(
+            f"A2 anchor {tag}: {p} artifacts in the tree at the tag != "
+            f"pinned ANCHOR_PROGRAMME {programme} ({side} by "
+            f"{abs(p - programme)}) — the tag's tree cannot change, so the "
+            f"INSTRUMENT changed: PROGRAMME_GLOB, the loader or the artifact "
+            f"filter finds a different population than when the anchor was "
+            f"recorded (#1183)"
+        )
+    # A0 — the anchor is the window's previous tag, at most one minor behind.
+    lag = None
+    m_a = re.fullmatch(r"v(\d+)\.(\d+)\.\d+", tag)
+    m_w = re.fullmatch(r"v(\d+)\.(\d+)\.\d+", window_label or "")
+    if m_a is None:
+        failures.append(
+            f"A0 anchor {tag!r}: ANCHOR_TAG must be a vX.Y.Z release tag "
+            f"(#1183)"
+        )
+    elif m_w is None:
+        failures.append(
+            f"A0 anchor {tag}: the release window's previous tag is "
+            f"underivable ({window_label!r}), so the anchor's currency cannot "
+            f"be decided — no git, tags not fetched, or no release directory "
+            f"(#1183)"
+        )
+    elif m_a.group(1) != m_w.group(1):
+        failures.append(
+            f"A0 anchor {tag}: a different MAJOR than the window's previous "
+            f"tag {window_label}; re-anchor (#1183)"
+        )
+    else:
+        lag = int(m_w.group(2)) - int(m_a.group(2))
+        if lag < 0:
+            failures.append(
+                f"A0 anchor {tag}: AHEAD of the window's previous tag "
+                f"{window_label} — an anchor cannot precede the release it "
+                f"anchors (#1183)"
+            )
+        elif lag >= 2:
+            failures.append(
+                f"A0 anchor {tag}: {lag} minors behind the window's previous "
+                f"tag {window_label} — the anchor moves once per release and "
+                f"this one was skipped; re-pin at {window_label} (#1183)"
+            )
+        elif lag == 1:
+            nd = anchor_delivery_count(root, by_id, window_label) \
+                if state == "ok" else None
+            np_ = anchor_programme_count(root, window_label) \
+                if state == "ok" else None
+            warnings.append(
+                f"ANCHOR-LAG: {tag} is one minor behind the window's previous "
+                f"tag {window_label}; move it in the post-tag PR — "
+                f'ANCHOR_TAG = "{window_label}" / ANCHOR_DELIVERY = '
+                f"{nd if nd is not None else '?'} / ANCHOR_PROGRAMME = "
+                f"{np_ if np_ is not None else '?'} / "
+                f"PROGRAMME_DELETED_SINCE_ANCHOR = 0 (two minors is red, #1183)"
+            )
+    # A3 — the waiver channel cannot be standing.
+    if deleted < 0:
+        failures.append(
+            f"A3: PROGRAMME_DELETED_SINCE_ANCHOR = {deleted} is not a "
+            f"deletion count (#1183)"
+        )
+    elif deleted > 0 and live_programme >= programme:
+        failures.append(
+            f"A3: DEAD waiver — PROGRAMME_DELETED_SINCE_ANCHOR = {deleted} "
+            f"while the live scan holds {live_programme} >= anchor "
+            f"{programme}; a declaration the count does not need is a "
+            f"standing licence, delete it (#1183)"
+        )
+    if live_delivery < delivery:
+        # The same fact check() reports as VACUOUS under the derived
+        # DELIVERY_FLOOR; named here so the anchor line is self-contained.
+        failures.append(
+            f"A3: live delivery scan {live_delivery} < anchor {delivery} — "
+            f"history the anchor tag reaches is missing from HEAD's, or a "
+            f"shipped release artifact was deleted (#1183)"
+        )
+    return d, p, lag, warnings, failures
 
 
 def _prose_fields(fields, prefix: str = "fields"):
@@ -1421,10 +1720,22 @@ def main() -> int:
             check_unscoped(args.root)
         (fp_scanned, fp_live, fp_hits, fp_failures) = \
             check_live_floor_prose(args.root)
+        # A-rules (#1183): the release anchor is a statement about THIS
+        # repository's history; a subjects-file replay has none behind it.
+        if args.subjects_file:
+            a_delivery = a_programme = a_lag = None
+            a_warnings, a_failures = [], []
+            anchor_skipped = True
+        else:
+            (a_delivery, a_programme, a_lag, a_warnings, a_failures) = \
+                check_anchor(args.root, {a[2] for a in artifacts}, hits,
+                             p_checked, window_label)
+            anchor_skipped = False
     except DuplicateKeyError as e:
         print(f"FAIL: duplicate-key defect in a release file (#1059): {e}")
         return 1
-    failures = failures + p_failures + s_failures + fp_failures
+    failures = failures + p_failures + s_failures + fp_failures + a_failures
+    warnings = warnings + a_warnings
 
     for w in warnings:
         print(w)
@@ -1451,6 +1762,18 @@ def main() -> int:
         f"{fp_live if fp_live is not None else 'UNDERIVABLE'} restated "
         f"{fp_hits} times"
     )
+    if anchor_skipped:
+        print("status-evidence-anchor: SKIPPED — subjects-file replay has no "
+              "history to anchor (#1183)")
+    else:
+        print(
+            f"status-evidence-anchor: {ANCHOR_TAG} — "
+            f"{a_delivery if a_delivery is not None else 'UNDERIVABLE'} "
+            f"delivery commits (pinned {ANCHOR_DELIVERY}), "
+            f"{a_programme if a_programme is not None else 'UNDERIVABLE'} "
+            f"artifacts (pinned {ANCHOR_PROGRAMME}), lag "
+            f"{a_lag if a_lag is not None else 'UNDERIVABLE'}"
+        )
     if window_label is None:
         print("status-evidence-window: SKIPPED — release window not "
               "derivable (#1119)")

@@ -2822,6 +2822,52 @@ claims:
         expect: 1
 
   # ---------------------------------------------------------------------------
+  # #1183 / RQ-65-FLOORSHAPE — the status-evidence POPULATION floors are
+  # anchored at the previous minor's release tag, not hand-pinned. Measured
+  # v0.56.0 -> v0.64.0 -> HEAD: the delivery count moved 65 times in 11
+  # release intervals and the programme count 31 times, so an equality at
+  # HEAD (the RQ-63-FLOOREQ / RQ-64-SCOPEGAP shape, right for a count that
+  # moved twice in seven) would cost a bump in essentially every delivery
+  # PR. What IS constant between releases — delivery commits reachable from
+  # the tag, artifacts in the tree at the tag — is pinned as an EQUALITY
+  # and re-derived from git on every run; the live floors are DERIVED from
+  # it. This pin binds the anchor's three lines verbatim so the once-per-
+  # release move is a visible ledger diff, and pins that the `!=` checks,
+  # the derived floors and the CI grep stay wired. Deliberately NOT `kind:
+  # ratchet`: the anchored numbers are constants of a tag, with no direction
+  # to assert; the waiver channel is PROGRAMME_DELETED_SINCE_ANCHOR inside
+  # the gate (dead-waiver-checked), not a second one here.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-STATUS-EVIDENCE-ANCHOR-1183
+    doc: scripts/status_evidence_check.py
+    text: 'ANCHOR_TAG = "v0.64.0"'
+    evidence:
+      - kind: count-eq                       # the two anchored counts, verbatim
+        pattern: '(?m)^ANCHOR_DELIVERY = 67$'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '(?m)^ANCHOR_PROGRAMME = 401$'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 1
+      - kind: count-eq                       # the waiver channel is EMPTY
+        pattern: '(?m)^PROGRAMME_DELETED_SINCE_ANCHOR = 0$'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 1
+      - kind: count-eq                       # both equality checks are wired
+        pattern: 'elif [dp] != (?:delivery|programme):'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 2
+      - kind: count-eq                       # the floors are DERIVED, not pinned
+        pattern: '(?m)^(?:DELIVERY_FLOOR = ANCHOR_DELIVERY|PROGRAMME_FLOOR = ANCHOR_PROGRAMME - PROGRAMME_DELETED_SINCE_ANCHOR)$'
+        glob: ['scripts/status_evidence_check.py']
+        expect: 2
+      - kind: count-eq                       # and CI greps the anchor line
+        pattern: 'status-evidence-anchor: v\[0-9\]'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+
+  # ---------------------------------------------------------------------------
   # #1100 / RQ-61-MCDCFLOOR — the MC/DC report-side floors move ONLY through
   # the gate's own re-statement ledger. The floors are layout-coupled through
   # witness's DWARF decision reconstruction (upstream witness#208): adding
