@@ -177,7 +177,7 @@ fn start_on_arm_selfcontained_is_invoked_from_reset_handler() {
              above still ran; the execution proof is the selector-parity oracle.\n\
              ---- disasm ----\n{}",
             dis.status.code(),
-            &text.chars().take(600).collect::<String>()
+            text.chars().take(600).collect::<String>()
         );
         return;
     };
