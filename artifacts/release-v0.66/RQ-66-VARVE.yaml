@@ -132,14 +132,38 @@ artifacts:
       even though `varve verify` genuinely failed. Fixed to
       `if: always() && steps.varve_verify.outcome == 'failure'`.
 
-      EXPECTED STATE AFTER THE FIX: the job should now reach `varve verify`,
-      `Sync externals`, `Validate the federated graph` and the non-vacuity
-      guard, all real functionality — and the new "Shadowing gate" should
-      correctly turn the JOB red (non-blocking; advisory) because the
-      cross-job rivet shadow is a REAL condition on this runner, not a false
-      alarm. A red `rivet-federated` after this fix is the check WORKING,
-      not the conversion failing — see the PR for the actual re-run result,
-      recorded there rather than predicted here.
+      RE-RUN, MEASURED (run 34381956416, job 102568731138, this branch's
+      current head — not a prediction): landed on a DIFFERENT runner,
+      `pulseengine-ci-01-12`. `varve install`, `Sync externals` (7 externals
+      synced), `Validate the federated graph` (**Result: PASS, 381
+      warnings**) and the non-vacuity guard (**Cross-repo backlinks: 1032**,
+      matching #1012's authoring count) ALL ran and passed. The job is still
+      RED, because the "Shadowing gate" correctly fired: `varve verify`
+      found the SAME class of shadow on this second, independent runner too
+      — `rivet` on `runner12`'s PATH is
+      `/var/lib/runners/runner12/.cargo/bin/rivet`, not the pin. Two
+      different runners sampled, same hazard on both — reported as
+      "confirmed on two runners sampled", not "the whole fleet" (fleet size
+      and full exposure unverified).
+
+      BASELINE CONTEXT: on `main`, before this PR, the last two
+      `rivet-federated` runs were green — not because the hazard was absent,
+      but because the OLD job never checked PATH at all (it dispatched its
+      own privately-rooted binary, `--root ~/.cargo/rivet-0.32`, so it was
+      never exposed to PATH resolution either). The new red is a
+      PREVIOUSLY-INVISIBLE signal, not a regression in what the job does:
+      `varve run` also dispatches the pinned binary directly, bypassing
+      PATH, so this job's own correctness was never at risk from the shadow
+      — REQ-SHADOW-001 exists to flag exactly this before something else
+      (a human, a future script) types bare `rivet` and gets the wrong one.
+
+      NET RESULT: ghcr.io IS reachable from this self-hosted fleet (answers
+      the open question this PR's own CI comment named), and the shadowing
+      gate WORKS — it found something real to be red about on its first two
+      runs. A natural follow-up (not done in this PR): give the required
+      `rivet` job's `cargo install --force --git` a `--root`, mirroring the
+      pattern the old federated job already used, so it stops leaking into
+      the shared runners' default cargo bin dir.
 
       The layer carries **synth 0.61.0**; this repo ships 0.65.0 (moving to
       0.66 this release) — the layer is behind its own consumer, so the next
@@ -193,11 +217,22 @@ artifacts:
         position per `varve run --help`; fixed to `varve run -- rivet sync`)
         plus a related `if:` condition bug on the new "Shadowing gate" step
         (missing `always()`, so it silently didn't run once a later step
-        failed for an unrelated reason; fixed). Both fixes verified locally
-        before a follow-up push. Expect the re-run to still be red — for the
-        RIGHT reason this time (the real shadow REQ-SHADOW-001 found), which
-        is the check working, not the conversion failing; final re-run
-        result recorded in the PR thread. The required `rivet` job remains
-        on its hand-typed `cargo install --git --tag v0.23.0` pin — NOT
-        converted in this PR; UNPINNED w.r.t. varve, by choice, pending a
-        team decision to move the merge-blocking gate's toolchain source.
+        failed for an unrelated reason; fixed). Both fixes verified locally,
+        then pushed. RE-RUN, MEASURED (run 34381956416, job 102568731138,
+        current head, landed on a DIFFERENT runner `pulseengine-ci-01-12`):
+        `varve install`, `Sync externals` (7 externals), `Validate the
+        federated graph` (PASS, 381 warnings) and the non-vacuity guard
+        (Cross-repo backlinks: 1032) ALL PASSED. Job still RED because the
+        Shadowing gate correctly fired — the SAME shadow class on this
+        second runner too (`rivet` -> `runner12`'s `~/.cargo/bin/rivet`).
+        Two runners sampled, same hazard on both; not claiming fleet-wide.
+        Baseline: the pre-PR job was green on `main` only because it never
+        checked PATH (dispatched its own privately-rooted binary) — this red
+        is a new, previously-invisible signal, not a regression; `varve run`
+        bypasses PATH so this job's own dispatch was never at risk. The
+        required `rivet` job remains on its hand-typed
+        `cargo install --git --tag v0.23.0` pin — NOT converted in this PR;
+        UNPINNED w.r.t. varve, by choice, pending a team decision to move
+        the merge-blocking gate's toolchain source. A natural follow-up
+        (not done here): give that job's `cargo install` a `--root` so it
+        stops leaking into the shared runners' default cargo bin dir.
