@@ -3607,6 +3607,88 @@ jobs:
           # numbers and print the offending value instead of exiting silently.
           python3 scripts/ci_mutants_gate.py mutants-ci.txt
 
+  watched-1189-oracle:
+    name: "the survey's four UNTESTED mutants, watched (RQ-66-WATCHED, #1189)"
+    # RQ-66-WATCHED: the v0.65 mutation survey classified four codegen
+    # decisions UNTESTED — bytes change, the whole named suite stays green.
+    # Each is a specification for an oracle that did not exist; this job
+    # runs the three EXECUTION oracles written to those specifications (the
+    # fourth, the AAPCS dead-at-return set in liveness.rs, is a unit test
+    # and rides `test`). Every one was proven RED on its recorded mutant
+    # (applied with `mutation_survey.py`'s own Edit context manager) and
+    # GREEN on the clean tree before being wired here — the transcripts are
+    # in the RQ-66-WATCHED PR.
+    #   cmn_residual_compare_1189       the direct selector's hand-written
+    #                                   negative-immediate `cmn` compare
+    #                                   table (`I32Eq => EQ` inverted survived)
+    #   i64_result_pair_1189            the optimized path's i64-result
+    #                                   `mov r1, <hi>` epilogue move (deleted
+    #                                   survived)
+    #   self_contained_boot_sweep_1189  EVERY self-contained corpus image
+    #                                   booted through its own shipped
+    #                                   Reset_Handler and executed against
+    #                                   wasmtime (the startup data-copy count
+    #                                   register r2 -> r3 survived: nothing in
+    #                                   the suite booted a shipped startup, and
+    #                                   the one harness that did never asserted
+    #                                   the boot FINISHED). Its first run found
+    #                                   #1240 and #1241.
+    # Each image boots on ZEROED RAM: the harness fabricates no memory
+    # contents, so what the exports read is what the artifact's reset path
+    # copied. Known-open findings are pinned by EXACT count inside each
+    # script (#1204, #1211, #1240, #1241, the memory.grow envelope); a pin
+    # that moves in either direction is red.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "cmn residual compare — the direct selector's negative-immediate table, executed (R3-direct)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/cmn_residual_compare_1189_differential.py | tee /tmp/cmn1189.log
+          # NON-VACUITY: thousands of vectors compared (the script itself fails
+          # on any disagreement; a backreference equality here would be a GNU
+          # grep dependence the survey's local replay cannot honour).
+          grep -Eq '^#1189 CMN CHECKS=[1-9][0-9]{3,}/[1-9][0-9]{3,}$' /tmp/cmn1189.log
+          grep -q '^RESULT: PASS' /tmp/cmn1189.log
+      - name: "i64 result pair — the optimized path's epilogue hi move, executed (R2-ir_to_arm)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/i64_result_pair_1189_differential.py | tee /tmp/i64pair1189.log
+          grep -Eq '^#1189 I64PAIR CHECKS=[1-9][0-9]*/[1-9][0-9]*' /tmp/i64pair1189.log
+          grep -q '^RESULT: PASS' /tmp/i64pair1189.log
+      - name: "self-contained boot sweep — every corpus image through its shipped Reset_Handler (R5-startup, R2)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/self_contained_boot_sweep_1189_differential.py | tee /tmp/boot1189.log
+          # NON-VACUITY asserted here as well as inside the script: images
+          # booted and vectors compared are both printed counts, not exit 0.
+          grep -Eq '^#1189 BOOT CHECKS=[1-9][0-9]{3,}/[1-9][0-9]{3,} images=[1-9][0-9]{2,}/[1-9][0-9]{2,}' /tmp/boot1189.log
+          grep -q '^RESULT: PASS' /tmp/boot1189.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 3
+
   home-alias-class-1189-oracle:
     name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"
     # RQ-65-ALIASCLASS: the EXECUTION half — every consumer family (i32/i64

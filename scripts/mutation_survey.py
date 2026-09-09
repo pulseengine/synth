@@ -1726,6 +1726,48 @@ def cmd_ci(args):
     sys.exit(1 if failures else 0)
 
 
+# ---------------------------------------------------------------------------
+# THE SILENT SUBSET (RQ-66-WATCHED, from the v0.65 cold review). "KILLED"
+# means CI went red, which counts the compiler REFUSING (#952, a decline
+# census tripping), a PANIC, a non-vacuity FLOOR firing and a compiler HANG —
+# none of which is an oracle noticing WRONG CODE. The honest denominator for
+# "would an oracle catch this being wrong" is the mutants that changed bytes
+# and were caught by NOTHING loud, and the honest rate is the survivors over
+# that. The rule is MECHANICAL, applied to the recorded killer evidence, so
+# the number is re-derived from the ledger rather than hand-tallied (v0.65's
+# "4 of 15" was hand-tallied and does not decompose from its own records;
+# under this rule the same ledger reads 4 of 16 — see MUTATION_SURVEY.md).
+#   loud   := layer `timeout`, or layer `execution` whose recorded tail shows
+#             a refusal / panic / floor and NO wrong-value comparison
+#   silent := byte-changing and not loud (structure and freeze-only kills are
+#             silent: a test or a golden noticed the bytes, the compiler did
+#             not refuse them)
+# A wrong-value comparison OUTRANKS a floor in the same tail: an execution
+# differential that reported 10 wrong vectors and then also tripped its
+# population floor did observe wrong code.
+# ---------------------------------------------------------------------------
+LOUD_RE = re.compile(
+    r"#952|no functions compiled|VACUOUS|NEW DECLINE|panicked|index out of bounds|"
+    r"RUST_BACKTRACE|FLOOR|floor is|lost its population|declared floor",
+)
+WRONG_VALUE_RE = re.compile(r"want=|got=|MISMATCH|BUG \[|CHECKS=(\d+)/(\d+)")
+
+
+def is_loud_kill(m):
+    """Was this KILLED mutant caught by something other than an oracle seeing
+    wrong code? (See the block comment above.)"""
+    kb = m.get("killed_by") or {}
+    if kb.get("layer") == "timeout":
+        return True
+    if kb.get("layer") != "execution":
+        return False
+    tail = kb.get("tail") or ""
+    for wm in WRONG_VALUE_RE.finditer(tail):
+        if wm.group(1) is None or int(wm.group(1)) < int(wm.group(2)):
+            return False  # a wrong value was observed: silent-caught
+    return bool(LOUD_RE.search(tail))
+
+
 def summarize(ledger):
     ms = [m for m in ledger["mutants"]]
     compiled = [m for m in ms if m["classification"] != "UNCOMPILABLE"]
@@ -1736,6 +1778,9 @@ def summarize(ledger):
     struct_k = [m for m in killed if m["killed_by"]["layer"] == "structure"]
     freeze_k = [m for m in killed if m["killed_by"]["layer"] == "freeze-only"]
     timeout_k = [m for m in killed if m["killed_by"]["layer"] == "timeout"]
+    loud = [m for m in killed if is_loud_kill(m)]
+    silent = [m for m in changed if not (m["classification"] == "KILLED" and is_loud_kill(m))]
+    silent_exec = [m for m in exec_k if not is_loud_kill(m)]
     return {
         "sampled": len(ms), "uncompilable": len(by("UNCOMPILABLE")), "compiled": len(compiled),
         "changed": len(changed), "identical": len(compiled) - len(changed),
@@ -1743,6 +1788,11 @@ def summarize(ledger):
         "killed_freeze_only": len(freeze_k), "killed_timeout": len(timeout_k),
         "untested": len(by("UNTESTED")), "equivalent": len(by("EQUIVALENT")), "dead": len(by("DEAD")),
         "unresolved": len(by("UNRESOLVED")),
+        # the silent subset (RQ-66-WATCHED): loud kills removed from the frame
+        "killed_loud": len(loud), "silent_changed": len(silent),
+        "silent_killed_execution": len(silent_exec),
+        "silent_killed_structure": len(struct_k), "silent_killed_freeze_only": len(freeze_k),
+        "silent_untested": len(by("UNTESTED")),
     }
 
 
@@ -1751,6 +1801,11 @@ def cmd_report(args):
     s = summarize(ledger)
     rate = (100.0 * s["untested"] / s["changed"]) if s["changed"] else float("nan")
     print(f"survival rate: {s['untested']}/{s['changed']} byte-changing mutants = {rate:.1f}% UNTESTED")
+    srate = (100.0 * s["silent_untested"] / s["silent_changed"]) if s["silent_changed"] else float("nan")
+    print(f"SILENT-subset rate: {s['silent_untested']}/{s['silent_changed']} silently byte-changing mutants "
+          f"= {srate:.1f}% UNTESTED ({s['killed_loud']} loud kills removed: refusal / panic / floor / hang; "
+          f"silent kills: execution {s['silent_killed_execution']}, structure {s['silent_killed_structure']}, "
+          f"freeze-only {s['silent_killed_freeze_only']})")
     print(json.dumps(s, indent=1))
     print()
     print("| region | sampled | uncompilable | identical (equiv/dead/unres.) | changed | killed (exec/struct/freeze-only/timeout) | UNTESTED | survival |")
