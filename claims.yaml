@@ -3504,9 +3504,11 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 3
       - kind: count-eq                       # ci_subset: known-not-KILLED side
+        # RQ-66-DELETE: 4 -> 7 — all four DEAD records are pinned now, each
+        # with its wide-reach witnesses (SYNTH-MUTATION-DEAD-REACHABLE-RQ66).
         pattern: '"want_classification": "(?:UNTESTED|EQUIVALENT|DEAD)"'
         glob: ['docs/status/mutation_survey.json']
-        expect: 4
+        expect: 7
       - kind: count-eq                       # the CI job exists and greps the
         pattern: '^  mutation-survey-discrimination:$'
         glob: ['.github/workflows/ci.yml']   # summary line, not exit 0
@@ -3519,3 +3521,40 @@ claims:
         path: scripts/mutation_survey.py
       - kind: file-exists
         path: docs/status/mutation_survey.json
+
+  # ===========================================================================
+  # RQ-66-DELETE (#242, #1238): the four DEAD sites the survey handed v0.66 as
+  # its deletion list are REACHABLE — under a hard-float target (the GI-FPU-002
+  # VFP retry ladder, #881/#1069) and under SYNTH_GRAPH_ALLOC=1 (the arbiter's
+  # literal-pool sizing), neither of which the corpus compiles. Nothing was
+  # deleted; the sites are now GUARDED: each DEAD record carries the reaching
+  # modules per REACH_CFGS configuration, the ci_subset pins witnesses, and the
+  # replay goes red if a witness goes silent (deleted, unreachable, or a blind
+  # probe). The decision function is unit-tested from both sides.
+  # ===========================================================================
+  - id: SYNTH-MUTATION-DEAD-REACHABLE-RQ66
+    doc: docs/status/MUTATION_SURVEY.md
+    text: "Every one of the four DEAD sites is REACHED"
+    evidence:
+      - kind: count-eq                       # the evidence on each DEAD record
+        pattern: '"reach_wide_at":'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 4
+      - kind: count-eq                       # the witnesses pinned for the replay
+        pattern: '"want_reach_wide":'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 4
+      - kind: count-eq                       # the replay line that makes it red
+        pattern: "grep -Eq '\\^MUTANTS-REACH-WIDE entries=\\[1-9\\]\\[0-9\\]\\* reached=\\[1-9\\]\\[0-9\\]\\* unreached=0\\$'"
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: count-eq                       # the checker's own tests run in CI
+        pattern: 'python3 scripts/test_mutation_survey\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: count-eq                       # REACH_CFGS exists and is not CORPUS_CFGS
+        pattern: '^REACH_CFGS = \{$'
+        glob: ['scripts/mutation_survey.py']
+        expect: 1
+      - kind: file-exists
+        path: scripts/test_mutation_survey.py

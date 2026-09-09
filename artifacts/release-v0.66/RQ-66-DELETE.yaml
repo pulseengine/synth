@@ -18,6 +18,37 @@ artifacts:
       those lines was justified in the PR that added it — but the direction has
       been wrong every single time, and no arm has ever been deleted.
 
+      CORRECTION TO THIS ARTIFACT'S OWN PREMISE, applied before the plan
+      merged and kept here because the premise is stated above rather than
+      below. The scoping claim was that deleting these four sites would make
+      `selector_lines_code` FALL for the first time. **It could not have.**
+      That ratchet's population is
+
+        glob: crates/synth-synthesis/src/instruction_selector.rs
+              crates/synth-synthesis/src/instruction_selector/**/*.rs
+
+      and all four DEAD sites are in `crates/synth-backend/src/arm_backend.rs`,
+      outside it. Deleting every one would have moved the metric by exactly
+      ZERO. The release headline was scoped on a number the work could not
+      touch, and the glob was not read until the work was already done.
+
+      THE STRUCTURAL FACT BEHIND THAT is worth more than the mistake: only ONE
+      of the mutation survey's five regions is inside the ratchet's population —
+
+        R1-routing    arm_backend.rs                              outside
+        R2-ir_to_arm  optimizer_bridge.rs                         outside
+        R3-direct     instruction_selector/select_with_stack.rs   INSIDE
+        R4-shared     liveness.rs                                 outside
+        R5-startup    synth-cli/src/main.rs                       outside
+
+      So the survey, as framed, CANNOT supply deletion candidates for the metric
+      it was meant to feed, except from R3. Two instruments each built to answer
+      a question about the code generator have been measuring near-disjoint
+      populations, and neither names the other's scope. A future release wanting
+      this ratchet to fall on survey evidence must sample R3 far more heavily or
+      widen the ratchet's population to the files the survey covers — and
+      widening a ceiling is a decision with consequences, not a convenience.
+
       WHAT IS DIFFERENT NOW. RQ-65-MUTANTS classified four sampled mutants
       **DEAD**: their mutation changes no emitted byte anywhere in the corpus
       AND the site is never reached, so the code cannot affect output. Three of
@@ -41,35 +72,6 @@ artifacts:
       REFUSED, not explained." v0.58 proved deletion works under that gate,
       byte-identically, and this artifact uses the same discipline.
 
-      CORRECTION TO THIS ARTIFACT'S OWN PREMISE, made before the plan merged.
-      The scoping claim was that deleting these four would make
-      `selector_lines_code` FALL for the first time. **It could not have.** That
-      ratchet's population is
-
-        glob: crates/synth-synthesis/src/instruction_selector.rs
-              crates/synth-synthesis/src/instruction_selector/**/*.rs
-
-      and all four DEAD sites are in `crates/synth-backend/src/arm_backend.rs`,
-      outside it. Deleting every one of them would have moved the metric by
-      exactly ZERO. The coordinator scoped a release headline on a number the
-      work could not touch.
-
-      THE STRUCTURAL FACT BEHIND THAT, which is worth more than the mistake:
-      only ONE of the survey's five regions is inside the ratchet's population —
-
-        R1-routing    arm_backend.rs                    outside
-        R2-ir_to_arm  optimizer_bridge.rs               outside
-        R3-direct     instruction_selector/select_with_stack.rs   INSIDE
-        R4-shared     liveness.rs                       outside
-        R5-startup    synth-cli/src/main.rs             outside
-
-      So the mutation survey, as framed, CANNOT supply deletion candidates for
-      the metric it was meant to feed, except from R3. Any future release that
-      wants this ratchet to fall on evidence must either sample R3 far more
-      heavily or widen the ratchet's population to the files the survey actually
-      covers — and widening a ceiling is a decision with its own consequences,
-      not a convenience.
-
       "DEAD" MEANS UNREACHED BY THIS CORPUS, and the sample is four. A DEAD
       classification is EVIDENCE, NOT PROOF. Widening the corpus before deleting
       is legitimate and may be the honest first step. **Discovering that a DEAD
@@ -77,7 +79,7 @@ artifacts:
       than a deletion made on a small sample** — it would mean the survey's
       reach probe needs strengthening, which is worth more than four fewer
       lines.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - subtraction
@@ -93,9 +95,102 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: each of the four DEAD sites is either DELETED with byte-identity proven over the corpus, or shown REACHABLE with the evidence that contradicts its DEAD classification; selector_lines_code moves DOWN in claims.yaml with no waiver, or the artifact states why no deletion was safe"
+      landed: >-
+        PR #TBD (branch fix/delete-242), one increment; finding filed as #1238.
+        No deletion: every one of the four DEAD sites is REACHABLE, so none was
+        touched (no Rust file changed). What landed is the guard:
+        `scripts/mutation_survey.py` gains `REACH_CFGS` (m7dp-reloc, m7dp-self,
+        graph-alloc-reloc, graph-alloc-self — configurations the corpus never
+        compiles), a `reach [--only] [--write]` subcommand that re-probes DEAD
+        sites under them and records `reach_wide` / `reach_wide_at` on the
+        ledger record, `pin-subset --reach-witnesses N` carrying
+        `want_reach_wide`, and a `ci` replay that requires every pinned witness
+        to keep reaching (pure `reach_wide_failures`, subset semantics) and
+        prints `MUTANTS-REACH-WIDE entries=N reached=N unreached=0`;
+        `classify_identical` (DEAD only when unreached under CORPUS_CFGS AND
+        every REACH_CFGS configuration; reached only under REACH_CFGS is
+        UNRESOLVED with a note, never DEAD — `evaluate` always runs the wide
+        probe now); `scripts/test_mutation_survey.py` (12 tests, both sides of
+        both decisions)
+        wired into the `mutation-survey-discrimination` job beside the new grep;
+        `docs/status/mutation_survey.json` (the four DEAD records annotated with
+        `reach_wide` / `reach_wide_at` / `reach_note` / `published_as` — the
+        v0.65 "deletion candidate" statement marked FALSE beside each verdict,
+        the classification itself left as v0.65 recorded it for the
+        coordinator's publication decision;
+        `ci_subset` 7 -> 10 with all four DEAD entries and their witnesses);
+        `docs/status/MUTATION_SURVEY.md` follow-up section; `claims.yaml`
+        (`SYNTH-MUTATION-DEAD-REACHABLE-RQ66`, the non-killed ci_subset pin
+        4 -> 7). `selector_lines_code` unchanged at 19896 — no waiver, no
+        movement, and the artifact states why.
       verified-by: >-
-        PENDING. The bar is byte-identity over the full corpus (203 modules x 3
-        configurations), not a passing test suite: a deletion that changes any
-        emitted byte is refused unless an execution differential proves the new
-        bytes correct. Report the ratchet delta as measured — including if it is
-        zero because every candidate turned out reachable.
+        MEASURED, not deleted. Each of the four sites was probed with the
+        survey's OWN instrument (`Edit(site, "probe")` wrapping the original
+        token in `{ eprintln!(MARK); token }`, `enumerate_sites()` ids
+        `R1-routing/GUARD/arm_backend.rs:808:0`, `:836:24`, `:862:0`,
+        `R1-routing/BOUND/arm_backend.rs:1316:36`, the 203-module corpus, a
+        rebuilt synth-cli per site — cargo's recompile of synth-backend and
+        synth-cli confirmed by its own `Compiling` lines — and `git diff
+        --quiet` asserted after every probe) under EIGHT configurations: the
+        survey's three (`--target cortex-m4` reloc / self / self-noopt) and
+        five it never compiles. RESULT: under the survey's three, 0 of 203
+        modules reach any site — v0.65's DEAD verdict reproduces exactly on
+        its own terms. Under `--target cortex-m7dp --relocatable` (the exact
+        flags of the #881/#1069 execution oracles), `cortex-m7dp` self-
+        contained and `cortex-m4f --relocatable`: `:808` `if vfp.is_ok()` is
+        reached by `vfp_spill_881.wat` AND `vfp_local_pressure_1069.wat`
+        (2/203 in each), `:836` the `"spilling the VFP register file"`
+        term and `:862` `if grown.is_ok()` by `vfp_local_pressure_1069.wat`
+        (1/203 each; its `live24` function composes the #1069 frame-homed
+        stage with the #587 pool-grow retry). Under `SYNTH_GRAPH_ALLOC=1`:
+        `:1316` `if literals > 0` is reached by 171/203 modules relocatable
+        and 108/203 self-contained (the arbiter's `size_of` runs for every
+        function the colourer returns a candidate for — e.g. `const_cse.wat`,
+        `spill_on_exhaust_242.wat`, `control_step.wasm`). So every candidate
+        is REACHABLE and none was deleted; the byte-identity gate was never
+        entered because no bytes were asked to move (the diff contains no
+        Rust file). Root cause of the DEAD verdicts: the corpus configuration
+        — `cortex-m4` has no FPU, so the GI-FPU-002 retry ladder is
+        unreachable by construction there, and no corpus compile sets the
+        env flag the arbiter lives behind — MEASURED on the unmutated
+        binary: `SYNTH_RECOVERY_STATS=1` on cortex-m7dp prints 7x
+        `rung=vfp-spill` for vfp_spill_881.wat and 4x `rung=vfp-frame-locals`
+        for vfp_local_pressure_1069.wat, while on cortex-m4 the same fixtures
+        report `8 of 8` / `5 of 5 functions were skipped` (`GI-FPU-002: scalar
+        f32 requires a…`, `rung=base result=exhausted`) and emit nothing;
+        `SYNTH_GRAPH_ALLOC=1 SYNTH_GRAPH_ALLOC_STATS=1` prints the arbiter on
+        const_cse.wat (4x `arbiter kept shipping bytes`), spill_on_exhaust_242.wat
+        and call_5args.wat (`APPLIED (validated; arbiter: 102 B < 104 B`,
+        `54 B < 60 B`), and with the flag unset there is no `[graph-alloc]`
+        line at all. The probe is NOT circular: byte-identity decides whether
+        the probe runs, the rebuilt marker binary decides reach. BLAST RADIUS:
+        v0.65.0's published "4 DEAD (deletion candidates)" (CHANGELOG 0.65.0,
+        MUTATION_SURVEY.md, RQ-65-MUTANTS) is false 4 of 4; stated in the
+        report and beside each ledger verdict, the v0.65 text left as shipped
+        for the coordinator's publication decision (#1238). RATCHET: `claim_check.py
+        claims.yaml --metric` re-derives `selector_lines_code 19896 /
+        baseline 17897 must FALL`, unchanged, no waiver; it could not have
+        moved on these sites — its population is `instruction_selector*.rs`
+        and the sites are in `arm_backend.rs` (four of the survey's five
+        regions are outside the population). GUARD, verified: `mutation_survey.py
+        reach --write` recorded `reach_wide` on the four records at this
+        tree; `pin-subset --dead 4` pinned witnesses; `python3
+        scripts/test_mutation_survey.py` 8/8 (a silent witness fails by
+        name, widening passes, no evidence fails every witness; DEAD only
+        when unreached everywhere, wide-only is UNRESOLVED); the FULL
+        `mutation_survey.py ci` replay run locally on this tree: `MUTANTS-CI
+        subset=10 controls=3 non-killed=7 failures=0` and `MUTANTS-REACH-WIDE
+        entries=4 reached=4 unreached=0` — all three controls KILLED by their
+        recorded killer (join-alias 15 s, cmp-select 15 s, cargo test 278 s),
+        the two UNTESTED byte-sets reproduced (8, 53), EQUIVALENT reproduced,
+        the four DEAD entries reproduced with their witnesses. ADMISSIBLE
+        because the three killer steps were run GREEN on the UNMUTATED tree in
+        the same environment first (join-alias RESULT: PASS 223 emulations,
+        cmp-select ORACLE: PASS 22 emulations, cargo test green 246 s — the
+        harness's python->python3 substitution holds here). NEGATIVE CONTROL
+        (red-first for the new pin): a scratch ledger with add_imm_large.wat
+        planted as :808's m7dp-reloc witness — `ci` exit 1, `MUTANTS-REACH-WIDE
+        entries=4 reached=3 unreached=1`, `failures=1`, `FAIL: …:808:0:
+        reach-wide witnesses went SILENT [('m7dp-reloc', 'add_imm_large.wat')]`.
+        claim_check 65/65; status_evidence_check green; cargo fmt --check and
+        clippy -D warnings clean (no Rust diff).

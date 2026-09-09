@@ -3423,6 +3423,15 @@ jobs:
     # It runs no new emulation oracle of its own — every step it replays is
     # an already-declared scripts/repro/ oracle, so the summed
     # `ci-checks: emulations` floor is untouched.
+    #
+    # RQ-66-DELETE (#242, #1238): the four v0.65 DEAD sites turned out
+    # REACHABLE under configurations the corpus never compiles (a hard-float
+    # target for the VFP retry ladder, SYNTH_GRAPH_ALLOC=1 for the arbiter).
+    # Their ledger entries carry `want_reach_wide` witnesses, replayed under
+    # REACH_CFGS by the same `ci` run: a witness that goes silent — the code
+    # deleted, made unreachable, or the probe blind — is red HERE, with the
+    # `MUTANTS-REACH-WIDE` line grepped so a subset with no such entry
+    # cannot pass either.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -3445,11 +3454,16 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone pyyaml
+      - name: "The checker's own tests — the reach-wide decision from both sides (RQ-66-DELETE)"
+        run: python3 scripts/test_mutation_survey.py
       - name: "Replay the pinned mutant subset (controls must die, survivors must reproduce)"
         run: |
           set -euo pipefail
           python3 scripts/mutation_survey.py ci | tee mutants-ci.txt
           grep -Eq '^MUTANTS-CI subset=[4-9][0-9]* controls=[2-9][0-9]* non-killed=[2-9][0-9]* failures=0$' mutants-ci.txt
+          # RQ-66-DELETE: every DEAD entry's wide-reach witnesses reproduced,
+          # and there is at least one such entry (entries >= 1, unreached = 0).
+          grep -Eq '^MUTANTS-REACH-WIDE entries=[1-9][0-9]* reached=[1-9][0-9]* unreached=0$' mutants-ci.txt
 
   home-alias-class-1189-oracle:
     name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"

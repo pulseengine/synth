@@ -256,6 +256,10 @@ denominator; neither could be classified EQUIVALENT vs DEAD by the reach probe:
 **(b) DEAD — never evaluated during the 600 corpus compiles. Deletion
 candidates for the subtraction ratchet, not proofs of unreachability.**
 
+> **v0.66 (RQ-66-DELETE): all four are REACHABLE** under hard-float and
+> flag-on configurations the corpus never compiles — none was deleted. See
+> § "v0.66 follow-up" below.
+
 | id | diff | why unreached here |
 |---|---|---|
 | `R1-routing/BOUND/arm_backend.rs:1316:36` | `if literals > 0 {` → `>= 0` | inside the `SYNTH_PATH_DEBUG`-style arbiter reporting after realloc; no corpus function reaches that branch |
@@ -329,7 +333,8 @@ have let `optimizer_bridge.rs:6396` (a memory offset +4) through.
    (808, 836, 862) and the literals arbiter branch (1316). DEAD here means
    "unreached on 200 corpus modules", so each needs a reachability argument
    or a fixture before deletion — the survey supplies the list, not the
-   proof.
+   proof. **v0.66 supplied the argument and it went the other way: all four
+   are reachable (§ "v0.66 follow-up" below).**
 5. **Two freeze-only kills** (`optimizer_bridge.rs:6396`, `arm_backend.rs:1177`)
    are protected by goldens alone; the next re-pin of `base_cse_flip_468` or
    `const_cse_reduction_242` should be treated as a review event, not a
@@ -343,6 +348,128 @@ have let `optimizer_bridge.rs:6396` (a memory offset +4) through.
    disk — SIGTERM now unwinds the restore; cargo's `Running …/deps/` line
    shape was missed, so structural kills were attributed to `?` until
    re-attributed from the recorded test names.
+
+## v0.66 follow-up — the four DEAD sites are reachable (RQ-66-DELETE, #242, #1238)
+
+v0.66 set out to DELETE the four DEAD sites under the byte-identity gate. It
+tried to reach them first, with this survey's own probe (`Edit(site, "probe")`
+on the original token, `enumerate_sites()`, the same 203-module corpus, a
+rebuilt `synth` per site, tree asserted clean after each), under the three
+survey configurations AND five the corpus never compiles.
+**Every one of the four DEAD sites is REACHED** — and under the survey's own
+three `cortex-m4` configurations every probe stays silent, so the v0.65 verdict
+reproduces exactly on its own terms:
+
+| site (`arm_backend.rs`) | survey (`reloc` / `self` / `self-noopt`) | `m7dp-reloc` | `m7dp-self` | `m4f-reloc` | `SYNTH_GRAPH_ALLOC=1` reloc / self |
+|---|---|---|---|---|---|
+| `:808` `if vfp.is_ok() {` | 0 / 0 / 0 | **2** (`vfp_spill_881.wat`, `vfp_local_pressure_1069.wat`) | **2** (same) | **2** (same) | 0 / 0 |
+| `:836` `\|\| msg.contains("spilling the VFP register file")` | 0 / 0 / 0 | **1** (`vfp_local_pressure_1069.wat`) | **1** | **1** | 0 / 0 |
+| `:862` `if grown.is_ok() {` | 0 / 0 / 0 | **1** (`vfp_local_pressure_1069.wat`) | **1** | **1** | 0 / 0 |
+| `:1316` `if literals > 0 {` | 0 / 0 / 0 | 0 | 0 | 0 | **171** / **108** of 203 |
+
+**How each site is reached — re-runnable without mutating anything.** The
+compiler's own stats lines name the rung / the arbiter on the unmutated binary:
+
+```
+# :808 (the plain #881 rung) — 7 functions take it on cortex-m7dp
+SYNTH_RECOVERY_STATS=1 synth compile scripts/repro/vfp_spill_881.wat \
+    --all-exports --relocatable --target cortex-m7dp -o /tmp/a.o
+#   -> 1x rung=base result=ok, 7x rung=vfp-spill result=ok
+# :836 and :862 (the #1069 frame-homed stage and its grown-pool retry)
+SYNTH_RECOVERY_STATS=1 synth compile scripts/repro/vfp_local_pressure_1069.wat \
+    --all-exports --relocatable --target cortex-m7dp -o /tmp/b.o
+#   -> 1x rung=base result=ok (live13), 4x rung=vfp-frame-locals result=ok
+#      (live14, live16, live24 = the grown-pool composition, live8d)
+# :1316 (the graph-colouring arbiter's literal-pool sizing)
+SYNTH_GRAPH_ALLOC=1 SYNTH_GRAPH_ALLOC_STATS=1 synth compile scripts/repro/const_cse.wat \
+    --all-exports --relocatable --target cortex-m4 -o /tmp/e.o
+#   -> "[graph-alloc] arbiter ..." lines; with the flag unset: no [graph-alloc] line at all
+# the survey's own instrument, per site:
+python3 scripts/mutation_survey.py reach --only R1-routing/GUARD/arm_backend.rs:808:0
+```
+
+**Why the survey called them DEAD — the mechanism, named.** Not a probe
+defect and not circular: `evaluate` does NOT infer reach from byte-identity.
+Byte-identity only decides WHETHER the reach probe runs; the probe itself
+rebuilds the compiler with `{ eprintln!(MARK); token }` around the original
+token and re-compiles the corpus — a real instrument, and the same one that
+fired under the wide configurations above. The defect is the CONFIGURATION SET
+the probe ran over. `CORPUS_CFGS` is three `--target cortex-m4` runs — no FPU —
+and on that target the selector REFUSES every scalar float op BEFORE any
+register pressure can arise: the same two fixtures compile to `8 of 8 functions
+were skipped … GI-FPU-002: scalar f32 requires a…` and `5 of 5 … skipped`,
+`rung=base result=exhausted`, "no functions compiled successfully". The VFP
+retry ladder is therefore unreachable BY CONSTRUCTION under the survey, while
+the fixtures written to exercise it sit in the corpus and are compiled by their
+own CI oracles on `cortex-m7dp`. The fourth site sits behind
+`graph_alloc::enabled()` = `SYNTH_GRAPH_ALLOC` set, and no corpus compile sets
+any environment, although the `vcr_dec_001_graph_alloc_differential` job runs it
+on every PR. The `"spilling the VFP register file"` term is not vestigial
+either: `instruction_selector.rs` emits `"#881: spill-slot pool exhausted while
+spilling the VFP register file"`, which lacks the `i64 ` prefix of
+`SLOT_EXHAUSTION`, so that term is the only thing that catches it. So: "DEAD"
+was an honest verdict for the frame this document states — and the frame
+excluded exactly the two levers the code is gated on. The report then read
+DEAD as a deletion list; that reading was the error.
+
+**Blast radius on v0.65's published claims — stated plainly.** v0.65.0
+published "4 DEAD (deletion candidates for the subtraction ratchet)" in three
+places: the 0.65.0 CHANGELOG ("the DEAD four are deletion targets and give the
+subtraction ratchet its first principled target list"), this document (§ (b)
+"Deletion candidates", § "What v0.66 gets scoped from" item 4) and the
+RQ-65-MUTANTS artifact ("(b) DEAD — unreachable, which is a DELETION target").
+**That statement is false, 4 of 4.** Every one of the four sites is reachable
+and none is a deletion candidate. The ledger records carry the correction
+beside the original verdict (`reach_wide`, `reach_wide_at`, `reach_note`,
+`published_as`); the v0.65 text itself is left as shipped — how the correction
+is published is a release decision, recorded in #1238.
+
+**Is DEAD salvageable as a category? Yes — and the rule is now in the
+harness.** The probe is real, so DEAD is measurable; what it lacked was a
+stated configuration set. From this release `classify_identical` assigns DEAD
+only when a byte-identical mutant is unreached under `CORPUS_CFGS` AND under
+every `REACH_CFGS` configuration (`evaluate` now always runs the wide probe,
+~15 s per byte-identical mutant); reached ONLY under `REACH_CFGS` is
+UNRESOLVED with a note — the byte triage was not run under those
+configurations, so it is neither DEAD nor EQUIVALENT — and never DEAD. Two
+residuals, recorded rather than closed: the byte-triage baseline is still
+`CORPUS_CFGS`-only, so folding `REACH_CFGS` into the baseline (a re-survey,
+item 3) is what makes a future DEAD a sound candidate; and `REACH_CFGS` is a
+hand-listed set — the honest version is DERIVED from the levers the code
+generator reads (`std::env::var` gates and the FPU target variants), the same
+"derive what you check against" rule the rest of this repository runs on.
+Until both land, a DEAD verdict reads "unreached under `CORPUS_CFGS` +
+`REACH_CFGS` as listed at that commit" and still needs a reachability argument
+before deletion.
+
+**Nothing was deleted, and the ratchet did not move.** `selector_lines_code`
+stays at 19,896 with no waiver — and it could not have moved: it counts
+`instruction_selector.rs` + `instruction_selector/**`, and all four sites are in
+`arm_backend.rs`. Four of this survey's five regions (R1 routing, R2
+`optimizer_bridge.rs`, R4 shared tail, R5 startup) lie outside that population;
+only R3 (`select_with_stack.rs`) is inside it. A DEAD site from the other four
+regions can never move the ratchet even if deleted.
+
+**What now guards this.** `mutation_survey.py reach [--write]` re-probes DEAD
+sites under `REACH_CFGS` (`m7dp-reloc`, `m7dp-self`, `graph-alloc-reloc`,
+`graph-alloc-self`) and records the reaching modules per configuration on the
+ledger record (`reach_wide`, `reach_wide_at`, `reach_note`); `pin-subset` pins the first four
+witnesses per configuration as `want_reach_wide`, and `ci` requires every
+witness to keep reaching (subset semantics — reach may widen without a ledger
+edit; a witness going silent is red, whether the code became unreachable, was
+deleted, or the probe went blind). The replay prints `MUTANTS-REACH-WIDE
+entries=4 reached=4 unreached=0`, grepped by the `mutation-survey-discrimination`
+job. The decision function is pure and unit-tested from both sides
+(`scripts/test_mutation_survey.py`, 12 tests). The four records keep
+`classification: DEAD` as v0.65 recorded it — the publication decision is the
+coordinator's — with the contradicting evidence and `published_as` beside it;
+under the new rule the same measurement classifies UNRESOLVED (the `ci` replay
+prints `expect DEAD -> UNRESOLVED wide=…` for them, which is the instrument
+saying so), and any DEAD verdict from now on reads "unreached under
+`CORPUS_CFGS` + `REACH_CFGS`" and still needs a reachability argument before
+deletion. `REACH_CFGS` is deliberately NOT folded into `CORPUS_CFGS`: every
+baseline hash and `changed` set in the ledger is relative to `CORPUS_CFGS`, and
+widening that is a re-survey (item 3 above), not a patch.
 
 ## Re-running and the CI pin
 

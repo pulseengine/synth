@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### RQ-66-DELETE (#242, #1238) — the four "DEAD" sites are reachable; nothing deleted, and the reason is now a gate
+
+v0.65's mutation survey handed this release its first principled deletion
+list: four mutants whose flip changed no byte AND whose site the corpus never
+evaluated. RQ-66-DELETE tried to REACH each site before deleting it, with the
+survey's own probe, and **all four fired**: the three VFP-retry-ladder rungs in
+`arm_backend.rs` (`vfp.is_ok()`, the `"spilling the VFP register file"` match,
+`grown.is_ok()`) on `vfp_spill_881.wat` / `vfp_local_pressure_1069.wat` under
+`--target cortex-m7dp` (and `cortex-m4f`), and the graph-colouring arbiter's
+`literals > 0` on 171 of 203 modules under `SYNTH_GRAPH_ALLOC=1`. Under the
+survey's own three `cortex-m4` configurations every probe stays silent — the
+v0.65 verdict reproduces exactly. "DEAD" was a property of the corpus
+CONFIGURATION (soft-float only, no flag-on run), not of the code: on
+`cortex-m4` the selector refuses every scalar float op (`GI-FPU-002: scalar
+f32 requires a…`, 8 of 8 and 5 of 5 functions skipped) before any VFP pressure
+can arise, and no corpus compile sets `SYNTH_GRAPH_ALLOC`. The probe itself is
+sound — `evaluate` never infers reach from byte-identity. **v0.65.0's published
+"4 DEAD (deletion candidates)" — CHANGELOG, `MUTATION_SURVEY.md`, RQ-65-MUTANTS
+— is therefore false, 4 of 4**; the v0.65 text is left as shipped and the
+correction is carried beside the verdicts in the ledger (#1238).
+
+- **Deleted: nothing.** `selector_lines_code` stays 19,896, no waiver — and it
+  could not have moved: the ratchet counts `instruction_selector*.rs`, all four
+  sites are in `arm_backend.rs`, and four of the survey's five regions lie
+  outside the ratchet's population.
+- **Guarded instead:** `scripts/mutation_survey.py reach [--write]` re-probes
+  DEAD sites under `REACH_CFGS` (hard-float targets, `SYNTH_GRAPH_ALLOC=1`)
+  and records the reaching modules on the ledger; `pin-subset` pins witnesses
+  (`want_reach_wide`); `ci` requires every witness to keep reaching and prints
+  `MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0`, grepped by the
+  `mutation-survey-discrimination` job. The decision function is pure and
+  unit-tested from both sides (`scripts/test_mutation_survey.py`, wired).
+- **DEAD salvaged as a category:** `classify_identical` assigns DEAD only when
+  a byte-identical mutant is unreached under `CORPUS_CFGS` AND every
+  `REACH_CFGS` configuration (`evaluate` always runs the wide probe now);
+  reached only under `REACH_CFGS` is UNRESOLVED with a note, never DEAD.
+- `docs/status/MUTATION_SURVEY.md` gains the follow-up section and the DEAD
+  table is annotated; `claims.yaml` pins it (`SYNTH-MUTATION-DEAD-REACHABLE-RQ66`)
+  and the `ci_subset` non-killed side moves 4 -> 7.
+- No Rust file changed: emitted bytes are unchanged by construction.
+
 ## [0.65.0] - 2026-09-09
 
 **How much of this is correct by accident?**
