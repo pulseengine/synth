@@ -154,8 +154,22 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 // return + post-call state struct vs wasmtime, in default and both lever
 // opt-outs) and the #990 leak oracle went 22/34 -> 34/34 on each backend
 // (brif_local_zeroinit_990_{arm,riscv}_differential.py).
+// RE-PINNED for the void-call phantom-push fix (RQ-66-BOTHWRONG, #1210):
+// gust_poll 700→684 (−16), a real win, not a cost. `gust_poll` calls
+// `TaskTable::transition` (type 0: 5 i32 params, NO result — a genuinely
+// void callee) and, before this fix, `call`'s ARM lowering unconditionally
+// pushed a phantom operand-stack result for every callee regardless of its
+// actual WASM arity, corrupting the surrounding preserve/restore traffic
+// around that call site. Fixed: the callee's declared result count
+// (`CompileConfig::func_result_counts`, already computed, previously never
+// reaching the ARM selector) now gates whether `call` pushes anything at
+// all. func_0/func_1/gust_mix are byte-IDENTICAL — the win is local to the
+// one void call site. Execution UNCHANGED — re-pinned only after
+// gust_spill_fwd_390_differential.py PASSED on the new bytes (default +
+// both lever opt-outs) and the #990 leak oracle held 34/34 on ARM
+// (brif_local_zeroinit_990_arm_differential.py).
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 700),
+    ("gust_poll", 684),
     ("gust_mix", 32),
     ("func_0", 380),
     ("func_1", 60),

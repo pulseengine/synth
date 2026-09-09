@@ -251,8 +251,14 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
         ),
         (
             "flight_seam.wasm",
-            "e7152735df88a699f4600574dc5b6f5bc34efcb8cba020f78ec78f59d9d20f8a",
-            706,
+            // RQ-66-BOTHWRONG (#1210): 706 -> 718. `flight_algo` calls the
+            // VOID function `filter_step`; before this fix `call` pushed a
+            // phantom result for every callee regardless of its actual WASM
+            // arity, and the phantom's later removal happened to shrink code
+            // elsewhere. Fixed: correct stack effect for void calls (verified:
+            // flight_seam_differential.py 0x07FDF307 MATCH on these bytes).
+            "e47705fd59f682ab8894bb6fbf941472c32a3c5725b001a6fd8138ff7bc768d4",
+            718,
         ),
         (
             "flight_seam_flat.wasm",
@@ -288,8 +294,10 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "a11ed21e5fe53cdd3bc45382e7ad4288a53abf7fbdffa42c299cf1d2bc24f1da",
-            938usize,
+            // RQ-66-BOTHWRONG (#1210): 938 -> 950 — same void-call phantom-push
+            // fix as the default golden above; unrelated to stack-fwd itself.
+            "28642bd9639e111fed5021902c91b17f608b2380884cbfdbeb94c054c5dab662",
+            950usize,
         ),
         (
             "flight_seam_flat.wasm",
@@ -381,8 +389,10 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "d8af257f82594e0a41d75c2fba2aaee62041fff54863342f4a9c3aebe39e10f3",
-            894usize,
+            // RQ-66-BOTHWRONG (#1210): 894 -> 906 — same void-call phantom-push
+            // fix as the default golden above; unrelated to spill-realloc itself.
+            "54d68b9e71671c743c004d54b248d31be01b5f582aa28d53681f457e18184bbb",
+            906usize,
         ),
         (
             "flight_seam_flat.wasm",
@@ -474,8 +484,10 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
         ),
         (
             "flight_seam.wasm",
-            "d8af257f82594e0a41d75c2fba2aaee62041fff54863342f4a9c3aebe39e10f3",
-            894,
+            // RQ-66-BOTHWRONG (#1210): 894 -> 906 — same void-call phantom-push
+            // fix as the default golden above; unrelated to const-CSE itself.
+            "54d68b9e71671c743c004d54b248d31be01b5f582aa28d53681f457e18184bbb",
+            906,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -557,8 +569,10 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "18163e0b37f5932f0e97fe573d9626f53ca1962b823c24e8f5057a34cf8c4318",
-            890usize,
+            // RQ-66-BOTHWRONG (#1210): 890 -> 906 — same void-call phantom-push
+            // fix as the default golden above; unrelated to dead-frame-elim itself.
+            "54d68b9e71671c743c004d54b248d31be01b5f582aa28d53681f457e18184bbb",
+            906usize,
         ),
         (
             "flight_seam_flat.wasm",

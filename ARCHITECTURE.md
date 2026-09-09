@@ -51,10 +51,19 @@ It carries **four backends**:
   existed: nine narrow i64 memory forms, an i64 `select` and a value-`if`
   with a computed condition compiled exit-0 to wrong code on the optimized
   path (#1208/#1213/#1205) and now decline to the direct selector
-  (RQ-65-DECLINE). What remains pinned is named, not hidden: two
-  optimized-path classes (#1204 an unsaved R11 write, #1206 a loop-carried
-  non-param local) and the shapes both selectors get wrong
-  (#1209/#1210/#1211/#1214/#1215).
+  (RQ-65-DECLINE). RQ-66-BOTHWRONG (v0.66) closed 84 of the 89 entries
+  RQ-65-PARITY had pinned as wrong on BOTH selectors: #1210 (a value live
+  across a call inside a value-carrying construct), #1211 (call_indirect
+  through a non-zero table index — two independent causes) and #1214 (an
+  i64 read-before-write local not zero-initialised) are fixed outright;
+  #1209 (memory64) is loudly REFUSED rather than fixed, since no synth
+  backend implements i64 linear-memory addressing. What remains pinned is
+  named, not hidden: two optimized-path classes (#1204 an unsaved R11
+  write, #1206 a loop-carried non-param local) and one still-unaddressed
+  both-selectors-wrong mechanism, #1215's residual — a `br_table`/`br_if`
+  whose index or condition operand is ITSELF a nested branch instruction
+  carrying a value out, which neither this release's fixes nor RQ-65-DECLINE
+  touch.
 
 ### Synth and Loom
 

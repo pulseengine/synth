@@ -185,8 +185,23 @@ LEGS = (("optimized", []), ("direct", ["--no-optimize"]))
 # corpus grows, never lower them to green a run.
 # `--no-suite` (tests/wast + own fixtures) applies the smaller LOCAL floors so
 # a submodule-less checkout still runs and still cannot compare nothing.
+# RE-DERIVED after RQ-66-BOTHWRONG (#1210). `refuse_memory64_module`
+# (crates/synth-cli/src/main.rs, #1209) now refuses every `(memory i64 ...)`
+# module OUTRIGHT, before either selector runs — a refusal both legs share,
+# so a memory64 module that used to land in "both legs accepted" (silently
+# wrong on both, #1209's whole finding) now refuses on both and drops out of
+# that count instead. Re-measured on the corpus with the fix applied:
+# modules both legs accepted 261 (158 mixed-path) — down from 326 (assertions
+# executed 17,925, optimized-path functions 1,176, byte-differing functions
+# 1,383 — all three comfortably above their unchanged floors, so only
+# `modules_both` moves. This is the acceptance cost of decline-honesty
+# (the same trade RQ-65-MVPCORE made for the multi-module `.wast` merge,
+# scripts/repro/home_alias_audit_corpus_1189.py's identical-shaped floor
+# note), stated where it is measurable. The floor moves DOWN here exactly
+# once, with this reason; a further fall without one is scan rot and stays
+# red.
 # ---------------------------------------------------------------------------
-FLOORS_FULL = dict(modules_both=300, assertions_compared=14_500,
+FLOORS_FULL = dict(modules_both=250, assertions_compared=14_500,
                    optimized_funcs=1_150, differing_funcs=1_350)
 FLOORS_LOCAL = dict(modules_both=20, assertions_compared=200,
                     optimized_funcs=30, differing_funcs=20)
@@ -225,98 +240,110 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     # #1213 — optimized path: i64 select (register-pair operands). CONVERTED
     # to a decline in v0.65 (RQ-65-DECLINE): select.wast as-convert-operand
     # is `ok`.
-    # #1209 — memory64 modules accepted and silently wrong on both selectors
-    # (i64-offset data segments dropped; optimized mis-addresses i64 addresses).
-    # Whole-module pins per kind: one class hits every function.
-    ('address64.wast', 0, '*', 'shared-wrong'): ('#1209', 25),
-    ('address64.wast', 1, '*', 'shared-wrong'): ('#1209', 35),
-    ('float_memory64.wast', 0, '*', 'shared-wrong'): ('#1209', 1),
-    ('float_memory64.wast', 1, '*', 'shared-wrong'): ('#1209', 1),
-    ('float_memory64.wast', 2, '*', 'parity-divergence/memory-only'): ('#1209', 2),
-    ('float_memory64.wast', 2, '*', 'shared-wrong'): ('#1209', 1),
-    ('float_memory64.wast', 3, '*', 'shared-wrong'): ('#1209', 1),
-    ('float_memory64.wast', 4, '*', 'shared-wrong'): ('#1209', 1),
-    ('float_memory64.wast', 5, '*', 'shared-wrong'): ('#1209', 1),
-    ('load64.wast', 0, '*', 'parity-divergence/memory-only'): ('#1209', 6),
-    ('load64.wast', 0, '*', 'parity-divergence/opt-wrong'): ('#1209', 4),
-    ('memory64.wast', 9, '*', 'parity-divergence/memory-only'): ('#1209', 40),
-    ('memory64.wast', 9, '*', 'shared-wrong'): ('#1209', 1),
-    ('memory_copy64.wast', 0, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_copy64.wast', 0, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_copy64.wast', 1, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_copy64.wast', 1, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_copy64.wast', 2, '*', 'shared-wrong'): ('#1209', 11),
-    ('memory_copy64.wast', 2, '*', 'shared-wrong/memory'): ('#1209', 20),
-    ('memory_copy64.wast', 3, '*', 'shared-wrong'): ('#1209', 6),
-    ('memory_copy64.wast', 3, '*', 'shared-wrong/memory'): ('#1209', 25),
-    ('memory_copy64.wast', 4, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_copy64.wast', 4, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_copy64.wast', 5, '*', 'shared-wrong'): ('#1209', 11),
-    ('memory_copy64.wast', 5, '*', 'shared-wrong/memory'): ('#1209', 20),
-    ('memory_copy64.wast', 6, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_copy64.wast', 6, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_copy64.wast', 7, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_copy64.wast', 7, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_grow64.wast', 0, '*', 'parity-divergence/both-wrong-differently'): ('#1209', 2),
-    ('memory_grow64.wast', 0, '*', 'parity-divergence/opt-wrong'): ('#1209', 1),
-    ('memory_grow64.wast', 1, '*', 'shared-wrong'): ('#1209', 6),
-    ('memory_grow64.wast', 2, '*', 'shared-wrong'): ('#1209', 6),
-    ('memory_grow64.wast', 3, '*', 'shared-wrong'): ('#1209', 10),
-    ('memory_init64.wast', 0, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_init64.wast', 0, '*', 'shared-wrong/memory'): ('#1209', 22),
-    ('memory_init64.wast', 1, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_init64.wast', 1, '*', 'shared-wrong/memory'): ('#1209', 21),
-    ('memory_init64.wast', 2, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_init64.wast', 2, '*', 'shared-wrong/memory'): ('#1209', 21),
-    ('memory_init64.wast', 3, '*', 'shared-wrong'): ('#1209', 9),
-    ('memory_init64.wast', 3, '*', 'shared-wrong/memory'): ('#1209', 21),
-    # #1210 — a value live across a call inside a value-carrying block/if/loop is
-    # lost on BOTH selectors (parity-blind; caught by the wasmtime leg).
-    ('block.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 1),
-    ('block.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 1),
-    ('block.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 1),
-    ('block.wast', 0, 'multi', 'shared-wrong'): ('#1210', 1),
-    ('if.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 4),
-    ('if.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 2),
-    ('if.wast', 0, 'as-call_indirect-last', 'shared-wrong'): ('#1210', 1),
-    ('if.wast', 0, 'as-call_indirect-mid', 'shared-wrong'): ('#1210', 2),
-    ('if.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 2),
-    ('if.wast', 0, 'as-select-last', 'shared-wrong'): ('#1210', 2),
-    ('if.wast', 0, 'as-select-mid', 'shared-wrong'): ('#1210', 2),
-    ('local_tee.wast', 0, 'as-block-first', 'shared-wrong'): ('#1210', 1),
-    ('local_tee.wast', 0, 'as-block-mid', 'shared-wrong'): ('#1210', 1),
-    ('local_tee.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1210', 1),
-    ('local_tee.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1210', 1),
-    ('loop.wast', 0, 'as-binary-operand', 'shared-wrong'): ('#1210', 1),
-    ('loop.wast', 0, 'as-binary-operands', 'shared-wrong'): ('#1210', 1),
-    ('loop.wast', 0, 'as-mixed-operands', 'shared-wrong'): ('#1210', 1),
-    ('loop.wast', 0, 'multi', 'shared-wrong'): ('#1210', 1),
-    ('select.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1210', 2),
-    ('select.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1210', 2),
-    ('stack.wast', 0, 'not-quite-a-tree', 'shared-wrong'): ('#1210', 2),
-    # #1215 — br_table/br_if with a value-carrying branch or if in an operand
-    # position, wrong on both selectors.
+    # #1209 — memory64 modules were accepted and silently wrong on both
+    # selectors (i64-offset data segments dropped; optimized mis-addresses
+    # i64 addresses). RQ-66-BOTHWRONG (v0.66): REFUSED outright, not fixed —
+    # `refuse_memory64_module` in synth-cli declines any module declaring a
+    # 64-bit-indexed memory at decode time (the #1046 pattern). Accepting
+    # memory64 and computing the wrong answer is exactly the class CLAUDE.md's
+    # compliance envelope calls the worst outcome, and a real lowering fix
+    # touches data-segment offset decoding, memory.size/memory.grow, and every
+    # address-materialization path on BOTH selectors — multi-release scale for
+    # a proposal needing a >4 GiB address space, incoherent for Cortex-M/RV32/
+    # host-native AArch64. All 42 pins / 513 assertions across address64.wast,
+    # float_memory64.wast, load64.wast, memory64.wast, memory_copy64.wast,
+    # memory_grow64.wast, memory_init64.wast move to a clean module-decline —
+    # see scripts/repro/bothwrong_1210_1211_1214_triage.md for the acceptance-
+    # delta note (NOT measured against the real-world #1017 corpus, which is
+    # not available in-repo; measured only that 14/257 spec-suite files are
+    # memory64-tagged, a weak proxy stated as such).
+    #
+    # #1210 — a value live across a call inside a value-carrying block/if/loop
+    # was lost on BOTH selectors. Root cause: `Call`'s non-float result
+    # handling unconditionally pushed a phantom operand-stack value for EVERY
+    # callee, including a void (0-result) one — `func_ret_i64` alone conflates
+    # "returns i32" with "returns nothing" (both all-false). FIXED by gating
+    # the push on `func_result_counts` (already computed by the decoder for
+    # the AArch64 backend, #851; never threaded to the ARM selector before
+    # now). All 22 pins / 33 assertions across block.wast, if.wast,
+    # local_tee.wast, loop.wast, select.wast, stack.wast are `ok`.
+    #
+    # #1215 — br_table/br_if with a value-carrying branch in an operand
+    # position, wrong on both selectors. Two of eleven entries
+    # (if.wast as-br_if-last/as-br_table-last) turned out to be the #1210
+    # void-call phantom-push bug wearing this issue number — the #1210 fix
+    # resolves them as a side effect, no #1215-specific change. Three more
+    # (br_table.wast as-loop-first/-last/-mid) were a SEPARATE, genuine
+    # `BrTable` bug: `target_idx` used `saturating_sub`, which silently
+    # clamped a branch depth reaching past every tracked block (a
+    # function-level `br_table` — e.g. `br_table 1 1` one level out of a
+    # single loop, which means "return", not "branch to block 0") to index 0
+    # — the OUTERMOST tracked block, or the loop ITSELF when nothing else was
+    # open, so the branch looped back on itself instead of exiting (measured
+    # as an emulator TIMEOUT, not merely a wrong value). The `#500` fix that
+    # already made `Br`/`BrIf` use `checked_sub` for exactly this case was
+    # never extended to `BrTable`; FIXED by the same `checked_sub` +
+    # synthesized function-return-label treatment (mirrors `Br`'s `None` arm:
+    # land the value in R0, jump to a shared epilogue label). This also
+    # closed `func.wast`'s `break-br_table-num` (`br_table 0 0 (i32.const 50)
+    # (local.get 0)) (i32.const 51)`, the same function-level shape.
+    #
+    # The remaining SIX entries are a third, genuinely different, unaddressed
+    # mechanism: a `br_table`/`br_if` whose INDEX or CONDITION operand is
+    # ITSELF a nested branch instruction that carries a value out (e.g. the
+    # outer `br_table`'s index operand is a second, nested `br_table`) — the
+    # selector does not model a branch as a value-producing expression when it
+    # appears in another branch's operand position. No call is involved, so
+    # #1210 cannot and does not touch these; the `target_idx` depth is
+    # in-range on every one, so the #1215 `checked_sub` fix does not touch
+    # them either (confirmed: all six reproduce, unchanged, after every fix in
+    # this lane). Left pinned — see
+    # scripts/repro/bothwrong_1210_1211_1214_triage.md for the evidence a
+    # nested `br 0 (i32.const 8)` used as `br_table`'s INDEX operand leaves
+    # its sibling VALUE operand undiscarded on the compiler's simulated
+    # stack, so a later `i32.add` sums both instead of using the one the
+    # taken branch actually carries (`br.wast`/`br_if.wast`
+    # nested-br_table-value-index: 1+4+8=... observed 12, wasmtime 9;
+    # `br_table.wast`'s two nested-br_table-* shapes and `func.wast`'s
+    # break-br_table-nested-num are the same mechanism).
     ('br.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 1),
     ('br_if.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 2),
-    ('br_table.wast', 0, 'as-loop-first', 'shared-wrong'): ('#1215', 1),
-    ('br_table.wast', 0, 'as-loop-last', 'shared-wrong'): ('#1215', 1),
-    ('br_table.wast', 0, 'as-loop-mid', 'shared-wrong'): ('#1215', 1),
     ('br_table.wast', 0, 'nested-br_table-value', 'shared-wrong'): ('#1215', 2),
     ('br_table.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 5),
     ('func.wast', 0, 'break-br_table-nested-num', 'shared-wrong'): ('#1215', 1),
-    ('func.wast', 0, 'break-br_table-num', 'shared-wrong'): ('#1215', 4),
-    ('if.wast', 0, 'as-br_if-last', 'shared-wrong'): ('#1215', 1),
-    ('if.wast', 0, 'as-br_table-last', 'shared-wrong'): ('#1215', 2),
-    # #1214 — i64 read-before-write local not zero-initialised on either selector.
-    ('func.wast', 0, 'init-local-i64', 'shared-wrong'): ('#1214', 1),
-    # #1211 — call_indirect ignores a non-zero table index (wrong callee);
-    # elem.wast call_in_table lands on a non-code address.
-    ('call_indirect.wast', 1, 'call-1', 'shared-wrong'): ('#1211', 2),
-    ('call_indirect.wast', 1, 'call-2', 'shared-wrong'): ('#1211', 3),
-    ('call_indirect.wast', 1, 'call-3', 'shared-wrong'): ('#1211', 2),
-    ('elem.wast', 72, 'call_in_table', 'shared-wrong'): ('#1211', 1),
-    ('elem.wast', 73, 'call_in_table', 'shared-wrong'): ('#1211', 1),
-    ('elem.wast', 74, 'call_in_table', 'shared-wrong'): ('#1211', 1),
+    #
+    # #1214 — i64 read-before-write local not zero-initialised on either
+    # selector. Root cause: `infer_i64_locals` infers a local's width only
+    # from a `local.set`/`local.tee` storing a known-i64 value (dataflow, not
+    # declaration) — a local declared i64, read before any write, and NEVER
+    # written at all anywhere in the function never entered the inferred set,
+    # so `compute_local_layout` gave it a 4-byte slot and the #457
+    # read-before-write zero-init prologue only zeroed the low word. FIXED by
+    # threading the module's own DECLARED local types
+    # (`FunctionOps::declared_i64_locals`, new decoder field) down to
+    # `compute_local_layout`, ORed into the dataflow-inferred set. `ok`.
+    #
+    # #1211 — TWO independent causes bundled under one issue number, both
+    # fixed. (a) call_indirect.wast's non-zero-table-index `call-1`/`call-2`/
+    # `call-3`: NOT "the table index is ignored" (the original hypothesis) —
+    # a register-liveness bug. `reg_srcs` (the register-passed call
+    # arguments, already popped off the operand-stack model by
+    # `pop_call_args`) were invisible to `stack_live_regs(&stack)`, so
+    # `free_callee_saved`'s scratch pick for the table-index relocation could
+    # (and did) hand back a register still holding a live argument — the
+    # relocation MOV silently overwrote it with the table index before
+    # marshalling (`call-1(2,3,0)` expected 5 = right callee `$f`, called
+    # with its second argument corrupted to the table index 0, computing
+    # 2+0=2). FIXED by protecting `reg_srcs` explicitly. (b) elem.wast's
+    # `call_in_table` (m72–74): the element-section offset reader recognized
+    # only a bare `i32.const` — `(i32.add (i32.const 1) (i32.const 2))` (the
+    # Wasm 2.0 extended-const grammar) fell through to "unverifiable", which
+    # poisons the WHOLE TABLE's closed-world type check and ships every slot
+    # null, so the dispatch executes the null word (`UC_ERR_INSN_INVALID`,
+    # not a clean trap). FIXED by `eval_extended_const_i32_offset`, a small
+    # evaluator for `i32.const`/`i32.add`/`i32.sub`/`i32.mul` (no
+    # `global.get` — stays unverifiable). All 6 pins / 10 assertions are `ok`.
+    #
     # memory.grow in a fixed-SRAM self-contained image returns -1 — a spec-LEGAL
     # failure (#539 lineage), while wasmtime grows; the later `memory.size` and
     # `check-memory-zero` results follow from it. Recorded with this reason, no

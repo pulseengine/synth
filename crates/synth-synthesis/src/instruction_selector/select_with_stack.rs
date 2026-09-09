@@ -243,6 +243,7 @@ impl InstructionSelector {
             wasm_ops,
             num_params,
             &self.params_i64,
+            &self.declared_i64_locals,
             &self.params_f32,
             &params_f64_vfp,
             &self.func_ret_i64,
@@ -4424,6 +4425,36 @@ impl InstructionSelector {
                         idx,
                     )?;
 
+                    // #1215: `checked_sub`, not `saturating_sub` — the #500
+                    // fix applied to `Br`/`BrIf` was never extended to
+                    // `BrTable`. A depth reaching past every tracked block
+                    // (a FUNCTION-LEVEL `br_table`, e.g. a bare `br_table 0 0`
+                    // in the function body, or `br_table 1 1` one level out of
+                    // a single loop) is a `return`, not a branch to block 0 —
+                    // the old clamp aliased it to the OUTERMOST tracked
+                    // block's label, and when NO block was open at all it sent
+                    // `target_idx < block_labels.len()` to `0 < 0` (false),
+                    // silently skipping BOTH the value landing and the branch
+                    // instruction, so control fell through to whatever
+                    // followed the `br_table` — spec `func.wast`'s
+                    // `break-br_table-num` measured this exactly
+                    // (`br_table 0 0 (i32.const 50) (local.get 0)) (i32.const
+                    // 51)` always returned 51, never branching).
+                    let target_of = |block_labels_len: usize, depth: u32| -> Option<usize> {
+                        block_labels_len.checked_sub(1 + depth as usize)
+                    };
+
+                    // A function-level edge needs ONE shared return label:
+                    // several distinct depths (or several targets sharing one
+                    // depth) can all resolve to "return", and the epilogue
+                    // must be emitted only once.
+                    let needs_fn_return = targets
+                        .iter()
+                        .chain(std::iter::once(default))
+                        .any(|&t| target_of(block_labels.len(), t).is_none());
+                    let fn_return_label =
+                        needs_fn_return.then(|| self.alloc_label("br_table_fnret"));
+
                     // #509: land the carried value in EVERY distinct target
                     // block's designated result register up front, before the
                     // dispatch cascade (never between a CMP and its Bcc — a
@@ -4432,24 +4463,54 @@ impl InstructionSelector {
                     // R_res is reserved for its block's extent and only
                     // meaningful at that block's join. Valid wasm gives all
                     // br_table targets the same arity, so either every edge
-                    // carries the value or none does.
+                    // carries the value or none does. A function-level edge
+                    // lands the SAME carried value in R0 (mirrors `Br`'s
+                    // `None` arm) instead of a block's designated register.
                     let mut moved: Vec<usize> = Vec::new();
+                    let mut moved_fn_return = false;
                     for t in targets.iter().chain(std::iter::once(default)) {
-                        let target_idx = block_labels.len().saturating_sub(1 + *t as usize);
-                        if target_idx < block_labels.len() && !moved.contains(&target_idx) {
-                            moved.push(target_idx);
-                            let mut edge_reserved = live_params.clone();
-                            edge_reserved.push(index_reg);
-                            edge_value_move(
-                                &mut block_labels,
-                                target_idx,
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &edge_reserved,
-                                idx,
-                            )?;
+                        match target_of(block_labels.len(), *t) {
+                            Some(target_idx) if !moved.contains(&target_idx) => {
+                                moved.push(target_idx);
+                                let mut edge_reserved = live_params.clone();
+                                edge_reserved.push(index_reg);
+                                edge_value_move(
+                                    &mut block_labels,
+                                    target_idx,
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &edge_reserved,
+                                    idx,
+                                )?;
+                            }
+                            None if !moved_fn_return => {
+                                moved_fn_return = true;
+                                if !stack.is_empty() {
+                                    let mut peek_reserved = live_params.clone();
+                                    peek_reserved.push(index_reg);
+                                    let val = peek_operand(
+                                        &mut stack,
+                                        &mut next_temp,
+                                        &mut instructions,
+                                        &mut spill,
+                                        &peek_reserved,
+                                        idx,
+                                    )?;
+                                    if val != Reg::R0 {
+                                        instructions.push(ArmInstruction {
+                                            op: ArmOp::Mov {
+                                                rd: Reg::R0,
+                                                op2: Operand2::Reg(val),
+                                            },
+                                            source_line: Some(idx),
+                                        });
+                                        cf.add_instruction();
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
 
@@ -4464,30 +4525,65 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
 
-                        let target_idx = block_labels.len().saturating_sub(1 + *target as usize);
-                        if target_idx < block_labels.len() {
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Bcc {
-                                    cond: Condition::EQ,
-                                    label: block_labels[target_idx].label.clone(),
-                                },
-                                source_line: Some(idx),
-                            });
-                        }
+                        let label = match target_of(block_labels.len(), *target) {
+                            Some(target_idx) => block_labels[target_idx].label.clone(),
+                            None => fn_return_label
+                                .clone()
+                                .expect("#1215: needs_fn_return computed over the same targets"),
+                        };
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Bcc {
+                                cond: Condition::EQ,
+                                label,
+                            },
+                            source_line: Some(idx),
+                        });
                         cf.add_instruction();
                     }
 
                     // Default branch
-                    let default_idx = block_labels.len().saturating_sub(1 + *default as usize);
-                    if default_idx < block_labels.len() {
+                    let label = match target_of(block_labels.len(), *default) {
+                        Some(default_idx) => block_labels[default_idx].label.clone(),
+                        None => fn_return_label
+                            .clone()
+                            .expect("#1215: needs_fn_return computed over the same targets"),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::B { label },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+
+                    // #1215: the shared function-return epilogue — reached
+                    // ONLY via an explicit jump from the cascade above (dead
+                    // code otherwise), so it is emitted right after the
+                    // default branch. Mirrors `Br`'s `None` arm exactly: the
+                    // value is already in R0 from the up-front landing pass.
+                    if let Some(label) = fn_return_label {
                         instructions.push(ArmInstruction {
-                            op: ArmOp::B {
-                                label: block_labels[default_idx].label.clone(),
+                            op: ArmOp::Label { name: label },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        if layout.frame_size > 0 {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: Reg::SP,
+                                    rn: Reg::SP,
+                                    op2: Operand2::Imm(layout.frame_size),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Pop {
+                                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
                             },
                             source_line: Some(idx),
                         });
+                        cf.add_instruction();
                     }
-                    cf.add_instruction();
                 }
 
                 Return => {
@@ -4937,29 +5033,68 @@ impl InstructionSelector {
                         restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
                         stack.push(result);
                     } else {
-                        // #311: tag an i64 result as the R0:R1 pair.
-                        let ret_i64 = self
-                            .func_ret_i64
+                        // #1210: does this callee return anything at all?
+                        // `func_ret_i64` alone conflates "returns i32" with
+                        // "returns nothing" (both all-false) — without this
+                        // check, a call to a VOID function still pushed a
+                        // phantom result (whatever garbage the callee left
+                        // in R0), landing every later real push one slot
+                        // deeper than wasm's own validated stack depth and
+                        // corrupting every consumer downstream (`stack.wast`
+                        // `not-quite-a-tree`, any value-carrying block/loop/if
+                        // with a void call inside it). Empty table (hand-built
+                        // op streams) ⇒ assume a result, the legacy path.
+                        let callee_returns_value = self
+                            .func_result_counts
                             .get(*func_idx as usize)
                             .copied()
-                            .unwrap_or(false);
-                        let result_reg = self.restore_caller_saved(
-                            &mut instructions,
-                            &preserved,
-                            &stack_live_regs(&stack),
-                            &local_to_reg,
-                            &layout,
-                            &mut spill,
-                            ret_i64,
-                            idx,
-                        )?;
-                        // #719 phase 2: reload the f32 S-registers the BL clobbered.
-                        // The callee returns in R0 (never S0/D0 on this branch), so
-                        // reloading S0..S15 here cannot destroy the integer result.
-                        restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
-                        // Push the call's return value as a live operand (spilled to
-                        // the frame if no register was free to hold it — #171).
-                        stack.push(result_reg);
+                            .unwrap_or(1)
+                            != 0;
+                        if callee_returns_value {
+                            // #311: tag an i64 result as the R0:R1 pair.
+                            let ret_i64 = self
+                                .func_ret_i64
+                                .get(*func_idx as usize)
+                                .copied()
+                                .unwrap_or(false);
+                            let result_reg = self.restore_caller_saved(
+                                &mut instructions,
+                                &preserved,
+                                &stack_live_regs(&stack),
+                                &local_to_reg,
+                                &layout,
+                                &mut spill,
+                                ret_i64,
+                                idx,
+                            )?;
+                            // #719 phase 2: reload the f32 S-registers the BL
+                            // clobbered. The callee returns in R0 (never
+                            // S0/D0 on this branch), so reloading S0..S15
+                            // here cannot destroy the integer result.
+                            restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
+                            // Push the call's return value as a live operand
+                            // (spilled to the frame if no register was free
+                            // to hold it — #171).
+                            stack.push(result_reg);
+                        } else {
+                            // A void callee leaves no wasm-visible result:
+                            // reload every preserved caller-saved register
+                            // verbatim (there is no fresh result to protect,
+                            // so none of `restore_caller_saved`'s
+                            // R0-conflict handling applies) and push
+                            // NOTHING — matching wasm's own validated stack
+                            // effect for this call exactly.
+                            for &(reg, off) in &preserved {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Ldr {
+                                        rd: reg,
+                                        addr: MemAddr::imm(Reg::SP, off),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                            }
+                            restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
+                        }
                     }
                 }
 
@@ -5032,15 +5167,24 @@ impl InstructionSelector {
                     // relocate the table index into a free callee-saved register
                     // so neither the R0–R3 arg writes nor the spill scratch can
                     // clobber it. We keep that register ON the operand stack while
-                    // marshalling so every `free_callee_saved` call avoids it,
-                    // then pop it back off just before emitting the call.
+                    // marshalling so every LATER `free_callee_saved` call avoids
+                    // it, then pop it back off just before emitting the call.
+                    //
+                    // #1211: `reg_srcs` was already popped off `stack` by
+                    // `pop_call_args` above, so `stack_live_regs(&stack)` alone
+                    // is blind to it — `free_callee_saved` could (and did) hand
+                    // back a register one of `reg_srcs` was still sitting in,
+                    // and the relocation MOV then silently overwrote a live call
+                    // argument with the table index (a non-zero-table
+                    // `call_indirect` dispatched the right function with the
+                    // table index in place of its real second argument). Protect
+                    // `reg_srcs` explicitly — they stay live until the
+                    // `emit_arg_moves` call below consumes them.
                     let mut table_pushed = false;
                     if !reg_srcs.is_empty() {
-                        let safe = self.free_callee_saved(
-                            &stack_live_regs(&stack),
-                            &local_to_reg,
-                            &layout,
-                        )?;
+                        let mut protect = stack_live_regs(&stack);
+                        protect.extend_from_slice(reg_srcs);
+                        let safe = self.free_callee_saved(&protect, &local_to_reg, &layout)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
                                 rd: safe,

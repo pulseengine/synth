@@ -1290,9 +1290,17 @@ claims:
         glob: ['crates/synth-synthesis/src/optimizer_bridge.rs']
         expect: 14
       - kind: count-eq                       # pinned optimized-path wrong answers (the named residual)
+        # RQ-66-BOTHWRONG (v0.66): 4 -> 2. The two entries this pattern lost
+        # were both `#1209` (`load64.wast` / `memory_grow64.wast` sub-cases) —
+        # incidental 'opt-wrong'-kind hits inside the memory64 pin block, not
+        # a third named class. #1209 is now refused outright (`refuse_memory64_module`,
+        # crates/synth-cli/src/main.rs), so its whole pin block — these two
+        # entries included — is gone. The remaining 2 now match the prose's
+        # "two optimized-path classes" (#1204, #1206) exactly, where before
+        # the count (4) never actually equaled the prose's "two".
         pattern: "parity-divergence/opt-wrong'\\): \\('#"
         glob: ['scripts/repro/selector_parity_197_differential.py']
-        expect: 4
+        expect: 2
       - kind: verbatim
         text: "pinned there by exact count with its issue"
 
@@ -1640,14 +1648,60 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
+        # RQ-66-BOTHWRONG (#1210/#1211/#1214/#1215): 19896 -> 20097. Four
+        # genuinely new lowering decisions, none replacing an existing arm —
+        # see scripts/repro/bothwrong_1210_1211_1214_triage.md for the full
+        # root-cause evidence. (a) #1214: `declared_i64_locals` threading +
+        # the OR-in at `compute_local_layout` (a local's width had NO
+        # declaration-based fallback before this; dataflow inference alone
+        # cannot see a read-before-write, never-written local's declared
+        # type). (b) #1211a: `CallIndirect`'s `reg_srcs` register-liveness
+        # protection (a register-argument-clobber class with no prior guard).
+        # (c) #1210: `func_result_counts`-gated void-call handling in `Call`
+        # (no prior representation of "this callee returns nothing"
+        # anywhere in the ARM selector). (d) #1215 (partial): `BrTable`'s
+        # target-depth resolution switched from `saturating_sub` to
+        # `checked_sub` plus a shared function-return epilogue — a depth
+        # past every tracked block is a `return`, which the old clamp
+        # aliased to the outermost block's label (or silently dropped both
+        # the value landing and the branch when no block was open at all).
+        # Each is oracle-gated: every closed pin in
+        # `selector_parity_197_differential.py` moved from
+        # `shared-wrong`/`parity-divergence` to `ok` or a clean
+        # `module-decline`, verified before AND after. Value RE-DERIVED
+        # after cargo fmt.
         # RQ-65-ALIASCLASS finishing lane (#1189): 19945 -> 19896. The
         # `SYNTH_HOME_ALIAS_AUDIT` hook body (home-set construction, verbose
         # line, decline text) moved OUT of select_with_stack.rs into
         # `home_alias::selector_hook` — one call remains. A FALL, no waiver;
         # value RE-DERIVED after cargo fmt.
-        value: 19896
+        value: 20097
         baseline: 17897
         waivers:
+          - to: 20097
+            reason: >-
+              RQ-66-BOTHWRONG (#1210/#1211/#1214/#1215): 19896 -> 20097
+              (+201). Four independent correctness fixes, each closing one
+              or more both-selectors-wrong pins the RQ-65-PARITY oracle
+              found and none superseding an existing hand-written arm to
+              delete in exchange — see
+              scripts/repro/bothwrong_1210_1211_1214_triage.md.
+              `declared_i64_locals` (#1214) is 1 new field + 1 setter + a
+              3-line OR in `compute_local_layout` in instruction_selector.rs;
+              the `CallIndirect` `reg_srcs` protection (#1211a) is a
+              register-set widened by one line plus an expanded comment in
+              select_with_stack.rs; the `func_result_counts`-gated void-call
+              branch (#1210) is a new field + setter + an `if
+              callee_returns_value` split of the existing integer-result
+              push in select_with_stack.rs; the `BrTable` function-level
+              return (#1215 partial) is a `target_of` helper (replacing the
+              inline `saturating_sub` clamp at both its call sites) plus the
+              up-front value-landing arm and the shared epilogue emitted
+              once per function. No decline-honesty residual: all four
+              shapes previously compiled with exit 0 and a silently wrong
+              answer (or, for the `BrTable` shape, silently fell through
+              past the branch instead of returning), the exact class this
+              ceiling exists to let grow only with a stated reason.
           - to: 19896
             reason: >-
               RQ-65-ALIASCLASS finishing lane (#1189): a FALL, 19945 -> 19896,
@@ -2108,7 +2162,11 @@ claims:
         # smaller than the two deltas summed).
         # RQ-65-ALIASCLASS finishing lane: 30943 -> 30894, the audit hook
         # collapsed to one call (see selector_lines_code).
-        value: 30894
+        # RQ-66-BOTHWRONG (#1210/#1211/#1214/#1215): 30894 -> 31100 (+206 =
+        # +201 code, see selector_lines_code, + 5 test module — the new
+        # `declared_i64_locals` argument threaded through the five
+        # compute_local_layout test call sites in instruction_selector.rs).
+        value: 31100
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2141,9 +2199,25 @@ claims:
       - kind: ratchet
         name: selector_wildcard_arms_code
         direction: down
-        value: 55
+        # RQ-66-BOTHWRONG (#1215 partial): 55 -> 56. The `BrTable`
+        # function-level-return fix's `match target_of(...) { Some(..) =>
+        # .., None if .. => .., _ => {} }` (both the value-landing pass and
+        # the per-target label resolution) carries one new `_ => {}` — the
+        # "already handled by an earlier arm, or this depth already got its
+        # value/label" no-op case. Closed-subspace over the match's own two
+        # prior arms, not a miscompile risk. This is a DIFFERENT contributor
+        # than the ZEROINIT +1 below (which is still live in the code); they
+        # land on the same value 56 by coincidence of the intervening
+        # RQ-59-SUBTRACT -1, not because either superseded the other.
+        value: 56
         baseline: 55
         waivers:
+          - to: 56
+            reason: >-
+              RQ-66-BOTHWRONG (#1215 partial, scripts/repro/bothwrong_1210_1211_1214_triage.md):
+              the `BrTable` `target_of` match's trailing `_ => {}` (see the
+              value: comment above) — +1 on top of the ZEROINIT +1 already
+              waived below, composing with RQ-59-SUBTRACT's -1 to 56.
           - to: 56
             reason: >-
               RQ-59-ZEROINIT (#990): `read_before_write_locals` now walks the
@@ -2169,7 +2243,9 @@ claims:
         # #1189: 90 -> 91 — the `_ => None` in the unit test
         # `if_result_join_never_targets_a_live_local_home_1189`'s MOV filter
         # (test region; the directed code-region count stays 55).
-        value: 93
+        # RQ-66-BOTHWRONG (#1215 partial): 93 -> 94 — the `BrTable`
+        # `target_of` match's `_ => {}` (see selector_wildcard_arms_code).
+        value: 94
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -2321,8 +2397,8 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 104
-        baseline: 104
+        value: 27
+        baseline: 27
       # THE ANTI-COARSENING COMPLEMENT. Slack-free but undirected: the
       # summed case count moves when the spec testsuite grows or a fixture
       # is added — honest work, so it costs a number update and not a
@@ -2331,7 +2407,7 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 623
+        value: 56
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the four tables in the
       # population or one of the two PINNED_WRONG red-half fixtures excluded

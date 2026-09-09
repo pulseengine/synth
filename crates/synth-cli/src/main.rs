@@ -1905,6 +1905,7 @@ fn compile_command(
     // limit would make every access an always-trap for a `(memory 1)` module).
     let mut single_func_linear_memory_bytes: u32 = 0;
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
+    let mut current_func_declared_i64_locals: Vec<bool> = Vec::new(); // #1214: declared local widths
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
     // consumed by any codegen path (Phase 2 is the gated elision).
@@ -1946,6 +1947,9 @@ fn compile_command(
             // RQ-59-STARTFN (#1046): the single-function path drops a start
             // function exactly like the module path — refuse it here too.
             refuse_dropped_start_function(module.start_function)?;
+            // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
+            // the module-path #1046 lineage.
+            refuse_memory64_module(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
             call_indirect_guards = module.call_indirect_guards();
@@ -2053,6 +2057,7 @@ fn compile_command(
             // #457: THIS function's declared param count from the type section.
             current_func_param_count = module_func_arg_counts.get(func.index as usize).copied();
             current_func_block_arity = func.block_arity.clone();
+            current_func_declared_i64_locals = func.declared_i64_locals.clone();
             // VCR-PERF-002 Phase 1 (#494): THIS function's facts slice, the
             // `current_func_params_i64` pattern (`compile_function` carries no
             // function index, so the driver filters by `func_index` up front).
@@ -2181,6 +2186,7 @@ fn compile_command(
         // #643: type-aware globals-table layout (8-byte i64/f64 slots).
         global_widths,
         current_func_block_arity,
+        current_func_declared_i64_locals,
         // VCR-PERF-002 Phase 1 (#494): threaded but not yet consumed (inert
         // plumbing, like volatile_segments was in #543 Phase 1). Phase 2 reads
         // `current_func_facts` in the selector behind SYNTH_FACT_SPEC.
@@ -3490,6 +3496,48 @@ fn refuse_dropped_start_function(start_function: Option<u32>) -> Result<()> {
     Ok(())
 }
 
+/// RQ-66-BOTHWRONG (#1209): a module declaring a 64-bit-INDEXED memory (the
+/// memory64 proposal, `(memory i64 ...)`) is ACCEPTED and SILENTLY WRONG —
+/// found by RQ-65-PARITY executing the spec suite through both shipped
+/// selectors for the first time. No decode or codegen path in this crate
+/// carries the i64-vs-i32 memory-index distinction past the memory section:
+/// an active data segment's `i64.const` offset is not recognized as a
+/// constant offset at all (only `i32.const` is), so its bytes are silently
+/// DROPPED (`address64.wast` reads back zeros); every address-materialization
+/// path assumes a 32-bit address, so the optimized and direct selectors
+/// disagree with each other on where an i64 address lands
+/// (`load64.wast`) — measured wrong on BOTH selectors, never merely declined.
+///
+/// This is the exact class CLAUDE.md's compliance envelope names as the
+/// worst outcome ("accept it and compute the wrong answer"), so it is
+/// refused outright — the #1046 start-function pattern — rather than
+/// partially fixed. memory64 also needs a >4 GiB address space to mean
+/// anything, which is incoherent for the Cortex-M/RV32 bare-metal targets
+/// this backend ships to; a real fix would touch data-segment offset
+/// decoding, `memory.size`/`memory.grow`, and every load/store
+/// address-materialization path on BOTH selectors — multi-release-scale
+/// work for a proposal this backend's targets cannot use anyway. No escape
+/// hatch: there is no partial-correctness mode to opt into, only a wrong one.
+fn refuse_memory64_module(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<()> {
+    if let Some(mem) = memories.iter().find(|m| m.memory64) {
+        anyhow::bail!(
+            "module declares memory {} as 64-bit-indexed (the memory64 \
+             proposal, `(memory i64 ...)`), but no synth backend implements \
+             i64 linear-memory addressing — an active data segment with an \
+             `i64.const` offset would be silently DROPPED, and the optimized \
+             and direct selectors disagree with each other on where an i64 \
+             address lands; accepting this module would compile it to \
+             executable, WRONG code rather than fail (#1209). memory64 also \
+             requires a >4 GiB address space, which no target this backend \
+             ships to (Cortex-M, RV32, host-native AArch64) can provide. \
+             Refusing; there is no workaround short of a 32-bit-indexed \
+             memory.",
+            mem.index
+        );
+    }
+    Ok(())
+}
+
 /// Compile all exported functions (plus their reachable internal callees, #235)
 /// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
@@ -3691,6 +3739,8 @@ fn compile_all_exports(
                     // refuse the whole compile rather than silently merge
                     // exports whose init never runs.
                     refuse_dropped_start_function(module.start_function)?;
+                    // RQ-66-BOTHWRONG (#1209): same for memory64.
+                    refuse_memory64_module(&module.memories)?;
                     let export_count = module
                         .functions
                         .iter()
@@ -3919,6 +3969,10 @@ fn compile_all_exports(
         };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+        // RQ-66-BOTHWRONG (#1209): unconditional, independent of the
+        // start-function decision below — memory64 is refused on every
+        // compile mode this path serves.
+        refuse_memory64_module(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM
         // Cortex-M image, whose Reset_Handler is the instantiation step and
@@ -4641,6 +4695,7 @@ fn compile_all_exports(
                 .copied()
                 .unwrap_or(false);
             fc.current_func_block_arity = func.block_arity.clone();
+            fc.current_func_declared_i64_locals = func.declared_i64_locals.clone();
             // #1168: on the .wast merge, compile THIS function against ITS
             // module's signature tables. The merged config carries ONE
             // module's tables (max-imports, else first); a function merged
@@ -9951,6 +10006,7 @@ mod tests {
             op_offsets: Vec::new(),
             unsupported: None,
             block_arity: Vec::new(),
+            declared_i64_locals: Vec::new(),
         }
     }
 

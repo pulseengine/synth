@@ -2149,6 +2149,7 @@ fn compute_local_layout(
     wasm_ops: &[WasmOp],
     num_params: u32,
     params_i64: &[bool],
+    declared_i64_locals: &[bool],
     params_f32: &[bool],
     params_f64_vfp: &[bool],
     func_ret_i64: &[bool],
@@ -2199,7 +2200,16 @@ fn compute_local_layout(
     // `offset % 8` alignment checks are preserved exactly.
     let mut offset: i32 = outgoing_arg_bytes;
     for &idx in &used {
-        let is_i64 = i64_set.contains(&idx);
+        // #1214: OR in the DECLARED width for a local the dataflow walk
+        // never saw written (read-before-write, never written at all) — see
+        // `InstructionSelector::declared_i64_locals`. For every other local,
+        // inference and declaration necessarily agree (valid wasm), so this
+        // is a no-op there.
+        let declared_i64 = declared_i64_locals
+            .get((idx - num_params) as usize)
+            .copied()
+            .unwrap_or(false);
+        let is_i64 = i64_set.contains(&idx) || declared_i64;
         // i64 locals require 8-byte alignment.
         if is_i64 && (offset % 8) != 0 {
             offset += 4;
@@ -5970,11 +5980,36 @@ pub struct InstructionSelector {
     func_ret_i64: Vec<bool>,
     /// #311: whether type `i` returns i64 (`call_indirect`).
     type_ret_i64: Vec<bool>,
+    /// #1210: result (return-value) count of function `i` (full wasm index,
+    /// imports first) — see
+    /// [`synth_core::wasm_decoder::DecodedModule::func_result_counts`]. `0` =
+    /// void. `Call` consults this before pushing a result onto the operand
+    /// stack: `func_ret_i64`/`func_ret_f32`/`func_ret_f64` all-false
+    /// conflates "returns i32" with "returns nothing", so without this table
+    /// a `call` to a VOID function silently pushed a phantom result anyway
+    /// (whatever garbage the callee left in R0) — the next real value landed
+    /// one slot deeper than wasm's own validated stack depth, corrupting
+    /// every consumer downstream (`stack.wast`'s `not-quite-a-tree`, and any
+    /// value-carrying block/loop/if with a void call inside it, #1210).
+    /// Empty ⇒ assume every callee returns a value (the legacy behavior;
+    /// every function whose callees ALL have a declared result is
+    /// byte-identical).
+    func_result_counts: Vec<u32>,
     /// #359: declared param widths of the function being compiled —
     /// `params_i64[k]` true ⇒ param `k` is i64/f64. The AAPCS stack-argument
     /// path refuses (Ok-or-Err) when any param is 64-bit. Empty ⇒ assume i32
     /// (the legacy path; every function with <=4 i32 params is byte-identical).
     params_i64: Vec<bool>,
+    /// #1214: DECLARED width of the non-parameter locals of the function
+    /// being compiled, by declaration order (index 0 = the first local after
+    /// the signature's parameters) — see
+    /// [`synth_core::wasm_decoder::FunctionOps::declared_i64_locals`].
+    /// `compute_local_layout` ORs this into the dataflow-inferred i64 set so
+    /// a local that is read before any write, and never written at all, is
+    /// still correctly widened. Empty ⇒ no correction (the legacy
+    /// dataflow-only inference; every function whose locals ARE written
+    /// somewhere is byte-identical).
+    declared_i64_locals: Vec<bool>,
     /// GI-FPU-002 (#619/#369): `params_f32[k]` true ⇒ param `k` is an f32,
     /// homed in an AAPCS-VFP argument S-register (S0..S15) rather than the
     /// R0..R3 integer path. Empty ⇒ no f32 params (byte-identical legacy path).
@@ -6164,7 +6199,9 @@ impl InstructionSelector {
             sp_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            func_result_counts: Vec::new(),
             params_i64: Vec::new(),
+            declared_i64_locals: Vec::new(),
             params_f32: Vec::new(),
             params_f64: Vec::new(),
             ret_f32: false,
@@ -6216,7 +6253,9 @@ impl InstructionSelector {
             sp_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            func_result_counts: Vec::new(),
             params_i64: Vec::new(),
+            declared_i64_locals: Vec::new(),
             params_f32: Vec::new(),
             params_f64: Vec::new(),
             ret_f32: false,
@@ -6872,11 +6911,29 @@ impl InstructionSelector {
         self.type_ret_i64 = type_ret_i64;
     }
 
+    /// #1210: register the per-function result COUNT (0 = void), so `Call`
+    /// can tell a void callee from an i32-returning one — `func_ret_i64`
+    /// alone conflates them (both all-false). Empty ⇒ assume every callee
+    /// returns a value (the legacy behavior).
+    pub fn set_func_result_counts(&mut self, func_result_counts: Vec<u32>) {
+        self.func_result_counts = func_result_counts;
+    }
+
     /// #359: register the declared parameter widths of the function about to be
     /// compiled so the AAPCS stack-argument path can refuse 64-bit params
     /// (Ok-or-Err). Empty ⇒ all params assumed i32 (the legacy path).
     pub fn set_params_i64(&mut self, params_i64: Vec<bool>) {
         self.params_i64 = params_i64;
+    }
+
+    /// #1214: register the DECLARED width of the function's non-parameter
+    /// locals (declaration order) so `compute_local_layout` can widen a
+    /// local `infer_i64_locals`'s dataflow walk never saw written — the
+    /// read-before-write-and-never-written i64 local that otherwise defaults
+    /// to a 4-byte slot and leaks its upper word. Empty ⇒ no correction (the
+    /// legacy dataflow-only inference).
+    pub fn set_declared_i64_locals(&mut self, declared_i64_locals: Vec<bool>) {
+        self.declared_i64_locals = declared_i64_locals;
     }
 
     /// GI-FPU-002 (#619/#369): register the declared f32-param mask of the
@@ -17019,6 +17076,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             false,
             false,
             false,
@@ -17041,6 +17099,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             1,
+            &[],
             &[],
             &[],
             &[],
@@ -17074,6 +17133,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             0,
+            &[],
             &[],
             &[],
             &[],
@@ -17117,6 +17177,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             false,
             false,
             false,
@@ -17148,6 +17209,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             2,
+            &[],
             &[],
             &[],
             &[],
