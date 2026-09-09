@@ -552,28 +552,52 @@ exactly this second case and must never be classified UNRUNNABLE — doing so
 would refuse the survey into never running anywhere the environment differs
 even slightly from CI, which is the opposite failure.
 
-**`preflight_suite`** runs every L1 and L2 step once on the unmutated tree
-before `run`, `controls`, or `ci` touch a single mutant, and:
+**`preflight_l1`** runs every L1 step once on the unmutated tree before
+`run`, `controls`, or `ci` touch a single mutant, and:
 
-- REFUSES (`sys.exit`, no ledger written) when anything is UNRUNNABLE, or
-  when any L2 (`cargo test`) command is red for any reason (a broken test
-  suite is not survivable by excluding the broken part).
-- EXCLUDES (does not score) an L1 step that executes and is merely red on
-  this tree — recorded in the ledger as `suite.l1_excluded_at_preflight` —
-  the same thing `baseline` has always done, now also applied when a
-  possibly stale or foreign `suite` (baselined elsewhere, or a while ago) is
-  reused without re-baselining. That reuse path is exactly the shape of the
-  incident above: a suite derived once (in CI, where `python` exists) and
-  replayed later somewhere it does not.
+- REFUSES (`sys.exit`, no ledger written) when anything is UNRUNNABLE.
+- Returns a usable L1 list with any step that executes and is merely red on
+  this tree EXCLUDED from scoring — recorded in the ledger as an audit-trail
+  field, `suite.l1_excluded_at_preflight` — the same exclusion `baseline` has
+  always applied, now also applied when a possibly stale or foreign `suite`
+  (baselined elsewhere, or a while ago) is reused without re-baselining.
+  That reuse path is exactly the shape of the incident above: a suite
+  derived once (in CI, where `python` exists) and replayed later somewhere
+  it does not. **The persisted `suite["l1"]` is left untouched** — only the
+  returned list is pruned, for that one call's scoring — so a step
+  transiently red on one host cannot silently and permanently shrink the
+  ledger's own record of the derived suite the next time it is saved (`run`
+  and `controls` are resumable, invoked many times per survey; mutating the
+  persisted list in place was a real regression found and fixed before this
+  shipped, second bullet below).
 
-`cmd_ci` does NOT get the full preflight when replaying without `--full` —
-its own module doc is explicit that `ci` is "the harness's DISCRIMINATION,
-not a re-run of the survey", so paying a full-suite probe on every CI
-invocation would contradict that design. Instead it probes only the L1 steps
-the pinned subset's recorded KILLED-type entries actually depend on (a
-handful, not 198), and refuses on EITHER unrunnable or red there — a
-replayed KILLED verdict is meaningless if the killer step is not green
-before the mutation is even applied.
+L2 (`cargo test --workspace` and friends) gets a DIFFERENT check depending on
+who is asking, because "is L2's validated-green status still trustworthy"
+has a different right answer for each caller:
+
+- `run`/`controls` (`preflight_suite`, composing `preflight_l1` with
+  `l2_is_current`) trust L2 IFF `suite["l2_validated_at"]` — set by both
+  `baseline` and `l2` — equals the commit the tree is at right now. That is
+  exact, not heuristic: these commands are resumed many times against a tree
+  that is not expected to move between invocations, so re-running the whole
+  workspace suite (278 s, measured in the RQ-66-DELETE evidence above) on
+  every resume would tax every one of them for a risk `baseline`/`l2`
+  already gate at the point L2 is actually confirmed green.
+- `ci` cannot use that check — it inherently replays against a tree EXPECTED
+  to have moved since `baseline` (that is the entire point of a regression
+  replay), so "the commit still matches" would refuse every real invocation.
+  It runs L2 directly, once, on the unmutated tree, whenever its subset can
+  actually reach it (`--full`, or a pinned KILLED-type entry whose recorded
+  killer layer is not `execution`) — a replayed L2 kill means nothing if L2
+  was already red before any mutation was applied. It also does NOT get the
+  full L1 preflight when replaying without `--full` — its own module doc is
+  explicit that `ci` is "the harness's DISCRIMINATION, not a re-run of the
+  survey", so paying a full-suite probe on every CI invocation would
+  contradict that design. Instead it probes only the L1 steps the pinned
+  subset's recorded execution-layer KILLED-type entries actually depend on
+  (a handful, not 198), and refuses on EITHER unrunnable or red there — a
+  replayed KILLED verdict is meaningless if the killer step is not green
+  before the mutation is even applied.
 
 **Second-order: `draw_frame` locks the sampling frame.** `cmd_run` used to
 overwrite `ledger["meta"]` unconditionally with its own argparse defaults on
@@ -604,12 +628,19 @@ A synthetic suite containing one genuinely-missing binary alongside real
 repro scripts (`cmp_select_two_move_differential.py`, run through the
 harness's existing bare-`python`→`python3` substitution) REFUSED naming the
 missing binary while the real scripts ran and passed in the same probe pass;
-a suite with only the real scripts proceeded. `python3
-scripts/test_mutation_survey.py`: 30/30, 12 new — `classify_unrunnable` on
-both directions (including a live example pulled from that week's own CI: a
-`home-alias-audit-oracle` step whose own oracle printed `RESULT: PASS` but
-whose step exit was 1 because of a stale `grep -Eq` count assertion further
-down the same step — correctly "ran, not unrunnable", the same class as
-`fact_spec_div_494_differential.py` from the other direction) and
-`draw_frame` on both directions.
+a suite with only the real scripts proceeded, returning the working list
+without touching `suite["l1"]`. A separate demo with one real,
+legitimately-failing (not unrunnable) step confirmed `suite["l1"]` is
+byte-identical before and after `preflight_l1` while the RETURNED list has
+that step excluded. `python3 scripts/test_mutation_survey.py`: 34/34, 16
+new — `classify_unrunnable` on both directions (including a live example
+pulled from that week's own CI: a `home-alias-audit-oracle` step whose own
+oracle printed `RESULT: PASS` but whose step exit was 1 because of a stale
+`grep -Eq` count assertion further down the same step — correctly "ran, not
+unrunnable", the same class as `fact_spec_div_494_differential.py` from the
+other direction), `draw_frame` on both directions, and `l2_is_current`
+(validated at the current commit, a moved commit since validation, never
+validated, and the pre-fix shape of THIS ledger — `l2_baseline_seconds` set
+but no `l2_validated_at` — which correctly reads as not-yet-trustworthy
+rather than silently assumed fine).
 
