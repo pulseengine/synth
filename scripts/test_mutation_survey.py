@@ -324,5 +324,39 @@ class DrawFrame(unittest.TestCase):
         self.assertEqual(fields, {})
 
 
+class L2IsCurrent(unittest.TestCase):
+    """RQ-66-POTENCY (#1189): `preflight_suite` (used by `run`/`controls`,
+    which resume a survey across many invocations against a tree that is not
+    expected to move between them) trusts L2's validated-green status
+    without re-executing `cargo test --workspace` on every call — but only
+    when that trust is not misplaced. `l2_is_current` is the decision,
+    driven here with an explicit `current_commit` so it needs no subprocess.
+    """
+
+    def test_validated_at_the_current_commit_is_trusted(self):
+        ledger = {"suite": {"l2_baseline_seconds": 274.4, "l2_validated_at": "abc12345"}}
+        self.assertTrue(ms.l2_is_current(ledger, current_commit="abc12345"))
+
+    def test_a_moved_commit_since_l2_was_validated_is_not_trusted(self):
+        # The exact shape `run`/`controls` must catch: baseline validated L2
+        # at abc12345, the tree has since moved to def67890 (new commits,
+        # possibly a regression) without anyone re-running `baseline`/`l2`.
+        ledger = {"suite": {"l2_baseline_seconds": 274.4, "l2_validated_at": "abc12345"}}
+        self.assertFalse(ms.l2_is_current(ledger, current_commit="def67890"))
+
+    def test_l2_never_validated_is_not_trusted(self):
+        # `baseline --skip-l2` and no `l2` run since: nothing to trust yet.
+        ledger = {"suite": {}}
+        self.assertFalse(ms.l2_is_current(ledger, current_commit="abc12345"))
+
+    def test_a_pre_fix_ledger_with_no_validated_at_field_is_not_trusted(self):
+        # The committed docs/status/mutation_survey.json shape: it has
+        # l2_baseline_seconds (L2 WAS run at baseline time) but predates this
+        # fix's l2_validated_at field. Must refuse rather than assume trust
+        # from a field that was never written for the reason being fixed.
+        ledger = {"suite": {"l2_baseline_seconds": 274.4}}
+        self.assertFalse(ms.l2_is_current(ledger, current_commit="ad52535a"))
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

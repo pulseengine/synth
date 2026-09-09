@@ -931,78 +931,88 @@ def probe_l1(l1_steps, log_prefix=""):
     return green, unrunnable, red
 
 
-def probe_l2(l2_steps):
-    """Run every L2 (cargo test) command ONCE, classified the same way as
-    probe_l1. L2 failing for a REAL reason (the codebase's own tests are red)
-    is not something this survey can route around by exclusion — that case is
-    still a hard refuse in cmd_baseline, same as before this fix; this
-    function only adds the ability to say WHY (environment vs. code) in the
-    refusal message."""
-    unrunnable, red = [], []
-    for step in l2_steps:
-        cmd = step["run"]
-        if cmd.startswith("cargo test --workspace"):
-            cmd = cmd + " --no-fail-fast"
-        r = subprocess.run(
-            ["bash", "-eo", "pipefail", "-c", cmd], cwd=ROOT, env=cargo_env(),
-            capture_output=True, text=True, timeout=3600,
-        )
-        if r.returncode == 0:
-            continue
-        out = r.stdout + r.stderr
-        reason = classify_unrunnable(r.returncode, out)
-        tail = "\n".join(out.strip().splitlines()[-6:])[-600:]
-        entry = {"job": step["job"], "step": step["step"], "exit": r.returncode, "tail": tail}
-        if reason:
-            entry["reason"] = reason
-            unrunnable.append(entry)
-        else:
-            entry["reason"] = "red on the unmutated tree"
-            red.append(entry)
-    return unrunnable, red
 
 
-def preflight_suite(ledger, log_prefix=""):
-    """RQ-66-POTENCY (#1189): re-probe the LOADED ledger's suite on the
-    CURRENT tree before ANY mutant is evaluated. A ledger's `suite` may have
+def l2_is_current(ledger, current_commit=None):
+    """L2 (`cargo test --workspace` and friends) is NOT re-executed by
+    `preflight_suite` — on an already-built target that is still real
+    minutes of test EXECUTION (RQ-66-DELETE's own evidence: 278s green), and
+    `run`/`controls` are RESUMABLE commands invoked many times per survey —
+    unconditionally re-running the whole workspace suite on every resume
+    would tax every one of those invocations for a risk `baseline` (and
+    `cmd_l2`) already gate at the point L2 is actually validated. Instead,
+    L2's validated-green status is trusted IFF `suite["l2_validated_at"]`
+    (set by `baseline` and by `l2`, whichever last confirmed L2 green) equals
+    the commit this tree is at NOW: a commit that moved since then means the
+    ledger's L2 validation no longer describes this tree, and an L2 "kill"
+    scored against it would repeat the #1189 false-kill shape for the same
+    reason an unrunnable L1 step does. `current_commit` defaults to
+    `head_commit()`; overridable so this decision is testable as a function
+    of its inputs, independent of `baseline["commit"]` (which `l2` does not
+    — and must not need to — update)."""
+    suite = ledger.get("suite") or {}
+    current_commit = head_commit() if current_commit is None else current_commit
+    return bool(suite.get("l2_baseline_seconds")) and suite.get("l2_validated_at") == current_commit
+
+
+def preflight_l1(suite, log_prefix=""):
+    """RQ-66-POTENCY (#1189): re-probe a suite's L1 steps on the CURRENT tree
+    before ANY mutant is evaluated against them. A ledger's `suite` may have
     been baselined elsewhere (CI) or a while ago; a step that cannot execute
-    HERE must not be scored as evidence about a mutation. Mutates
-    `ledger["suite"]["l1"]` in place to drop steps found legitimately red on
-    THIS tree (mirroring what a from-scratch `baseline` run here would have
-    produced) — a step already red pre-mutation is zero signal about a
-    mutation, whichever way it is discovered. Refuses (raises SystemExit) if
-    anything is UNRUNNABLE; that is the one thing this must never silently
-    route around, because an unrunnable step biases every mutant's score
-    toward "killed"."""
-    suite = ledger["suite"]
+    HERE must not be scored as evidence about a mutation — REFUSES (raises
+    SystemExit) when anything is UNRUNNABLE. Returns the L1 list callers
+    should score against: EITHER `suite["l1"]` unchanged, OR — when a step
+    executed and is merely red on this tree (zero signal about a mutation
+    either way, not evidence the harness is broken) — a COPY with that step
+    dropped. `suite["l1"]` itself is deliberately left untouched (only
+    `l1_excluded_at_preflight` is recorded on it, as an audit trail):
+    mutating the persisted list would let one transiently-red step silently
+    and permanently shrink the derived suite the next time the ledger is
+    saved. Host-environment concern only — callers own any L2 check, which
+    has a different right answer depending on whether the caller expects the
+    tree to have moved since `baseline` (see `l2_is_current` vs. running `l2`
+    directly)."""
     _green, unrunnable, red = probe_l1(suite["l1"], log_prefix=log_prefix)
-    l2_unrunnable, l2_red = probe_l2(suite["l2"])
-    if unrunnable or l2_unrunnable:
+    if unrunnable:
         lines = "\n".join(f"  L1 {e['job']} / {e['step']}: {e['reason']}" for e in unrunnable)
-        lines += ("\n" if unrunnable and l2_unrunnable else "") + "\n".join(
-            f"  L2 {e['job']} / {e['step']}: {e['reason']}" for e in l2_unrunnable)
         sys.exit(
-            f"REFUSING TO RUN: {len(unrunnable) + len(l2_unrunnable)} suite step(s) cannot "
-            f"execute on this tree/environment. Scoring a mutant against a step that never ran "
-            f"would count a dead oracle as a kill (#1189):\n{lines}\n"
+            f"REFUSING TO RUN: {len(unrunnable)} suite step(s) cannot execute on this "
+            f"tree/environment. Scoring a mutant against a step that never ran would count a "
+            f"dead oracle as a kill (#1189):\n{lines}\n"
             f"Fix the environment (missing interpreter / package / binary), or re-`baseline` "
             f"with a --jobs subset that excludes the unreachable jobs.")
-    if l2_red:
-        lines = "\n".join(f"  {e['job']} / {e['step']}: exit {e['exit']}" for e in l2_red)
-        sys.exit(
-            f"REFUSING TO RUN: {len(l2_red)} L2 (cargo test) command(s) are red on the "
-            f"unmutated tree — the codebase's own tests do not pass here, so nothing L2 reports "
-            f"during mutant scoring would be trustworthy:\n{lines}\n"
-            f"Fix the tree before surveying (same policy `baseline` has always enforced).")
+    usable_l1 = suite["l1"]
     if red:
         excluded = {(e["job"], e["step"]) for e in red}
-        suite["l1"] = [s for s in suite["l1"] if (s["job"], s["step"]) not in excluded]
+        usable_l1 = [s for s in suite["l1"] if (s["job"], s["step"]) not in excluded]
         suite.setdefault("l1_excluded_at_preflight", [])
         suite["l1_excluded_at_preflight"] = [
             e for e in suite["l1_excluded_at_preflight"] if (e["job"], e["step"]) not in excluded
         ] + red
         log(f"{log_prefix}{len(red)} L1 step(s) legitimately red on this tree — excluded from "
-            f"this run (not unrunnable, but zero signal about a mutation either way)")
+            f"this run's scoring (not unrunnable, but zero signal about a mutation either way)")
+    return usable_l1
+
+
+def preflight_suite(ledger, log_prefix=""):
+    """`run`/`controls` variant: `preflight_l1` plus the CHEAP `l2_is_current`
+    check (see its docstring — valid here because these commands resume a
+    survey across MANY invocations against a tree that is not expected to
+    move between them; re-running `cargo test --workspace` on every resume
+    would tax every one of them for a risk `baseline`/`l2` already gate at
+    the point L2 is actually validated). `cmd_ci` does NOT use this function:
+    it inherently replays against a tree EXPECTED to have moved since
+    `baseline`, so the cheap commit-match check would refuse it by design —
+    it runs `l2` directly, once, when its subset actually needs it."""
+    suite = ledger["suite"]
+    if not l2_is_current(ledger):
+        sys.exit(
+            f"REFUSING TO RUN: L2 (cargo test) was last validated at commit "
+            f"{suite.get('l2_validated_at')!r}, but this tree is at {head_commit()!r} (or L2 "
+            f"was never validated at all). An L2 kill scored against an un-revalidated tree "
+            f"risks the same false-kill shape as an unrunnable L1 step (#1189) — re-run "
+            f"`baseline` or `l2` on this tree first.")
+    return preflight_l1(suite, log_prefix=log_prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -1074,12 +1084,14 @@ def draw_frame(existing_meta, seed, per_region, oversample):
 # ---------------------------------------------------------------------------
 # Pipeline per mutant
 # ---------------------------------------------------------------------------
-def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wide=True):
+def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wide=True, l1=None):
     """Run one mutant through: build -> triage -> (probe | suite). Returns the
     ledger record. The working tree is restored on every path. `wide` (default
     on since RQ-66-DELETE) makes a byte-identical mutant's reach probe also run
     REACH_CFGS, so no DEAD verdict is ever recorded without the wide evidence
-    beside it."""
+    beside it. `l1`, when given, overrides the suite's L1 list for THIS
+    mutant's scoring only (RQ-66-POTENCY's preflight-filtered list) — see
+    `run_suite`."""
     rec = {k: site[k] for k in ("id", "region", "op", "file", "start", "end", "before", "after")}
     t0 = time.time()
     base = ledger["baseline"]["corpus"]
@@ -1104,7 +1116,7 @@ def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wi
                                           f"{' (+%d more)' % (len(hung) - 1) if len(hung) > 1 else ''}"
                                           " — every CI job times out"})
         elif changed and run_oracles:
-            rec.update(run_suite(ledger, log_prefix))
+            rec.update(run_suite(ledger, log_prefix, l1=l1))
     assert git_clean(site["file"]), f"tree not restored: {site['file']}"
     if not changed:
         rec.update(reach_probe(site, ledger, wide=wide))
@@ -1116,9 +1128,15 @@ def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wi
     return rec
 
 
-def run_suite(ledger, log_prefix=""):
+def run_suite(ledger, log_prefix="", l1=None):
+    """`l1` overrides `ledger["suite"]["l1"]` for this call only — used by
+    `preflight_suite` callers to score against the steps found runnable HERE
+    without PERSISTING that narrower list as the ledger's own record of the
+    derived suite (a step excluded for being red on one tree must not vanish
+    from the suite forever the moment `save_ledger` next fires)."""
     suite = ledger["suite"]
-    for step in suite["l1"]:
+    l1 = suite["l1"] if l1 is None else l1
+    for step in l1:
         code, out, dt = run_step(step)
         if code != 0:
             tail = "\n".join(out.strip().splitlines()[-6:])
@@ -1320,6 +1338,7 @@ def cmd_baseline(args):
         if not green:
             sys.exit("baseline L2 is red — fix the tree before surveying")
         suite["l2_baseline_seconds"] = round(dt, 1)
+        suite["l2_validated_at"] = head_commit()
     ledger["baseline"] = {"commit": head_commit(), "corpus": corpus,
                           "corpus_modules": len(corpus_modules()), "configs": CORPUS_CFGS}
     ledger["suite"] = suite
@@ -1339,6 +1358,7 @@ def cmd_l2(args):
     if not green:
         sys.exit(1)
     ledger["suite"]["l2_baseline_seconds"] = round(dt, 1)
+    ledger["suite"]["l2_validated_at"] = head_commit()
     save_ledger(args.ledger, ledger)
 
 
@@ -1347,7 +1367,7 @@ def cmd_run(args):
     if not ledger.get("baseline"):
         sys.exit("run `baseline` first")
     ensure_symlink()
-    preflight_suite(ledger)
+    l1 = preflight_suite(ledger)
     sites = enumerate_sites()
     fields, ok, msg = draw_frame(ledger["meta"], args.seed, args.per_region, args.oversample)
     if not ok:
@@ -1367,7 +1387,7 @@ def cmd_run(args):
             continue
         if not args.only and counted[site["region"]] >= args.per_region:
             continue
-        rec = evaluate(site, ledger, log_prefix=f"[{site['region']} {counted[site['region']]}/{args.per_region}] ")
+        rec = evaluate(site, ledger, log_prefix=f"[{site['region']} {counted[site['region']]}/{args.per_region}] ", l1=l1)
         ledger["mutants"].append(rec)
         if rec["classification"] != "UNCOMPILABLE":
             counted[site["region"]] += 1
@@ -1380,11 +1400,11 @@ def cmd_controls(args):
     if not ledger.get("baseline"):
         sys.exit("run `baseline` first")
     ensure_symlink()
-    preflight_suite(ledger)
+    l1 = preflight_suite(ledger)
     ledger["controls"] = []
     bad = 0
     for site in control_sites():
-        rec = evaluate(site, ledger, log_prefix="[control] ")
+        rec = evaluate(site, ledger, log_prefix="[control] ", l1=l1)
         rec["expect"] = "KILLED"
         killer = rec.get("killed_by", {})
         rec["control_ok"] = rec["classification"] == "KILLED" and (
@@ -1565,18 +1585,25 @@ def cmd_ci(args):
     ok, err, _ = build_synth()
     if not ok:
         sys.exit(f"build failed: {err}")
-    # RQ-66-POTENCY (#1189): `ci` replays a SMALL FIXED SUBSET on purpose
-    # ("the harness's DISCRIMINATION, not a re-run of the survey" — module
-    # doc), so this probes only the L1 steps the pinned subset's recorded
-    # killers actually depend on, not the whole derived suite (that full
-    # probe belongs to `run`/`controls`, which already run the whole suite
-    # per mutant/control). `--full` additionally replays UNTESTED entries
-    # through the entire suite, so it gets the full preflight too.
+    # RQ-66-POTENCY (#1189): `ci` uses `preflight_l1` (NOT `preflight_suite`'s
+    # cheap commit-match L2 check — that is WRONG here: `ci` inherently
+    # replays against a tree EXPECTED to have moved since `baseline`, so "the
+    # commit still matches" would refuse every real invocation by design).
+    # L1 is probed narrowly (`--full`: the whole derived suite, since UNTESTED
+    # replay walks all of it via `run_suite`; otherwise just the steps the
+    # subset's KILLED-type entries actually depend on — "a small fixed
+    # subset... not a re-run of the survey", per the module doc). L2 is
+    # validated by running it ONCE, directly, on the UNMUTATED tree, whenever
+    # the subset can reach it — a replayed L2 kill means nothing if L2 was
+    # already red before any mutation was applied.
+    subset_for_preflight = ledger.get("ci_subset") or []
+    l1_override = None
     if args.full:
-        preflight_suite(ledger)
+        l1_override = preflight_l1(ledger["suite"], log_prefix="[ci-preflight] ")
+        needs_l2 = True
     else:
         killer_steps = {(kb["job"], kb["step"])
-                         for e in (ledger.get("ci_subset") or [])
+                         for e in subset_for_preflight
                          if (kb := e.get("want_killed_by", {})).get("layer") == "execution"}
         probe_targets = [s for s in ledger.get("suite", {}).get("l1", [])
                          if (s["job"], s["step"]) in killer_steps]
@@ -1594,6 +1621,16 @@ def cmd_ci(args):
                     f"REFUSING TO RUN: {len(bad)} pinned killer step(s) are not green on the "
                     f"UNMUTATED tree — replaying their mutation would be a vacuous KILLED "
                     f"verdict, not evidence the mutation was caught (#1189):\n{lines}")
+        needs_l2 = any(
+            e.get("want_killed_by", {}).get("layer") not in (None, "execution")
+            for e in subset_for_preflight if e.get("want_classification") == "KILLED")
+    if needs_l2:
+        green, failing, _binaries, _dt = run_l2(ledger["suite"]["l2"])
+        if not green:
+            sys.exit(
+                f"REFUSING TO RUN: L2 (cargo test) is red on the UNMUTATED tree "
+                f"({failing[:3]}) — a replayed L2 KILLED verdict would be vacuous, not "
+                f"evidence a mutation was caught (#1189).")
     base_corpus, _ = compile_corpus(TARGET_DIR / "base-corpus")
     if base_corpus != ledger["baseline"]["corpus"]:
         drift = [k for k in base_corpus if base_corpus[k] != ledger["baseline"]["corpus"].get(k)]
@@ -1647,7 +1684,7 @@ def cmd_ci(args):
                 failures.append(f"{sid}: a mutation the ledger records as KILLED now SURVIVES its killer — the oracle lost its power")
         else:
             rec = evaluate(site, live, run_oracles=(expect["classification"] == "UNTESTED" and args.full),
-                           wide=bool(expect["reach_wide"]))
+                           wide=bool(expect["reach_wide"]), l1=l1_override)
             want_bytes = expect["bytes"]
             if rec.get("bytes") != want_bytes:
                 failures.append(f"{sid}: bytes {rec.get('bytes')} != ledger {want_bytes}")
