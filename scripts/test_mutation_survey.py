@@ -12,6 +12,7 @@ Run: python3 scripts/test_mutation_survey.py
 """
 import importlib.util
 import os
+import pathlib
 import sys
 import unittest
 from pathlib import Path
@@ -107,6 +108,51 @@ class ReachCfgsShape(unittest.TestCase):
         flag_on = [c for c, (_, e) in ms.REACH_CFGS.items() if e.get("SYNTH_GRAPH_ALLOC") == "1"]
         self.assertTrue(hard_float, "no hard-float configuration in REACH_CFGS")
         self.assertTrue(flag_on, "no SYNTH_GRAPH_ALLOC configuration in REACH_CFGS")
+
+
+class MutantsCiGateArithmetic(unittest.TestCase):
+    """#1243 — the CI summary gate's floors must be NUMBERS, not digit shapes.
+
+    The old form asserted `subset=[4-9][0-9]*`, meaning "first digit is 4-9",
+    so it accepted 4-9 and 40-99 and rejected 10-39. RQ-66-DELETE grew the
+    pinned subset 7 -> 10 and the job failed while reporting a healthy result.
+    The regression that matters is not "the regex was wrong" but "a floor
+    reddened when the guarded quantity IMPROVED", so both directions are
+    asserted here rather than only the one that broke.
+    """
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "ci_mutants_gate", pathlib.Path(__file__).with_name("ci_mutants_gate.py"))
+        self.gate_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate_mod)
+
+    def test_selftest_cases_all_hold(self):
+        for label, text, expect_pass in self.gate_mod.SELFTEST:
+            with self.subTest(label):
+                self.assertEqual(not self.gate_mod.gate(text), expect_pass, label)
+
+    def test_the_exact_1243_output_passes(self):
+        # The literal job output that the character-class regex rejected.
+        text = ("MUTANTS-CI subset=10 controls=3 non-killed=7 failures=0\n"
+                "MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0\n")
+        self.assertEqual(self.gate_mod.gate(text), [])
+
+    def test_growth_past_nine_never_reddens(self):
+        # The whole 10-39 band the old assertion refused, plus beyond it.
+        for subset in (10, 17, 39, 40, 100):
+            text = (f"MUTANTS-CI subset={subset} controls=3 non-killed=7 failures=0\n"
+                    "MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0\n")
+            with self.subTest(subset=subset):
+                self.assertEqual(self.gate_mod.gate(text), [])
+
+    def test_shrinking_below_the_floor_still_reddens(self):
+        # The gate must not have been loosened into vacuity by the fix.
+        text = ("MUTANTS-CI subset=3 controls=1 non-killed=1 failures=0\n"
+                "MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0\n")
+        complaints = self.gate_mod.gate(text)
+        self.assertEqual(len(complaints), 3, complaints)
 
 
 if __name__ == "__main__":

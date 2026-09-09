@@ -97,6 +97,33 @@ artifacts:
       done-when: "manual: each of the four DEAD sites is either DELETED with byte-identity proven over the corpus, or shown REACHABLE with the evidence that contradicts its DEAD classification; selector_lines_code moves DOWN in claims.yaml with no waiver, or the artifact states why no deletion was safe"
       landed: >-
         PR #1239 (branch fix/delete-242), one increment; finding filed as #1238.
+        THE PR'S OWN GATE HAD A DEFECT, FIXED HERE RED-FIRST (#1243). The
+        replay step asserted its floors with character-class regexes —
+        `subset=[4-9][0-9]*`, written to mean "at least 4" and actually meaning
+        "the first digit is 4 through 9", so it accepted 4-9 and 40-99 and
+        REJECTED 10-39. This PR grew the pinned subset 7 -> 10 and the job went
+        RED while reporting a completely healthy run (every control killed by
+        its own named oracle, every survivor reproduced, `failures=0`): the gate
+        reddened because the thing it guards got BIGGER. The regex was on main
+        and predates this PR; it was silently wrong for as long as the numbers
+        stayed in single digits, so nothing had ever exercised that band. Two
+        siblings were latent, `controls=` and `non-killed=`, both rejecting
+        10-19. Replaced by `scripts/ci_mutants_gate.py`: floors compare as
+        integers, exactness assertions stay exact, `reached == entries` becomes
+        an IDENTITY rather than two independent floors (two floors would pass a
+        probe reaching fewer sites than it has entries — precisely what the gate
+        exists to catch), and every complaint names its field and value where
+        `grep -q` exited 1 saying nothing. Red-first is INHERITED, not asserted:
+        the gate was red on this PR's own run and the fix turns it green without
+        touching the survey's result. Eight `--selftest` cases and four
+        `unittest` cases cover both directions, including that shrinking below
+        the floor still produces exactly three complaints, so the fix cannot
+        have loosened the gate into vacuity. `claims.yaml` moved with it: the
+        two pins that named the deleted regexes now pin the GATE and the floor
+        VALUES read from the shipped source (`("subset", "MUTANTS-CI", "floor",
+        4)`, `("unreached", …, "exact", 0)`, `reached != entries:`) rather than
+        a transcription of their spelling — which is how a wrong threshold
+        survived a ledger that was faithfully guarding it.
         No deletion: every one of the four DEAD sites is REACHABLE, so none was
         touched (no Rust file changed). What landed is the guard:
         `scripts/mutation_survey.py` gains `REACH_CFGS` (m7dp-reloc, m7dp-self,

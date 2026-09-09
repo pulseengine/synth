@@ -3514,8 +3514,18 @@ claims:
         glob: ['.github/workflows/ci.yml']   # summary line, not exit 0
         expect: 1
       - kind: count-eq
-        pattern: "grep -Eq '\\^MUTANTS-CI subset=\\[4-9\\]\\[0-9\\]\\* controls=\\[2-9\\]\\[0-9\\]\\* non-killed=\\[2-9\\]\\[0-9\\]\\* failures=0\\$'"
+        # #1243: this pinned the literal `grep -Eq '^MUTANTS-CI
+        # subset=[4-9][0-9]* ...'`. That assertion was a CHARACTER CLASS, not a
+        # floor -- "the first digit is 4-9" -- so it accepted 4-9 and 40-99 and
+        # REJECTED 10-39, and it went red when the pinned subset grew 7 -> 10.
+        # Floors are arithmetic now, so the ledger pins the gate that enforces
+        # them and the floor VALUE inside it.
+        pattern: 'python3 scripts/ci_mutants_gate\.py mutants-ci\.txt'
         glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: count-eq                       # the floor itself, read from the shipped gate
+        pattern: '\("subset",\s+"MUTANTS-CI",\s+"floor", 4\)'
+        glob: ['scripts/ci_mutants_gate.py']
         expect: 1
       - kind: file-exists
         path: scripts/mutation_survey.py
@@ -3545,8 +3555,12 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 4
       - kind: count-eq                       # the replay line that makes it red
-        pattern: "grep -Eq '\\^MUTANTS-REACH-WIDE entries=\\[1-9\\]\\[0-9\\]\\* reached=\\[1-9\\]\\[0-9\\]\\* unreached=0\\$'"
-        glob: ['.github/workflows/ci.yml']
+        pattern: '\("unreached",\s+"MUTANTS-REACH-WIDE",\s+"exact", 0\)'
+        glob: ['scripts/ci_mutants_gate.py']
+        expect: 1
+      - kind: count-eq                       # reach completeness is an IDENTITY, not two floors
+        pattern: 'reached != entries:'
+        glob: ['scripts/ci_mutants_gate.py']
         expect: 1
       - kind: count-eq                       # the checker's own tests run in CI
         pattern: 'python3 scripts/test_mutation_survey\.py'
