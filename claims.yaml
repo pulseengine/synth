@@ -2453,7 +2453,7 @@ claims:
       - kind: count-eq
         pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'
         glob: ['scripts/repro/**/*.py']
-        expect: 10
+        expect: 12
       - kind: verbatim                       # the prose names what is OUT
         text: "EXCLUDED, by design"
       - kind: count-eq                       # the derivation exists…
@@ -3162,7 +3162,26 @@ claims:
     #   the captured bytes. Value RE-DERIVED from `oracle_wiring_check.py`
     #   AFTER rebasing onto origin/main (fcb8be4f, a dependency bump only):
     #   346751 -> 346759.
-    text: "--exact-emulation-floor 346759"
+    # v0.66 — RQ-66-WATCHED (#1189): +21000 for the three execution oracles
+    #   written to the v0.65 survey's UNTESTED mutants, each proven red on
+    #   its recorded mutant before wiring: cmn_residual_compare_1189
+    #   (2,500 declared; oracle_run.py measures 2,638 emulations / 2,636
+    #   wasmtime_calls — 41 exports x 2 self-contained legs), i64_result_pair_1189
+    #   (1,000; 1,032 emulations / 1,030 wasmtime_calls) and
+    #   self_contained_boot_sweep_1189 (17,500; every corpus image booted
+    #   through its own shipped Reset_Handler + every register-signature
+    #   export executed against wasmtime — 331 boots, 18,199 emulations /
+    #   17,868 wasmtime_calls measured via oracle_run.py). The floor total
+    #   here sums each script's DECLARED `# ci-checks: emulations >= N`
+    #   threshold (2,500 + 1,000 + 17,500), not the live-measured count above.
+    #   Value RE-DERIVED from `oracle_wiring_check.py` on the lane tree at
+    #   a73d5ac2 (`--exact-emulation-floor 367751` verified green):
+    #   346751 -> 367751. Re-derive again on the merged tree if a sibling
+    #   lane lands a floor in the same wave.
+    # v0.66 MERGE: both landed in the same wave, so neither branch's value is
+    #   correct for this tree. RE-DERIVED below by running oracle_wiring_check
+    #   on the merged tree, exactly as the RQ-66-WATCHED note above instructs.
+    text: "--exact-emulation-floor 367759"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
@@ -3611,6 +3630,36 @@ claims:
         pattern: '"control_ok": true'
         glob: ['docs/status/mutation_survey.json']
         expect: 3
+      # RQ-66-WATCHED: the SILENT-subset numbers, derived mechanically by
+      # `mutation_survey.py summarize()`'s `is_loud_kill` rule re-run over
+      # THIS SAME v0.65 ledger (no re-sampling, no oracle invocation — see
+      # MUTATION_SURVEY.md "why mutants_untested does not fall"). Pinned so
+      # the published 25.0 % silent-survival number cannot drift from the
+      # ledger it is derived from.
+      - kind: count-eq
+        pattern: '"survey_killed_loud": 5\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_changed": 16\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_untested": 4\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_killed_execution": 2\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_killed_structure": 8\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_killed_freeze_only": 2\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
       - kind: count-eq                       # ci_subset: known-KILLED side
         pattern: '"want_classification": "KILLED"'
         glob: ['docs/status/mutation_survey.json']
@@ -3684,3 +3733,49 @@ claims:
         expect: 1
       - kind: file-exists
         path: scripts/test_mutation_survey.py
+  # RQ-66-WATCHED (#1189): the four v0.65 UNTESTED mutants each got an oracle
+  # PROVEN to kill it (red on the recorded mutant applied with the survey's
+  # own Edit context manager, green on the clean tree — transcripts in the
+  # PR). Three are execution oracles in one CI job; the fourth (the AAPCS
+  # dead-at-return set, a CONSERVATIVE mutation no execution differential
+  # can see) is a behavioural unit test that pins the fact through BOTH of
+  # its hand-maintained copies at once (the pass proposes, the validator
+  # certifies). The pins below keep the job, the scripts and the test in
+  # existence; the survey's re-measured numbers are pinned in the block
+  # above against the harness-written summary, including the SILENT-subset
+  # keys the v0.65 cold review asked for (now derived by a mechanical rule
+  # in `mutation_survey.py summarize`, never hand-tallied).
+  - id: SYNTH-MUTATION-WATCHED-RQ66
+    doc: docs/status/MUTATION_SURVEY.md
+    text: "RQ-66-WATCHED"
+    evidence:
+      - kind: count-eq                       # the job exists
+        pattern: '^  watched-1189-oracle:$'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: count-eq                       # its three oracles are driven
+        pattern: 'oracle_run\.py scripts/repro/(cmn_residual_compare_1189|i64_result_pair_1189|self_contained_boot_sweep_1189)_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 3
+      - kind: file-exists
+        path: scripts/repro/cmn_residual_compare_1189_differential.py
+      - kind: file-exists
+        path: scripts/repro/cmn_residual_compare_1189.wat
+      - kind: file-exists
+        path: scripts/repro/i64_result_pair_1189_differential.py
+      - kind: file-exists
+        path: scripts/repro/i64_result_pair_1189.wat
+      - kind: file-exists
+        path: scripts/repro/self_contained_boot_sweep_1189_differential.py
+      - kind: count-eq                       # the liveness ABI test exists
+        pattern: 'fn aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189\(\)'
+        glob: ['crates/synth-synthesis/src/liveness.rs']
+        expect: 1
+      - kind: count-eq                       # the boot oracle ASSERTS the boot finished
+        pattern: 'boot-incomplete'
+        glob: ['scripts/repro/self_contained_boot_sweep_1189_differential.py']
+        expect: 2                            # the docstring and the assertion
+      - kind: count-eq                       # the silent-subset rule is mechanical
+        pattern: '^def is_loud_kill\('
+        glob: ['scripts/mutation_survey.py']
+        expect: 1

@@ -47,6 +47,68 @@ correction is carried beside the verdicts in the ledger (#1238).
   table is annotated; `claims.yaml` pins it (`SYNTH-MUTATION-DEAD-REACHABLE-RQ66`)
   and the `ci_subset` non-killed side moves 4 -> 7.
 - No Rust file changed: emitted bytes are unchanged by construction.
+### RQ-66-WATCHED (#1189) — the survey's four UNTESTED mutants, each watched by an oracle proven to kill it
+
+v0.65's mutation survey named four codegen decisions no oracle watches: an
+equality's condition code inverted on the direct selector, an i64 result's
+high-half move deleted on the optimized path, an AAPCS dead-at-return register
+dropped from the realloc pass, and the startup's data-copy count register
+changed — bytes moved, the whole named suite stayed green. Each is now watched,
+and "watched" was defined as red-first: the oracle fails on the recorded mutant
+(applied with `mutation_survey.py`'s own `Edit`) and passes on the clean tree.
+
+- `cmn_residual_compare_1189` — the direct selector's hand-written
+  negative-immediate `cmn` compare table, all ten conditions at three
+  magnitudes, executed on both self-contained legs against wasmtime: **160
+  wrong values on the mutant, 2,636/2,636 clean.**
+- `i64_result_pair_1189` — 22 i64-result shapes on the OPTIMIZED path with R1
+  poisoned: **400 wrong high halves on the mutant, clean green.**
+- `liveness::tests::aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189`
+  — the conservative mutant no execution differential can see, pinned as
+  behaviour in both directions through BOTH hand-maintained copies of the set
+  (pass + validator): **fails on the mutant with the exact lost recolouring.**
+- `self_contained_boot_sweep_1189` — **every self-contained corpus image booted
+  through its own shipped `Reset_Handler`** on zeroed RAM, the boot ASSERTED
+  to reach the entry scaffold, every register-signature export executed
+  against wasmtime (331 images, 17,850 vectors): **210 findings on the mutant
+  — 22 images never finish booting, 12 boot with a TRUNCATED copy** (the
+  mutant's `movt r2` still lands the high half of the count, so an image whose
+  data is ≥ 64 KiB looks healthy and is missing its tail). No harness had ever
+  asserted a boot *finished*.
+
+**No 38-mutant re-sampling ran this release** — this host has no bare
+`python`, and `mutation_survey.py`'s suite replay scores any non-zero step
+exit as KILLED, so a replay here would misclassify every mutant on an
+environment defect rather than an oracle observing wrongness (see
+`docs/status/MUTATION_SURVEY.md`, "why `mutants_untested` does not fall").
+The headline is therefore UNCHANGED: 4 of 21 byte-changing mutants survive
+(19 %). What DID move: **Silent subset** — kills by refusal, panic, floor or
+hang removed, now by a MECHANICAL rule in `mutation_survey.py`
+(`is_loud_kill`) rather than a hand tally — re-derived directly over the
+existing ledger (no oracle invocation) and reproduces exactly: **4 of 16,
+25.0 %** (not the 4 of 15 / 27 % the v0.65 cold review's hand tally quoted —
+that tally does not decompose from its own ledger).
+`mutants_untested` ratchet: **4 → 4, unchanged** — the four oracles above are
+independently proven red-first by hand, but reclassifying the ledger's
+`UNTESTED` records honestly requires a genuine suite replay (CI, where a real
+`python` exists), which this PR does not attempt to fake.
+
+**The boot sweep's first run found two new optimized-path miscompiles** (exit
+0, direct selector correct): **#1240** `i64.clz`/`ctz`/`popcnt` leave the
+input's high word in the result; **#1241** an i64 non-param local loses its
+value, a half of it visible in R9/R10/R11 — plausibly #1204's root (the
+optimized path treats R9–R11 as allocatable and never saves them, which the
+sweep reports on 23 module/export pairs). Every known-open finding is pinned
+by exact count (#1204, #1211, #1240, #1241, the spec-legal `memory.grow`
+failure on a fixed-memory image); a pin that moves in either direction is red.
+
+**Caveat this release owes (#1238, measured by the sibling lane):** the
+survey corpus is `cortex-m4` soft-float in all three configurations, so a
+DEAD verdict means "unreached by a soft-float, flag-off corpus", not a deletion
+candidate; UNTESTED is unaffected; every rate describes that slice.
+
+Emulation floor 346751 → 367751 (three new `# ci-checks: emulations`
+declarations; re-derived by `oracle_wiring_check.py`, never summed by hand).
 
 ## [0.65.0] - 2026-09-09
 
