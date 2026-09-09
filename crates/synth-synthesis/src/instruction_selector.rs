@@ -18032,6 +18032,64 @@ mod tests {
             tee.contains(&(Reg::R0, lo)) && tee.contains(&(Reg::R1, hi)),
             "local.tee 0 must move BOTH halves into R0:R1, got {tee:?}"
         );
+
+        // The pair write is gated on the DECLARED width. With NO declared
+        // widths (the `i64_lowering_doesnt_clobber_params` fuzz harness's
+        // configuration) the layout homes local 1 at R1 and the body-inferred
+        // i64 local 0 keeps the single-move arm: nothing may write R1 while
+        // `local.get 1` still reads it — measured, this is the RED 3 sequence.
+        let mut s = fresh_selector();
+        let ops = vec![
+            I64Const(0),
+            LocalSet(0),
+            LocalGet(0),
+            Drop,
+            LocalGet(1),
+            Drop,
+            End,
+        ];
+        let arm = s
+            .select_with_stack(&ops, 2)
+            .expect("undeclared-width shape lowers");
+        let set = movs_at(&arm, 1);
+        assert!(
+            set.iter().any(|&(rd, _)| rd == Reg::R0) && !set.iter().any(|&(rd, _)| rd == Reg::R1),
+            "undeclared widths: the set writes R0 only (local 1 is homed at R1): {set:?}"
+        );
+        let read1 = arm
+            .iter()
+            .position(|i| i.source_line == Some(4))
+            .unwrap_or(arm.len());
+        assert!(
+            !arm[..read1]
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Mov { rd: Reg::R1, .. })),
+            "nothing before `local.get 1` may write R1: {arm:#?}"
+        );
+        // DECLARED `(i64 i32)`: the pair is R0:R1 and local 1 lives in R2 —
+        // the set writes both halves and local 1 is read from R2.
+        let mut s = fresh_selector();
+        s.set_params_i64(vec![true, false]);
+        let ops = vec![I64Const(0x3_0000_0004), LocalSet(0), LocalGet(1), End];
+        let arm = s
+            .select_with_stack(&ops, 2)
+            .expect("(i64 i32) set then read lowers");
+        let (lo, hi) = const_pair(&arm);
+        let set = movs_at(&arm, 1);
+        assert!(
+            set.contains(&(Reg::R0, lo)) && set.contains(&(Reg::R1, hi)),
+            "(i64 i32): the set writes the declared pair R0:R1: {set:?}"
+        );
+        assert!(
+            arm.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Reg(Reg::R2)
+                }
+            )),
+            "(i64 i32): local 1 is read from R2 (the result move `mov r0, r2`): {arm:#?}"
+        );
     }
 
     /// #1189: the join register must never be a LIVE register-homed local's

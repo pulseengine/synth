@@ -106,6 +106,24 @@ impl InstructionSelector {
             &self.params_f32,
             &params_f64_vfp,
         );
+        // #1222 (RQ-65-ALIASCLASS): a param is a register PAIR only when its
+        // DECLARED width says so and the layout above homed it as one.
+        // `i64_locals` also carries body-INFERRED widths (`infer_i64_locals`),
+        // and a param the signature calls i32 (or whose width nobody
+        // declared — a direct `select_with_stack` caller, #1226's stale
+        // multi-module width table, invalid wasm) that the body stores an i64
+        // into was homed NARROW by `aapcs_param_layout`: its "hi half" is the
+        // NEXT param's home. The pair-writing set/tee arm must not fire there
+        // — the `i64_lowering_doesnt_clobber_params` harness caught it writing
+        // R1 = local 1 on exactly that undeclared configuration. Such a param
+        // keeps the single-move arm: yesterday's bytes, measured.
+        let declared_wide_params: Vec<bool> = (0..num_params)
+            .map(|p| {
+                self.params_i64.get(p as usize).copied().unwrap_or(false)
+                    && !params_f64_vfp.get(p as usize).copied().unwrap_or(false)
+                    && param_layout.regs.contains_key(&p)
+            })
+            .collect();
         let has_reg_i64_param = (0..num_params).any(|i| {
             self.params_i64.get(i as usize).copied().unwrap_or(false)
                 && param_layout.regs.contains_key(&i)
@@ -5573,7 +5591,12 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else if *local_idx < num_params.min(4) {
-                        if i64_locals.contains(local_idx) {
+                        if i64_locals.contains(local_idx)
+                            && declared_wide_params
+                                .get(*local_idx as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        {
                             // #1222: an i64 param is a register PAIR — both
                             // halves are written, at the AAPCS home.
                             let n = write_i64_param_home(
@@ -5741,7 +5764,12 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else if *local_idx < num_params.min(4) {
-                        if i64_locals.contains(local_idx) {
+                        if i64_locals.contains(local_idx)
+                            && declared_wide_params
+                                .get(*local_idx as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        {
                             // #1222: an i64 param is a register PAIR — both
                             // halves are written, at the AAPCS home; the tee's
                             // kept top is skipped by the alias snapshot.

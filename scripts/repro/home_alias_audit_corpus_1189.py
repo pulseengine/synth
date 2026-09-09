@@ -67,7 +67,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# scripts/repro/<this file> -> the repo root is THREE levels up. (First CI run:
+# `parent.parent` resolved to `scripts/`, the suite path did not exist, and
+# the sweep exited 1 having audited nothing — a local run from the repo root
+# with an explicit --suite never saw it.)
+ROOT = Path(__file__).resolve().parent.parent.parent
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 EXPECTED_SUITE_FILES = 257
@@ -116,8 +120,10 @@ HIT_LINE = re.compile(
 def corpus(suite: Path):
     files = sorted(suite.glob("*.wast"))
     if len(files) != EXPECTED_SUITE_FILES:
-        print(f"FATAL: {suite} holds {len(files)} top-level .wast, want "
-              f"{EXPECTED_SUITE_FILES} (submodule not checked out?)")
+        print(f"FATAL: looked for the spec testsuite at {suite.resolve()} "
+              f"(exists: {suite.is_dir()}) and found {len(files)} top-level "
+              f".wast, want {EXPECTED_SUITE_FILES} — pass --suite, or check "
+              f"that path; nothing was audited")
         sys.exit(1)
     files += sorted((ROOT / "tests" / "wast").glob("*.wast"))
     files += sorted((ROOT / "tests" / "wat").glob("*.wat"))
