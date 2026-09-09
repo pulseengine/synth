@@ -155,5 +155,174 @@ class MutantsCiGateArithmetic(unittest.TestCase):
         self.assertEqual(len(complaints), 3, complaints)
 
 
+class ClassifyUnrunnable(unittest.TestCase):
+    """RQ-66-POTENCY (#1189): scripts/mutation_survey.py used to score ANY
+    non-zero oracle exit as a KILL. 147 of 196 ci.yml L1 steps invoke bare
+    `python`, absent on the machine this was measured on, so a re-survey
+    nearly published a fabricated 0 % survival (147 dead oracles read as 147
+    working ones). `classify_unrunnable` is the decision that must now gate
+    every suite step before it can be scored: UNRUNNABLE means the step never
+    executed (refuse), everything else means it ran and is a different thing
+    (a real red, or a real pass) that must not be treated the same way.
+    Every non-None case here is captured verbatim from this machine, not
+    invented — see the PR description for the exact commands run.
+    """
+
+    def test_green_is_never_unrunnable(self):
+        self.assertIsNone(ms.classify_unrunnable(0, ""))
+        self.assertIsNone(ms.classify_unrunnable(0, "anything at all, even scary-looking text\nImportError: x"))
+
+    def test_exit_127_command_not_found_is_unrunnable(self):
+        # Captured verbatim: `bash -c "python nonexistent_script.py"` on this
+        # machine, where bare `python` does not exist.
+        out = "bash: python: command not found\n"
+        reason = ms.classify_unrunnable(127, out)
+        self.assertIsNotNone(reason)
+        self.assertIn("python", reason)
+
+    def test_exit_127_with_no_recognizable_text_is_still_unrunnable(self):
+        # The exit code alone is dispositive for 127/126 — a step must not
+        # need to ALSO match a text pattern to be caught.
+        self.assertIsNotNone(ms.classify_unrunnable(127, ""))
+        self.assertIsNotNone(ms.classify_unrunnable(126, "permission denied, no useful text"))
+
+    def test_module_not_found_is_unrunnable_even_at_exit_1(self):
+        # Captured verbatim: `python3 -c "import nonexistent_package_xyz"`.
+        out = (
+            "Traceback (most recent call last):\n"
+            '  File "<string>", line 1, in <module>\n'
+            "    import nonexistent_package_xyz\n"
+            "ModuleNotFoundError: No module named 'nonexistent_package_xyz'\n"
+        )
+        reason = ms.classify_unrunnable(1, out)
+        self.assertIsNotNone(reason)
+        self.assertIn("nonexistent_package_xyz", reason)
+
+    def test_env_shebang_missing_interpreter_is_unrunnable(self):
+        # Captured verbatim: a `#!/usr/bin/env pythonzzz` script executed
+        # directly on this (BSD env) machine.
+        out = "env: pythonzzz: No such file or directory\n"
+        reason = ms.classify_unrunnable(127, out)
+        self.assertIsNotNone(reason)
+        self.assertIn("pythonzzz", reason)
+
+    def test_a_real_assertion_failure_is_not_unrunnable(self):
+        # The step EXECUTED (real traceback from real logic, not an import or
+        # shell-dispatch failure) and found something wrong. This is the
+        # fact_spec_div_494_differential.py shape named in the brief: red
+        # locally on an unmutated tree while green in CI is a REAL result,
+        # not an environment failure, and must not be refused away.
+        out = (
+            "Traceback (most recent call last):\n"
+            '  File "scripts/repro/fact_spec_div_494_differential.py", line 210, in <module>\n'
+            "    assert observed == expected, f'divergence: {observed} != {expected}'\n"
+            "AssertionError: divergence: 17 != 12\n"
+        )
+        self.assertIsNone(ms.classify_unrunnable(1, out))
+
+    def test_a_stale_grep_assertion_after_a_passing_oracle_is_not_unrunnable(self):
+        # A LIVE example from CI (v0.66, same week this fix was written): the
+        # "home-register write audit sweep" job pipes an oracle's output
+        # through `tee` and then chains `grep -Eq` assertions under
+        # `set -euo pipefail` (.github/workflows/ci.yml, job
+        # `home-alias-audit-oracle`). The oracle itself printed PASS on every
+        # line that matters; a DIFFERENT, stale `grep` further down the same
+        # step (pinning an exact count that had since moved) is what made the
+        # STEP exit 1. `##[error]Process completed with exit code 1` is
+        # exactly the shape defect 1 exists to stop trusting blindly — except
+        # here the step genuinely EXECUTED and its own oracle said PASS, so
+        # this is the "ran, and is a different thing" side, not "could not
+        # run": scoring THIS step as an unrunnable environment failure would
+        # be as wrong as scoring it a legitimate kill. Either way it is not
+        # UNRUNNABLE, which is the one thing this function decides.
+        out = (
+            "functions audited: 7191\n"
+            "homes watched: 8100\n"
+            "POTENCY: PASS (192 planted writes reported, 0 without the plant, "
+            "over 3 fixtures x 4 legs)\n"
+            "WIDTH-1226: closed (.wast homes == .wat homes, merge refuses, same module text on 4 legs)\n"
+            "hits: 0 (known-open: 0 [none], unexplained: 0)\n"
+            "RESULT: PASS\n"
+        )
+        self.assertIsNone(ms.classify_unrunnable(1, out))
+
+    def test_a_deliberate_missing_fixture_filenotfound_is_not_unrunnable(self):
+        # A script's OWN FileNotFoundError (Python's `[Errno 2]` shape, e.g.
+        # asserting a decline path when a fixture is intentionally absent) is
+        # NOT the same signal as the shell or the loader failing to find an
+        # interpreter or package — conflating the two is exactly the
+        # over-broad match this test guards against (the brief: "refusing so
+        # broadly that the survey can never run anywhere is not" right).
+        out = (
+            "Traceback (most recent call last):\n"
+            '  File "scripts/repro/some_differential.py", line 42, in <module>\n'
+            "    open('scripts/repro/fixtures/missing_on_purpose.wat')\n"
+            "FileNotFoundError: [Errno 2] No such file or directory: "
+            "'scripts/repro/fixtures/missing_on_purpose.wat'\n"
+        )
+        self.assertIsNone(ms.classify_unrunnable(1, out))
+
+    def test_a_generic_importerror_from_application_logic_is_not_unrunnable(self):
+        # A script's own version-guard ("ImportError: wasmtime too old") is
+        # application logic, not "the package is not installed" — only the
+        # narrower ModuleNotFoundError shape is trusted as environment signal.
+        out = "ImportError: wasmtime 20.0 required, found 5.0\n"
+        self.assertIsNone(ms.classify_unrunnable(1, out))
+
+
+class DrawFrame(unittest.TestCase):
+    """RQ-66-POTENCY (#1189): `cmd_run` used to unconditionally overwrite
+    `ledger["meta"]` with its own argparse defaults on every invocation —
+    v0.65 shipped `per_region: 12` in the ledger for a sample actually drawn
+    at 8, because a later `run` call (default --per-region 12) silently
+    clobbered the recorded frame. `draw_frame` is the pure decision that must
+    now gate every write: write once, refuse to rewrite silently.
+    """
+
+    def test_first_draw_on_an_empty_ledger_writes_the_frame(self):
+        fields, ok, msg = ms.draw_frame({}, seed=1189, per_region=8, oversample=4)
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+        self.assertEqual(fields, {"seed": 1189, "per_region": 8, "oversample": 4})
+
+    def test_a_repeat_run_with_the_same_frame_is_a_true_no_op(self):
+        existing = {"seed": 1189, "per_region": 8, "oversample": 4, "candidate_sites": {"R1-routing": 65}}
+        fields, ok, msg = ms.draw_frame(existing, seed=1189, per_region=8, oversample=4)
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+        # Nothing to write: not "write the same values again", literally empty.
+        self.assertEqual(fields, {})
+
+    def test_the_exact_1189_regression_is_refused_not_silently_applied(self):
+        # The precise shape that shipped: a sample drawn at per_region=8,
+        # then `run` invoked again with the argparse DEFAULT (12) instead of
+        # the recorded value.
+        existing = {"seed": 1189, "per_region": 8, "oversample": 4}
+        fields, ok, msg = ms.draw_frame(existing, seed=1189, per_region=12, oversample=4)
+        self.assertFalse(ok)
+        self.assertIsNotNone(msg)
+        self.assertIn("8", msg)
+        self.assertIn("12", msg)
+        # And critically: draw_frame itself never mutates its input.
+        self.assertEqual(existing, {"seed": 1189, "per_region": 8, "oversample": 4})
+
+    def test_a_different_seed_is_also_refused(self):
+        existing = {"seed": 1189, "per_region": 8, "oversample": 4}
+        fields, ok, msg = ms.draw_frame(existing, seed=42, per_region=8, oversample=4)
+        self.assertFalse(ok)
+        self.assertIn("42", msg)
+
+    def test_candidate_sites_is_not_part_of_the_locked_frame(self):
+        # candidate_sites is live tree-state context (drifts as the codebase
+        # changes) and is refreshed by the caller every run on purpose; it
+        # must not be compared here or a routine `run` on a moved tree would
+        # be refused for a reason that has nothing to do with the sample.
+        existing = {"seed": 1189, "per_region": 8, "oversample": 4,
+                    "candidate_sites": {"R1-routing": 65}}
+        fields, ok, msg = ms.draw_frame(existing, seed=1189, per_region=8, oversample=4)
+        self.assertTrue(ok)
+        self.assertEqual(fields, {})
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

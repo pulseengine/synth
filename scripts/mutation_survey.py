@@ -841,6 +841,171 @@ def run_l2(l2):
 
 
 # ---------------------------------------------------------------------------
+# RQ-66-POTENCY (#1189): distinguish "the oracle ran and found something
+# wrong" from "the oracle could not run" BEFORE any mutant is scored against
+# it. scripts/mutation_survey.py used to score ANY non-zero step exit as a
+# KILL; 147 of 196 ci.yml oracle steps invoke bare `python`, absent on this
+# Mac, so a re-survey nearly published a fabricated 0 % survival (every
+# mutant read as trivially killed by exit-127 steps in ~0.1 s each). The fix
+# is to PROBE every suite step on the unmutated tree first and REFUSE to
+# start when a step is UNRUNNABLE here — as opposed to a step that executes
+# and legitimately finds the unmutated tree red (e.g.
+# fact_spec_div_494_differential.py is red locally while green in CI; that is
+# real evidence about this tree, not about the environment, and must not be
+# refused into silence or it would become impossible to survey anywhere the
+# environment differs even slightly from CI).
+# ---------------------------------------------------------------------------
+UNRUNNABLE_PATTERNS = (
+    # (compiled regex over the tail of combined stdout+stderr, reason template)
+    # Each pattern is a FIXED, environment-specific string a script would not
+    # organically produce as its own deliberate result — deliberately NOT
+    # matching generic `ImportError:` or a bare "No such file or directory"
+    # (that is a Python FileNotFoundError's own `[Errno 2]` shape, which a
+    # script can raise on purpose for a missing FIXTURE, not a missing tool —
+    # the exact over-broad match that would misclassify a legitimate red as
+    # unrunnable, or refuse the survey into never running anywhere).
+    (re.compile(r"^(?:bash: (?:line \d+: )?)?(\S+): command not found\s*$", re.MULTILINE),
+     "'{0}' not found on PATH"),
+    (re.compile(r"^ModuleNotFoundError: No module named '([^']+)'", re.MULTILINE),
+     "missing Python package '{0}'"),
+    (re.compile(r"^env: [‘'\"]?([^’'\":\s]+)[’'\"]?: No such file or directory\s*$", re.MULTILINE),
+     "interpreter '{0}' not found (env shebang)"),
+)
+
+
+def classify_unrunnable(code, out):
+    """Pure. `code`/`out` are one step's (exit code, combined stdout+stderr).
+    Returns a short human reason when the step could not EXECUTE in this
+    environment (missing interpreter, missing binary, an import error for an
+    uninstalled package — exactly the #1189 shape) or None when a non-zero
+    exit is a step that actually RAN and is a different thing: a real
+    assertion failure, a real diff, a real decline — evidence about the tree,
+    not about the environment. `None` says nothing about pass/fail, only that
+    a failure (if any) is not attributable to environment absence."""
+    if code == 0:
+        return None
+    tail = out[-4000:]
+    # Text patterns first: when one matches it names the actual missing
+    # interpreter/package, a strictly more useful reason than the bare exit
+    # code below. The exit-code fallback exists because bash's own
+    # "command not found" message is not always on the LAST 4000 chars of a
+    # noisy step, or a wrapper script can propagate 127 without repeating it.
+    for pat, tmpl in UNRUNNABLE_PATTERNS:
+        m = pat.search(tail)
+        if m:
+            return tmpl.format(m.group(1))
+    if code == 127:
+        return "exit 127 (command not found)"
+    if code == 126:
+        return "exit 126 (found but not executable)"
+    return None
+
+
+def probe_l1(l1_steps, log_prefix=""):
+    """Run every L1 step ONCE on the (assumed unmutated) current tree.
+    Returns (green, unrunnable, red): `green` is [(step, seconds)] for exit 0,
+    `unrunnable` and `red` are [{job, step, exit, reason, tail}] — the same
+    shape, split by `classify_unrunnable` so the caller can REFUSE on the
+    former and merely EXCLUDE the latter (a step already red pre-mutation
+    gives zero signal about a mutation either way, but only an unrunnable one
+    is evidence the harness itself is broken here)."""
+    green, unrunnable, red = [], [], []
+    for step in l1_steps:
+        code, out, dt = run_step(step)
+        if code == 0:
+            green.append((step, dt))
+            log(f"{log_prefix}L1 {step['job']} / {step['step'][:50]}: ok ({dt:.0f}s)")
+            continue
+        reason = classify_unrunnable(code, out)
+        tail = "\n".join(out.strip().splitlines()[-6:])[-600:]
+        entry = {"job": step["job"], "step": step["step"], "exit": code,
+                 "seconds": round(dt, 1), "tail": tail}
+        if reason:
+            entry["reason"] = reason
+            unrunnable.append(entry)
+            log(f"{log_prefix}UNRUNNABLE {step['job']} / {step['step'][:60]}: {reason}")
+        else:
+            entry["reason"] = "red on the unmutated binary"
+            red.append(entry)
+            log(f"{log_prefix}red-on-baseline (excluded, not unrunnable) {step['job']} / {step['step'][:60]}")
+    return green, unrunnable, red
+
+
+def probe_l2(l2_steps):
+    """Run every L2 (cargo test) command ONCE, classified the same way as
+    probe_l1. L2 failing for a REAL reason (the codebase's own tests are red)
+    is not something this survey can route around by exclusion — that case is
+    still a hard refuse in cmd_baseline, same as before this fix; this
+    function only adds the ability to say WHY (environment vs. code) in the
+    refusal message."""
+    unrunnable, red = [], []
+    for step in l2_steps:
+        cmd = step["run"]
+        if cmd.startswith("cargo test --workspace"):
+            cmd = cmd + " --no-fail-fast"
+        r = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", cmd], cwd=ROOT, env=cargo_env(),
+            capture_output=True, text=True, timeout=3600,
+        )
+        if r.returncode == 0:
+            continue
+        out = r.stdout + r.stderr
+        reason = classify_unrunnable(r.returncode, out)
+        tail = "\n".join(out.strip().splitlines()[-6:])[-600:]
+        entry = {"job": step["job"], "step": step["step"], "exit": r.returncode, "tail": tail}
+        if reason:
+            entry["reason"] = reason
+            unrunnable.append(entry)
+        else:
+            entry["reason"] = "red on the unmutated tree"
+            red.append(entry)
+    return unrunnable, red
+
+
+def preflight_suite(ledger, log_prefix=""):
+    """RQ-66-POTENCY (#1189): re-probe the LOADED ledger's suite on the
+    CURRENT tree before ANY mutant is evaluated. A ledger's `suite` may have
+    been baselined elsewhere (CI) or a while ago; a step that cannot execute
+    HERE must not be scored as evidence about a mutation. Mutates
+    `ledger["suite"]["l1"]` in place to drop steps found legitimately red on
+    THIS tree (mirroring what a from-scratch `baseline` run here would have
+    produced) — a step already red pre-mutation is zero signal about a
+    mutation, whichever way it is discovered. Refuses (raises SystemExit) if
+    anything is UNRUNNABLE; that is the one thing this must never silently
+    route around, because an unrunnable step biases every mutant's score
+    toward "killed"."""
+    suite = ledger["suite"]
+    _green, unrunnable, red = probe_l1(suite["l1"], log_prefix=log_prefix)
+    l2_unrunnable, l2_red = probe_l2(suite["l2"])
+    if unrunnable or l2_unrunnable:
+        lines = "\n".join(f"  L1 {e['job']} / {e['step']}: {e['reason']}" for e in unrunnable)
+        lines += ("\n" if unrunnable and l2_unrunnable else "") + "\n".join(
+            f"  L2 {e['job']} / {e['step']}: {e['reason']}" for e in l2_unrunnable)
+        sys.exit(
+            f"REFUSING TO RUN: {len(unrunnable) + len(l2_unrunnable)} suite step(s) cannot "
+            f"execute on this tree/environment. Scoring a mutant against a step that never ran "
+            f"would count a dead oracle as a kill (#1189):\n{lines}\n"
+            f"Fix the environment (missing interpreter / package / binary), or re-`baseline` "
+            f"with a --jobs subset that excludes the unreachable jobs.")
+    if l2_red:
+        lines = "\n".join(f"  {e['job']} / {e['step']}: exit {e['exit']}" for e in l2_red)
+        sys.exit(
+            f"REFUSING TO RUN: {len(l2_red)} L2 (cargo test) command(s) are red on the "
+            f"unmutated tree — the codebase's own tests do not pass here, so nothing L2 reports "
+            f"during mutant scoring would be trustworthy:\n{lines}\n"
+            f"Fix the tree before surveying (same policy `baseline` has always enforced).")
+    if red:
+        excluded = {(e["job"], e["step"]) for e in red}
+        suite["l1"] = [s for s in suite["l1"] if (s["job"], s["step"]) not in excluded]
+        suite.setdefault("l1_excluded_at_preflight", [])
+        suite["l1_excluded_at_preflight"] = [
+            e for e in suite["l1_excluded_at_preflight"] if (e["job"], e["step"]) not in excluded
+        ] + red
+        log(f"{log_prefix}{len(red)} L1 step(s) legitimately red on this tree — excluded from "
+            f"this run (not unrunnable, but zero signal about a mutation either way)")
+
+
+# ---------------------------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------------------------
 def load_ledger(path):
@@ -868,6 +1033,42 @@ def save_ledger(path, ledger):
 
 def head_commit():
     return subprocess.run(["git", "rev-parse", "--short=8", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+
+
+# RQ-66-POTENCY (#1189): the fields that describe HOW a sample was drawn —
+# not `candidate_sites`, which is live tree-state context that legitimately
+# drifts as the codebase changes and is refreshed every run regardless.
+FRAME_FIELDS = ("seed", "per_region", "oversample")
+
+
+def draw_frame(existing_meta, seed, per_region, oversample):
+    """Pure. `cmd_run` used to unconditionally overwrite `ledger["meta"]`
+    with its own argparse defaults on EVERY invocation, so re-running `run`
+    against an existing ledger silently replaced the recorded description of
+    how the survey was drawn — v0.65 shipped `per_region: 12` this way for a
+    sample actually drawn at 8, and a coordinator check reading `meta` was
+    fooled by it.
+
+    The frame is written ONCE, when a survey is first drawn against a ledger
+    that has none yet. A later `run` invocation must reproduce the SAME three
+    numbers: if it does, there is nothing to write (not a "no-op overwrite" —
+    literally no assignment happens); if any differs, refuse rather than let
+    the ledger's own record of its sampling frame silently go wrong.
+
+    Returns (fields_to_write: dict, ok: bool, message: str | None). Callers
+    must `sys.exit(message)` when `ok` is False rather than proceed."""
+    frame = {"seed": seed, "per_region": per_region, "oversample": oversample}
+    have = {k: existing_meta.get(k) for k in FRAME_FIELDS}
+    if all(v is None for v in have.values()):
+        return frame, True, None
+    if have == frame:
+        return {}, True, None
+    return {}, False, (
+        f"refusing to run: this ledger's sampling frame is recorded as {have}, but this "
+        f"invocation asked for {frame}. Re-running `run` against an existing ledger must not "
+        f"silently rewrite the frame (#1189 — v0.65 shipped per_region:12 this way for a sample "
+        f"drawn at 8) — pass the SAME --seed/--per-region/--oversample as the recorded draw, or "
+        f"use a fresh --ledger for a genuinely different frame.")
 
 
 # ---------------------------------------------------------------------------
@@ -1095,18 +1296,23 @@ def cmd_baseline(args):
         f"selected={suite['selected_jobs']}), L2 {len(suite['l2'])} cargo commands; "
         f"unselected jobs {len(suite['unselected_jobs'])}, excluded jobs {len(suite['excluded_jobs'])}, "
         f"excluded steps {len(suite['excluded_steps'])}")
-    timed, red = [], []
-    for step in suite["l1"]:
-        code, out, dt = run_step(step)
-        tag = "ok" if code == 0 else f"RED exit {code}"
-        log(f"  L1 {step['job']} / {step['step'][:50]}: {tag} ({dt:.0f}s)")
-        if code == 0:
-            timed.append((dt, step))
-        else:
-            red.append({**{k: step[k] for k in ('job', 'step')}, "reason": "red on the unmutated binary",
-                        "tail": "\n".join(out.strip().splitlines()[-5:])[-600:]})
-    timed.sort(key=lambda t: t[0])
-    suite["l1"] = [dict(step, baseline_seconds=round(dt, 1)) for dt, step in timed]
+    # RQ-66-POTENCY (#1189): probe every L1 step on the unmutated tree BEFORE
+    # it can ever be scored against a mutant. A step that cannot execute here
+    # (missing interpreter/package/binary) is refused outright — scoring it
+    # would count a dead oracle as a kill for every mutant that reaches it. A
+    # step that executes and is simply red on this tree is excluded (as
+    # always), which is a different and legitimate thing.
+    green, unrunnable, red = probe_l1(suite["l1"], log_prefix="  ")
+    if unrunnable:
+        lines = "\n".join(f"  {e['job']} / {e['step']}: {e['reason']}" for e in unrunnable)
+        sys.exit(
+            f"REFUSING TO BASELINE: {len(unrunnable)} suite step(s) cannot execute on this "
+            f"tree/environment (#1189 — an unrunnable step reads as a trivial kill for every "
+            f"mutant that reaches it unless caught here):\n{lines}\n"
+            f"Fix the environment (missing interpreter / package / binary), or pass --jobs to "
+            f"exclude the unreachable jobs.")
+    timed = sorted(green, key=lambda t: t[1])
+    suite["l1"] = [dict(step, baseline_seconds=round(dt, 1)) for step, dt in timed]
     suite["l1_red_on_baseline"] = red
     if not args.skip_l2:
         green, failing, binaries, dt = run_l2(suite["l2"])
@@ -1141,9 +1347,15 @@ def cmd_run(args):
     if not ledger.get("baseline"):
         sys.exit("run `baseline` first")
     ensure_symlink()
+    preflight_suite(ledger)
     sites = enumerate_sites()
-    ledger["meta"].update(seed=args.seed, per_region=args.per_region, oversample=args.oversample,
-                          candidate_sites={r: sum(1 for s in sites.values() if s["region"] == r) for r in REGIONS})
+    fields, ok, msg = draw_frame(ledger["meta"], args.seed, args.per_region, args.oversample)
+    if not ok:
+        sys.exit(msg)
+    ledger["meta"].update(fields)
+    # candidate_sites is live tree-state context, not part of the locked
+    # frame above — it is refreshed every run on purpose (RQ-66-POTENCY).
+    ledger["meta"]["candidate_sites"] = {r: sum(1 for s in sites.values() if s["region"] == r) for r in REGIONS}
     done = {m["id"]: m for m in ledger["mutants"]}
     if args.only:
         order = [sites[i] for i in args.only.split(",")]
@@ -1168,6 +1380,7 @@ def cmd_controls(args):
     if not ledger.get("baseline"):
         sys.exit("run `baseline` first")
     ensure_symlink()
+    preflight_suite(ledger)
     ledger["controls"] = []
     bad = 0
     for site in control_sites():
@@ -1352,6 +1565,35 @@ def cmd_ci(args):
     ok, err, _ = build_synth()
     if not ok:
         sys.exit(f"build failed: {err}")
+    # RQ-66-POTENCY (#1189): `ci` replays a SMALL FIXED SUBSET on purpose
+    # ("the harness's DISCRIMINATION, not a re-run of the survey" — module
+    # doc), so this probes only the L1 steps the pinned subset's recorded
+    # killers actually depend on, not the whole derived suite (that full
+    # probe belongs to `run`/`controls`, which already run the whole suite
+    # per mutant/control). `--full` additionally replays UNTESTED entries
+    # through the entire suite, so it gets the full preflight too.
+    if args.full:
+        preflight_suite(ledger)
+    else:
+        killer_steps = {(kb["job"], kb["step"])
+                         for e in (ledger.get("ci_subset") or [])
+                         if (kb := e.get("want_killed_by", {})).get("layer") == "execution"}
+        probe_targets = [s for s in ledger.get("suite", {}).get("l1", [])
+                         if (s["job"], s["step"]) in killer_steps]
+        if probe_targets:
+            _green, unrunnable, red = probe_l1(probe_targets, log_prefix="[ci-preflight] ")
+            # Both buckets refuse HERE (unlike the full-suite preflight, which
+            # only excludes `red`): a KILLED verdict after mutating means
+            # nothing if the pinned killer step is already non-green BEFORE
+            # the mutation is applied, whether that is because it cannot run
+            # or because it is red for a real reason on this tree.
+            bad = unrunnable + red
+            if bad:
+                lines = "\n".join(f"  {e['job']} / {e['step']}: {e['reason']}" for e in bad)
+                sys.exit(
+                    f"REFUSING TO RUN: {len(bad)} pinned killer step(s) are not green on the "
+                    f"UNMUTATED tree — replaying their mutation would be a vacuous KILLED "
+                    f"verdict, not evidence the mutation was caught (#1189):\n{lines}")
     base_corpus, _ = compile_corpus(TARGET_DIR / "base-corpus")
     if base_corpus != ledger["baseline"]["corpus"]:
         drift = [k for k in base_corpus if base_corpus[k] != ledger["baseline"]["corpus"].get(k)]
