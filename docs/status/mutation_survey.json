@@ -12,7 +12,7 @@
       "R4-shared": 603,
       "R5-startup": 15
     },
-    "reanchored_at": "4f7306ca",
+    "reanchored_at": "304d65c0",
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review."
   },
   "baseline": {
@@ -1012,12 +1012,12 @@
       "seconds": 270.4
     },
     {
-      "id": "R3-direct/REG/select_with_stack.rs:2601:24",
+      "id": "R3-direct/REG/select_with_stack.rs:2619:24",
       "region": "R3-direct",
       "op": "REG",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 2601,
-      "end": 2601,
+      "start": 2619,
+      "end": 2619,
       "before": "                        Reg::R0",
       "after": "                        Reg::R1",
       "changed": [
@@ -1266,12 +1266,12 @@
       "seconds": 1.4
     },
     {
-      "id": "R5-startup/IMM/main.rs:9369:36",
+      "id": "R5-startup/IMM/main.rs:9607:36",
       "region": "R5-startup",
       "op": "IMM",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9369,
-      "end": 9369,
+      "start": 9607,
+      "end": 9607,
       "before": "            code.extend_from_slice(&encode_thumb2_movw(12, (w & 0xFFFF) as u16));",
       "after": "            code.extend_from_slice(&encode_thumb2_movw(0, (w & 0xFFFF) as u16));",
       "changed": [
@@ -2098,12 +2098,12 @@
       "seconds": 31.3
     },
     {
-      "id": "R3-direct/GUARD/select_with_stack.rs:884:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:902:0",
       "region": "R3-direct",
       "op": "GUARD",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 884,
-      "end": 884,
+      "start": 902,
+      "end": 902,
       "before": "            if aeabi_route && is_aeabi_i64_f32_routed_op(op) {",
       "after": "            if !(aeabi_route && is_aeabi_i64_f32_routed_op(op)) {",
       "changed": [
@@ -4051,12 +4051,12 @@
       "seconds": 326.8
     },
     {
-      "id": "R5-startup/BOUND/main.rs:9280:58",
+      "id": "R5-startup/BOUND/main.rs:9518:58",
       "region": "R5-startup",
       "op": "BOUND",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9280,
-      "end": 9280,
+      "start": 9518,
+      "end": 9518,
       "before": "    let src_patch_off: Option<usize> = if data_copy_bytes > 0 {",
       "after": "    let src_patch_off: Option<usize> = if data_copy_bytes >= 0 {",
       "changed": [
@@ -5593,12 +5593,12 @@
       "seconds": 16.5
     },
     {
-      "id": "R3-direct/COND/select_with_stack.rs:6774:37",
+      "id": "R3-direct/COND/select_with_stack.rs:6840:37",
       "region": "R3-direct",
       "op": "COND",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 6774,
-      "end": 6774,
+      "start": 6840,
+      "end": 6840,
       "before": "                            I32Eq => Condition::EQ,",
       "after": "                            I32Eq => Condition::NE,",
       "changed": [
@@ -5632,12 +5632,12 @@
       "seconds": 1.6
     },
     {
-      "id": "R5-startup/IMM/main.rs:9365:32",
+      "id": "R5-startup/IMM/main.rs:9603:32",
       "region": "R5-startup",
       "op": "IMM",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9365,
-      "end": 9365,
+      "start": 9603,
+      "end": 9603,
       "before": "        code.extend_from_slice(&encode_thumb2_movw(9, (base & 0xFFFF) as u16));",
       "after": "        code.extend_from_slice(&encode_thumb2_movw(10, (base & 0xFFFF) as u16));",
       "changed": [
@@ -6024,12 +6024,12 @@
       "seconds": 1.0
     },
     {
-      "id": "R3-direct/GUARD/select_with_stack.rs:5979:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:6045:0",
       "region": "R3-direct",
       "op": "GUARD",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 5979,
-      "end": 5979,
+      "start": 6045,
+      "end": 6045,
       "before": "                        if self.native_pointer_abi {",
       "after": "                        if !(self.native_pointer_abi) {",
       "changed": [
@@ -6098,12 +6098,12 @@
       "seconds": 1.3
     },
     {
-      "id": "R5-startup/GUARD/main.rs:9359:0",
+      "id": "R5-startup/GUARD/main.rs:9597:0",
       "region": "R5-startup",
       "op": "GUARD",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9359,
-      "end": 9359,
+      "start": 9597,
+      "end": 9597,
       "before": "    if !globals_words.is_empty() {",
       "after": "    if !(!globals_words.is_empty()) {",
       "changed": [
@@ -7533,12 +7533,12 @@
       "seconds": 396.9
     },
     {
-      "id": "R3-direct/REG/select_with_stack.rs:188:45",
+      "id": "R3-direct/REG/select_with_stack.rs:206:45",
       "region": "R3-direct",
       "op": "REG",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 188,
-      "end": 188,
+      "start": 206,
+      "end": 206,
       "before": "                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],",
       "after": "                regs: vec![Reg::R4, Reg::R5, Reg::R7, Reg::R7, Reg::R8, Reg::LR],",
       "changed": [
@@ -8762,12 +8762,12 @@
       "seconds": 14.8
     },
     {
-      "id": "R5-startup/GUARD/main.rs:9324:0",
+      "id": "R5-startup/GUARD/main.rs:9562:0",
       "region": "R5-startup",
       "op": "GUARD",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9324,
-      "end": 9324,
+      "start": 9562,
+      "end": 9562,
       "before": "    if enable_fpu {",
       "after": "    if !(enable_fpu) {",
       "changed": [
@@ -11098,12 +11098,12 @@
       "seconds": 17.0
     },
     {
-      "id": "R3-direct/BOUND/select_with_stack.rs:1672:39",
+      "id": "R3-direct/BOUND/select_with_stack.rs:1690:39",
       "region": "R3-direct",
       "op": "BOUND",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 1672,
-      "end": 1672,
+      "start": 1690,
+      "end": 1690,
       "before": "                        .filter(|&u| u >= 3 && !u.is_power_of_two())",
       "after": "                        .filter(|&u| u > 3 && !u.is_power_of_two())",
       "changed": [],
@@ -11130,12 +11130,12 @@
       "seconds": 27.9
     },
     {
-      "id": "R5-startup/IMM/main.rs:9295:32",
+      "id": "R5-startup/IMM/main.rs:9533:32",
       "region": "R5-startup",
       "op": "IMM",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9295,
-      "end": 9295,
+      "start": 9533,
+      "end": 9533,
       "before": "        code.extend_from_slice(&encode_thumb2_movw(2, (data_copy_bytes & 0xFFFF) as u16));",
       "after": "        code.extend_from_slice(&encode_thumb2_movw(3, (data_copy_bytes & 0xFFFF) as u16));",
       "changed": [
@@ -11402,12 +11402,12 @@
       "seconds": 17.6
     },
     {
-      "id": "R3-direct/BOUND/select_with_stack.rs:4450:38",
+      "id": "R3-direct/BOUND/select_with_stack.rs:4468:38",
       "region": "R3-direct",
       "op": "BOUND",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 4450,
-      "end": 4450,
+      "start": 4468,
+      "end": 4468,
       "before": "                        if target_idx < block_labels.len() {",
       "after": "                        if target_idx <= block_labels.len() {",
       "changed": [],
@@ -11432,12 +11432,12 @@
       "seconds": 1.3
     },
     {
-      "id": "R5-startup/IMM/main.rs:9340:28",
+      "id": "R5-startup/IMM/main.rs:9578:28",
       "region": "R5-startup",
       "op": "IMM",
       "file": "crates/synth-cli/src/main.rs",
-      "start": 9340,
-      "end": 9340,
+      "start": 9578,
+      "end": 9578,
       "before": "    code.extend_from_slice(&encode_thumb2_movw(11, (linmem_base & 0xFFFF) as u16));",
       "after": "    code.extend_from_slice(&encode_thumb2_movw(12, (linmem_base & 0xFFFF) as u16));",
       "changed": [
@@ -12797,12 +12797,12 @@
       "seconds": 1.1
     },
     {
-      "id": "R3-direct/BOUND/select_with_stack.rs:543:46",
+      "id": "R3-direct/BOUND/select_with_stack.rs:561:46",
       "region": "R3-direct",
       "op": "BOUND",
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "start": 543,
-      "end": 543,
+      "start": 561,
+      "end": 561,
       "before": "                    if *last > start && *last < end {",
       "after": "                    if *last > start && *last <= end {",
       "changed": [
@@ -14498,6 +14498,18 @@
     "survey_equivalent": 5,
     "survey_dead": 4,
     "survey_unresolved": 2,
+    "survey_killed_loud": 6,
+    "survey_silent_changed": 15,
+    "survey_silent_killed_execution": 2,
+    "survey_silent_killed_structure": 7,
+    "survey_silent_killed_freeze_only": 2,
+    "survey_silent_untested": 4,
+    "survey_killed_loud_1006_8_silent": 5,
+    "survey_silent_changed_1006_8_silent": 16,
+    "survey_silent_killed_execution_1006_8_silent": 2,
+    "survey_silent_killed_structure_1006_8_silent": 8,
+    "survey_silent_killed_freeze_only_1006_8_silent": 2,
+    "survey_silent_untested_1006_8_silent": 4,
     "survey_controls_killed": 3,
     "survey_controls": 3
   }

@@ -382,7 +382,7 @@ status_fields:
   #   WIDTH_1226_HOMES — a CLOSED (#1232) homes-count pin, not a suppression.
   # The population is itself pinned (SYNTH-KNOWN-OPEN-PINS-RQ66: a count-eq
   # over every top-level KNOWN*/PINNED* dict literal under scripts/repro),
-  # so a fifth table must be listed here or excluded there, never unnoticed.
+  # so a seventh table must be listed here or excluded there, never unnoticed.
   #
   # Measured at authoring (2026-09-09, fcb8be4f): 104 entries — 90 name an
   # open issue (8 issues: #1209 42, #1210 22, #1215 11, #1204 6, #1211 6,
@@ -392,6 +392,17 @@ status_fields:
   # #1213 #1214 #1215); the derivation finds seven of those ten still
   # pinned — RQ-65-DECLINE converted #1205, #1208 and #1213 to declines and
   # the table dropped them — plus #1223, which the plan's list never held.
+  #
+  # RQ-66-WATCHED (v0.66, #1189): 104 -> 152 entries (+48), 623 -> 1030
+  # pinned cases, 6 -> 8 population tables. Two NEW tables — the
+  # i64-result-pair differential's `KNOWN` (#1204/#1240) and the
+  # self-contained boot sweep's `KNOWN` (#1204/#1211/#1240/#1241/the
+  # `#539` grow-fails envelope) — from two NEW execution oracles this
+  # release wrote for the v0.65 survey's own UNTESTED mutants; the boot
+  # sweep's first-ever run is what FOUND #1240 and #1241. Waived (see
+  # `known_open_pins`'s `waivers:`): the pin debt did not grow, its
+  # measurement did — every entry in both new tables names an issue and an
+  # exact count the way the pre-existing four tables already did.
   known_open_pins:
     kind: pin-table
     measure: entries
@@ -427,6 +438,17 @@ status_fields:
         name: KNOWN
       - file: scripts/repro/aarch64_operand_class_1231_differential.py
         name: KNOWN
+      # RQ-66-WATCHED (#1189): the pin debt did not grow here — its
+      # MEASUREMENT did. Both tables below are findings (#1204/#1240/#1241,
+      # #1211) that had no execution oracle at all until this lane wrote
+      # one; the boot sweep's own first run is what FOUND #1240 and #1241.
+      # Both are `(issue, count)`-shaped like the parity table.
+      - file: scripts/repro/i64_result_pair_1189_differential.py
+        name: KNOWN
+        cases_at: 1
+      - file: scripts/repro/self_contained_boot_sweep_1189_differential.py
+        name: KNOWN
+        cases_at: 1
   # The same tables summed by pinned CASE — pinned `track` beside the entry
   # ceiling because the parity oracle accepts one '*' wildcard pin per
   # (file, module, kind): merging three per-function pins into one would
@@ -2410,7 +2432,7 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 85
+        value: 133
         baseline: 27
         waivers:
           # RQ-66-UNWATCHED (#1207/#1229/#1230/#1231): 27 -> 85. THE PIN DEBT DID NOT
@@ -2428,6 +2450,36 @@ claims:
               (#1207 13 fixtures x 3 backends, #1229 74 arm + 56 riscv false
               rejections, #1230 five VCR-RA-003 declines, #1231 four aarch64
               operand-class confusions) -- newly MEASURED debt, not new debt
+          - to: 75
+            reason: >-
+              RQ-66-WATCHED (#1189): 27 -> 75 (+48). The pin debt did not
+              grow — its MEASUREMENT did. `i64_result_pair_1189_differential.py`
+              and `self_contained_boot_sweep_1189_differential.py` are two NEW
+              execution oracles this lane wrote for the v0.65 survey's own
+              UNTESTED mutants; the boot sweep is the first EXECUTION of the
+              self-contained corpus images (compiled 400 times per survey run,
+              never run), and its own first run is what FOUND #1240 and #1241
+              — findings with no oracle at all before this PR. Every entry in
+              both new tables names an issue and an exact count the way the
+              existing four tables do; nothing here is a new suppression of a
+              PRE-EXISTING silent wrongness this project already knew about
+              and chose to live with.
+          # THE MERGED RESULT. The two entries above record each lane's own
+          # contribution, measured against the 27 that RQ-66-BOTHWRONG earned
+          # by closing 84 of 89 pinned entries. Landing together the release
+          # goes 104 -> 27 -> 133: it CLOSED 77 wrong-answer pins and ADDED 106
+          # newly-measured ones, ending +29 above where it began. That is the
+          # honest shape of a release whose disposition for previously
+          # UNWATCHED findings is to start counting them, and it is stated in
+          # the release notes as a headline rather than left in this waiver.
+          - to: 133
+            reason: >-
+              the combined effect of both lanes on the merged tree, DERIVED not
+              summed: RQ-66-BOTHWRONG closed 77 pins (104 -> 27), then
+              RQ-66-UNWATCHED (+58) and RQ-66-WATCHED (+48) added oracles for
+              ten findings that previously had none. Net +29 against the v0.65
+              baseline of 104; the obligation to drive all 133 to zero stays on
+              the books.
       # THE ANTI-COARSENING COMPLEMENT. Slack-free but undirected: the
       # summed case count moves when the spec testsuite grows or a fixture
       # is added — honest work, so it costs a number update and not a
@@ -2436,11 +2488,14 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 114
+        value: 521
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
-      # under scripts/repro is either one of the four tables in the
-      # population or one of the two PINNED_WRONG red-half fixtures excluded
-      # by name in the status_fields comment (4 + 2). A new oracle's own
+      # under scripts/repro is either one of the six tables in the
+      # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
+      # i64_result_pair_1189_differential.py and
+      # self_contained_boot_sweep_1189_differential.py to the original
+      # four) or one of the two PINNED_WRONG red-half fixtures excluded by
+      # name in the status_fields comment (6 + 2). A new oracle's own
       # known-open list must be added to the population or written into the
       # exclusion list, and this count moves either way. NARROW ON PURPOSE,
       # documented so the narrowness is a choice and not a blind spot: the
