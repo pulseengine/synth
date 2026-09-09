@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^functions audited: (\d+)$/ >= 8317
+# ci-checks: stdout /^functions audited: (\d+)$/ >= 7191
 """RQ-65-ALIASCLASS (#1189) — the home-register write audit, swept over the
 local corpus on every ARM direct-selector leg.
 
@@ -115,11 +115,26 @@ LEGS = {
 # and scripts/repro were never found). Re-derive with --print-floors when the
 # corpus or the selector legitimately moves. Every one is a floor on WORK
 # DONE, not on hits.
+# RE-DERIVED after RQ-65-MVPCORE (#1232) merged. The population FELL, and the
+# reason is a deliberate trade, not scan rot: #1232 makes the multi-module
+# `.wast` merge REFUSE modules it would mis-handle (i64 params, data segments,
+# accessed globals) instead of silently mis-compiling them. Refused modules
+# produce no audited functions, so the audit's corpus shrank with them:
+#
+#   modules compiled   1045 -> 940    (-105 refused)
+#   functions audited  8317 -> 7191   (-13.5 %)
+#   homes watched      8776 -> 8100
+#   attributed instrs  261440 -> 219807
+#
+# This is the acceptance cost of decline-honesty, stated where it is measurable
+# rather than left to be rediscovered as "the floor mysteriously dropped". The
+# floors move DOWN here exactly once, with that reason; a further fall without
+# one is scan rot and must stay red.
 FLOORS = {
-    "modules_compiled": 1045,  # (module, leg) pairs that produced >=1 audited fn
-    "functions_audited": 8317,
-    "homes_watched": 8776,
-    "attributed_instrs": 261440,
+    "modules_compiled": 940,  # (module, leg) pairs that produced >=1 audited fn
+    "functions_audited": 7191,
+    "homes_watched": 8100,
+    "attributed_instrs": 219807,
 }
 
 # Hits whose defect is FILED and OPEN, pinned EXACTLY — (module, function,

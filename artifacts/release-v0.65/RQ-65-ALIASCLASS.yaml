@@ -107,8 +107,8 @@ artifacts:
         the script's corpus root resolved one level too shallow and never
         found tests/wast, tests/wat, fixtures or scripts/repro; in CI it
         found nothing at all and exited 1 having audited 0): `modules
-        compiled: 1045`, `functions audited: 8317`, `homes watched: 8776`,
-        `attributed instructions: 261440 (unattributed: 33406)`, `hits: 0
+        compiled: 940`, `functions audited: 7191`, `homes watched: 8100`,
+        `attributed instructions: 219807 (unattributed: 29012)`, `hits: 0
         (known-open: 0 [none], unexplained: 0)`, RESULT: PASS — floors
         pinned in-script and grepped EXACTLY in ci.yml. The first run over
         the FULL corpus reported `hits: 12 (known-open: 0, unexplained: 12)`
@@ -144,7 +144,18 @@ artifacts:
         negative-control build reproduces exactly its own shape (8 pop
         hits with the pop check off; the 4 VFP functions — now reported at
         the `Bl` — with the round trip off) and nothing else; the fixed
-        walk sweeps the identical population (same 1045/8317/8776/261440)
+        POPULATION FELL AFTER #1232, AND WHY — recorded because a floor that
+        drops without a stated reason is indistinguishable from scan rot.
+        RQ-65-MVPCORE (#1232) merged first and makes the multi-module `.wast`
+        merge REFUSE modules it would mis-handle (i64 params, data segments,
+        accessed globals) rather than silently mis-compile them. A refused
+        module audits no functions, so this oracle's corpus shrank with them:
+        1045 -> 940 (module, leg) pairs, 8317 -> 7191 functions (-13.5 %),
+        8776 -> 8100 homes, 261440 -> 219807 attributed instructions. That is
+        the ACCEPTANCE COST of decline-honesty, stated where it is measurable.
+        The floors move DOWN exactly once, here, with that reason; a further
+        fall without one is scan rot and stays red.
+        walk sweeps the identical population (same 940/7191/8100/219807)
         to 0 hits. POTENCY, wired (coordinator review of #1227: a
         population floor proves the sweep RAN, not that the detector
         FIRES): the script's self-test phase runs first —
