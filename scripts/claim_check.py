@@ -304,6 +304,239 @@ def _yaml_field(ev, root):
     return None, f'id {ev["id"]!r} not found in {ev["path"]}'
 
 
+def _top_level_bindings(tree, name):
+    """AST value-nodes assigned to `name` by a plain `name = ...` or
+    `name: T = ...` at MODULE TOP LEVEL (not inside a def/class, not inside a
+    for/if body) — the same scope `_pin_table`'s own table lookup uses, so a
+    shadowing local or a loop-body rebind can never redefine what counts as
+    *the* binding."""
+    hits = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign):
+            if any(isinstance(x, ast.Name) and x.id == name for x in stmt.targets):
+                hits.append(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign):
+            if (
+                isinstance(stmt.target, ast.Name)
+                and stmt.target.id == name
+                and stmt.value is not None
+            ):
+                hits.append(stmt.value)
+    return hits
+
+
+_MUTATING_METHODS = {
+    "update", "append", "add", "extend", "insert", "setdefault", "remove",
+    "discard", "pop", "popitem", "clear",
+}
+
+
+def _name_is_mutated_anywhere(tree, name):
+    """True if `name` is ever written to via subscript assignment
+    (`name[k] = v`) or a known mutating method call (`name.update(...)`)
+    ANYWHERE in the file. Deliberately over-broad — it does not check that
+    the mutation site is reachable at module-load time — because the failure
+    mode of being too suspicious here is a loud error, and the failure mode
+    of being too trusting is a silently WRONG count: see
+    invalid_accept_1207_differential.py's `FIXTURES`, declared `= {}` and
+    then filled entry-by-entry by a top-level `for` loop's
+    `FIXTURES[key] = value`. A literal `{}` is a perfectly good dict literal
+    by itself; it is only wrong here because it is not the FINAL value."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                if (
+                    isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == name
+                ):
+                    return True
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == name
+            and node.func.attr in _MUTATING_METHODS
+        ):
+            return True
+    return False
+
+
+def _asserted_len(tree, name):
+    """The int K of a top-level `assert len(<name>) == K[, msg]` statement,
+    if EXACTLY one such assertion exists (zero, or more than one — even if
+    they agree — returns None: an ambiguous rescue is no rescue). Consulted
+    ONLY as a last resort in `_resolve_static_iter_len`, after a name's own
+    literal binding has been found and then invalidated by a later mutation
+    — never as a substitute for a name that was never a literal at all, and
+    never in preference to a clean, unmutated literal. See
+    `_resolve_static_iter_len`'s docstring for why this narrow rescue is
+    trusted and a blanket one was not."""
+    hits = []
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assert):
+            continue
+        t = stmt.test
+        if (
+            isinstance(t, ast.Compare)
+            and len(t.ops) == 1
+            and isinstance(t.ops[0], ast.Eq)
+            and isinstance(t.left, ast.Call)
+            and isinstance(t.left.func, ast.Name)
+            and t.left.func.id == "len"
+            and len(t.left.args) == 1
+            and isinstance(t.left.args[0], ast.Name)
+            and t.left.args[0].id == name
+            and len(t.comparators) == 1
+        ):
+            try:
+                n = ast.literal_eval(t.comparators[0])
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(n, int) and not isinstance(n, bool):
+                hits.append(n)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _resolve_static_iter_len(iter_node, tree, where):
+    """The length of a DictComp generator's iterable, WITHOUT running
+    anything. A literal list/tuple/set/dict counts directly. A bare Name
+    counts if it resolves to a SINGLE top-level literal binding — and, if
+    that literal is later MUTATED (e.g. `NAME = {}` filled in by a `for`
+    loop's `NAME[k] = v`, as invalid_accept_1207_differential.py's own
+    `FIXTURES` does), the literal is not trusted on its own but a single
+    unambiguous top-level `assert len(NAME) == K` naming its FINAL length
+    is. Anything else — a call, a comprehension, an import, an ambiguous or
+    absent binding, or a mutated literal with no such assert (or a
+    contradictory/ambiguous one) — is a hard error: a length the counter
+    cannot see must never be silently guessed.
+
+    The assert-rescue is deliberately narrow, not a blanket "trust any
+    assert" — it fires ONLY to recover a name whose literal path is
+    otherwise blocked by a detected mutation, never as a first choice over
+    a clean literal and never for a name that was never a literal at all
+    (a bare function-call value, say). A version of this that trusted the
+    assert unconditionally was tried first and reverted on review, over the
+    concern that it would let this ledger's number diverge from the
+    oracle's ACTUAL table between the assert going stale and the oracle's
+    own (separate) CI job next running. That concern does not apply the
+    other way around: `assert len(FIXTURES) == 13` is CHECKED, not merely
+    documented, every time invalid_accept_1207_differential.py's own oracle
+    runs in its own CI job — a drift between the assert and the loop that
+    fills `FIXTURES` fails LOUD, in the same run, before the table is ever
+    consulted for real. Trusting a self-verifying invariant the file
+    already enforces on itself is not a second source of truth about the
+    first; a hand-typed 39 sitting in claims.yaml instead would have been."""
+    if isinstance(iter_node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        try:
+            return len(ast.literal_eval(iter_node))
+        except (ValueError, SyntaxError) as e:
+            raise MeasureError(
+                f"pin-table: {where} generator's iterable contains a "
+                f"non-literal element at line {iter_node.lineno} — its "
+                f"length cannot be derived without running the oracle"
+            ) from e
+    if not isinstance(iter_node, ast.Name):
+        raise MeasureError(
+            f"pin-table: {where} generator iterates over a "
+            f"{type(iter_node).__name__} at line {iter_node.lineno}, not a "
+            f"literal collection or a plain name — its length cannot be "
+            f"derived without running the oracle"
+        )
+    name = iter_node.id
+    hits = _top_level_bindings(tree, name)
+    if len(hits) != 1:
+        raise MeasureError(
+            f"pin-table: {where} generator iterates over {name!r}, assigned "
+            f"{len(hits)} times at module top level, expected exactly 1 — "
+            f"its length cannot be derived"
+        )
+    value = hits[0]
+    if isinstance(value, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        raise MeasureError(
+            f"pin-table: {where} {name!r} is built by a comprehension, not "
+            f"a literal — its length cannot be derived without running it"
+        )
+    if not isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        raise MeasureError(
+            f"pin-table: {where} {name!r} is a {type(value).__name__}, not "
+            f"a literal collection — its length cannot be derived without "
+            f"running the oracle"
+        )
+    if _name_is_mutated_anywhere(tree, name):
+        asserted = _asserted_len(tree, name)
+        if asserted is not None:
+            return asserted
+        raise MeasureError(
+            f"pin-table: {where} {name!r}'s literal initial value is "
+            f"mutated afterward (a subscript assignment or an "
+            f".update()/.append()-shaped call elsewhere in the file), and no "
+            f"unambiguous module-level `assert len({name}) == N` names its "
+            f"FINAL length — its length cannot be derived without running "
+            f"the oracle"
+        )
+    try:
+        return len(ast.literal_eval(value))
+    except (ValueError, SyntaxError) as e:
+        raise MeasureError(
+            f"pin-table: {where} {name!r} contains a non-literal element — "
+            f"its length cannot be derived without running the oracle"
+        ) from e
+
+
+def _count_dict_comp(node, tree, where):
+    """RQ-66-PINDEBT's DictComp extension — count a comprehension's entries
+    WITHOUT evaluating it. When every generator's iterable is statically
+    determinable (see `_resolve_static_iter_len`), there are no `if`
+    filters, and the key expression uses every generator's target, the
+    comprehension is a static cross product and the entry count is the
+    PRODUCT of the generators' lengths — exactly what
+    invalid_accept_1207_differential.py's 13-fixture x 3-backend `KNOWN`
+    table is (`{(name, be): ... for name in FIXTURES for be in BACKENDS}`).
+
+    Refused, each with its own reason: an `async for` generator; an `if`
+    filter, even one over constants — the entry count would depend on
+    evaluating it, which is exactly the thing this function exists to avoid
+    doing; an unpacking target (`for a, b in pairs`); a key expression that
+    does not reference every generator's target (entries could then collide
+    and silently undercount, since the comprehension itself would coalesce
+    those keys)."""
+    if not node.generators:
+        raise MeasureError(f"pin-table: {where} DictComp has no generators")
+    total = 1
+    target_names = []
+    for i, gen in enumerate(node.generators):
+        if gen.is_async:
+            raise MeasureError(
+                f"pin-table: {where} generator {i} is `async for` — not "
+                f"statically countable"
+            )
+        if gen.ifs:
+            raise MeasureError(
+                f"pin-table: {where} generator {i} carries an `if` filter — "
+                f"the entry count depends on evaluating it, so it cannot be "
+                f"derived without running the oracle"
+            )
+        if not isinstance(gen.target, ast.Name):
+            raise MeasureError(
+                f"pin-table: {where} generator {i} unpacks its target "
+                f"(e.g. `for a, b in ...`) — only a single bound name per "
+                f"generator is supported"
+            )
+        target_names.append(gen.target.id)
+        total *= _resolve_static_iter_len(gen.iter, tree, where)
+    used = {n.id for n in ast.walk(node.key) if isinstance(n, ast.Name)}
+    missing = [t for t in target_names if t not in used]
+    if missing:
+        raise MeasureError(
+            f"pin-table: {where} key expression does not use generator "
+            f"target(s) {missing!r} — entries could collide, so the count "
+            f"cannot be trusted without running the oracle"
+        )
+    return total
+
+
 def _pin_table(tables, measure, root):
     """RQ-66-PINDEBT (#242) — count the known-open pins the oracles carry.
 
@@ -319,14 +552,18 @@ def _pin_table(tables, measure, root):
     The oracle files are parsed with `ast` and never imported: they pull
     unicorn/wasmtime, and the ledger gate must run where they cannot. Each
     `tables:` item names a `file:` and the top-level `name:` of a dict
-    LITERAL in it.
+    LITERAL — or, since RQ-66-UNWATCHED, a statically-determinable dict
+    COMPREHENSION (see `_count_dict_comp`) — in it.
 
       measure: entries   one key is one pin — one hand-written decision to
                          pass over an observed wrong answer.
       measure: cases     the per-entry case count summed instead. A table
                          whose value tuple carries one (the parity oracle's
                          `(issue, count)`) says where with `cases_at:`; a
-                         table without one contributes 1 per entry.
+                         table without one contributes 1 per entry. Not
+                         supported for a DictComp table (its value expression
+                         is not a per-key literal to index into) — such a
+                         table must omit `cases_at`, and gets 1 per entry.
 
     The two are pinned together — entries `down`, cases `track` — because
     the parity oracle accepts a `'*'` wildcard pin per (file, module, kind):
@@ -336,13 +573,28 @@ def _pin_table(tables, measure, root):
 
     Every shape assumption is a HARD ERROR, never a silent zero: a missing
     file, a name assigned zero or several times at top level, a value that
-    is not a dict literal, a `**spread` or non-literal key, a `cases_at`
-    that does not land on a positive int. A DUPLICATE literal key is
-    refused outright — Python keeps the last value and says nothing, which
-    is one pin silently overwriting another inside the oracle itself: the
-    #1087 duplicate-`reason:` class one file over. An EMPTY table is 0, not
-    an error: an empty suppression list is the goal state, and two of the
-    four tables in the population are there already.
+    is not a dict literal or a countable comprehension, a `**spread` or
+    non-literal key, a `cases_at` that does not land on a positive int. A
+    DUPLICATE literal key is refused outright — Python keeps the last value
+    and says nothing, which is one pin silently overwriting another inside
+    the oracle itself: the #1087 duplicate-`reason:` class one file over. An
+    EMPTY table is 0, not an error: an empty suppression list is the goal
+    state, and two of the four tables in the original population are there
+    already.
+
+    A DictComp table (`{(name, be): ... for name in FIXTURES for be in
+    BACKENDS}`) is counted as the PRODUCT of its generators' lengths — see
+    `_count_dict_comp` for the exact support matrix (constant `if` filters,
+    nested comprehensions, `dict(...)` calls, and a generator over a name
+    itself built by a comprehension all raise rather than guess) and
+    `_resolve_static_iter_len` for how a generator's iterable's length is
+    derived: a literal collection, or a Name bound ONCE at top level to a
+    literal that is never mutated afterward. A name built imperatively (a
+    `for` loop's item-by-item assignment, `.update()` calls) always raises,
+    even if the file separately asserts its own resulting length — trusting
+    that assert was tried and rejected: it would let this ledger's number
+    diverge from the oracle's ACTUAL table between the assert going stale
+    and the oracle's own (separate) CI job next catching it.
     """
     if not tables:
         raise MeasureError(
@@ -364,30 +616,30 @@ def _pin_table(tables, measure, root):
             tree = ast.parse(path.read_text(errors="ignore"), filename=rel)
         except SyntaxError as e:
             raise MeasureError(f"pin-table: {rel} does not parse: {e}") from e
-        hits = []
-        for stmt in tree.body:
-            if isinstance(stmt, ast.Assign):
-                if any(isinstance(x, ast.Name) and x.id == name for x in stmt.targets):
-                    hits.append(stmt.value)
-            elif isinstance(stmt, ast.AnnAssign):
-                if (
-                    isinstance(stmt.target, ast.Name)
-                    and stmt.target.id == name
-                    and stmt.value is not None
-                ):
-                    hits.append(stmt.value)
+        hits = _top_level_bindings(tree, name)
         if len(hits) != 1:
             raise MeasureError(
                 f"pin-table: {where} is assigned {len(hits)} times at top level, "
                 f"expected exactly 1 — the table is undefined"
             )
         node = hits[0]
+        cases_at = t.get("cases_at")
+        if isinstance(node, ast.DictComp):
+            if cases_at is not None:
+                raise MeasureError(
+                    f"pin-table: {where} is a DictComp with `cases_at` set — "
+                    f"a per-entry case count cannot be derived without "
+                    f"evaluating the comprehension's value expression; drop "
+                    f"cases_at (1 per entry) or make this table a dict literal"
+                )
+            total += _count_dict_comp(node, tree, where)
+            continue
         if not isinstance(node, ast.Dict):
             raise MeasureError(
                 f"pin-table: {where} is a {type(node).__name__}, not a dict "
-                f"literal — the table must be countable without running the oracle"
+                f"literal or comprehension — the table must be countable "
+                f"without running the oracle"
             )
-        cases_at = t.get("cases_at")
         seen = set()
         for k, v in zip(node.keys, node.values):
             if k is None:

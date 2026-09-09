@@ -514,6 +514,234 @@ class PinTableDerivation(unittest.TestCase):
         self.write(self.ORACLE.replace("('#1', 4)", "None"))
         self.assertEqual(self.entries(self.table("KNOWN", cases_at=1)), 3)
 
+    # -- RQ-66-UNWATCHED: a statically-determinable DictComp --------------
+    #
+    # invalid_accept_1207_differential.py's own KNOWN table (13 fixtures x 3
+    # backends, one literal exception) is a DictComp, not a dict literal, and
+    # the population tripwire's own doc says plainly that a comprehension
+    # "would slip past ... `_pin_table` itself, which requires an `ast.Dict`
+    # node" — until this lane, that was true. These tests drive the fix
+    # directly against the real table's own shape (a name built by a
+    # top-level `for` loop's item assignment, with its length declared by a
+    # module-level `assert len(...) == N`), not just the brief's simplified
+    # illustration.
+
+    def test_dictcomp_counts_the_cross_product_of_literal_iterables(self):
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP: dict[tuple[str, str], str] = {\n"
+            "    (f, b): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "}\n",
+            name="comp_literal.py",
+        )
+        t = {"file": "comp_literal.py", "name": "KNOWN_COMP"}
+        self.assertEqual(self.entries(t), 6)
+        self.assertEqual(self.cases(t), 6)  # no cases_at -> 1 per entry
+
+    def test_dictcomp_mirrors_the_real_1207_table_via_the_asserted_rescue(self):
+        # This is invalid_accept_1207_differential.py's ACTUAL `FIXTURES`
+        # shape, pulled from origin/feat/unwatched-1229 and re-verified
+        # directly against that real file, not just this reproduction: it
+        # starts life as a literal `{}` and is filled entry-by-entry by a
+        # top-level for loop, then a module-level
+        # `assert len(FIXTURES) == 13` declares its final length. That
+        # assert is CHECKED, not merely documented, every time this oracle's
+        # own (separate) CI job runs — a drift between it and the loop that
+        # fills FIXTURES fails loud in that run, before the table is ever
+        # consulted for real, so trusting it here is not a second source of
+        # truth about the first. 13 x 3 = 39.
+        self.write(
+            "FIXTURES: dict[str, str] = {}\n"
+            "for i in range(13):\n"
+            "    FIXTURES[f'fx{i}'] = 'body'\n"
+            "assert len(FIXTURES) == 13, f'expected 13, got {len(FIXTURES)}'\n"
+            "BACKENDS = {'arm': [], 'riscv': [], 'aarch64': []}\n"
+            "DECLINES: set[tuple[str, str]] = {('fx0', 'aarch64')}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): ('decline' if (name, be) in DECLINES else 'accept')\n"
+            "    for name in FIXTURES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_1207_as_shipped.py",
+        )
+        t = {"file": "comp_1207_as_shipped.py", "name": "KNOWN"}
+        self.assertEqual(self.entries(t), 39)
+        self.assertEqual(self.cases(t), 39)
+
+    def test_dictcomp_iterable_mutated_with_no_assert_is_an_error(self):
+        # The FIXTURES shape above, minus the assert: an empty-literal
+        # initial value that is later mutated must never be silently read as
+        # length 0 just because `{}` is itself a valid dict literal, and
+        # there is nothing left to rescue it.
+        self.write(
+            "FIXTURES: dict[str, str] = {}\n"
+            "for i in range(13):\n"
+            "    FIXTURES[f'fx{i}'] = 'body'\n"
+            "BACKENDS = {'arm': [], 'riscv': []}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): 'accept'\n"
+            "    for name in FIXTURES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_mutated_no_assert.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_mutated_no_assert.py", "name": "KNOWN"})
+        self.assertIn("mutated afterward", str(e.exception))
+
+    def test_dictcomp_ambiguous_asserted_length_is_still_an_error(self):
+        # Two conflicting top-level asserts about the same name (even one
+        # that happens to be right) make the rescue AMBIGUOUS, not doubly
+        # sure — refused, same as having none.
+        self.write(
+            "FIXTURES: dict[str, str] = {}\n"
+            "for i in range(13):\n"
+            "    FIXTURES[f'fx{i}'] = 'body'\n"
+            "assert len(FIXTURES) == 13\n"
+            "assert len(FIXTURES) == 14\n"
+            "BACKENDS = {'arm': [], 'riscv': []}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): 'accept'\n"
+            "    for name in FIXTURES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_ambiguous_assert.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_ambiguous_assert.py", "name": "KNOWN"})
+        self.assertIn("mutated afterward", str(e.exception))
+
+    def test_dictcomp_assert_does_not_override_a_clean_unmutated_literal(self):
+        # The rescue fires ONLY when a mutation blocks the literal path — a
+        # stray, unrelated (and here wrong) assert must not out-rank a
+        # clean, never-mutated literal binding.
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "assert len(FIXTURES2) == 999\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP = {\n"
+            "    (f, b): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "}\n",
+            name="comp_literal_with_stray_assert.py",
+        )
+        t = {"file": "comp_literal_with_stray_assert.py", "name": "KNOWN_COMP"}
+        self.assertEqual(self.entries(t), 6)  # 3 x 2, NOT 999 x 2
+
+    def test_dictcomp_counts_a_literal_names_list_with_a_generated_values_dict(self):
+        # An alternative shape that also counts cleanly, with no assert
+        # needed at all: FIXTURE_NAMES as the literal the comprehension
+        # iterates over (13 names), with the WAT-source bodies still
+        # generated into a dict keyed by those names. 13 x 3 = 39.
+        self.write(
+            "FIXTURE_NAMES = (\n"
+            "    'type-empty-block-i32', 'type-empty-block-i64',\n"
+            "    'type-empty-block-f32', 'type-empty-block-f64',\n"
+            "    'type-empty-loop-i32', 'type-empty-loop-i64',\n"
+            "    'type-empty-loop-f32', 'type-empty-loop-f64',\n"
+            "    'type-empty-if-i32', 'type-empty-if-i64',\n"
+            "    'type-empty-if-f32', 'type-empty-if-f64',\n"
+            "    'cu_add_tee',\n"
+            ")\n"
+            "FIXTURES = {name: f'(module ... {name} ...)' for name in FIXTURE_NAMES}\n"
+            "BACKENDS = {'arm': [], 'riscv': [], 'aarch64': []}\n"
+            "DECLINES: set[tuple[str, str]] = {('cu_add_tee', 'aarch64')}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): ('decline' if (name, be) in DECLINES else 'accept')\n"
+            "    for name in FIXTURE_NAMES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_1207_fixed.py",
+        )
+        t = {"file": "comp_1207_fixed.py", "name": "KNOWN"}
+        self.assertEqual(self.entries(t), 39)
+        self.assertEqual(self.cases(t), 39)
+
+    def test_dictcomp_with_if_filter_is_an_error(self):
+        # Even a filter over pure constants is refused: the entry count
+        # would depend on evaluating it, which is the thing this counter
+        # exists to avoid doing.
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP = {\n"
+            "    (f, b): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "    if f != 'a'\n"
+            "}\n",
+            name="comp_filter.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_filter.py", "name": "KNOWN_COMP"})
+        self.assertIn("if` filter", str(e.exception))
+
+    def test_dictcomp_over_a_name_built_by_comprehension_is_an_error(self):
+        # "a comprehension over a name that is itself built by comprehension"
+        # — the nested-comprehension neighbour named in the lane brief.
+        self.write(
+            "FIXTURES4 = [x for x in range(5)]\n"
+            "KNOWN_COMP = {\n"
+            "    (f, 1): 'accept'\n"
+            "    for f in FIXTURES4\n"
+            "}\n",
+            name="comp_nested.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_nested.py", "name": "KNOWN_COMP"})
+        self.assertIn("comprehension", str(e.exception))
+
+    def test_dictcomp_cases_at_is_an_error(self):
+        # The value expression is not a per-key literal to index into; a
+        # table needing case-weighting must be a dict literal instead.
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP = {\n"
+            "    (f, b): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "}\n",
+            name="comp_cases_at.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.cases({"file": "comp_cases_at.py", "name": "KNOWN_COMP", "cases_at": 0})
+        self.assertIn("cases_at", str(e.exception))
+
+    def test_dictcomp_key_missing_a_generator_target_is_an_error(self):
+        # The key must use EVERY generator's target or entries can collide
+        # and silently undercount.
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP = {\n"
+            "    (f, f): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "}\n",
+            name="comp_missing_target.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_missing_target.py", "name": "KNOWN_COMP"})
+        self.assertIn("does not use generator target", str(e.exception))
+
+    def test_dictcomp_unpacking_target_is_an_error(self):
+        self.write(
+            "PAIRS = [('a', 1), ('b', 2)]\n"
+            "KNOWN_COMP = {\n"
+            "    (a, b): 'accept'\n"
+            "    for a, b in PAIRS\n"
+            "}\n",
+            name="comp_unpack.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_unpack.py", "name": "KNOWN_COMP"})
+        self.assertIn("unpacks its target", str(e.exception))
+
     @unittest.skipIf(yaml is None, "PyYAML not installed")
     def test_the_repos_own_population_resolves(self):
         # Non-vacuity against the real tree: every pin-table field the ledger
