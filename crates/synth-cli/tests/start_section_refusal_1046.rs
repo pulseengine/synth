@@ -134,15 +134,41 @@ fn start_on_arm_selfcontained_is_invoked_from_reset_handler() {
     let elf = std::env::temp_dir()
         .join("synth_start_1046_tests")
         .join("start_arm_sc_targetcortexm4.o");
+    assert!(
+        elf.is_file() && elf.metadata().map(|m| m.len() > 0).unwrap_or(false),
+        "the compile reported success but produced no object at {}\n(dir listing: {:?})",
+        elf.display(),
+        std::fs::read_dir(elf.parent().unwrap())
+            .map(|d| d
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
     let dis = Command::new(synth())
         .args(["disasm", elf.to_str().unwrap()])
         .output()
         .expect("run synth disasm");
     let text =
         String::from_utf8_lossy(&dis.stdout).to_string() + &String::from_utf8_lossy(&dis.stderr);
-    let reset = text
-        .find("<Reset_Handler>:")
-        .expect("disasm names Reset_Handler");
+    // The `<Reset_Handler>:` label is SYNTHESISED by `synth disasm` from the
+    // startup layout — the self-contained image carries no `.symtab` — so its
+    // absence means the image is not the self-contained shape this test is
+    // about, not that a symbol is missing. Print what we actually got: this
+    // assertion failed once in CI (#1232) and could not be reproduced locally
+    // across 5 clean runs, workspace feature unification included, so the next
+    // failure must carry its own evidence rather than an opaque expect().
+    let reset = text.find("<Reset_Handler>:").unwrap_or_else(|| {
+        panic!(
+            "disasm does not name Reset_Handler for {}\n\
+             disasm exit: {:?}, stdout {} B, stderr {} B\n\
+             ---- disasm (first 1200 chars) ----\n{}",
+            elf.display(),
+            dis.status.code(),
+            dis.stdout.len(),
+            dis.stderr.len(),
+            &text.chars().take(1200).collect::<String>()
+        )
+    });
     let after = text[reset..]
         .find("<Default_Handler>:")
         .map(|i| reset + i)
