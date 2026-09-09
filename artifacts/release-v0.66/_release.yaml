@@ -48,10 +48,37 @@
 # the work could not touch. Only R3-direct of the survey's five regions is
 # inside that population, so the survey cannot currently feed the ratchet it
 # was meant to feed. Recorded in RQ-66-DELETE; the release does not get to
-# claim a fall it was never able to produce. If the DEAD
-# code turns out reachable, or the new oracles do not kill their mutants, this
-# release publishes that — the same way v0.65 published that its own metric had
-# gone backwards.
+# claim a fall it was never able to produce.
+#
+# If the DEAD code turns out reachable, or the new oracles do not kill their
+# mutants, this release publishes that — the same way v0.65 published that its
+# own metric had gone backwards.
+#
+# SECOND CORRECTION, from auditing this plan against its own rule. "Every v0.65
+# finding gets one of three dispositions and there is no fourth" is a rule this
+# plan broke on the day it was written. Derived from the board, not remembered:
+# of the findings v0.65 filed and left open, FOUR are watched by nothing at all
+# — no oracle, no CI assertion, no pin, no test. They exist only as issue prose:
+#
+#   #1207  `synth compile` ACCEPTS an INVALID module (stack underflow at a
+#          loop-(result i32) end) — an acceptance-soundness defect of the same
+#          class as #1209, and unlike #1209 nothing measures it
+#   #1229  the ARM direct selector reports "stack underflow: malformed WASM or
+#          compiler bug" on VALID spec modules — a FALSE REJECTION, so it costs
+#          reach, and reach is part of correctness
+#   #1230  VCR-RA-003 refuses synth's OWN emitted stream on spec modules
+#          (`JoinValueNotAvailable`) — the whole-function validator that the
+#          allocator endgame is meant to be built against does not accept the
+#          allocator we ship
+#   #1231  the aarch64 selector confuses operand classes ("local.set: expected
+#          GP operand, got FP")
+#
+# Everything else v0.65 left open is at least PINNED by an oracle (#1204/#1206
+# in the parity table, #1223/#1226 in the home-alias oracles, #1209/#1210/
+# #1211/#1214/#1215 in the parity table and owned by RQ-66-BOTHWRONG). These
+# four are the fourth disposition the rule says does not exist. RQ-66-UNWATCHED
+# is added to close that hole; without it this release would have shipped the
+# theme while violating it.
 #
 # HONEST RISKS, recorded before the work:
 #   - DELETION IS THE DANGEROUS ONE. CLAUDE.md is explicit: refactoring the
@@ -66,5 +93,8 @@
 #     a root cause the artifact says so and closes them together rather than
 #     performing five fixes.
 #
-# Scope: 6 new + 1 carried. ARCHMODEL carries a 6th time; spar#445 is external
-# and was re-verified OPEN at the v0.65 cut.
+# Scope: 7 new + 1 carried. ARCHMODEL carries a 6th time; spar#445 is external
+# and was re-verified OPEN at the v0.65 cut. RQ-66-UNWATCHED was added after
+# the plan was written, by auditing the plan against its own rule — the seventh
+# artifact exists because the first six did not cover four of the findings the
+# rule says must be covered.
