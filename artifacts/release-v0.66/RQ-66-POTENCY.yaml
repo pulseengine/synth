@@ -1,0 +1,69 @@
+artifacts:
+  - id: RQ-66-POTENCY
+    type: system-req
+    title: "The mutation harness cannot tell a dead oracle from a live one — it nearly published a fabricated 0 % survival"
+    description: >
+      MEASURED DURING v0.65, and the near-miss is why this is filed rather than
+      left as a note.
+
+      A local re-survey of the mutation suite reported **0 of 29 mutants
+      surviving** — a perfect-coverage headline. It was an artifact.
+      `scripts/mutation_survey.py` scores ANY non-zero oracle exit as a KILL,
+      and **147 of the 196 L1 steps invoke bare `python`**, which does not exist
+      on that machine: exit 127 in ~0.1 s, 147 times. One hundred and forty-seven
+      dead oracles read as one hundred and forty-seven working ones.
+
+      THE BIAS OF A BROKEN MUTATION SURVEY IS ALWAYS OPTIMISM. Every failure
+      mode of the measurement — a missing interpreter, a tool not installed, a
+      path wrong, a build absent — produces a non-zero exit, which the harness
+      reads as evidence the mutant was caught. There is no failure mode that
+      makes coverage look worse than it is.
+
+      WHAT CAUGHT IT was not judgement. It was the harness's own requirement
+      that each control die to ITS SPECIFIC RECORDED ORACLE:
+
+        CONTROL/1189-copy-disabled came back KILLED (expected KILLED by
+        join_alias_1189_differential.py)
+        1 control(s) not killed — the survey measures nothing; do not publish
+        the rate
+
+      A gate checking only that controls DIED would have certified the 0 %. That
+      one extra constraint is the whole difference, and it should not be the
+      only line of defence.
+
+      THE FIX IS CHEAP AND STRUCTURAL: probe each suite step ON THE UNMUTATED
+      TREE before the survey starts, and REFUSE TO RUN when steps are
+      unrunnable, rather than scoring them. A step that cannot execute is not
+      evidence about a mutation; it is evidence about the environment, and the
+      two must not be summed. The v0.65 cold review reproduced the flaw
+      independently (`FileNotFoundError` on the unmutated binary scoring as
+      KILLED) and made its own replay admissible only by running all three
+      killers green first — that discipline belongs in the tool, not in the
+      reviewer's head.
+
+      SECOND-ORDER, WORTH FIXING WHILE HERE: `cmd_run` REWRITES `meta` on every
+      invocation with its argparse defaults, so the ledger field recording the
+      sampling frame is overwritten by the tool that reads it. v0.65 shipped
+      `per_region: 12` for a sample drawn at 8, and a coordinator check that
+      "the frames match" was reading the overwritten value.
+    status: proposed
+    release: v0.66
+    tags:
+      - oracle
+      - mutation
+      - non-vacuity
+      - instrument
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1189"
+      done-when: "manual: the survey probes every suite step on the UNMUTATED tree and refuses to start when any is unrunnable, distinguishing 'oracle failed' from 'oracle could not run'; meta records the frame actually used rather than argparse defaults; both shown red-first by making a step unrunnable and confirming the survey refuses instead of scoring"
+      verified-by: >-
+        PENDING. The red-first is easy and must be run: remove an interpreter
+        from PATH (or point a step at a missing binary) and confirm the survey
+        REFUSES rather than reporting a flattering rate. That is the exact
+        failure v0.65 hit.

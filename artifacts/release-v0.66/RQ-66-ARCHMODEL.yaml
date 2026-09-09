@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-66-ARCHMODEL
+    type: system-req
+    title: "Feature-loop steps 1-2 (spar AADL -> WIT) — carried a SIXTH time on an external blocker, re-verified at plan time"
+    description: >
+      Steps 1 and 2 of the feature loop generate WIT from an AADL model via
+      spar. They have been N/A for six consecutive releases, and #1136 exists so
+      that the recurrence is FILED rather than waved — the feature-loop skill's
+      own rule is that a step marked N/A three features running becomes a
+      backlog item, not an exemption.
+
+      THE BLOCKER IS EXTERNAL AND UNCHANGED: **spar#445** — spar accepts
+      property associations from UNDECLARED property sets silently (rc=0), so a
+      typo'd or invented property is indistinguishable from a satisfied one.
+      Re-verified at v0.65 cut time (2026-09-09): still OPEN, last updated
+      2026-09-03. Generating WIT from an AADL model that spar will silently
+      mis-validate would manufacture exactly the unearned confidence this
+      programme exists to prevent — a green result whose checker cannot fail.
+
+      WHAT IS ALREADY DISCHARGED, so it is not re-litigated: v0.65 answered the
+      measurable half of RQ-65-ARCHMODEL and it found a live defect.
+      `loop_conformance_check`'s steps-1-2 slot matched the FIRST
+      programme-scoped artifact rather than the release under test — for a v0.65
+      run it returned RQ-63-ARCHMODEL, two releases back, while v0.65's own
+      artifact was invisible to it for want of a `feature-loop` tag. The
+      recurring N/A could have lapsed entirely with the slot green forever.
+      Fixed in PR #1224: the matcher is release-scoped, an older match is
+      returned marked `stale` so the caller fails LOUDLY naming it, and the
+      v0.65 conformance run confirmed it (`RQ-65-ARCHMODEL ... [scoped to
+      v0.65]`).
+
+      SO THIS CARRY IS A RE-VERIFICATION, NOT A COPY. The obligation is to check
+      spar#445 again at cut time and record what was observed, with the date. If
+      it has closed, the deferral ends and the AADL -> WIT path gets exercised
+      for real.
+    status: proposed
+    release: v0.66
+    tags:
+      - spar
+      - aadl
+      - feature-loop
+      - recurring-na
+      - external-blocker
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1136"
+      carried-from: RQ-65-ARCHMODEL
+      done-when: "manual: spar#445 is re-checked AT CUT TIME with the observed state and date recorded; if still open the deferral is filed as the sixth recurrence; if closed, an AADL model is generated to WIT and the loop's steps 1-2 are exercised"
+      verified-by: >-
+        PENDING. Record the blocker's state and the date it was checked, not a
+        restatement of the previous release's finding. Six consecutive N/As is
+        itself worth stating plainly in the release notes rather than leaving in
+        an artifact nobody reads.

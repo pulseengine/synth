@@ -1,0 +1,63 @@
+artifacts:
+  - id: RQ-66-BOTHWRONG
+    type: system-req
+    title: "Five spec-suite classes are wrong on BOTH shipped selectors — there is nothing correct to fall back to"
+    description: >
+      RQ-65-PARITY executed the spec suite through both shipped selectors for
+      the first time and found eleven defects. RQ-65-DECLINE closed the ones
+      where the direct selector was correct, by making the optimized path fall
+      back to it. **These five have no such escape**, because both selectors
+      emit wrong code:
+
+        #1209  memory64 modules are ACCEPTED and silently wrong on both
+        #1210  a value live across a call inside a value-carrying construct is
+               lost (spec block.wast / loop.wast / stack.wast)
+        #1211  call_indirect with a non-zero table index dispatches through the
+               WRONG table
+        #1214  an i64 read-before-write local is not zero-initialised
+        #1215  br_table / br_if carrying a value in an OPERAND position
+
+      TRIAGE BY ROOT CAUSE BEFORE FIXING. #1210 and #1215 are both "a value that
+      must survive something gets lost" and may be one defect wearing two
+      issues; #1214 is an initialisation contract; #1211 is an index; #1209 is
+      an acceptance decision. **If two of these share a cause, say so and close
+      them together — five fixes for one bug is a worse outcome than one fix
+      honestly attributed.**
+
+      #1209 MAY NOT BE A LOWERING FIX AT ALL. Accepting memory64 and computing
+      the wrong answer is the exact shape CLAUDE.md's compliance envelope calls
+      the worst class, and the project's stated differentiator is
+      loud-decline-over-silent-miscompile. A refusal is a legitimate and
+      possibly better outcome — but it costs reach, and reach is part of
+      correctness, so the acceptance delta must be MEASURED and published, not
+      estimated.
+
+      THE PINS ARE THE EVIDENCE, and they are already in place. RQ-65-PARITY
+      pinned every divergence by exact (file, module, function, kind) count, so
+      a real fix MOVES a pin and the pin moving is the proof. Red-first is
+      inherited and free. A fix that does not move its pin has not been shown to
+      work.
+
+      A NARROW RESULT IS ACCEPTABLE. Closing two of five with proof beats
+      claiming five with hand-waving; the residual stays pinned with its reason,
+      and RQ-66-PINDEBT counts what remains.
+    status: proposed
+    release: v0.66
+    tags:
+      - correctness
+      - miscompile-class
+      - spec-suite
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1210"
+      done-when: "manual: the five classes are triaged by ROOT CAUSE with shared causes named; every class closed moves its RQ-65-PARITY pin from wrong-answer to correct in the same PR; #1209 is either fixed or LOUDLY DECLINED with the acceptance delta measured; every residual stays pinned with a stated reason"
+      verified-by: >-
+        PENDING. Byte identity is required for every module NOT affected by a
+        fix, and an execution differential for every module that is. The pin
+        counts are the red-first: they were measured on main before any fix and
+        a change to them is the evidence.

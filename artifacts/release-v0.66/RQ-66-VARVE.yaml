@@ -1,0 +1,56 @@
+artifacts:
+  - id: RQ-66-VARVE
+    type: system-req
+    title: "The pulseengine rolling root rotated and the registry moved — the loop's step 0 is unverifiable until the pin is refreshed"
+    description: >
+      Filed as #1236 on 2026-09-09, the day v0.65 shipped.
+
+      Step 0 of the feature loop is resolving the toolchain through **varve**, so
+      that every artifact the loop produces is traceable to an exact, signed
+      layer rather than to whatever happened to be on PATH. The realm's rolling
+      channel is explicitly provisional and its root ROTATES at the v1.0
+      ceremony — that rotation, plus a registry move, has now happened.
+
+      WHY THIS IS NOT COSMETIC. The pin's value is entirely in its verifiability:
+      `varve which <tool>` printing a layer and manifest digest is what makes
+      "which toolchain produced this?" answerable later. A pin whose trust root
+      no longer resolves is not a weaker pin, it is a claim with no checker
+      behind it — the same shape as a ledger pin bound to the wrong layer
+      (v0.65's `SYNTH-ARCH-LOUD-DECLINE`, green by construction) or a gate whose
+      evidence cannot fail.
+
+      THE HANDLING IS THE POINT AND IT IS WRITTEN DOWN ALREADY: take the realm
+      definitions from the PUBLISHED ASSET rather than pasting a key
+      (`gh release download --repo pulseengine/varve -p varve-realms.toml`), and
+      prefer the realm over `VARVE_TRUST_ROOT` because the realm is
+      authoritative and cannot be overridden by the ambient environment. **A
+      refusal is the feature**: outside a pinned project a shim exits 1 rather
+      than silently falling back to an ambient binary. Do not "fix" a refusal by
+      bypassing varve — fix the pin.
+
+      REPORT THE LAYER IDENTITY WITH THE RESULT. A release that says it ran
+      pinned without stating which layer has asserted the thing it cannot show.
+      If the new root or registry cannot be resolved at all, say so plainly and
+      record the release as UNPINNED for that step rather than implying
+      otherwise — an honest gap is a finding.
+    status: proposed
+    release: v0.66
+    tags:
+      - toolchain
+      - varve
+      - provenance
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1236"
+      done-when: "manual: varve.toml resolves against the rotated realm from the PUBLISHED realms asset (not a pasted key), `varve install` verifies signatures and digests, `varve which` reports a layer for the loop's tools, and the layer identity is recorded with the release; or the step is declared UNPINNED with the reason"
+      verified-by: >-
+        PENDING. State the layer and manifest digest actually observed. A
+        negative control is cheap and worth running: confirm a shim still exits
+        1 outside a pinned project, so the refusal that makes the pin meaningful
+        is shown to still work after the rotation.

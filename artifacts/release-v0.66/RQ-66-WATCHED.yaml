@@ -1,0 +1,68 @@
+artifacts:
+  - id: RQ-66-WATCHED
+    type: system-req
+    title: "The mutation survey named its own missing tests — four codegen decisions no oracle watches, one of them an inverted comparison"
+    description: >
+      RQ-65-MUTANTS classified four sampled mutants **UNTESTED**: the mutation
+      changes emitted bytes and the entire named suite stays green. Each one is
+      not merely a gap — it is a SPECIFICATION FOR AN ORACLE THAT DOES NOT
+      EXIST, written by the compiler itself.
+
+        R3-direct/COND/select_with_stack.rs:6774
+          `I32Eq => Condition::EQ`  ->  `Condition::NE`
+          An equality comparison's condition code INVERTED on the direct
+          selector, and nothing notices. RQ-65-PARITY predicted this exact gap
+          from the other direction; the survey confirmed it empirically.
+
+        R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6705
+          the result `Mov { rd: R1, .. }` DROPPED on the optimized path.
+
+        R4-shared/REG/liveness.rs:7025
+          `aapcs_dead_at_return = [R2, R3, R12, LR]` -> R2 replaced by R3, so
+          R2 silently leaves the dead-at-return set. An ABI fact with no test.
+
+        R5-startup/IMM/main.rs:9295
+          the startup's data-copy count register changed r2 -> r3. Compounds
+          the finding recorded in v0.65: FOUR OF FIVE named-suite oracles SEED
+          R11 THEMSELVES rather than booting the shipped `Reset_Handler`, so
+          the startup's register contract is assumed by the harness and
+          therefore untestable by it BY CONSTRUCTION.
+
+      THE DELIVERABLE IS FOUR ORACLES AND A RE-MEASUREMENT, in that order. Build
+      the oracle, prove it KILLS its mutant (that is the red-first: the oracle
+      must fail on the mutated tree and pass on the clean one), then RE-RUN the
+      survey and publish the new rate. `mutants_untested` is a CI-pinned ratchet
+      that must FALL from 4.
+
+      REPORT THE SILENT-SUBSET NUMBER, not just the headline. v0.65's cold
+      review established the distinction and it is the one that matters:
+      "81 % caught" means CI GOES RED, which counts the compiler refusing, a
+      panic, and a non-vacuity floor firing. Restricted to the 15 mutants that
+      changed bytes SILENTLY, 4 survive — **27 %** — and an execution
+      differential caught only 2. That is the number this artifact moves.
+
+      A SMALLER IMPROVEMENT HONESTLY MEASURED BEATS A LARGER ONE ASSERTED. If an
+      oracle turns out not to kill its mutant, say so and keep the mutant
+      UNTESTED rather than weakening the oracle until it passes.
+    status: proposed
+    release: v0.66
+    tags:
+      - oracle
+      - mutation
+      - coverage
+      - north-star
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1189"
+      done-when: "manual: each of the four UNTESTED mutants either has an oracle PROVEN to kill it (red on the mutated tree, green on the clean one) or is recorded as still-unwatched with the reason; the survey is re-run and both the headline and the SILENT-SUBSET rates are published; mutants_untested falls in claims.yaml"
+      verified-by: >-
+        PENDING. Red-first is the definition here, not a nicety: an oracle that
+        passes on the mutated tree has not been shown to watch anything. Report
+        the re-measured rate against the same frame (seed 1189, per_region 8)
+        so it is comparable, and state plainly if the sample drifts because the
+        site population moved.

@@ -430,9 +430,9 @@ DECLARE_SINCE = (0, 60)
 # a wrong hand-copy fails A1/A2 in the same PR. claims.yaml pins the three
 # lines verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183) so every move is a
 # visible ledger diff, and pins that the `!=` checks stay wired.
-ANCHOR_TAG = "v0.64.0"
-ANCHOR_DELIVERY = 67
-ANCHOR_PROGRAMME = 401
+ANCHOR_TAG = "v0.65.0"
+ANCHOR_DELIVERY = 69
+ANCHOR_PROGRAMME = 409
 # A3-programme waiver channel, empty by construction: the programme count has
 # never decreased at any of the 129 first-parent commits touching artifacts/
 # since v0.56.0 (measured). A deliberate net deletion declares its size here
@@ -1110,7 +1110,7 @@ def check_anchor(root: Path, by_id, live_delivery: int, live_programme: int,
                 if state == "ok" else None
             warnings.append(
                 f"ANCHOR-LAG: {tag} is one minor behind the window's previous "
-                f"tag {window_label}; move it in the post-tag PR — "
+                f"tag {window_label}; move it in the PR that OPENS this window (measured: moving it earlier reds A0) — "
                 f'ANCHOR_TAG = "{window_label}" / ANCHOR_DELIVERY = '
                 f"{nd if nd is not None else '?'} / ANCHOR_PROGRAMME = "
                 f"{np_ if np_ is not None else '?'} / "

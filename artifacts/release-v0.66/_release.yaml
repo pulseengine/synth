@@ -1,0 +1,61 @@
+# v0.66 — "Watched, fixed, or deleted"
+#
+# v0.65 asked what fraction of the code generator any oracle would catch being
+# wrong. It answered — 19 % of byte-changing mutants survive a named suite, and
+# 27 % of the ones that change bytes SILENTLY — and it produced a list: 21
+# defects, 10 of them pinned known-open, 4 mutants no oracle watches, 4 mutants
+# nothing reaches.
+#
+# A LIST IS NOT WORK. This project's characteristic failure is that lists become
+# furniture. The evidence is one number:
+#
+#   selector_lines_code, the metric v0.58 installed as the project's own
+#   scoreboard, has NEVER ONCE FALLEN release-over-release:
+#
+#     v0.58 17961 | v0.59 +327 | v0.60 +911 | v0.61 +14 | v0.62 +14
+#     v0.63 +0    | v0.64 +513 | v0.65 +156
+#
+#   +1935 across seven releases, 20 waivers, not a single decrease. Meanwhile
+#   `sel_dsl_rules` sits at 80 and `selector_wildcard_arms_code` at 55, both
+#   unmoved. v0.58's correction was that a rule is done when the hand-written
+#   arm it replaces is DELETED. Nothing has been deleted since.
+#
+# WHAT CHANGED: v0.65 produced, for the first time, EVIDENCE ABOUT WHICH CODE IS
+# SAFE TO DELETE. Four DEAD mutants — code whose behaviour cannot be altered
+# because nothing reaches it — three of them in one `arm_backend.rs` retry
+# ladder. That is the first principled deletion list this compiler has had.
+#
+# THE RULE FOR THIS RELEASE: every v0.65 finding gets exactly one of three
+# dispositions, and there is no fourth:
+#
+#   WATCHED  — an oracle now catches it
+#   FIXED    — red-first, with the pin moving in the same PR
+#   DELETED  — proven unreachable, gated on byte-identity
+#
+# "Still pinned known-open" is not a disposition. RQ-66-PINDEBT makes that
+# structural rather than aspirational: the known-open pin count becomes a
+# ratchet that must FALL, so a release cannot end with more open pins than it
+# began.
+#
+# FALSIFIABLE IN BOTH DIRECTIONS. Four numbers move or they do not:
+# `selector_lines_code` (19896), `mutants_untested` (4), the known-open pin
+# count (10), and the re-measured silent-subset survival (27 %). If the DEAD
+# code turns out reachable, or the new oracles do not kill their mutants, this
+# release publishes that — the same way v0.65 published that its own metric had
+# gone backwards.
+#
+# HONEST RISKS, recorded before the work:
+#   - DELETION IS THE DANGEROUS ONE. CLAUDE.md is explicit: refactoring the
+#     selector without a per-step execution oracle is how this project would
+#     inject the miscompiles it exists to prevent. Every deletion is gated on
+#     byte-identity or an execution differential. An explanation is not a gate.
+#   - "DEAD" means unreached BY THIS CORPUS. Four mutants is a small sample; a
+#     DEAD classification is evidence, not proof. Widening the corpus before
+#     deleting may be the honest first step, and finding a DEAD mutant is
+#     actually reachable is a publishable result, not a setback.
+#   - The five both-selectors-wrong classes MAY NOT BE FIVE BUGS. If they share
+#     a root cause the artifact says so and closes them together rather than
+#     performing five fixes.
+#
+# Scope: 6 new + 1 carried. ARCHMODEL carries a 6th time; spar#445 is external
+# and was re-verified OPEN at the v0.65 cut.
