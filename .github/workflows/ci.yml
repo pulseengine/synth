@@ -495,6 +495,17 @@ jobs:
       - name: Runner-redundancy structural check — every required context reports (RQ-62-CLAIMCHECK, #1062)
         run: python3 scripts/runner_redundancy_check.py --structural-only
 
+      # RQ-66-VARVE (#1236): the `rivet-federated` job's shadowing gate reads
+      # `varve verify` output against a KNOWN-OPEN pin table
+      # (scripts/check_varve_shadow_pins.py) rather than hard-failing on any
+      # shadow — the checker does not get to be the unchecked one either.
+      # Fixtures are REAL captured `varve verify` output (the two actual CI
+      # runs this pin was authored from, plus a real clean run and a real
+      # multi-tool-shadow run from the authoring machine), not synthesized
+      # text, so this replay is a replay of what was actually measured.
+      - name: Unit-test the varve shadow-pin gate — real-fixture replay (RQ-66-VARVE, #1236)
+        run: python3 scripts/test_check_varve_shadow_pins.py
+
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         # FLOOR TIGHTNESS (v0.62, #1145 review): the floor must EQUAL the
         # declared total, not merely sit below it. It had drifted 1,892
@@ -936,14 +947,30 @@ jobs:
   # the queue. So: visible red, non-blocking. Promote to required only if it
   # stays quiet long enough to earn it (and then only with a lock-pinned sync).
   #
-  # WHY rivet v0.32.0 HERE while the job above stays on v0.23.0: this is a NEW
-  # pin for a NEW job, not a silent bump of the existing gate — sync/lock and
-  # the broken-cross-ref accounting this job exists to exercise are what
-  # matured after 0.23.0, and the in-tree rivet.lock was written by 0.32.0.
-  # Installed under its OWN --root: both jobs share self-hosted runners, and
-  # ~/.cargo/bin/rivet is shared machine state — clobbering versions would make
-  # the two jobs re-build rivet-cli (HiGHS C++) on alternating runs, the exact
-  # disk-filling failure the binary cache above exists to prevent.
+  # RQ-66-VARVE (#1236, v0.66): rivet now comes from the checked-in varve pin
+  # (`varve.toml` + `varve-realms.toml`, layer 2026.09.2, rivet 0.35.0)
+  # instead of a hand-typed `cargo install --git --tag`. This was the FIRST CI
+  # job converted — chosen because it is advisory: a real `ghcr.io` reachability
+  # or version-drift surprise from switching toolchain source lands here as
+  # visible red, not a merge-blocking one. Before wiring this, `varve install`
+  # (layer 2026.09.2, digest `sha256:67d585…999025`) plus the SAME filters the
+  # required job above applies were run locally against this repo's rivet.yaml
+  # under the resulting rivet 0.35.0: non-cross-repo errors = 0, artifacts
+  # loaded = 551 (floor 526), and a full `sync` + federated `validate` passed
+  # clean (Cross-repo backlinks: 1032, matching the count at #1012's authoring)
+  # — so a red result here should read as a CI-environment finding (network,
+  # runner state), not an unvetted version jump. The former "own --root, never
+  # clobbers ~/.cargo/bin/rivet" concern is now moot: varve's core is
+  # content-addressed under `~/.varve/realms/<realm-hash>/core/sha256-<digest>/`,
+  # distinct per pinned layer by construction, so two jobs pinning different
+  # layers already can't collide — no `--root` bookkeeping needed.
+  #
+  # NEW dependency this introduces: `varve install` fetches from
+  # `oci://ghcr.io/pulseengine/layers` (the realm's registry), which this
+  # workflow has never talked to before — every other job in this file reaches
+  # only crates.io, github.com and (kani) nothing external. If self-hosted
+  # egress doesn't reach ghcr.io, THIS is where that surfaces, isolated from
+  # the required gate.
   # ---------------------------------------------------------------------------
   rivet-federated:
     name: Rivet Federated Graph (advisory)
@@ -952,16 +979,57 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache rivet-cli 0.32.0 binary
+      - name: Cache varve client binary (v0.33.0 floor — see varve.toml)
         uses: actions/cache@v6
         with:
-          path: ~/.cargo/rivet-0.32/bin/rivet
-          key: ${{ runner.os }}-rivet-cli-v0.32.0
-      - name: Install rivet 0.32.0 (own root — never clobbers the 0.23.0 at ~/.cargo/bin)
+          path: ~/.varve/bin/varve
+          key: ${{ runner.os }}-varve-client-v0.33.0
+      - name: Install varve client v0.33.0 (additive default dir — never touches an ambient varve elsewhere on PATH)
+        # 0.32.0 and earlier HARD-REFUSE this repo's varve-realms.toml
+        # (`unknown field 'retired-roots'`) — the rotated realm's diagnostic
+        # extension didn't exist yet. Pinned exactly, not "latest", for the
+        # same reason every other tool in this file is pinned. Default
+        # VARVE_INSTALL_DIR ($HOME/.varve/bin) matches `varve docs bootstrap`
+        # and the floor recorded in varve.toml — deliberately not a
+        # CI-specific path, so a repro of this step off-CI behaves the same.
+        env:
+          VARVE_VERSION: v0.33.0
         run: |
-          if ! ~/.cargo/rivet-0.32/bin/rivet --version 2>/dev/null | grep -q "0.32.0"; then
-            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.32.0 --root ~/.cargo/rivet-0.32 rivet-cli
+          if ! ~/.varve/bin/varve --version 2>/dev/null | grep -q "0.33.0"; then
+            curl -fsSL https://github.com/pulseengine/varve/releases/download/v0.33.0/install.sh | sh
           fi
+          ~/.varve/bin/varve --version
+      - name: varve install — resolve + fetch + verify the pinned layer
+        # Fetches from oci://ghcr.io/pulseengine/layers per varve-realms.toml.
+        # Signature + per-platform digest verification happens here, offline
+        # thereafter; `varve verify` below re-checks without re-fetching.
+        run: ~/.varve/bin/varve install
+      - name: varve verify — signature, digest AND PATH-shadowing (REQ-SHADOW-001)
+        # This IS the shadowing check the RQ-66-VARVE brief asked for — varve
+        # already ships one (`varve verify` / `varve which` both exit 1 when a
+        # dispatched tool's name resolves to something other than the pinned
+        # binary on PATH), so this step wires the existing oracle rather than
+        # hand-parsing warning text (a mirror of a shipped thing is the failure
+        # class this project's own North Star names). A self-hosted runner is a
+        # PERSISTENT machine shared with the `rivet` job above, which installs
+        # its own rivet-cli into ~/.cargo/bin via actions/cache restore — if
+        # that leaks onto this job's PATH, this step is exactly what catches it
+        # instead of the two jobs silently dispatching different rivets.
+        #
+        # continue-on-error here on PURPOSE: `varve run` below dispatches the
+        # pinned binary DIRECTLY (it never resolves through $PATH), so a
+        # shadowed PATH cannot corrupt this job's own sync/validate result —
+        # the two findings (is the graph federated-valid; is PATH shadowed)
+        # are independent, and blocking the first on the second would hide a
+        # real answer to the first behind an unrelated hazard. The
+        # "Shadowing gate" step below reads this step's captured output
+        # against a KNOWN-OPEN pin table rather than hard-failing on any
+        # shadow at all — see that step's comment for why.
+        id: varve_verify
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ~/.varve/bin/varve verify 2>&1 | tee /tmp/varve-verify.txt
       - name: Sync externals (network — clones the 7 sibling repos)
         # #1143: AUTHENTICATE FOR QUOTA, NOT FOR ACCESS. All seven siblings are
         # PUBLIC, so this clone needs no permission — but GitHub rate-limits
@@ -985,13 +1053,13 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
-          ~/.cargo/rivet-0.32/bin/rivet sync
+          ~/.varve/bin/varve run -- rivet sync
       - name: Validate the federated graph
         # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
         # under pipefail so the log keeps the full diagnostic list.
         run: |
           set -o pipefail
-          ~/.cargo/rivet-0.32/bin/rivet validate 2>&1 | tee /tmp/rivet-federated.txt
+          ~/.varve/bin/varve run -- rivet validate 2>&1 | tee /tmp/rivet-federated.txt
       - name: Non-vacuity guard — resolution must actually have run
         # The #1012 signature was "FAIL (50 errors, ..., 0 broken cross-refs)":
         # zero broken cross-refs beside dozens of link errors because rivet
@@ -1006,6 +1074,70 @@ jobs:
           echo "Cross-repo backlinks: ${BACKLINKS:-0}"
           if [ "${BACKLINKS:-0}" -eq 0 ]; then
             echo "::error::Federated resolution appears NOT to have run (0 cross-repo backlinks loaded) — the #1012 poisoned-resolution signature. A green validate above is vacuous in this state."
+            exit 1
+          fi
+      - name: Shadowing gate — RQ-66-VARVE / #1236 (known-open REPORT, not a set-equality pin)
+        # Reads the `varve verify` step's captured output through
+        # scripts/check_varve_shadow_pins.py. THIS IS THE THIRD DESIGN —
+        # both earlier ones were wrong, and the history is worth keeping
+        # visible (full account in the script's own docstring):
+        #
+        #  1. Hard-fail on any `varve verify` failure. Found a REAL hazard
+        #     (`rivet` shadowed by the required `rivet` job's own
+        #     `~/.cargo/bin/rivet`, no `--root`) but made the job red on
+        #     EVERY run, since the hazard isn't fixable inside this change —
+        #     violates this release's "watched, fixed, or deleted" rule (a
+        #     gate red every run is ignored, not watched).
+        #  2. An EXACT-MATCH known-open pin (parity-oracle / home-alias
+        #     `KNOWN_OPEN` shape): green iff the observed shadow set equals
+        #     the pinned set, red if a pinned tool ever goes UNobserved too
+        #     (the "improvement must be captured" ratchet rule). This is
+        #     the RIGHT shape for a REPRODUCIBLE CODE DEFECT. It is the
+        #     WRONG shape here: a fourth real run, on a fourth distinct
+        #     runner (`pulseengine-ci-01-6`), came back with `varve verify`
+        #     completely CLEAN — no shadow at all, same commit, same pin.
+        #     The observable is RUNNER STATE (has this specific shared,
+        #     persistent machine run the sibling job before), not a repo
+        #     property, so exact-match-on-presence made the gate FLAKY:
+        #     green or red depending on which machine picks up the job —
+        #     worse than either a clean green or an honest red, because a
+        #     flaky gate is how a real regression gets waved through as
+        #     "just the runner again" (the coordinator's diagnosis,
+        #     confirmed by run 4's clean log).
+        #  3. THIS ONE: report the already-known, runner-state-driven
+        #     observation (present or absent, either way, every run) but
+        #     gate ONLY on something no runner-state story can explain: a
+        #     shadowed tool NOT in KNOWN_OPEN at all, or the known tool
+        #     shadowed via a path that does NOT match its pinned shape (a
+        #     different mechanism under the same name). Presence/absence of
+        #     the already-pinned (tool, path) pair is printed, never gated.
+        #
+        # `always()` is REQUIRED, not decoration: an `if:` with no
+        # status-check function gets an implicit `success()` ANDed in by
+        # Actions, so without it this step would never run once an earlier,
+        # UNRELATED step (Sync externals, Validate) fails — found for real at
+        # PR #1244 authoring on design #1 above.
+        #
+        # NOT wired into claims.yaml's `known_open_pins` ratchet
+        # (RQ-66-PINDEBT, landed on main after this branch's own base):
+        # deliberately, not just because #1242 wasn't merged when this was
+        # first written. That ratchet's population is REPRODUCIBLE CODE
+        # DEFECTS an oracle proves identically every run (its own
+        # `claims.yaml` comment already excludes loud-decline pins and
+        # ci.yml floors as a different kind of thing); this hazard is a
+        # THIRD kind — non-deterministic shared-infrastructure state — and
+        # belongs in that population no more than a flaky network timeout
+        # would. Verified directly, not assumed: the population tripwire's
+        # glob (`scripts/repro/**/*.py`) does not match this file's path,
+        # and `claim_check.py claims.yaml` / `--metric` are unaffected
+        # (65/65 hold, `known_open_pins` stays 104/104) with this file
+        # present.
+        if: always()
+        run: |
+          if [ -f /tmp/varve-verify.txt ]; then
+            python3 scripts/check_varve_shadow_pins.py < /tmp/varve-verify.txt
+          else
+            echo "::error::/tmp/varve-verify.txt not found — the 'varve verify' step above did not run (an earlier step, e.g. 'varve install', likely failed before it). Cannot check shadow pins; that earlier failure is the real problem to look at."
             exit 1
           fi
 

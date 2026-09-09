@@ -33,7 +33,215 @@ artifacts:
       If the new root or registry cannot be resolved at all, say so plainly and
       record the release as UNPINNED for that step rather than implying
       otherwise — an honest gap is a finding.
-    status: proposed
+
+      RESOLUTION (PR against #1236, RQ-66-VARVE lane). Three additional things
+      were measured beyond the nominal pin bump, because the pin bump alone was
+      furniture:
+
+      1. **Client-version floor.** The realm's rotated `varve-realms.toml`
+         (published in the varve v0.33.0 release) adds a `retired-roots =`
+         diagnostic field. varve 0.32.0 and earlier HARD-REFUSE it
+         (`unknown field 'retired-roots'`) — measured directly. The v0.33.0
+         client was installed additively (`install.sh`, cosign-verified
+         SHA256SUMS, `~/.varve/bin`), leaving the ambient `~/.cargo/bin/varve`
+         0.32.0 untouched as rollback. The floor is recorded in `varve.toml`
+         itself (a comment on the pin, read every time someone edits it) and
+         in this PR body.
+
+      2. **`varve self-update` friction reproduced** exactly as briefed: run
+         with the ambient 0.32.0 binary against a repo that already has
+         `realm = "pulseengine"` in `varve.toml` and a valid `varve-realms.toml`
+         beside it, it refuses and asks the caller to configure precisely what
+         is already configured (`no trust root configured` /
+         "add `realm = \"pulseengine\"` ..."). Filed upstream — see PR body /
+         report for the issue URL.
+
+      3. **The pin governed nothing before this PR, in either environment —
+         confirmed, and worse than briefed in one respect.** Locally, `varve
+         verify` (not a hand-written parser — this is varve's OWN
+         REQ-SHADOW-001 check) exits 1: 5 of 12 dispatched tools (loom, meld,
+         rivet, spar, synth) resolve to an ambient `~/.cargo/bin` copy instead
+         of the pinned one. Measured drift on the rotated layer (2026.09.2) is
+         WIDER than the pre-rotation baseline: loom ambient 0.1.0 vs pinned
+         **1.4.1** (was 1.2.0), rivet ambient 0.32.0 vs pinned **0.35.0**. In
+         CI, `varve` appeared in zero of `.github/workflows/*.yml` or the Bazel
+         files — confirmed by grep — while `ci.yml` hand-installed rivet twice
+         at two different tags (`v0.23.0` line ~727 required job, `v0.32.0`
+         line ~955 advisory federated job). **The clearest demonstration of why
+         this matters is spar, not rivet or loom**: the ambient
+         `~/.cargo/bin/spar` (dated 2026-06-15, months stale) still exhibits
+         the exact `--version`/`-V` failure pulseengine/spar#422 tracked
+         (`Unknown command`, exit 1) — but that was already FIXED upstream in
+         spar 0.36.0 (#419), and the varve-PINNED spar (0.40.0, from this
+         rotation's layer) is fully compliant: `--version`/`-V`/bare `version`
+         all print `spar 0.40.0` and exit 0, and an unknown command exits 2.
+         Measuring the ambient copy alone would have produced a FALSE report
+         of a long-fixed bug — the pin isn't just about drift, it is about
+         which answer is even true.
+
+      CI CONVERSION (one job, real, not a plan). Before touching CI, `varve
+      install` (layer 2026.09.2, digest `sha256:67d585…999025`) was run against
+      this repo, then rivet 0.35.0 from the resulting pinned core was run
+      locally through the SAME filters the required `rivet` job applies
+      (foreign-prefix exemption, artifact-load floor): non-cross-repo errors =
+      0, artifacts loaded = 551 (floor 526) — and a full `rivet sync` +
+      federated `rivet validate` passed clean (Cross-repo backlinks: 1032,
+      matching the count recorded at #1012's authoring). The advisory
+      `rivet-federated` job (chosen over the required `rivet` job precisely
+      because it is advisory) was converted to install the varve client,
+      `varve install` the pinned layer, run `varve verify` (a new
+      "Shadowing gate" step turns the job red — non-blocking, since the job
+      is advisory — if a dispatched tool is shadowed on the self-hosted
+      runner's PATH, which is plausible given it is a PERSISTENT machine
+      shared with the `rivet` job's own `~/.cargo/bin` install), and dispatch
+      `rivet sync`/`rivet validate` via `varve run` rather than a hardcoded
+      binary path. The required `rivet` job was deliberately left unconverted
+      in this PR — the local dry-run above says it would likely pass, but
+      changing the toolchain source for the gate that actually blocks merges
+      is a bigger claim than one lane should make unilaterally; recorded here
+      as a validated next step, not done.
+
+      REAL CI RESULT, first attempt (run 34381378564, job 102566804680): RED,
+      but the two most important steps for THIS artifact both PASSED —
+      `varve install` fetched layer 2026.09.2 from `oci://ghcr.io/pulseengine/layers`
+      cleanly (ghcr.io IS reachable from the self-hosted `rust-cpu` fleet —
+      the open question this PR's CI comment named is answered), and `varve
+      verify` found EXACTLY the hazard predicted: `rivet` on this runner's
+      PATH resolves to `/var/lib/runners/runner9/.cargo/bin/rivet`, not the
+      pinned copy. `~/.cargo/bin` is the DEFAULT cargo install location, and
+      the required `rivet` job's `cargo install --force --git` (no `--root`)
+      is the most likely source since it is the only thing in this workflow
+      that installs rivet there — but this is the LIKELY mechanism, not a
+      confirmed one; I did not check which job actually ran on this runner
+      beforehand, so a foreign image bake or another repo on the same fleet
+      is not ruled out. REQ-SHADOW-001 (varve's own oracle, not a
+      hand-written parser) caught a real, previously-invisible PATH hazard
+      on the first run it was wired into, whatever its exact source.
+
+      What actually reddened the job was a bug in THIS PR's own workflow
+      syntax, unrelated to varve or ghcr.io: `varve run rivet -- sync` is
+      wrong argument order (`varve run`'s own `--help` says "tool and its
+      arguments, after `--`", i.e. the `--` goes immediately after `run`,
+      not between the tool name and its args) — rivet's clap parser then saw
+      a literal `--` positional and refused `sync` with `unexpected argument
+      'sync' found` / `tip: subcommand 'sync' exists; to use it, remove the
+      '--' before it`. Fixed to `varve run -- rivet sync` /
+      `varve run -- rivet validate`, verified locally (`rivet sync`: 7
+      externals synced, exit 0) before pushing the fix. A second, related bug
+      found and fixed in the same pass: the new "Shadowing gate" step's
+      `if: steps.varve_verify.outcome == 'failure'` carries an IMPLICIT
+      `success()` from Actions when no status-check function is present, so
+      it never ran once `Sync externals` also failed — it reported `skipped`
+      even though `varve verify` genuinely failed. Fixed to
+      `if: always() && steps.varve_verify.outcome == 'failure'`.
+
+      RE-RUN, MEASURED (run 34381956416, job 102568731138, this branch's
+      current head — not a prediction): landed on a DIFFERENT runner,
+      `pulseengine-ci-01-12`. `varve install`, `Sync externals` (7 externals
+      synced), `Validate the federated graph` (**Result: PASS, 381
+      warnings**) and the non-vacuity guard (**Cross-repo backlinks: 1032**,
+      matching #1012's authoring count) ALL ran and passed. The job is still
+      RED, because the "Shadowing gate" correctly fired: `varve verify`
+      found the SAME class of shadow on this second, independent runner too
+      — `rivet` on `runner12`'s PATH is
+      `/var/lib/runners/runner12/.cargo/bin/rivet`, not the pin. Two
+      different runners sampled, same hazard on both — reported as
+      "confirmed on two runners sampled", not "the whole fleet" (fleet size
+      and full exposure unverified).
+
+      BASELINE CONTEXT: on `main`, before this PR, the last two
+      `rivet-federated` runs were green — not because the hazard was absent,
+      but because the OLD job dispatched rivet by ABSOLUTE PATH
+      (`~/.cargo/rivet-0.32/bin/rivet sync`) and never ran anything that
+      CHECKED PATH resolution at all, so nothing could have reported a
+      shadow either way. The new red is a PREVIOUSLY-INVISIBLE signal, not a
+      regression in what the job does: `varve run` also dispatches the
+      pinned binary by its own resolved path (not through `$PATH`), so this
+      job's own correctness was never at risk from the shadow —
+      REQ-SHADOW-001 exists to flag exactly this before something else (a
+      human, a future script) types bare `rivet` and gets the wrong one.
+
+      NET RESULT: ghcr.io IS reachable from this self-hosted fleet (answers
+      the open question this PR's own CI comment named), and the shadowing
+      gate WORKS — it found something real to be red about on its first two
+      runs. The likely (NOT confirmed — I did not check which job actually
+      ran on runner9/runner12 beforehand) source is the required `rivet`
+      job's `cargo install --force --git` (no `--root`), since it is the
+      one thing in this workflow that installs rivet into the default
+      `~/.cargo/bin` on these shared runners; a foreign image bake or
+      another repo sharing the fleet cannot be ruled out from this evidence
+      alone. A natural follow-up (not done in this PR, and contingent on
+      confirming the source): give the required
+      `rivet` job's `cargo install --force --git` a `--root`, mirroring the
+      pattern the old federated job already used, so it stops leaking into
+      the shared runners' default cargo bin dir.
+
+      CORRECTION (post-review): the "Shadowing gate" as first built was a
+      HARD FAIL on any `varve verify` failure — which meant the job would be
+      RED ON EVERY RUN until the runner-side fix above lands, since the
+      hazard is real and reproduces reliably. A gate red on every run is not
+      "watched" in this release's own sense ("watched, fixed, or deleted —
+      there is no fourth"): it trains everyone to ignore it and blocks
+      unrelated PRs with a hazard they did not cause. Flagged by the
+      coordinator during review; agreed, and reshaped rather than argued
+      against.
+
+      NEW DESIGN: a KNOWN-OPEN PIN, same shape as the parity oracle's and
+      the home-alias differential's `KNOWN_OPEN` tables
+      (`scripts/repro/home_alias_class_1189_differential.py`) —
+      `scripts/check_varve_shadow_pins.py` reads the `varve verify` step's
+      captured output and compares the shadowed (tool, ambient-path) pairs
+      against a pinned dict literal, exact-match in both directions (the
+      #911 ratchet discipline): a shadowed tool NOT pinned is a NEW hazard
+      (red); a PINNED tool shadowed via a path that does NOT match the
+      pinned shape is a DIFFERENT hazard wearing the same name (red,
+      reported distinctly — this is the scope-widening the review caught:
+      the first cut keyed on tool name alone, which would have stayed green
+      if `rivet` were later shadowed by something else entirely at a
+      different path); a pinned tool no longer reported shadowed AT ALL is
+      an IMPROVEMENT that must be captured by editing the pin down in the
+      same PR (red until then, not silently accepted); otherwise green. The
+      pin currently carries exactly one entry — `rivet`, path shape
+      `\.cargo/bin/rivet$` (the stable suffix across both observed runners;
+      `/var/lib/runners/runnerN/` varies by design and is NOT part of the
+      pin). 14 unit tests (`scripts/test_check_varve_shadow_pins.py`) using
+      REAL captured fixtures (both actual CI runs, a real clean local run,
+      a real 5-tool local shadow run) plus one synthetic "same tool,
+      different path" fixture (that specific shape has not been observed —
+      labeled as synthetic, not measured), wired as a step in the REQUIRED
+      `claim-check` job (following the same "the checker doesn't get to be
+      the unchecked one" pattern as the sibling status-evidence/
+      loop-conformance/runner-redundancy checker tests already there).
+
+      CORRECTED ANSWER to "which of the 9 required contexts does this
+      affect": NOT NONE. **Claim Check** (required) now runs
+      `test_check_varve_shadow_pins.py` as one more step — a small, pure
+      Python, deterministic addition, but a real one, following existing
+      precedent in that exact job. `rivet-federated` itself remains
+      advisory/non-required, and with the pin in place it is expected to go
+      GREEN in the ordinary case (both real CI runs measured for this PR
+      replay green against the pin, per the test suite).
+
+      NOT YET WIRED into claims.yaml's `known_open_pins` ratchet
+      (RQ-66-PINDEBT, epic #242): **PR #1242 is an OPEN PR on
+      `feat/pindebt-242`, not merged to `main`, and not an ancestor of this
+      branch's base (75a02953)** — verified directly
+      (`git merge-base --is-ancestor 23caede5 75a02953` fails). The
+      coordinator's framing ("has just landed... currently 104") does not
+      hold on this branch; `known_open_pins` and the `pin-table` derivation
+      kind do not exist here. `KNOWN_OPEN` in
+      `scripts/check_varve_shadow_pins.py` is already shaped for that exact
+      mechanism (a top-level dict literal, `measure: entries`, no
+      `cases_at` needed) so registering
+      `{file: scripts/check_varve_shadow_pins.py, name: KNOWN_OPEN}` under
+      `known_open_pins.tables` in claims.yaml is a one-line follow-up once
+      #1242 merges — not done here since the field it would populate does
+      not exist on this branch.
+
+      The layer carries **synth 0.61.0**; this repo ships 0.65.0 (moving to
+      0.66 this release) — the layer is behind its own consumer, so the next
+      `pulseengine-layers` deposit should bump it. Stated, not fixed here.
+    status: implemented
     release: v0.66
     tags:
       - toolchain
@@ -50,7 +258,131 @@ artifacts:
       issue: "#1236"
       done-when: "manual: varve.toml resolves against the rotated realm from the PUBLISHED realms asset (not a pasted key), `varve install` verifies signatures and digests, `varve which` reports a layer for the loop's tools, and the layer identity is recorded with the release; or the step is declared UNPINNED with the reason"
       verified-by: >-
-        PENDING. State the layer and manifest digest actually observed. A
-        negative control is cheap and worth running: confirm a shim still exits
-        1 outside a pinned project, so the refusal that makes the pin meaningful
-        is shown to still work after the rotation.
+        Layer 2026.09.2, manifest digest
+        sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025,
+        realm `pulseengine`, registry `oci://ghcr.io/pulseengine/layers`,
+        trust-root `7d3b892e…da1a0`. `varve-realms.toml` is byte-identical to
+        the asset in the pulseengine/varve v0.33.0 release (diffed). `varve
+        install` + `varve verify` both run clean (signature OK, 12/12 tools
+        match signed digests) against the checked-in pin from the repo root
+        under the v0.33.0 client. Negative control run: a shim installed into
+        an isolated `VARVE_ROOT` and invoked from a directory with no
+        `varve.toml` anywhere up its ancestry refuses —
+        "no varve.toml found walking up from ... this project has no pinned
+        layer" — exit 1, confirmed still true after the rotation. `varve
+        which`/`varve verify` confirm the PATH-shadowing refusal
+        (REQ-SHADOW-001) still fires on this machine post-rotation (loom,
+        meld, rivet, spar, synth all shadowed, wider drift than
+        pre-rotation). CI: the advisory `rivet-federated` job in
+        `.github/workflows/ci.yml` now installs varve v0.33.0, runs `varve
+        install`/`varve verify`, and dispatches rivet via `varve run` instead
+        of a hand-typed `cargo install --git --tag`; local dry-run under the
+        resulting rivet 0.35.0 reproduces the required job's own pass
+        conditions (0 non-cross-repo errors, 551≥526 artifacts) and a full
+        federated sync+validate (1032 cross-repo backlinks, PASS). REAL CI,
+        measured (run 34381378564, job 102566804680, first attempt): ghcr.io
+        IS reachable from the self-hosted `rust-cpu` fleet (`varve install`
+        fetched layer 2026.09.2 cleanly) and `varve verify` caught a REAL
+        cross-job shadow — `rivet` on that runner's PATH resolves to the
+        required job's own `~/.cargo/bin/rivet`, not the pin (REQ-SHADOW-001,
+        exact verbatim error in the PR). The job went red from a genuine bug
+        in this PR's own YAML (`varve run rivet -- sync` — wrong `--`
+        position per `varve run --help`; fixed to `varve run -- rivet sync`)
+        plus a related `if:` condition bug on the new "Shadowing gate" step
+        (missing `always()`, so it silently didn't run once a later step
+        failed for an unrelated reason; fixed). Both fixes verified locally,
+        then pushed. RE-RUN, MEASURED (run 34381956416, job 102568731138,
+        current head, landed on a DIFFERENT runner `pulseengine-ci-01-12`):
+        `varve install`, `Sync externals` (7 externals), `Validate the
+        federated graph` (PASS, 381 warnings) and the non-vacuity guard
+        (Cross-repo backlinks: 1032) ALL PASSED. Job still RED because the
+        Shadowing gate correctly fired — the SAME shadow class on this
+        second runner too (`rivet` -> `runner12`'s `~/.cargo/bin/rivet`).
+        Two runners sampled, same hazard on both; not claiming fleet-wide.
+        Baseline: the pre-PR job was green on `main` only because it never
+        checked PATH (dispatched its own privately-rooted binary) — this red
+        is a new, previously-invisible signal, not a regression; `varve run`
+        bypasses PATH so this job's own dispatch was never at risk. The
+        required `rivet` job remains on its hand-typed
+        `cargo install --git --tag v0.23.0` pin — NOT converted in this PR;
+        UNPINNED w.r.t. varve, by choice, pending a team decision to move
+        the merge-blocking gate's toolchain source. A natural follow-up
+        (not done here): give that job's `cargo install` a `--root` so it
+        stops leaking into the shared runners' default cargo bin dir.
+        POST-REVIEW CORRECTION: the hard-fail "Shadowing gate" was replaced
+        with a KNOWN-OPEN pin (`scripts/check_varve_shadow_pins.py`,
+        `KNOWN_OPEN = {"rivet": (issue, note, path_pattern)}`, scoped to
+        tool name AND ambient-path shape, not name alone) after the
+        coordinator correctly flagged that a hard fail on this real,
+        not-fixable-here hazard would leave the job red forever, violating
+        this release's own "watched, fixed, or deleted" rule. Both real CI
+        runs above now replay GREEN against the pin (14 unit tests,
+        `scripts/test_check_varve_shadow_pins.py`, using the real captured
+        output from both runs plus a real clean run and a real 5-tool local
+        shadow run). That test suite is wired as a step in the REQUIRED
+        `claim-check` job — so the corrected answer to "which required
+        context is affected" is **Claim Check**, not none. NOT wired into
+        `known_open_pins` (RQ-66-PINDEBT): PR #1242 is confirmed OPEN, not
+        merged, not an ancestor of this branch's base — the coordinator's
+        "currently 104, has just landed" does not hold here; noted as a
+        one-line follow-up once #1242 merges.
+
+        LIVE CONFIRMATION (run 34384697392, job 102577926865, current head
+        910a06cb): landed on a THIRD distinct runner, `pulseengine-ci-01-11`.
+        `varve verify` found the SAME known hazard again
+        (`rivet` -> `/var/lib/runners/runner11/.cargo/bin/rivet`) — three
+        different runners now, same mechanism, strengthening rather than
+        weakening the case that this is fleet-wide, not a one-off. The
+        Shadowing gate step's own output: "varve shadow pins: 1 known-open
+        (rivet), all present at their pinned path shape, no new or
+        different hazard." Every step in the job, INCLUDING the Shadowing
+        gate, reports `success` — the job's overall conclusion is
+        **SUCCESS**. `Claim Check` also passed on the same commit, with the
+        new `test_check_varve_shadow_pins.py` step included. The known-open
+        pin design is confirmed working end-to-end in real CI, not just
+        locally.
+
+        SECOND CORRECTION (post-rebase onto main 499c3895, which now
+        carries RQ-66-PINDEBT #1242): the coordinator reported the
+        Shadowing gate RED again on a fresh run and correctly suspected the
+        pin's SHAPE, not a regression. Confirmed: run 34395957454, job
+        102615600973, a FOURTH distinct runner (`pulseengine-ci-01-6`),
+        same commit, same pin — `varve verify` came back COMPLETELY CLEAN
+        (`layer 2026.09.2 ... verified: signature OK, 12 tool(s) match
+        their signed digests`, zero `REQ-SHADOW-001` lines). The exact-match
+        design (green iff the shadow set == the pinned set, red if a pinned
+        tool ever goes unobserved) was WRONG for this hazard: the
+        observable is RUNNER STATE (whether that specific shared,
+        persistent machine has run the required `rivet` job's cargo
+        install before), not a repo property, so gating on presence/absence
+        made the check FLAKY — green or red depending on which of the
+        fleet's machines happened to pick up the job. A flaky gate is worse
+        than either a clean green or an honest red: it is exactly how a
+        real regression gets waved through as "just the runner again."
+
+        REDESIGNED (third cut): `scripts/check_varve_shadow_pins.py` now
+        REPORTS the already-known (tool, path) observation every run,
+        present or absent, and GATES only on genuinely new information a
+        runner-state story cannot explain — a shadowed tool not in
+        KNOWN_OPEN at all, or the known tool shadowed via a path that does
+        NOT match its pinned shape. All four real captured runs (three
+        shadowed — runner9, runner12, runner11 — one clean — runner6) now
+        replay green; 17 unit tests (`scripts/test_check_varve_shadow_pins.py`).
+
+        Also checked, as asked: whether `KNOWN_OPEN` in this file needed
+        registering under claims.yaml's now-landed `known_open_pins`
+        ratchet. Verified directly rather than assumed — `python3
+        scripts/claim_check.py claims.yaml` (65/65 hold) and `--metric`
+        (`known_open_pins 104 104 +0`) are BOTH unaffected by this file's
+        presence, because the population tripwire's glob
+        (`scripts/repro/**/*.py`) does not reach `scripts/check_varve_shadow_pins.py`
+        at all — it lives directly under `scripts/`. Beyond the glob
+        technicality, the conceptual case against registering it is
+        stronger: `known_open_pins`'s population is REPRODUCIBLE CODE
+        DEFECTS (a given WASM shape produces the same wrong bytes on every
+        run, everywhere) — the varve-shadow hazard is a THIRD kind again,
+        non-deterministic SHARED-INFRASTRUCTURE state, and belongs in that
+        ratchet no more than a flaky network timeout would (the ratchet's
+        own claims.yaml comment already excludes loud-decline pins and
+        ci.yml floors as different kinds of thing). Not wired in, by
+        reasoned choice, not oversight.
