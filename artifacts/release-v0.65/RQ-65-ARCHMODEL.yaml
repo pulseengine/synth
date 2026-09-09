@@ -76,5 +76,25 @@ artifacts:
         and the deferral recorded — is cut-time work and has not happened.
       done-when: "manual: either spar#445 closes and the AADL -> WIT path is exercised, or the deferral is recorded again with the blocker RE-VERIFIED at cut time; and separately, loop_conformance_check's step 1-2 slot is checked for whether it matches the artifact of the release under test rather than the first programme-scoped one"
       verified-by: >-
-        PENDING — carried unchanged from RQ-64-ARCHMODEL, with the conformance
-        slot-matching question added as a measurable sub-item.
+        DEFERRED AGAIN, blocker re-verified AT CUT TIME as the done-when
+        requires: spar#445 checked 2026-09-09, still OPEN, last updated
+        2026-09-03 — six days before this cut. It is an EXTERNAL blocker in
+        another repository; synth cannot close it, and generating WIT from an
+        AADL model that spar will silently mis-validate would produce exactly
+        the unearned confidence this programme exists to prevent. Fifth
+        consecutive N/A for the same reason, filed rather than waved (#1136).
+
+        THE SECOND HALF IS DISCHARGED, and it found a live defect. The question
+        "does loop_conformance_check's step 1-2 slot match the artifact of the
+        release UNDER TEST, or just the first programme-scoped one?" was
+        MEASURED with rivet's own loader: for a v0.65 run the unscoped matcher
+        returned RQ-63-ARCHMODEL — an artifact from two releases back — and
+        RQ-65-ARCHMODEL was itself invisible to it, lacking the `feature-loop`
+        tag. Together the recurring N/A could have lapsed entirely with the slot
+        staying green forever, which is precisely the failure #1136 exists to
+        prevent. Fixed in PR #1224: the matcher is release-scoped, an older
+        match is returned marked `stale` so the caller fails LOUDLY naming it,
+        and this artifact carries the tag. Discriminates three ways on the real
+        tree — v0.65 PASS, v0.64 PASS, an unfiled release stale FAIL — with
+        tests 33 -> 39 and three mutations each killed by the tests that claim
+        them.
