@@ -348,3 +348,39 @@ have let `optimizer_bridge.rs:6396` (a memory offset +4) through.
   ledger (a survivor that becomes caught must be banked as a visible diff);
   the sample and byte-changing denominators are pinned `count-eq` so the rate
   quoted here cannot drift from the ledger.
+
+## Ledger staleness after RQ-65-MVPCORE (#1232) — stated, not silently carried
+
+`#1232` landed between this survey being measured and this PR merging, and grew
+`crates/synth-cli/src/main.rs` from 11,143 to 11,405 lines. Mutation sites are
+anchored by `file:line:col`, so on the merged tree:
+
+| | |
+|---|---|
+| sites enumerated on the merged tree | 1,542 |
+| **`ci_subset` entries that still resolve** | **7 of 7** (3 controls + 4 mutants) |
+| R5-startup mutants that still resolve | **0 of 7** |
+
+**The live gate is intact.** Every `ci_subset` entry resolves, because the three
+controls are defined structurally by `control_sites()` rather than by line, and
+the four subset mutants live in `optimizer_bridge.rs`, `liveness.rs` and
+`arm_backend.rs` — files `#1232` did not touch. So
+`mutation-survey-discrimination` still replays real mutations and still fails if
+a recorded killer stops killing.
+
+**What IS stale, said plainly.** All seven `R5-startup` mutants point at code that
+has moved. They are **7 of the 21 byte-changing mutants** the rate is computed
+over (6 KILLED, 1 UNTESTED), and that one UNTESTED is **one of the four published
+survivors**. So:
+
+- the **19 % stands as a measurement of the tree it names** (`meta.commit`), which
+  is what a seeded survey with a stated frame reports;
+- **a third of its denominator is not replayable on `main`**, and neither is one
+  of its four survivors;
+- re-anchoring R5 is follow-up work, not a re-run: `#1232` restructured that
+  region, so "the equivalent site" is a judgement, not a line-number shift.
+
+This is recorded here rather than fixed silently because a survey whose
+denominator quietly stops being checkable is exactly the failure this release
+exists to name. The number is honest about its tree; this section is honest about
+which tree that was.
