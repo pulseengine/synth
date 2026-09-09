@@ -1,0 +1,99 @@
+artifacts:
+  - id: RQ-66-UNWATCHED
+    type: system-req
+    title: "Four v0.65 findings are watched by nothing at all — the fourth disposition this release says does not exist"
+    description: >
+      THIS ARTIFACT EXISTS BECAUSE THE PLAN BROKE ITS OWN RULE. v0.66 states
+      that every v0.65 finding gets exactly one of three dispositions —
+      WATCHED, FIXED, DELETED — and that there is no fourth. Auditing the board
+      against the oracles before the plan merged found four findings that have
+      none of the three. They are not pinned, not asserted in `ci.yml`, not
+      referenced by any script under `scripts/`, not covered by a test, and not
+      named by any other v0.66 artifact. They exist only as issue prose, which
+      is precisely the "a list is not work" failure the release theme was
+      written against.
+
+      DERIVED, NOT REMEMBERED. The check is mechanical and reproducible:
+      for each open v0.65-window issue, `grep -rl "#N" scripts/ .github/workflows/
+      claims.yaml crates/*/tests crates/*/src`. Four come back empty:
+
+        #1207  `synth compile` ACCEPTS AN INVALID MODULE — stack underflow at a
+               loop-(result i32) end is accepted and compiled. This is an
+               acceptance-soundness defect of the SAME CLASS as #1209
+               (memory64 accepted and silently wrong), and unlike #1209 there
+               is not even a pin counting it. A compiler that accepts invalid
+               input has no defined obligation about what it emits.
+
+        #1229  THE ARM DIRECT SELECTOR REJECTS VALID INPUT — "stack underflow:
+               malformed WASM or compiler bug" on modules the spec suite says
+               are well-formed. The message itself is an admission that the
+               code cannot tell the two apart. This is a FALSE REJECTION, so it
+               costs reach, and the North Star's second invariant is that reach
+               is part of correctness. It is also the mirror image of #1207 —
+               the same stack-discipline machinery is wrong in both directions,
+               and the two should be triaged together before either is fixed.
+
+        #1230  VCR-RA-003 REFUSES SYNTH'S OWN EMITTED STREAM on spec modules
+               (`JoinValueNotAvailable { reg: … }`). The whole-function
+               allocator validator is designated by the allocator endgame as
+               the ACCEPTANCE ORACLE the replacement allocator is to be built
+               against. An acceptance oracle that rejects the incumbent is
+               either finding a real defect in the shipped allocator or is
+               itself wrong; both are load-bearing, and nobody has determined
+               which.
+
+        #1231  THE AARCH64 SELECTOR CONFUSES OPERAND CLASSES — "local.set:
+               expected GP operand, got FP". AArch64 accepts 1.6 % of real
+               modules; a class confusion in `local.set` is on the path of
+               almost anything it would newly accept.
+
+      EVERYTHING ELSE v0.65 LEFT OPEN IS AT LEAST PINNED — #1204 and #1206 in
+      the parity table, #1223 and #1226 in the home-alias oracles, and
+      #1209/#1210/#1211/#1214/#1215 in the parity table and owned by
+      RQ-66-BOTHWRONG. So the residue is exactly these four, and the gap is
+      small enough to close in one release rather than argue about.
+
+      THE MINIMUM DELIVERABLE IS "WATCHED", NOT "FIXED". A red-first pinned
+      oracle for each — one that FAILS today, records the exact wrong behaviour
+      by count, and is wired into `ci.yml` — discharges the release rule and
+      converts four pieces of prose into four measured numbers. Fixing any of
+      them is welcome and is a bonus, not the bar; a fix without an oracle is
+      not, because then the next regression is silent again.
+
+      TRIAGE #1207 AND #1229 TOGETHER, AND SAY WHETHER THEY ARE ONE DEFECT.
+      Accepting invalid input and rejecting valid input are the two failure
+      directions of one stack-discipline implementation. If a single validator
+      is responsible for both, one fix moves two pins and the honest report is
+      one defect, not two — the same discipline RQ-66-BOTHWRONG applies to
+      #1210/#1215.
+
+      #1230 MAY BE A FINDING ABOUT THE ORACLE, NOT THE ALLOCATOR, AND THAT
+      OUTCOME MUST BE PUBLISHABLE. If VCR-RA-003 is wrong, say so and pin the
+      validator's own defect; do not "fix" the allocator to satisfy a validator
+      that is mistaken, and do not weaken the validator to make the red go
+      away. Determining WHICH of the two is wrong is the deliverable; either
+      answer is a result.
+    status: proposed
+    release: v0.66
+    tags:
+      - oracle
+      - non-vacuity
+      - acceptance-soundness
+      - reach
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1229"
+      done-when: "manual: each of #1207, #1229, #1230, #1231 has a red-first oracle that fails on main, records its wrong behaviour by exact count, and is wired into ci.yml; #1207 and #1229 are triaged together with a stated verdict on whether they share a root cause; #1230 states whether the allocator or the validator is wrong, with evidence; any finding fixed rather than merely watched moves its own pin in the same PR"
+      verified-by: >-
+        PENDING. Red-first is the whole point here and it is not inherited —
+        these four have no pin to move, so each oracle must be DEMONSTRATED to
+        fail on `origin/main` before it is wired in, with the failing output
+        recorded. An oracle added green is an oracle nobody has watched fire,
+        and this release already has two artifacts (RQ-66-PINDEBT,
+        RQ-66-DELETE) built on the principle that such a gate is being guessed
+        at rather than known.

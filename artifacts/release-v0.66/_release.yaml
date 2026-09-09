@@ -1,0 +1,100 @@
+# v0.66 — "Watched, fixed, or deleted"
+#
+# v0.65 asked what fraction of the code generator any oracle would catch being
+# wrong. It answered — 19 % of byte-changing mutants survive a named suite, and
+# 27 % of the ones that change bytes SILENTLY — and it produced a list: 21
+# defects, 10 of them pinned known-open, 4 mutants no oracle watches, 4 mutants
+# nothing reaches.
+#
+# A LIST IS NOT WORK. This project's characteristic failure is that lists become
+# furniture. The evidence is one number:
+#
+#   selector_lines_code, the metric v0.58 installed as the project's own
+#   scoreboard, has NEVER ONCE FALLEN release-over-release:
+#
+#     v0.58 17961 | v0.59 +327 | v0.60 +911 | v0.61 +14 | v0.62 +14
+#     v0.63 +0    | v0.64 +513 | v0.65 +156
+#
+#   +1935 across seven releases, 20 waivers, not a single decrease. Meanwhile
+#   `sel_dsl_rules` sits at 80 and `selector_wildcard_arms_code` at 55, both
+#   unmoved. v0.58's correction was that a rule is done when the hand-written
+#   arm it replaces is DELETED. Nothing has been deleted since.
+#
+# WHAT CHANGED: v0.65 produced, for the first time, EVIDENCE ABOUT WHICH CODE IS
+# SAFE TO DELETE. Four DEAD mutants — code whose behaviour cannot be altered
+# because nothing reaches it — three of them in one `arm_backend.rs` retry
+# ladder. That is the first principled deletion list this compiler has had.
+#
+# THE RULE FOR THIS RELEASE: every v0.65 finding gets exactly one of three
+# dispositions, and there is no fourth:
+#
+#   WATCHED  — an oracle now catches it
+#   FIXED    — red-first, with the pin moving in the same PR
+#   DELETED  — proven unreachable, gated on byte-identity
+#
+# "Still pinned known-open" is not a disposition. RQ-66-PINDEBT makes that
+# structural rather than aspirational: the known-open pin count becomes a
+# ratchet that must FALL, so a release cannot end with more open pins than it
+# began.
+#
+# FALSIFIABLE IN BOTH DIRECTIONS. Four numbers move or they do not:
+# `selector_lines_code` (19896), `mutants_untested` (4), the known-open pin
+# count (10), and the re-measured silent-subset survival (27 %).
+#
+# CORRECTION, made before this plan merged: `selector_lines_code` was NOT
+# movable by RQ-66-DELETE. Its glob is the `instruction_selector` family, and
+# all four DEAD sites are in `arm_backend.rs`, outside it — deleting every one
+# would have moved it by zero. The coordinator scoped the headline on a metric
+# the work could not touch. Only R3-direct of the survey's five regions is
+# inside that population, so the survey cannot currently feed the ratchet it
+# was meant to feed. Recorded in RQ-66-DELETE; the release does not get to
+# claim a fall it was never able to produce.
+#
+# If the DEAD code turns out reachable, or the new oracles do not kill their
+# mutants, this release publishes that — the same way v0.65 published that its
+# own metric had gone backwards.
+#
+# SECOND CORRECTION, from auditing this plan against its own rule. "Every v0.65
+# finding gets one of three dispositions and there is no fourth" is a rule this
+# plan broke on the day it was written. Derived from the board, not remembered:
+# of the findings v0.65 filed and left open, FOUR are watched by nothing at all
+# — no oracle, no CI assertion, no pin, no test. They exist only as issue prose:
+#
+#   #1207  `synth compile` ACCEPTS an INVALID module (stack underflow at a
+#          loop-(result i32) end) — an acceptance-soundness defect of the same
+#          class as #1209, and unlike #1209 nothing measures it
+#   #1229  the ARM direct selector reports "stack underflow: malformed WASM or
+#          compiler bug" on VALID spec modules — a FALSE REJECTION, so it costs
+#          reach, and reach is part of correctness
+#   #1230  VCR-RA-003 refuses synth's OWN emitted stream on spec modules
+#          (`JoinValueNotAvailable`) — the whole-function validator that the
+#          allocator endgame is meant to be built against does not accept the
+#          allocator we ship
+#   #1231  the aarch64 selector confuses operand classes ("local.set: expected
+#          GP operand, got FP")
+#
+# Everything else v0.65 left open is at least PINNED by an oracle (#1204/#1206
+# in the parity table, #1223/#1226 in the home-alias oracles, #1209/#1210/
+# #1211/#1214/#1215 in the parity table and owned by RQ-66-BOTHWRONG). These
+# four are the fourth disposition the rule says does not exist. RQ-66-UNWATCHED
+# is added to close that hole; without it this release would have shipped the
+# theme while violating it.
+#
+# HONEST RISKS, recorded before the work:
+#   - DELETION IS THE DANGEROUS ONE. CLAUDE.md is explicit: refactoring the
+#     selector without a per-step execution oracle is how this project would
+#     inject the miscompiles it exists to prevent. Every deletion is gated on
+#     byte-identity or an execution differential. An explanation is not a gate.
+#   - "DEAD" means unreached BY THIS CORPUS. Four mutants is a small sample; a
+#     DEAD classification is evidence, not proof. Widening the corpus before
+#     deleting may be the honest first step, and finding a DEAD mutant is
+#     actually reachable is a publishable result, not a setback.
+#   - The five both-selectors-wrong classes MAY NOT BE FIVE BUGS. If they share
+#     a root cause the artifact says so and closes them together rather than
+#     performing five fixes.
+#
+# Scope: 7 new + 1 carried. ARCHMODEL carries a 6th time; spar#445 is external
+# and was re-verified OPEN at the v0.65 cut. RQ-66-UNWATCHED was added after
+# the plan was written, by auditing the plan against its own rule — the seventh
+# artifact exists because the first six did not cover four of the findings the
+# rule says must be covered.

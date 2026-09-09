@@ -1,0 +1,65 @@
+artifacts:
+  - id: RQ-66-PINDEBT
+    type: system-req
+    title: "Nothing stops a known-open pin from becoming permanent — make the pin count a ratchet that must FALL"
+    description: >
+      This artifact is the structural half of the release theme, and it exists
+      because the alternative is a release that agrees with itself and changes
+      nothing.
+
+      v0.65 pinned ten wrong-answer classes red-first (#1204, #1205, #1206,
+      #1208, #1209, #1210, #1211, #1213, #1214, #1215). That was the right call
+      at the time — a pinned defect is honest, it keeps the oracle green without
+      hiding the bug, and the pin moving is the fix's own evidence.
+
+      BUT NOTHING MAKES A PIN TEMPORARY. A pin is comfortable: CI is green, the
+      defect is documented, and the cost of leaving it is zero. That is exactly
+      the shape of every other accumulation this project has measured and then
+      had to correct — 20 selector waivers, seven releases of growth,
+      `sel_dsl_rules` frozen at 80, a delivery floor that sat at 28 against a
+      live 67 for eleven releases. **Each of those was individually justified
+      and collectively wrong.**
+
+      SO PIN IT THE WAY THE OTHER RATCHETS ARE PINNED. Add the known-open pin
+      count to `claims.yaml` with `direction: FALL`, derived from the oracles
+      themselves rather than hand-maintained, so:
+
+        - a release that ends with more open pins than it began goes RED;
+        - adding a pin is still allowed and still cheap, but it must be PAID FOR
+          by closing one, or by a waiver with a written reason in the PR that
+          adds it — the #911 discipline the size ceiling already uses;
+        - the number appears in `claim_check --metric` beside the others, so
+          "how much known-wrong code are we carrying?" is a question with an
+          answer.
+
+      DERIVE IT, DO NOT COUNT IT BY HAND. The pins live in the oracle scripts
+      and their ci.yml assertions; a hand-maintained tally is a second source of
+      truth that will drift, which is the failure the North Star's first
+      invariant names. Read the pin tables the oracles already parse.
+
+      AND PROVE IT DISCRIMINATES, both directions: adding a pin without closing
+      one must redden; closing one must let the number fall. A ratchet nobody
+      has watched fire is a ratchet being guessed at — RQ-63-FLOOREQ and
+      RQ-65-FLOORSHAPE both established that bar and this must meet it.
+    status: proposed
+    release: v0.66
+    tags:
+      - ratchet
+      - gate
+      - non-vacuity
+      - north-star
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#242"
+      done-when: "manual: the known-open pin count is DERIVED from the oracles, pinned in claims.yaml with a FALL direction and a waiver channel, printed by claim_check --metric, and shown red-first to REDDEN when a pin is added without one being closed"
+      verified-by: >-
+        PENDING. The demonstration is the deliverable: add a synthetic pin and
+        show the gate red; close one and show the number fall. Report the
+        starting count as measured, not as remembered — v0.65's ten is a
+        coordinator tally and the derivation may disagree, which would itself be
+        a finding.
