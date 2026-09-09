@@ -404,8 +404,29 @@ DECLARE_SINCE = (0, 60)
 # THE MOVE IS ONCE PER RELEASE AND FORCED, NOT REMEMBERED (A0): the anchor must
 # be the previous minor's tag of the release being cut — the R4-issue/R10
 # window's own derivation. One minor of lag is a WARNING that prints the
-# three new lines to paste (the post-tag attestation PR is where the move
-# lands); two minors is red. The values are this script's own derivation, so
+# three new lines to paste; two minors is red.
+#
+# WHEN TO MOVE IT — the PR that OPENS THE NEXT RELEASE WINDOW, not the post-tag
+# attestation PR. This was measured, because the obvious reading is wrong in a
+# way that reds `main` (coordinator, v0.65, in a scratch clone):
+#
+#   * TAGGING DOES NOT MOVE THE LAG. `lag` compares ANCHOR_TAG against the
+#     release WINDOW's previous tag, not the newest tag. After `git tag -a
+#     v0.65.0` the window is still v0.65 and its previous tag is still
+#     v0.64.0, so the checker reports `lag 0` and exit 0. There is no
+#     ANCHOR-LAG warning at the tag to act on.
+#   * MOVING IT AT THE TAG IS RED, not merely early. With ANCHOR_TAG =
+#     "v0.65.0" while the window is still v0.65:
+#         FAIL A0 anchor v0.65.0: AHEAD of the window's previous tag v0.64.0
+#              — an anchor cannot precede the release it anchors (#1183)
+#     plus an A2 mismatch, because the tree at the new tag holds a different
+#     artifact count than the pin recorded.
+#
+# So the anchor moves in the vX.(Y+1) PLANNING PR — the one that creates
+# `artifacts/release-vX.(Y+1)/` — together with the re-derived
+# ANCHOR_DELIVERY / ANCHOR_PROGRAMME and a PROGRAMME_DELETED_SINCE_ANCHOR
+# reset. That is the first moment the window has advanced, which is exactly
+# when the one-minor grace period starts. The values are this script's own derivation, so
 # a wrong hand-copy fails A1/A2 in the same PR. claims.yaml pins the three
 # lines verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183) so every move is a
 # visible ledger diff, and pins that the `!=` checks stay wired.
