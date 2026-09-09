@@ -63,7 +63,7 @@ artifacts:
       issue: "#1189"
       done-when: "manual: the survey probes every suite step on the UNMUTATED tree and refuses to start when any is unrunnable, distinguishing 'oracle failed' from 'oracle could not run'; meta records the frame actually used rather than argparse defaults; both shown red-first by making a step unrunnable and confirming the survey refuses instead of scoring"
       landed: >-
-        PR #TBD (branch feat/potency-1189, stacked on fix/delete-242 / #1239).
+        PR #1248 (branch feat/potency-1189, stacked on fix/delete-242 / #1239).
         `classify_unrunnable(code, out)` (pure) tells "could not execute"
         (exit 127/126, `command not found`, `ModuleNotFoundError`, an `env`
         shebang failing to find its interpreter) from "executed and is red
