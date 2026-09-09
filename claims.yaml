@@ -1539,9 +1539,25 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19917
+        value: 19945
         baseline: 17897
         waivers:
+          - to: 19945
+            reason: >-
+              RQ-65-ALIASCLASS (#1222), coordinator salvage: +28 lines in
+              select_with_stack.rs for `declared_wide_params` and the two
+              guards that consume it. This is a CORRECTION to the same
+              artifact's own +177 growth, not new capability: the #1222
+              pair-write was gated only on `i64_locals`, which carries
+              body-INFERRED widths, so a param the signature calls i32 (or
+              whose width nobody declared) was homed NARROW by
+              `aapcs_param_layout` and the pair-write clobbered the NEXT
+              param's home. The `i64_lowering_doesnt_clobber_params` fuzz
+              target caught it writing R1 = local 1; the harness was right
+              and the fix over-applied. Narrowing the arm cannot be done by
+              deleting: the correct behaviour needs the declared-width test
+              the original arm lacked. Value RE-DERIVED after cargo fmt on
+              the tree rebased onto 1aebe474.
           - to: 19917
             reason: >-
               RQ-65-ALIASCLASS (#1189/#1222): +177 lines in select_with_stack.rs,
@@ -1967,7 +1983,7 @@ claims:
         # (the RQ-64 then-result alias copy is now the shared #1189
         # mechanism, `copy_live_home_then_results`, so the merged code is
         # smaller than the two deltas summed).
-        value: 30857
+        value: 30943
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
