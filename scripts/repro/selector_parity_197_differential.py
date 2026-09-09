@@ -190,6 +190,12 @@ FLOORS_FULL = dict(modules_both=300, assertions_compared=14_500,
                    optimized_funcs=1_150, differing_funcs=1_350)
 FLOORS_LOCAL = dict(modules_both=20, assertions_compared=200,
                     optimized_funcs=30, differing_funcs=20)
+# RQ-65-MVPCORE (#1017): start-function modules that must be both-accepted
+# and BOOTED whenever start.wast is in the run (full and `--only start`
+# alike). Measured at authoring on the compiler that invokes the start
+# function from Reset_Handler; 0 on the compiler before it (every start
+# module refused, #1046).
+START_MODULES_FLOOR = 1
 
 # ---------------------------------------------------------------------------
 # KNOWN divergences — (file, module ordinal, function, kind) -> (issue, count).
@@ -769,6 +775,15 @@ class ModuleRun:
         self.emulations = 0
         self.trap_miss = False
         self.mixed = False
+        # RQ-65-MVPCORE (#1017): the module declares a `(start ...)`. Since the
+        # self-contained Cortex-M image invokes it from Reset_Handler (before
+        # the boot stops at the entry `blx r0`), a start module is executed
+        # like any other — wasmtime runs start at instantiation, both images
+        # run it in their own shipped startup, and the assertions that depend
+        # on its side effects (start.wast: `get` reads what `inc` wrote) then
+        # compare. Before this the oracle DECLINED every start module; the
+        # floor below is what makes "the start function ran" a checked claim.
+        self.has_start = False
 
 
 def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) -> ModuleRun:
@@ -783,9 +798,10 @@ def run_module(engine, file: str, idx: int, wat: str, actions: list, tmp: Path) 
     if "import" in kinds:
         mr.decline = "imports"
         return mr
-    if "start" in kinds:
-        mr.decline = "start-function"
-        return mr
+    # RQ-65-MVPCORE (#1017): a `(start ...)` module is no longer declined —
+    # the ARM self-contained image invokes the start function from its own
+    # Reset_Handler, and that is exactly what the boot below executes.
+    mr.has_start = "start" in kinds
     for name, extra in LEGS:
         mr.legs[name] = compile_leg(name, extra, src, tmp)
     opt, direct = mr.legs["optimized"], mr.legs["direct"]
@@ -1069,6 +1085,12 @@ def main() -> int:
     identical = sum(r.identical_funcs for r in runs)
     emulations = sum(r.emulations for r in runs)
     mixed = sum(1 for r in runs if r.mixed and r.both)
+    # RQ-65-MVPCORE (#1017): the start-function population, counted
+    # separately so "start modules executed" is a number this run prints and
+    # a floor below can refuse.
+    start_modules = sum(1 for r in runs if r.has_start)
+    start_both = sum(1 for r in runs if r.has_start and r.both)
+    start_ok = sum(r.verdicts.get("ok", 0) for r in runs if r.has_start and r.both)
     for r in runs:
         verdicts.update(r.verdicts)
         declined.update(r.declined)
@@ -1096,6 +1118,8 @@ def main() -> int:
 
     print(f"#197 selector parity — {len(files)} files, {len(runs)} modules with assertions considered")
     print(f"  modules both legs accepted: {both}   (mixed-path images among them: {mixed})")
+    print(f"  start-function modules: {start_modules} seen, {start_both} both-accepted and booted "
+          f"through a Reset_Handler that invokes the start function, {start_ok} assertion(s) ok")
     print(f"  module-level declines: " + (", ".join(f"{k}={v}" for k, v in sorted(module_declines.items())) or "none"))
     print(f"  functions common to both legs: {differing + identical}  "
           f"(bytes differ: {differing}, byte-identical: {identical})")
@@ -1120,6 +1144,7 @@ def main() -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(dict(
             files=len(files), modules=len(runs), both=both, mixed=mixed,
+            start_modules=start_modules, start_both=start_both, start_ok=start_ok,
             differing_funcs=differing, identical_funcs=identical,
             verdicts=verdicts, declined=declined, module_declines=module_declines,
             path_tally=path_tally, pregate_reasons=pregate_reasons, fallback_reasons=fallback_reasons,
@@ -1140,6 +1165,15 @@ def main() -> int:
     for k, floor in floors.items():
         if measured[k] < floor:
             fails.append(f"NON-VACUITY: {k} = {measured[k]} < floor {floor}")
+    # RQ-65-MVPCORE (#1017): whenever start.wast is in the run, the start
+    # population must have been EXECUTED, not declined — this is the floor
+    # that was red on the pre-invocation compiler (both legs refused every
+    # start module, #1046) and is what turned green when Reset_Handler began
+    # calling the start function.
+    if any(f.name == "start.wast" for f in files) and start_both < START_MODULES_FLOOR:
+        fails.append(f"NON-VACUITY: start-function modules both-accepted and booted = "
+                     f"{start_both} < floor {START_MODULES_FLOOR} (seen {start_modules}) — "
+                     f"the start function is being declined, not executed")
     # Pins: every gating divergence must be a KNOWN one at EXACTLY its pinned
     # count; every KNOWN pin whose file was in this run must still be there.
     # A pin whose function is "*" covers a whole module (one class hitting

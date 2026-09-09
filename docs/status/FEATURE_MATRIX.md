@@ -119,7 +119,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | Renode emulation | ARM Cortex-M4 robot tests via `rules_renode` |
 | Execution differentials | unicorn/wasmtime differential scripts in `scripts/repro/`, CI-gated (symtab-based, host-independent) |
 | Silicon (gale loop) | Fixture-scoped cycle + correctness gates on NUCLEO-G474RE / STM32F100; no broad board matrix |
-| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 22 ARM / 12 RV32 / 27 AArch64, at-least-one-export 84 / 74 / 57, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Compilation only — not executed on emulator |
+| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 47 / 43 / 47, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |
 
 ---
 

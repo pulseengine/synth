@@ -86,6 +86,72 @@ exact count of pinned optimized-path wrong answers in the parity oracle), with
 sensitivity proved by mutation and the ARCHITECTURE.md sentence now stating
 how it is enforced and what remains pinned.
 
+### RQ-65-MVPCORE (#1017) — the MVP-core row, re-derived: 14 / 114 was measured on a path nothing executes
+
+**Delta stated plainly, per backend, on the corrected 80-file MVP-core set:
+arm 13 → 12 `ok`, riscv 10 → 9, aarch64 18 → 18. The reach increment that
+landed alongside moved ZERO files.** The number went down, and every move is
+a refusal of an object that was wrong or the first real compile of one the
+old path had mis-typed.
+
+- **The instrument measured the wrong object (#1225).** `synth compile
+  file.wast` — the census's invocation — took the multi-module MERGE branch,
+  written for synth's i32-only fixture suite, which handed the backends empty
+  data segments, empty globals, i32-only signature tables and a default
+  aarch64 substrate. Measured on one module compiled as `.wast` vs `.wat`:
+  the `.wast` image had no data bytes and a `Reset_Handler` that never wrote
+  R9 while `get_g` was `ldr.w r4, [r9]` in both; `tests/wast/i64_arithmetic
+  .wast`'s `i64.add` on two i64 params was lowered as `adds r3, r0, r1` —
+  param 0's low half plus its own high half. Exit 0, counted `ok`. The
+  execution oracle (`selector_parity_197_differential.py`) compiles per-module
+  `.wat` — the other path — so v0.63's `14 / 114` was a property of objects
+  no oracle runs (the shape #1217 asks to sweep for).
+- **Fix, oracle first:** a single-module `.wast` now compiles on the
+  single-module path, gated byte-for-byte against its module compiled alone
+  by `scripts/repro/wast_single_module_path_identity_1225.py` (wired into the
+  `Spec Suite` workflow; red on the pre-fix driver — arm 49 / riscv 33 /
+  aarch64 56 of 140 mismatched — 140 / 140 / 140 identical after). The
+  multi-module merge REFUSES a module carrying active data segments, accessed
+  globals or an i64/f32/f64 parameter or result, naming the count (the
+  #1041/#1046 shape).
+- **The denominator was wrong too:** 31 multi-memory-proposal twins
+  (`address0`, `load0..2`, `memory_size0..3`, `data0/1`, `imports0..4`, ...,
+  content-verified at 2..21 memories per module) and 3 relaxed-SIMD lane
+  files sat in MVP core because the family regexes predate the Wasm 3.0
+  merge (and `^data\b` cannot match `data0`). MVP core is 80 files;
+  `multi-memory` is a family row now. v0.63's top arm blocker (17 files sole)
+  was a multi-memory decline mis-filed as scalar-core.
+- **Reach increment, oracle first — start-function invocation on the
+  self-contained Cortex-M image** (the #1046 follow-on): `Reset_Handler` BLs
+  the `(start ...)` function after the data copy and the R9 table, before the
+  entry `BLX r0`; the closure is seeded with it. The parity oracle stopped
+  declining start modules and gained a floor that was RED on the compiler
+  before (4 start modules seen, 0 both-accepted) and is green after (2
+  both-accepted and booted, 10 assertions ok, 0 divergences — `get` observes
+  three `inc`s from the start function on both selectors and in wasmtime).
+  File-level delta on the census: **zero** on all three backends —
+  `start.wast`/`annotations.wast`/`binary.wast` are multi-module and
+  `start0.wast` is a multi-memory twin — exactly the file-vs-module gap v0.63
+  said to measure rather than predict. `--relocatable`, an ET_REL degradation
+  via imports, an imported start, the single-function path, RISC-V and
+  AArch64 (neither emits a startup) keep the #1046 refusal.
+- **Declined with measured reasons** (`docs/status/SPEC_FAMILY_CENSUS.md`
+  carries the ranked table): GI-FPU-002 f32/f64 is the census's no-FPU target
+  (17 / 22 on `cortex-m7dp` vs 12 / 21); the 22 multi-module files the merge
+  now refuses are the next lever (per-module compilation, a census-shape
+  change); `call_indirect` self-contained dispatch stays silicon-gated (#717);
+  multi-memory in a self-contained image is a multi-memory decline (#1145, no
+  memory-k oracle). Filed: ARM "stack underflow" on VALID modules (6 files /
+  74 functions, 0 sole, #1229), `VCR-RA-003 JoinValueNotAvailable` (a caught
+  would-be miscompile, #1230), aarch64 GP/FP operand-class confusion (#1231).
+- Census pins moved with the measurement: whole-suite `ok` 22 / 12 / 27 →
+  16 / 9 / 21, at-least-one-export 84 / 74 / 57 → 47 / 43 / 47 (README,
+  FEATURE_MATRIX template, claims.yaml, `FAMILY_OK_PINS` together); the
+  VCR-MEM-002 `multi-memory (#406)` decline family, reaching the census for
+  the first time, is classified by its tag; the summed emulation floor is
+  unchanged (the new oracle declares a `compiles` floor, which that sum does
+  not include).
+
 ## [0.64.0] - 2026-09-07
 
 **The number you plan from.**
