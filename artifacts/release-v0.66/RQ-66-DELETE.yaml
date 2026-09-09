@@ -96,7 +96,7 @@ artifacts:
       issue: "#242"
       done-when: "manual: each of the four DEAD sites is either DELETED with byte-identity proven over the corpus, or shown REACHABLE with the evidence that contradicts its DEAD classification; selector_lines_code moves DOWN in claims.yaml with no waiver, or the artifact states why no deletion was safe"
       landed: >-
-        PR #TBD (branch fix/delete-242), one increment; finding filed as #1238.
+        PR #1239 (branch fix/delete-242), one increment; finding filed as #1238.
         No deletion: every one of the four DEAD sites is REACHABLE, so none was
         touched (no Rust file changed). What landed is the guard:
         `scripts/mutation_survey.py` gains `REACH_CFGS` (m7dp-reloc, m7dp-self,
