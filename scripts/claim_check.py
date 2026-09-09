@@ -82,6 +82,12 @@ Derived-status field kinds (under `status_fields:`):
                   when the selection matches nothing.
   const           a hand-written value (names, not numbers) whose supporting
                   paths under `require:` must all exist
+  pin-table       RQ-66-PINDEBT: the entries (`measure: entries`) or summed
+                  per-entry case counts (`measure: cases`, `cases_at:` per
+                  table) of the oracles' KNOWN-OPEN suppression tables, read
+                  from the oracle SOURCE with `ast` — never imported, never
+                  hand-tallied. Every shape assumption is a hard error and a
+                  duplicate literal key is refused; see `_pin_table`.
 
 ===============================================================================
 RQ-58-METRIC — the `ratchet` evidence kind (epic #242)
@@ -138,6 +144,7 @@ the defects are; a 60-line gate whose only validation is that it fired once is
 the next one.
 """
 
+import ast
 import glob
 import json
 import pathlib
@@ -297,6 +304,136 @@ def _yaml_field(ev, root):
     return None, f'id {ev["id"]!r} not found in {ev["path"]}'
 
 
+def _pin_table(tables, measure, root):
+    """RQ-66-PINDEBT (#242) — count the known-open pins the oracles carry.
+
+    v0.65 pinned its wrong-answer classes red-first: an oracle table entry
+    that says "this function returns this wrong answer today, issue #N",
+    exact in both directions, so the oracle stays green without hiding the
+    bug and the pin moving is the fix's own evidence. Nothing made a pin
+    TEMPORARY. This derivation makes the pin count a number a ratchet can
+    hold, and it reads that number from the tables the oracles THEMSELVES
+    consult — never from a hand tally, which would be a second source of
+    truth about the first (the North Star's first invariant).
+
+    The oracle files are parsed with `ast` and never imported: they pull
+    unicorn/wasmtime, and the ledger gate must run where they cannot. Each
+    `tables:` item names a `file:` and the top-level `name:` of a dict
+    LITERAL in it.
+
+      measure: entries   one key is one pin — one hand-written decision to
+                         pass over an observed wrong answer.
+      measure: cases     the per-entry case count summed instead. A table
+                         whose value tuple carries one (the parity oracle's
+                         `(issue, count)`) says where with `cases_at:`; a
+                         table without one contributes 1 per entry.
+
+    The two are pinned together — entries `down`, cases `track` — because
+    the parity oracle accepts a `'*'` wildcard pin per (file, module, kind):
+    merging three per-function pins into one wildcard would drop the entry
+    ceiling by two with nothing fixed. The tracked sum does not move under
+    that merge, so the "win" is visible for what it is.
+
+    Every shape assumption is a HARD ERROR, never a silent zero: a missing
+    file, a name assigned zero or several times at top level, a value that
+    is not a dict literal, a `**spread` or non-literal key, a `cases_at`
+    that does not land on a positive int. A DUPLICATE literal key is
+    refused outright — Python keeps the last value and says nothing, which
+    is one pin silently overwriting another inside the oracle itself: the
+    #1087 duplicate-`reason:` class one file over. An EMPTY table is 0, not
+    an error: an empty suppression list is the goal state, and two of the
+    four tables in the population are there already.
+    """
+    if not tables:
+        raise MeasureError(
+            "pin-table: no tables listed — an empty population measures nothing"
+        )
+    if measure not in ("entries", "cases"):
+        raise MeasureError(f"pin-table: unknown measure {measure!r} (entries|cases)")
+    total = 0
+    for t in tables:
+        rel, name = t["file"], t["name"]
+        where = f"{rel}::{name}"
+        path = root / rel
+        if not path.is_file():
+            raise MeasureError(
+                f"pin-table: {rel} is missing — the oracle this number derives "
+                f"from is gone, so the number is undefined"
+            )
+        try:
+            tree = ast.parse(path.read_text(errors="ignore"), filename=rel)
+        except SyntaxError as e:
+            raise MeasureError(f"pin-table: {rel} does not parse: {e}") from e
+        hits = []
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign):
+                if any(isinstance(x, ast.Name) and x.id == name for x in stmt.targets):
+                    hits.append(stmt.value)
+            elif isinstance(stmt, ast.AnnAssign):
+                if (
+                    isinstance(stmt.target, ast.Name)
+                    and stmt.target.id == name
+                    and stmt.value is not None
+                ):
+                    hits.append(stmt.value)
+        if len(hits) != 1:
+            raise MeasureError(
+                f"pin-table: {where} is assigned {len(hits)} times at top level, "
+                f"expected exactly 1 — the table is undefined"
+            )
+        node = hits[0]
+        if not isinstance(node, ast.Dict):
+            raise MeasureError(
+                f"pin-table: {where} is a {type(node).__name__}, not a dict "
+                f"literal — the table must be countable without running the oracle"
+            )
+        cases_at = t.get("cases_at")
+        seen = set()
+        for k, v in zip(node.keys, node.values):
+            if k is None:
+                raise MeasureError(
+                    f"pin-table: {where} carries a `**` spread — its entries "
+                    f"cannot be counted from source"
+                )
+            try:
+                key = ast.literal_eval(k)
+                hash(key)
+            except (ValueError, SyntaxError, TypeError) as e:
+                raise MeasureError(
+                    f"pin-table: {where} has a non-literal key at line {k.lineno}"
+                ) from e
+            if key in seen:
+                raise MeasureError(
+                    f"pin-table: {where} declares key {key!r} TWICE (line "
+                    f"{k.lineno}) — Python keeps the last value silently, so one "
+                    f"pin has overwritten another; fix the oracle"
+                )
+            seen.add(key)
+            if measure == "entries" or cases_at is None:
+                total += 1
+                continue
+            if not isinstance(v, ast.Tuple) or len(v.elts) <= cases_at:
+                raise MeasureError(
+                    f"pin-table: {where} entry {key!r} (line {k.lineno}) is not a "
+                    f"tuple with a case count at index {cases_at} — the table's "
+                    f"shape changed; update cases_at or the table"
+                )
+            try:
+                n = ast.literal_eval(v.elts[cases_at])
+            except (ValueError, SyntaxError) as e:
+                raise MeasureError(
+                    f"pin-table: {where} entry {key!r} (line {k.lineno}) has a "
+                    f"non-literal case count"
+                ) from e
+            if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+                raise MeasureError(
+                    f"pin-table: {where} entry {key!r} (line {k.lineno}) has case "
+                    f"count {n!r}, expected a positive int"
+                )
+            total += n
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Derived status — the ONE machine-derived numbers artifact (status.json).
 # README badges and the generated feature matrix surface these; prose does not
@@ -391,6 +528,14 @@ def derive_status(spec, root):
                 )
             w = f.get("wrap", "")
             out[name] = f.get("join", ", ").join(f"{w}{v}{w}" for v in vals)
+        elif kind == "pin-table":
+            # RQ-66-PINDEBT: the known-open pin debt, read from the oracles'
+            # own suppression tables (see _pin_table). A MeasureError here is
+            # a shape assumption that stopped holding — loud, never zero.
+            try:
+                out[name] = _pin_table(f.get("tables") or [], f.get("measure"), root)
+            except MeasureError as e:
+                raise RuntimeError(f"status field {name!r}: {e}") from e
         elif kind == "const":
             for p in f.get("require", []):
                 if not (root / p).exists():

@@ -203,10 +203,12 @@ ever-growing pile of locally-correct patches.**
 > fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
 > without deleting one must turn the gate red.
 >
-> **The ratchet, and how to move it.** Eight `kind: ratchet` pins in
+> **The ratchet, and how to move it.** Ten `kind: ratchet` pins in
 > `claims.yaml` (seven from RQ-58-METRIC, plus v0.65's `mutants_untested` —
 > the mutation survey's surviving-mutant ceiling over
-> `docs/status/mutation_survey.json`, RQ-65-MUTANTS; engine + escape hatch documented in `scripts/claim_check.py`,
+> `docs/status/mutation_survey.json`, RQ-65-MUTANTS — plus v0.66's
+> `known_open_pins` / `known_open_pinned_cases`, the pin debt, below;
+> engine + escape hatch documented in `scripts/claim_check.py`,
 > unit-tested in `scripts/test_claim_check.py`, printed every CI run by
 > `claim_check.py claims.yaml --metric`). Each carries a `value:` that must
 > EQUAL the live derivation — there is no "current + slack" ceiling to hide in,
@@ -230,6 +232,40 @@ ever-growing pile of locally-correct patches.**
 > applied to size). The waiver is bound to that value, so a second regression
 > needs a second waiver — permission is per-growth, never standing. Use it;
 > a gate people cannot move honestly is a gate they route around.
+>
+> **Pin debt is a ratchet too (RQ-66-PINDEBT, v0.66).** A red-first pin — an
+> oracle table entry saying "this function returns this wrong answer today,
+> issue #N", exact in both directions — keeps CI green without hiding the
+> bug, and the pin moving is the fix's own evidence. But nothing made a pin
+> TEMPORARY, and a comfortable pin is the shape of every accumulation this
+> project has measured and then had to correct (20 selector waivers;
+> `sel_dsl_rules` flat at 80 for twelve releases; a delivery floor at 28
+> against a live 67 for eleven). So
+> the known-open pin count is pinned `direction: down` as `known_open_pins`,
+> DERIVED at check time (`kind: pin-table`, an `ast` walk over the oracle
+> source — never a hand tally) from the suppression tables the CI-wired
+> oracles consult on the LIVE compiler: the selector-parity `KNOWN` table,
+> the ARM corpus sweep's `KNOWN_ARM_MISMATCHES`, the home-alias class
+> differential's `KNOWN_OPEN` and the home-alias audit's `KNOWN_OPEN_HITS`.
+> Every entry counts, the envelope-reasoned `#539-grow-fails` ones included
+> — a suppression hides whatever else goes wrong behind it, whatever its
+> stated reason.
+> EXCLUDED, by design: the `PINNED_WRONG` red-half fixtures (recorded wrong
+> values of FROZEN pre-fix bytes — the oracles' potency evidence, which never
+> shrinks when a fix lands), the `EXPECTED_DECLINES`/`EXPECTED_SKIPS` decline
+> pins (a loud refusal is reach, not silent wrongness) and the ci.yml
+> `# ci-checks:` floors; the population itself is pinned, so a new
+> `KNOWN*`/`PINNED*` table must be listed or excluded, never unnoticed — that
+> tripwire sees only a top-level `NAME = { ... }` dict LITERAL (matching what
+> `_pin_table` itself can read without running the oracle); a table built via
+> `dict(...)`, a comprehension, or `.update()` calls would slip past both and
+> is a review-time obligation, not a caught one. The
+> summed pinned case count rides beside it as `known_open_pinned_cases`
+> (`direction: track`) so that merging per-function pins into one wildcard
+> entry — which the parity oracle accepts — cannot read as progress. A
+> release that ends with more pins than it began is red; adding a pin is
+> paid for by closing one, or by a `waivers:` entry with a written reason in
+> the same PR.
 >
 > This is NOT "clean up the codebase" — refactoring 29k lines of selector
 > without a per-step execution oracle is how you inject the miscompiles this
