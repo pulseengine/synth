@@ -3373,10 +3373,14 @@ jobs:
           # 0/0/11/11 (VFP homes; soft-float m4 has none) planted writes
           # reported, 0 declines without the plant. 192 in total.
           grep -Eq '^POTENCY: PASS \(192 planted writes reported, 0 without the plant, over 3 fixtures x 4 legs\)$' haa1189.txt
-          # #1226 red-first: same module text, `.wast` homes < `.wat` homes
-          # (6 < 8 on the relocatable legs, 4 < 8 self-contained). A fix makes
-          # them equal, this line goes red, and the fix flips the pin.
-          grep -Eq '^WIDTH-1226: known-open \(\.wast homes < \.wat homes for the same module text on 4 legs\)$' haa1189.txt
+          # #1226 CLOSED by RQ-65-MVPCORE (#1232), pin flipped here in the same
+          # release. Re-derived on the merged tree: every leg is now
+          # (merged-wast, single-wast, same-text-wat) = (0, 8, 8) — the
+          # single-module `.wast` path threads declared widths so `wast == wat`,
+          # and the multi-module merge REFUSES an i64-param module so
+          # `merged == 0`. The assertion is now EQUALITY plus that refusal, so a
+          # narrower `wast` OR the merge silently accepting again goes red.
+          grep -Eq '^WIDTH-1226: closed \(\.wast homes == \.wat homes, merge refuses, same module text on 4 legs\)$' haa1189.txt
           # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk
           # false positives (epilogue pop = the return; VFP caller-save round
           # trip) fixed in home_alias.rs; the 16 #1226 hits were a symptom of

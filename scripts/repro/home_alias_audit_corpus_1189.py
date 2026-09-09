@@ -212,10 +212,12 @@ WIDTH_1226_FIXTURE = "home_alias_width_1226.wast"
 # leg -> (merged .wast total, single-module .wast total, .wat total) of
 # `homes=`. DERIVED; the pin is `wast < wat` with these exact values.
 WIDTH_1226_HOMES = {
-    "m4-reloc": (7, 6, 8),
-    "m4-self": (4, 4, 8),   # self-contained: `second3` (params read as i32) takes the optimized selector, no audit line
-    "m4f-reloc": (7, 6, 8),
-    "m4f-self": (4, 4, 8),
+    # CLOSED by RQ-65-MVPCORE (#1232) — re-derived on the merged tree, all four
+    # legs (merged-wast, single-wast, same-text-wat):
+    "m4-reloc": (0, 8, 8),
+    "m4-self": (0, 8, 8),
+    "m4f-reloc": (0, 8, 8),
+    "m4f-self": (0, 8, 8),
 }
 
 
@@ -322,12 +324,17 @@ def self_test(print_pins: bool) -> int:
                     fails += 1
             derived_width[leg] = (totals["merged"], totals["wast"], totals["wat"])
             pinned = WIDTH_1226_HOMES.get(leg)
-            open_ = totals["wast"] < totals["wat"]
-            ok = print_pins or (pinned == derived_width[leg] and open_)
+            # #1226 CLOSED (v0.65, #1232): the single-module `.wast` path now
+            # threads declared widths, so `wast == wat`; the multi-module merge
+            # REFUSES an i64-param module, so `merged == 0`. The pin therefore
+            # asserts EQUALITY and a refusal — if either regresses (a narrower
+            # `wast`, or the merge silently accepting again) this goes red.
+            closed_ = totals["wast"] == totals["wat"] and totals["merged"] == 0
+            ok = print_pins or (pinned == derived_width[leg] and closed_)
             print(f"width-1226: {leg}: homes merged-wast={totals['merged']} "
                   f"single-wast={totals['wast']} same-text-wat={totals['wat']} "
                   f"pinned={pinned} "
-                  f"{'known-open' if open_ else 'wast == wat -> a fix landed, flip the pin'} "
+                  f"{'closed (wast == wat, merge refuses)' if closed_ else 'REGRESSED -- wast < wat or the merge accepted again'} "
                   f"{'ok' if ok else 'FAIL'}")
             if not ok:
                 fails += 1
@@ -341,14 +348,16 @@ def self_test(print_pins: bool) -> int:
             print(f'    "{leg}": {pair},')
         print("}")
         return 0
-    legs_open = sum(1 for leg in LEGS if derived_width[leg][1] < derived_width[leg][2])
+    legs_closed = sum(1 for leg in LEGS
+                      if derived_width[leg][1] == derived_width[leg][2]
+                      and derived_width[leg][0] == 0)
     if fails:
         print(f"POTENCY: FAIL ({fails})")
     else:
         print(f"POTENCY: PASS ({total_planted} planted writes reported, 0 without "
               f"the plant, over {len(PLANT_FIXTURES)} fixtures x {len(LEGS)} legs)")
-        print(f"WIDTH-1226: known-open (.wast homes < .wat homes for the same "
-              f"module text on {legs_open} legs)")
+        print(f"WIDTH-1226: closed (.wast homes == .wat homes, merge refuses, "
+              f"same module text on {legs_closed} legs)")
     return fails
 
 

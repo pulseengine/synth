@@ -190,17 +190,26 @@ artifacts:
         two-module spec-suite shape), its last module derived at run time
         as a single-module `.wast` and as the identical `.wat`: (merged,
         single-wast, wat) = (7, 6, 8) on the relocatable legs and (4, 4, 8)
-        self-contained, `wast < wat` on all 4 legs — `WIDTH-1226:
-        known-open` grepped exactly in ci.yml; a fix makes them equal and
-        must flip the pin. CONSEQUENCE for #1222, recorded: the pair-write
+        self-contained, `wast < wat` on all 4 legs. THAT FIX LANDED INSIDE
+        THIS RELEASE: RQ-65-MVPCORE (#1232) merged first, and the values
+        RE-DERIVED on the merged tree are (0, 8, 8) on ALL FOUR legs —
+        `wast == wat` (the single-module path threads declared widths) and
+        `merged == 0` (the multi-module merge REFUSES an i64-param module).
+        The pin is flipped here in the same release, as its own rule
+        required: ci.yml now greps `WIDTH-1226: closed`, asserting EQUALITY
+        plus the refusal, so a narrower `wast` OR the merge silently
+        accepting again goes red. CONSEQUENCE for #1222, recorded: the pair-write
         arm is gated on the DECLARED width, so on `.wast` input it never
         fires — the spec-suite functions the #1222 entry names (fac-opt,
         loop `while`, type-param-i64, the 64-bit bulk-memory `checkRange`s)
-        are NOT fixed by #1222; they are wrong for #1226's reason and stay
-        so until #1226 is fixed. #1222 is fixed for `.wat`/`.wasm` input
-        (the oracle's own fixtures, executed). #1226 stays OPEN with the
-        corrected mechanism and bytes on the issue; a CLI driver defect, not
-        this class, not fixed here.
+        were NOT fixed by #1222 — they were wrong for #1226's reason. #1226
+        was a CLI driver defect, not this class, and was NOT fixed here: it
+        was fixed by RQ-65-MVPCORE (#1232) in this same release, which is
+        why those spec-suite functions ARE now correct and why the pin above
+        reads `closed`. What remains of #1226 is a REACH note, not a
+        correctness one: the multi-module merge now REFUSES i64-param
+        modules it previously accepted and mis-compiled. Decline-honesty,
+        with the acceptance cost stated rather than hidden.
         POTENCY of the audit against the REAL history: built at the pre-#1190
         commit f4780608 with the hook, it declines exactly `bif iboth iloop
         inest ir0 ir1 ir2 ir3 isets` (main fixture) and `i64p` (i64 fixture)
