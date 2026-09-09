@@ -1039,13 +1039,13 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
-          ~/.varve/bin/varve run rivet -- sync
+          ~/.varve/bin/varve run -- rivet sync
       - name: Validate the federated graph
         # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
         # under pipefail so the log keeps the full diagnostic list.
         run: |
           set -o pipefail
-          ~/.varve/bin/varve run rivet -- validate 2>&1 | tee /tmp/rivet-federated.txt
+          ~/.varve/bin/varve run -- rivet validate 2>&1 | tee /tmp/rivet-federated.txt
       - name: Non-vacuity guard — resolution must actually have run
         # The #1012 signature was "FAIL (50 errors, ..., 0 broken cross-refs)":
         # zero broken cross-refs beside dozens of link errors because rivet
@@ -1071,7 +1071,18 @@ jobs:
         # the mixed-toolchain hazard varve exists to close. Do not silence
         # this by removing the check; if it goes red, fix the runner's PATH
         # (or the sibling job's install step), never this gate.
-        if: steps.varve_verify.outcome == 'failure'
+        #
+        # `always()` is REQUIRED here, not decoration: an `if:` with no
+        # status-check function gets an IMPLICIT `success()` ANDed in by
+        # Actions, so without it this step silently never runs once ANY
+        # earlier step in the job fails for an unrelated reason (sync,
+        # validate) — found for real at PR #1244 authoring: `varve verify`
+        # DID fail here (a real `rivet` shadow on the self-hosted runner) but
+        # this step was reported `skipped` because `Sync externals` also
+        # failed (a since-fixed `varve run` argument-order bug), and
+        # `success()` was false. `always()` decouples this gate from every
+        # other step's outcome, which is the whole point of it.
+        if: always() && steps.varve_verify.outcome == 'failure'
         run: |
           echo "::error::varve verify reported PATH shadowing (REQ-SHADOW-001) — see the 'varve verify' step's output above for which tool(s). This is advisory (job is not required), but it is a real cross-job toolchain hazard on this self-hosted runner, not a false alarm."
           exit 1

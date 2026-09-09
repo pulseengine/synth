@@ -101,6 +101,46 @@ artifacts:
       is a bigger claim than one lane should make unilaterally; recorded here
       as a validated next step, not done.
 
+      REAL CI RESULT, first attempt (run 34381378564, job 102566804680): RED,
+      but the two most important steps for THIS artifact both PASSED —
+      `varve install` fetched layer 2026.09.2 from `oci://ghcr.io/pulseengine/layers`
+      cleanly (ghcr.io IS reachable from the self-hosted `rust-cpu` fleet —
+      the open question this PR's CI comment named is answered), and `varve
+      verify` found EXACTLY the hazard predicted: `rivet` on this runner's
+      PATH resolves to `/var/lib/runners/runner9/.cargo/bin/rivet`, not the
+      pinned copy — the required `rivet` job's `cargo install --force --git`
+      (no `--root`, so it lands in the default cargo bin dir) leaking onto a
+      shared self-hosted runner and shadowing the pin for a DIFFERENT job.
+      REQ-SHADOW-001 (varve's own oracle, not a hand-written parser) caught a
+      real, previously-invisible cross-job toolchain hazard on the first run
+      it was wired into.
+
+      What actually reddened the job was a bug in THIS PR's own workflow
+      syntax, unrelated to varve or ghcr.io: `varve run rivet -- sync` is
+      wrong argument order (`varve run`'s own `--help` says "tool and its
+      arguments, after `--`", i.e. the `--` goes immediately after `run`,
+      not between the tool name and its args) — rivet's clap parser then saw
+      a literal `--` positional and refused `sync` with `unexpected argument
+      'sync' found` / `tip: subcommand 'sync' exists; to use it, remove the
+      '--' before it`. Fixed to `varve run -- rivet sync` /
+      `varve run -- rivet validate`, verified locally (`rivet sync`: 7
+      externals synced, exit 0) before pushing the fix. A second, related bug
+      found and fixed in the same pass: the new "Shadowing gate" step's
+      `if: steps.varve_verify.outcome == 'failure'` carries an IMPLICIT
+      `success()` from Actions when no status-check function is present, so
+      it never ran once `Sync externals` also failed — it reported `skipped`
+      even though `varve verify` genuinely failed. Fixed to
+      `if: always() && steps.varve_verify.outcome == 'failure'`.
+
+      EXPECTED STATE AFTER THE FIX: the job should now reach `varve verify`,
+      `Sync externals`, `Validate the federated graph` and the non-vacuity
+      guard, all real functionality — and the new "Shadowing gate" should
+      correctly turn the JOB red (non-blocking; advisory) because the
+      cross-job rivet shadow is a REAL condition on this runner, not a false
+      alarm. A red `rivet-federated` after this fix is the check WORKING,
+      not the conversion failing — see the PR for the actual re-run result,
+      recorded there rather than predicted here.
+
       The layer carries **synth 0.61.0**; this repo ships 0.65.0 (moving to
       0.66 this release) — the layer is behind its own consumer, so the next
       `pulseengine-layers` deposit should bump it. Stated, not fixed here.
@@ -142,10 +182,22 @@ artifacts:
         of a hand-typed `cargo install --git --tag`; local dry-run under the
         resulting rivet 0.35.0 reproduces the required job's own pass
         conditions (0 non-cross-repo errors, 551≥526 artifacts) and a full
-        federated sync+validate (1032 cross-repo backlinks, PASS). Real CI
-        result for this converted job is in the PR — see PR body for the run
-        link and outcome (pass, or the specific error captured if the
-        self-hosted runner cannot reach `ghcr.io`). The required `rivet` job
-        remains on its hand-typed `cargo install --git --tag v0.23.0` pin —
-        NOT converted in this PR; UNPINNED w.r.t. varve, by choice, pending a
+        federated sync+validate (1032 cross-repo backlinks, PASS). REAL CI,
+        measured (run 34381378564, job 102566804680, first attempt): ghcr.io
+        IS reachable from the self-hosted `rust-cpu` fleet (`varve install`
+        fetched layer 2026.09.2 cleanly) and `varve verify` caught a REAL
+        cross-job shadow — `rivet` on that runner's PATH resolves to the
+        required job's own `~/.cargo/bin/rivet`, not the pin (REQ-SHADOW-001,
+        exact verbatim error in the PR). The job went red from a genuine bug
+        in this PR's own YAML (`varve run rivet -- sync` — wrong `--`
+        position per `varve run --help`; fixed to `varve run -- rivet sync`)
+        plus a related `if:` condition bug on the new "Shadowing gate" step
+        (missing `always()`, so it silently didn't run once a later step
+        failed for an unrelated reason; fixed). Both fixes verified locally
+        before a follow-up push. Expect the re-run to still be red — for the
+        RIGHT reason this time (the real shadow REQ-SHADOW-001 found), which
+        is the check working, not the conversion failing; final re-run
+        result recorded in the PR thread. The required `rivet` job remains
+        on its hand-typed `cargo install --git --tag v0.23.0` pin — NOT
+        converted in this PR; UNPINNED w.r.t. varve, by choice, pending a
         team decision to move the merge-blocking gate's toolchain source.
