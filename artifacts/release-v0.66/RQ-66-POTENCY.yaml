@@ -46,7 +46,7 @@ artifacts:
       sampling frame is overwritten by the tool that reads it. v0.65 shipped
       `per_region: 12` for a sample drawn at 8, and a coordinator check that
       "the frames match" was reading the overwritten value.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - oracle
@@ -62,8 +62,75 @@ artifacts:
       verification-track: review
       issue: "#1189"
       done-when: "manual: the survey probes every suite step on the UNMUTATED tree and refuses to start when any is unrunnable, distinguishing 'oracle failed' from 'oracle could not run'; meta records the frame actually used rather than argparse defaults; both shown red-first by making a step unrunnable and confirming the survey refuses instead of scoring"
+      landed: >-
+        PR #TBD (branch feat/potency-1189, stacked on fix/delete-242 / #1239).
+        `classify_unrunnable(code, out)` (pure) tells "could not execute"
+        (exit 127/126, `command not found`, `ModuleNotFoundError`, an `env`
+        shebang failing to find its interpreter) from "executed and is red
+        for a real reason" (everything else, including
+        fact_spec_div_494_differential.py's real local/CI divergence and a
+        script's own deliberate `FileNotFoundError` on a missing fixture).
+        `probe_l1`/`probe_l2` run every suite step once and split it into
+        green / unrunnable / red buckets; `preflight_suite` calls both,
+        REFUSES (`sys.exit`) on any unrunnable step or any red L2 command
+        (a broken test suite is not survivable by exclusion), and otherwise
+        drops red-but-runnable L1 steps from `suite["l1"]` for this
+        invocation (recorded in a new `l1_excluded_at_preflight` ledger
+        field) — the same exclusion `baseline` always did, now also applied
+        when a possibly-stale/foreign ledger's `suite` is reused. Wired into
+        `cmd_baseline` (refuses at derivation time instead of silently
+        trusting a red step), `cmd_run` and `cmd_controls` (full preflight
+        before any mutant is touched), and `cmd_ci` (a TARGETED probe of
+        only the pinned subset's recorded execution-layer killer steps when
+        not `--full` — `ci` replays "a small fixed subset... not a re-run of
+        the survey", so it does not pay the full-suite probe cost; both
+        unrunnable AND red refuse there, since a KILLED verdict is
+        meaningless if the killer step is not green before mutating).
+        Second-order fix: `draw_frame(existing_meta, seed, per_region,
+        oversample)` (pure) writes the sampling frame ONCE; a later `run`
+        must reproduce the same three numbers or it refuses with both the
+        recorded and requested values shown, rather than silently
+        overwriting (the exact v0.65 `per_region: 12`-for-8 shape).
+        `candidate_sites` (live tree-state context, not a sampling
+        parameter) is still refreshed every run and is not part of the
+        locked frame. 12 new tests in `scripts/test_mutation_survey.py`.
       verified-by: >-
-        PENDING. The red-first is easy and must be run: remove an interpreter
-        from PATH (or point a step at a missing binary) and confirm the survey
-        REFUSES rather than reporting a flattering rate. That is the exact
-        failure v0.65 hit.
+        RED-FIRST, run for real, not asserted. (1) `preflight_suite` against
+        a synthetic suite containing one step invoking a genuinely-absent
+        binary (`totally_fake_binary_xyz_1189`) alongside real, working repro
+        scripts: REFUSED with `SystemExit("REFUSING TO RUN: 1 suite step(s)
+        cannot execute...")` naming the exact step and reason
+        (`'totally_fake_binary_xyz_1189' not found on PATH`), while the SAME
+        call's other real steps (including the actual
+        `cmp_select_two_move_differential.py` oracle via `oracle_run.py`,
+        run through the harness's existing bare-`python`->`python3`
+        substitution) executed and passed; a second ledger with only the
+        working steps PROCEEDED (no refusal), mutating `suite["l1"]` to the
+        full working list. (2) `draw_frame`/`cmd_run`: seeded a ledger with
+        `meta == {seed:1189, per_region:8, oversample:4}` (the real v0.65
+        shape) and ran `mutation_survey.py run --seed 1189 --per-region 12
+        --oversample 4` against it — REFUSED (`exit 1`) with the message
+        showing both `{'per_region': 8, ...}` (recorded) and `{'per_region':
+        12, ...}` (requested); the ledger file's sha256 was BYTE-IDENTICAL
+        before and after (`diff` empty) — the frame was not touched, where
+        the pre-fix code would have silently written 12. A second run with
+        the MATCHING frame (`--per-region 8`) proceeded past the frame check
+        (failed only on an unrelated, expected `--only` site-id lookup),
+        confirming the match path is not refused. `python3
+        scripts/test_mutation_survey.py`: 30/30 (12 new: `classify_unrunnable`
+        on exit-127/126, `command not found`, `ModuleNotFoundError`, an `env`
+        shebang failure, a real assertion failure
+        (fact_spec_div_494_differential.py's shape), a script's own
+        deliberate `FileNotFoundError`, a generic application-level
+        `ImportError`, and a LIVE example pulled from this week's own CI — the
+        `home-alias-audit-oracle` job's `POTENCY: PASS` / `RESULT: PASS`
+        output followed by a stale `grep -Eq` count assertion further down
+        the same step, which failed the STEP while the oracle itself said
+        PASS; `draw_frame` on first-draw, matching no-op, the exact 1189
+        regression, a different seed, and `candidate_sites` exclusion from
+        the locked frame). `python3 scripts/claim_check.py claims.yaml`:
+        66/66 (unaffected — this fix adds no `KNOWN*`/`PINNED*` table, so
+        RQ-66-PINDEBT's new `known_open_pins` ratchet is unmoved at 104,
+        `known_open_pinned_cases` at 623). `cargo fmt --check`, `cargo clippy
+        --workspace --all-targets -- -D warnings` and `cargo test
+        --workspace` clean (no Rust file changed by this fix).
