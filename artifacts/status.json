@@ -19,6 +19,7 @@
   "kani_harnesses": 18,
   "mirror_marker_files": 60,
   "mirror_obligation_files": 24,
+  "mutants_untested": 4,
   "proof_inventory_rocq_qed": "645",
   "proof_inventory_wasm_op_total": "279",
   "rocq_admit_tactics": 2,

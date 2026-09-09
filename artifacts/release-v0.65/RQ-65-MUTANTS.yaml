@@ -39,7 +39,7 @@ artifacts:
       NOT A CODE-QUALITY EXERCISE. The output is a NUMBER plus a classified
       survivor list, published the way the acceptance rate is published. It
       becomes what v0.66 is scoped from.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - oracle
@@ -55,8 +55,52 @@ artifacts:
       verification-track: differential
       issue: "#1189"
       done-when: "manual: a selector mutation survey exists with its sampling frame stated; a survival rate is published and CI-pinned; every survivor is classified untested / dead / equivalent; and the untested set is enumerated so v0.66 can be scoped from it"
+      landed: >-
+        branch feat/mutants-1189 (PR number recorded in the follow-up commit
+        once `gh pr create` returns), one increment: `scripts/mutation_survey.py`
+        (the harness — anchor-located frame, six mechanical operators, seeded
+        stratified sampling, byte-triage + reach probe, a suite DERIVED from
+        ci.yml, red-first controls, `ci` replay, `reanchor`/`attribute`/
+        `pin-subset`), the committed ledger `docs/status/mutation_survey.json`
+        (every mutant's exact diff and verdict, the seed, the frame, the suite
+        with its exclusions, the controls, the `ci_subset`), the report
+        `docs/status/MUTATION_SURVEY.md`, the `mutation-survey-discrimination`
+        CI job, and the `claims.yaml` pins (`SYNTH-MUTATION-SURVEY-RQ65`:
+        the eighth `kind: ratchet`, `mutants_untested`, a ceiling over the
+        ledger; count-eq pins on 38 / 21 / 4, the three controls and the
+        `ci_subset` floors). No new `# ci-checks: emulations` declaration —
+        the job replays already-declared scripts/repro oracles — so the
+        exact emulation floor (re-derived by oracle_wiring_check.py on the
+        rebased tree, never restated here) is untouched.
       verified-by: >-
-        PENDING. The survey must itself be red-first in the trivial direction:
-        a mutation known to be caught (e.g. the #1189 aliasing copy removed)
-        MUST be reported as killed, or the harness is measuring nothing. Report
-        that control alongside the rate.
+        IMPLEMENTED and MEASURED at 580d53f9 (rebased to 761c6922, sites
+        re-anchored by text, 8 moved, 0 lost). RED-FIRST CONTROLS, run before
+        the sample through the identical pipeline, all KILLED: the #1189
+        aliasing copy disabled (`if !live_home {` -> `if true {` in
+        `copy_live_home_then_results`; 7 corpus objects change; killed by
+        the `join-alias-1189-oracle` execution differential in 18 s); the
+        direct selector's `rule_i32_select` operands swapped (15 objects;
+        killed by `cmp-select-oracle` in 18 s); the startup R10 seed written
+        into R9 (325 objects, every self-contained image; killed ONLY by the
+        `base_cse_flip_468` / `const_cse_reduction_242` byte goldens after
+        274 s of `cargo test` — no execution oracle in the suite boots the
+        shipped Reset_Handler, itself a finding). THE RATE: 38 mutants drawn
+        (seed 1189, stratified over R1 routing / R2 ir_to_arm / R3 direct /
+        R4 shared post-merge tail / R5 startup, 1,538 candidate sites), 6
+        uncompilable (excluded), 32 compiled, 21 byte-changing over 200
+        corpus modules x 3 ARM configurations; 17 KILLED (6 execution, 8
+        structure, 2 freeze-only, 1 compiler hang), 4 UNTESTED: 4 of 21
+        byte-changing mutants survived = 19 % survival, relative to the NAMED
+        suite (wast-conformance, repro-sweep-arm-corpus, join-alias-1189,
+        cmp-select, frame-slot-dce-242 + `cargo test --workspace`; the
+        parity oracle excluded for cost, >20 min per run here) and therefore
+        an UPPER bound under the full CI board. Byte-identical: 5 EQUIVALENT,
+        4 DEAD (reach probe), 2 UNRESOLVED declared with reasons (a `const`
+        has no runtime probe; a `<` inside a multi-line format string is not
+        a decision site). The four UNTESTED sites are enumerated with their
+        exact diffs in the report. CI: the `mutation-survey-discrimination`
+        job replays the ledger's `ci_subset` — 3 controls (recorded killer
+        must go red) + 2 UNTESTED + 1 EQUIVALENT + 1 DEAD (byte-triage set
+        and reach verdict must reproduce) — verified locally: `MUTANTS-CI
+        subset=7 controls=3 non-killed=4 failures=0`; claim_check 64/64 with
+        `mutants_untested 4 / baseline 4 must FALL`.

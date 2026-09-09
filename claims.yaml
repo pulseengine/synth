@@ -323,6 +323,17 @@ status_fields:
     pattern: '(?i)hand-maintained|hand-written mirror|keep(?:s|ing)? in sync|must (?:agree|stay in sync|match)|second source of truth|forget to update'
     glob: ['crates/**/*.rs']
     unit: files
+  # RQ-65-MUTANTS (#1189): the mutation survey's UNTESTED survivors — sampled
+  # codegen decisions that change emitted bytes and that NO oracle in the
+  # survey's named suite noticed. Counted from the committed ledger's mutant
+  # records (the `ci_subset` expectations and the controls spell their keys
+  # `want_classification` / KILLED on purpose so they cannot inflate this).
+  # Direction down: a survivor becomes caught (an oracle gained reach) or is
+  # deleted; a re-survey that records a NEW survivor needs a waiver.
+  mutants_untested:
+    kind: count
+    pattern: '"classification": "UNTESTED"'
+    glob: ['docs/status/mutation_survey.json']
 
   # Names, not numbers — const is allowed here, but the supporting crates must
   # exist on disk or the derivation fails.
@@ -2148,12 +2159,15 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Seven `kind: ratchet` pins in"
+    text: "Eight `kind: ratchet` pins in"
     evidence:
+      # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
+      # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65);
+      # 5 ceilings + 1 floor + 2 tracked, and CLAUDE.md says "Eight".
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 7
+        expect: 8
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -2170,7 +2184,7 @@ claims:
       - kind: count-eq
         pattern: '^        direction: down$'
         glob: ['claims.yaml']
-        expect: 4
+        expect: 5
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']
@@ -3294,3 +3308,60 @@ claims:
         expect: 1                            # @-hazard section reasons from
       - kind: file-exists                    # the negative-controlled gate
         path: scripts/repro/verify_embedder_gate_1132.py
+
+  # RQ-65-MUTANTS (#1189): the v0.65 headline number — what share of sampled
+  # emitted-code DECISIONS an oracle would catch being wrong — is derived from
+  # the committed survey ledger, never typed into prose. `mutants_untested` is
+  # a CEILING over the ledger (a survivor that becomes caught or deleted is a
+  # banked baseline; a re-survey recording a new one needs a waiver). The
+  # published numerator/denominators are pinned by exact text against the
+  # ledger's harness-written `summary` block so the report's "4 of 21" cannot
+  # drift from the records. The CI job replays the ledger's `ci_subset`;
+  # its floors here (3 known-KILLED controls, 4 known-not-KILLED cases) are
+  # the non-vacuity of that gate — an empty subset would be a check that
+  # cannot fail, the exact shape this release exists to find.
+  - id: SYNTH-MUTATION-SURVEY-RQ65
+    doc: docs/status/MUTATION_SURVEY.md
+    text: "4 of 21 byte-changing mutants survived"
+    evidence:
+      - kind: ratchet
+        name: mutants_untested
+        direction: down
+        value: 4
+        baseline: 4
+      - kind: count-eq                       # the numerator the report quotes
+        pattern: '"survey_untested": 4\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq                       # the byte-changing denominator
+        pattern: '"survey_changed": 21\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq                       # the stated sample size
+        pattern: '"survey_sampled": 38\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq                       # every red-first control KILLED
+        pattern: '"control_ok": true'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 3
+      - kind: count-eq                       # ci_subset: known-KILLED side
+        pattern: '"want_classification": "KILLED"'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 3
+      - kind: count-eq                       # ci_subset: known-not-KILLED side
+        pattern: '"want_classification": "(?:UNTESTED|EQUIVALENT|DEAD)"'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 4
+      - kind: count-eq                       # the CI job exists and greps the
+        pattern: '^  mutation-survey-discrimination:$'
+        glob: ['.github/workflows/ci.yml']   # summary line, not exit 0
+        expect: 1
+      - kind: count-eq
+        pattern: "grep -Eq '\\^MUTANTS-CI subset=\\[4-9\\]\\[0-9\\]\\* controls=\\[2-9\\]\\[0-9\\]\\* non-killed=\\[2-9\\]\\[0-9\\]\\* failures=0\\$'"
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+      - kind: file-exists
+        path: scripts/mutation_survey.py
+      - kind: file-exists
+        path: docs/status/mutation_survey.json

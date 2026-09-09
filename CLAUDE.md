@@ -203,8 +203,10 @@ ever-growing pile of locally-correct patches.**
 > fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
 > without deleting one must turn the gate red.
 >
-> **The ratchet, and how to move it.** Seven `kind: ratchet` pins in
-> `claims.yaml` (engine + escape hatch documented in `scripts/claim_check.py`,
+> **The ratchet, and how to move it.** Eight `kind: ratchet` pins in
+> `claims.yaml` (seven from RQ-58-METRIC, plus v0.65's `mutants_untested` —
+> the mutation survey's surviving-mutant ceiling over
+> `docs/status/mutation_survey.json`, RQ-65-MUTANTS; engine + escape hatch documented in `scripts/claim_check.py`,
 > unit-tested in `scripts/test_claim_check.py`, printed every CI run by
 > `claim_check.py claims.yaml --metric`). Each carries a `value:` that must
 > EQUAL the live derivation — there is no "current + slack" ceiling to hide in,
