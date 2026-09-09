@@ -403,6 +403,15 @@ status_fields:
         name: KNOWN_ARM_MISMATCHES
       - file: scripts/repro/home_alias_class_1189_differential.py
         name: KNOWN_OPEN
+        # NO cases_at: `KNOWN_OPEN`'s value tuple is `(count, issue)` — count
+        # FIRST, issue second — the reverse of the parity table's
+        # `(issue, count)`. Deliberately left uncounted-by-value (1 per
+        # entry, the no-`cases_at` default) rather than wired to index 0:
+        # this table's one entry today carries count 0, so a future entry
+        # whose first element is a real positive case count would silently
+        # undercount at 1-per-entry if someone assumed it was already
+        # case-weighted. Add `cases_at: 0` (not 1) if that table ever needs
+        # case-weighting.
       - file: scripts/repro/home_alias_audit_corpus_1189.py
         name: KNOWN_OPEN_HITS
   # The same tables summed by pinned CASE — pinned `track` beside the entry
