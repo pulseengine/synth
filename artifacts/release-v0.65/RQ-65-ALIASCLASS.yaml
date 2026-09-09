@@ -39,7 +39,7 @@ artifacts:
       not acceptable is a broad rewrite of local handling justified by one
       repro — that is how this project would inject the miscompiles it exists
       to prevent.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - correctness
@@ -53,9 +53,107 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1189"
-      done-when: "manual: every site where a register-homed local reaches the operand stack uncopied is enumerated across all four legs (arm-reloc, arm-self-contained, RV32, AArch64); each is either guarded with an execution oracle or pinned with a structural reason it cannot alias; and any newly-found miscompile lands red-first"
+      landed: >-
+        PR (fix/aliasclass-1189): `synth_synthesis::home_alias` — an
+        exhaustive, wildcard-free register-writes table for all 222 `ArmOp`
+        variants (`gp_defs`/`vfp_defs`, pinned by a source-scan test the way
+        #946 pins `may_move_sp`) and a loop-back-edge-extended liveness walk,
+        run inside `select_with_stack` under `SYNTH_HOME_ALIAS_AUDIT` (a hit
+        is a loud decline naming op, instruction, register and local;
+        byte-invisible otherwise — objects identical with and without the
+        variable). `scripts/repro/home_alias_audit_corpus_1189.py` sweeps it
+        over the pinned spec testsuite + tests/wast + tests/wat + fixtures +
+        scripts/repro on {relocatable, self-contained} x {cortex-m4,
+        cortex-m4f} (CI job `home-alias-audit-1189`, submodule checkout).
+        `scripts/repro/home_alias_class_1189_differential.py` + three
+        generated modules (`scripts/gen_home_alias_class_1189.py`, committed
+        as `home_alias_class_1189_{i32,i64,promo}.wat`) execute 117
+        consumer-family functions on all four legs against wasmtime with a
+        permanent red half (`home_alias_class_1189_red_main.json`, main's own
+        objects) — CI job `home-alias-class-1189-oracle`. Two fixes, one site
+        each: aarch64 `rotl` (#1221, `crates/synth-backend-aarch64/src/
+        selector.rs`) and the direct selector's i64-param `local.set`/`tee`
+        (#1222, `write_i64_param_home` in `select_with_stack.rs`). Structural
+        pins as tests: `param_local_get_copies_and_no_consumer_writes_the_home_1189`
+        and `promoted_local_is_written_only_by_its_own_set_and_the_epilogue_1189`
+        (RV32), `param_homes_are_never_a_destination_1189` (AArch64),
+        `optimized_path_never_writes_a_param_home_1189` (optimized path),
+        `i64_param_set_writes_both_halves_at_the_aapcs_home_1222` and the
+        rotl pair on aarch64. The per-leg, per-consumer table:
+        `docs/analysis/HOME_REGISTER_ALIAS_CLASS_1189.md`. #1223 (an IR fold,
+        not this class) filed and pinned OPEN in the oracle.
+      done-when: "contains:.github/workflows/ci.yml:home_alias_class_1189_differential.py"
       verified-by: >-
-        PENDING. Any fix moves emitted bytes and therefore needs byte-identity
-        or an execution differential proving the new bytes correct — never an
-        explanation. #1190's oracle keeps main's own wrong bytes as a permanent
-        red half; extend that pattern rather than replacing it.
+        ENUMERATION (docs/analysis/HOME_REGISTER_ALIAS_CLASS_1189.md):
+        producers on all four legs — ARM direct (params r0-r3, promoted
+        r4-r8, VFP homes), ARM optimized (`vreg_to_arm[dest] = param_reg`),
+        RV32 (params COPY; promoted s8..s10 alias), AArch64 (leaf unwritten
+        params) — and every consumer per leg with a disposition: GUARD (#1190
+        join, #677 bulk memory, #989 set WAR, #973 reload, RV32 #931 edge,
+        RV32 #472 snapshot), PIN (temp allocators exclude live homes on every
+        leg; block/branch results are fresh temps; `return`/function-level
+        `br` result moves run straight into an inline epilogue — checked ON
+        THE STREAM by `write_is_terminal`; call-containing functions have no
+        homes; aarch64 TEMPS disjoint from x0..x7; optimized-path local vregs
+        never freed), or FIXED (#1221, #1222). STATIC AUDIT, measured on the
+        lane tree after the fixes: `functions audited: 4628`, `homes watched:
+        2372`, `attributed instructions: 227150 (unattributed: 17330)`,
+        `hits: 16 (known-open: 16 [#1226], unexplained: 0)`, RESULT: PASS, on
+        313 (module, leg) pairs that produced >=1 audited function — floors
+        pinned in-script and grepped EXACTLY in ci.yml. The 16 known-open
+        hits are ONE defect the #1222 fix made visible (the pre-fix sweep
+        read 0 hits over the same bytes): #1226, the multi-module .wast merge
+        hands a later module's function the representative module's
+        param-width table, so `(i64 i64 i32)`'s `$to` is homed at R1:R2 and
+        the now-correct `local.set $from` (R0:R1) lands on "local 1" —
+        memory_{copy,fill,init}64 checkRange + memory_grow64
+        check-memory-zero, 4 legs each, pinned (function, op, register,
+        local) per leg so the fix must flip the pin. A CLI-merge defect
+        (#1168 re-threads arg counts, not width masks), filed, not this
+        class, not fixed here.
+        POTENCY of the audit against the REAL history: built at the pre-#1190
+        commit f4780608 with the hook, it declines exactly `bif iboth iloop
+        inest ir0 ir1 ir2 ir3 isets` (main fixture) and `i64p` (i64 fixture)
+        naming `Mov { rd: R0, op2: Reg(R1) }` at `End` — the 10 functions
+        #1190 recorded WRONG on arm-reloc — and none of its 7 pinned-clean
+        ones; on the current compiler: 0 hits. Its first corpus run also
+        surfaced 30 `Return`-in-arm and 2 VFP-first-def false positives, both
+        turned into checked exemptions (terminal-write proof on the stream;
+        `since` index for a float local's late home) with unit tests for the
+        exempt AND the still-flagged shapes. EXECUTION ORACLE, red-first on
+        main af819788 through the same script: `live vectors: 990 matched, 9
+        diverged` — i32/aarch64 b_rotl(7,3) -> 0x3c (wasmtime 0x42),
+        (0x80000005,3) -> 0x8000002e (0x80000034), (-9,4) -> 0xffffff72
+        (0xffffff7a); i64/aarch64 b_rotl x4 likewise; i64/arm-reloc and
+        i64/arm-self war64(0x100000007,0x300000003) -> 0x50000000e
+        (0x70000000e); `silent-wrong vectors: 10 (of 10 pinned)`,
+        `known-open vectors: 1 (of 1)` (#1223 same_twice(7) -> 0x0, wasmtime
+        0x7), RESULT: FAIL (9). GREEN on the fixes: `live vectors: 999
+        matched, 0 diverged`, the 10 pinned vectors still reproduce from
+        main's captured objects, `emulations: 1629`, RESULT: PASS. Declines
+        pinned exactly per (module, leg) (RV32 #312 i64 params: 46;
+        aarch64 brif_fn/copy/fill/ifparam; both ARM legs decline the 10 i64
+        compare-then-extend shapes). BYTE-IDENTITY pre-fix vs post-fix over
+        1419 compiles / 10725 functions (spec suite + local corpus on
+        arm-reloc, arm-self, aarch64, per function from the ELF symtab): 58
+        functions changed — every one an aarch64 function containing `rotl`
+        or an ARM function that `local.set`/`tee`s an i64 param (previously
+        silently wrong: fac.wast fac-opt, loop.wast while,
+        local_set/local_tee.wast type-param-i64, memory_{copy,fill,init}64
+        checkRange, memory_grow64 check-memory-zero) — 0 newly declined, 0
+        newly accepted, 0 rc changes, no skip-set moved. Emulation floor
+        moved by this oracle's 1629 declared entries and RE-DERIVED by
+        oracle_wiring_check.py (its reported `emulations floor total`), ci.yml
+        and claims.yaml in lockstep — the live number is cited by derivation,
+        never restated here; the generator lives outside scripts/repro so the
+        `manual` surface stays at 7. Unit tests: 9 in home_alias.rs (a
+        planted #1189 join write, dead home, own-set exemption, loop
+        back-edge, pair and D-register halves, unattributed counting, VFP
+        `since`, terminal-vs-conditional return, the 222-variant no-wildcard
+        scan), the six structural pins named in `landed`, all green. WHAT IS
+        NOT VERIFIED, stated: the 805-module real-world census is not on the
+        lane machine; hidden encoder-expansion scratch (#1021/#1048 class)
+        is outside the ArmOp-level audit (expansion-canary gates own it);
+        VFP homes are audited on the m4f sweep legs but not executed under
+        unicorn here; the other three legs have no per-op attribution and are
+        pinned structurally + by execution, not by an audit of every word.

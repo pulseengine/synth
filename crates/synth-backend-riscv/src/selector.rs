@@ -9733,6 +9733,102 @@ mod tests {
         ]
     }
 
+    /// RQ-65-ALIASCLASS (#1189): WHY this leg is clean for params, pinned.
+    /// `local.get` of an a-register param emits a COPY (`mv dst, a_n`) — the
+    /// home never reaches the vstack, so no consumer can write it in place.
+    /// This is the accident of implementation the artifact names: an RV32
+    /// "alias params on the vstack" byte-saving change would recreate #1189
+    /// here, and would have to get past this test (and the RV32 leg of
+    /// `home_alias_class_1189_differential.py`) to do so.
+    #[test]
+    fn param_local_get_copies_and_no_consumer_writes_the_home_1189() {
+        // a + b + b — param 1's home a1 is read twice, around a consumer.
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+                WasmOp::End,
+            ],
+            2,
+        );
+        assert!(
+            out.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::A1,
+                    imm: 0,
+                    rd
+                } if *rd != Reg::A1
+            )),
+            "local.get 1 must COPY a1 into a temp: {out:?}"
+        );
+        assert!(
+            !writes_reg(&out, Reg::A1),
+            "no emitted instruction may write a1, param 1's home: {out:?}"
+        );
+        // a0 (param 0's home) is written only by a result move (`mv a0, x`)
+        // — one per epilogue — never by a consumer.
+        let a0_writes: Vec<&RiscVOp> = out
+            .iter()
+            .filter(|op| op_dest(op) == Some(Reg::A0))
+            .collect();
+        assert!(
+            !a0_writes.is_empty()
+                && a0_writes.iter().all(|op| matches!(
+                    op,
+                    RiscVOp::Addi {
+                        rd: Reg::A0,
+                        imm: 0,
+                        ..
+                    }
+                )),
+            "every write of a0 is the epilogue's result move: {a0_writes:?}"
+        );
+    }
+
+    /// RQ-65-ALIASCLASS (#1189): a #472-PROMOTED local IS aliased uncopied
+    /// onto the vstack (`lower_local_get`), so its s-register is a home any
+    /// consumer could write. Pin the stated reason it is safe: every
+    /// consumer allocates a fresh dst from the temp pool (`s8..s10` are
+    /// outside it), so the only writers of `s8` are the local's OWN
+    /// `local.set` and the epilogue restore — never a consumer.
+    #[test]
+    fn promoted_local_is_written_only_by_its_own_set_and_the_epilogue_1189() {
+        let on = s_promo(&promotable_ops(), 1, true);
+        let s8_writes: Vec<&RiscVOp> = on
+            .iter()
+            .filter(|op| op_dest(op) == Some(Reg::S8))
+            .collect();
+        let sets = s8_writes
+            .iter()
+            .filter(|op| matches!(op, RiscVOp::Addi { rd: Reg::S8, .. }))
+            .count();
+        assert_eq!(
+            sets, 1,
+            "exactly one write of s8 is the local.set (mv): {s8_writes:?}"
+        );
+        assert!(
+            s8_writes.iter().all(|op| matches!(
+                op,
+                RiscVOp::Addi { rd: Reg::S8, .. }
+                    | RiscVOp::Lw {
+                        rd: Reg::S8,
+                        rs1: Reg::SP,
+                        ..
+                    }
+            )),
+            "every other write of s8 is an epilogue restore from the frame: {s8_writes:?}"
+        );
+        assert!(
+            !on.iter()
+                .any(|op| matches!(op, RiscVOp::Add { rd: Reg::S8, .. })),
+            "no consumer (the adds) may write the promoted home s8: {on:?}"
+        );
+    }
+
     /// The env-unset default `select()` path must equal the flag-ON lowering
     /// (local promotion is DEFAULT-ON since the #601 measured-profitability
     /// flip — on this shape promotion measures no larger than the baseline

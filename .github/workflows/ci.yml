@@ -509,7 +509,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 345122 \
+            --exact-emulation-floor 346751 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3291,6 +3291,124 @@ jobs:
           grep -Eq '^live vectors: 149 matched, 0 diverged \(of 149\)$' ja1189.txt
           grep -q '^RESULT: PASS' ja1189.txt
       # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  home-alias-audit-1189:
+    name: "home-register write audit over the corpus (RQ-65-ALIASCLASS, #1189)"
+    # RQ-65-ALIASCLASS: `local.get` of a register-homed local pushes THE HOME
+    # REGISTER uncopied on the ARM direct selector; #677, #989 and #1189 were
+    # three consumers that wrote it, each a silent wrong answer found one at a
+    # time. `synth_synthesis::home_alias::audit` (exhaustive over all 222
+    # `ArmOp` variants, no wildcard) runs inside `select_with_stack` under
+    # `SYNTH_HOME_ALIAS_AUDIT` and turns any write to a LIVE local's home
+    # (other than that local's own set/tee, or a straight-line-to-epilogue
+    # `return` move) into a loud decline naming the instruction. This job
+    # compiles the pinned spec testsuite + tests/wast + tests/wat + fixtures +
+    # scripts/repro on both ARM paths x {cortex-m4, cortex-m4f} with it armed
+    # and requires ZERO UNEXPLAINED hits — over floors on the WORK DONE
+    # (functions audited, homes watched, attributed instructions), so a sweep
+    # that silently did less is red, not green (#1113). A hit whose defect is
+    # filed and open is pinned EXACTLY (today: #1226, 16 hits) so the fix
+    # must flip the pin. Needs the suite submodule.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: "Run the home-register write audit sweep (RQ-65-ALIASCLASS)"
+        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 4628` header
+        # floors the audited population; the greps pin the printed totals
+        # EXACTLY (the #1112 pattern) so a corpus or hook change is a visible
+        # diff here, and `hits: 0` is what the artifact claims.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
+          grep -Eq '^functions audited: 4628$' haa1189.txt
+          grep -Eq '^homes watched: 2372$' haa1189.txt
+          # 16 hits, ALL pinned known-open against #1226 (the multi-module
+          # .wast param-width table; 4 functions x 4 legs) — 0 unexplained.
+          # The #1226 fix must flip the in-script pin AND this line.
+          grep -Eq '^hits: 16 \(known-open: 16 \[#1226\], unexplained: 0\)$' haa1189.txt
+          grep -q '^RESULT: PASS' haa1189.txt
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  home-alias-class-1189-oracle:
+    name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"
+    # RQ-65-ALIASCLASS: the EXECUTION half — every consumer family (i32/i64
+    # binary, compare, unary, conversions, loads/stores with a home as
+    # address and as value, select, function-level br_if, br_table, block
+    # params, block fall-through, a param-bounded loop, set/tee of another
+    # local, the #989 WAR, bulk memory) fed register-homed params and
+    # re-reading them, on ARM relocatable, ARM self-contained (the OPTIMIZED
+    # selector aliases too), RV32 (promoted locals alias) and AArch64 (leaf
+    # params alias). Its first run on main found THREE silent wrong answers:
+    # #1221 (aarch64 rotl negates the count IN PLACE in a param's home),
+    # #1222 (the direct selector's local.set/tee of an i64 param writes only
+    # the lo half), #1223 (the optimized path folds (x-x)+x to 0 — an IR
+    # defect, filed and pinned OPEN). The committed fixture holds main's
+    # (af819788) own objects for the five affected (module, leg) pairs and
+    # the 10 recorded wrong values must reproduce every run; the live half
+    # must match wasmtime on all four legs except the pinned-open #1223
+    # vector. Declines per leg are pinned EXACTLY (reach moved = red).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth (riscv feature — the RV32 leg needs it)
+        run: cargo build --features riscv -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run the RQ-65-ALIASCLASS four-leg oracle (fixture red half + live half)"
+        # `ci-checks: emulations >= 1629` counts fixture + live unicorn
+        # entries; it cannot see the wrong/match partition, the known-open
+        # pin or a dropped leg, so the script floors each and the greps pin
+        # the printed counts (the #1112 pattern).
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/home_alias_class_1189_differential.py | tee hac1189.txt
+          grep -Eq '^silent-wrong vectors: 10 \(of 10 pinned\); fixture match vectors: [1-9][0-9]*$' hac1189.txt
+          grep -Eq '^known-open vectors: 1 \(of 1\)$' hac1189.txt
+          grep -Eq '^live vectors: 999 matched, 0 diverged$' hac1189.txt
+          grep -q '^RESULT: PASS' hac1189.txt
       - name: Differential evidence ledger (#910)
         if: always()
         run: |

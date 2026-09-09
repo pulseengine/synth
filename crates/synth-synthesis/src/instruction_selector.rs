@@ -17919,6 +17919,121 @@ mod tests {
         );
     }
 
+    /// #1222 (RQ-65-ALIASCLASS): `local.set`/`local.tee` of a REGISTER-HOMED
+    /// i64 param writes BOTH halves of the AAPCS pair, at the pair's real
+    /// home. Pre-fix the arm emitted one `mov r0, lo` — the hi word was never
+    /// written (`set64(0x1_00000007)` returned `0x1_00000004` for
+    /// `0x3_00000004`), the second i64 of `(i64 i64)` was targeted at
+    /// `index_to_reg(1)` = R1 (its home is R2:R3), and the #989 snapshot of a
+    /// still-live earlier `local.get` could land on the value's hi register.
+    #[test]
+    fn i64_param_set_writes_both_halves_at_the_aapcs_home_1222() {
+        use WasmOp::*;
+        let const_pair = |arm: &[ArmInstruction]| -> (Reg, Reg) {
+            arm.iter()
+                .find_map(|i| match &i.op {
+                    ArmOp::I64Const { rdlo, rdhi, .. } => Some((*rdlo, *rdhi)),
+                    _ => None,
+                })
+                .expect("the i64.const pair")
+        };
+        let movs_at = |arm: &[ArmInstruction], line: usize| -> Vec<(Reg, Reg)> {
+            arm.iter()
+                .filter(|i| i.source_line == Some(line))
+                .filter_map(|i| match &i.op {
+                    ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rs),
+                    } => Some((*rd, *rs)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // (param i64): both halves land in R0:R1.
+        let mut s = fresh_selector();
+        s.set_params_i64(vec![true]);
+        let ops = vec![I64Const(0x3_0000_0004), LocalSet(0), LocalGet(0), End];
+        let arm = s
+            .select_with_stack(&ops, 1)
+            .expect("set of an i64 param lowers");
+        let (lo, hi) = const_pair(&arm);
+        let set = movs_at(&arm, 1);
+        assert!(
+            set.contains(&(Reg::R0, lo)) && set.contains(&(Reg::R1, hi)),
+            "local.set 0 must move BOTH halves into R0:R1, got {set:?} (const pair {lo:?}:{hi:?})"
+        );
+
+        // (param i64 i64): local.set 1 targets the AAPCS pair R2:R3, never R1.
+        let mut s = fresh_selector();
+        s.set_params_i64(vec![true, true]);
+        let ops = vec![I64Const(0x3_0000_0004), LocalSet(1), LocalGet(1), End];
+        let arm = s
+            .select_with_stack(&ops, 2)
+            .expect("set of the second i64 param lowers");
+        let (lo, hi) = const_pair(&arm);
+        let set = movs_at(&arm, 1);
+        assert!(
+            set.contains(&(Reg::R2, lo)) && set.contains(&(Reg::R3, hi)),
+            "local.set 1 of (i64 i64) must move into R2:R3, got {set:?}"
+        );
+        assert!(
+            !set.iter().any(|&(rd, _)| rd == Reg::R1),
+            "R1 is the hi half of param 0 and must not be written by the set: {set:?}"
+        );
+
+        // get -> set -> use on a pair (#989 shape): the alias snapshot's pair
+        // is disjoint from the constant's registers, and the set still writes
+        // both halves.
+        let mut s = fresh_selector();
+        s.set_params_i64(vec![true]);
+        let ops = vec![
+            LocalGet(0),
+            I64Const(0x3_0000_0004),
+            LocalSet(0),
+            LocalGet(0),
+            I64Add,
+            End,
+        ];
+        let arm = s
+            .select_with_stack(&ops, 1)
+            .expect("get->set->use on an i64 param lowers");
+        let (lo, hi) = const_pair(&arm);
+        let at_set = movs_at(&arm, 2);
+        let snapshot: Vec<(Reg, Reg)> = at_set
+            .iter()
+            .copied()
+            .filter(|&(rd, _)| rd != Reg::R0 && rd != Reg::R1)
+            .collect();
+        assert_eq!(
+            snapshot.len(),
+            2,
+            "one pair snapshot of the aliased R0:R1: {at_set:?}"
+        );
+        assert!(
+            snapshot.iter().all(|&(rd, _)| rd != lo && rd != hi),
+            "the snapshot pair must not land on the constant {lo:?}:{hi:?}: {at_set:?}"
+        );
+        assert!(
+            at_set.contains(&(Reg::R0, lo)) && at_set.contains(&(Reg::R1, hi)),
+            "the set writes both halves after the snapshot: {at_set:?}"
+        );
+
+        // local.tee: same pair write, value stays on the stack.
+        let mut s = fresh_selector();
+        s.set_params_i64(vec![true]);
+        let ops = vec![I64Const(0x3_0000_0004), LocalTee(0), Drop, LocalGet(0), End];
+        let arm = s
+            .select_with_stack(&ops, 1)
+            .expect("tee of an i64 param lowers");
+        let (lo, hi) = const_pair(&arm);
+        let tee = movs_at(&arm, 1);
+        assert!(
+            tee.contains(&(Reg::R0, lo)) && tee.contains(&(Reg::R1, hi)),
+            "local.tee 0 must move BOTH halves into R0:R1, got {tee:?}"
+        );
+    }
+
     /// #1189: the join register must never be a LIVE register-homed local's
     /// home. Param 0 is homed in R0 (call-free function); the then-arm's bare
     /// `local.get 0` used to push R0 itself, and the #313 reconciliation on

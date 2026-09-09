@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### RQ-65-ALIASCLASS (#1189) — the home-register alias class, enumerated on all four legs
+
+`local.get` of a register-homed local pushes THE HOME REGISTER uncopied; #677,
+#989 and #1189 were three consumers that wrote it, each a silent wrong answer
+found one at a time. This artifact asks how many others exist and answers
+mechanically rather than by re-reading selector arms:
+
+- **Static audit, ARM direct selector** — `synth_synthesis::home_alias`: an
+  exhaustive (222-variant, no-wildcard) register-writes table for `ArmOp`
+  plus a loop-back-edge-extended liveness walk, run inside
+  `select_with_stack` under `SYNTH_HOME_ALIAS_AUDIT` (byte-invisible
+  otherwise). Any write to a live local's home other than its own set/tee or
+  a straight-line-to-epilogue `return` move is a loud decline naming the
+  instruction. Swept over the pinned spec testsuite + local corpus on
+  {relocatable, self-contained} x {cortex-m4, cortex-m4f}: **4,628 functions,
+  2,372 homes, 227,150 instructions, 0 unexplained hits** (16 hits pinned
+  KNOWN-OPEN against #1226, below); the same audit on the pre-#1190 compiler
+  flags exactly #1190's 10 wrong functions and none of its clean ones
+  (`home_alias_audit_corpus_1189.py`, job `home-alias-audit-1189`).
+  - **#1226 (open, pinned)** — surfaced BY the #1222 fix: in a multi-module
+    `.wast` the merge hands a later module's function the representative
+    module's param-width table, so an i64 param is homed as i32 and its pair
+    overlaps the next param (`(i64 i64 i32)`: `$to` at R1:R2). A CLI-merge
+    defect (#1168 re-threads arg counts, not width masks), not the alias
+    class; 4 spec-suite functions x 4 legs pinned exactly until fixed.
+- **Execution oracle, four legs** — 117 consumer-family functions (i32, i64,
+  promoted-local) re-reading their homes after every op, on ARM relocatable,
+  ARM self-contained (the optimized selector aliases too), RV32 and AArch64;
+  expected values from wasmtime; declines pinned per leg EXACTLY
+  (`home_alias_class_1189_differential.py`, job
+  `home-alias-class-1189-oracle`, 1,629 emulations). Its first run on main
+  found **three silent wrong answers**:
+  - **#1221 (fixed)** aarch64 `i32.rotl`/`i64.rotl` negated the count IN
+    PLACE — the #776 fix's "now-dead register" is a param's home in a leaf
+    function, so the param read back as `-count` (`rotl(a,b)+a+b` returned
+    `rotl+a-b`). A param count is now negated into a scratch chosen with
+    `n`, `k` and `dst` held live; a temp count keeps its bytes.
+  - **#1222 (fixed)** the direct selector's `local.set`/`local.tee` of a
+    register-homed **i64 param** wrote only the LO half, at `index_to_reg(i)`
+    rather than the AAPCS pair, with the #989 alias snapshot reserving only
+    `val_lo`. Every leaf function that assigns an i64 param was affected —
+    including spec-suite functions the census counted as compiled
+    (`fac.wast fac-opt`, `loop.wast while`, `local_set/local_tee.wast
+    type-param-i64`, the 64-bit bulk-memory `checkRange`s). Fixed by
+    `write_i64_param_home`: both halves, at the `local_to_reg` home, ordered
+    for partial overlap, both halves of the value reserved.
+  - **#1223 (open, pinned)** the optimized path folds `(x - x) + x` to the
+    constant 0 — an IR fold/DCE defect, not an alias; its recorded wrong
+    value is pinned in the oracle until the fix flips the pin.
+  The oracle keeps main's own objects for the five affected (module, leg)
+  pairs as a permanent red half (10 pinned wrong vectors reproduce every
+  run). Byte-identity of the two fixes over 1,419 compiles / 10,725
+  functions: 58 changed, every one an aarch64 `rotl` function or an ARM i64-
+  param set/tee; 0 newly declined, 0 newly accepted.
+- **Structural pins for the clean legs** — RV32 params COPY on `local.get`
+  (the accident of implementation, now a test a future "alias params on the
+  vstack" change must get past) and a promoted `s8` is written only by its
+  own set and the epilogue; AArch64's temp pool is disjoint from x0..x7 and
+  21 families never write a param home; the optimized path's local vregs are
+  never freed (18 families walked with the same `gp_defs` table).
+- The full per-leg, per-consumer table with each site's disposition and the
+  stated bound of the search: `docs/analysis/HOME_REGISTER_ALIAS_CLASS_1189.md`.
+
 ### The floor that could lose half its history and stay green (#1183, RQ-65-FLOORSHAPE)
 
 `status_evidence_check.py` guarded its own scan population with two hand-pinned

@@ -7734,6 +7734,70 @@ mod tests {
     use super::*;
     use crate::rules::Reg;
 
+    /// RQ-65-ALIASCLASS (#1189): the OPTIMIZED selector aliases too — a
+    /// `local.get`'s vreg is mapped straight onto the param register
+    /// (`vreg_to_arm[dest] = param_regs[i]`, no copy). Pin the stated reason
+    /// no consumer writes it: a local's vreg is in `local_vregs` and is never
+    /// freed, so its register is never handed to another dest for the rest
+    /// of the function. Walked with the same exhaustive `gp_defs` table the
+    /// direct-selector audit uses — every two-operand family, param 1
+    /// re-read after the op: nothing may write R1 (or R2/R3), and R0 (the
+    /// result register) is written exactly once, by the epilogue move.
+    #[test]
+    fn optimized_path_never_writes_a_param_home_1189() {
+        use crate::home_alias::gp_defs;
+        let families = [
+            WasmOp::I32Add,
+            WasmOp::I32Sub,
+            WasmOp::I32Mul,
+            WasmOp::I32And,
+            WasmOp::I32Or,
+            WasmOp::I32Xor,
+            WasmOp::I32Shl,
+            WasmOp::I32ShrS,
+            WasmOp::I32ShrU,
+            WasmOp::I32Rotl,
+            WasmOp::I32Rotr,
+            WasmOp::I32Eq,
+            WasmOp::I32Ne,
+            WasmOp::I32LtS,
+            WasmOp::I32LtU,
+            WasmOp::I32GeS,
+            WasmOp::I32DivU,
+            WasmOp::I32RemS,
+        ];
+        for op in families {
+            // a OP b, then b again: a + (a OP b) is not needed — the re-read
+            // of b after the op is what makes an in-place write observable.
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+                WasmOp::End,
+            ];
+            let bridge = OptimizerBridge::with_config(OptimizationConfig::all());
+            let (ir, _cfg, _stats) = bridge.optimize_full(&ops).expect("IR");
+            let arm = bridge.ir_to_arm(&ir, 2).expect("lowers");
+            let mut r0_writes = 0;
+            for a in &arm {
+                let defs = gp_defs(a);
+                assert!(
+                    !defs.contains(&Reg::R1)
+                        && !defs.contains(&Reg::R2)
+                        && !defs.contains(&Reg::R3),
+                    "{op:?}: {a:?} writes a param home (r1/r2/r3): {arm:#?}"
+                );
+                r0_writes += usize::from(defs.contains(&Reg::R0));
+            }
+            assert_eq!(
+                r0_writes, 1,
+                "{op:?}: R0 (param 0's home / the result) written once, by the result move: {arm:#?}"
+            );
+        }
+    }
+
     // ---- base-CSE planner (VCR-RA lever 3, #468) ----
 
     fn inst(op: Opcode) -> Instruction {
