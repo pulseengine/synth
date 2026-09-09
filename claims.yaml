@@ -1539,9 +1539,27 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19945
+        # RQ-65-ALIASCLASS finishing lane (#1189): 19945 -> 19896. The
+        # `SYNTH_HOME_ALIAS_AUDIT` hook body (home-set construction, verbose
+        # line, decline text) moved OUT of select_with_stack.rs into
+        # `home_alias::selector_hook` — one call remains. A FALL, no waiver;
+        # value RE-DERIVED after cargo fmt.
+        value: 19896
         baseline: 17897
         waivers:
+          - to: 19896
+            reason: >-
+              RQ-65-ALIASCLASS finishing lane (#1189): a FALL, 19945 -> 19896,
+              recorded because every value above the baseline is bound to a
+              waiver. The `SYNTH_HOME_ALIAS_AUDIT` hook body — home-set
+              construction (params + #1069 float-local `since`), the verbose
+              line, the decline text — moved out of select_with_stack.rs into
+              `home_alias::selector_hook`, leaving one call (63 -> 12 lines);
+              the `plant` potency probe was added there, not here. Audit-only
+              code: objects identical with the variable unset (the corpus
+              sweep, its potency self-test and the four-leg execution oracle
+              are the gates). No lowering arm added or removed. Value
+              RE-DERIVED after cargo fmt.
           - to: 19945
             reason: >-
               RQ-65-ALIASCLASS (#1222), coordinator salvage: +28 lines in
@@ -1567,7 +1585,9 @@ claims:
               the lo half at `index_to_reg(i)` (not the AAPCS pair) with the
               #989 snapshot reserving only `val_lo`; every leaf function that
               assigns an i64 param was wrong (spec suite: fac-opt, loop
-              `while`, type-param-i64, the 64-bit bulk-memory checkRanges).
+              `while`, type-param-i64, the 64-bit bulk-memory checkRanges —
+              `.wast` inputs, where the arm is inert under the declared-width
+              gate because the `.wast` driver threads no widths, #1226).
               Nothing could be deleted in exchange: the class had NO handling.
               (b) the `SYNTH_HOME_ALIAS_AUDIT` hook at the selector's tail —
               the home-register write audit's entry point (the table and the
@@ -1985,7 +2005,9 @@ claims:
         # (the RQ-64 then-result alias copy is now the shared #1189
         # mechanism, `copy_live_home_then_results`, so the merged code is
         # smaller than the two deltas summed).
-        value: 30943
+        # RQ-65-ALIASCLASS finishing lane: 30943 -> 30894, the audit hook
+        # collapsed to one call (see selector_lines_code).
+        value: 30894
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

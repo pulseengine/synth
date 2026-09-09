@@ -110,8 +110,8 @@ impl InstructionSelector {
         // DECLARED width says so and the layout above homed it as one.
         // `i64_locals` also carries body-INFERRED widths (`infer_i64_locals`),
         // and a param the signature calls i32 (or whose width nobody
-        // declared — a direct `select_with_stack` caller, #1226's stale
-        // multi-module width table, invalid wasm) that the body stores an i64
+        // declared — a direct `select_with_stack` caller, ANY `.wast` input
+        // (#1226: that driver threads no widths), invalid wasm) that stores an i64
         // into was homed NARROW by `aapcs_param_layout`: its "hi half" is the
         // NEXT param's home. The pair-writing set/tee arm must not fire there
         // — the `i64_lowering_doesnt_clobber_params` harness caught it writing
@@ -8317,66 +8317,17 @@ impl InstructionSelector {
         // — other than the local's own set/tee — is the #677/#989/#1189 class.
         // Armed by `SYNTH_HOME_ALIAS_AUDIT` (the corpus sweep and the
         // per-opcode oracle run with it); a hit is a LOUD DECLINE naming the
-        // write, never a rewrite. Unset, this block is byte-invisible.
-        if let Ok(mode) = std::env::var(crate::home_alias::AUDIT_ENV) {
-            use crate::home_alias::{Home, audit, vfp_slots};
-            let mut homes: Vec<Home> = home_of.iter().map(|&(r, p)| Home::Gp(r, p)).collect();
-            // A float PARAM is homed from op 0; a non-param float local gets
-            // its S/D home at its first def (#1069) — before that the
-            // register is an ordinary temp.
-            let since = |p: u32| -> usize {
-                if p < num_params {
-                    0
-                } else {
-                    wasm_ops
-                        .iter()
-                        .position(
-                            |o| matches!(o, WasmOp::LocalSet(q) | WasmOp::LocalTee(q) if *q == p),
-                        )
-                        .unwrap_or(usize::MAX)
-                }
-            };
-            for (&p, &s) in &f32_home {
-                homes.extend(
-                    vfp_slots(s)
-                        .into_iter()
-                        .map(|slot| Home::Vfp(slot, p, since(p))),
-                );
-            }
-            for (&p, &d) in &f64_home {
-                homes.extend(
-                    vfp_slots(d)
-                        .into_iter()
-                        .map(|slot| Home::Vfp(slot, p, since(p))),
-                );
-            }
-            let report = audit(&instructions, wasm_ops, &homes);
-            if mode == "verbose" {
-                eprintln!(
-                    "home-alias-audit: ops={} homes={} attributed={} unattributed={} hits={}",
-                    wasm_ops.len(),
-                    report.homes,
-                    report.attributed,
-                    report.unattributed,
-                    report.hits.len()
-                );
-            }
-            if let Some(h) = report.hits.first() {
-                return Err(synth_core::Error::synthesis(format!(
-                    "{}: op {} ({}) instr {} `{}` writes {} = home of local {}, which is \
-                     read again at op {} ({} hit(s) in this function)",
-                    crate::home_alias::HIT_NEEDLE,
-                    h.idx,
-                    h.op,
-                    h.instr,
-                    h.arm,
-                    h.home,
-                    h.local,
-                    h.last_read,
-                    report.hits.len()
-                )));
-            }
-        }
+        // write, never a rewrite. Unset, this call is byte-invisible. The home
+        // set, the walk, the `plant` potency probe and the decline text all
+        // live in `home_alias.rs` — this call is the selector's only contact.
+        crate::home_alias::selector_hook(
+            &instructions,
+            wasm_ops,
+            num_params,
+            &home_of,
+            &f32_home,
+            &f64_home,
+        )?;
 
         Ok(instructions)
     }

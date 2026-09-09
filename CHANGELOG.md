@@ -37,16 +37,28 @@ mechanically rather than by re-reading selector arms:
   looked like the write. Calls now carry the clobber (a missing restore is
   a hit; none on the corpus) and the save/restore round trip is proven on
   the stream; each fix's negative variant reproduces exactly its own shape.
-  - **#1226 (open, now silent to the audit)** — surfaced BY the #1222 fix:
-    in a multi-module `.wast` the merge hands a later module's function the
-    representative module's param-width table, so an i64 param is homed as
-    i32 and its pair overlaps the next param (`(i64 i64 i32)`: `$to` at
-    R1:R2). A CLI-merge defect (#1168 re-threads arg counts, not width
-    masks), not the alias class. The `declared_wide_params` gate reads the
-    same stale table, so `local.set $from` writes only R0 there again and
-    the 16 pinned hits stopped occurring — the HIT is gone, the miscompile
-    is not (`checkRange` still compares `$to` at R1:R2); the pin is removed,
-    the issue stays open.
+  POTENCY is wired, not remembered: the sweep's self-test plants one
+  synthetic home write per function of three fixtures
+  (`SYNTH_HOME_ALIAS_AUDIT=verbose,plant`, `home_alias::plant_probe`) and
+  EXACTLY the pinned number must decline per (fixture, leg) — 192 planted
+  writes reported, 0 without the plant — so a detector that goes quiet is
+  red, not green. The selector's audit hook collapsed to one call into
+  `home_alias.rs` (`selector_lines_code` 19945 -> 19896).
+  - **#1226 (open; mechanism CORRECTED, pinned red-first)** — surfaced BY
+    the #1222 fix as 16 audit hits on the 64-bit bulk-memory `checkRange`s.
+    Not the merge: the synth-cli `.wast` driver path threads NO declared-
+    width tables (`Vec::new()` for params/returns i64/f32/f64, "WAST fixture
+    suite is i32-only"), so on ANY `.wast` — single-module too — an
+    i64/f32/f64 param or result whose width body inference cannot recover
+    is homed as i32 (`second3` as `.wat`: `mov r0, r2; mov r1, r3`; as
+    `.wast`: `mov r0, r1`). A mis-HOMING this audit cannot see as a write
+    (it trusts the selector's home table); the 16 hits were a symptom the
+    `declared_wide_params` gate removed by changing the emission, not the
+    walk. Pinned red-first on the `homes=` count of the same module text as
+    `.wast` vs `.wat` (6 < 8 relocatable, 4 < 8 self-contained), flipped by
+    the fix. CONSEQUENCE: the #1222 pair-write is gated on the declared
+    width, so on `.wast` input it never fires — the spec-suite functions the
+    #1222 entry names are NOT fixed by it and stay wrong until #1226 is.
 - **Execution oracle, four legs** — 117 consumer-family functions (i32, i64,
   promoted-local) re-reading their homes after every op, on ARM relocatable,
   ARM self-contained (the optimized selector aliases too), RV32 and AArch64;
@@ -67,7 +79,9 @@ mechanically rather than by re-reading selector arms:
     (`fac.wast fac-opt`, `loop.wast while`, `local_set/local_tee.wast
     type-param-i64`, the 64-bit bulk-memory `checkRange`s). Fixed by
     `write_i64_param_home`: both halves, at the `local_to_reg` home, ordered
-    for partial overlap, both halves of the value reserved.
+    for partial overlap, both halves of the value reserved — for
+    `.wat`/`.wasm` input. The `.wast` instances just named are NOT fixed:
+    see #1226 below (their declared widths are empty, the arm never fires).
   - **#1223 (open, pinned)** the optimized path folds `(x - x) + x` to the
     constant 0 — an IR fold/DCE defect, not an alias; its recorded wrong
     value is pinned in the oracle until the fix flips the pin.

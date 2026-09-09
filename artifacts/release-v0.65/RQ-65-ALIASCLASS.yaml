@@ -145,18 +145,62 @@ artifacts:
         hits with the pop check off; the 4 VFP functions — now reported at
         the `Bl` — with the round trip off) and nothing else; the fixed
         walk sweeps the identical population (same 1045/8317/8776/261440)
-        to 0 hits. (c) THE 16 #1226 PINS STOPPED OCCURRING because the
-        coordinator's `declared_wide_params` gate reads the SAME stale
-        width table #1226 describes, so on `checkRange` the pair-write no
-        longer fires and nothing lands on `$to`'s R1 — verified on the
-        bytes: the gate removed the HIT, not the MISCOMPILE. `checkRange`
-        still compiles `i64.eq` as `cmp r0, r1; it eq; cmpeq r1, r2` (`$to`
-        read at R1:R2 where AAPCS passes it in R2:R3), `local.set $from` is
-        back to the single-half `mov r0, r5` (`adc r6` dropped), and the
-        `i64.const -1` return sets R0 only. #1226 stays OPEN (comment with
-        the bytes on the issue) and is unpinned here because no sweep line
-        can see it any more; a CLI-merge defect (#1168 re-threads arg
-        counts, not width masks), not this class, not fixed here.
+        to 0 hits. POTENCY, wired (coordinator review of #1227: a
+        population floor proves the sweep RAN, not that the detector
+        FIRES): the script's self-test phase runs first —
+        `SYNTH_HOME_ALIAS_AUDIT=verbose,plant` makes
+        `home_alias::plant_probe` plant ONE synthetic write of a watched
+        home at op 0 of every function that has a home still read later
+        (`mov <home>, r12` / `F32Const` into the S-slot, on a COPY of the
+        stream; the shipped bytes are untouched) and every such function
+        MUST decline with the needle at `op 0` through the same decline /
+        needle / parse path the sweep relies on; pinned EXACTLY per
+        (fixture, leg) in both directions — i32 params r0–r3
+        (`home_alias_class_1189_i32.wat`) 58/7/58/7, promoted locals r4–r8
+        (`..._promo.wat`) 11/9/11/9, VFP homes (`f32_ops_719.wat`) 0/0/11/11
+        (soft-float m4 has no VFP home), 192 planted writes reported, 0
+        declines without the plant — `POTENCY: PASS (192 …)` grepped exactly
+        in ci.yml. The selector's hook collapsed to one call
+        (`home_alias::selector_hook`; select_with_stack.rs 63 -> 12 lines,
+        `selector_lines_code` 19945 -> 19896, a FALL). (c) #1226, STATED
+        PLAINLY: the walk is correct and #1226 was never a home-register
+        WRITE — it is a mis-HOMING, and its real mechanism is WIDER than the
+        issue first said: the synth-cli `.wast` driver path returns
+        `Vec::new()` for every declared-width table (func/type ret_i64,
+        params_i64/_f32/_f64, the f32/f64 return masks — each annotated
+        "WAST fixture suite is i32-only"), so on ANY `.wast` — a
+        single-module file too, not only a later module — every i64/f32/f64
+        param or result whose width body inference cannot recover
+        (`infer_i64_locals` learns from set/tee only) is homed as i32.
+        Measured on the bytes: the same module text as `.wat` gives
+        `second3` (`(param i64 i64 i32) (local.get 1)`) homes=4 and `mov r0,
+        r2; mov r1, r3`; as a `.wast` (single or merged) homes=2 and `mov
+        r0, r1`; `fac.wast` `fac-opt` is rescued by inference (it sets its
+        param). Static upper bound: 1393 exported spec-suite functions in 74
+        files carry an i64/f32/f64 param or result. This audit trusts the
+        selector's home table BY CONSTRUCTION (it asks whether anything
+        WRITES a home, not whether the home is right), so it never saw #1226
+        itself: the 16 hits it carried were a symptom — the #1222
+        pair-write, fired by body inference, landing in the neighbour's
+        wrongly assigned R1 — that the `declared_wide_params` gate removed
+        by changing the EMISSION on that shape (the declared table is empty
+        on `.wast`), not the walk; no coverage of home writes was lost. What
+        covers #1226 now: the same self-test pins it RED-FIRST on the
+        `homes=` count — one fixture (`home_alias_width_1226.wast`, the
+        two-module spec-suite shape), its last module derived at run time
+        as a single-module `.wast` and as the identical `.wat`: (merged,
+        single-wast, wat) = (7, 6, 8) on the relocatable legs and (4, 4, 8)
+        self-contained, `wast < wat` on all 4 legs — `WIDTH-1226:
+        known-open` grepped exactly in ci.yml; a fix makes them equal and
+        must flip the pin. CONSEQUENCE for #1222, recorded: the pair-write
+        arm is gated on the DECLARED width, so on `.wast` input it never
+        fires — the spec-suite functions the #1222 entry names (fac-opt,
+        loop `while`, type-param-i64, the 64-bit bulk-memory `checkRange`s)
+        are NOT fixed by #1222; they are wrong for #1226's reason and stay
+        so until #1226 is fixed. #1222 is fixed for `.wat`/`.wasm` input
+        (the oracle's own fixtures, executed). #1226 stays OPEN with the
+        corrected mechanism and bytes on the issue; a CLI driver defect, not
+        this class, not fixed here.
         POTENCY of the audit against the REAL history: built at the pre-#1190
         commit f4780608 with the hook, it declines exactly `bif iboth iloop
         inest ir0 ir1 ir2 ir3 isets` (main fixture) and `i64p` (i64 fixture)
@@ -186,8 +230,10 @@ artifacts:
         or an ARM function that `local.set`/`tee`s an i64 param (previously
         silently wrong: fac.wast fac-opt, loop.wast while,
         local_set/local_tee.wast type-param-i64, memory_{copy,fill,init}64
-        checkRange, memory_grow64 check-memory-zero) — 0 newly declined, 0
-        newly accepted, 0 rc changes, no skip-set moved. Emulation floor
+        checkRange, memory_grow64 check-memory-zero — measured BEFORE the
+        declared-width gate; those are `.wast` inputs and REVERTED under the
+        gate, see (c) above) — 0 newly declined, 0 newly accepted, 0 rc
+        changes, no skip-set moved. Emulation floor
         moved by this oracle's 1629 declared entries and RE-DERIVED by
         oracle_wiring_check.py (its reported `emulations floor total`), ci.yml
         and claims.yaml in lockstep — the live number is cited by derivation,

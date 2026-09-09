@@ -3314,12 +3314,23 @@ jobs:
     # scripts/repro on both ARM paths x {cortex-m4, cortex-m4f} with it armed
     # and requires ZERO UNEXPLAINED hits — over floors on the WORK DONE
     # (functions audited, homes watched, attributed instructions), so a sweep
-    # that silently did less is red, not green (#1113). A hit whose defect is
-    # filed and open is pinned EXACTLY so the fix must flip the pin (today:
-    # none — the #1226 hits went silent when the #1222 pair-write was gated
-    # on the declared width; the issue stays open, see the script). Needs the
-    # suite submodule: the numbers below are measured WITH it (1045 module-leg
-    # pairs); a checkout without it fails loudly at 0 audited, never 0/0.
+    # that silently did less is red, not green (#1113), and — because a
+    # population floor proves the sweep RAN, not that the DETECTOR FIRES — a
+    # POTENCY self-test runs first: `SYNTH_HOME_ALIAS_AUDIT=verbose,plant`
+    # plants one synthetic home write per function of three fixtures and
+    # EXACTLY the pinned number must decline per (fixture, leg), 0 without the
+    # plant. A hit whose defect is filed and open is pinned EXACTLY so the fix
+    # must flip the pin (today: none as a WRITE). #1226, stated plainly: it is
+    # a mis-HOMING — the `.wast` driver path threads NO declared-width tables,
+    # so on any `.wast` an i64/f32/f64 param whose width body inference cannot
+    # recover is homed as i32 — which this audit cannot see as a write because
+    # it trusts the selector's home table; the 16 hits it once carried were a
+    # symptom that the #1222 declared-width gate removed by changing the
+    # EMISSION on that shape, not the walk (no coverage of home WRITES was
+    # lost). It is pinned red-first on the `homes=` count of the same module
+    # text as `.wast` vs `.wat` instead. Needs the suite submodule: the
+    # numbers below are measured WITH it (1045 module-leg pairs); a checkout
+    # without it fails loudly at 0 audited, never 0/0.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -3356,10 +3367,21 @@ jobs:
             python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
           grep -Eq '^functions audited: 8317$' haa1189.txt
           grep -Eq '^homes watched: 8776$' haa1189.txt
+          # POTENCY: the detector still fires, on this binary, through the
+          # same decline / needle / parse path — per (fixture, leg) EXACTLY
+          # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
+          # 0/0/11/11 (VFP homes; soft-float m4 has none) planted writes
+          # reported, 0 declines without the plant. 192 in total.
+          grep -Eq '^POTENCY: PASS \(192 planted writes reported, 0 without the plant, over 3 fixtures x 4 legs\)$' haa1189.txt
+          # #1226 red-first: same module text, `.wast` homes < `.wat` homes
+          # (6 < 8 on the relocatable legs, 4 < 8 self-contained). A fix makes
+          # them equal, this line goes red, and the fix flips the pin.
+          grep -Eq '^WIDTH-1226: known-open \(\.wast homes < \.wat homes for the same module text on 4 legs\)$' haa1189.txt
           # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk
           # false positives (epilogue pop = the return; VFP caller-save round
-          # trip) fixed in home_alias.rs, and #1226's 16 went silent behind
-          # the #1222 declared-width gate (open, no longer audit-visible).
+          # trip) fixed in home_alias.rs; the 16 #1226 hits were a symptom of
+          # the mis-homing that the #1222 declared-width gate removed by
+          # changing the emission on that shape (pinned above, not here).
           grep -Eq '^hits: 0 \(known-open: 0 \[none\], unexplained: 0\)$' haa1189.txt
           grep -q '^RESULT: PASS' haa1189.txt
       - name: Differential evidence ledger (#910)

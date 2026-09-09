@@ -964,6 +964,180 @@ pub const AUDIT_ENV: &str = "SYNTH_HOME_ALIAS_AUDIT";
 /// The stderr needle every hit carries (ci grep + the corpus sweep).
 pub const HIT_NEEDLE: &str = "#1189-class home-register write";
 
+/// `S(n)` by slot index — the inverse of [`vfp_slots`] for single slots,
+/// pinned against it by `s_regs_invert_vfp_slots`. Only the potency probe
+/// needs it (to plant a write into a VFP home).
+const S_REGS: [VfpReg; 32] = [
+    VfpReg::S0,
+    VfpReg::S1,
+    VfpReg::S2,
+    VfpReg::S3,
+    VfpReg::S4,
+    VfpReg::S5,
+    VfpReg::S6,
+    VfpReg::S7,
+    VfpReg::S8,
+    VfpReg::S9,
+    VfpReg::S10,
+    VfpReg::S11,
+    VfpReg::S12,
+    VfpReg::S13,
+    VfpReg::S14,
+    VfpReg::S15,
+    VfpReg::S16,
+    VfpReg::S17,
+    VfpReg::S18,
+    VfpReg::S19,
+    VfpReg::S20,
+    VfpReg::S21,
+    VfpReg::S22,
+    VfpReg::S23,
+    VfpReg::S24,
+    VfpReg::S25,
+    VfpReg::S26,
+    VfpReg::S27,
+    VfpReg::S28,
+    VfpReg::S29,
+    VfpReg::S30,
+    VfpReg::S31,
+];
+
+/// POTENCY PROBE (`SYNTH_HOME_ALIAS_AUDIT=plant`): a COPY of `instrs` with ONE
+/// synthetic write of a watched home planted at the head of the stream,
+/// attributed to op 0 — `mov <home>, r12` for a core home, `vmov.f32 s<n>, #0`
+/// (`F32Const`) for a VFP one — for the FIRST home (in `homes` order) whose
+/// local is still read after op 0, whose op 0 is not its own set/tee, and
+/// (VFP) that is homed from op 0. `None` when no home qualifies, so a caller
+/// can assert the EXACT number of functions that must decline. The shipped
+/// stream is never touched.
+///
+/// Why it exists: a corpus sweep that asserts `hits: 0` proves the sweep RAN
+/// (its work floors) — it does not prove the DETECTOR FIRES, and after a walk
+/// is relaxed to clear false positives that is the property under suspicion.
+/// The probe lets the same binary, through the same decline / needle / parse
+/// path, show that a known home write is still reported; the corpus script
+/// pins the count per (fixture, leg) in both directions.
+pub fn plant_probe(
+    instrs: &[ArmInstruction],
+    wasm_ops: &[WasmOp],
+    homes: &[Home],
+) -> Option<Vec<ArmInstruction>> {
+    let last = last_reads(wasm_ops);
+    let own_set_at_0 = |p: u32| matches!(wasm_ops.first(), Some(WasmOp::LocalSet(q) | WasmOp::LocalTee(q)) if *q == p);
+    let target = homes.iter().find(|h| {
+        let (p, since) = match **h {
+            Home::Gp(_, p) => (p, 0),
+            Home::Vfp(_, p, since) => (p, since),
+        };
+        since == 0 && !own_set_at_0(p) && last.get(&p).is_some_and(|&r| r > 0)
+    })?;
+    let op = match *target {
+        Home::Gp(r, _) => ArmOp::Mov {
+            rd: r,
+            op2: crate::rules::Operand2::Reg(Reg::R12),
+        },
+        Home::Vfp(s, _, _) => ArmOp::F32Const {
+            sd: S_REGS[s as usize],
+            value: 0.0,
+        },
+    };
+    let mut probed = Vec::with_capacity(instrs.len() + 1);
+    probed.push(ArmInstruction {
+        op,
+        source_line: Some(0),
+    });
+    probed.extend_from_slice(instrs);
+    Some(probed)
+}
+
+/// The `select_with_stack` tail hook — the ONLY place the selector touches
+/// this module. Unset `SYNTH_HOME_ALIAS_AUDIT`: returns `Ok(())` at once and
+/// the stream is untouched (byte-invisible). Set: builds the home set (a
+/// param or promoted local is homed from op 0; a non-param float local from
+/// its first def, #1069), runs [`audit`] — or, with the `plant` flag, the
+/// [`plant_probe`] copy — prints the `verbose` line, and turns a hit into the
+/// loud decline carrying [`HIT_NEEDLE`]. Flags are comma-separated
+/// (`verbose`, `plant`; anything else = armed, quiet).
+pub fn selector_hook(
+    instrs: &[ArmInstruction],
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    gp_homes: &[(Reg, u32)],
+    f32_home: &std::collections::HashMap<u32, VfpReg>,
+    f64_home: &std::collections::HashMap<u32, VfpReg>,
+) -> Result<(), synth_core::Error> {
+    let Ok(mode) = std::env::var(AUDIT_ENV) else {
+        return Ok(());
+    };
+    let flags: Vec<&str> = mode.split(',').map(str::trim).collect();
+    let verbose = flags.contains(&"verbose");
+    let plant = flags.contains(&"plant");
+
+    let mut homes: Vec<Home> = gp_homes.iter().map(|&(r, p)| Home::Gp(r, p)).collect();
+    let since = |p: u32| -> usize {
+        if p < num_params {
+            0
+        } else {
+            wasm_ops
+                .iter()
+                .position(|o| matches!(o, WasmOp::LocalSet(q) | WasmOp::LocalTee(q) if *q == p))
+                .unwrap_or(usize::MAX)
+        }
+    };
+    // HashMap order is per-process random; sort so the probe's choice of
+    // home (and every printed line) is deterministic run to run.
+    let mut vfp: Vec<(u32, VfpReg)> = f32_home
+        .iter()
+        .chain(f64_home.iter())
+        .map(|(&p, &r)| (p, r))
+        .collect();
+    vfp.sort_by_key(|&(p, r)| (p, r as u8));
+    for (p, r) in vfp {
+        homes.extend(
+            vfp_slots(r)
+                .into_iter()
+                .map(|slot| Home::Vfp(slot, p, since(p))),
+        );
+    }
+
+    let probed = if plant {
+        plant_probe(instrs, wasm_ops, &homes)
+    } else {
+        None
+    };
+    let planted = probed.is_some();
+    let stream: &[ArmInstruction] = probed.as_deref().unwrap_or(instrs);
+    let report = audit(stream, wasm_ops, &homes);
+    if verbose {
+        eprintln!(
+            "home-alias-audit: ops={} homes={} attributed={} unattributed={} hits={} planted={}",
+            wasm_ops.len(),
+            report.homes,
+            report.attributed,
+            report.unattributed,
+            report.hits.len(),
+            u8::from(planted)
+        );
+    }
+    if let Some(h) = report.hits.first() {
+        return Err(synth_core::Error::synthesis(format!(
+            "{}: op {} ({}) instr {} `{}` writes {} = home of local {}, which is read again \
+             at op {} ({} hit(s) in this function{})",
+            HIT_NEEDLE,
+            h.idx,
+            h.op,
+            h.instr,
+            h.arm,
+            h.home,
+            h.local,
+            h.last_read,
+            report.hits.len(),
+            if planted { "; planted probe" } else { "" }
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1444,6 +1618,77 @@ mod tests {
             hits(&[save.clone(), label, bl.clone(), restore.clone()]).len(),
             2
         );
+    }
+
+    #[test]
+    fn s_regs_invert_vfp_slots() {
+        for (i, r) in S_REGS.iter().enumerate() {
+            assert_eq!(vfp_slots(*r), vec![i as u8], "S_REGS[{i}]");
+        }
+    }
+
+    /// The potency probe plants exactly ONE write the audit MUST report — at
+    /// op 0, into the first home still read later — and plants nothing when
+    /// no home qualifies (read only at op 0; op 0 is the local's own set; a
+    /// float local not yet homed), so a caller can pin the count exactly.
+    #[test]
+    fn plant_probe_plants_one_reported_write_or_nothing() {
+        use WasmOp::*;
+        let ops = vec![LocalGet(0), I32Const(1), I32Add, LocalGet(0), Drop];
+        let stream = vec![
+            mov(Reg::R1, Reg::R0, Some(0)),
+            mov(Reg::R2, Reg::R1, Some(2)),
+        ];
+
+        // A core home read at op 3: planted `mov r0, r12` at op 0, one hit.
+        let homes = [Home::Gp(Reg::R0, 0)];
+        let probed = plant_probe(&stream, &ops, &homes).expect("plants");
+        assert_eq!(probed.len(), stream.len() + 1);
+        assert_eq!(probed[0].source_line, Some(0));
+        let r = audit(&probed, &ops, &homes);
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!((r.hits[0].idx, r.hits[0].instr, r.hits[0].local), (0, 0, 0));
+        assert!(
+            r.hits[0].arm.starts_with("Mov { rd: R0"),
+            "{}",
+            r.hits[0].arm
+        );
+        // …and the unprobed stream is clean.
+        assert!(audit(&stream, &ops, &homes).hits.is_empty());
+
+        // A VFP param home: planted `F32Const` into S0, one hit.
+        let vhomes = [Home::Vfp(0, 0, 0)];
+        let probed = plant_probe(&stream, &ops, &vhomes).expect("plants");
+        let r = audit(&probed, &ops, &vhomes);
+        assert_eq!(r.hits.len(), 1);
+        assert!(
+            r.hits[0].arm.starts_with("F32Const { sd: S0"),
+            "{}",
+            r.hits[0].arm
+        );
+
+        // Read only at op 0: nothing to plant.
+        let once = vec![LocalGet(0), Drop];
+        assert!(plant_probe(&stream, &once, &homes).is_none());
+        // Op 0 is the local's own set: that home is skipped.
+        let own = vec![LocalSet(0), LocalGet(0), Drop];
+        assert!(plant_probe(&stream, &own, &homes).is_none());
+        // A float local homed only from op 2 does not qualify either.
+        let late = vec![F32Const(1.0), LocalSet(1), LocalGet(1), Drop];
+        assert!(plant_probe(&stream, &late, &[Home::Vfp(0, 1, 1)]).is_none());
+        // With two homes the first qualifying one is chosen (deterministic).
+        let two = [Home::Gp(Reg::R1, 1), Home::Gp(Reg::R0, 0)];
+        let both = vec![
+            LocalGet(1),
+            LocalGet(0),
+            I32Add,
+            LocalGet(0),
+            LocalGet(1),
+            Drop,
+            Drop,
+        ];
+        let probed = plant_probe(&stream, &both, &two).expect("plants");
+        assert!(format!("{:?}", probed[0].op).starts_with("Mov { rd: R1"));
     }
 
     /// Calls carry the AAPCS VFP caller-saved set — s0–s15, never s16–s31 —

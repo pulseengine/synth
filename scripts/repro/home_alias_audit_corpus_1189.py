@@ -45,7 +45,16 @@ here. This script compiles the corpus with it armed and asserts:
     floor on work): functions audited, homes watched, attributed
     instructions, modules compiled — each pinned at a value DERIVED from a
     run, so a corpus that silently shrinks or a hook that silently stops
-    firing is red, not green.
+    firing is red, not green;
+  * POTENCY, before the sweep: `hits: 0` over a corpus proves the sweep RAN,
+    not that the DETECTOR FIRES. The `plant` probe (`home_alias::plant_probe`)
+    plants one synthetic home write per function of three small fixtures and
+    every one MUST decline with the needle at op 0 — pinned EXACTLY per
+    (fixture, leg), and 0 without the plant (PLANT_EXPECTED);
+  * the #1226 PIN: a mis-homing this audit cannot see as a write (it trusts
+    the selector's home table) is pinned on the `homes=` count instead — the
+    same module text as `.wast` vs `.wat` (WIDTH_1226_HOMES), red-first,
+    flipped by the fix.
 
 LEGS. `select_with_stack` serves (a) every `--relocatable` compile (#197) and
 (b) every self-contained function the optimized selector declines — so both
@@ -90,7 +99,7 @@ EXPECTED_SUITE_FILES = 257
 NEEDLE = "#1189-class home-register write"
 AUDIT_LINE = re.compile(
     r"^home-alias-audit: ops=(\d+) homes=(\d+) attributed=(\d+) "
-    r"unattributed=(\d+) hits=(\d+)$"
+    r"unattributed=(\d+) hits=(\d+)(?: planted=(\d+))?$"
 )
 
 LEGS = {
@@ -134,6 +143,81 @@ HIT_LINE = re.compile(
     r"writes ([A-Z0-9]+) = home of local (\d+)"
 )
 
+# ── POTENCY SELF-TEST + #1226 PIN — runs BEFORE the sweep, cheap ─────────────
+#
+# A `hits: 0` sweep proves the sweep RAN (the floors above) — not that the
+# DETECTOR FIRES, and after the walk was relaxed to clear 12 false positives
+# that is the property under suspicion. `SYNTH_HOME_ALIAS_AUDIT=verbose,plant`
+# makes `home_alias::plant_probe` plant ONE synthetic write of a watched home
+# at op 0 of every function that has a home still read later — on a COPY of
+# the stream — so each such function MUST decline with the needle at `op 0`,
+# through the very decline / needle / parse path this sweep relies on; and
+# NO function may decline without the plant. Pinned EXACTLY per (fixture,
+# leg) in BOTH directions: fewer declines -> the detector went quiet; more ->
+# the walk over-reports again. The three fixtures cover the three home kinds:
+# i32 params in r0-r3 (leaf), #390-promoted locals in r4-r8, f32 params and
+# locals in S-registers (cortex-m4f). On the self-contained legs only the
+# functions the optimized selector declines reach the direct selector, so
+# their counts are smaller and may be 0 — the relocatable legs carry the
+# potency for every fixture (asserted: no fixture may be 0 on every leg).
+PLANT_FIXTURES = [
+    "home_alias_class_1189_i32.wat",
+    "home_alias_class_1189_promo.wat",
+    "f32_ops_719.wat",
+]
+# (fixture, leg) -> functions that MUST decline under the plant (= the
+# verbose lines with `planted=1`). DERIVED by --print-self-test; a fixture or
+# walk change moves it here, visibly.
+PLANT_EXPECTED = {
+    ("home_alias_class_1189_i32.wat", "m4-reloc"): 58,
+    ("home_alias_class_1189_i32.wat", "m4-self"): 7,
+    ("home_alias_class_1189_i32.wat", "m4f-reloc"): 58,
+    ("home_alias_class_1189_i32.wat", "m4f-self"): 7,
+    ("home_alias_class_1189_promo.wat", "m4-reloc"): 11,
+    ("home_alias_class_1189_promo.wat", "m4-self"): 9,
+    ("home_alias_class_1189_promo.wat", "m4f-reloc"): 11,
+    ("home_alias_class_1189_promo.wat", "m4f-self"): 9,
+    ("f32_ops_719.wat", "m4-reloc"): 0,  # soft-float: no VFP home to plant into
+    ("f32_ops_719.wat", "m4-self"): 0,
+    ("f32_ops_719.wat", "m4f-reloc"): 11,
+    ("f32_ops_719.wat", "m4f-self"): 11,
+}
+
+# #1226 — stated plainly. It is a mis-HOMING, not a home WRITE, and its real
+# mechanism is wider than the issue first said: the synth-cli `.wast` driver
+# path returns `Vec::new()` for EVERY declared-width table (func/type ret_i64,
+# params_i64/_f32/_f64, the f32/f64 return masks — main.rs, each annotated
+# "WAST fixture suite is i32-only"), so on ANY `.wast` — single-module too,
+# not only a later module of a multi-module file — every i64/f32/f64 param or
+# result whose width body inference cannot recover (`infer_i64_locals` learns
+# from set/tee only) is homed as i32. Measured: the SAME module text compiled
+# as `.wat` gives `second3` homes=4 and `mov r0, r2; mov r1, r3`; as a `.wast`
+# (single or merged) homes=2 and `mov r0, r1`. This audit trusts the
+# selector's home table BY CONSTRUCTION (it asks "does anything write a
+# home?", not "is the home right?"), so it never saw #1226 itself — the 16
+# hits it carried were a SYMPTOM (the #1222 pair-write, fired by body
+# inference, landing in the neighbour's wrongly assigned R1) that the
+# declared-width gate removed by changing the EMISSION on that shape, not the
+# walk. The audit's coverage of home WRITES is unchanged; the walk is correct.
+# What covers #1226 now is THIS pin, on the one thing the audit does report
+# about homing — the `homes=` count: ONE fixture, three ways — (a) as shipped
+# (two modules, the spec-suite shape), (b) its last module alone as a `.wast`,
+# (c) the identical text as a `.wat` — must report `wast < wat` on every leg
+# while the defect is open. A fix makes (b) == (c), this goes red, and the fix
+# flips the pin (known-open -> closed) in its own PR. The fixture is `.wast`
+# on purpose: `scripts/repro/*.wat` is executed against wasmtime by
+# arm_corpus_sweep_973.py and this module is a KNOWN miscompile; the `.wat`
+# control is derived from it at run time so the two can never drift.
+WIDTH_1226_FIXTURE = "home_alias_width_1226.wast"
+# leg -> (merged .wast total, single-module .wast total, .wat total) of
+# `homes=`. DERIVED; the pin is `wast < wat` with these exact values.
+WIDTH_1226_HOMES = {
+    "m4-reloc": (7, 6, 8),
+    "m4-self": (4, 4, 8),   # self-contained: `second3` (params read as i32) takes the optimized selector, no audit line
+    "m4f-reloc": (7, 6, 8),
+    "m4f-self": (4, 4, 8),
+}
+
 
 def corpus(suite: Path):
     files = sorted(suite.glob("*.wast"))
@@ -150,10 +234,10 @@ def corpus(suite: Path):
     return files
 
 
-def run_one(module: Path, leg: str):
+def run_one(module: Path, leg: str, mode: str = "verbose"):
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "m.o")
-        env = {"PATH": "/usr/bin:/bin", "SYNTH_HOME_ALIAS_AUDIT": "verbose"}
+        env = {"PATH": "/usr/bin:/bin", "SYNTH_HOME_ALIAS_AUDIT": mode}
         try:
             r = subprocess.run(
                 [SYNTH, "compile", str(module), "-o", out, "--all-exports",
@@ -163,7 +247,7 @@ def run_one(module: Path, leg: str):
         except subprocess.TimeoutExpired:
             return module, leg, None, [], "timeout"
         log = r.stderr + r.stdout
-    stats = [0, 0, 0, 0]  # functions, homes, attributed, unattributed
+    stats = [0, 0, 0, 0, 0]  # functions, homes, attributed, unattributed, planted
     hits = []
     for line in log.splitlines():
         m = AUDIT_LINE.match(line.strip())
@@ -172,11 +256,100 @@ def run_one(module: Path, leg: str):
             stats[1] += int(m.group(2))
             stats[2] += int(m.group(3))
             stats[3] += int(m.group(4))
+            stats[4] += int(m.group(6) or 0)
             continue
         if NEEDLE in line:
             hits.append(line.strip())
     panic = "panicked at" in log or r.returncode == 101
     return module, leg, stats, hits, "panic" if panic else ""
+
+
+def self_test(print_pins: bool) -> int:
+    """Potency (plant) in both directions + the #1226 homes pin. Returns the
+    number of failures; with `print_pins` prints the derived tables and
+    returns 0."""
+    fails = 0
+    repro = ROOT / "scripts" / "repro"
+    derived_plant = {}
+    total_planted = 0
+    for fx in PLANT_FIXTURES:
+        per_fixture = 0
+        for leg in LEGS:
+            _, _, stats, hits, err = run_one(repro / fx, leg, "verbose,plant")
+            planted = stats[4] if stats else -1
+            declined = len(hits)
+            bad_shape = [h for h in hits
+                         if not HIT_LINE.search(h) or "op 0 (" not in h
+                         or "planted probe" not in h]
+            derived_plant[(fx, leg)] = planted
+            expected = PLANT_EXPECTED.get((fx, leg))
+            ok = (err == "" and not bad_shape and planted == declined
+                  and (print_pins or expected == declined))
+            print(f"potency: {fx}/{leg}: planted={planted} declined={declined} "
+                  f"expected={'?' if expected is None else expected}"
+                  f"{'' if not bad_shape else f' malformed={len(bad_shape)}'}"
+                  f"{'' if not err else f' {err}'} {'ok' if ok else 'FAIL'}")
+            if not ok:
+                fails += 1
+            per_fixture += declined
+            total_planted += declined
+            # The other direction: the same fixture, no plant, declines nothing.
+            _, _, _, hits0, err0 = run_one(repro / fx, leg, "verbose")
+            if hits0 or err0:
+                print(f"potency: unplanted {fx}/{leg}: declined={len(hits0)} "
+                      f"expected=0 {err0} FAIL")
+                fails += 1
+        if per_fixture == 0:
+            print(f"potency: {fx}: 0 planted writes on EVERY leg — vacuous FAIL")
+            fails += 1
+    derived_width = {}
+    src = "\n".join(l for l in (repro / WIDTH_1226_FIXTURE).read_text().splitlines()
+                    if not l.lstrip().startswith(";;"))
+    last_module = src[src.rindex("(module"):]
+    with tempfile.TemporaryDirectory() as td:
+        single_wast = Path(td) / "single.wast"
+        single_wast.write_text(last_module)
+        as_wat = Path(td) / "same.wat"
+        as_wat.write_text(last_module)
+        for leg in LEGS:
+            totals = {}
+            for kind, f in (("merged", repro / WIDTH_1226_FIXTURE),
+                            ("wast", single_wast), ("wat", as_wat)):
+                _, _, stats, hits, err = run_one(f, leg, "verbose")
+                totals[kind] = stats[1] if stats else -1
+                if hits or err:
+                    print(f"width-1226: {kind}/{leg}: unexpected {len(hits)} hit(s) {err} FAIL")
+                    fails += 1
+            derived_width[leg] = (totals["merged"], totals["wast"], totals["wat"])
+            pinned = WIDTH_1226_HOMES.get(leg)
+            open_ = totals["wast"] < totals["wat"]
+            ok = print_pins or (pinned == derived_width[leg] and open_)
+            print(f"width-1226: {leg}: homes merged-wast={totals['merged']} "
+                  f"single-wast={totals['wast']} same-text-wat={totals['wat']} "
+                  f"pinned={pinned} "
+                  f"{'known-open' if open_ else 'wast == wat -> a fix landed, flip the pin'} "
+                  f"{'ok' if ok else 'FAIL'}")
+            if not ok:
+                fails += 1
+    if print_pins:
+        print("PLANT_EXPECTED = {")
+        for (fx, leg), n in derived_plant.items():
+            print(f'    ("{fx}", "{leg}"): {n},')
+        print("}")
+        print("WIDTH_1226_HOMES = {")
+        for leg, pair in derived_width.items():
+            print(f'    "{leg}": {pair},')
+        print("}")
+        return 0
+    legs_open = sum(1 for leg in LEGS if derived_width[leg][1] < derived_width[leg][2])
+    if fails:
+        print(f"POTENCY: FAIL ({fails})")
+    else:
+        print(f"POTENCY: PASS ({total_planted} planted writes reported, 0 without "
+              f"the plant, over {len(PLANT_FIXTURES)} fixtures x {len(LEGS)} legs)")
+        print(f"WIDTH-1226: known-open (.wast homes < .wat homes for the same "
+              f"module text on {legs_open} legs)")
+    return fails
 
 
 def main():
@@ -185,7 +358,18 @@ def main():
     ap.add_argument("-j", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--print-floors", action="store_true",
                     help="print the measured totals in FLOORS form and exit 0")
+    ap.add_argument("--print-self-test", action="store_true",
+                    help="print the derived PLANT_EXPECTED / WIDTH_1226_HOMES and exit 0")
+    ap.add_argument("--self-test-only", action="store_true",
+                    help="run only the potency self-test + #1226 pin")
     args = ap.parse_args()
+
+    if args.print_self_test:
+        return self_test(print_pins=True)
+    self_fails = self_test(print_pins=False)
+    if args.self_test_only:
+        print("RESULT: PASS" if not self_fails else f"RESULT: FAIL ({self_fails})")
+        return 1 if self_fails else 0
 
     files = corpus(Path(args.suite))
     jobs = [(f, leg) for f in files for leg in LEGS]
@@ -248,7 +432,7 @@ def main():
         print("}")
         return 0
 
-    fails = 0
+    fails = 1 if self_fails else 0
     for k, floor in FLOORS.items():
         if totals[k] < floor:
             print(f"VACUOUS: {k}={totals[k]} < floor {floor} — the sweep did "

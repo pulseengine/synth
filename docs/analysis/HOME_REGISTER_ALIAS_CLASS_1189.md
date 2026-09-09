@@ -65,15 +65,40 @@ restore necessary was invisible and the restore looked like the write. Calls
 now carry the clobber in `vfp_defs` (a MISSING restore is a hit — re-swept:
 none on the corpus) and the round trip is proven on the stream
 (`write_is_bracketed_by_save_restore`); each exemption's negative variant
-reproduces exactly its own shape (8 / 4) and nothing else. #1226 is no
-longer visible to this audit: the `declared_wide_params` gate (#1222) reads
-the same stale width table, so `checkRange`'s `local.set $from` writes only
-R0 again and nothing lands on `$to`'s mis-homed R1:R2 — the HIT is gone, the
-MISCOMPILE is not (`cmp r0, r1; it eq; cmpeq r1, r2` still reads `$to` at
-R1:R2, and the `i64.const -1` return sets R0 only); the issue stays open,
-unpinned here because no sweep line can see it. Potency: the same audit on
-the pre-#1190 compiler flags exactly the 10 functions #1190 recorded as
-wrong and none of its 7 pinned-clean ones.
+reproduces exactly its own shape (8 / 4) and nothing else.
+
+**Potency, wired.** `hits: 0` over a corpus proves the sweep RAN, not that
+the detector FIRES, so the sweep's self-test phase runs first:
+`SYNTH_HOME_ALIAS_AUDIT=verbose,plant` makes `home_alias::plant_probe` plant
+ONE synthetic write of a watched home at op 0 of every function that has a
+home still read later (on a copy of the stream) and every such function MUST
+decline with the needle at `op 0` — pinned EXACTLY per (fixture, leg), both
+directions: i32 params r0–r3 58/7/58/7, promoted locals r4–r8 11/9/11/9, VFP
+homes 0/0/11/11 (soft-float m4 has none); 192 planted writes reported, 0
+declines without the plant. Historical potency, kept: the same audit on the
+pre-#1190 compiler flags exactly the 10 functions #1190 recorded as wrong
+and none of its 7 pinned-clean ones.
+
+**#1226, stated plainly.** The walk is correct and #1226 was never a
+home-register WRITE: it is a mis-HOMING, and its real mechanism is wider
+than first filed — the synth-cli `.wast` driver path threads NO declared-
+width tables at all (`Vec::new()` for params/returns i64/f32/f64, each
+annotated "WAST fixture suite is i32-only"), so on ANY `.wast`, single-module
+included, an i64/f32/f64 param or result whose width body inference cannot
+recover is homed as i32. Measured: the same module text as `.wat` gives
+`second3` homes=4 / `mov r0, r2; mov r1, r3`; as `.wast` homes=2 / `mov r0,
+r1`. This audit trusts the selector's home table by construction, so it
+never saw #1226 itself; the 16 hits were the #1222 pair-write (fired by body
+inference) landing in the neighbour's wrongly assigned R1, and the
+declared-width gate removed them by changing the emission, not the walk —
+no coverage of home writes was lost. It is pinned RED-FIRST on the `homes=`
+count instead: `home_alias_width_1226.wast`, its last module derived at run
+time as a single `.wast` and as the identical `.wat`, (merged, single-wast,
+wat) = (7, 6, 8) relocatable / (4, 4, 8) self-contained, `wast < wat` on all
+4 legs until a fix makes them equal and flips the pin. Consequence for the
+`#1222` row below: its spec-suite instances are `.wast` inputs, where the
+declared table is empty and the pair-write arm never fires — they are NOT
+fixed by #1222 and stay wrong until #1226 is fixed.
 
 | consumer | disposition | reason / evidence |
 |---|---|---|
@@ -83,7 +108,7 @@ wrong and none of its 7 pinned-clean ones.
 | `return` / function-level `br` result move into R0 | PIN | the move runs straight-line into the inline epilogue (`add sp; pop {…, pc}`) — no later op can run; the audit proves this ON THE STREAM (`write_is_terminal`), and a `br_if` that wrote R0 before a conditional branch would stay a hit |
 | the inline epilogue `pop {r4-r8, pc}` itself (mid-function `return`, function-level `br_if`) | PIN | it WRITES r4–r8 — a promoted local's home — and returns in the same instruction, so the writer IS the terminator; `Pop` has no conditional form in `ArmOp` and both encoders emit it unconditionally. The first full-corpus run flagged 8 of these because the terminal scan started past the writer; a `pop` without `pc` stays a hit (unit-tested) |
 | `local.set`/`local.tee` of the SAME local (i32) | GUARD | the one legitimate writer; #989 snapshots still-live aliases first (`war_set`, executed) |
-| `local.set`/`local.tee` of an **i64 param** | **FIXED #1222** | wrote only the lo half, at `index_to_reg(i)` instead of the AAPCS pair, with the alias snapshot reserving only `val_lo`; now `write_i64_param_home` moves both halves at the `local_to_reg` home, ordered for partial overlap, with both halves of `val` reserved. Affected spec-suite functions (previously silently wrong): `fac.wast fac-opt`, `loop.wast while`, `local_set/local_tee.wast type-param-i64`, the 64-bit bulk-memory `checkRange`s, `memory_grow64 check-memory-zero` |
+| `local.set`/`local.tee` of an **i64 param** | **FIXED #1222** | wrote only the lo half, at `index_to_reg(i)` instead of the AAPCS pair, with the alias snapshot reserving only `val_lo`; now `write_i64_param_home` moves both halves at the `local_to_reg` home, ordered for partial overlap, with both halves of `val` reserved — for `.wat`/`.wasm` input (the oracle's own i64 fixture, executed). The spec-suite functions first listed as affected (`fac.wast fac-opt`, `loop.wast while`, `local_set/local_tee.wast type-param-i64`, the 64-bit bulk-memory `checkRange`s, `memory_grow64 check-memory-zero`) are `.wast` inputs: #1226's real mechanism leaves their declared widths EMPTY, the arm (gated on the declared width) never fires there, and they remain wrong until #1226 is fixed |
 | `local.set`/`tee` of ANOTHER local | PIN | stores to the frame slot / moves into the other local's register; the source home is read only (`set_other`, `tee_other`, executed) |
 | `memory.fill`/`memory.copy` walking pointers | GUARD | #677 `bulk_mutable_operand` copies a live operand to scratch (`fill`, `copy`, executed) |
 | `call` argument marshalling / caller-saved clobber (core registers) | PIN | a call-containing function frame-backs its integer params (#193/#204) and promotion is leaf-only (#390), so no CORE home exists to alias (`icall` row in #1190) |
