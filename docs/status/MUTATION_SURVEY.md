@@ -349,38 +349,44 @@ have let `optimizer_bridge.rs:6396` (a memory offset +4) through.
   the sample and byte-changing denominators are pinned `count-eq` so the rate
   quoted here cannot drift from the ledger.
 
-## Ledger staleness after RQ-65-MVPCORE (#1232) — stated, not silently carried
+## Ledger drift after RQ-65-MVPCORE (#1232) and RQ-65-ALIASCLASS (#1227)
 
-`#1232` landed between this survey being measured and this PR merging, and grew
-`crates/synth-cli/src/main.rs` from 11,143 to 11,405 lines. Mutation sites are
-anchored by `file:line:col`, so on the merged tree:
+Both landed between this survey being measured and this PR merging. Measured on
+the merged tree, not assumed:
 
 | | |
 |---|---|
-| sites enumerated on the merged tree | 1,542 |
-| **`ci_subset` entries that still resolve** | **7 of 7** (3 controls + 4 mutants) |
-| R5-startup mutants that still resolve | **0 of 7** |
+| mutation sites enumerated | 1,542 |
+| `ci_subset` entries that still resolve | **7 of 7** |
+| sites whose line anchor moved | 15 — **all relocated by `reanchor`, 0 not found** |
+| baseline corpus entries that drifted | **13 of 609** |
 
-**The live gate is intact.** Every `ci_subset` entry resolves, because the three
-controls are defined structurally by `control_sites()` rather than by line, and
-the four subset mutants live in `optimizer_bridge.rs`, `liveness.rs` and
-`arm_backend.rs` — files `#1232` did not touch. So
-`mutation-survey-discrimination` still replays real mutations and still fails if
-a recorded killer stops killing.
+**Anchors: repaired mechanically.** `mutation_survey.py reanchor` re-locates every
+recorded site by its stored `before` TEXT rather than its line number, so a
+refactor that moves code does not orphan the ledger. It reported 15 moved, 0 not
+found. Structural definitions survive refactors that line numbers do not — the
+three controls come from `control_sites()` and never moved at all.
 
-**What IS stale, said plainly.** All seven `R5-startup` mutants point at code that
-has moved. They are **7 of the 21 byte-changing mutants** the rate is computed
-over (6 KILLED, 1 UNTESTED), and that one UNTESTED is **one of the four published
-survivors**. So:
+**One measurement genuinely changed, and it is recorded rather than papered over.**
+`R4-shared/REG/liveness.rs:7025:36` perturbs **53** corpus modules on the merged
+tree where it perturbed 49 when surveyed. The site did not move; the BASELINE did
+(13 of 609 entries), so the mutation's blast radius moved with it. Re-derived by
+byte triage on the merged tree — CI and a local run agree at 53 independently.
 
-- the **19 % stands as a measurement of the tree it names** (`meta.commit`), which
-  is what a seeded survey with a stated frame reports;
-- **a third of its denominator is not replayable on `main`**, and neither is one
-  of its four survivors;
-- re-anchoring R5 is follow-up work, not a re-run: `#1232` restructured that
-  region, so "the equivalent site" is a judgement, not a line-number shift.
+**What is NOT re-verified, stated plainly.** That mutant's CLASSIFICATION
+(`UNTESTED`) was measured at `meta.commit` and has not been re-established on the
+merged tree. The CI replay checks byte triage for `UNTESTED` entries, not the
+oracle suite (that needs `--full`), so nothing here asserts it. The published rate
+remains relative to the commit this ledger names — a survival rate is a property
+of a tree, not of a project.
 
-This is recorded here rather than fixed silently because a survey whose
-denominator quietly stops being checkable is exactly the failure this release
-exists to name. The number is honest about its tree; this section is honest about
-which tree that was.
+**A local re-survey was attempted and DISCARDED as invalid.** Two independent
+environmental faults made this machine unable to run the oracle suite: 147 of the
+196 L1 steps invoke bare `python`, which is absent here (exit 127 in 0.1 s, which
+the harness scores as a KILL), and `fact_spec_div_494_differential.py` is red on
+the UNMUTATED tree locally while green in CI. The run reported 0 of 29 surviving —
+an artifact of dead oracles, not a result. Its own control check caught it:
+`1 control(s) not killed — the survey measures nothing; do not publish the rate`.
+That refusal is the harness working exactly as intended, and it is the reason a
+fabricated 0 % is not in this document.
+
