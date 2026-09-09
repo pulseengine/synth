@@ -528,7 +528,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 346751 \
+            --exact-emulation-floor 346759 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -4630,6 +4630,98 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Universe-complete parity + red-first + ledger-liveness
         run: cargo test -p synth-backend-riscv --test cross_backend_op_parity
+
+  rq66-unwatched-oracle:
+    name: "RQ-66-UNWATCHED (#1207/#1229/#1230/#1231) — four v0.65 findings watched"
+    # v0.66's own rule: every v0.65 finding is WATCHED (an oracle catches it),
+    # FIXED (red-first, pin moves same PR) or DELETED (proven unreachable) —
+    # no fourth disposition. Auditing the v0.65 window against its own oracles
+    # found four findings with none of the three: no pin, no CI assertion, no
+    # test, no script naming them (`grep -rl "#N" scripts/ .github/workflows/
+    # claims.yaml crates/*/tests crates/*/src` came back empty for all four).
+    # This job converts all four into pinned, CI-gated counts.
+    #
+    #   #1207 — `synth compile` ACCEPTS invalid WASM (13 curated fixtures x 3
+    #           backends; ARM/RISC-V accept all 13, AArch64 accepts 12/13).
+    #   #1229 — the ARM/RISC-V direct selectors REJECT valid WASM (dead code
+    #           after an unconditional terminator) — 74 arm + 56 riscv false
+    #           rejects, pinned per file.
+    #   #1230 — VCR-RA-003 refuses synth's own emitted stream (5 declines,
+    #           R4/R5 join-value-not-available) — PLUS a frozen-fixture
+    #           dynamic proof (poisoned-register unicorn replay) that the
+    #           refused bytes are a REAL miscompile, not a validator false
+    #           positive: verdict is "the allocator is wrong, the validator
+    #           is right."
+    #   #1231 — the AArch64 selector confuses GP/FP operand classes on
+    #           `local.set` (4 instances across 3 sources, one a single-
+    #           module extraction of a shape the file-level census cannot
+    #           see at all — see that oracle's docstring for the correction
+    #           to the issue's own file-level table).
+    #
+    # #1207 and #1229 share ONE root cause (see the #1229 oracle's docstring
+    # for the code-site evidence): the ARM/RISC-V direct selectors lack the
+    # reachability + end-of-block value-arity tracking AArch64's selector
+    # already has (`WasmOp::End`,
+    # `crates/synth-backend-aarch64/src/selector.rs:2207`). Filed as WATCHED,
+    # not fixed, per this lane's mandate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth (riscv feature is default; aarch64 backend is unconditional)
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "#1207 — synth compile accepts invalid WASM (13 fixtures x 3 backends)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/invalid_accept_1207_differential.py | tee /tmp/1207.txt
+          grep -qE '^#1207 CHECKS=39/39 cells classified$' /tmp/1207.txt
+          grep -q '^RESULT: PASS' /tmp/1207.txt
+      - name: "#1229 — ARM/RISC-V direct selectors reject valid WASM (dead-code shapes)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/false_reject_1229_differential.py | tee /tmp/1229.txt
+          grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=130$' /tmp/1229.txt
+          grep -q '^RESULT: PASS' /tmp/1229.txt
+      - name: "#1230 — VCR-RA-003 refuses its own emitted stream (decline census + frozen-fixture wrongness proof)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/ra003_join_1230_differential.py | tee /tmp/1230.txt
+          grep -qE '^#1230 decline TOTAL=5 \(pin 5\)$' /tmp/1230.txt
+          grep -qE '^#1230 CHECKS: 5 declines \+ 6 spec confirmations \+ 8 poisoned emulations$' /tmp/1230.txt
+          grep -q '^RESULT: PASS' /tmp/1230.txt
+      - name: "#1231 — AArch64 selector confuses GP/FP operand classes on local.set"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/aarch64_operand_class_1231_differential.py | tee /tmp/1231.txt
+          grep -qE '^#1231 CHECKS=3/3 sources; TOTAL=4$' /tmp/1231.txt
+          grep -q '^RESULT: PASS' /tmp/1231.txt
+      # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
 
   repro-sweep-selector-oracle:
     name: repro sweep — selector / control-flow / call / i64 differentials

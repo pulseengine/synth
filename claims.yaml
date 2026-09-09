@@ -3126,7 +3126,14 @@ claims:
     #   re-derived on the MERGED tree, never carried textually across a
     #   rebase. A textual merge here would have silently dropped 18,372
     #   emulations from the enforced floor.)
-    text: "--exact-emulation-floor 346751"
+    # v0.66 — RQ-66-UNWATCHED (#1230): +8 for ra003_join_1230_differential.py
+    #   — a frozen-fixture dynamic proof that VCR-RA-003's `switch` decline
+    #   (labels.wast) is a REAL allocator miscompile, not a validator false
+    #   positive: 4 poisoned-register unicorn replays x 2 poison values of
+    #   the captured bytes. Value RE-DERIVED from `oracle_wiring_check.py`
+    #   AFTER rebasing onto origin/main (fcb8be4f, a dependency bump only):
+    #   346751 -> 346759.
+    text: "--exact-emulation-floor 346759"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
