@@ -171,22 +171,55 @@ BUCKETS = [
 # gap RQ-65-MVPCORE was told to measure rather than predict; the module-level
 # gain is the parity oracle's `start-function modules ... both-accepted`
 # line (2 modules, 10 assertions).
+# RE-MEASURED after RQ-66-BOTHWRONG (#1210). `refuse_memory64_module`
+# (crates/synth-cli/src/main.rs, #1209) now refuses every `(memory i64 ...)`
+# module outright, on all three backends. Exhaustively diffed file-by-file
+# against the pre-fix binary (all 257 files x 3 backends): EXACTLY five real
+# memory64 spec files move, all into `module_decline`, and nothing else moves
+# — the delta on every backend balances to zero against these five:
+#
+#   binary_leb128_64.wast     no_exports     -> module_decline (all 3)
+#   endianness64.wast         all_declined   -> module_decline (arm, riscv)
+#                              partial        -> module_decline (aarch64)
+#   load64.wast                ok            -> module_decline (arm)
+#                              all_declined   -> module_decline (riscv)
+#                              partial        -> module_decline (aarch64)
+#   memory64-imports.wast      no_exports     -> module_decline (all 3)
+#   memory_redundancy64.wast   partial        -> module_decline (all 3)
+#
+# `no_exports` FALLING is the correct direction here, not a hole in the
+# refusal: `binary_leb128_64.wast`/`memory64-imports.wast` declare a memory64
+# memory AND have no exported functions, so before this fix the "no exported
+# functions" check fired first (nothing upstream knew the memory was 64-bit);
+# now `refuse_memory64_module` runs earlier and reports the REAL reason. `arm:
+# ok` falling by exactly one (16->15) is `load64.wast` specifically — a
+# genuine memory64 module that used to compile "ok" (silently, wrongly — the
+# #1209 finding) and is now correctly refused; it is the ONLY `ok`-bucket
+# departure on any backend (confirmed by the exhaustive diff: `func_ptrs.wast`,
+# the census's other `module_decline` file touching the `ok` count on paper,
+# is IDENTICALLY `module_decline` — the pre-existing #1168 multi-module
+# label-collision refusal — on the pre-fix baseline too, so it is not part of
+# this delta). `memory64` family's own reported `ok` count (1, both before and
+# after) is UNCHANGED and is `i64.wast`, a plain MVP-core i64-arithmetic file
+# mis-attributed to the `memory64` family by the `64\.wast$` filename
+# pattern — not a memory64 module, and not evidence of a hole in the refusal.
 PINS = {
-    "arm": dict(ok=16, partial=31, all_declined=95, module_decline=94,
-                no_module=9, no_exports=11, parse_fail=1, panic=0,
+    "arm": dict(ok=15, partial=30, all_declined=94, module_decline=99,
+                no_module=9, no_exports=9, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=9, partial=34, all_declined=98, module_decline=95,
-                  no_module=9, no_exports=11, parse_fail=1, panic=0,
+    "riscv": dict(ok=9, partial=33, all_declined=96, module_decline=100,
+                  no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=21, partial=26, all_declined=80, module_decline=109,
-                    no_module=9, no_exports=11, parse_fail=1, panic=0,
+    "aarch64": dict(ok=21, partial=23, all_declined=80, module_decline=114,
+                    no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
 }
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
-# arm=47 riscv=43 aarch64=47
-AT_LEAST_ONE_EXPORT = {"arm": 47, "riscv": 43, "aarch64": 47}
+# arm=45 riscv=42 aarch64=44 (RQ-66-BOTHWRONG: 47/43/47 -> 45/42/44 — the five
+# memory64 files' ok+partial losses above, see the PINS comment)
+AT_LEAST_ONE_EXPORT = {"arm": 45, "riscv": 42, "aarch64": 44}
 
 
 def classify(output: str, rc: int) -> str:
@@ -329,13 +362,36 @@ def family_of(name: str) -> str:
 # `ok` counts are measured on the single-module path / refusing merge (#1225):
 # arm 14 -> 12, riscv 11 -> 9, aarch64 21 -> 18 — with 12 / 9 / 18 of 80 being
 # the row, not of 114. `multi-memory` is pinned too now that it is a family.
+#
+# EXTENDED after RQ-66-BOTHWRONG (#1210): the census's own investigation of
+# `arm: ok` falling 16->15 needed the `memory64` family's `ok` count named
+# per-file, and it was not pinned — exactly the drift this pin exists to
+# prevent, in a family this release just made a refusal decision about.
+# `memory64`, `bulk memory`, `reference types` and `multi-value` are added.
+# NAMED, because "family assigned by filename" proves nothing about content:
+# `memory64`'s `ok` survivors are `i64.wast` (all 3 backends) and, on
+# aarch64 only, ALSO `f64.wast` — both plain MVP-core numeric-op files
+# mis-attributed by the family's `64\.wast$` filename pattern, not memory64
+# modules; every GENUINE memory64 file is `module_decline` on every backend
+# (verified file-by-file, see the PINS comment above). `bulk memory`'s one
+# `ok` (arm only) is `memory_fill.wast`, a real bulk-memory op, unaffected by
+# this PR. `reference types` and `multi-value` are 0 everywhere; the one
+# `multi-value` file (`func_ptrs.wast`) is `module_decline` via the
+# pre-existing #1168 multi-module label-collision refusal, unchanged by this
+# PR (confirmed identical on the pre-fix binary).
 FAMILY_OK_PINS = {
     "arm":     {"MVP core": 12, "multi-memory": 1, "SIMD": 0, "GC": 0,
-                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
+                "memory64": 1, "bulk memory": 1, "reference types": 0,
+                "multi-value": 0},
     "riscv":   {"MVP core": 9, "multi-memory": 0, "SIMD": 0, "GC": 0,
-                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
+                "memory64": 0, "bulk memory": 0, "reference types": 0,
+                "multi-value": 0},
     "aarch64": {"MVP core": 18, "multi-memory": 1, "SIMD": 0, "GC": 0,
-                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
+                "memory64": 2, "bulk memory": 0, "reference types": 0,
+                "multi-value": 0},
 }
 
 

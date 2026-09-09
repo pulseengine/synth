@@ -1013,22 +1013,22 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 47 / 43 / 47, panics 0 / 0 / 0"
+    text: "full-module compile 15 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
-        pattern: 'ok=16, partial=31'
+        pattern: 'ok=15, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
-        pattern: 'ok=9, partial=34'
+        pattern: 'ok=9, partial=33'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
-        pattern: 'ok=21, partial=26'
+        pattern: 'ok=21, partial=23'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
-        pattern: '"arm": 47, "riscv": 43, "aarch64": 47'
+        pattern: '"arm": 45, "riscv": 42, "aarch64": 44'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-min                      # #1225: the path the census measures is byte-identity gated in the same workflow
@@ -1050,22 +1050,22 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 47 / 43 / 47, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 15 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
-        pattern: 'ok=16, partial=31'
+        pattern: 'ok=15, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=9, partial=34'
+        pattern: 'ok=9, partial=33'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=21, partial=26'
+        pattern: 'ok=21, partial=23'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: '"arm": 47, "riscv": 43, "aarch64": 47'
+        pattern: '"arm": 45, "riscv": 42, "aarch64": 44'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
