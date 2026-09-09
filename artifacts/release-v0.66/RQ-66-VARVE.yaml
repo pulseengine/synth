@@ -341,3 +341,48 @@ artifacts:
         new `test_check_varve_shadow_pins.py` step included. The known-open
         pin design is confirmed working end-to-end in real CI, not just
         locally.
+
+        SECOND CORRECTION (post-rebase onto main 499c3895, which now
+        carries RQ-66-PINDEBT #1242): the coordinator reported the
+        Shadowing gate RED again on a fresh run and correctly suspected the
+        pin's SHAPE, not a regression. Confirmed: run 34395957454, job
+        102615600973, a FOURTH distinct runner (`pulseengine-ci-01-6`),
+        same commit, same pin — `varve verify` came back COMPLETELY CLEAN
+        (`layer 2026.09.2 ... verified: signature OK, 12 tool(s) match
+        their signed digests`, zero `REQ-SHADOW-001` lines). The exact-match
+        design (green iff the shadow set == the pinned set, red if a pinned
+        tool ever goes unobserved) was WRONG for this hazard: the
+        observable is RUNNER STATE (whether that specific shared,
+        persistent machine has run the required `rivet` job's cargo
+        install before), not a repo property, so gating on presence/absence
+        made the check FLAKY — green or red depending on which of the
+        fleet's machines happened to pick up the job. A flaky gate is worse
+        than either a clean green or an honest red: it is exactly how a
+        real regression gets waved through as "just the runner again."
+
+        REDESIGNED (third cut): `scripts/check_varve_shadow_pins.py` now
+        REPORTS the already-known (tool, path) observation every run,
+        present or absent, and GATES only on genuinely new information a
+        runner-state story cannot explain — a shadowed tool not in
+        KNOWN_OPEN at all, or the known tool shadowed via a path that does
+        NOT match its pinned shape. All four real captured runs (three
+        shadowed — runner9, runner12, runner11 — one clean — runner6) now
+        replay green; 17 unit tests (`scripts/test_check_varve_shadow_pins.py`).
+
+        Also checked, as asked: whether `KNOWN_OPEN` in this file needed
+        registering under claims.yaml's now-landed `known_open_pins`
+        ratchet. Verified directly rather than assumed — `python3
+        scripts/claim_check.py claims.yaml` (65/65 hold) and `--metric`
+        (`known_open_pins 104 104 +0`) are BOTH unaffected by this file's
+        presence, because the population tripwire's glob
+        (`scripts/repro/**/*.py`) does not reach `scripts/check_varve_shadow_pins.py`
+        at all — it lives directly under `scripts/`. Beyond the glob
+        technicality, the conceptual case against registering it is
+        stronger: `known_open_pins`'s population is REPRODUCIBLE CODE
+        DEFECTS (a given WASM shape produces the same wrong bytes on every
+        run, everywhere) — the varve-shadow hazard is a THIRD kind again,
+        non-deterministic SHARED-INFRASTRUCTURE state, and belongs in that
+        ratchet no more than a flaky network timeout would (the ratchet's
+        own claims.yaml comment already excludes loud-decline pins and
+        ci.yml floors as different kinds of thing). Not wired in, by
+        reasoned choice, not oversight.

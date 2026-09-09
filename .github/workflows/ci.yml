@@ -1076,46 +1076,62 @@ jobs:
             echo "::error::Federated resolution appears NOT to have run (0 cross-repo backlinks loaded) — the #1012 poisoned-resolution signature. A green validate above is vacuous in this state."
             exit 1
           fi
-      - name: Shadowing gate — RQ-66-VARVE / #1236 (known-open pin, RQ-66-PINDEBT shape)
-        # Reads the `varve verify` step's captured output against a KNOWN-OPEN
-        # pin table (scripts/check_varve_shadow_pins.py), the same "pin the
-        # exact known defect, exact-match both directions" shape as the
-        # parity oracle's and the home-alias differential's `KNOWN_OPEN`
-        # tables — NOT a hard fail on any shadow at all.
+      - name: Shadowing gate — RQ-66-VARVE / #1236 (known-open REPORT, not a set-equality pin)
+        # Reads the `varve verify` step's captured output through
+        # scripts/check_varve_shadow_pins.py. THIS IS THE THIRD DESIGN —
+        # both earlier ones were wrong, and the history is worth keeping
+        # visible (full account in the script's own docstring):
         #
-        # WHY NOT HARD-FAIL (this is a correction from this PR's first
-        # version, made after real CI use): the first cut turned the job red
-        # on ANY `varve verify` failure. It immediately found a REAL,
-        # reproduced-on-two-different-self-hosted-runners hazard (`rivet`
-        # shadowed by the required `rivet` job's own `~/.cargo/bin/rivet`)
-        # — but that hazard is a property of the shared runner fleet, not
-        # fixable inside this change, so the job would have been red on
-        # EVERY run until someone else's infrastructure work landed. This
-        # release's own rule is "watched, fixed, or deleted — there is no
-        # fourth": a gate that is red on every run is not watched, it is
-        # ignored, and it blocks unrelated PRs with a hazard they did not
-        # cause. Pinning it — green on the known set, red on any DRIFT from
-        # it — makes it the fourth thing actually be "watched": counted,
-        # visible in the pin's own issue reference, and REQUIRED to shrink
-        # (not just permitted to) once the runner-side fix lands, because a
-        # tool no longer shadowed but still pinned is ALSO red (see the
-        # script's docstring) until the pin is edited down in that fix's PR.
+        #  1. Hard-fail on any `varve verify` failure. Found a REAL hazard
+        #     (`rivet` shadowed by the required `rivet` job's own
+        #     `~/.cargo/bin/rivet`, no `--root`) but made the job red on
+        #     EVERY run, since the hazard isn't fixable inside this change —
+        #     violates this release's "watched, fixed, or deleted" rule (a
+        #     gate red every run is ignored, not watched).
+        #  2. An EXACT-MATCH known-open pin (parity-oracle / home-alias
+        #     `KNOWN_OPEN` shape): green iff the observed shadow set equals
+        #     the pinned set, red if a pinned tool ever goes UNobserved too
+        #     (the "improvement must be captured" ratchet rule). This is
+        #     the RIGHT shape for a REPRODUCIBLE CODE DEFECT. It is the
+        #     WRONG shape here: a fourth real run, on a fourth distinct
+        #     runner (`pulseengine-ci-01-6`), came back with `varve verify`
+        #     completely CLEAN — no shadow at all, same commit, same pin.
+        #     The observable is RUNNER STATE (has this specific shared,
+        #     persistent machine run the sibling job before), not a repo
+        #     property, so exact-match-on-presence made the gate FLAKY:
+        #     green or red depending on which machine picks up the job —
+        #     worse than either a clean green or an honest red, because a
+        #     flaky gate is how a real regression gets waved through as
+        #     "just the runner again" (the coordinator's diagnosis,
+        #     confirmed by run 4's clean log).
+        #  3. THIS ONE: report the already-known, runner-state-driven
+        #     observation (present or absent, either way, every run) but
+        #     gate ONLY on something no runner-state story can explain: a
+        #     shadowed tool NOT in KNOWN_OPEN at all, or the known tool
+        #     shadowed via a path that does NOT match its pinned shape (a
+        #     different mechanism under the same name). Presence/absence of
+        #     the already-pinned (tool, path) pair is printed, never gated.
         #
         # `always()` is REQUIRED, not decoration: an `if:` with no
         # status-check function gets an implicit `success()` ANDed in by
         # Actions, so without it this step would never run once an earlier,
         # UNRELATED step (Sync externals, Validate) fails — found for real at
-        # PR #1244 authoring on the hard-fail version of this gate.
+        # PR #1244 authoring on design #1 above.
         #
-        # NOT YET WIRED into claims.yaml's `known_open_pins` ratchet
-        # (RQ-66-PINDEBT, #1242): that PR was still open, based on the same
-        # commit this branch is, when this was written, so the `pin-table`
-        # derivation kind doesn't exist on this branch's base yet. The table
-        # in check_varve_shadow_pins.py is already shaped for it
-        # (`KNOWN_OPEN`, a plain dict literal, `measure: entries`) — adding
-        # `{file: scripts/check_varve_shadow_pins.py, name: KNOWN_OPEN}` to
-        # `known_open_pins.tables` in claims.yaml is the one-line follow-up,
-        # once #1242 merges (or as part of reconciling the two).
+        # NOT wired into claims.yaml's `known_open_pins` ratchet
+        # (RQ-66-PINDEBT, landed on main after this branch's own base):
+        # deliberately, not just because #1242 wasn't merged when this was
+        # first written. That ratchet's population is REPRODUCIBLE CODE
+        # DEFECTS an oracle proves identically every run (its own
+        # `claims.yaml` comment already excludes loud-decline pins and
+        # ci.yml floors as a different kind of thing); this hazard is a
+        # THIRD kind — non-deterministic shared-infrastructure state — and
+        # belongs in that population no more than a flaky network timeout
+        # would. Verified directly, not assumed: the population tripwire's
+        # glob (`scripts/repro/**/*.py`) does not match this file's path,
+        # and `claim_check.py claims.yaml` / `--metric` are unaffected
+        # (65/65 hold, `known_open_pins` stays 104/104) with this file
+        # present.
         if: always()
         run: |
           if [ -f /tmp/varve-verify.txt ]; then

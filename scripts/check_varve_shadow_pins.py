@@ -1,62 +1,68 @@
 #!/usr/bin/env python3
-"""RQ-66-VARVE (#1236): known-open PATH-shadow pins for the varve toolchain pin.
+"""RQ-66-VARVE (#1236): known-open PATH-shadow REPORT for the varve toolchain pin.
 
 `varve verify` (REQ-SHADOW-001) is varve's own PATH-shadowing oracle — not a
 hand-written parser here, the shipped tool's own check. Wired into the
-`rivet-federated` CI job (#1244), it found a REAL, reproduced-on-two-
-different-self-hosted-runners hazard: `rivet` on the runner's PATH resolves
-to an ambient `.cargo/bin/rivet` the required `rivet` job's
-`cargo install --force --git` (no `--root`) leaves behind on a shared,
-persistent machine, not to the varve-pinned copy (measured paths
-`/var/lib/runners/runner9/.cargo/bin/rivet` and
-`/var/lib/runners/runner12/.cargo/bin/rivet` — different runner, same
-`.cargo/bin/rivet` suffix, which IS the mechanism: a plain
-`cargo install` with no `--root` always lands there).
+`rivet-federated` CI job (#1244), it found `rivet` on the runner's PATH
+resolving to an ambient `.cargo/bin/rivet` instead of the varve-pinned copy,
+on THREE distinct self-hosted runners (`pulseengine-ci-01-9`,
+`-01-12`, `-01-11`).
 
-That hazard is real but not fixable inside this change (it needs a decision
-about the OTHER job's install step, on shared infrastructure). Making the
-job hard-fail forever on it is not "watched" in this release's sense
-("watched, fixed, or deleted — there is no fourth") — a gate that is red on
-every run trains everyone to ignore it and blocks unrelated work with it,
-the exact failure mode RQ-66-PINDEBT's `known_open_pins` ratchet exists to
-make visible and accountable instead of silently tolerated forever.
+REVISION HISTORY, because the wrong model was tried first and the mistake is
+worth keeping visible:
 
-So: pin the KNOWN shadow exactly, the same shape as the parity oracle's and
-the home-alias differential's `KNOWN_OPEN` tables (`scripts/repro/
-home_alias_class_1189_differential.py`) — a dict literal countable by
-`scripts/claim_check.py`'s `pin-table` measure (RQ-66-PINDEBT, #242)
-without importing this file (it is parsed with `ast`, matching that
-mechanism's own "never hand-tally, never import an oracle into the ledger"
-rule). Register this file + `KNOWN_OPEN` under `known_open_pins.tables` in
-claims.yaml once RQ-66-PINDEBT (#1242) is merged to this branch's base —
-NOT YET POSSIBLE from this branch alone: #1242 is an OPEN PR on
-`feat/pindebt-242`, not an ancestor of this branch's base, as of when this
-was written. Noted here and in the PR/artifact rather than silently assumed
-done.
+1. First cut: hard-fail the job on ANY `varve verify` failure. Immediately
+   red on every run — a real hazard, but not fixable inside this change, so
+   this violated the release's own "watched, fixed, or deleted" rule (a
+   gate red every run trains people to ignore it).
+2. Second cut: an EXACT-MATCH known-open pin, same shape as the parity
+   oracle's / home-alias differential's `KNOWN_OPEN` tables — green when
+   the observed shadow set equals the pinned set, red on a NEW tool AND
+   (symmetrically) red when a PINNED tool stops being observed (an
+   "improvement" that must be captured, the #911 / ratchet discipline).
+   This is the RIGHT shape for a REPRODUCIBLE CODE DEFECT (the parity/
+   home-alias tables: a given WASM shape ALWAYS produces the same wrong
+   bytes, deterministically, on every run, on every machine). It is the
+   WRONG shape here: a FOURTH real CI run, on a fourth distinct runner
+   (`pulseengine-ci-01-6`), came back with `varve verify` completely CLEAN
+   — no shadow at all. The observable is not a property of the CODE or the
+   PIN; it is a property of RUNNER STATE (whether the required `rivet`
+   job's `cargo install --force --git`, no `--root`, happened to run on
+   THAT particular shared, persistent machine before). Treating "is rivet
+   shadowed right now" as an exact-match invariant made the gate FLAKY —
+   green or red depending on which machine happened to pick up the job,
+   which is worse than either a clean green or an honest red: a flaky gate
+   is exactly how a real regression gets waved through as "just the runner
+   again" (the coordinator's diagnosis, confirmed by run 4's clean log).
 
-SCOPE, DELIBERATELY NARROWER THAN "tool name matched": the pin key is
-(tool name, ambient-path SHAPE), not tool name alone. `rivet` shadowed via
-some path that does NOT match the pinned shape (a foreign image bake, a
-homebrew keg, a different install root) is a DIFFERENT hazard wearing the
-same tool name and must NOT be silently absorbed into this pin — it is
-reported as its own finding, separate from "resolved" (which means the
-pinned variant specifically is gone) and from "new" (which means an
-entirely different TOOL is now shadowed).
+3. THIS CUT: REPORT, don't gate, on the ALREADY-KNOWN, runner-state-driven
+   observation. Gate ONLY on something that would be NEW information no
+   matter which runner ran the job:
+     - a shadowed tool NOT in KNOWN_OPEN at all (a genuinely new hazard);
+     - a KNOWN_OPEN tool shadowed via a path that does NOT match its pinned
+       shape (a DIFFERENT mechanism wearing the same tool name).
+   Presence or absence of the ALREADY-EXPLAINED `rivet` shadow, at its
+   already-pinned path shape, is neither passed over silently (it is always
+   printed) nor treated as pass/fail — because a single run's presence or
+   absence proves nothing about whether the underlying cause (the sibling
+   job's install step) is fixed everywhere, one runner, or nowhere.
 
-CONTRACT, exact match in every direction (the #911 / ratchet discipline —
-a win must be captured, not silently absorbed as slack):
-  - a shadowed tool NOT in KNOWN_OPEN at all is a NEW hazard -> RED;
-  - a tool KNOWN_OPEN pins, shadowed via a path that does NOT match the
-    pinned shape, is a DIFFERENT hazard under the same name -> RED,
-    reported distinctly (do not conflate with the pinned variant);
-  - a tool KNOWN_OPEN pins that `varve verify` no longer reports shadowed
-    AT ALL is an IMPROVEMENT -> RED until the entry is removed in the SAME
-    PR that fixed it (silently accepting the win would hide it);
-  - the pinned tool shadowed via exactly the pinned path shape, and nothing
-    else drifted -> GREEN.
+NOT registered under `known_open_pins` (RQ-66-PINDEBT, claims.yaml): that
+ratchet's population is explicitly scoped to REPRODUCIBLE CODE DEFECTS
+under `scripts/repro/` (its own "EXCLUDED, and why" block already carves
+out EXPECTED_DECLINES/EXPECTED_SKIPS and ci.yml `# ci-checks:` floors as a
+different kind of thing than a suppressed wrong-answer). This hazard is a
+third kind again — non-deterministic SHARED-INFRASTRUCTURE state, not a
+defect this repo's own code produces reproducibly — so it does not belong
+in that population any more than a flaky network timeout would. Verified
+directly rather than assumed: the population tripwire's glob
+(`scripts/repro/**/*.py`) does not match this file's path at all, and
+`python3 scripts/claim_check.py claims.yaml` / `--metric` are unaffected
+(65/65 hold, `known_open_pins` stays 104/104) whether or not this file
+exists — confirmed empirically, not inferred from reading the pattern.
 
 Usage: `varve verify` output on stdin (any exit code); this script's own
-exit code is the real gate signal.
+exit code is the real gate signal (0 unless a NEW-information case fires).
 """
 
 from __future__ import annotations
@@ -67,16 +73,19 @@ import sys
 # (issue, note, ambient_path_pattern) — the note POINTS at evidence (measured
 # CI runs, run ids, runner names — see #1236 / PR #1244) rather than
 # repeating it, so this table cannot drift out of sync with the commentary
-# that justifies it. `ambient_path_pattern` is a regex matched against the
-# END of the shadowing path (re.search) — the stable part across runners is
-# the SUFFIX (`.cargo/bin/<tool>`), never the `/var/lib/runners/runnerN/`
-# prefix, which varies by design (whichever runner the job lands on).
+# that justifies it. `ambient_path_pattern` is a regex matched (re.search)
+# against the shadowing path — the stable part across runners is the SUFFIX
+# (`.cargo/bin/<tool>`), never the `/var/lib/runners/runnerN/` prefix, which
+# varies by design (whichever runner the job lands on, and whether that
+# specific runner has ever run the sibling job that leaves rivet there).
 KNOWN_OPEN: dict[str, tuple[str, str, str]] = {
     "rivet": (
         "#1236",
         "required `rivet` job's cargo install (no --root) shadows the pin's "
-        "rivet on shared self-hosted runners; reproduced on two different "
-        "runners (pulseengine-ci-01-9, pulseengine-ci-01-12) in PR #1244",
+        "rivet on shared self-hosted runners WHEN a given runner has run "
+        "that job before — observed present on pulseengine-ci-01-9, -01-12, "
+        "-01-11 and ABSENT (clean) on -01-6 in PR #1244, confirming this is "
+        "runner-state, not a stable repo property",
         r"\.cargo/bin/rivet$",
     ),
 }
@@ -102,7 +111,14 @@ def shadowed_tools_from_verify_output(text: str) -> set[str]:
 
 
 def check(text: str) -> tuple[bool, list[str]]:
-    """Return (ok, messages). ok is False iff the pin table needs editing."""
+    """Return (ok, messages).
+
+    ok is False ONLY for information a runner-state explanation cannot
+    account for: a tool not in KNOWN_OPEN at all, or a KNOWN_OPEN tool
+    shadowed via a path that doesn't match its pinned shape. Presence or
+    absence of the already-pinned (tool, path) pair is REPORTED, never
+    gated — see the module docstring for why.
+    """
     if "signature OK" not in text and "REQ-SHADOW-001" not in text:
         return False, [
             "input does not look like `varve verify` output (no 'signature "
@@ -114,18 +130,26 @@ def check(text: str) -> tuple[bool, list[str]]:
     pinned_tools = set(KNOWN_OPEN)
 
     problems: list[str] = []
+    info: list[str] = []
 
     for tool, path in pairs:
         if tool not in KNOWN_OPEN:
             problems.append(
                 f"NEW PATH shadow found, not in KNOWN_OPEN: `{tool}` (via "
-                f"{path}). Either this is a real new hazard (investigate "
-                f"before pinning it) or the runner fleet changed — do not "
+                f"{path}). This is not explained by the known runner-state "
+                f"variance — either a real new hazard (investigate before "
+                f"pinning it) or a different runner-fleet change; do not "
                 f"silently widen the pin without a reason and an issue."
             )
             continue
         issue, note, pattern = KNOWN_OPEN[tool]
-        if not re.search(pattern, path):
+        if re.search(pattern, path):
+            info.append(
+                f"`{tool}` is shadowed via {path} — matches the KNOWN_OPEN "
+                f"shape for {tool!r} ({issue}). Known runner-state variance, "
+                f"not gated (see module docstring)."
+            )
+        else:
             problems.append(
                 f"`{tool}` is shadowed via {path!r}, which does NOT match the "
                 f"pinned shape ({pattern!r}) for KNOWN_OPEN[{tool!r}] "
@@ -134,24 +158,21 @@ def check(text: str) -> tuple[bool, list[str]]:
                 f"known one; do not widen the pattern to paper over it."
             )
 
-    resolved = sorted(pinned_tools - actual_tools)
-    for tool in resolved:
-        issue, note, _pattern = KNOWN_OPEN[tool]
-        problems.append(
-            f"KNOWN_OPEN pins `{tool}` ({issue}: {note}) as shadowed, but "
-            f"`varve verify` no longer reports it shadowed at all. That is "
-            f"an IMPROVEMENT — remove this entry from KNOWN_OPEN in the SAME "
-            f"PR that fixed it; do not leave a stale pin claiming a hazard "
-            f"that is gone."
+    not_observed = sorted(pinned_tools - actual_tools)
+    for tool in not_observed:
+        issue, _note, _pattern = KNOWN_OPEN[tool]
+        info.append(
+            f"`{tool}` (KNOWN_OPEN, {issue}) is NOT shadowed on this runner "
+            f"this run. Not gated: a single clean run does not prove the "
+            f"hazard is fixed everywhere (it is runner-state-dependent), and "
+            f"a single shadowed run does not prove it is fixed nowhere."
         )
 
     if problems:
         return False, problems
-    return True, [
-        f"varve shadow pins: {len(pinned_tools)} known-open "
-        f"({', '.join(sorted(pinned_tools))}), all present at their "
-        f"pinned path shape, no new or different hazard."
-    ]
+    if not info:
+        info.append("varve verify: clean, no shadow reported.")
+    return True, info
 
 
 def main(argv: list[str]) -> int:
