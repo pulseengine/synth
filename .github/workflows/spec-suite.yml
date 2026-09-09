@@ -24,6 +24,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # #910: the per-job measured-evidence ledger the oracle driver appends to.
+  ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl
 
 jobs:
   spec-compile-census:
@@ -53,3 +55,30 @@ jobs:
         run: cargo build --features riscv --bin synth
       - name: Run spec-suite compile census (exact-pinned, all backends)
         run: python3 scripts/spec_compile_census.py
+      # RQ-65-MVPCORE (#1017) / #1225: the census above measures the
+      # SINGLE-MODULE path for a one-module .wast (what every execution oracle
+      # compiles) and the refusing multi-module merge for the rest. This step
+      # is what makes the first half TRUE: every single-module .wast in the
+      # suite (and every tests/wast fixture) must compile to exactly the bytes
+      # its module compiles to alone, on all three backends. Red on the
+      # pre-#1225 driver (arm 49 / riscv 33 / aarch64 56 mismatches — dropped
+      # data segments, an R9 the startup never wrote, i64 parameter pairs
+      # mis-homed), so the census's `ok` there was a property of an
+      # unexecuted path. Same checkout, same binary, same 257-file floor.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Single-module .wast == its module alone, byte for byte (#1225)
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_run.py \
+            scripts/repro/wast_single_module_path_identity_1225.py | tee /tmp/identity.log
+          # NON-VACUITY, asserted here as well as inside the script (its
+          # compared-pairs floor), so neither can go quiet alone.
+          grep -qE '^#1225 CHECKS=[1-9][0-9]{2,} single-module .wast files compared across 3 backend' /tmp/identity.log
+          grep -q '^RESULT: PASS' /tmp/identity.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1

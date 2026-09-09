@@ -50,10 +50,25 @@ SYNTH-SPEC-SUITE-CENSUS-* claims in claims.yaml bind them to this file, so
 claim_check goes red if they drift apart).
 
 Baseline measured 2026-09-01, re-measured 2026-09-06 after #1168 (the .wast
-reachable-callgraph closure — see the note above PINS), on the pinned suite
-commit 345367358f065375524498749470720d9cdd1418 (257 top-level .wast files; the
+reachable-callgraph closure — see the note above PINS), and again 2026-09-09
+after #1225 (RQ-65-MVPCORE: a single-module .wast now compiles on the
+single-module path, and the multi-module merge refuses what it cannot
+represent — see the second note above PINS), on the pinned suite commit
+345367358f065375524498749470720d9cdd1418 (257 top-level .wast files; the
 repo's subdirectories carry 27 more inside proposals/, deliberately out of
 scope — the top level IS the merged spec, proposals are not).
+
+WHICH PATH THIS MEASURES (#1225): the single-module path for a .wast carrying
+one `(module ...)` — exactly the bytes the execution oracles compile
+(`selector_parity_197_differential.py` writes every module to a `.wat`), gated
+byte-for-byte by `scripts/repro/wast_single_module_path_identity_1225.py` in
+the same workflow — and the multi-module MERGE for the rest, which refuses a
+module carrying active data segments, accessed globals or a non-i32
+signature. Before v0.65 every .wast took the merge, which handed the backends
+empty data, empty globals (the Cortex-M startup never wrote R9) and i32-only
+signatures, so an `ok` here could be an object that read an uninitialized
+register or mis-homed an i64 parameter pair; the counts below are the
+first measured on objects nothing was silently dropped from.
 
 Usage:
   python3 scripts/spec_compile_census.py [--synth PATH] [--suite DIR]
@@ -118,22 +133,60 @@ BUCKETS = [
 # `all_declined` split ALSO sharpened (see `classify`): an object holding only
 # non-exported helpers is `all_declined`, so `AT_LEAST_ONE_EXPORT` keeps its
 # name's meaning.
+#
+# v0.65 / #1225 (RQ-65-MVPCORE, #1017): the numbers moved AGAIN, in the honest
+# direction, and for a reason of the same shape as #1168. A .wast with ONE
+# module now compiles on the single-module path (what every execution oracle
+# compiles), and the multi-module merge REFUSES a module carrying active data
+# segments, accessed globals or an i64/f32/f64 parameter or result — the three
+# shapes measured to be silently dropped or mis-typed by the merge (an `ok`
+# object whose `global.get` dereferenced an R9 the startup never wrote; whose
+# data bytes were absent; whose `i64.add` on two i64 params was lowered as
+# `adds r3, r0, r1`). Re-measured per file against the pre-fix binary on all
+# three backends (the per-file movement is in the PR); the moves are:
+#   * multi-module files with those shapes: ok/partial -> module_decline
+#     (`int_exprs`, `const` (402 f32/f64-result modules), `stack`,
+#     `binary-leb128`, `memory`, `address`, `float_memory`, `global`,
+#     `select`, `traps`, `unreached-valid`, `token`, every multi-memory twin
+#     that carries data, ...) — objects that were wrong are now refused;
+#   * single-module files gain: `nop`/`load` partial -> ok on arm (the merge's
+#     default call_indirect guards had declined every dispatch); on aarch64
+#     `f32`, `f32_bitwise`, `f32_cmp`, `f64_bitwise`, `f64_cmp`, `float_misc`,
+#     `conversions` all_declined/partial -> ok (real signatures reach the
+#     backend), and `block`, `br`, `br_if`, `br_table`, `call`, `if`, `load`,
+#     `local_tee`, `loop`, `nop`, `return`, `left-to-right` module_decline ->
+#     partial (the #851 "declares no globals" refusal was the merge's empty
+#     globals table);
+#   * the VCR-MEM-002 `multi-memory (#406)` decline family reaches this census
+#     for the first time (a single-module twin now hands the backend its
+#     second memory) — classified as `module_decline` by its tag;
+#   * `no_exports` 16 -> 11: five files carrying data/globals in export-free
+#     modules are refused by the merge before the "nothing exported" check.
+# None of the moves is a lowering change: every one is a refusal of an object
+# that shipped wrong, or the first real compile of an object the merge had
+# mis-typed. The start-function invocation that landed alongside (#1017,
+# Reset_Handler BLs the start function on the self-contained image) moves NO
+# file here — start.wast/annotations.wast/binary.wast are multi-module and
+# start0.wast is a multi-memory twin — which is exactly the file-vs-module
+# gap RQ-65-MVPCORE was told to measure rather than predict; the module-level
+# gain is the parity oracle's `start-function modules ... both-accepted`
+# line (2 modules, 10 assertions).
 PINS = {
-    "arm": dict(ok=22, partial=62, all_declined=130, module_decline=17,
-                no_module=9, no_exports=16, parse_fail=1, panic=0,
+    "arm": dict(ok=16, partial=31, all_declined=95, module_decline=94,
+                no_module=9, no_exports=11, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=12, partial=62, all_declined=140, module_decline=17,
-                  no_module=9, no_exports=16, parse_fail=1, panic=0,
+    "riscv": dict(ok=9, partial=34, all_declined=98, module_decline=95,
+                  no_module=9, no_exports=11, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=27, partial=30, all_declined=109, module_decline=65,
-                    no_module=9, no_exports=16, parse_fail=1, panic=0,
+    "aarch64": dict(ok=21, partial=26, all_declined=80, module_decline=109,
+                    no_module=9, no_exports=11, parse_fail=1, panic=0,
                     other_error=0),
 }
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
-# arm=84 riscv=74 aarch64=57
-AT_LEAST_ONE_EXPORT = {"arm": 84, "riscv": 74, "aarch64": 57}
+# arm=47 riscv=43 aarch64=47
+AT_LEAST_ONE_EXPORT = {"arm": 47, "riscv": 43, "aarch64": 47}
 
 
 def classify(output: str, rc: int) -> str:
@@ -161,7 +214,14 @@ def classify(output: str, rc: int) -> str:
         return "partial"
     if rc == 0:
         return "ok"
-    if re.search(r"refus|declin", output, re.IGNORECASE):
+    # RQ-65-MVPCORE (#1017/#1225): a single-module .wast now compiles on the
+    # single-module path, which exposed the VCR-MEM-002 multi-memory decline
+    # family to this census for the first time (the merge had never handed a
+    # backend a second memory). Its messages carry the machine tag
+    # `multi-memory (#406)` and say "cannot be compiled ... compiles only on
+    # --relocatable" — a decline with a reason, matched on its TAG so a
+    # rewording of the prose cannot move 22 files into `other_error`.
+    if re.search(r"refus|declin|multi-memory \(#406\)", output, re.IGNORECASE):
         return "module_decline"
     return "other_error"
 
@@ -195,26 +255,57 @@ def run_backend(synth: Path, backend: str, files, jobs: int):
 # This census publishes ONE derived figure per backend (`at-least-one-export`).
 # That figure is correct and gated, and it is the wrong number to plan from: it
 # averages families synth TARGETS with families synth has never implemented.
-# Split by family it says two things the aggregate hides — MVP core is 14 of
-# 114 fully-ok on arm (the scalar foundation every other family rests on), and
-# 86 files (33 % of the suite) are families with ZERO support on any backend,
-# which is a declared BOUNDARY rather than a failure.
+# Split by family it says two things the aggregate hides — MVP core is 12 of
+# 80 fully-ok on arm (the scalar foundation every other family rests on;
+# 14 of 114 in v0.63 before the family re-attribution and the #1225 path fix
+# below), and 89 files (35 % of the suite) are families with ZERO support on
+# any backend, which is a declared BOUNDARY rather than a failure.
 #
 # Families are matched on the suite's own filenames — the merged proposals are
 # named there (simd_*, ref_*, table_*, memory_copy, return_call, try*, gc_*).
 # Ordered: the first pattern that matches wins, MVP core is the fallback.
 # ---------------------------------------------------------------------------
+#
+# RQ-65-MVPCORE (#1017, v0.65): two families were mis-attributed to MVP core,
+# and the pin below moved 114 -> 79 when they were re-attributed:
+#   * MULTI-MEMORY. The proposal merged into the core suite (Wasm 3.0,
+#     2025-09-17; suite commit 4b24564 added the files) as DIGIT-SUFFIXED TWINS
+#     of the core files — `address0.wast` beside `address.wast`, `load0..2`,
+#     `memory_size0..3`, `data0/1`, `linking0..3`, `imports0..4`, ... — plus
+#     `memory-multi.wast` and `data_drop0.wast`. Content-verified: every one
+#     declares 2..21 memories per module (`exports0` 21, `data0` 19). The old
+#     `^multi.?memory|^memory_multi` pattern matched NONE of them (and never
+#     matched `memory-multi` either — hyphen vs underscore), so 32 of them sat
+#     in MVP core and the family's top arm blocker ("multi-memory: an op on
+#     memory N cannot be lowered into a self-contained image", 17 files as the
+#     SOLE blocker) was a multi-memory decline mis-filed as a scalar-core one.
+#     The family is matched BEFORE the features it twins (`data0` is a
+#     multi-memory data test, `linking0` a multi-memory linking test) so a
+#     decline there is attributed to the capability actually missing.
+#   * RELAXED SIMD lane files: `i8x16_relaxed_swizzle`, `i16x8_relaxed_q15mulr_s`,
+#     `i32x4_relaxed_trunc` — git-recorded renames from
+#     `proposals/relaxed-simd/` in the same suite commit; they start with a lane
+#     type, not `relaxed_`.
+#   Also: `^data\b` could never match `data0` (no word boundary between `a` and
+#   `0`), which is how `data0`/`data1` fell through to MVP core too.
+# Digit-suffixed twins are enumerated, not `\d\.wast$`-wildcarded: `i32.wast`
+# and `f64.wast` end in a digit too, and `address64.wast` is memory64.
+# ---------------------------------------------------------------------------
 FAMILIES = [
     ("SIMD",               r"^simd_"),
-    ("relaxed SIMD",       r"^relaxed_"),
+    ("relaxed SIMD",       r"^relaxed_|^i(8x16|16x8|32x4)_relaxed_"),
     ("threads / atomics",  r"^atomic|shared|thread"),
     ("GC",                 r"^gc_|^struct|^array|^ref_(cast|test)|^type-(sub|equiv|rec)|^br_on_(cast|null)"),
     ("exception handling", r"^try|^throw|^tag|^rethrow|^exception"),
     ("tail call",          r"^return_call"),
+    ("multi-memory",       r"^(address|align|binary|data|exports|float_exprs|float_memory"
+                           r"|imports|linking|load|memory_copy|memory_fill|memory_init"
+                           r"|memory_size|memory_trap|start|store|traps)\d\.wast$"
+                           r"|^memory-multi\.wast$|^data_drop\d\.wast$"
+                           r"|^multi.?memory|^memory_multi"),
     ("reference types",    r"^ref_|^table_|^table\.|^elem|^linking"),
-    ("bulk memory",        r"^memory_(copy|fill|init|grow)|^data\b|^bulk"),
+    ("bulk memory",        r"^memory_(copy|fill|init|grow)|^data[._]|^data\.wast$|^bulk"),
     ("memory64",           r"64\.wast$|^address64|^align64|^memory64"),
-    ("multi-memory",       r"^multi.?memory|^memory_multi"),
     ("multi-value",        r"^multi.?value|^func_ptrs"),
     ("MVP core",           r".*"),
 ]
@@ -233,13 +324,18 @@ def family_of(name: str) -> str:
 # per-family `ok` counts, pinned like the bucket PINS above so a family count
 # that moves reddens the census itself rather than drifting until someone
 # re-reads the doc.
+#
+# v0.65 (RQ-65-MVPCORE): MVP core is 80 files, not 114 (see FAMILIES), and its
+# `ok` counts are measured on the single-module path / refusing merge (#1225):
+# arm 14 -> 12, riscv 11 -> 9, aarch64 21 -> 18 — with 12 / 9 / 18 of 80 being
+# the row, not of 114. `multi-memory` is pinned too now that it is a family.
 FAMILY_OK_PINS = {
-    "arm":     {"MVP core": 14, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
-                "exception handling": 0, "tail call": 0},
-    "riscv":   {"MVP core": 11, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
-                "exception handling": 0, "tail call": 0},
-    "aarch64": {"MVP core": 21, "SIMD": 0, "GC": 0, "relaxed SIMD": 0,
-                "exception handling": 0, "tail call": 0},
+    "arm":     {"MVP core": 12, "multi-memory": 1, "SIMD": 0, "GC": 0,
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
+    "riscv":   {"MVP core": 9, "multi-memory": 0, "SIMD": 0, "GC": 0,
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
+    "aarch64": {"MVP core": 18, "multi-memory": 1, "SIMD": 0, "GC": 0,
+                "relaxed SIMD": 0, "exception handling": 0, "tail call": 0},
 }
 
 

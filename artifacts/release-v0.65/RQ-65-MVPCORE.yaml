@@ -28,7 +28,7 @@ artifacts:
       same question asked from two directions. Accepting more input while
       knowing less about whether the lowering is watched would be the wrong
       trade, and the mutation survey is what keeps this honest.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - reach
@@ -43,6 +43,133 @@ artifacts:
       verification-track: differential
       issue: "#1017"
       done-when: "manual: the top MVP-core blockers are each closed with an execution oracle or declined with a measured reason; the family census MVP-core row is re-derived and the delta REPORTED (including if it is zero); no reach increment lands without the oracle that makes the newly-accepted input safe"
+      landed: >-
+        Both numbers in "14 / 114" were properties of the instrument, and the
+        lane found that BEFORE touching a lowering. (1) THE DENOMINATOR:
+        31 multi-memory-proposal twins (`address0`, `load0..2`,
+        `memory_size0..3`, `data0/1`, `imports0..4`, `start0`, ...,
+        content-verified at 2..21 memories per module; suite commit 4b24564,
+        five days after the Wasm 3.0 merge) and 3 relaxed-SIMD lane files
+        (git-recorded renames from proposals/relaxed-simd/) sat in MVP core
+        because `scripts/spec_compile_census.py`'s family regexes predate the
+        merge (`^multi.?memory|^memory_multi` matched none of them; `^data\b`
+        cannot match `data0`). MVP core is 80 files; `multi-memory` is a
+        family row and a `FAMILY_OK_PINS` entry now; v0.63's top arm blocker
+        (17 files as the SOLE blocker) was a multi-memory decline mis-filed as
+        scalar-core. (2) THE NUMERATOR, the "correct by accident" finding
+        (#1225): the census's `synth compile file.wast` took the multi-module
+        MERGE branch — written for synth's i32-only fixture suite, and saying
+        so beside every `Vec::new()` it passes — which handed the backends
+        empty data segments, empty globals and initializers, i32-only
+        signature tables and a default aarch64 substrate. Probed on one module
+        as `.wast` vs `.wat`: the `.wast` image had no data bytes and a
+        Reset_Handler that never wrote R9 while `get_g` was `ldr.w r4, [r9]`
+        in both; `tests/wast/i64_arithmetic.wast`'s `i64.add` on two i64
+        params was lowered as `adds r3, r0, r1` (param 0's low half plus its
+        own high half). Exit 0, counted `ok`. The execution oracle
+        (`selector_parity_197_differential.py`) compiles per-module `.wat` —
+        the other path — so the row was measured on objects no oracle runs
+        (the shape #1217 asks to sweep for). ORACLE FIRST:
+        `scripts/repro/wast_single_module_path_identity_1225.py` (a
+        single-module .wast must compile to exactly the bytes its module
+        compiles to alone, three backends, `compiles` floor, wired into the
+        Spec Suite workflow) was RED on the pre-fix driver — arm 49 / riscv
+        33 / aarch64 56 of 140 mismatched — then the driver routes a
+        single-module .wast through the single-module path (140/140/140
+        identical, RESULT PASS) and the multi-module merge REFUSES a module
+        carrying active data segments, accessed globals or an i64/f32/f64
+        parameter or result over the functions it would retain, naming the
+        count (`refuse_wast_merge_unrepresentable`, the #1041/#1046 shape;
+        cargo-tested in `wast_callgraph_closure_1168.rs` and
+        `start_section_refusal_1046.rs`). (3) THE REACH INCREMENT, oracle
+        first: start-function invocation on the self-contained Cortex-M image
+        (#1046's stated capability follow-on — the only backend with a
+        startup; riscv and aarch64 emit ET_REL only, measured decline).
+        `selector_parity_197_differential.py` stopped declining start modules
+        and gained a floor (`START_MODULES_FLOOR`) that was RED on the
+        pre-invocation compiler (`--only start`: 4 start modules seen, 0
+        both-accepted, both legs `module-decline`); then `generate_minimal_
+        startup` emits a `BL <start>` after the data copy and the R9 table and
+        before the entry `BLX r0` (a BL, never `BLX r0`, because the oracle's
+        boot scanner stops at the first `blx r0`), `build_multi_func_cortex_
+        m_elf` patches it post-layout via `encode_thumb_bl`, the reachable
+        closure is seeded with the start function, and `refuse_dropped_start_
+        function` keeps every other path (`--relocatable`, ET_REL degradation
+        via imports checked after compilation, an imported start, the
+        single-function path, A32, RISC-V, AArch64). Also: the VCR-MEM-002
+        `multi-memory (#406)` decline family reaches the census for the first
+        time (a single-module twin now hands a backend its second memory) and
+        is classified `module_decline` by its tag, keeping `other_error` at
+        its structural 0. Pins moved with the measurement, together: census
+        `PINS`/`AT_LEAST_ONE_EXPORT`/`FAMILY_OK_PINS`, README row, FEATURE_
+        MATRIX template, claims.yaml (`SYNTH-SPEC-FAMILY-MVP-CORE`,
+        `SYNTH-SPEC-SUITE-CENSUS-README/-MATRIX`, a new count-min on the
+        identity oracle's wiring). Issues filed for the declined lowering
+        gaps: #1229 (arm "stack underflow" on VALID modules, 74 functions, 0
+        sole), #1230 (VCR-RA-003 JoinValueNotAvailable — a caught would-be
+        miscompile), #1231 (aarch64 GP/FP operand class); #1225 carries the
+        census-path finding with both measured shapes.
       verified-by: >-
-        PENDING. Report the measured delta, not the blocker count cleared.
-        v0.63 is the precedent for why those differ.
+        THE MEASURED DELTA, per backend, stated as the artifact demands. Census
+        run (`scripts/spec_compile_census.py`, 257 files, three backends,
+        release binary at the lane tree) BEFORE on main 580d53f9: MVP core
+        114 files — arm 14 ok / 39 partial / 42 declined, riscv 11 / 38 / 46,
+        aarch64 21 / 17 / 57 — identical to the v0.63 doc, RESULT PASS on
+        every v0.63 pin. AFTER, same binary lineage plus this PR: MVP core
+        80 files — arm 12 ok / 21 partial / 34 declined, riscv 9 / 23 / 35,
+        aarch64 18 / 20 / 29; whole-suite ok 16 / 9 / 21, at-least-one-export
+        47 / 43 / 47 (from 22 / 12 / 27 and 84 / 74 / 57), `other_error`
+        0 / 0 / 0, every bucket summing to 257, RESULT PASS on the new pins.
+        On the corrected 80-file set the row moved arm 13 -> 12, riscv
+        10 -> 9, aarch64 18 -> 18; on the old 114-file set 14 -> 12,
+        11 -> 9, 21 -> 18. PER-FILE MOVEMENT (a before/after diff over all
+        257 files, every mover's recorded reason inspected): losses are
+        refusals of objects that were wrong — `int_exprs` (i64 signatures),
+        `const` (402 f32/f64-result modules), `stack` (accessed globals),
+        `binary-leb128`/`memory`/`address`/`float_memory` (data; aarch64
+        REFUSES data-carrying modules on the real path, v0.53), `imports0/2/3`
+        (multi-memory twins the merge had never handed a second memory);
+        gains are first real compiles — `nop`/`load` partial -> ok on arm
+        (the merge's default call_indirect guards had declined every
+        dispatch), and on aarch64 `f32`, `f32_bitwise`, `f32_cmp`,
+        `f64_bitwise`, `f64_cmp`, `float_misc`, `conversions` -> ok plus 12
+        core files (`block`, `br`, `br_if`, `br_table`, `call`, `if`, `load`,
+        `local_tee`, `loop`, `nop`, `return`, `left-to-right`) from whole-file
+        refusal to partial. THE REACH INCREMENT'S FILE-LEVEL DELTA IS ZERO on
+        all three backends: `start.wast`, `annotations.wast`, `binary.wast`
+        are multi-module (the merge cannot run five instantiations' start
+        functions) and `start0.wast` is a multi-memory twin — the
+        file-vs-module gap v0.63's caution predicted, measured. Its
+        module-level gain is the parity oracle's own line: `--only start` on
+        the pre-invocation compiler = 4 start modules seen, 0 both-accepted,
+        floor RED; on the invoking compiler = 2 both-accepted and booted
+        through a Reset_Handler that invokes the start function, 10/10
+        assertions ok (start.wast's `get` observing three `inc`s from the
+        start function on both selectors and in wasmtime), 0 divergences.
+        ORACLES: identity oracle RED before (arm 49 / riscv 33 / aarch64 56
+        of 140) and PASS after (140/140/140, 420 compared) on the final
+        binary; `oracle_wiring_check.py --exact-emulation-floor <the ci.yml pin>`
+        passes with the summed emulation floor UNCHANGED — the derivation it
+        reports equals the pin before and after, because the new oracle
+        declares a `compiles >= 600` floor, which that sum does not include; `claim_check.py claims.yaml --emit-status` 62/62 with the
+        generated matrix regenerated; cargo tests
+        `start_section_refusal_1046` 10/10 (the self-contained case now
+        asserts acceptance + a `BL func_0` in Reset_Handler BEFORE the entry
+        `BLX r0` + the body in the image; two new refusals: imported start,
+        ET_REL degradation), `wast_callgraph_closure_1168` 5/5,
+        `wast_compile` all fixtures; `cargo fmt` and `cargo clippy
+        --workspace --all-targets -- -D warnings` clean. DECLINES WITH
+        MEASURED REASONS (`docs/status/SPEC_FAMILY_CENSUS.md`, ranked table on
+        the v0.65 path): the 22 multi-module MVP-core files the merge now
+        refuses (9 signatures / 7 globals / 6 data, the top row on every
+        backend) — the next lever is per-module compilation, a census-shape
+        change, not this lane's reach increment; GI-FPU-002 f32/f64 is the
+        census's no-FPU `--cortex-m` target (same 80 files on `--target
+        cortex-m7dp`: 17 ok / 22 partial vs 12 / 21 — changing the invocation
+        would move every pin to flatter one target); aarch64 br_table with
+        value-carrying targets (2 sole, 13 files, 90 functions) visible now
+        that the #851 globals refusal no longer hides it; call_indirect
+        self-contained dispatch silicon-gated (#717); multi-memory in a
+        self-contained image is a multi-memory decline (#1145, no memory-k
+        oracle). The full-corpus parity run on the final binary is recorded
+        in the PR (it is the CI gate that runs on every push).

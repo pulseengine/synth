@@ -1,5 +1,9 @@
 //! RQ-59-STARTFN (#1046) — every synth backend must REFUSE a module that
-//! declares a `(start ...)` function, because none of them invokes it.
+//! declares a `(start ...)` function, because none of them invokes it —
+//! EXCEPT, since RQ-65-MVPCORE (#1017, v0.65), the self-contained ARM
+//! Cortex-M image, whose Reset_Handler now invokes it (see
+//! `start_on_arm_selfcontained_is_invoked_from_reset_handler` below); every
+//! other path keeps the refusal and this file pins both halves.
 //!
 //! Pre-fix behaviour (the filed bug): the decoder has NO
 //! `Payload::StartSection` arm at all — the section falls through the
@@ -18,9 +22,13 @@
 //! broken behaviour and would make this test vacuously green. Every existing
 //! test asserted what synth DOES; nothing asserted what it silently DIDN'T.
 //!
-//! Start-function INVOCATION (the self-contained Reset_Handler calling it
-//! before any export, or an exported init hook on the relocatable contract)
-//! is a capability question and explicitly NOT this fix (#1046 note (b)).
+//! Start-function INVOCATION was a capability question explicitly NOT the
+//! #1046 fix (note (b)). The self-contained Reset_Handler half landed in
+//! v0.65 (a `BL` after the data copy and the R9 table, before the entry
+//! `BLX r0`; execution-gated by the selector-parity oracle over start.wast);
+//! the exported init hook on the relocatable contract has not, so
+//! `--relocatable`, an ET_REL degradation via imports, an IMPORTED start
+//! function, the single-function path, A32, RISC-V and AArch64 still refuse.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -104,17 +112,106 @@ fn start_on_arm_relocatable_refuses_loudly() {
     );
 }
 
-/// ARM self-contained Cortex-M image (no --relocatable) — the image has a
-/// Reset_Handler that COULD call the start function one day; until it does,
-/// it must refuse, not silently skip the init.
+/// ARM self-contained Cortex-M image (no --relocatable) — RQ-65-MVPCORE
+/// (#1017), the #1046 capability follow-on: the image's Reset_Handler IS the
+/// instantiation step, and it now invokes the start function (a `BL` after
+/// the data copy and the R9 table, before the entry `BLX r0`). The compile
+/// must succeed and the startup must carry that call; the EXECUTION proof —
+/// `get` observing what `$init` stored — is the selector-parity oracle over
+/// start.wast (`scripts/repro/selector_parity_197_differential.py`, which
+/// boots this very startup under unicorn and was red on the compiler that
+/// refused start modules). This test pins the SHAPE so a regression to the
+/// refusal, or a startup that stops calling, fails without the emulator.
 #[test]
-fn start_on_arm_selfcontained_refuses_loudly() {
+fn start_on_arm_selfcontained_is_invoked_from_reset_handler() {
     let f = wat_file("start_arm_sc.wat", START_WAT);
+    let out = compile(&f, &["--target", "cortex-m4"]);
+    assert!(
+        out.status.success(),
+        "(start) on ARM self-contained must compile (#1017):\n{}",
+        stderr(&out)
+    );
+    let elf = std::env::temp_dir()
+        .join("synth_start_1046_tests")
+        .join("start_arm_sc_targetcortexm4.o");
+    let dis = Command::new(synth())
+        .args(["disasm", elf.to_str().unwrap()])
+        .output()
+        .expect("run synth disasm");
+    let text =
+        String::from_utf8_lossy(&dis.stdout).to_string() + &String::from_utf8_lossy(&dis.stderr);
+    let reset = text
+        .find("<Reset_Handler>:")
+        .expect("disasm names Reset_Handler");
+    let after = text[reset..]
+        .find("<Default_Handler>:")
+        .map(|i| reset + i)
+        .unwrap_or(text.len());
+    let startup = &text[reset..after];
+    // `$init` is function index 0 and is NOT exported, so it ships as `func_0`;
+    // the startup's BL must target it, and it must sit BEFORE the entry BLX.
+    let bl = startup
+        .find("bl\t")
+        .or_else(|| startup.find("bl "))
+        .unwrap_or_else(|| panic!("Reset_Handler carries no BL to the start function:\n{startup}"));
+    let blx = startup
+        .find("blx\tr0")
+        .or_else(|| startup.find("blx r0"))
+        .unwrap_or_else(|| panic!("Reset_Handler carries no entry BLX r0:\n{startup}"));
+    assert!(
+        bl < blx,
+        "the start BL must precede the entry BLX r0 (instantiation before any export):\n{startup}"
+    );
+    assert!(
+        startup[bl..blx].contains("func_0"),
+        "the start BL must target func_0 (the (start $init) body):\n{startup}"
+    );
+    assert!(
+        text.contains("<func_0>:"),
+        "the start function body must be in the image (closure seeded with it):\n{text}"
+    );
+}
+
+/// A start function that is IMPORTED has no body in the image — the
+/// self-contained path must still refuse (nothing to BL).
+#[test]
+fn imported_start_on_arm_selfcontained_still_refuses() {
+    let f = wat_file(
+        "start_arm_sc_imported.wat",
+        r#"(module
+  (import "env" "init" (func $init))
+  (memory 1)
+  (start $init)
+  (func (export "get") (result i32) i32.const 0 i32.load))"#,
+    );
     let out = compile(&f, &["--target", "cortex-m4"]);
     assert_refused(
         &out,
         &["start function", "#1046"],
-        "(start) on ARM self-contained",
+        "(start $imported) on ARM self-contained",
+    );
+}
+
+/// A module whose OTHER imports degrade the self-contained compile to a
+/// host-linked ET_REL object has no Reset_Handler — the accepted start would
+/// silently never run, so it must refuse after compilation, where that is
+/// known.
+#[test]
+fn start_with_imports_degrading_to_relocatable_still_refuses() {
+    let f = wat_file(
+        "start_arm_sc_degraded.wat",
+        r#"(module
+  (import "env" "host" (func $host (param i32)))
+  (memory 1)
+  (func $init (i32.const 0) (i32.const 42) i32.store)
+  (start $init)
+  (func (export "get") (result i32) (call $host (i32.const 1)) i32.const 0 i32.load))"#,
+    );
+    let out = compile(&f, &["--target", "cortex-m4"]);
+    assert_refused(
+        &out,
+        &["start function", "#1046"],
+        "(start) with host imports on --target cortex-m4 (ET_REL degradation)",
     );
 }
 

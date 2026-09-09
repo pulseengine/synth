@@ -3192,6 +3192,94 @@ struct ModuleTables {
     imports: Vec<ImportEntry>,
 }
 
+/// #1225 (RQ-65-MVPCORE, #1017): the multi-module `.wast` merge hands the
+/// backends NO data-segment image, NO globals table and i32-ONLY signature
+/// tables (`ModuleTables` carries argument/result COUNTS only) — it was
+/// written for synth's i32-only fixture suite and says so beside every
+/// `Vec::new()` it passes. On the spec suite that shape emitted objects at
+/// exit 0 that were wrong in three measured ways: a `global.get` that
+/// dereferenced R9 with the startup never having written R9; loads from an
+/// initialized region whose bytes were never shipped; and an `i64.add` on two
+/// i64 parameters lowered as `adds r3, r0, r1` — param 0's low half plus its
+/// OWN high half — because the empty `func_params_i64` table typed every
+/// parameter i32 (`tests/wast/i64_arithmetic.wast`, byte-diffed against the
+/// same module compiled alone). Refuse each shape over the functions the
+/// merge would actually RETAIN, naming the count, rather than emit any of
+/// them; a `.wast` with ONE module (or the module itself as `.wat`/`.wasm`)
+/// takes the full path, so this is a decline of the MERGE, not of the input.
+/// Threading typed signatures, data and globals through a merge of
+/// INDEPENDENT instances is not a fix — those modules are separate
+/// instantiations that happen to share a file.
+fn refuse_wast_merge_unrepresentable(
+    wast_index: usize,
+    module: &synth_core::wasm_decoder::DecodedModule,
+    retained: &std::collections::BTreeSet<u32>,
+) -> Result<()> {
+    let mut reasons: Vec<String> = Vec::new();
+    if !module.data_segments.is_empty() {
+        reasons.push(format!(
+            "{} active data segment(s) — the merge ships no data image, so every \
+             load from the initialized region would read whatever RAM holds",
+            module.data_segments.len()
+        ));
+    }
+    let declared_globals = module.globals.len()
+        + module
+            .imports
+            .iter()
+            .filter(|i| matches!(i.kind, synth_core::ImportKind::Global))
+            .count();
+    let global_users = module
+        .functions
+        .iter()
+        .filter(|f| retained.contains(&f.index))
+        .filter(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)))
+        })
+        .count();
+    if declared_globals > 0 && global_users > 0 {
+        reasons.push(format!(
+            "{global_users} retained function(s) access {declared_globals} global(s) — the merge \
+             emits no globals table and the startup never establishes R9"
+        ));
+    }
+    let wide_sig = |idx: u32| -> bool {
+        let i = idx as usize;
+        let any = |t: &Vec<Vec<bool>>| t.get(i).is_some_and(|v| v.iter().any(|b| *b));
+        let one = |t: &Vec<bool>| t.get(i).copied().unwrap_or(false);
+        any(&module.func_params_i64)
+            || any(&module.func_params_f32)
+            || any(&module.func_params_f64)
+            || one(&module.func_ret_i64)
+            || one(&module.func_ret_f32)
+            || one(&module.func_ret_f64)
+    };
+    let wide = module
+        .functions
+        .iter()
+        .filter(|f| retained.contains(&f.index) && wide_sig(f.index))
+        .count();
+    if wide > 0 {
+        reasons.push(format!(
+            "{wide} retained function(s) with an i64/f32/f64 parameter or result — the merge's \
+             signature tables are i32-only, so an i64 parameter pair is mis-homed"
+        ));
+    }
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "#1225: module {wast_index} of this multi-module .wast cannot be represented by the \
+         merge: {}. Refusing rather than emitting an object that reads uninitialized memory \
+         or mis-homes a parameter (the merge was built for an i32-only, data-free, \
+         globals-free fixture suite). A .wast carrying ONE module — or the module as \
+         .wat/.wasm — compiles on the full single-module path.",
+        reasons.join("; ")
+    );
+}
+
 /// #1168: the WAST multi-module merge shares ONE `func_N` label space across
 /// every module it merges, and ONE import table (the max-imports module's).
 /// A direct call from a retained function of module k to index t therefore
@@ -3363,7 +3451,10 @@ fn reachable_from_roots(
 }
 
 /// RQ-59-STARTFN (#1046): refuse a module that declares a `(start ...)`
-/// function — NO synth backend invokes it. The decoder previously had no
+/// function on every path that does not invoke it — since RQ-65-MVPCORE
+/// (#1017, v0.65) the SELF-CONTAINED ARM Cortex-M image does (its
+/// Reset_Handler BLs the start function; see `compile_all_exports`), and every
+/// other path still lands here. The decoder previously had no
 /// `StartSection` arm at all: the section was discarded outright, the module
 /// compiled, exited 0, printed no warning, and the start function was not
 /// even in the object (reachability walks exports only). WASM Core §4.5.5
@@ -3490,7 +3581,44 @@ fn compile_all_exports(
     // module (the one whose imports were merged), set inside the match below.
     let mut sbom_wasm_bytes: Option<Vec<u8>> = None;
 
-    // Decode module(s) — for WAST files we merge exports across all modules
+    // #1225 (RQ-65-MVPCORE, #1017): extract a `.wast`'s modules FIRST, because
+    // a `.wast` carrying exactly ONE `(module ...)` does not take the
+    // multi-module merge below at all — it takes the single-module path, the
+    // same one a `.wasm`/`.wat` takes and the same one the execution oracles
+    // compile (`selector_parity_197_differential.py` writes every module to a
+    // `.wat`). The merge was written for synth's i32-only fixture suite and
+    // hands the backends EMPTY data segments, EMPTY globals (so the Cortex-M
+    // startup never establishes R9), i32-ONLY signature tables and a DEFAULT
+    // aarch64 substrate; on the spec suite that produced objects at exit 0
+    // whose `global.get` dereferenced an uninitialized R9, whose data bytes
+    // were absent, and whose `i64.add` on two i64 params was lowered as
+    // `adds r3, r0, r1` (param 0's low half plus param 0's HIGH half) —
+    // measured, all three, on tests/wast and the spec suite; gated by
+    // scripts/repro/wast_single_module_path_identity_1225.py (byte identity
+    // between `file.wast` and its module as `.wat`, three backends).
+    let wast_modules: Option<Vec<Vec<u8>>> = if path.extension().is_some_and(|ext| ext == "wast") {
+        info!("Parsing WAST (extracting all modules)...");
+        let contents = std::str::from_utf8(&file_bytes).context("WAST file is not valid UTF-8")?;
+        let mods = extract_all_modules_from_wast(contents)?;
+        info!("Found {} modules in WAST file", mods.len());
+        Some(mods)
+    } else {
+        None
+    };
+    let single_wast_module: Option<Vec<u8>> = match &wast_modules {
+        Some(mods) if mods.len() == 1 => Some(mods[0].clone()),
+        _ => None,
+    };
+    let multi_wast_modules: Option<Vec<Vec<u8>>> = wast_modules.filter(|m| m.len() > 1);
+
+    // RQ-65-MVPCORE (#1017): the `(start ...)` function this compile will
+    // INVOKE — `Some` only on the self-contained ARM Cortex-M image (whose
+    // Reset_Handler is the instantiation step and BLs it, #1046 follow-on);
+    // every other path keeps the #1046 refusal. Set inside the decode below.
+    let mut accepted_start_function: Option<u32> = None;
+
+    // Decode module(s) — for multi-module WAST files we merge exports across
+    // all modules (see #1225 above for what the merge cannot represent).
     let (
         all_exports,
         all_origins, // #1168: per-function owning module + its import count (parallel to all_exports)
@@ -3521,12 +3649,7 @@ fn compile_all_exports(
         all_call_indirect_guards,     // #642: table size + closed-world type verdicts
         all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
         a64_plan_inputs, // #851 lane L3: snapshot of the aarch64 substrate inputs (globals image + funcref table)
-    ) = if path.extension().is_some_and(|ext| ext == "wast") {
-        info!("Parsing WAST (extracting all modules)...");
-        let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
-        let module_binaries = extract_all_modules_from_wast(&contents)?;
-        info!("Found {} modules in WAST file", module_binaries.len());
-
+    ) = if let Some(module_binaries) = multi_wast_modules {
         // Decode each module and collect exports.
         // Last module with a given export name wins (matching WAST spec
         // semantics where assertions test the most-recent module).
@@ -3655,6 +3778,9 @@ fn compile_all_exports(
             if std::env::var_os("EXPORTS_ONLY_275").is_some() {
                 reachable = roots.clone();
             }
+            // #1225: what the merge cannot represent, refused over the
+            // functions it would actually retain.
+            refuse_wast_merge_unrepresentable(idx, &module, &reachable)?;
             let pulled_in = reachable.len().saturating_sub(roots.len());
             if pulled_in > 0 {
                 info!(
@@ -3736,7 +3862,12 @@ fn compile_all_exports(
             synth_backend_aarch64::substrate::PlanInputs::default(),
         )
     } else {
-        let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
+        let wasm_bytes = if let Some(bytes) = single_wast_module {
+            // #1225: one `(module ...)` — the `.wast` is that module. Every
+            // input from here on is what the module's own `.wasm` would give.
+            info!("Single-module WAST: compiling the module on the single-module path (#1225)");
+            bytes
+        } else if path.extension().is_some_and(|ext| ext == "wat") {
             info!("Parsing WAT to WASM...");
             wat::parse_bytes(&file_bytes)
                 .context("Failed to parse WAT file")?
@@ -3788,10 +3919,31 @@ fn compile_all_exports(
         };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
-        // RQ-59-STARTFN (#1046): refuse a (start ...) module on every backend
-        // this path serves (ARM Thumb-2/A32, RISC-V, AArch64) — none invokes
-        // the start function, and until #1046 it was silently discarded.
-        refuse_dropped_start_function(module.start_function)?;
+        // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
+        // module is ACCEPTED on exactly one path — the self-contained ARM
+        // Cortex-M image, whose Reset_Handler is the instantiation step and
+        // now BLs the start function after the data copy and the R9 table
+        // (WASM Core §4.5.5: before any export is callable). The function
+        // must be DEFINED in the module (an imported start has no body here)
+        // and the image must stay self-contained (imports degrade it to an
+        // ET_REL object with no startup — checked again after compilation,
+        // where that is known). Every other path — `--relocatable`, the A32
+        // and RISC-V and AArch64 backends, an imported start — keeps the
+        // #1046 refusal: nothing there invokes it, and a silently-never-run
+        // start is the drop #1046 closed.
+        let start_is_defined = module
+            .start_function
+            .is_some_and(|idx| idx >= module.num_imported_funcs);
+        if cortex_m && !relocatable && backend.name() == "arm" && start_is_defined {
+            accepted_start_function = module.start_function;
+            info!(
+                "  (start ...) function index {} accepted: the self-contained image's \
+                 Reset_Handler invokes it before the entry call (#1017)",
+                accepted_start_function.unwrap_or(0)
+            );
+        } else {
+            refuse_dropped_start_function(module.start_function)?;
+        }
         sbom_wasm_bytes = Some(wasm_bytes);
 
         // #642: call_indirect guard inputs — computed while the module is
@@ -3873,8 +4025,21 @@ fn compile_all_exports(
         // exports call no internal function (every leaf fixture) yields exactly
         // the exports, so existing output stays bit-identical.
         #[cfg_attr(not(feature = "exports_only_275_probe"), allow(unused_mut))]
-        let mut reachable =
-            reachable_from_exports(&module.functions, num_imports, &elem_func_indices);
+        let mut reachable = if let Some(start_idx) = accepted_start_function {
+            // #1017: the start function is a ROOT of the closure alongside the
+            // exports — it is invoked at instantiation, so its body and its
+            // callees ship exactly like an export's.
+            let mut roots: std::collections::BTreeSet<u32> = module
+                .functions
+                .iter()
+                .filter(|f| f.export_name.is_some())
+                .map(|f| f.index)
+                .collect();
+            roots.insert(start_idx);
+            reachable_from_roots(&module.functions, num_imports, &elem_func_indices, &roots)
+        } else {
+            reachable_from_exports(&module.functions, num_imports, &elem_func_indices)
+        };
         // #275 non-vacuity probe (feature `exports_only_275_probe`, NEVER in a
         // default/release build): `EXPORTS_ONLY_275=1` reverts to the pre-#235
         // exports-only behavior (drop every non-exported reachable callee) so the
@@ -5144,6 +5309,21 @@ fn compile_all_exports(
     // Tracks whether we emitted an ET_REL object (needs linking) vs a standalone
     // executable, so the summary below reports the right type and link hint.
     let produced_relocatable = is_riscv || is_aarch64 || has_external_relocations || relocatable;
+    // #1017: a start function was accepted for the SELF-CONTAINED image, but
+    // imports have degraded this compile to an ET_REL object with no
+    // Reset_Handler — nothing would invoke it. Refuse (the #1046 shape) rather
+    // than ship an object whose instantiation step silently never runs.
+    if produced_relocatable && accepted_start_function.is_some() {
+        anyhow::bail!(
+            "module declares a start function (function index {}), but this compile produced \
+             a relocatable object (imported functions are host-linked) and no startup runs \
+             in it — the (start ...) instantiation-time initialization (WASM Core §4.5.5) \
+             would silently never run; refusing (#1046). The self-contained Cortex-M image \
+             invokes the start function from its Reset_Handler; on the host-linked contract \
+             the embedder must call it first, which this object does not yet expose.",
+            accepted_start_function.unwrap_or(0)
+        );
+    }
 
     // #687: imported functions force ET_REL output (host-linked), where the
     // linker script owns the stack/linmem layout — only detectable here, after
@@ -5451,6 +5631,8 @@ fn compile_all_exports(
             &all_funcref_slots,
             &config.call_indirect_guards.type_ids_image,
             config.call_indirect_guards.type_ids_byte_offset,
+            // #1017: the accepted `(start ...)` function — the startup BLs it.
+            accepted_start_function,
         )?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
@@ -7464,6 +7646,15 @@ fn build_multi_func_cortex_m_elf(
     // offset within the region — cross-checked against the pointer-word count.
     type_ids_image: &[u32],
     type_ids_byte_offset: Option<u32>,
+    // RQ-65-MVPCORE (#1017, the #1046 follow-on): the module's `(start ...)`
+    // function index, ALREADY accepted by the driver (self-contained ARM
+    // only, defined — not imported — function). The startup BLs it after the
+    // data copy and the R9 table and before the entry `BLX r0`; its body must
+    // be among `funcs` (the driver seeds the reachable closure with it), and
+    // a start function the selector DECLINED is a hard error here — an image
+    // whose instantiation step is missing is the silent-drop shape #1046
+    // closed. `None` ⇒ byte-identical to before.
+    start_function: Option<u32>,
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -7602,7 +7793,7 @@ fn build_multi_func_cortex_m_elf(
 
     let startup_addr = flash_base + vector_table_size;
     let func_visible_linmem_base = stack_layout.optimized_linmem_base();
-    let (startup_code, data_src_patch_off, r9_movw_off) = generate_minimal_startup(
+    let (startup_code, data_src_patch_off, r9_movw_off, start_bl_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         // RQ-65-PARITY (#197): R11 is seeded with the FUNCTION-VISIBLE base,
@@ -7629,6 +7820,9 @@ fn build_multi_func_cortex_m_elf(
         // linear memory at (same expression used to compile them, so the two
         // can't drift under --stack-layout=low or a future base change).
         func_visible_linmem_base,
+        // #1017: BL the start function from the startup when the module
+        // declares one (the displacement is patched after layout below).
+        start_function.is_some(),
     );
     let startup_size = startup_code.len() as u32;
 
@@ -7922,6 +8116,33 @@ fn build_multi_func_cortex_m_elf(
     let first_func_addr = funcs_base | 1; // Thumb bit
     let lit = patched_startup.len() - 4;
     patched_startup[lit..].copy_from_slice(&first_func_addr.to_le_bytes());
+    // #1017: patch the `BL <start>` displacement now that the start function
+    // is laid out. Both addresses are absolute flash addresses; the encoder
+    // takes the BL's own address (PC-relative, +4) and the target's.
+    if let Some(start_idx) = start_function {
+        let bl_off = start_bl_off.expect(
+            "#1017: start function accepted but the startup emitted no BL placeholder — \
+             generate_minimal_startup invariant violated",
+        );
+        let pos = funcs
+            .iter()
+            .position(|f| f.wasm_index == start_idx)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "start function (function index {start_idx}) is not in the image — it \
+                     was declined by the selector, so the instantiation step WASM Core \
+                     §4.5.5 requires cannot run; refusing the image rather than shipping \
+                     one whose start silently never happens (#1046/#1017)"
+                )
+            })?;
+        let bl_addr = startup_addr + bl_off as u32;
+        let target = funcs_base + func_offsets[pos];
+        patched_startup[bl_off..bl_off + 4].copy_from_slice(&encode_thumb_bl(bl_addr, target));
+        info!(
+            "  #1017 start function: Reset_Handler BLs func_{start_idx} at 0x{target:08x} \
+             before the entry call"
+        );
+    }
     flash_image.extend_from_slice(&patched_startup);
 
     // Default handler
@@ -8982,7 +9203,7 @@ fn build_cortex_m_elf(
 
     let startup_addr = flash_base + vector_table_size;
     let func_visible_linmem_base = stack_layout.optimized_linmem_base();
-    let (startup_code, _data_src_patch_off, r9_movw_off) = generate_minimal_startup(
+    let (startup_code, _data_src_patch_off, r9_movw_off, _start_bl_off) = generate_minimal_startup(
         linear_memory_size,
         globals_words,
         // RQ-65-PARITY (#197): R11 = the function-visible base (see the
@@ -8995,6 +9216,9 @@ fn build_cortex_m_elf(
         // (data_copy_bytes = 0 suppresses the whole copy block).
         0,
         func_visible_linmem_base,
+        // #1017: the single-function path refuses a (start ...) module
+        // (#1046 stays), so no start call is ever emitted here.
+        false,
     );
     let startup_size = startup_code.len() as u32;
 
@@ -9239,7 +9463,19 @@ fn generate_minimal_startup(
     // destination AND (#761) the base the R9 globals table must sit ABOVE, so
     // the top of the linmem page cannot alias the table.
     func_visible_linmem_base: u32,
-) -> (Vec<u8>, Option<usize>, Option<usize>) {
+    // RQ-65-MVPCORE (#1017, the #1046 capability follow-on): emit a `BL` to
+    // the module's `(start ...)` function AFTER the data copy and the globals
+    // table are established and BEFORE the entry `BLX r0` — WASM Core §4.5.5
+    // runs the start function at instantiation, before any export is
+    // callable, and this is the self-contained image's instantiation. The
+    // BL is a 4-byte placeholder here (its displacement is only known after
+    // layout; the builder patches it like the entry literal), so the
+    // LDR-literal alignment below is undisturbed. It is a BL and never a
+    // `BLX r0` on purpose: the execution oracle boots the image up to the
+    // FIRST `blx r0` halfword, so a register-indirect start call would stop
+    // the boot before the start function ran.
+    call_start: bool,
+) -> (Vec<u8>, Option<usize>, Option<usize>, Option<usize>) {
     // This startup code:
     // 0. (#758) When there are active data segments, copy `data_copy_bytes`
     //    from the flash ROM image (appended to `.text`) into linear memory —
@@ -9249,6 +9485,8 @@ fn generate_minimal_startup(
     //    so VFP instructions don't fault (the FPU is disabled at reset).
     // 1. Initializes R10 with memory size (for bounds checking)
     // 2. Initializes R11 with the linear memory base for WASM memory access
+    // 2b. (#649) Materializes the R9 globals table
+    // 2c. (#1017) BL <start function> when the module declares one
     // 3. Loads the address of the user function
     // 4. Calls it with BLX
     // 5. Loops forever
@@ -9378,6 +9616,17 @@ fn generate_minimal_startup(
         }
     }
 
+    // #1017: `BL <start>` placeholder (the relocatable path's `f7ff fffe`,
+    // BL to self-4) — 4 bytes, so the literal alignment below holds. The
+    // builder patches the displacement once the start function's address is
+    // laid out. Absent when the module declares no start function, so every
+    // start-free image is byte-identical to before.
+    let mut start_bl_off: Option<usize> = None;
+    if call_start {
+        start_bl_off = Some(code.len());
+        code.extend_from_slice(&[0xff, 0xf7, 0xfe, 0xff]);
+    }
+
     // LDR r0, [pc, #4] - Thumb 16-bit encoding: 0x4801
     // (PC = LDR addr + 4, already 4-aligned; literal sits at PC+4 = LDR+8)
     code.extend_from_slice(&[0x01, 0x48]);
@@ -9389,7 +9638,7 @@ fn generate_minimal_startup(
     code.extend_from_slice(&[0x00, 0x00]);
     // Literal pool placeholder — LAST word, patched with func_addr | 1
     code.extend_from_slice(&[0x91, 0x00, 0x00, 0x00]);
-    (code, src_patch_off, r9_movw_off)
+    (code, src_patch_off, r9_movw_off, start_bl_off)
 }
 
 /// Encode Thumb-2 MOVW instruction (move 16-bit immediate to low half of register)
@@ -10710,8 +10959,12 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // #758: no data segments ⇒ data_copy_bytes = 0, no copy loop, and the
         // src-patch offset is None — the blob is byte-identical to before.
-        let (startup, patch, r9_off) =
-            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100);
+        let (startup, patch, r9_off, start_bl) =
+            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100, false);
+        assert!(
+            start_bl.is_none(),
+            "no start BL when the module declares no start function"
+        );
         assert!(patch.is_none(), "no copy loop when data_copy_bytes == 0");
         assert!(r9_off.is_none(), "no R9 block when there are no globals");
 
@@ -10753,10 +11006,17 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
         let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
-        let (startup, _, r9_off) =
-            generate_minimal_startup(memory_size, &words, 0x2000_0000, false, 0, 0x2000_0100);
+        let (startup, _, r9_off, _) = generate_minimal_startup(
+            memory_size,
+            &words,
+            0x2000_0000,
+            false,
+            0,
+            0x2000_0100,
+            false,
+        );
         let empty =
-            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100).0;
+            generate_minimal_startup(memory_size, &[], 0x2000_0000, false, 0, 0x2000_0100, false).0;
 
         // #761: the read-back decoder recovers the emitted R9 base = the
         // function-visible base (0x2000_0100) + memory_size (64KB) = 0x2001_0100.
@@ -10802,8 +11062,10 @@ mod tests {
         let base_low = base_high + DEFAULT_LOW_STACK_SIZE; // 0x2000_1000
         let words = [0x0C0FFEE1u32];
 
-        let low = generate_minimal_startup(memory_size, &words, base_low, false, 0, base_low).0;
-        let high = generate_minimal_startup(memory_size, &words, base_high, false, 0, base_high).0;
+        let low =
+            generate_minimal_startup(memory_size, &words, base_low, false, 0, base_low, false).0;
+        let high =
+            generate_minimal_startup(memory_size, &words, base_high, false, 0, base_high, false).0;
         assert_eq!(low.len(), high.len(), "same shape, shifted constants");
 
         // R10 (memory size) identical.
