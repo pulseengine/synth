@@ -44,7 +44,8 @@ artifacts:
       issue: "#1017"
       done-when: "manual: the top MVP-core blockers are each closed with an execution oracle or declined with a measured reason; the family census MVP-core row is re-derived and the delta REPORTED (including if it is zero); no reach increment lands without the oracle that makes the newly-accepted input safe"
       landed: >-
-        Both numbers in "14 / 114" were properties of the instrument, and the
+        PR #1232 (rebased onto RQ-65-DECLINE's main). Both numbers in
+        "14 / 114" were properties of the instrument, and the
         lane found that BEFORE touching a lowering. (1) THE DENOMINATOR:
         31 multi-memory-proposal twins (`address0`, `load0..2`,
         `memory_size0..3`, `data0/1`, `imports0..4`, `start0`, ...,
@@ -171,5 +172,11 @@ artifacts:
         that the #851 globals refusal no longer hides it; call_indirect
         self-contained dispatch silicon-gated (#717); multi-memory in a
         self-contained image is a multi-memory decline (#1145, no memory-k
-        oracle). The full-corpus parity run on the final binary is recorded
-        in the PR (it is the CI gate that runs on every push).
+        oracle). PARITY, full corpus: on the pre-rebase tree RESULT PASS —
+        330 modules both-accepted, 19155/19155 assertions in parity, 722
+        pinned divergences across 108 pins with 0 unpinned, the start line at
+        2 both-accepted / 10 ok; on the REBASED tree (RQ-65-DECLINE's
+        moved pins merged) the full run is RESULT PASS again — 330 modules,
+        19155/19155, 622 pinned across 103 pins, 0 unpinned, start line 2 /
+        10 / 0 divergences — and the `selector-parity-oracle` CI job on PR
+        #1232 is the gate, of which these local runs are the pre-flight.
