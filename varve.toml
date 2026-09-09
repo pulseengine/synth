@@ -1,13 +1,24 @@
 # synth's toolchain pin — see `varve docs pins`.
 # The realm supplies both the registry and the trust root, so no environment
 # variable is needed; varve-realms.toml beside this file is authoritative.
+#
+# CLIENT-VERSION FLOOR: varve >= 0.33.0 to resolve this file. 0.32.0 and
+# earlier HARD-REFUSE the `retired-roots` field in varve-realms.toml below
+# ("unknown field `retired-roots`, expected one of `registry`, `mirrors`,
+# `trust-root`, `trust-root-file`, `signed-index`") — measured RQ-66-VARVE /
+# #1236. Install the floor additively (`sh install.sh` from a
+# pulseengine/varve release, default ~/.varve/bin) rather than replacing
+# whatever ambient `varve` you have; see `varve which`/`varve verify` (both
+# exit 1 on PATH shadowing, REQ-SHADOW-001) before trusting an ambient copy.
 manifest-version = 1
 
 [toolchain]
 realm   = "pulseengine"
 channel = "rolling"
-layer   = "2026.08.2"
+layer   = "2026.09.2"
 # Digest-pinned as `varve docs pins` recommends: byte-exact freezing, and
 # constant-time resolution (~37us regardless of how many layers the local core
-# holds, vs ~2.5ms for a name-only pin at 200 layers).
-digest  = "sha256:83a699600deab6289e6e71a3860d2b47c07f1c85a5b64ad80e9700710e476d3a"
+# holds, vs ~2.5ms for a name-only pin at 200 layers). Re-derived (never
+# copied) via `varve install` against the rotated realm below — see
+# RQ-66-VARVE / #1236.
+digest  = "sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025"

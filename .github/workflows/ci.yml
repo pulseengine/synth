@@ -936,14 +936,30 @@ jobs:
   # the queue. So: visible red, non-blocking. Promote to required only if it
   # stays quiet long enough to earn it (and then only with a lock-pinned sync).
   #
-  # WHY rivet v0.32.0 HERE while the job above stays on v0.23.0: this is a NEW
-  # pin for a NEW job, not a silent bump of the existing gate — sync/lock and
-  # the broken-cross-ref accounting this job exists to exercise are what
-  # matured after 0.23.0, and the in-tree rivet.lock was written by 0.32.0.
-  # Installed under its OWN --root: both jobs share self-hosted runners, and
-  # ~/.cargo/bin/rivet is shared machine state — clobbering versions would make
-  # the two jobs re-build rivet-cli (HiGHS C++) on alternating runs, the exact
-  # disk-filling failure the binary cache above exists to prevent.
+  # RQ-66-VARVE (#1236, v0.66): rivet now comes from the checked-in varve pin
+  # (`varve.toml` + `varve-realms.toml`, layer 2026.09.2, rivet 0.35.0)
+  # instead of a hand-typed `cargo install --git --tag`. This was the FIRST CI
+  # job converted — chosen because it is advisory: a real `ghcr.io` reachability
+  # or version-drift surprise from switching toolchain source lands here as
+  # visible red, not a merge-blocking one. Before wiring this, `varve install`
+  # (layer 2026.09.2, digest `sha256:67d585…999025`) plus the SAME filters the
+  # required job above applies were run locally against this repo's rivet.yaml
+  # under the resulting rivet 0.35.0: non-cross-repo errors = 0, artifacts
+  # loaded = 551 (floor 526), and a full `sync` + federated `validate` passed
+  # clean (Cross-repo backlinks: 1032, matching the count at #1012's authoring)
+  # — so a red result here should read as a CI-environment finding (network,
+  # runner state), not an unvetted version jump. The former "own --root, never
+  # clobbers ~/.cargo/bin/rivet" concern is now moot: varve's core is
+  # content-addressed under `~/.varve/realms/<realm-hash>/core/sha256-<digest>/`,
+  # distinct per pinned layer by construction, so two jobs pinning different
+  # layers already can't collide — no `--root` bookkeeping needed.
+  #
+  # NEW dependency this introduces: `varve install` fetches from
+  # `oci://ghcr.io/pulseengine/layers` (the realm's registry), which this
+  # workflow has never talked to before — every other job in this file reaches
+  # only crates.io, github.com and (kani) nothing external. If self-hosted
+  # egress doesn't reach ghcr.io, THIS is where that surfaces, isolated from
+  # the required gate.
   # ---------------------------------------------------------------------------
   rivet-federated:
     name: Rivet Federated Graph (advisory)
@@ -952,16 +968,54 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache rivet-cli 0.32.0 binary
+      - name: Cache varve client binary (v0.33.0 floor — see varve.toml)
         uses: actions/cache@v6
         with:
-          path: ~/.cargo/rivet-0.32/bin/rivet
-          key: ${{ runner.os }}-rivet-cli-v0.32.0
-      - name: Install rivet 0.32.0 (own root — never clobbers the 0.23.0 at ~/.cargo/bin)
+          path: ~/.varve/bin/varve
+          key: ${{ runner.os }}-varve-client-v0.33.0
+      - name: Install varve client v0.33.0 (additive default dir — never touches an ambient varve elsewhere on PATH)
+        # 0.32.0 and earlier HARD-REFUSE this repo's varve-realms.toml
+        # (`unknown field 'retired-roots'`) — the rotated realm's diagnostic
+        # extension didn't exist yet. Pinned exactly, not "latest", for the
+        # same reason every other tool in this file is pinned. Default
+        # VARVE_INSTALL_DIR ($HOME/.varve/bin) matches `varve docs bootstrap`
+        # and the floor recorded in varve.toml — deliberately not a
+        # CI-specific path, so a repro of this step off-CI behaves the same.
+        env:
+          VARVE_VERSION: v0.33.0
         run: |
-          if ! ~/.cargo/rivet-0.32/bin/rivet --version 2>/dev/null | grep -q "0.32.0"; then
-            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.32.0 --root ~/.cargo/rivet-0.32 rivet-cli
+          if ! ~/.varve/bin/varve --version 2>/dev/null | grep -q "0.33.0"; then
+            curl -fsSL https://github.com/pulseengine/varve/releases/download/v0.33.0/install.sh | sh
           fi
+          ~/.varve/bin/varve --version
+      - name: varve install — resolve + fetch + verify the pinned layer
+        # Fetches from oci://ghcr.io/pulseengine/layers per varve-realms.toml.
+        # Signature + per-platform digest verification happens here, offline
+        # thereafter; `varve verify` below re-checks without re-fetching.
+        run: ~/.varve/bin/varve install
+      - name: varve verify — signature, digest AND PATH-shadowing (REQ-SHADOW-001)
+        # This IS the shadowing check the RQ-66-VARVE brief asked for — varve
+        # already ships one (`varve verify` / `varve which` both exit 1 when a
+        # dispatched tool's name resolves to something other than the pinned
+        # binary on PATH), so this step wires the existing oracle rather than
+        # hand-parsing warning text (a mirror of a shipped thing is the failure
+        # class this project's own North Star names). A self-hosted runner is a
+        # PERSISTENT machine shared with the `rivet` job above, which installs
+        # its own rivet-cli into ~/.cargo/bin via actions/cache restore — if
+        # that leaks onto this job's PATH, this step is exactly what catches it
+        # instead of the two jobs silently dispatching different rivets.
+        #
+        # continue-on-error here on PURPOSE: `varve run` below dispatches the
+        # pinned binary DIRECTLY (it never resolves through $PATH), so a
+        # shadowed PATH cannot corrupt this job's own sync/validate result —
+        # the two findings (is the graph federated-valid; is PATH shadowed)
+        # are independent, and blocking the first on the second would hide a
+        # real answer to the first behind an unrelated hazard. The final
+        # "Shadowing gate" step below still turns the JOB red if this failed —
+        # nothing here silently swallows it.
+        id: varve_verify
+        continue-on-error: true
+        run: ~/.varve/bin/varve verify
       - name: Sync externals (network — clones the 7 sibling repos)
         # #1143: AUTHENTICATE FOR QUOTA, NOT FOR ACCESS. All seven siblings are
         # PUBLIC, so this clone needs no permission — but GitHub rate-limits
@@ -985,13 +1039,13 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
-          ~/.cargo/rivet-0.32/bin/rivet sync
+          ~/.varve/bin/varve run rivet -- sync
       - name: Validate the federated graph
         # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
         # under pipefail so the log keeps the full diagnostic list.
         run: |
           set -o pipefail
-          ~/.cargo/rivet-0.32/bin/rivet validate 2>&1 | tee /tmp/rivet-federated.txt
+          ~/.varve/bin/varve run rivet -- validate 2>&1 | tee /tmp/rivet-federated.txt
       - name: Non-vacuity guard — resolution must actually have run
         # The #1012 signature was "FAIL (50 errors, ..., 0 broken cross-refs)":
         # zero broken cross-refs beside dozens of link errors because rivet
@@ -1008,6 +1062,19 @@ jobs:
             echo "::error::Federated resolution appears NOT to have run (0 cross-repo backlinks loaded) — the #1012 poisoned-resolution signature. A green validate above is vacuous in this state."
             exit 1
           fi
+      - name: Shadowing gate — RQ-66-VARVE / #1236
+        # Turns the JOB red if the `varve verify` step above found a
+        # dispatched tool's name shadowed on PATH by something ambient, even
+        # though it did not block sync/validate from running (see that step's
+        # comment). A tolerated shadow here is exactly how a self-hosted
+        # runner ends up quietly running two different rivets from two jobs —
+        # the mixed-toolchain hazard varve exists to close. Do not silence
+        # this by removing the check; if it goes red, fix the runner's PATH
+        # (or the sibling job's install step), never this gate.
+        if: steps.varve_verify.outcome == 'failure'
+        run: |
+          echo "::error::varve verify reported PATH shadowing (REQ-SHADOW-001) — see the 'varve verify' step's output above for which tool(s). This is advisory (job is not required), but it is a real cross-job toolchain hazard on this self-hosted runner, not a false alarm."
+          exit 1
 
   bazel:
     name: Bazel Build & Proofs

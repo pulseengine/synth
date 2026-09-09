@@ -33,7 +33,78 @@ artifacts:
       If the new root or registry cannot be resolved at all, say so plainly and
       record the release as UNPINNED for that step rather than implying
       otherwise — an honest gap is a finding.
-    status: proposed
+
+      RESOLUTION (PR against #1236, RQ-66-VARVE lane). Three additional things
+      were measured beyond the nominal pin bump, because the pin bump alone was
+      furniture:
+
+      1. **Client-version floor.** The realm's rotated `varve-realms.toml`
+         (published in the varve v0.33.0 release) adds a `retired-roots =`
+         diagnostic field. varve 0.32.0 and earlier HARD-REFUSE it
+         (`unknown field 'retired-roots'`) — measured directly. The v0.33.0
+         client was installed additively (`install.sh`, cosign-verified
+         SHA256SUMS, `~/.varve/bin`), leaving the ambient `~/.cargo/bin/varve`
+         0.32.0 untouched as rollback. The floor is recorded in `varve.toml`
+         itself (a comment on the pin, read every time someone edits it) and
+         in this PR body.
+
+      2. **`varve self-update` friction reproduced** exactly as briefed: run
+         with the ambient 0.32.0 binary against a repo that already has
+         `realm = "pulseengine"` in `varve.toml` and a valid `varve-realms.toml`
+         beside it, it refuses and asks the caller to configure precisely what
+         is already configured (`no trust root configured` /
+         "add `realm = \"pulseengine\"` ..."). Filed upstream — see PR body /
+         report for the issue URL.
+
+      3. **The pin governed nothing before this PR, in either environment —
+         confirmed, and worse than briefed in one respect.** Locally, `varve
+         verify` (not a hand-written parser — this is varve's OWN
+         REQ-SHADOW-001 check) exits 1: 5 of 12 dispatched tools (loom, meld,
+         rivet, spar, synth) resolve to an ambient `~/.cargo/bin` copy instead
+         of the pinned one. Measured drift on the rotated layer (2026.09.2) is
+         WIDER than the pre-rotation baseline: loom ambient 0.1.0 vs pinned
+         **1.4.1** (was 1.2.0), rivet ambient 0.32.0 vs pinned **0.35.0**. In
+         CI, `varve` appeared in zero of `.github/workflows/*.yml` or the Bazel
+         files — confirmed by grep — while `ci.yml` hand-installed rivet twice
+         at two different tags (`v0.23.0` line ~727 required job, `v0.32.0`
+         line ~955 advisory federated job). **The clearest demonstration of why
+         this matters is spar, not rivet or loom**: the ambient
+         `~/.cargo/bin/spar` (dated 2026-06-15, months stale) still exhibits
+         the exact `--version`/`-V` failure pulseengine/spar#422 tracked
+         (`Unknown command`, exit 1) — but that was already FIXED upstream in
+         spar 0.36.0 (#419), and the varve-PINNED spar (0.40.0, from this
+         rotation's layer) is fully compliant: `--version`/`-V`/bare `version`
+         all print `spar 0.40.0` and exit 0, and an unknown command exits 2.
+         Measuring the ambient copy alone would have produced a FALSE report
+         of a long-fixed bug — the pin isn't just about drift, it is about
+         which answer is even true.
+
+      CI CONVERSION (one job, real, not a plan). Before touching CI, `varve
+      install` (layer 2026.09.2, digest `sha256:67d585…999025`) was run against
+      this repo, then rivet 0.35.0 from the resulting pinned core was run
+      locally through the SAME filters the required `rivet` job applies
+      (foreign-prefix exemption, artifact-load floor): non-cross-repo errors =
+      0, artifacts loaded = 551 (floor 526) — and a full `rivet sync` +
+      federated `rivet validate` passed clean (Cross-repo backlinks: 1032,
+      matching the count recorded at #1012's authoring). The advisory
+      `rivet-federated` job (chosen over the required `rivet` job precisely
+      because it is advisory) was converted to install the varve client,
+      `varve install` the pinned layer, run `varve verify` (a new
+      "Shadowing gate" step turns the job red — non-blocking, since the job
+      is advisory — if a dispatched tool is shadowed on the self-hosted
+      runner's PATH, which is plausible given it is a PERSISTENT machine
+      shared with the `rivet` job's own `~/.cargo/bin` install), and dispatch
+      `rivet sync`/`rivet validate` via `varve run` rather than a hardcoded
+      binary path. The required `rivet` job was deliberately left unconverted
+      in this PR — the local dry-run above says it would likely pass, but
+      changing the toolchain source for the gate that actually blocks merges
+      is a bigger claim than one lane should make unilaterally; recorded here
+      as a validated next step, not done.
+
+      The layer carries **synth 0.61.0**; this repo ships 0.65.0 (moving to
+      0.66 this release) — the layer is behind its own consumer, so the next
+      `pulseengine-layers` deposit should bump it. Stated, not fixed here.
+    status: implemented
     release: v0.66
     tags:
       - toolchain
@@ -50,7 +121,31 @@ artifacts:
       issue: "#1236"
       done-when: "manual: varve.toml resolves against the rotated realm from the PUBLISHED realms asset (not a pasted key), `varve install` verifies signatures and digests, `varve which` reports a layer for the loop's tools, and the layer identity is recorded with the release; or the step is declared UNPINNED with the reason"
       verified-by: >-
-        PENDING. State the layer and manifest digest actually observed. A
-        negative control is cheap and worth running: confirm a shim still exits
-        1 outside a pinned project, so the refusal that makes the pin meaningful
-        is shown to still work after the rotation.
+        Layer 2026.09.2, manifest digest
+        sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025,
+        realm `pulseengine`, registry `oci://ghcr.io/pulseengine/layers`,
+        trust-root `7d3b892e…da1a0`. `varve-realms.toml` is byte-identical to
+        the asset in the pulseengine/varve v0.33.0 release (diffed). `varve
+        install` + `varve verify` both run clean (signature OK, 12/12 tools
+        match signed digests) against the checked-in pin from the repo root
+        under the v0.33.0 client. Negative control run: a shim installed into
+        an isolated `VARVE_ROOT` and invoked from a directory with no
+        `varve.toml` anywhere up its ancestry refuses —
+        "no varve.toml found walking up from ... this project has no pinned
+        layer" — exit 1, confirmed still true after the rotation. `varve
+        which`/`varve verify` confirm the PATH-shadowing refusal
+        (REQ-SHADOW-001) still fires on this machine post-rotation (loom,
+        meld, rivet, spar, synth all shadowed, wider drift than
+        pre-rotation). CI: the advisory `rivet-federated` job in
+        `.github/workflows/ci.yml` now installs varve v0.33.0, runs `varve
+        install`/`varve verify`, and dispatches rivet via `varve run` instead
+        of a hand-typed `cargo install --git --tag`; local dry-run under the
+        resulting rivet 0.35.0 reproduces the required job's own pass
+        conditions (0 non-cross-repo errors, 551≥526 artifacts) and a full
+        federated sync+validate (1032 cross-repo backlinks, PASS). Real CI
+        result for this converted job is in the PR — see PR body for the run
+        link and outcome (pass, or the specific error captured if the
+        self-hosted runner cannot reach `ghcr.io`). The required `rivet` job
+        remains on its hand-typed `cargo install --git --tag v0.23.0` pin —
+        NOT converted in this PR; UNPINNED w.r.t. varve, by choice, pending a
+        team decision to move the merge-blocking gate's toolchain source.
