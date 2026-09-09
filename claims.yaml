@@ -335,6 +335,96 @@ status_fields:
     pattern: '"classification": "UNTESTED"'
     glob: ['docs/status/mutation_survey.json']
 
+  # RQ-66-PINDEBT (#242) — THE PIN DEBT. v0.65 pinned its wrong-answer
+  # classes red-first: an oracle table entry that says "this function returns
+  # this wrong answer today, issue #N", exact in both directions, so the
+  # oracle stays green without hiding the bug and the pin moving is the
+  # fix's own evidence. NOTHING MADE A PIN TEMPORARY — and a comfortable pin
+  # is the shape of every accumulation this repo has measured and then had
+  # to correct (20 selector waivers; sel_dsl_rules flat at 80 for twelve
+  # releases; a delivery floor at 28 against a live 67 for eleven). Derived
+  # here from the oracles' OWN suppression tables (`kind: pin-table`: an
+  # `ast` walk over the oracle source — the oracles import unicorn/wasmtime,
+  # so they are read, never run), so the number can never be a hand tally
+  # drifting from the tables it describes.
+  #
+  # THE POPULATION, stated so nobody has to guess it. (RQ-65's lesson: the
+  # selector ratchet's glob and the mutation survey's regions answered
+  # adjacent questions over near-disjoint files, and neither named the
+  # other's scope.) A table is IN when a CI-wired oracle consults it to
+  # pass over a divergence it observes on the LIVE compiler:
+  #
+  #   selector_parity_197_differential.py   KNOWN
+  #       (file, module, fn, kind) -> (reason, count)   cases_at 1
+  #   arm_corpus_sweep_973.py               KNOWN_ARM_MISMATCHES
+  #       (fixture, export) -> issue                    1 case per entry
+  #   home_alias_class_1189_differential.py KNOWN_OPEN
+  #       (module, leg, fn, args) -> (value, issue)     1 case per entry
+  #   home_alias_audit_corpus_1189.py       KNOWN_OPEN_HITS
+  #       (module, fn, op, reg, local) -> ...           1 case per entry
+  #
+  # EVERY entry counts, whatever its stated reason. The parity table's 14
+  # `#539-grow-fails` entries are an envelope (memory.grow legitimately
+  # fails in a fixed-SRAM image, the #539 lineage), not a miscompile — but
+  # each still passes over an EXACT number of wrong answers on a named
+  # function, and a suppression hides whatever else goes wrong behind it.
+  # Retiring one honestly (model the envelope in the reference leg, or
+  # reclassify the kind as informational) is a real fall; a reason-string
+  # filter would be a hole a reworded reason walks through.
+  #
+  # EXCLUDED, and why:
+  #   PINNED_WRONG (join_alias_1189, home_alias_class_1189) — the RED half:
+  #     recorded wrong values of FROZEN pre-fix bytes, the oracles' potency
+  #     evidence. They never shrink when a fix lands, so they are not debt.
+  #   EXPECTED_DECLINES / EXPECTED_SKIPS — loud refusals. Reach, not silent
+  #     wrongness; the acceptance-rate census owns those numbers.
+  #   `# ci-checks:` floors in ci.yml — non-vacuity floors on work done.
+  #   WIDTH_1226_HOMES — a CLOSED (#1232) homes-count pin, not a suppression.
+  # The population is itself pinned (SYNTH-KNOWN-OPEN-PINS-RQ66: a count-eq
+  # over every top-level KNOWN*/PINNED* dict literal under scripts/repro),
+  # so a fifth table must be listed here or excluded there, never unnoticed.
+  #
+  # Measured at authoring (2026-09-09, fcb8be4f): 104 entries — 90 name an
+  # open issue (8 issues: #1209 42, #1210 22, #1215 11, #1204 6, #1211 6,
+  # #1206 1, #1214 1 in the parity table; #1223 1 in KNOWN_OPEN) and 14 name
+  # the grow-fails envelope — over 623 pinned cases. The v0.65 plan
+  # remembered "ten open pins" (#1204 #1205 #1206 #1208 #1209 #1210 #1211
+  # #1213 #1214 #1215); the derivation finds seven of those ten still
+  # pinned — RQ-65-DECLINE converted #1205, #1208 and #1213 to declines and
+  # the table dropped them — plus #1223, which the plan's list never held.
+  known_open_pins:
+    kind: pin-table
+    measure: entries
+    tables: &known_open_pin_tables
+      - file: scripts/repro/selector_parity_197_differential.py
+        name: KNOWN
+        cases_at: 1
+      - file: scripts/repro/arm_corpus_sweep_973.py
+        name: KNOWN_ARM_MISMATCHES
+      - file: scripts/repro/home_alias_class_1189_differential.py
+        name: KNOWN_OPEN
+        # NO cases_at: `KNOWN_OPEN`'s value tuple is `(count, issue)` — count
+        # FIRST, issue second — the reverse of the parity table's
+        # `(issue, count)`. Deliberately left uncounted-by-value (1 per
+        # entry, the no-`cases_at` default) rather than wired to index 0:
+        # this table's one entry today carries count 0, so a future entry
+        # whose first element is a real positive case count would silently
+        # undercount at 1-per-entry if someone assumed it was already
+        # case-weighted. Add `cases_at: 0` (not 1) if that table ever needs
+        # case-weighting.
+      - file: scripts/repro/home_alias_audit_corpus_1189.py
+        name: KNOWN_OPEN_HITS
+  # The same tables summed by pinned CASE — pinned `track` beside the entry
+  # ceiling because the parity oracle accepts one '*' wildcard pin per
+  # (file, module, kind): merging three per-function pins into one would
+  # drop the ceiling by two with nothing fixed, and this sum would not move.
+  # ONE table list (the YAML anchor above), so the two fields cannot
+  # disagree about the population.
+  known_open_pinned_cases:
+    kind: pin-table
+    measure: cases
+    tables: *known_open_pin_tables
+
   # Names, not numbers — const is allowed here, but the supporting crates must
   # exist on disk or the derivation fails.
   backends:
@@ -2159,15 +2249,19 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Eight `kind: ratchet` pins in"
+    text: "Ten `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
-      # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65);
-      # 5 ceilings + 1 floor + 2 tracked, and CLAUDE.md says "Eight".
+      # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
+      # RQ-66-PINDEBT (v0.66): 8 -> 10 — `known_open_pins`, a ceiling over
+      # the oracles' known-open suppression tables, and its anti-coarsening
+      # complement `known_open_pinned_cases` (tracked); see
+      # SYNTH-KNOWN-OPEN-PINS-RQ66. 6 ceilings + 1 floor + 3 tracked, and
+      # CLAUDE.md says "Ten".
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 8
+        expect: 10
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -2181,10 +2275,11 @@ claims:
       # not by CI. These three counts are what a re-read should not have had to
       # do: 4 ceilings + 1 floor + 2 tracked == the 7 above, and flipping any
       # pin's direction without updating the prose is now red.
+      # (6 + 1 + 3 == the 10 since RQ-66-PINDEBT.)
       - kind: count-eq
         pattern: '^        direction: down$'
         glob: ['claims.yaml']
-        expect: 5
+        expect: 6
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']
@@ -2192,7 +2287,7 @@ claims:
       - kind: count-eq
         pattern: '^        direction: track$'
         glob: ['claims.yaml']
-        expect: 2
+        expect: 3
       - kind: verbatim                       # the prose those directions match
         text: "the whole-file counts are pinned `direction: track`"
       - kind: count-eq                       # the CI step that prints them
@@ -2205,6 +2300,65 @@ claims:
         expect: 1
       - kind: file-exists
         path: scripts/test_claim_check.py
+
+  # ---------------------------------------------------------------------------
+  # RQ-66-PINDEBT (#242) — THE PIN DEBT IS A RATCHET. The population, the
+  # exclusions and the at-authoring breakdown are stated ONCE, at the
+  # `known_open_pins` field under status_fields; this claim binds the prose
+  # to the derivation and pins the population's boundary.
+  # ---------------------------------------------------------------------------
+  - id: SYNTH-KNOWN-OPEN-PINS-RQ66
+    doc: CLAUDE.md
+    text: "the known-open pin count is pinned `direction: down` as `known_open_pins`"
+    evidence:
+      # THE CEILING. One entry is one hand-written decision to pass over an
+      # observed wrong answer on the live compiler. Adding one without
+      # closing one is red unless a `waivers:` entry with a written reason is
+      # bound to the new value in the same PR — the #911 discipline the
+      # selector size ceiling already uses. Closing one is red until the
+      # win is BANKED (value and baseline together), so it cannot be given
+      # back silently.
+      - kind: ratchet
+        name: known_open_pins
+        direction: down
+        value: 104
+        baseline: 104
+      # THE ANTI-COARSENING COMPLEMENT. Slack-free but undirected: the
+      # summed case count moves when the spec testsuite grows or a fixture
+      # is added — honest work, so it costs a number update and not a
+      # waiver — but it does NOT move when N per-function pins are merged
+      # into one '*' wildcard, which is how the entry ceiling would be gamed.
+      - kind: ratchet
+        name: known_open_pinned_cases
+        direction: track
+        value: 623
+      # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
+      # under scripts/repro is either one of the four tables in the
+      # population or one of the two PINNED_WRONG red-half fixtures excluded
+      # by name in the status_fields comment (4 + 2). A new oracle's own
+      # known-open list must be added to the population or written into the
+      # exclusion list, and this count moves either way. NARROW ON PURPOSE,
+      # documented so the narrowness is a choice and not a blind spot: the
+      # pattern sees only a `NAME = { ... }` / `NAME: T = { ... }` literal —
+      # a table built via `dict(...)`, a dict comprehension, or assembled by
+      # `.update()` calls would slip past this tripwire (and past `_pin_table`
+      # itself, which requires an `ast.Dict` node). Every table in the
+      # population today is a literal; a future oracle choosing another shape
+      # must be caught at review, not by this pattern.
+      - kind: count-eq
+        pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'
+        glob: ['scripts/repro/**/*.py']
+        expect: 6
+      - kind: verbatim                       # the prose names what is OUT
+        text: "EXCLUDED, by design"
+      - kind: count-eq                       # the derivation exists…
+        pattern: '^def _pin_table\('
+        glob: ['scripts/claim_check.py']
+        expect: 1
+      - kind: count-eq                       # …and is unit-driven
+        pattern: '^class PinTableDerivation\('
+        glob: ['scripts/test_claim_check.py']
+        expect: 1
 
   - id: SYNTH-SUBTRACTION-MIRRORS
     doc: CLAUDE.md

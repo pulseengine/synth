@@ -28,8 +28,10 @@ from claim_check import (  # noqa: E402
     MeasureError,
     StrictLoader,
     _count,
+    _pin_table,
     _region,
     check_ratchet,
+    derive_status,
 )
 
 try:
@@ -330,6 +332,209 @@ class RegionAndCounting(unittest.TestCase):
             "    // the main match's `_ =>` arm falls through\n",
         )
         self.assertEqual(_count(r"^[ \t]*_ =>", ["f.rs"], self.root)[0], 2)
+
+
+class PinTableDerivation(unittest.TestCase):
+    """RQ-66-PINDEBT (#242) — the known-open pin count is READ FROM THE
+    ORACLES' OWN TABLES, never tallied by hand, and every shape assumption
+    fails loudly rather than counting zero.
+
+    The fixture mirrors the three shapes in the real population: the parity
+    oracle's `(key tuple) -> (issue, count)` (annotated assignment, a
+    `cases_at`), the corpus sweep's `(fixture, export) -> issue` (a bare
+    value, one case per entry), and an EMPTY table (the goal state — two of
+    the four real tables are there, and an empty table must be 0, never an
+    error). The discriminating cases are the deliverable: adding a pin moves
+    the count, closing one moves it back, and COARSENING per-function pins
+    into a wildcard moves entries but not cases.
+    """
+
+    ORACLE = (
+        "import re\n"
+        "FLOORS = dict(modules_both=300)\n"
+        "KNOWN: dict[tuple, tuple] = {\n"
+        "    ('a.wast', 0, 'f', 'shared-wrong'): ('#1', 4),\n"
+        "    ('a.wast', 0, 'g', 'shared-wrong'): ('#1', 1),\n"
+        "    ('b.wast', 2, '*', 'opt-wrong'): ('#2', 25),\n"
+        "}\n"
+        "OTHER = {('x.wat', 'export'): 989}\n"
+        "EMPTY = {}\n"
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.write(self.ORACLE)
+
+    def write(self, text, name="oracle.py"):
+        (self.root / name).write_text(text)
+
+    def table(self, name, **kw):
+        return {"file": "oracle.py", "name": name, **kw}
+
+    def entries(self, *tables):
+        return _pin_table(list(tables), "entries", self.root)
+
+    def cases(self, *tables):
+        return _pin_table(list(tables), "cases", self.root)
+
+    # -- the green cases: the derivation must MEASURE something ---------------
+
+    def test_entries_counts_one_per_pin(self):
+        self.assertEqual(self.entries(self.table("KNOWN")), 3)
+
+    def test_cases_sums_the_indexed_count(self):
+        self.assertEqual(self.cases(self.table("KNOWN", cases_at=1)), 30)
+
+    def test_cases_default_to_one_per_entry_without_cases_at(self):
+        # The corpus sweep's `(fixture, export) -> 989` shape: the value is
+        # the issue number, not a count, and must not be summed.
+        self.assertEqual(self.cases(self.table("OTHER")), 1)
+        self.assertEqual(self.cases(self.table("KNOWN")), 3)
+
+    def test_empty_table_is_zero_not_an_error(self):
+        self.assertEqual(self.entries(self.table("EMPTY")), 0)
+        self.assertEqual(self.cases(self.table("EMPTY")), 0)
+
+    def test_population_sums_across_tables(self):
+        t = (self.table("KNOWN", cases_at=1), self.table("OTHER"), self.table("EMPTY"))
+        self.assertEqual(self.entries(*t), 4)
+        self.assertEqual(self.cases(*t), 31)
+
+    def test_derive_status_exposes_the_kind(self):
+        spec = {
+            "pins": {"kind": "pin-table", "measure": "entries",
+                     "tables": [self.table("KNOWN"), self.table("OTHER")]},
+            "cases": {"kind": "pin-table", "measure": "cases",
+                      "tables": [self.table("KNOWN", cases_at=1), self.table("OTHER")]},
+        }
+        self.assertEqual(derive_status(spec, self.root), {"pins": 4, "cases": 31})
+
+    # -- the discriminating cases: the deliverable ----------------------------
+
+    def test_adding_a_pin_moves_entries_and_cases(self):
+        self.write(self.ORACLE.replace(
+            "}\nOTHER", "    ('c.wast', 0, 'h', 'shared-wrong'): ('#3', 2),\n}\nOTHER"))
+        self.assertEqual(self.entries(self.table("KNOWN")), 4)
+        self.assertEqual(self.cases(self.table("KNOWN", cases_at=1)), 32)
+
+    def test_closing_a_pin_moves_entries_and_cases_down(self):
+        self.write(self.ORACLE.replace(
+            "    ('a.wast', 0, 'g', 'shared-wrong'): ('#1', 1),\n", ""))
+        self.assertEqual(self.entries(self.table("KNOWN")), 2)
+        self.assertEqual(self.cases(self.table("KNOWN", cases_at=1)), 29)
+
+    def test_coarsening_into_a_wildcard_moves_entries_but_not_cases(self):
+        # THE reason the two measures are pinned together: the parity oracle
+        # accepts one '*' pin per (file, module, kind), so two per-function
+        # pins can be merged into one with nothing fixed. Entries fall by
+        # one (a "win" under the ceiling); cases do not move (the tell).
+        self.write(self.ORACLE.replace(
+            "    ('a.wast', 0, 'f', 'shared-wrong'): ('#1', 4),\n"
+            "    ('a.wast', 0, 'g', 'shared-wrong'): ('#1', 1),\n",
+            "    ('a.wast', 0, '*', 'shared-wrong'): ('#1', 5),\n"))
+        self.assertEqual(self.entries(self.table("KNOWN")), 2)
+        self.assertEqual(self.cases(self.table("KNOWN", cases_at=1)), 30)
+
+    # -- the loud failures: a shape that stopped holding is never a zero ------
+
+    def test_no_tables_is_an_error(self):
+        with self.assertRaises(MeasureError):
+            _pin_table([], "entries", self.root)
+
+    def test_unknown_measure_is_an_error(self):
+        for m in ("pins", None):
+            with self.assertRaises(MeasureError):
+                _pin_table([self.table("KNOWN")], m, self.root)
+
+    def test_missing_file_is_an_error(self):
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "gone.py", "name": "KNOWN"})
+        self.assertIn("missing", str(e.exception))
+
+    def test_unparseable_oracle_is_an_error(self):
+        self.write("KNOWN = {\n", name="broken.py")
+        with self.assertRaises(MeasureError):
+            self.entries({"file": "broken.py", "name": "KNOWN"})
+
+    def test_unknown_name_is_an_error(self):
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("NOPE"))
+        self.assertIn("assigned 0 times", str(e.exception))
+
+    def test_name_assigned_twice_is_an_error(self):
+        self.write(self.ORACLE + "OTHER = {}\n")
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("OTHER"))
+        self.assertIn("assigned 2 times", str(e.exception))
+
+    def test_nested_assignment_does_not_count_as_the_table(self):
+        # Only a TOP-LEVEL binding is the table; one inside a function body
+        # is not, so a shadowing local cannot redefine the population.
+        self.write(self.ORACLE + "def f():\n    KNOWN = {1: 2}\n")
+        self.assertEqual(self.entries(self.table("KNOWN")), 3)
+
+    def test_non_dict_value_is_an_error(self):
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("FLOORS"))
+        self.assertIn("not a dict literal", str(e.exception))
+
+    def test_duplicate_key_is_refused(self):
+        # #1087 inside the oracle: Python keeps the last value and says
+        # nothing, so one pin has silently overwritten another.
+        self.write(self.ORACLE.replace(
+            "}\nOTHER", "    ('a.wast', 0, 'f', 'shared-wrong'): ('#1', 9),\n}\nOTHER"))
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("KNOWN"))
+        self.assertIn("TWICE", str(e.exception))
+
+    def test_spread_key_is_an_error(self):
+        self.write(self.ORACLE.replace("EMPTY = {}", "EMPTY = {**OTHER}"))
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("EMPTY"))
+        self.assertIn("spread", str(e.exception))
+
+    def test_non_literal_key_is_an_error(self):
+        self.write(self.ORACLE.replace("EMPTY = {}", "EMPTY = {re.compile('x'): 1}"))
+        with self.assertRaises(MeasureError) as e:
+            self.entries(self.table("EMPTY"))
+        self.assertIn("non-literal key", str(e.exception))
+
+    def test_cases_at_shape_drift_is_an_error(self):
+        # Value not a tuple / index past the tuple / count 0 / bool / string:
+        # each is the table's shape changing under the ledger, each is loud.
+        for bad in ("('#1', 4): 7", "('#1',)", "('#1', 0)", "('#1', True)", "('#1', 'four')"):
+            self.write(self.ORACLE.replace("('#1', 4)", bad))
+            with self.assertRaises(MeasureError, msg=bad):
+                self.cases(self.table("KNOWN", cases_at=1))
+
+    def test_entries_measure_ignores_cases_at(self):
+        # Counting pins needs no value shape at all; only `cases` reads it.
+        self.write(self.ORACLE.replace("('#1', 4)", "None"))
+        self.assertEqual(self.entries(self.table("KNOWN", cases_at=1)), 3)
+
+    @unittest.skipIf(yaml is None, "PyYAML not installed")
+    def test_the_repos_own_population_resolves(self):
+        # Non-vacuity against the real tree: every pin-table field the ledger
+        # declares must find its tables, and the entry ceiling must be a
+        # number the ratchet can hold. Not pinned to a value here — that is
+        # claims.yaml's job, and a second copy would be the mirror this
+        # derivation exists to avoid.
+        root = pathlib.Path(__file__).resolve().parent.parent
+        ledger = root / "claims.yaml"
+        if not ledger.exists():  # pragma: no cover
+            self.skipTest("claims.yaml not present")
+        spec = yaml.load(ledger.read_text(), Loader=StrictLoader).get("status_fields", {})
+        pin_fields = {k: v for k, v in spec.items() if v.get("kind") == "pin-table"}
+        self.assertEqual(sorted(pin_fields), ["known_open_pinned_cases", "known_open_pins"])
+        got = derive_status(pin_fields, root)
+        self.assertGreater(got["known_open_pins"], 0)
+        self.assertGreaterEqual(got["known_open_pinned_cases"], got["known_open_pins"])
+        # ONE table list for both fields (a YAML anchor), so the two numbers
+        # cannot disagree about the population.
+        self.assertEqual(pin_fields["known_open_pins"]["tables"],
+                         pin_fields["known_open_pinned_cases"]["tables"])
 
 
 @unittest.skipIf(yaml is None, "PyYAML not installed")

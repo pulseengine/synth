@@ -256,6 +256,14 @@ jobs:
       # and it FAILS if the pin population is empty, because deleting a ceiling
       # must never be the cheapest way to satisfy it.
       #
+      # RQ-66-PINDEBT (#242): the same table carries the PIN DEBT —
+      # `known_open_pins`, a ceiling DERIVED (an `ast` walk, never a tally)
+      # from the oracles' own known-open suppression tables (the parity
+      # KNOWN table, the corpus sweep's KNOWN_ARM_MISMATCHES, the home-alias
+      # KNOWN_OPEN / KNOWN_OPEN_HITS), with the summed pinned cases tracked
+      # beside it. A pin added without one closed reds the re-derive step
+      # above; no separate job, for the standing reason below.
+      #
       # Lives in the already-REQUIRED claim-check job for the same reason the
       # oracle-wiring gate below does: a brand-new job is not a required
       # context on main, so it could sit red for weeks blocking nothing.
