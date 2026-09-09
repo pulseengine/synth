@@ -529,3 +529,87 @@ an artifact of dead oracles, not a result. Its own control check caught it:
 That refusal is the harness working exactly as intended, and it is the reason a
 fabricated 0 % is not in this document.
 
+## v0.66 follow-up — probe before scoring, lock the sampling frame (RQ-66-POTENCY, #1189)
+
+The near-miss above was caught by luck, not judgement — the control check
+requires each control to die to its OWN recorded oracle, and one of the three
+controls' recorded oracle happened to be among the 49 steps that could still
+run, so it alone surfaced `1 control(s) not killed`. Nothing checked that the
+other 147 steps ever executed; they simply never killed anything, so nothing
+noticed that all 147 had scored every mutant that reached them anyway. This
+release makes that non-vacuity a property of the harness rather than a
+property of which control's oracle happens to survive.
+
+**`classify_unrunnable(code, out)`** (pure) is the decision that gates every
+step before it can be scored: exit 127/126, a `command not found` line, a
+`ModuleNotFoundError`, or an `env` shebang failing to find its interpreter
+mean the step never EXECUTED — UNRUNNABLE. Everything else (a real assertion
+failure, a script's own deliberate `FileNotFoundError` on a missing fixture,
+a generic application-level `ImportError`) means the step ran and is a
+different thing: real evidence about the tree, not about the environment.
+`fact_spec_div_494_differential.py`'s local/CI divergence, named above, is
+exactly this second case and must never be classified UNRUNNABLE — doing so
+would refuse the survey into never running anywhere the environment differs
+even slightly from CI, which is the opposite failure.
+
+**`preflight_suite`** runs every L1 and L2 step once on the unmutated tree
+before `run`, `controls`, or `ci` touch a single mutant, and:
+
+- REFUSES (`sys.exit`, no ledger written) when anything is UNRUNNABLE, or
+  when any L2 (`cargo test`) command is red for any reason (a broken test
+  suite is not survivable by excluding the broken part).
+- EXCLUDES (does not score) an L1 step that executes and is merely red on
+  this tree — recorded in the ledger as `suite.l1_excluded_at_preflight` —
+  the same thing `baseline` has always done, now also applied when a
+  possibly stale or foreign `suite` (baselined elsewhere, or a while ago) is
+  reused without re-baselining. That reuse path is exactly the shape of the
+  incident above: a suite derived once (in CI, where `python` exists) and
+  replayed later somewhere it does not.
+
+`cmd_ci` does NOT get the full preflight when replaying without `--full` —
+its own module doc is explicit that `ci` is "the harness's DISCRIMINATION,
+not a re-run of the survey", so paying a full-suite probe on every CI
+invocation would contradict that design. Instead it probes only the L1 steps
+the pinned subset's recorded KILLED-type entries actually depend on (a
+handful, not 198), and refuses on EITHER unrunnable or red there — a
+replayed KILLED verdict is meaningless if the killer step is not green
+before the mutation is even applied.
+
+**Second-order: `draw_frame` locks the sampling frame.** `cmd_run` used to
+overwrite `ledger["meta"]` unconditionally with its own argparse defaults on
+every invocation — the mechanism behind the `per_region: 12`-for-8 drift
+recorded in `meta.per_region_note` above. `draw_frame(existing_meta, seed,
+per_region, oversample)` (pure) writes the frame once; a later `run` must
+reproduce the same three numbers or it refuses, showing both the recorded and
+requested values, rather than silently rewriting the record of how the sample
+was drawn. `candidate_sites` is deliberately NOT part of the locked
+comparison — it is live tree-state context that legitimately drifts as the
+codebase changes (see "Ledger drift" above) and is refreshed every run.
+
+**Verified red-first, for real:**
+
+```
+$ python3 scripts/mutation_survey.py run --seed 1189 --per-region 12 --oversample 4 \
+    --ledger /tmp/ledger-with-per_region-8-already-recorded.json
+refusing to run: this ledger's sampling frame is recorded as {'seed': 1189,
+'per_region': 8, 'oversample': 4}, but this invocation asked for {'seed': 1189,
+'per_region': 12, 'oversample': 4}. Re-running `run` against an existing ledger
+must not silently rewrite the frame (#1189 — v0.65 shipped per_region:12 this
+way for a sample drawn at 8) — pass the SAME --seed/--per-region/--oversample
+as the recorded draw, or use a fresh --ledger for a genuinely different frame.
+```
+
+The ledger file's checksum was byte-identical before and after that refusal.
+A synthetic suite containing one genuinely-missing binary alongside real
+repro scripts (`cmp_select_two_move_differential.py`, run through the
+harness's existing bare-`python`→`python3` substitution) REFUSED naming the
+missing binary while the real scripts ran and passed in the same probe pass;
+a suite with only the real scripts proceeded. `python3
+scripts/test_mutation_survey.py`: 30/30, 12 new — `classify_unrunnable` on
+both directions (including a live example pulled from that week's own CI: a
+`home-alias-audit-oracle` step whose own oracle printed `RESULT: PASS` but
+whose step exit was 1 because of a stale `grep -Eq` count assertion further
+down the same step — correctly "ran, not unrunnable", the same class as
+`fact_spec_div_494_differential.py` from the other direction) and
+`draw_frame` on both directions.
+
