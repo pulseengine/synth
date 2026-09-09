@@ -108,12 +108,15 @@ artifacts:
       the open question this PR's CI comment named is answered), and `varve
       verify` found EXACTLY the hazard predicted: `rivet` on this runner's
       PATH resolves to `/var/lib/runners/runner9/.cargo/bin/rivet`, not the
-      pinned copy — the required `rivet` job's `cargo install --force --git`
-      (no `--root`, so it lands in the default cargo bin dir) leaking onto a
-      shared self-hosted runner and shadowing the pin for a DIFFERENT job.
-      REQ-SHADOW-001 (varve's own oracle, not a hand-written parser) caught a
-      real, previously-invisible cross-job toolchain hazard on the first run
-      it was wired into.
+      pinned copy. `~/.cargo/bin` is the DEFAULT cargo install location, and
+      the required `rivet` job's `cargo install --force --git` (no `--root`)
+      is the most likely source since it is the only thing in this workflow
+      that installs rivet there — but this is the LIKELY mechanism, not a
+      confirmed one; I did not check which job actually ran on this runner
+      beforehand, so a foreign image bake or another repo on the same fleet
+      is not ruled out. REQ-SHADOW-001 (varve's own oracle, not a
+      hand-written parser) caught a real, previously-invisible PATH hazard
+      on the first run it was wired into, whatever its exact source.
 
       What actually reddened the job was a bug in THIS PR's own workflow
       syntax, unrelated to varve or ghcr.io: `varve run rivet -- sync` is
@@ -148,19 +151,27 @@ artifacts:
 
       BASELINE CONTEXT: on `main`, before this PR, the last two
       `rivet-federated` runs were green — not because the hazard was absent,
-      but because the OLD job never checked PATH at all (it dispatched its
-      own privately-rooted binary, `--root ~/.cargo/rivet-0.32`, so it was
-      never exposed to PATH resolution either). The new red is a
-      PREVIOUSLY-INVISIBLE signal, not a regression in what the job does:
-      `varve run` also dispatches the pinned binary directly, bypassing
-      PATH, so this job's own correctness was never at risk from the shadow
-      — REQ-SHADOW-001 exists to flag exactly this before something else
-      (a human, a future script) types bare `rivet` and gets the wrong one.
+      but because the OLD job dispatched rivet by ABSOLUTE PATH
+      (`~/.cargo/rivet-0.32/bin/rivet sync`) and never ran anything that
+      CHECKED PATH resolution at all, so nothing could have reported a
+      shadow either way. The new red is a PREVIOUSLY-INVISIBLE signal, not a
+      regression in what the job does: `varve run` also dispatches the
+      pinned binary by its own resolved path (not through `$PATH`), so this
+      job's own correctness was never at risk from the shadow —
+      REQ-SHADOW-001 exists to flag exactly this before something else (a
+      human, a future script) types bare `rivet` and gets the wrong one.
 
       NET RESULT: ghcr.io IS reachable from this self-hosted fleet (answers
       the open question this PR's own CI comment named), and the shadowing
       gate WORKS — it found something real to be red about on its first two
-      runs. A natural follow-up (not done in this PR): give the required
+      runs. The likely (NOT confirmed — I did not check which job actually
+      ran on runner9/runner12 beforehand) source is the required `rivet`
+      job's `cargo install --force --git` (no `--root`), since it is the
+      one thing in this workflow that installs rivet into the default
+      `~/.cargo/bin` on these shared runners; a foreign image bake or
+      another repo sharing the fleet cannot be ruled out from this evidence
+      alone. A natural follow-up (not done in this PR, and contingent on
+      confirming the source): give the required
       `rivet` job's `cargo install --force --git` a `--root`, mirroring the
       pattern the old federated job already used, so it stops leaking into
       the shared runners' default cargo bin dir.
