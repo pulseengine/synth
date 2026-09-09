@@ -33,13 +33,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import loop_conformance_check as lcc  # noqa: E402
 
 
-def artifact(aid, tags=(), issue="", done_when="ok"):
+def artifact(aid, tags=(), issue="", done_when="ok", release=None):
     fields = {}
     if issue:
         fields["issue"] = issue
     if done_when is not None:
         fields["done-when"] = done_when
-    return {"id": aid, "tags": list(tags), "fields": fields, "status": "proposed"}
+    a = {"id": aid, "tags": list(tags), "fields": fields, "status": "proposed"}
+    if release is not None:
+        a["release"] = release
+    return a
 
 
 def mk_check(version="v0.61.0", mode="retro", sha="d" * 40):
@@ -80,6 +83,57 @@ class PureHelpers(unittest.TestCase):
         docs = [("f.yaml", {"artifacts": [artifact(
             "RQ-62-LOOPCONFORM", tags=["release-process", "feature-loop"], issue="#1136")]})]
         self.assertIsNone(lcc.find_filed_steps12_decision(docs))
+
+    # --- release scoping of the steps-1-2 slot (v0.65, #1136) -------------
+    # A recurring N/A must be RE-FILED each release. Before this, the matcher
+    # returned the first shape-match in scan order regardless of `release:`,
+    # so on the real v0.65 tree it returned RQ-63-ARCHMODEL -- two releases
+    # back -- and the filing could have lapsed with the slot staying green.
+
+    ARCH_TAGS = ["spar", "feature-loop"]
+
+    def _two_releases(self):
+        return [
+            ("old.yaml", {"artifacts": [artifact(
+                "RQ-63-ARCHMODEL", tags=self.ARCH_TAGS, issue="#1136", release="v0.63")]}),
+            ("new.yaml", {"artifacts": [artifact(
+                "RQ-65-ARCHMODEL", tags=self.ARCH_TAGS, issue="#1136", release="v0.65")]}),
+        ]
+
+    def test_steps12_prefers_the_release_under_test(self):
+        d = lcc.find_filed_steps12_decision(self._two_releases(), "v0.65")
+        self.assertEqual(d["id"], "RQ-65-ARCHMODEL")
+        self.assertFalse(d["stale"])
+
+    def test_steps12_marks_an_earlier_releases_filing_stale(self):
+        # Only v0.63 is filed; a v0.65 run must NOT be discharged by it.
+        docs = self._two_releases()[:1]
+        d = lcc.find_filed_steps12_decision(docs, "v0.65")
+        self.assertEqual(d["id"], "RQ-63-ARCHMODEL")
+        self.assertTrue(d["stale"], "a previous release's filing must not discharge this one")
+
+    def test_steps12_scan_order_does_not_decide(self):
+        # The stale one FIRST in scan order -- the exact shape of the live bug.
+        docs = self._two_releases()
+        d = lcc.find_filed_steps12_decision(docs, "v0.65")
+        self.assertEqual(d["id"], "RQ-65-ARCHMODEL")
+
+    def test_steps12_unscoped_call_is_unchanged(self):
+        # Back-compat: no release argument keeps first-match behaviour.
+        d = lcc.find_filed_steps12_decision(self._two_releases())
+        self.assertEqual(d["id"], "RQ-63-ARCHMODEL")
+
+    def test_steps12_missing_tag_makes_the_release_invisible(self):
+        # RQ-65-ARCHMODEL shipped without `feature-loop` and was invisible.
+        docs = [("new.yaml", {"artifacts": [artifact(
+            "RQ-65-ARCHMODEL", tags=["spar", "recurring-na"], issue="#1136",
+            release="v0.65")]})]
+        self.assertIsNone(lcc.find_filed_steps12_decision(docs, "v0.65"))
+
+    def test_release_scope_normalises_the_tag(self):
+        self.assertEqual(lcc.release_scope("v0.65.0"), "v0.65")
+        self.assertEqual(lcc.release_scope("0.65.1"), "v0.65")
+        self.assertEqual(lcc.release_scope("v1.10.3"), "v1.10")
 
     def test_done_when_census(self):
         docs = [
@@ -369,15 +423,45 @@ class Steps12Branches(unittest.TestCase):
         self.assertIn("#1136", c.findings[0][3])
 
     def test_filed_na_cites_the_artifact(self):
+        # mk_check() runs at v0.61.0, so the discharging artifact must be
+        # scoped to v0.61. Before release scoping this fixture carried no
+        # `release:` at all and passed anyway -- which was the bug.
         c = mk_check()
-        docs = [("artifacts/release-v0.62/RQ-62-ARCHMODEL.yaml",
-                 {"artifacts": [artifact("RQ-62-ARCHMODEL",
-                  tags=["aadl", "spar", "feature-loop"], issue="#1136")]})]
+        docs = [("artifacts/release-v0.61/RQ-61-ARCHMODEL.yaml",
+                 {"artifacts": [artifact("RQ-61-ARCHMODEL",
+                  tags=["aadl", "spar", "feature-loop"], issue="#1136",
+                  release="v0.61")]})]
         with mock.patch.object(lcc, "git", return_value=(0, "")), \
              mock.patch.object(lcc.Check, "load_checkout_docs", return_value=docs):
             c.step_1_2()
         self.assertEqual(c.findings[0][2], lcc.NA_FILED)
-        self.assertIn("RQ-62-ARCHMODEL", c.findings[0][3])
+        self.assertIn("RQ-61-ARCHMODEL", c.findings[0][3])
+
+    def test_previous_releases_filing_does_not_discharge_this_one(self):
+        # The live v0.65 shape: only an OLDER release's artifact exists.
+        c = mk_check()  # v0.61.0
+        docs = [("artifacts/release-v0.59/RQ-59-ARCHMODEL.yaml",
+                 {"artifacts": [artifact("RQ-59-ARCHMODEL",
+                  tags=["aadl", "spar", "feature-loop"], issue="#1136",
+                  release="v0.59")]})]
+        with mock.patch.object(lcc, "git", return_value=(0, "")), \
+             mock.patch.object(lcc.Check, "load_checkout_docs", return_value=docs):
+            c.step_1_2()
+        self.assertEqual(c.findings[0][2], lcc.DERIVED_FAIL)
+        self.assertIn("RQ-59-ARCHMODEL", c.findings[0][3])
+        self.assertIn("v0.61", c.findings[0][3])
+
+    def test_unreleased_artifact_does_not_discharge(self):
+        # An artifact with no `release:` is programme-scoped, not this
+        # release's filing.
+        c = mk_check()
+        docs = [("artifacts/x.yaml",
+                 {"artifacts": [artifact("RQ-X", tags=["spar", "feature-loop"],
+                  issue="#1136")]})]
+        with mock.patch.object(lcc, "git", return_value=(0, "")), \
+             mock.patch.object(lcc.Check, "load_checkout_docs", return_value=docs):
+            c.step_1_2()
+        self.assertEqual(c.findings[0][2], lcc.DERIVED_FAIL)
 
 
 class ReleaseIdentity(unittest.TestCase):

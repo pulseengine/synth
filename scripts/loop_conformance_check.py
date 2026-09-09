@@ -198,10 +198,35 @@ def http_status(url: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def find_filed_steps12_decision(docs: list[tuple[str, object]]) -> dict | None:
+def release_scope(version: str) -> str:
+    """`v0.65.0` -> `v0.65` — the value artifacts carry in their `release:`
+    field. The conformance check is invoked with a full vX.Y.Z tag; artifacts
+    are scoped per minor release."""
+    m = re.match(r"^v?(\d+\.\d+)", str(version).strip())
+    return f"v{m.group(1)}" if m else str(version).strip()
+
+
+def find_filed_steps12_decision(
+    docs: list[tuple[str, object]], release: str | None = None
+) -> dict | None:
     """A filed steps-1-2 decision: a release artifact tagged feature-loop AND
     aadl|spar, carrying a non-empty fields.issue. Matched by SHAPE, not by a
-    hardcoded id, so the citation is to the artifact that actually exists."""
+    hardcoded id, so the citation is to the artifact that actually exists.
+
+    RELEASE-SCOPED (v0.65, #1136). When `release` is given, only an artifact
+    carrying that `release:` DISCHARGES the slot. A match from an earlier
+    release is still returned, marked `stale`, so the caller can fail loudly
+    naming it rather than passing on someone else's filing.
+
+    Why this is not pedantry: #1136 exists because a recurring N/A must be
+    RE-FILED every release. Measured on the v0.65 tree before the fix, the
+    unscoped matcher returned `RQ-64-ARCHMODEL` — a PREVIOUS release's
+    artifact — for a v0.65 run, and v0.65's own ARCHMODEL was invisible to it
+    (it lacked the `feature-loop` tag). So the filing could lapse entirely
+    and this slot would stay green forever: a checker reporting success about
+    work the release under test never did.
+    """
+    stale: dict | None = None
     for fname, doc in docs:
         if not isinstance(doc, dict):
             continue
@@ -211,13 +236,19 @@ def find_filed_steps12_decision(docs: list[tuple[str, object]]) -> dict | None:
             tags = set(a.get("tags") or [])
             issue = str((a.get("fields") or {}).get("issue") or "").strip()
             if "feature-loop" in tags and tags & {"aadl", "spar"} and issue:
-                return {
+                hit = {
                     "id": a.get("id"),
                     "issue": issue,
                     "status": a.get("status"),
                     "file": fname,
+                    "release": str(a.get("release") or "").strip(),
+                    "stale": False,
                 }
-    return None
+                if release is None or hit["release"] == release:
+                    return hit
+                if stale is None:
+                    stale = dict(hit, stale=True)
+    return stale
 
 
 def artifacts_missing_done_when(docs: list[tuple[str, object]]) -> tuple[int, list[str]]:
@@ -380,15 +411,27 @@ class Check:
                 f"synth-owned AADL model tracked in-repo: {', '.join(aadl[:3])}",
             )
             return
-        decision = find_filed_steps12_decision(self.load_checkout_docs())
-        if decision:
+        scope = release_scope(self.version)
+        decision = find_filed_steps12_decision(self.load_checkout_docs(), scope)
+        if decision and not decision.get("stale"):
             self.add(
                 "1-2",
                 "filed decision",
                 NA_FILED,
                 "decided, artifact scoped, not yet built: "
                 f"{decision['id']} ({decision['issue']}, status {decision['status']}) "
-                f"in {decision['file']} [programme-scoped, evaluated at checkout]",
+                f"in {decision['file']} [scoped to {scope}, evaluated at checkout]",
+            )
+        elif decision:
+            self.add(
+                "1-2",
+                "filed decision",
+                DERIVED_FAIL,
+                f"the only filed steps-1-2 decision is {decision['id']}, scoped to "
+                f"release {decision['release'] or '(none)'} — NOT {scope}. A previous "
+                "release's filing does not discharge this one's: #1136 is a RECURRING "
+                f"N/A and must be re-filed per release. File a {scope}-scoped artifact "
+                "tagged feature-loop + aadl|spar with fields.issue.",
             )
         else:
             self.add(

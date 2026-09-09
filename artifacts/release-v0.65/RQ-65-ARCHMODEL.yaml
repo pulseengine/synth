@@ -44,6 +44,13 @@ artifacts:
     release: v0.65
     tags:
       - spar
+      - feature-loop          # REQUIRED by loop_conformance_check's steps-1-2
+                              # matcher (feature-loop + aadl|spar + an issue).
+                              # Without it this release's own filing is
+                              # INVISIBLE to the slot and an earlier release's
+                              # artifact silently discharges it — measured at
+                              # v0.65, where the unscoped matcher returned
+                              # RQ-63-ARCHMODEL for a v0.65 run.
       - recurring-na
       - external-blocker
     links:
@@ -55,6 +62,18 @@ artifacts:
       verification-track: review
       issue: "#1136"
       carried-from: RQ-64-ARCHMODEL
+      landed: >-
+        PR #1224 — the SECOND half of done-when only. `loop_conformance_check`
+        step 1-2 is now RELEASE-SCOPED: measured with the real loader, a v0.65
+        run was matching RQ-63-ARCHMODEL (two releases back), and RQ-65-ARCHMODEL
+        was itself invisible to the matcher for want of a `feature-loop` tag —
+        so the recurring N/A could have lapsed entirely with the slot green.
+        The matcher now takes the release under test, returns an older match
+        marked `stale`, and the caller fails LOUDLY naming it. Discriminates
+        three ways on the real tree (v0.65 PASS / v0.64 PASS / v0.99 stale FAIL);
+        tests 33 -> 39 with three mutations each killed by the tests that claim
+        them. The artifact stays `proposed`: the FIRST half — spar#445 re-verified
+        and the deferral recorded — is cut-time work and has not happened.
       done-when: "manual: either spar#445 closes and the AADL -> WIT path is exercised, or the deferral is recorded again with the blocker RE-VERIFIED at cut time; and separately, loop_conformance_check's step 1-2 slot is checked for whether it matches the artifact of the release under test rather than the first programme-scoped one"
       verified-by: >-
         PENDING — carried unchanged from RQ-64-ARCHMODEL, with the conformance
