@@ -363,27 +363,71 @@ def _name_is_mutated_anywhere(tree, name):
     return False
 
 
+def _asserted_len(tree, name):
+    """The int K of a top-level `assert len(<name>) == K[, msg]` statement,
+    if EXACTLY one such assertion exists (zero, or more than one — even if
+    they agree — returns None: an ambiguous rescue is no rescue). Consulted
+    ONLY as a last resort in `_resolve_static_iter_len`, after a name's own
+    literal binding has been found and then invalidated by a later mutation
+    — never as a substitute for a name that was never a literal at all, and
+    never in preference to a clean, unmutated literal. See
+    `_resolve_static_iter_len`'s docstring for why this narrow rescue is
+    trusted and a blanket one was not."""
+    hits = []
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assert):
+            continue
+        t = stmt.test
+        if (
+            isinstance(t, ast.Compare)
+            and len(t.ops) == 1
+            and isinstance(t.ops[0], ast.Eq)
+            and isinstance(t.left, ast.Call)
+            and isinstance(t.left.func, ast.Name)
+            and t.left.func.id == "len"
+            and len(t.left.args) == 1
+            and isinstance(t.left.args[0], ast.Name)
+            and t.left.args[0].id == name
+            and len(t.comparators) == 1
+        ):
+            try:
+                n = ast.literal_eval(t.comparators[0])
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(n, int) and not isinstance(n, bool):
+                hits.append(n)
+    return hits[0] if len(hits) == 1 else None
+
+
 def _resolve_static_iter_len(iter_node, tree, where):
     """The length of a DictComp generator's iterable, WITHOUT running
     anything. A literal list/tuple/set/dict counts directly. A bare Name
-    counts only if it resolves to a SINGLE top-level literal binding that is
-    never mutated afterward. Anything else — a call, a comprehension, an
-    import, an ambiguous or absent binding, or a literal that IS mutated
-    afterward (e.g. `NAME = {}` filled in by a later `for` loop's
-    `NAME[k] = v`, as invalid_accept_1207_differential.py's own `FIXTURES`
-    does today) — is a hard error: a length the counter cannot see must
-    never be silently guessed.
+    counts if it resolves to a SINGLE top-level literal binding — and, if
+    that literal is later MUTATED (e.g. `NAME = {}` filled in by a `for`
+    loop's `NAME[k] = v`, as invalid_accept_1207_differential.py's own
+    `FIXTURES` does), the literal is not trusted on its own but a single
+    unambiguous top-level `assert len(NAME) == K` naming its FINAL length
+    is. Anything else — a call, a comprehension, an import, an ambiguous or
+    absent binding, or a mutated literal with no such assert (or a
+    contradictory/ambiguous one) — is a hard error: a length the counter
+    cannot see must never be silently guessed.
 
-    Deliberately NOT supported: trusting a module-level `assert len(NAME)
-    == K` as a stand-in for a real literal. That was tried and rejected
-    while building this — it would let the ledger's number diverge from the
+    The assert-rescue is deliberately narrow, not a blanket "trust any
+    assert" — it fires ONLY to recover a name whose literal path is
+    otherwise blocked by a detected mutation, never as a first choice over
+    a clean literal and never for a name that was never a literal at all
+    (a bare function-call value, say). A version of this that trusted the
+    assert unconditionally was tried first and reverted on review, over the
+    concern that it would let this ledger's number diverge from the
     oracle's ACTUAL table between the assert going stale and the oracle's
-    own (separate) CI job next running, which is exactly the "two things
-    that should agree silently stop agreeing" shape RQ-66-PINDEBT itself
-    exists to catch elsewhere. The fix for a table like `FIXTURES` belongs
-    in the oracle: make the thing the comprehension iterates over an actual
-    literal (e.g. a literal tuple of names), even if a value keyed off it is
-    still computed."""
+    own (separate) CI job next running. That concern does not apply the
+    other way around: `assert len(FIXTURES) == 13` is CHECKED, not merely
+    documented, every time invalid_accept_1207_differential.py's own oracle
+    runs in its own CI job — a drift between the assert and the loop that
+    fills `FIXTURES` fails LOUD, in the same run, before the table is ever
+    consulted for real. Trusting a self-verifying invariant the file
+    already enforces on itself is not a second source of truth about the
+    first; a hand-typed 39 sitting in claims.yaml instead would have been."""
     if isinstance(iter_node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
         try:
             return len(ast.literal_eval(iter_node))
@@ -421,11 +465,16 @@ def _resolve_static_iter_len(iter_node, tree, where):
             f"running the oracle"
         )
     if _name_is_mutated_anywhere(tree, name):
+        asserted = _asserted_len(tree, name)
+        if asserted is not None:
+            return asserted
         raise MeasureError(
             f"pin-table: {where} {name!r}'s literal initial value is "
             f"mutated afterward (a subscript assignment or an "
-            f".update()/.append()-shaped call elsewhere in the file) — its "
-            f"FINAL length cannot be derived without running the oracle"
+            f".update()/.append()-shaped call elsewhere in the file), and no "
+            f"unambiguous module-level `assert len({name}) == N` names its "
+            f"FINAL length — its length cannot be derived without running "
+            f"the oracle"
         )
     try:
         return len(ast.literal_eval(value))

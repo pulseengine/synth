@@ -541,24 +541,18 @@ class PinTableDerivation(unittest.TestCase):
         self.assertEqual(self.entries(t), 6)
         self.assertEqual(self.cases(t), 6)  # no cases_at -> 1 per entry
 
-    def test_dictcomp_over_a_loop_built_dict_is_an_error_even_with_an_assert(self):
+    def test_dictcomp_mirrors_the_real_1207_table_via_the_asserted_rescue(self):
         # This is invalid_accept_1207_differential.py's ACTUAL `FIXTURES`
-        # shape (not the lane brief's simplified illustration, which elided
-        # the for-loop and showed only the assert): `FIXTURES` starts life
-        # as a literal `{}` and is filled entry-by-entry by a top-level for
-        # loop. That `{}` is itself a valid dict literal, so silently
-        # trusting it would undercount to 0 — the guard must fire instead.
-        #
-        # A companion `assert len(FIXTURES) == 13` does NOT change the
-        # answer: trusting an assert as a stand-in for a real literal was
-        # tried and deliberately dropped while building this. It would let
-        # this ledger's number diverge from the oracle's ACTUAL table
-        # between the assert going stale and the oracle's own (separate) CI
-        # job next catching it — the "two things that should agree silently
-        # stop agreeing" shape this whole ratchet exists to prevent. The fix
-        # belongs in the oracle: make the thing iterated over an actual
-        # literal (see test_dictcomp_counts_a_literal_names_list_with_a_
-        # generated_values_dict for the shape #1246 needs).
+        # shape, pulled from origin/feat/unwatched-1229 and re-verified
+        # directly against that real file, not just this reproduction: it
+        # starts life as a literal `{}` and is filled entry-by-entry by a
+        # top-level for loop, then a module-level
+        # `assert len(FIXTURES) == 13` declares its final length. That
+        # assert is CHECKED, not merely documented, every time this oracle's
+        # own (separate) CI job runs — a drift between it and the loop that
+        # fills FIXTURES fails loud in that run, before the table is ever
+        # consulted for real, so trusting it here is not a second source of
+        # truth about the first. 13 x 3 = 39.
         self.write(
             "FIXTURES: dict[str, str] = {}\n"
             "for i in range(13):\n"
@@ -573,16 +567,76 @@ class PinTableDerivation(unittest.TestCase):
             "}\n",
             name="comp_1207_as_shipped.py",
         )
+        t = {"file": "comp_1207_as_shipped.py", "name": "KNOWN"}
+        self.assertEqual(self.entries(t), 39)
+        self.assertEqual(self.cases(t), 39)
+
+    def test_dictcomp_iterable_mutated_with_no_assert_is_an_error(self):
+        # The FIXTURES shape above, minus the assert: an empty-literal
+        # initial value that is later mutated must never be silently read as
+        # length 0 just because `{}` is itself a valid dict literal, and
+        # there is nothing left to rescue it.
+        self.write(
+            "FIXTURES: dict[str, str] = {}\n"
+            "for i in range(13):\n"
+            "    FIXTURES[f'fx{i}'] = 'body'\n"
+            "BACKENDS = {'arm': [], 'riscv': []}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): 'accept'\n"
+            "    for name in FIXTURES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_mutated_no_assert.py",
+        )
         with self.assertRaises(MeasureError) as e:
-            self.entries({"file": "comp_1207_as_shipped.py", "name": "KNOWN"})
+            self.entries({"file": "comp_mutated_no_assert.py", "name": "KNOWN"})
         self.assertIn("mutated afterward", str(e.exception))
 
+    def test_dictcomp_ambiguous_asserted_length_is_still_an_error(self):
+        # Two conflicting top-level asserts about the same name (even one
+        # that happens to be right) make the rescue AMBIGUOUS, not doubly
+        # sure — refused, same as having none.
+        self.write(
+            "FIXTURES: dict[str, str] = {}\n"
+            "for i in range(13):\n"
+            "    FIXTURES[f'fx{i}'] = 'body'\n"
+            "assert len(FIXTURES) == 13\n"
+            "assert len(FIXTURES) == 14\n"
+            "BACKENDS = {'arm': [], 'riscv': []}\n"
+            "KNOWN: dict[tuple[str, str], str] = {\n"
+            "    (name, be): 'accept'\n"
+            "    for name in FIXTURES\n"
+            "    for be in BACKENDS\n"
+            "}\n",
+            name="comp_ambiguous_assert.py",
+        )
+        with self.assertRaises(MeasureError) as e:
+            self.entries({"file": "comp_ambiguous_assert.py", "name": "KNOWN"})
+        self.assertIn("mutated afterward", str(e.exception))
+
+    def test_dictcomp_assert_does_not_override_a_clean_unmutated_literal(self):
+        # The rescue fires ONLY when a mutation blocks the literal path — a
+        # stray, unrelated (and here wrong) assert must not out-rank a
+        # clean, never-mutated literal binding.
+        self.write(
+            "FIXTURES2 = ['a', 'b', 'c']\n"
+            "assert len(FIXTURES2) == 999\n"
+            "BACKENDS2 = ('x', 'y')\n"
+            "KNOWN_COMP = {\n"
+            "    (f, b): 'accept'\n"
+            "    for f in FIXTURES2\n"
+            "    for b in BACKENDS2\n"
+            "}\n",
+            name="comp_literal_with_stray_assert.py",
+        )
+        t = {"file": "comp_literal_with_stray_assert.py", "name": "KNOWN_COMP"}
+        self.assertEqual(self.entries(t), 6)  # 3 x 2, NOT 999 x 2
+
     def test_dictcomp_counts_a_literal_names_list_with_a_generated_values_dict(self):
-        # The fix #1246 needs: FIXTURE_NAMES becomes the literal the
-        # comprehension iterates over (13 names); the WAT-source bodies can
-        # still be generated into a dict keyed by those names, same as
-        # today — only the ITERATED-OVER collection needs to be a literal.
-        # 13 names x 3 backends = 39, no assert, no 39-line longhand table.
+        # An alternative shape that also counts cleanly, with no assert
+        # needed at all: FIXTURE_NAMES as the literal the comprehension
+        # iterates over (13 names), with the WAT-source bodies still
+        # generated into a dict keyed by those names. 13 x 3 = 39.
         self.write(
             "FIXTURE_NAMES = (\n"
             "    'type-empty-block-i32', 'type-empty-block-i64',\n"
@@ -606,26 +660,6 @@ class PinTableDerivation(unittest.TestCase):
         t = {"file": "comp_1207_fixed.py", "name": "KNOWN"}
         self.assertEqual(self.entries(t), 39)
         self.assertEqual(self.cases(t), 39)
-
-    def test_dictcomp_iterable_mutated_with_no_assert_is_an_error(self):
-        # The FIXTURES shape above, minus the assert: an empty-literal
-        # initial value that is later mutated must never be silently read as
-        # length 0 just because `{}` is itself a valid dict literal.
-        self.write(
-            "FIXTURES: dict[str, str] = {}\n"
-            "for i in range(13):\n"
-            "    FIXTURES[f'fx{i}'] = 'body'\n"
-            "BACKENDS = {'arm': [], 'riscv': []}\n"
-            "KNOWN: dict[tuple[str, str], str] = {\n"
-            "    (name, be): 'accept'\n"
-            "    for name in FIXTURES\n"
-            "    for be in BACKENDS\n"
-            "}\n",
-            name="comp_mutated_no_assert.py",
-        )
-        with self.assertRaises(MeasureError) as e:
-            self.entries({"file": "comp_mutated_no_assert.py", "name": "KNOWN"})
-        self.assertIn("mutated afterward", str(e.exception))
 
     def test_dictcomp_with_if_filter_is_an_error(self):
         # Even a filter over pure constants is refused: the entry count
