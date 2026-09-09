@@ -270,10 +270,20 @@ ARM configurations, and runs a suite DERIVED from `ci.yml` (five named
 execution-oracle jobs + `cargo test --workspace`) only on mutants that
 changed bytes. **Sampled 38 mutants (seed 1189) across five anchor-located
 regions supplied by RQ-65-PARITY; 6 uncompilable, 32 compiled, 21
-byte-changing: 17 KILLED (6 by execution differentials, 8 by unit/
-integration tests, 2 by frozen-byte goldens ONLY, 1 by a compiler hang) and
-4 of 21 byte-changing mutants survived — 19 % survival, an UPPER bound
-under the full CI board** (a broader suite cannot un-kill a mutant). The 11
+byte-changing: 17 KILLED (**2** by an execution differential observing a
+WRONG VALUE against wasmtime, 8 by unit/integration tests, 2 by frozen-byte
+goldens ONLY, 1 by a compiler hang, and **4 by the compiler REFUSING or a
+non-vacuity floor firing**) and 4 of 21 byte-changing mutants survived —
+19 % survival, an UPPER bound under the full CI board** (a broader suite
+cannot un-kill a mutant).
+
+  **"81 % caught" means CI GOES RED, not "an oracle noticed wrong code."**
+  Restricted to the **15** mutants that changed bytes SILENTLY — no decline,
+  no panic, no floor — **4 survive (27 %)** and an execution differential
+  caught only **2**. The apparatus is better at noticing that the compiler
+  stopped than at noticing that it lied. Corrected here from the v0.65 cold
+  review, which found the original wording counted refusals and floors as
+  execution differentials. The 11
 byte-identical mutants are classified by a reach probe: 5 EQUIVALENT, 4 DEAD
 (deletion candidates for the subtraction ratchet), 2 UNRESOLVED and declared.
 Three red-first controls (the #1189 copy disabled; the select operands
