@@ -51,6 +51,13 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1180"
+      landed: >-
+        PR #1218 — symbol binding moved into v0.64's shared `ObjectPlan`, closing
+        ELF and Mach-O together. Verified by a real linker: two objects each
+        defining `func_0` link with `ld.lld -r`, both instances `STB_LOCAL`, only
+        exported names global; `af819788` fails the same link with `duplicate
+        symbol: func_0`. The collision class was wider than `func_N` —
+        `__synth_globals` and `__synth_func_table` moved GLOBAL -> LOCAL too.
       done-when: "contains:crates/synth-backend-aarch64/src/elf.rs:pub binding: SymbolBinding,"
       verified-by: >-
         IMPLEMENTED. WHERE BINDING LIVES: `synth_core::backend::SymbolBinding`

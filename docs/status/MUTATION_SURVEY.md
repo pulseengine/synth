@@ -9,11 +9,20 @@ the ledger without a red gate.
 
 > **THE HEADLINE.** Of the sampled code-generator decisions that change
 > emitted bytes when flipped, **4 of 21 byte-changing mutants survived** the
-> named suite — **19 % survival**, so 81 % of them are caught by five
-> execution-oracle jobs plus the workspace tests. Of the 17 kills, 6 came
-> from execution differentials, 8 from unit/integration tests, **2 from
-> frozen-byte goldens only** (a change detector, not a wrongness detector),
-> and 1 from the compiler hanging. Every survivor is enumerated below with
+> named suite — **19 % survival**. Of the 17 kills, **2** came from an
+> execution differential observing a WRONG VALUE against wasmtime, 8 from
+> unit/integration tests, **2 from frozen-byte goldens only** (a change
+> detector, not a wrongness detector), 1 from the compiler hanging, and the
+> remaining **4 from the compiler REFUSING or a non-vacuity floor firing**
+> (`#952` skipped exports, a compiler panic, a census `NEW DECLINE`).
+>
+> **"81 % caught" means CI GOES RED, not "an oracle noticed wrong code".**
+> Those are different claims and the difference is the finding. Restricting to
+> the **15** mutants that changed bytes SILENTLY — no decline, no panic, no
+> floor — **4 survive, 27 %**, and an execution differential caught only **2**;
+> 9 of the 11 silent kills came from `cargo test` and 2 from byte goldens
+> alone. The apparatus is better at noticing that the compiler stopped than at
+> noticing that it lied. Every survivor is enumerated below with
 > its exact diff; that list is what v0.66 is scoped from. The rate is an
 > **upper bound** on survival under the full CI board (§ "what it is
 > relative to").
@@ -188,9 +197,12 @@ the sample. Every one MUST come back KILLED or the survey publishes no rate
 
 The third control is itself a finding: **no execution oracle in this suite
 boots the shipped `Reset_Handler`** — a startup-contract mutation that
-rewrites every self-contained image is caught only by the unit tests that
-decode the emitted `MOVW`/`MOVT`. (The parity oracle does boot the shipped
-startup; it is the one left out for cost.)
+rewrites every self-contained image is caught only by FROZEN-BYTE GOLDENS
+(layer `freeze-only`: `base_cse_escape_hatch…_468` and `const_cse_…_242` x2).
+**No startup unit test fired, and none exists**: nothing in the named suite
+decodes the emitted `MOVW`/`MOVT` for the R10 seed. A golden detects that the
+bytes CHANGED; it cannot say the new bytes are wrong. (The parity oracle does
+boot the shipped startup; it is the one left out for cost.)
 
 ## Per-region results
 

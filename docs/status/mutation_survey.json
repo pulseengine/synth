@@ -3,7 +3,7 @@
     "date": "2026-09-09",
     "commit": "ad52535a",
     "seed": 1189,
-    "per_region": 12,
+    "per_region": 8,
     "oversample": 4,
     "candidate_sites": {
       "R1-routing": 65,
@@ -12,7 +12,8 @@
       "R4-shared": 603,
       "R5-startup": 15
     },
-    "reanchored_at": "4f7306ca"
+    "reanchored_at": "4f7306ca",
+    "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review."
   },
   "baseline": {
     "commit": "ad52535a",

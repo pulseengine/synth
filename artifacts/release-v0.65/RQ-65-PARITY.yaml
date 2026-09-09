@@ -49,6 +49,15 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#197"
+      landed: >-
+        PR #1216 — `scripts/repro/selector_parity_197_differential.py`: every
+        spec-corpus module compiled on BOTH shipped selectors, both images booted
+        through their own shipped `Reset_Handler` under unicorn, compared against
+        wasmtime. First run 328 modules both-accepted / 19,145 assertions / 11
+        defects (#1204-#1215), each pinned by exact (file, module, function, kind)
+        count; #1203 fixed in the same PR. Reference engine pinned
+        (wasmtime==48.0.0, unicorn==2.1.4) because exact-count pins are engine-
+        version dependent.
       done-when: "manual: both selectors are run over the spec corpus and every module both ACCEPT is compared on emitted behaviour; each divergence is either a fixed bug or a recorded intended difference with its reason; the comparison is CI-wired with a non-vacuity floor on modules compared"
       verified-by: >-
         IMPLEMENTED, with one correction to the framing above: `select_default`
