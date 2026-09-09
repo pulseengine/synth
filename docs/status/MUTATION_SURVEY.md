@@ -5,12 +5,15 @@ ledger and stops short of a third it cannot do on this host. It (1) writes
 four oracles, each PROVEN red-first against its recorded v0.65 UNTESTED
 mutant (mutation applied by hand with `mutation_survey.py`'s own `Edit`
 context manager, tree-restoration asserted, transcripts below) and wires
-three of them into a new CI job, `watched-1189-oracle`; and (2) extends the
-SAME v0.65 ledger's derived `summary` with a MECHANICAL silent-subset rule
-(`is_loud_kill` in `mutation_survey.py`), replacing the v0.65 cold review's
-hand tally. It does NOT re-sample or re-run the 38-mutant survey against the
-expanded suite — see "Why `mutants_untested` does not fall" below for why
-that is a real limitation of this host, not an oversight.
+three of them into a new CI job, `watched-1189-oracle`; and (2) MECHANIZES
+the v0.65 cold review's own silent-subset rule (`is_loud_effect` in
+`mutation_survey.py`), which until this release existed only as prose in
+`docs/reviews/v0.65-cold-review.md` and had never been implemented in code —
+so `mutation_survey.py summarize()` had no loud/silent classification at
+all, and the published "27 %" was a hand tally from the start. It does NOT
+re-sample or re-run the 38-mutant survey against the expanded suite — see
+"Why `mutants_untested` does not fall" below for why that is a real
+limitation of this host, not an oversight.
 
 Every verdict is in the committed ledger `docs/status/mutation_survey.json`;
 the numbers below are derived from it and pinned in `claims.yaml`
@@ -18,12 +21,25 @@ the numbers below are derived from it and pinned in `claims.yaml`
 
 > **THE HEADLINE DOES NOT MOVE THIS RELEASE.** The v0.65 ledger still reads
 > 4 of 21 byte-changing mutants UNTESTED — **19 % survival**, unchanged,
-> because no re-sampling ran (see below). What DOES move: the **SILENT-subset**
-> rate — the number v0.65's cold review said was the honest one — is now
-> derived by a MECHANICAL rule instead of a hand tally, and REPRODUCES
-> exactly against the existing ledger: **4 of 16, 25.0 %** (the review's hand
-> tally said 4 of 15, 27 %, and does not decompose from its own ledger — see
-> "The silent subset").
+> because no re-sampling ran (see below).
+>
+> **THE SILENT-SUBSET RATE IS UNCHANGED IN VALUE AND NEW IN KIND: it is now
+> DERIVED rather than hand-tallied, and it reproduces the published figure
+> exactly.** The v0.65 cold review's own canonical rule — loud iff the
+> mutant's OWN corpus-effect triage recorded >= 1 module `newly-declined` or
+> a `compile-timeout`, a property of the mutant, not of which CI job caught
+> it — mechanized in `mutation_survey.py`'s `is_loud_effect` and re-run over
+> the SAME v0.65 ledger, gives **4 of 15 = 26.7 % (rounds to the published
+> 27 %)**. One record is BORDERLINE and the review named it explicitly:
+> `arm_backend.rs:1006:8` crosses the >=1-decline threshold on a single
+> incidental decline out of 104 corpus effects, and what actually killed it
+> was 9 ordinary `cargo test` value-comparisons, not a compiler refusal.
+> Counting that one record silent instead — the review's own stated
+> alternate — gives **4 of 16 = 25.0 %**. Both numbers are pinned; see "The
+> silent subset" for the full derivation, and see the correction note below
+> for how this document and the PR that produced it briefly (and wrongly)
+> treated 25.0 % as a correction to 27 % before finding the review's own
+> written rule.
 >
 > **`mutants_untested`: 4 → 4 (unchanged, ratchet green — `value` still
 > equals the live derivation).** All four oracles below are independently
@@ -104,37 +120,101 @@ produced 277 non-ok verdicts on `main`, every one triaged:
 
 Every pin is an exact count that goes red in either direction.
 
-## The silent subset — one mechanical rule, applied to both ledgers
+## The silent subset — the cold review's own rule, mechanized
 
 "KILLED" means CI went red. That counts the compiler REFUSING (`#952`, a
 decline-census `NEW DECLINE`), a PANIC, a non-vacuity FLOOR firing and a
-compiler HANG — none of which is an oracle noticing wrong code. The v0.65 cold
-review drew the distinction and hand-tallied "4 of 15, 27 %"; that tally does
-not decompose from the ledger it describes (it says 11 silent kills = 9
-`cargo test` + 2 goldens, while the records hold 8 structure + 2 freeze-only
-+ 2 wrong-value execution kills).
+compiler HANG — none of which is an oracle noticing wrong code. The v0.65
+cold review (`docs/reviews/v0.65-cold-review.md`, "The one that matters
+most: what 'caught' means in the headline") drew this distinction and
+published **"4 of 15, 27 %"** — but the rule that produces 15 lived only in
+that document's prose. `mutation_survey.py` on `main` has **no loud/silent
+classification at all**: the number was a hand tally from the start, and
+nothing re-derived it or could catch it drifting.
 
-`mutation_survey.py summarize` now derives it (`is_loud_kill`): a kill is
-**loud** if its layer is `timeout`, or its layer is `execution` and the
-recorded killer tail shows a refusal / panic / floor and NO wrong-value
-comparison; a wrong-value comparison outranks a floor in the same tail (an
-execution differential that reported 10 wrong vectors and then also tripped
-its population floor did observe wrong code). The silent subset is the
-byte-changing mutants minus the loud kills; the silent rate is the survivors
-over that.
+**The rule, precisely, as the review states it:** loud is a property of the
+**mutant's own corpus effect**, not of which layer/oracle killed it. Every
+mutant's byte-triage records a `changed[]` list — one entry per corpus
+module whose compiled output differs, tagged `kind: bytes` (a plain content
+diff), `kind: newly-declined` (a module that used to compile and now
+refuses), or `kind: compile-timeout` (the compiler hangs). A mutant is
+**loud** iff that list contains at least one `newly-declined` or
+`compile-timeout` entry ANYWHERE in the 204-module corpus — regardless of
+which specific CI job eventually reported it KILLED. Everything else —
+every mutant whose entire corpus effect is plain byte diffs — is **silent**.
 
-| | byte-changing | loud kills removed | **silent subset** | survivors | **silent survival** | silent kills: execution / structure / freeze-only |
+This is now mechanized as `is_loud_effect` in `mutation_survey.py`, and
+re-running it over the **unmodified, already-shipped v0.65 ledger** (no
+re-sampling, no oracle invocation, no `python`-availability dependency)
+reproduces the published figure exactly:
+
+| | byte-changing | loud (>=1 newly-declined/timeout) | **silent subset** | survivors | **silent survival** | silent kills: execution / structure / freeze-only |
 |---|---|---|---|---|---|---|
-| v0.65 ledger, this rule (v0.66's live number too — no resampling ran, see above) | 21 | 5 (4 execution-layer: `#952`, `no functions compiled`, `NEW DECLINE`, a panic; 1 hang) | 16 | 4 | **25.0 %** | 2 / 8 / 2 |
+| **PRIMARY** — `is_loud_effect` | 21 | **6** | **15** | 4 | **26.7 % (published: 27 %)** | 2 / 7 / 2 |
 
-Re-derived directly (`mutation_survey.summarize()` re-run over the committed
-ledger, no oracle invocation, no `python`-availability dependency) and it
-reproduces exactly: `killed_loud=5`, `silent_changed=16`, `silent_untested=4`,
-`silent_killed_execution=2`, `silent_killed_structure=8`,
-`silent_killed_freeze_only=2`. The ledger's `summary` block now carries
-`survey_silent_changed`, `survey_silent_untested`, `survey_killed_loud` and
-the per-layer silent counts, and `claims.yaml` pins them by exact text
-(`SYNTH-MUTATION-SURVEY-RQ65`).
+The six loud mutants: `select_with_stack.rs:902:0` (425 modules newly
+declined, `#952`/VACUOUS), `select_with_stack.rs:6045:0` (9 newly declined,
+`NEW DECLINE` census), `select_with_stack.rs:206:45` (1 newly declined,
+`#952`), `optimizer_bridge.rs:3658:0` (a panic — `index out of bounds` —
+plus a VACUOUS floor), `select_with_stack.rs:561:46` (a `compile-timeout`),
+and `arm_backend.rs:1006:8` (104 modules changed, of which **1** newly
+declines).
+
+### The borderline record, named the way the review named it
+
+`arm_backend.rs:1006:8` is the one entry in the loud six that is not a clean
+call. Its `changed[]` list holds 103 plain `kind: bytes` diffs and exactly
+ONE `kind: newly-declined` (`aarch64_surface_851.wat|self`) — a single
+incidental decline among 104 corpus effects trips the >=1 threshold. What
+actually reported it `KILLED`, separately, was **9 `cargo test`
+assertions** (`base_cse_flip_468`, `cabi_arena_bind_418`,
+`const_cse_reduction_242`, `i64_pair_exhaust_587`, `spill_on_exhaust_242`,
+`synth-backend(unit)`, `volatile_segment_phase2_543`, `wast_compile`,
+`wcet_bound_gate`) comparing bytes/bounds against expectations — value
+comparisons, not a compiler refusal. By WHAT CAUGHT IT this reads as a
+silent catch; by the review's corpus-effect rule it is loud on one declined
+module out of 104. The review states both readings and does not pick one:
+
+> "On the silent 15 the survival is 27 % (25 % if `1006:8` is counted
+> silent)"
+
+`is_loud_effect_1006_8_silent` is that named alternate, mechanized the same
+way — NOT a correction to 27 %, a documented, deliberate re-reading of one
+acknowledged borderline record:
+
+| | byte-changing | loud | **silent subset** | survivors | **silent survival** | silent kills: execution / structure / freeze-only |
+|---|---|---|---|---|---|---|
+| **ALTERNATE** — `1006:8` forced silent | 21 | 5 | **16** | 4 | **25.0 %** | 2 / 8 / 2 |
+
+**The review's own prose decomposes exactly to the PRIMARY frame's per-layer
+counts.** It states: "the execution-oracle layer ... caught 2 of 15; 9 of
+the 11 silent kills came from `cargo test`, and 2 of those from byte goldens
+alone." Silent-KILLED = 11 = 2 `execution` + 9 `cargo test`; "cargo test"
+here is the umbrella covering BOTH `structure` and `freeze-only` layers
+(both are literal `cargo test` failures), and "2 of those [9] from byte
+goldens" is exactly `freeze-only`. So 9 `cargo test` = 7 `structure` + 2
+`freeze-only`, which is precisely the PRIMARY row's `2 / 7 / 2` above — `9`
+was never a miscount of `structure` alone (8); it is `structure` (7, with
+`1006:8` moved to the loud side) plus `freeze-only` (2). This is the
+reconciliation the review's own words support once `1006:8`'s corpus effect
+is read out of the ledger rather than assumed.
+
+**A prior draft of this document and its PR wrongly treated 25.0 % as "the
+correction" to 27 %,** having derived only `is_loud_effect_1006_8_silent`
+(then called `is_loud_kill`, defined by killer-tail content rather than
+corpus effect) without first finding the review's own written corpus-effect
+rule. That was wrong: 27 % is the review's PRIMARY, published figure and
+this release does not replace it — it mechanizes it, names its one
+borderline record precisely, and pins both readings so neither can drift
+silently again.
+
+The ledger's `summary` block carries `survey_killed_loud`,
+`survey_silent_changed`, `survey_silent_untested` and the per-layer silent
+counts for the PRIMARY frame, and the same five fields suffixed
+`_1006_8_silent` for the ALTERNATE; `claims.yaml` pins all of them by exact
+text against `docs/status/mutation_survey.json`
+(`SYNTH-MUTATION-SURVEY-RQ65`), so either rate drifting from the ledger it
+is derived from is now a red gate, not a rediscovery a release later.
 
 ## The corpus's configuration coverage — a caveat this document owes (#1238)
 

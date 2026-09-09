@@ -67,12 +67,21 @@ artifacts:
         `i64_result_pair_1189_differential.py` (+ .wat),
         `self_contained_boot_sweep_1189_differential.py` — and one unit test,
         `liveness::tests::aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189`
-        (rides `test`); `mutation_survey.py` gains the mechanical SILENT-subset
-        rule (`is_loud_kill`, `summarize`, `report`), re-run over the existing
-        v0.65 ledger (no oracle invocation — pure re-derivation) to extend its
-        `summary` block; `docs/status/MUTATION_SURVEY.md` rewritten to report
-        both rates and to state plainly that no 38-mutant re-sampling ran this
-        release (see "why `mutants_untested` does not fall" in that doc);
+        (rides `test`); `mutation_survey.py` gains `is_loud_effect`, the FIRST
+        code implementation of the v0.65 cold review's own silent-subset rule
+        (`docs/reviews/v0.65-cold-review.md`: loud iff the mutant's own
+        corpus-triage `changed[]` recorded >= 1 `newly-declined` or
+        `compile-timeout` entry — a property of the mutant's effect, not of
+        which layer/oracle caught it; `mutation_survey.py` on `main` had NO
+        loud/silent classification at all before this). Re-run over the
+        EXISTING v0.65 ledger (no oracle invocation — pure re-derivation) it
+        reproduces the published 27 % (4 of 15) exactly, plus the review's own
+        named alternate 25.0 % (4 of 16, with the one borderline record
+        `arm_backend.rs:1006:8` counted silent) — both pinned, neither
+        replacing the other; `docs/status/MUTATION_SURVEY.md` rewritten to
+        report both rates with the full derivation and to state plainly that
+        no 38-mutant re-sampling ran this release (see "why `mutants_untested`
+        does not fall" in that doc);
         `claims.yaml` adds the silent-subset pins and
         `SYNTH-MUTATION-WATCHED-RQ66`, and moves the exact emulation floor
         (three new `# ci-checks: emulations` declarations; re-derived by
@@ -117,11 +126,18 @@ artifacts:
         misclassify every mutant, not just these four, on an environment
         defect rather than an oracle observing wrongness — see
         MUTATION_SURVEY.md). What DID re-derive cleanly, with no such
-        dependency: `mutation_survey.summarize()` re-run over the committed
-        ledger reproduces the SILENT subset exactly — `killed_loud=5`,
-        `silent_changed=16`, `silent_untested=4`, 25.0 % silent survival,
-        silent kills 2/8/2 — matching this document's own claimed v0.65
-        re-derivation. `mutants_untested` stays 4/4 (ratchet green, unchanged
+        dependency: `mutation_survey.summarize()`'s `is_loud_effect` — the
+        v0.65 cold review's OWN corpus-effect rule, mechanized for the first
+        time (mutation_survey.py had no loud/silent classification before
+        this) — re-run over the committed ledger reproduces the PUBLISHED
+        27 % exactly: `killed_loud=6`, `silent_changed=15`,
+        `silent_untested=4`, 26.7 % (rounds to 27 %), silent kills 2/7/2; the
+        review's own named alternate (`arm_backend.rs:1006:8` counted silent)
+        gives `killed_loud=5`, `silent_changed=16`, 25.0 %, silent kills
+        2/8/2 — both pinned, neither replacing the other (an earlier pass of
+        this PR wrongly treated 25.0 % as a correction to 27 % before finding
+        the review's written rule; see MUTATION_SURVEY.md's correction note).
+        `mutants_untested` stays 4/4 (ratchet green, unchanged
         — see done-when). `claim_check.py claims.yaml` exits 0;
         `oracle_wiring_check.py --list --exact-emulation-floor <the value
         pinned in claims.yaml's SYNTH-ORACLE-CHECK-FLOORS-910-CI, +21000 over

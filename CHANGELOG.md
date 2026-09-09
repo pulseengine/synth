@@ -82,12 +82,21 @@ exit as KILLED, so a replay here would misclassify every mutant on an
 environment defect rather than an oracle observing wrongness (see
 `docs/status/MUTATION_SURVEY.md`, "why `mutants_untested` does not fall").
 The headline is therefore UNCHANGED: 4 of 21 byte-changing mutants survive
-(19 %). What DID move: **Silent subset** — kills by refusal, panic, floor or
-hang removed, now by a MECHANICAL rule in `mutation_survey.py`
-(`is_loud_kill`) rather than a hand tally — re-derived directly over the
-existing ledger (no oracle invocation) and reproduces exactly: **4 of 16,
-25.0 %** (not the 4 of 15 / 27 % the v0.65 cold review's hand tally quoted —
-that tally does not decompose from its own ledger).
+(19 %). What changed in KIND, not in value: **Silent subset** — the v0.65
+cold review's own rule ("loud" iff the mutant's own corpus triage recorded
+>= 1 module `newly-declined`/`compile-timeout`, a property of the mutant's
+effect, not of which CI job caught it) existed only as prose until this
+release; `mutation_survey.py` had NO loud/silent classification at all.
+Mechanized as `is_loud_effect` and re-run directly over the existing v0.65
+ledger (no oracle invocation, no re-sampling), it reproduces the published
+figure exactly: **4 of 15 = 26.7 %, rounding to the published 27 %.** One
+record is borderline and the review named it: `arm_backend.rs:1006:8`
+newly-declines exactly 1 of 104 corpus effects; counting it silent instead
+(the review's own stated alternate) gives **4 of 16 = 25.0 %**. Both are
+pinned; neither replaces the other — see `MUTATION_SURVEY.md` "The silent
+subset" for the full derivation and a correction note (an earlier pass of
+this PR treated 25.0 % as a correction to 27 % before finding the review's
+written rule; it is not one).
 `mutants_untested` ratchet: **4 → 4, unchanged** — the four oracles above are
 independently proven red-first by hand, but reclassifying the ledger's
 `UNTESTED` records honestly requires a genuine suite replay (CI, where a real

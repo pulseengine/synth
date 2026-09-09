@@ -3631,17 +3631,23 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 3
       # RQ-66-WATCHED: the SILENT-subset numbers, derived mechanically by
-      # `mutation_survey.py summarize()`'s `is_loud_kill` rule re-run over
-      # THIS SAME v0.65 ledger (no re-sampling, no oracle invocation — see
-      # MUTATION_SURVEY.md "why mutants_untested does not fall"). Pinned so
-      # the published 25.0 % silent-survival number cannot drift from the
-      # ledger it is derived from.
+      # `mutation_survey.py summarize()`'s `is_loud_effect` rule — the v0.65
+      # cold review's OWN canonical rule (docs/reviews/v0.65-cold-review.md:
+      # loud iff the mutant's `changed[]` triage shows >= 1 `newly-declined`
+      # or `compile-timeout` entry, a property of the mutant's corpus effect,
+      # not of which layer/killer caught it), re-run over THIS SAME v0.65
+      # ledger (no re-sampling, no oracle invocation). PRIMARY reproduces the
+      # published 27 % (4/15) exactly; ALTERNATE is the review's own named
+      # caveat ("25 % if `arm_backend.rs:1006:8` is counted silent", 4/16).
+      # Pinned so neither number can drift from the ledger it is derived
+      # from. See MUTATION_SURVEY.md "The silent subset" for the full rule
+      # and why 1006:8 is borderline.
       - kind: count-eq
-        pattern: '"survey_killed_loud": 5\b'
+        pattern: '"survey_killed_loud": 6\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
-        pattern: '"survey_silent_changed": 16\b'
+        pattern: '"survey_silent_changed": 15\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
@@ -3653,11 +3659,23 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
-        pattern: '"survey_silent_killed_structure": 8\b'
+        pattern: '"survey_silent_killed_structure": 7\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
         pattern: '"survey_silent_killed_freeze_only": 2\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq                       # ALTERNATE: 1006:8 forced silent
+        pattern: '"survey_killed_loud_1006_8_silent": 5\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_changed_1006_8_silent": 16\b'
+        glob: ['docs/status/mutation_survey.json']
+        expect: 1
+      - kind: count-eq
+        pattern: '"survey_silent_untested_1006_8_silent": 4\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # ci_subset: known-KILLED side
@@ -3776,6 +3794,6 @@ claims:
         glob: ['scripts/repro/self_contained_boot_sweep_1189_differential.py']
         expect: 2                            # the docstring and the assertion
       - kind: count-eq                       # the silent-subset rule is mechanical
-        pattern: '^def is_loud_kill\('
+        pattern: '^def is_loud_effect\('
         glob: ['scripts/mutation_survey.py']
         expect: 1
