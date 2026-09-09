@@ -178,6 +178,40 @@ exact count of pinned optimized-path wrong answers in the parity oracle), with
 sensitivity proved by mutation and the ARCHITECTURE.md sentence now stating
 how it is enforced and what remains pinned.
 
+### How much of this is correct by accident — measured by mutation (#1189, RQ-65-MUTANTS)
+
+The v0.65 headline number. #1189 survived every oracle because the then-arm
+was correct by accident; nobody had measured what share of the code
+generator's emitted-code DECISIONS the apparatus (~19,740 selector lines, 190+
+repro scripts, 61 CI jobs, 645 Qed) would catch being wrong. Now measured:
+`scripts/mutation_survey.py` flips one decision at a time (register swap,
+condition inverse, dropped `Mov`, immediate +1, guard negation, bound
+off-by-one), rebuilds, triages by emitted bytes over 200 corpus modules × 3
+ARM configurations, and runs a suite DERIVED from `ci.yml` (five named
+execution-oracle jobs + `cargo test --workspace`) only on mutants that
+changed bytes. **Sampled 38 mutants (seed 1189) across five anchor-located
+regions supplied by RQ-65-PARITY; 6 uncompilable, 32 compiled, 21
+byte-changing: 17 KILLED (6 by execution differentials, 8 by unit/
+integration tests, 2 by frozen-byte goldens ONLY, 1 by a compiler hang) and
+4 of 21 byte-changing mutants survived — 19 % survival, an UPPER bound
+under the full CI board** (a broader suite cannot un-kill a mutant). The 11
+byte-identical mutants are classified by a reach probe: 5 EQUIVALENT, 4 DEAD
+(deletion candidates for the subtraction ratchet), 2 UNRESOLVED and declared.
+Three red-first controls (the #1189 copy disabled; the select operands
+swapped; the startup R10 seed written into R9) all came back KILLED — and
+the third only by frozen-byte goldens, because no execution oracle in the
+suite boots the shipped `Reset_Handler`. The four survivors are enumerated
+with their exact diffs in `docs/status/MUTATION_SURVEY.md` (an `ir_to_arm`
+result `Mov` dropped; the `I32Eq` residual compare inverted on the direct
+selector; R2 removed from the AAPCS dead-at-return set; the startup
+data-copy count register moved) — that list is what v0.66 is scoped from.
+The instrument's discrimination is CI-pinned without re-running the survey:
+the `mutation-survey-discrimination` job replays the ledger's `ci_subset`
+(3 controls that must die by their recorded killer, 4 non-killed mutants
+whose byte-triage and reach verdicts must reproduce) and the eighth
+`kind: ratchet` pin, `mutants_untested`, is a ceiling over the committed
+ledger `docs/status/mutation_survey.json`.
+
 ### RQ-65-MVPCORE (#1017) — the MVP-core row, re-derived: 14 / 114 was measured on a path nothing executes
 
 **Delta stated plainly, per backend, on the corrected 80-file MVP-core set:

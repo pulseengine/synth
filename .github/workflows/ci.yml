@@ -3394,6 +3394,55 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
+  mutation-survey-discrimination:
+    name: "mutation survey — the instrument still discriminates (RQ-65-MUTANTS, #1189)"
+    # RQ-65-MUTANTS: docs/status/mutation_survey.json is the committed ledger
+    # of a seeded mutation survey over five codegen regions (frame, operators,
+    # suite and every verdict recorded; report in docs/status/MUTATION_SURVEY.md;
+    # survival numbers pinned in claims.yaml). Re-running the survey per PR is
+    # unaffordable (each byte-changing mutant is a build plus the derived
+    # oracle suite), so this job pins the HARNESS'S DISCRIMINATION instead:
+    # it replays the ledger's fixed `ci_subset` — known-KILLED red-first
+    # controls (the #1189 aliasing copy disabled, the select operands swapped,
+    # the startup R10 seed written into R9), whose recorded killer step must
+    # go red again, and known-SURVIVED / EQUIVALENT / DEAD mutants, whose
+    # recorded byte-triage (the exact set of corpus objects that change) and
+    # reach-probe verdicts must reproduce exactly. A control that stops being
+    # killed means an oracle lost its power; a survivor whose byte delta
+    # moved means the triage went blind; either direction is red. The
+    # `MUTANTS-CI` summary line is grepped so an empty or one-sided subset
+    # cannot pass (the #1112 pattern: assert the printed counts, not exit 0).
+    # It runs no new emulation oracle of its own — every step it replays is
+    # an already-declared scripts/repro/ oracle, so the summed
+    # `ci-checks: emulations` floor is untouched.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth (the unmutated baseline)
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone pyyaml
+      - name: "Replay the pinned mutant subset (controls must die, survivors must reproduce)"
+        run: |
+          set -euo pipefail
+          python3 scripts/mutation_survey.py ci | tee mutants-ci.txt
+          grep -Eq '^MUTANTS-CI subset=[4-9][0-9]* controls=[2-9][0-9]* non-killed=[2-9][0-9]* failures=0$' mutants-ci.txt
+
   home-alias-class-1189-oracle:
     name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"
     # RQ-65-ALIASCLASS: the EXECUTION half — every consumer family (i32/i64
