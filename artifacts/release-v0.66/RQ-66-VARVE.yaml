@@ -176,6 +176,68 @@ artifacts:
       pattern the old federated job already used, so it stops leaking into
       the shared runners' default cargo bin dir.
 
+      CORRECTION (post-review): the "Shadowing gate" as first built was a
+      HARD FAIL on any `varve verify` failure — which meant the job would be
+      RED ON EVERY RUN until the runner-side fix above lands, since the
+      hazard is real and reproduces reliably. A gate red on every run is not
+      "watched" in this release's own sense ("watched, fixed, or deleted —
+      there is no fourth"): it trains everyone to ignore it and blocks
+      unrelated PRs with a hazard they did not cause. Flagged by the
+      coordinator during review; agreed, and reshaped rather than argued
+      against.
+
+      NEW DESIGN: a KNOWN-OPEN PIN, same shape as the parity oracle's and
+      the home-alias differential's `KNOWN_OPEN` tables
+      (`scripts/repro/home_alias_class_1189_differential.py`) —
+      `scripts/check_varve_shadow_pins.py` reads the `varve verify` step's
+      captured output and compares the shadowed (tool, ambient-path) pairs
+      against a pinned dict literal, exact-match in both directions (the
+      #911 ratchet discipline): a shadowed tool NOT pinned is a NEW hazard
+      (red); a PINNED tool shadowed via a path that does NOT match the
+      pinned shape is a DIFFERENT hazard wearing the same name (red,
+      reported distinctly — this is the scope-widening the review caught:
+      the first cut keyed on tool name alone, which would have stayed green
+      if `rivet` were later shadowed by something else entirely at a
+      different path); a pinned tool no longer reported shadowed AT ALL is
+      an IMPROVEMENT that must be captured by editing the pin down in the
+      same PR (red until then, not silently accepted); otherwise green. The
+      pin currently carries exactly one entry — `rivet`, path shape
+      `\.cargo/bin/rivet$` (the stable suffix across both observed runners;
+      `/var/lib/runners/runnerN/` varies by design and is NOT part of the
+      pin). 14 unit tests (`scripts/test_check_varve_shadow_pins.py`) using
+      REAL captured fixtures (both actual CI runs, a real clean local run,
+      a real 5-tool local shadow run) plus one synthetic "same tool,
+      different path" fixture (that specific shape has not been observed —
+      labeled as synthetic, not measured), wired as a step in the REQUIRED
+      `claim-check` job (following the same "the checker doesn't get to be
+      the unchecked one" pattern as the sibling status-evidence/
+      loop-conformance/runner-redundancy checker tests already there).
+
+      CORRECTED ANSWER to "which of the 9 required contexts does this
+      affect": NOT NONE. **Claim Check** (required) now runs
+      `test_check_varve_shadow_pins.py` as one more step — a small, pure
+      Python, deterministic addition, but a real one, following existing
+      precedent in that exact job. `rivet-federated` itself remains
+      advisory/non-required, and with the pin in place it is expected to go
+      GREEN in the ordinary case (both real CI runs measured for this PR
+      replay green against the pin, per the test suite).
+
+      NOT YET WIRED into claims.yaml's `known_open_pins` ratchet
+      (RQ-66-PINDEBT, epic #242): **PR #1242 is an OPEN PR on
+      `feat/pindebt-242`, not merged to `main`, and not an ancestor of this
+      branch's base (75a02953)** — verified directly
+      (`git merge-base --is-ancestor 23caede5 75a02953` fails). The
+      coordinator's framing ("has just landed... currently 104") does not
+      hold on this branch; `known_open_pins` and the `pin-table` derivation
+      kind do not exist here. `KNOWN_OPEN` in
+      `scripts/check_varve_shadow_pins.py` is already shaped for that exact
+      mechanism (a top-level dict literal, `measure: entries`, no
+      `cases_at` needed) so registering
+      `{file: scripts/check_varve_shadow_pins.py, name: KNOWN_OPEN}` under
+      `known_open_pins.tables` in claims.yaml is a one-line follow-up once
+      #1242 merges — not done here since the field it would populate does
+      not exist on this branch.
+
       The layer carries **synth 0.61.0**; this repo ships 0.65.0 (moving to
       0.66 this release) — the layer is behind its own consumer, so the next
       `pulseengine-layers` deposit should bump it. Stated, not fixed here.
@@ -247,3 +309,20 @@ artifacts:
         the merge-blocking gate's toolchain source. A natural follow-up
         (not done here): give that job's `cargo install` a `--root` so it
         stops leaking into the shared runners' default cargo bin dir.
+        POST-REVIEW CORRECTION: the hard-fail "Shadowing gate" was replaced
+        with a KNOWN-OPEN pin (`scripts/check_varve_shadow_pins.py`,
+        `KNOWN_OPEN = {"rivet": (issue, note, path_pattern)}`, scoped to
+        tool name AND ambient-path shape, not name alone) after the
+        coordinator correctly flagged that a hard fail on this real,
+        not-fixable-here hazard would leave the job red forever, violating
+        this release's own "watched, fixed, or deleted" rule. Both real CI
+        runs above now replay GREEN against the pin (14 unit tests,
+        `scripts/test_check_varve_shadow_pins.py`, using the real captured
+        output from both runs plus a real clean run and a real 5-tool local
+        shadow run). That test suite is wired as a step in the REQUIRED
+        `claim-check` job — so the corrected answer to "which required
+        context is affected" is **Claim Check**, not none. NOT wired into
+        `known_open_pins` (RQ-66-PINDEBT): PR #1242 is confirmed OPEN, not
+        merged, not an ancestor of this branch's base — the coordinator's
+        "currently 104, has just landed" does not hold here; noted as a
+        one-line follow-up once #1242 merges.

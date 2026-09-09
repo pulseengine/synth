@@ -495,6 +495,17 @@ jobs:
       - name: Runner-redundancy structural check — every required context reports (RQ-62-CLAIMCHECK, #1062)
         run: python3 scripts/runner_redundancy_check.py --structural-only
 
+      # RQ-66-VARVE (#1236): the `rivet-federated` job's shadowing gate reads
+      # `varve verify` output against a KNOWN-OPEN pin table
+      # (scripts/check_varve_shadow_pins.py) rather than hard-failing on any
+      # shadow — the checker does not get to be the unchecked one either.
+      # Fixtures are REAL captured `varve verify` output (the two actual CI
+      # runs this pin was authored from, plus a real clean run and a real
+      # multi-tool-shadow run from the authoring machine), not synthesized
+      # text, so this replay is a replay of what was actually measured.
+      - name: Unit-test the varve shadow-pin gate — real-fixture replay (RQ-66-VARVE, #1236)
+        run: python3 scripts/test_check_varve_shadow_pins.py
+
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         # FLOOR TIGHTNESS (v0.62, #1145 review): the floor must EQUAL the
         # declared total, not merely sit below it. It had drifted 1,892
@@ -1010,12 +1021,15 @@ jobs:
         # shadowed PATH cannot corrupt this job's own sync/validate result —
         # the two findings (is the graph federated-valid; is PATH shadowed)
         # are independent, and blocking the first on the second would hide a
-        # real answer to the first behind an unrelated hazard. The final
-        # "Shadowing gate" step below still turns the JOB red if this failed —
-        # nothing here silently swallows it.
+        # real answer to the first behind an unrelated hazard. The
+        # "Shadowing gate" step below reads this step's captured output
+        # against a KNOWN-OPEN pin table rather than hard-failing on any
+        # shadow at all — see that step's comment for why.
         id: varve_verify
         continue-on-error: true
-        run: ~/.varve/bin/varve verify
+        run: |
+          set -o pipefail
+          ~/.varve/bin/varve verify 2>&1 | tee /tmp/varve-verify.txt
       - name: Sync externals (network — clones the 7 sibling repos)
         # #1143: AUTHENTICATE FOR QUOTA, NOT FOR ACCESS. All seven siblings are
         # PUBLIC, so this clone needs no permission — but GitHub rate-limits
@@ -1062,30 +1076,54 @@ jobs:
             echo "::error::Federated resolution appears NOT to have run (0 cross-repo backlinks loaded) — the #1012 poisoned-resolution signature. A green validate above is vacuous in this state."
             exit 1
           fi
-      - name: Shadowing gate — RQ-66-VARVE / #1236
-        # Turns the JOB red if the `varve verify` step above found a
-        # dispatched tool's name shadowed on PATH by something ambient, even
-        # though it did not block sync/validate from running (see that step's
-        # comment). A tolerated shadow here is exactly how a self-hosted
-        # runner ends up quietly running two different rivets from two jobs —
-        # the mixed-toolchain hazard varve exists to close. Do not silence
-        # this by removing the check; if it goes red, fix the runner's PATH
-        # (or the sibling job's install step), never this gate.
+      - name: Shadowing gate — RQ-66-VARVE / #1236 (known-open pin, RQ-66-PINDEBT shape)
+        # Reads the `varve verify` step's captured output against a KNOWN-OPEN
+        # pin table (scripts/check_varve_shadow_pins.py), the same "pin the
+        # exact known defect, exact-match both directions" shape as the
+        # parity oracle's and the home-alias differential's `KNOWN_OPEN`
+        # tables — NOT a hard fail on any shadow at all.
         #
-        # `always()` is REQUIRED here, not decoration: an `if:` with no
-        # status-check function gets an IMPLICIT `success()` ANDed in by
-        # Actions, so without it this step silently never runs once ANY
-        # earlier step in the job fails for an unrelated reason (sync,
-        # validate) — found for real at PR #1244 authoring: `varve verify`
-        # DID fail here (a real `rivet` shadow on the self-hosted runner) but
-        # this step was reported `skipped` because `Sync externals` also
-        # failed (a since-fixed `varve run` argument-order bug), and
-        # `success()` was false. `always()` decouples this gate from every
-        # other step's outcome, which is the whole point of it.
-        if: always() && steps.varve_verify.outcome == 'failure'
+        # WHY NOT HARD-FAIL (this is a correction from this PR's first
+        # version, made after real CI use): the first cut turned the job red
+        # on ANY `varve verify` failure. It immediately found a REAL,
+        # reproduced-on-two-different-self-hosted-runners hazard (`rivet`
+        # shadowed by the required `rivet` job's own `~/.cargo/bin/rivet`)
+        # — but that hazard is a property of the shared runner fleet, not
+        # fixable inside this change, so the job would have been red on
+        # EVERY run until someone else's infrastructure work landed. This
+        # release's own rule is "watched, fixed, or deleted — there is no
+        # fourth": a gate that is red on every run is not watched, it is
+        # ignored, and it blocks unrelated PRs with a hazard they did not
+        # cause. Pinning it — green on the known set, red on any DRIFT from
+        # it — makes it the fourth thing actually be "watched": counted,
+        # visible in the pin's own issue reference, and REQUIRED to shrink
+        # (not just permitted to) once the runner-side fix lands, because a
+        # tool no longer shadowed but still pinned is ALSO red (see the
+        # script's docstring) until the pin is edited down in that fix's PR.
+        #
+        # `always()` is REQUIRED, not decoration: an `if:` with no
+        # status-check function gets an implicit `success()` ANDed in by
+        # Actions, so without it this step would never run once an earlier,
+        # UNRELATED step (Sync externals, Validate) fails — found for real at
+        # PR #1244 authoring on the hard-fail version of this gate.
+        #
+        # NOT YET WIRED into claims.yaml's `known_open_pins` ratchet
+        # (RQ-66-PINDEBT, #1242): that PR was still open, based on the same
+        # commit this branch is, when this was written, so the `pin-table`
+        # derivation kind doesn't exist on this branch's base yet. The table
+        # in check_varve_shadow_pins.py is already shaped for it
+        # (`KNOWN_OPEN`, a plain dict literal, `measure: entries`) — adding
+        # `{file: scripts/check_varve_shadow_pins.py, name: KNOWN_OPEN}` to
+        # `known_open_pins.tables` in claims.yaml is the one-line follow-up,
+        # once #1242 merges (or as part of reconciling the two).
+        if: always()
         run: |
-          echo "::error::varve verify reported PATH shadowing (REQ-SHADOW-001) — see the 'varve verify' step's output above for which tool(s). This is advisory (job is not required), but it is a real cross-job toolchain hazard on this self-hosted runner, not a false alarm."
-          exit 1
+          if [ -f /tmp/varve-verify.txt ]; then
+            python3 scripts/check_varve_shadow_pins.py < /tmp/varve-verify.txt
+          else
+            echo "::error::/tmp/varve-verify.txt not found — the 'varve verify' step above did not run (an earlier step, e.g. 'varve install', likely failed before it). Cannot check shadow pins; that earlier failure is the real problem to look at."
+            exit 1
+          fi
 
   bazel:
     name: Bazel Build & Proofs
