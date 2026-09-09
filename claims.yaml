@@ -1539,9 +1539,69 @@ claims:
       - kind: ratchet
         name: selector_lines_code
         direction: down
-        value: 19740
+        # RQ-65-ALIASCLASS finishing lane (#1189): 19945 -> 19896. The
+        # `SYNTH_HOME_ALIAS_AUDIT` hook body (home-set construction, verbose
+        # line, decline text) moved OUT of select_with_stack.rs into
+        # `home_alias::selector_hook` — one call remains. A FALL, no waiver;
+        # value RE-DERIVED after cargo fmt.
+        value: 19896
         baseline: 17897
         waivers:
+          - to: 19896
+            reason: >-
+              RQ-65-ALIASCLASS finishing lane (#1189): a FALL, 19945 -> 19896,
+              recorded because every value above the baseline is bound to a
+              waiver. The `SYNTH_HOME_ALIAS_AUDIT` hook body — home-set
+              construction (params + #1069 float-local `since`), the verbose
+              line, the decline text — moved out of select_with_stack.rs into
+              `home_alias::selector_hook`, leaving one call (63 -> 12 lines);
+              the `plant` potency probe was added there, not here. Audit-only
+              code: objects identical with the variable unset (the corpus
+              sweep, its potency self-test and the four-leg execution oracle
+              are the gates). No lowering arm added or removed. Value
+              RE-DERIVED after cargo fmt.
+          - to: 19945
+            reason: >-
+              RQ-65-ALIASCLASS (#1222), coordinator salvage: +28 lines in
+              select_with_stack.rs for `declared_wide_params` and the two
+              guards that consume it. This is a CORRECTION to the same
+              artifact's own +177 growth, not new capability: the #1222
+              pair-write was gated only on `i64_locals`, which carries
+              body-INFERRED widths, so a param the signature calls i32 (or
+              whose width nobody declared) was homed NARROW by
+              `aapcs_param_layout` and the pair-write clobbered the NEXT
+              param's home. The `i64_lowering_doesnt_clobber_params` fuzz
+              target caught it writing R1 = local 1; the harness was right
+              and the fix over-applied. Narrowing the arm cannot be done by
+              deleting: the correct behaviour needs the declared-width test
+              the original arm lacked. Value RE-DERIVED after cargo fmt on
+              the tree rebased onto 1aebe474.
+          - to: 19917
+            reason: >-
+              RQ-65-ALIASCLASS (#1189/#1222): +177 lines in select_with_stack.rs,
+              two things. (a) `write_i64_param_home` + its two call sites in
+              the `LocalSet`/`LocalTee` register-homed-param arms: #1222, a
+              silent miscompile — `local.set`/`tee` of an i64 PARAM wrote only
+              the lo half at `index_to_reg(i)` (not the AAPCS pair) with the
+              #989 snapshot reserving only `val_lo`; every leaf function that
+              assigns an i64 param was wrong (spec suite: fac-opt, loop
+              `while`, type-param-i64, the 64-bit bulk-memory checkRanges —
+              `.wast` inputs, where the arm is inert under the declared-width
+              gate because the `.wast` driver threads no widths, #1226).
+              Nothing could be deleted in exchange: the class had NO handling.
+              (b) the `SYNTH_HOME_ALIAS_AUDIT` hook at the selector's tail —
+              the home-register write audit's entry point (the table and the
+              walk live in `home_alias.rs`, outside this ceiling); byte-
+              invisible unless the variable is set, it is what turns "no
+              other consumer writes a live home" from a reading into a sweep
+              (8317 functions on the full corpus, 0 hits — the 4628 first
+              written here was a suite-only run) with CI job
+              home-alias-audit-1189.
+              No new lowering arm and no code-region wildcard (the +2 in the
+              tracked total are `_ => None` inside the new #1222 test).
+              Value RE-DERIVED after cargo fmt. Byte-identity over 1419
+              compiles / 10725 functions: only the i64-param set/tee shapes
+              (and aarch64 rotl, #1221, in its own crate) moved.
           - to: 19740
             reason: >-
               MERGE of two landed growths on one tree (#1188 RQ-64-MVLOWER
@@ -1945,7 +2005,9 @@ claims:
         # (the RQ-64 then-result alias copy is now the shared #1189
         # mechanism, `copy_live_home_then_results`, so the merged code is
         # smaller than the two deltas summed).
-        value: 30565
+        # RQ-65-ALIASCLASS finishing lane: 30943 -> 30894, the audit hook
+        # collapsed to one call (see selector_lines_code).
+        value: 30894
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2006,7 +2068,7 @@ claims:
         # #1189: 90 -> 91 — the `_ => None` in the unit test
         # `if_result_join_never_targets_a_live_local_home_1189`'s MOV filter
         # (test region; the directed code-region count stays 55).
-        value: 91
+        value: 93
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -2809,7 +2871,18 @@ claims:
     #   RQ-65-FUNCN's +1: 325122 -> 345122. (The lane measured 345121
     #   against the pre-FUNCN 325121; the value is re-derived on the
     #   merged tree, never carried textually across a rebase.)
-    text: "--exact-emulation-floor 345122"
+    # v0.65 — RQ-65-ALIASCLASS (#1189/#1221/#1222): +1629 for
+    #   home_alias_class_1189_differential.py — the per-consumer home-register
+    #   oracle across all four legs (ARM relocatable / ARM self-contained /
+    #   RV32 / AArch64), carrying main's own captured wrong bytes for the 10
+    #   pinned #1221/#1222 vectors as a permanent red half. Value RE-DERIVED
+    #   from `oracle_wiring_check.py` AFTER rebasing onto the tree carrying
+    #   RQ-65-PARITY's +20000 and RQ-65-FUNCN's +1: 345122 -> 346751. (The
+    #   lane measured 326750 against the pre-PARITY 325121; the value is
+    #   re-derived on the MERGED tree, never carried textually across a
+    #   rebase. A textual merge here would have silently dropped 18,372
+    #   emulations from the enforced floor.)
+    text: "--exact-emulation-floor 346751"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

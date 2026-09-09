@@ -137,6 +137,15 @@ EXPECTED_DECLINES = {
     # thumbv7m-none-eabi has none). Neither is a regression and neither is
     # about the value-stack change this fixture exercises.
     "aarch64_call_valstack_rq63.wat": "i64 call arg (#929 AAPCS pair) + f64 with no FPU (GI-FPU-002)",
+    # RQ-65-ALIASCLASS (#1189). The i64 half of the home-register alias-class
+    # oracle (`home_alias_class_1189_differential.py`, which pins this exact
+    # decline set per leg). 10 of its 48 exports — the `c_*` compares, each an
+    # `i64.extend_i32_u` of an i64 comparison — decline on BOTH ARM paths for
+    # a pre-existing reason (the comparison result feeding a widening
+    # extend), so the module fails via #952 without --allow-skipped-exports.
+    # The other 38 (i64 binary/unary/shift/rotate/load/store/select, the #1222
+    # get->set->use pair) compile and execute equal to wasmtime on this path.
+    "home_alias_class_1189_i64.wat": "i64 compare -> i64.extend_i32_u (10 c_* exports, #952)",
     "aarch64_brtable_blockvals_851.wat": "i64/f32/f64 block result values",
     "aarch64_divrem_851.wat": "i64 f64-reinterpret round trip",
     "aarch64_float_completion_851.wat": "f32/f64 ceil/floor/trunc/nearest + i64<->float",

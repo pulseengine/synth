@@ -509,7 +509,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 345122 \
+            --exact-emulation-floor 346751 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3291,6 +3291,161 @@ jobs:
           grep -Eq '^live vectors: 149 matched, 0 diverged \(of 149\)$' ja1189.txt
           grep -q '^RESULT: PASS' ja1189.txt
       # #910: close the job with what it EXECUTED.
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  home-alias-audit-1189:
+    name: "home-register write audit over the corpus (RQ-65-ALIASCLASS, #1189)"
+    # RQ-65-ALIASCLASS: `local.get` of a register-homed local pushes THE HOME
+    # REGISTER uncopied on the ARM direct selector; #677, #989 and #1189 were
+    # three consumers that wrote it, each a silent wrong answer found one at a
+    # time. `synth_synthesis::home_alias::audit` (exhaustive over all 222
+    # `ArmOp` variants, no wildcard) runs inside `select_with_stack` under
+    # `SYNTH_HOME_ALIAS_AUDIT` and turns any write to a LIVE local's home
+    # (other than that local's own set/tee, a write that IS or runs straight
+    # into the inline epilogue `pop {…, pc}`, or the save/restore round trip
+    # of a VFP home around a `bl` — calls carry the AAPCS VFP clobber, so a
+    # MISSING restore is a hit) into a loud decline naming the instruction.
+    # Both exemptions are proven on the stream, never from the op name. This job
+    # compiles the pinned spec testsuite + tests/wast + tests/wat + fixtures +
+    # scripts/repro on both ARM paths x {cortex-m4, cortex-m4f} with it armed
+    # and requires ZERO UNEXPLAINED hits — over floors on the WORK DONE
+    # (functions audited, homes watched, attributed instructions), so a sweep
+    # that silently did less is red, not green (#1113), and — because a
+    # population floor proves the sweep RAN, not that the DETECTOR FIRES — a
+    # POTENCY self-test runs first: `SYNTH_HOME_ALIAS_AUDIT=verbose,plant`
+    # plants one synthetic home write per function of three fixtures and
+    # EXACTLY the pinned number must decline per (fixture, leg), 0 without the
+    # plant. A hit whose defect is filed and open is pinned EXACTLY so the fix
+    # must flip the pin (today: none as a WRITE). #1226, stated plainly: it is
+    # a mis-HOMING — the `.wast` driver path threads NO declared-width tables,
+    # so on any `.wast` an i64/f32/f64 param whose width body inference cannot
+    # recover is homed as i32 — which this audit cannot see as a write because
+    # it trusts the selector's home table; the 16 hits it once carried were a
+    # symptom that the #1222 declared-width gate removed by changing the
+    # EMISSION on that shape, not the walk (no coverage of home WRITES was
+    # lost). It is pinned red-first on the `homes=` count of the same module
+    # text as `.wast` vs `.wat` instead. Needs the suite submodule: the
+    # numbers below are measured WITH it (1045 module-leg pairs); a checkout
+    # without it fails loudly at 0 audited, never 0/0.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: "Run the home-register write audit sweep (RQ-65-ALIASCLASS)"
+        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 8317` header
+        # floors the audited population; the greps pin the printed totals
+        # EXACTLY (the #1112 pattern) so a corpus or hook change is a visible
+        # diff here, and `hits: 0` is what the artifact claims. Measured with
+        # the suite submodule present: 1045 (module, leg) pairs, 8317
+        # functions, 8776 homes, 261440 attributed instructions. (The
+        # 4628/2372 first pinned here were a suite-only run — the script's
+        # corpus root resolved one level too shallow.)
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
+          grep -Eq '^functions audited: 7191$' haa1189.txt
+          grep -Eq '^homes watched: 8100$' haa1189.txt
+          # POTENCY: the detector still fires, on this binary, through the
+          # same decline / needle / parse path — per (fixture, leg) EXACTLY
+          # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
+          # 0/0/11/11 (VFP homes; soft-float m4 has none) planted writes
+          # reported, 0 declines without the plant. 192 in total.
+          grep -Eq '^POTENCY: PASS \(192 planted writes reported, 0 without the plant, over 3 fixtures x 4 legs\)$' haa1189.txt
+          # #1226 CLOSED by RQ-65-MVPCORE (#1232), pin flipped here in the same
+          # release. Re-derived on the merged tree: every leg is now
+          # (merged-wast, single-wast, same-text-wat) = (0, 8, 8) — the
+          # single-module `.wast` path threads declared widths so `wast == wat`,
+          # and the multi-module merge REFUSES an i64-param module so
+          # `merged == 0`. The assertion is now EQUALITY plus that refusal, so a
+          # narrower `wast` OR the merge silently accepting again goes red.
+          grep -Eq '^WIDTH-1226: closed \(\.wast homes == \.wat homes, merge refuses, same module text on 4 legs\)$' haa1189.txt
+          # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk
+          # false positives (epilogue pop = the return; VFP caller-save round
+          # trip) fixed in home_alias.rs; the 16 #1226 hits were a symptom of
+          # the mis-homing that the #1222 declared-width gate removed by
+          # changing the emission on that shape (pinned above, not here).
+          grep -Eq '^hits: 0 \(known-open: 0 \[none\], unexplained: 0\)$' haa1189.txt
+          grep -q '^RESULT: PASS' haa1189.txt
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  home-alias-class-1189-oracle:
+    name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"
+    # RQ-65-ALIASCLASS: the EXECUTION half — every consumer family (i32/i64
+    # binary, compare, unary, conversions, loads/stores with a home as
+    # address and as value, select, function-level br_if, br_table, block
+    # params, block fall-through, a param-bounded loop, set/tee of another
+    # local, the #989 WAR, bulk memory) fed register-homed params and
+    # re-reading them, on ARM relocatable, ARM self-contained (the OPTIMIZED
+    # selector aliases too), RV32 (promoted locals alias) and AArch64 (leaf
+    # params alias). Its first run on main found THREE silent wrong answers:
+    # #1221 (aarch64 rotl negates the count IN PLACE in a param's home),
+    # #1222 (the direct selector's local.set/tee of an i64 param writes only
+    # the lo half), #1223 (the optimized path folds (x-x)+x to 0 — an IR
+    # defect, filed and pinned OPEN). The committed fixture holds main's
+    # (af819788) own objects for the five affected (module, leg) pairs and
+    # the 10 recorded wrong values must reproduce every run; the live half
+    # must match wasmtime on all four legs except the pinned-open #1223
+    # vector. Declines per leg are pinned EXACTLY (reach moved = red).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth (riscv feature — the RV32 leg needs it)
+        run: cargo build --features riscv -p synth-cli
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: "Run the RQ-65-ALIASCLASS four-leg oracle (fixture red half + live half)"
+        # `ci-checks: emulations >= 1629` counts fixture + live unicorn
+        # entries; it cannot see the wrong/match partition, the known-open
+        # pin or a dropped leg, so the script floors each and the greps pin
+        # the printed counts (the #1112 pattern).
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/home_alias_class_1189_differential.py | tee hac1189.txt
+          grep -Eq '^silent-wrong vectors: 10 \(of 10 pinned\); fixture match vectors: [1-9][0-9]*$' hac1189.txt
+          grep -Eq '^known-open vectors: 1 \(of 1\)$' hac1189.txt
+          grep -Eq '^live vectors: 999 matched, 0 diverged$' hac1189.txt
+          grep -q '^RESULT: PASS' hac1189.txt
       - name: Differential evidence ledger (#910)
         if: always()
         run: |

@@ -1328,12 +1328,33 @@ pub fn select_typed_cf_calls(
         // own now-dead register instead; `rorv` then reads `n` (intact) + `-k` and
         // writes `dst` safely — reads-before-write holds even if `dst` aliases an
         // input, and n/k are distinct stack slots so `neg(k,k)` never touches `n`.
-        if sf {
-            words.push(enc::neg64(k, k));
-            words.push(enc::rorv64(dst, n, k));
+        //
+        // #1221 (RQ-65-ALIASCLASS): "now-dead" is true of a TEMP only. A leaf
+        // function that never writes a param pushes the AAPCS64 register ITSELF
+        // (`stack.push(params[i])`, uncopied), so when `k` is a param home
+        // `neg k, k` overwrote the param for every later `local.get` — the
+        // #1189 class on this leg (`rotl(a,b) + a + b` returned `rotl + a - b`).
+        // A popped TEMP is dead (each temp is pushed exactly once, by its
+        // producer; only params are pushed by reference), so the in-place form
+        // keeps yesterday's bytes there; a non-temp `k` gets a scratch chosen
+        // with `n`, `k` and `dst` all held live, so it aliases none of them.
+        let neg_into = if TEMPS.contains(&k) {
+            k
         } else {
-            words.push(enc::neg(k, k));
-            words.push(enc::rorv(dst, n, k));
+            let depth = stack.len();
+            stack.push(Val::gp(n));
+            stack.push(Val::gp(k));
+            stack.push(Val::gp(dst));
+            let t = alloc_temp(stack);
+            stack.truncate(depth);
+            t?
+        };
+        if sf {
+            words.push(enc::neg64(neg_into, k));
+            words.push(enc::rorv64(dst, n, neg_into));
+        } else {
+            words.push(enc::neg(neg_into, k));
+            words.push(enc::rorv(dst, n, neg_into));
         }
         stack.push(Val::gp(dst));
         Ok(())
@@ -4097,17 +4118,129 @@ mod tests {
             WasmOp::End,
         ];
         let w = select(&ops, 2).unwrap();
-        // #776: -k is computed in k's own register (1), NOT in dst (9) — so a
-        // computed `n` reused as dst is never clobbered before rorv reads it.
+        // #776: -k is NOT computed in dst (9) — a computed `n` reused as dst
+        // would be clobbered before rorv reads it. #1221 (RQ-65-ALIASCLASS):
+        // nor in k's OWN register when k is a PARAM home (w1 here) — the
+        // value stack holds the AAPCS register itself, so `neg w1, w1` wrote
+        // the param and every later `local.get 1` read `-k`. The scratch is
+        // a temp distinct from n (0), k (1) and dst (9): w10.
         assert_eq!(
             w,
             vec![
-                enc::neg(1, 1),
-                enc::rorv(9, 0, 1),
+                enc::neg(10, 1),
+                enc::rorv(9, 0, 10),
                 enc::mov_reg64(0, 9),
                 enc::ret()
             ]
         );
+        // A param re-read after the rotate is intact: no instruction writes w1.
+        assert!(
+            !w.iter().any(|&i| i & 0x1F == 1 && i != enc::ret()),
+            "no emitted word may have w1/x1 as its destination: {w:#x?}"
+        );
+    }
+
+    /// #1221: when the count is a TEMP (a computed value, dead after its
+    /// pop) the in-place `neg k, k` keeps its #776 bytes — the scratch copy
+    /// is taken only for a register-homed param.
+    #[test]
+    fn i32_rotl_temp_count_keeps_in_place_neg_1221() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(3),
+            WasmOp::I32Rotl,
+            WasmOp::End,
+        ];
+        let w = select(&ops, 1).unwrap();
+        assert!(
+            w.contains(&enc::neg(9, 9)),
+            "a temp count is negated in place (yesterday's bytes): {w:#x?}"
+        );
+        assert!(
+            !w.iter()
+                .any(|&i| i & 0x1F == 0 && i != enc::ret() && i != enc::mov_reg64(0, 9)),
+            "the param home w0 is never a destination: {w:#x?}"
+        );
+    }
+
+    /// RQ-65-ALIASCLASS (#1189): WHY this leg is clean, pinned. A leaf
+    /// function that never writes a param pushes the AAPCS64 register
+    /// ITSELF (`stack.push(params[i])`, uncopied), so a param home is a
+    /// register any consumer could write in place. The stated reason none
+    /// does: every destination is drawn from `TEMPS` (x9..x15, disjoint from
+    /// the x0..x7 argument registers) — a reconciliation register included —
+    /// so a param register is written only by the epilogue's result move.
+    /// #1221 was the one consumer that broke the rule by writing an OPERAND
+    /// (`neg k, k`), which is why the behavioural half below walks every
+    /// two-operand family with the param re-read afterwards.
+    #[test]
+    fn param_homes_are_never_a_destination_1189() {
+        assert!(
+            TEMPS.iter().all(|&t| (9..=15).contains(&t)),
+            "the GP temp pool is x9..x15: {TEMPS:?}"
+        );
+        let params = param_map(8, &[false; 8], &[false; 8]);
+        assert!(
+            params.iter().all(|p| p.file == File::Gp && p.reg < 8),
+            "integer params are x0..x7: {params:?}"
+        );
+        // Behavioural: a + (a OP b) + b for every two-operand family and the
+        // unary ones on b — b's home (w1) must not be the Rd of any word.
+        // (div/rem excluded: their `cbnz w1` guard has w1 in the Rt field,
+        // which is a READ; they are covered by the execution oracle.)
+        let ops2 = [
+            WasmOp::I32Add,
+            WasmOp::I32Sub,
+            WasmOp::I32Mul,
+            WasmOp::I32And,
+            WasmOp::I32Or,
+            WasmOp::I32Xor,
+            WasmOp::I32Shl,
+            WasmOp::I32ShrS,
+            WasmOp::I32ShrU,
+            WasmOp::I32Rotl,
+            WasmOp::I32Rotr,
+            WasmOp::I32Eq,
+            WasmOp::I32LtS,
+            WasmOp::I32GeU,
+            WasmOp::I64Add,
+            WasmOp::I64Rotl,
+            WasmOp::I64Shl,
+        ];
+        for op in ops2 {
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::LocalGet(1),
+                WasmOp::Drop,
+                WasmOp::End,
+            ];
+            let w = select(&ops, 2).unwrap();
+            assert!(
+                !w.iter().any(|&i| i != enc::ret() && (i & 0x1F) == 1),
+                "{op:?}: a word writes w1/x1, param 1's home: {w:#x?}"
+            );
+        }
+        for op in [
+            WasmOp::I32Eqz,
+            WasmOp::I32Clz,
+            WasmOp::I32Ctz,
+            WasmOp::I32Popcnt,
+        ] {
+            let ops = vec![
+                WasmOp::LocalGet(1),
+                op.clone(),
+                WasmOp::LocalGet(1),
+                WasmOp::Drop,
+                WasmOp::End,
+            ];
+            let w = select(&ops, 2).unwrap();
+            assert!(
+                !w.iter().any(|&i| i != enc::ret() && (i & 0x1F) == 1),
+                "{op:?}: a word writes w1/x1, param 1's home: {w:#x?}"
+            );
+        }
     }
 
     // #851 — div/rem now LOWER (SDIV/UDIV + MSUB) with WASM trap guards.

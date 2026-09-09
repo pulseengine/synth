@@ -106,6 +106,24 @@ impl InstructionSelector {
             &self.params_f32,
             &params_f64_vfp,
         );
+        // #1222 (RQ-65-ALIASCLASS): a param is a register PAIR only when its
+        // DECLARED width says so and the layout above homed it as one.
+        // `i64_locals` also carries body-INFERRED widths (`infer_i64_locals`),
+        // and a param the signature calls i32 (or whose width nobody
+        // declared — a direct `select_with_stack` caller, ANY `.wast` input
+        // (#1226: that driver threads no widths), invalid wasm) that stores an i64
+        // into was homed NARROW by `aapcs_param_layout`: its "hi half" is the
+        // NEXT param's home. The pair-writing set/tee arm must not fire there
+        // — the `i64_lowering_doesnt_clobber_params` harness caught it writing
+        // R1 = local 1 on exactly that undeclared configuration. Such a param
+        // keeps the single-move arm: yesterday's bytes, measured.
+        let declared_wide_params: Vec<bool> = (0..num_params)
+            .map(|p| {
+                self.params_i64.get(p as usize).copied().unwrap_or(false)
+                    && !params_f64_vfp.get(p as usize).copied().unwrap_or(false)
+                    && param_layout.regs.contains_key(&p)
+            })
+            .collect();
         let has_reg_i64_param = (0..num_params).any(|i| {
             self.params_i64.get(i as usize).copied().unwrap_or(false)
                 && param_layout.regs.contains_key(&i)
@@ -5573,6 +5591,29 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else if *local_idx < num_params.min(4) {
+                        if i64_locals.contains(local_idx)
+                            && declared_wide_params
+                                .get(*local_idx as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        {
+                            // #1222: an i64 param is a register PAIR — both
+                            // halves are written, at the AAPCS home.
+                            let n = write_i64_param_home(
+                                *local_idx,
+                                val,
+                                None,
+                                &local_to_reg,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            cf.add_instructions(n);
+                            continue;
+                        }
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
                             // #989: an EARLIER `local.get` of this same param
@@ -5723,6 +5764,31 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else if *local_idx < num_params.min(4) {
+                        if i64_locals.contains(local_idx)
+                            && declared_wide_params
+                                .get(*local_idx as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        {
+                            // #1222: an i64 param is a register PAIR — both
+                            // halves are written, at the AAPCS home; the tee's
+                            // kept top is skipped by the alias snapshot.
+                            let top_idx = stack.len() - 1;
+                            let n = write_i64_param_home(
+                                *local_idx,
+                                val,
+                                Some(top_idx),
+                                &local_to_reg,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            cf.add_instructions(n);
+                            continue;
+                        }
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
                             // #989: snapshot earlier `local.get` aliases of this
@@ -8245,6 +8311,96 @@ impl InstructionSelector {
             assert_spill_reloads_have_stores(&instructions, spill.base, spill.used.len());
         }
 
+        // RQ-65-ALIASCLASS (#1189): the home-register write audit. `local.get`
+        // of a register-homed local pushes the HOME REGISTER uncopied, so any
+        // instruction that writes that register while the local is still read
+        // — other than the local's own set/tee — is the #677/#989/#1189 class.
+        // Armed by `SYNTH_HOME_ALIAS_AUDIT` (the corpus sweep and the
+        // per-opcode oracle run with it); a hit is a LOUD DECLINE naming the
+        // write, never a rewrite. Unset, this call is byte-invisible. The home
+        // set, the walk, the `plant` potency probe and the decline text all
+        // live in `home_alias.rs` — this call is the selector's only contact.
+        crate::home_alias::selector_hook(
+            &instructions,
+            wasm_ops,
+            num_params,
+            &home_of,
+            &f32_home,
+            &f64_home,
+        )?;
+
         Ok(instructions)
     }
+}
+
+/// #1222 (RQ-65-ALIASCLASS): write `val` (the LO register of an i64 vstack
+/// value; hi = `i64_pair_hi`) into the register-PAIR home of i64 param
+/// `local_idx`. The i32 arm this sits beside got three things wrong for a
+/// pair, each a silent wrong answer on every LEAF function that assigns an
+/// i64 param (`set64(0x1_00000007)` returned `0x1_00000004` for
+/// `0x3_00000004`):
+///
+///  1. the home is the AAPCS pair recorded in `local_to_reg` — even-aligned,
+///     and shifted by any preceding wide param — where `index_to_reg(i)` is
+///     only right for an all-i32 signature;
+///  2. BOTH halves are moved, ordered so a partially overlapping pair
+///     (`val_hi == target_lo`) never reads a half the first move clobbered;
+///  3. the #989 alias snapshot reserves BOTH halves of `val`, so the pair it
+///     allocates for a still-live earlier `local.get` of this param cannot
+///     land on `val_hi` (it did: `mov r5, r1` into the constant's hi word).
+///
+/// `skip` is the vstack index the snapshot leaves alone (`local.tee`'s kept
+/// top). Returns the number of instructions emitted, for `cf`.
+#[allow(clippy::too_many_arguments)]
+fn write_i64_param_home(
+    local_idx: u32,
+    val: Reg,
+    skip: Option<usize>,
+    local_to_reg: &std::collections::HashMap<u32, Reg>,
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    live_params: &[Reg],
+    idx: usize,
+) -> Result<usize> {
+    let target = local_to_reg.get(&local_idx).copied().ok_or_else(|| {
+        synth_core::Error::synthesis(format!(
+            "#1222: i64 param {local_idx} has no register home at op {idx} (compiler \
+             bug: the register-homed set/tee arm was reached for an unhomed param)"
+        ))
+    })?;
+    if val == target {
+        return Ok(0);
+    }
+    let target_hi = i64_pair_hi(target)?;
+    let val_hi = i64_pair_hi(val)?;
+    let mut rsv = live_params.to_vec();
+    rsv.push(val);
+    rsv.push(val_hi);
+    snapshot_home_reg_aliases(
+        target,
+        skip,
+        stack,
+        next_temp,
+        instructions,
+        spill,
+        &rsv,
+        idx,
+    )?;
+    let moves = if val_hi == target {
+        [(target_hi, val_hi), (target, val)]
+    } else {
+        [(target, val), (target_hi, val_hi)]
+    };
+    for (rd, rs) in moves {
+        instructions.push(ArmInstruction {
+            op: ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rs),
+            },
+            source_line: Some(idx),
+        });
+    }
+    Ok(2)
 }
