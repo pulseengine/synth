@@ -21,17 +21,32 @@ mechanically rather than by re-reading selector arms:
   otherwise). Any write to a live local's home other than its own set/tee or
   a straight-line-to-epilogue `return` move is a loud decline naming the
   instruction. Swept over the pinned spec testsuite + local corpus on
-  {relocatable, self-contained} x {cortex-m4, cortex-m4f}: **4,628 functions,
-  2,372 homes, 227,150 instructions, 0 unexplained hits** (16 hits pinned
-  KNOWN-OPEN against #1226, below); the same audit on the pre-#1190 compiler
-  flags exactly #1190's 10 wrong functions and none of its clean ones
-  (`home_alias_audit_corpus_1189.py`, job `home-alias-audit-1189`).
-  - **#1226 (open, pinned)** — surfaced BY the #1222 fix: in a multi-module
-    `.wast` the merge hands a later module's function the representative
-    module's param-width table, so an i64 param is homed as i32 and its pair
-    overlaps the next param (`(i64 i64 i32)`: `$to` at R1:R2). A CLI-merge
-    defect (#1168 re-threads arg counts, not width masks), not the alias
-    class; 4 spec-suite functions x 4 legs pinned exactly until fixed.
+  {relocatable, self-contained} x {cortex-m4, cortex-m4f}, submodule present:
+  **8,317 functions, 8,776 homes, 261,440 instructions on 1,045 (module,
+  leg) pairs, 0 hits**; the same audit on the pre-#1190 compiler flags
+  exactly #1190's 10 wrong functions and none of its clean ones
+  (`home_alias_audit_corpus_1189.py`, job `home-alias-audit-1189`). The
+  first run over the FULL corpus (the lane's 4,628/2,372 figures were a
+  suite-only run — the script's corpus root resolved one level too shallow)
+  reported 12 hits, all false positives of the walk, fixed in the walk: the
+  inline epilogue `pop {r4-r8, pc}` restores a promoted local's r4 and
+  returns in the same instruction (8: mid-function `return`, function-level
+  `br_if`), and the caller-save restore `vldr s0, [sp, #n]` of an f32 home
+  after a `bl` (4) — the audit had not stated the AAPCS VFP caller-saved
+  clobber (s0–s15) on calls, so the clobber was invisible and its restore
+  looked like the write. Calls now carry the clobber (a missing restore is
+  a hit; none on the corpus) and the save/restore round trip is proven on
+  the stream; each fix's negative variant reproduces exactly its own shape.
+  - **#1226 (open, now silent to the audit)** — surfaced BY the #1222 fix:
+    in a multi-module `.wast` the merge hands a later module's function the
+    representative module's param-width table, so an i64 param is homed as
+    i32 and its pair overlaps the next param (`(i64 i64 i32)`: `$to` at
+    R1:R2). A CLI-merge defect (#1168 re-threads arg counts, not width
+    masks), not the alias class. The `declared_wide_params` gate reads the
+    same stale table, so `local.set $from` writes only R0 there again and
+    the 16 pinned hits stopped occurring — the HIT is gone, the miscompile
+    is not (`checkRange` still compares `$to` at R1:R2); the pin is removed,
+    the issue stays open.
 - **Execution oracle, four legs** — 117 consumer-family functions (i32, i64,
   promoted-local) re-reading their homes after every op, on ARM relocatable,
   ARM self-contained (the optimized selector aliases too), RV32 and AArch64;

@@ -46,20 +46,34 @@ table names what it writes; a write to a live home (loop-back-edge extended
 liveness, #663) that is not the local's own set/tee and not straight-line
 into an inline epilogue is a hit. Swept over the pinned spec testsuite (257
 files) + tests/wast + tests/wat + fixtures + scripts/repro on {relocatable,
-self-contained} x {cortex-m4, cortex-m4f}: **4,628 functions, 2,372 homes,
-227,150 attributed instructions, 0 unexplained hits**
+self-contained} x {cortex-m4, cortex-m4f}, WITH the suite submodule present
+(the lane's first figures — 4,628 functions, 2,372 homes — were a suite-only
+run: the script's corpus root resolved one level too shallow and never saw
+tests/wat, fixtures or scripts/repro): **1,045 (module, leg) pairs, 8,317
+functions, 8,776 homes, 261,440 attributed instructions, 0 hits**
 (`home_alias_audit_corpus_1189.py`, CI job `home-alias-audit-1189`). The
-sweep carries 16 hits pinned KNOWN-OPEN against one filed defect, #1226:
-the multi-module `.wast` merge hands a later module's function the
-representative module's param-width table, so `(i64 i64 i32)`'s `$to` is
-homed at R1:R2 and the (#1222-correct) `local.set $from` writing R0:R1 lands
-on "local 1" — 4 functions (`memory_{copy,fill,init}64 checkRange`,
-`memory_grow64 check-memory-zero`) x 4 legs. Not the alias class (the
-consumer writes its own local; the NEIGHBOUR's homing is wrong), and only
-visible because #1222 now writes the hi half — the pre-fix sweep read 0
-hits over the same wrong homing. Potency: the same audit on the pre-#1190
-compiler flags exactly the 10 functions #1190 recorded as wrong and none of
-its 7 pinned-clean ones.
+first run over the FULL corpus reported 12 hits, every one a false positive
+of the WALK and fixed in the walk rather than pinned: (a) 8 x the inline
+epilogue `pop {r4-r8, pc}` at a mid-function `return` / function-level
+`br_if` — it restores a promoted local's r4 and RETURNS in the same
+instruction, but the terminal-write scan started PAST the writer
+(`cabi_arena_{bind,realloc}.wat` func_0, `home_alias_class_1189_promo.wat`
+p_brif); (b) 4 x the caller-save RESTORE `vldr s0, [sp, #n]` of an f32 home
+after a `bl` (`f32_ops_719.wat` xhome/xcall2) — the audit had not stated the
+AAPCS VFP caller-saved clobber (s0–s15) on calls, so the `bl` that makes the
+restore necessary was invisible and the restore looked like the write. Calls
+now carry the clobber in `vfp_defs` (a MISSING restore is a hit — re-swept:
+none on the corpus) and the round trip is proven on the stream
+(`write_is_bracketed_by_save_restore`); each exemption's negative variant
+reproduces exactly its own shape (8 / 4) and nothing else. #1226 is no
+longer visible to this audit: the `declared_wide_params` gate (#1222) reads
+the same stale width table, so `checkRange`'s `local.set $from` writes only
+R0 again and nothing lands on `$to`'s mis-homed R1:R2 — the HIT is gone, the
+MISCOMPILE is not (`cmp r0, r1; it eq; cmpeq r1, r2` still reads `$to` at
+R1:R2, and the `i64.const -1` return sets R0 only); the issue stays open,
+unpinned here because no sweep line can see it. Potency: the same audit on
+the pre-#1190 compiler flags exactly the 10 functions #1190 recorded as
+wrong and none of its 7 pinned-clean ones.
 
 | consumer | disposition | reason / evidence |
 |---|---|---|
@@ -67,11 +81,13 @@ its 7 pinned-clean ones.
 | `if (result)`/`else` join `mov R_then, R_else` | GUARD | #1190: then-result that is a live home is copied on the then path; oracle `join_alias_1189_differential.py` |
 | `block`/`loop`/`br`/`br_if`/`br_table` value carry (#509/#931) | PIN | the block result register is a fresh temp with the home only ever a SOURCE (`bbrif`/`bfall` in #1190; `brif_blk`, `brtab`, `blkfall`, `loopcnt` here); a function-level `br_if` with a home value keeps the home intact on the fall-through (`brif_fn`, executed) |
 | `return` / function-level `br` result move into R0 | PIN | the move runs straight-line into the inline epilogue (`add sp; pop {…, pc}`) — no later op can run; the audit proves this ON THE STREAM (`write_is_terminal`), and a `br_if` that wrote R0 before a conditional branch would stay a hit |
+| the inline epilogue `pop {r4-r8, pc}` itself (mid-function `return`, function-level `br_if`) | PIN | it WRITES r4–r8 — a promoted local's home — and returns in the same instruction, so the writer IS the terminator; `Pop` has no conditional form in `ArmOp` and both encoders emit it unconditionally. The first full-corpus run flagged 8 of these because the terminal scan started past the writer; a `pop` without `pc` stays a hit (unit-tested) |
 | `local.set`/`local.tee` of the SAME local (i32) | GUARD | the one legitimate writer; #989 snapshots still-live aliases first (`war_set`, executed) |
 | `local.set`/`local.tee` of an **i64 param** | **FIXED #1222** | wrote only the lo half, at `index_to_reg(i)` instead of the AAPCS pair, with the alias snapshot reserving only `val_lo`; now `write_i64_param_home` moves both halves at the `local_to_reg` home, ordered for partial overlap, with both halves of `val` reserved. Affected spec-suite functions (previously silently wrong): `fac.wast fac-opt`, `loop.wast while`, `local_set/local_tee.wast type-param-i64`, the 64-bit bulk-memory `checkRange`s, `memory_grow64 check-memory-zero` |
 | `local.set`/`tee` of ANOTHER local | PIN | stores to the frame slot / moves into the other local's register; the source home is read only (`set_other`, `tee_other`, executed) |
 | `memory.fill`/`memory.copy` walking pointers | GUARD | #677 `bulk_mutable_operand` copies a live operand to scratch (`fill`, `copy`, executed) |
-| `call` argument marshalling / caller-saved clobber | PIN | a call-containing function frame-backs its params (#193/#204) and promotion is leaf-only (#390), so no home exists to alias (`icall` row in #1190) |
+| `call` argument marshalling / caller-saved clobber (core registers) | PIN | a call-containing function frame-backs its integer params (#193/#204) and promotion is leaf-only (#390), so no CORE home exists to alias (`icall` row in #1190) |
+| `call` caller-saved clobber (VFP, cortex-m4f) | PIN | an f32/f64 param or #1069-homed float local KEEPS its S/D home across a call; s0–s15 are AAPCS caller-saved and the selector saves the home to a frame slot before the `bl` and reloads it after. `vfp_defs` states the clobber on every call-shaped op and the audit proves the round trip ON THE STREAM (`write_is_bracketed_by_save_restore`: same register, same static slot, the save before any other write of the home in the op, nothing between save and restore touching the slot, its base register or control flow) — a missing restore, a restore from another slot, a store into the slot, an SP move or a label in between all stay hits (unit-tested). Corpus: 0 hits with the clobber stated; executed: `f32_ops_719_differential.py` (238/238 bit-exact vs wasmtime, incl. "f32-across-call spill/reload", m4f under unicorn) |
 | spill-on-exhaustion reloads | GUARD | #973 `pop_operand_committed` reserves already-popped operands; the #1189 copy declines honestly if displaced |
 | encoder expansions with hidden scratch (`POPCNT`→R11 #1021, i64 shift amount #1048, VCVT transit S-register) | out of the audit's sight, stated | the `ArmOp` names no home there; covered by the expansion-canary gates and #1048's read-only amount |
 
@@ -123,15 +139,19 @@ skip-set moved.
 
 * The static audit sees every EMITTED instruction of the ARM direct selector,
   so a `_ =>` arm nobody walked cannot hide a write — but only over the inputs
-  swept (the pinned suite + local corpus, ~4.6k functions; the 805-module
+  swept (the pinned suite + local corpus, 8,317 functions on 1,045 (module,
+  leg) pairs; the 805-module
   real-world census is not on the lane machine). The per-family oracle covers
   the consumer families the corpus may not exercise with a home operand.
 * Instructions with `source_line: None` are not audited (prologue/epilogue;
-  the count is reported: 17,330 over the sweep, ~3.7 per function).
+  the count is reported: 33,406 over the full sweep, ~4.0 per function).
 * Hidden scratch inside encoder expansions is outside the `ArmOp` and the
   audit (item above); the expansion-canary gates own it.
 * The other three legs have no per-op attribution, so they are pinned by
   structural tests plus the execution oracle, not by an audit of every
   emitted word.
-* VFP homes (cortex-m4f) are audited statically (the m4f sweep legs) but not
-  executed under unicorn in this artifact.
+* VFP homes (cortex-m4f) are audited statically (the m4f sweep legs, with the
+  AAPCS VFP call clobber stated); the f32-across-call shape the sweep
+  exercises is executed under unicorn by the CI-wired
+  `f32_ops_719_differential.py` (238/238 bit-exact), not by this artifact's
+  own oracle.

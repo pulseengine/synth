@@ -27,6 +27,24 @@
 //!          and the op at `idx` is not `local.set p` / `local.tee p`
 //!       then this instruction is a #1189-class write.
 //!
+//! Two writes are EXEMPT, each proven ON THE STREAM rather than assumed from
+//! the op name: (a) a write on a path that LEAVES THE FUNCTION — the
+//! instruction is, or runs straight-line into, an inline epilogue
+//! `pop {…, pc}` / `bx lr` ([`write_is_terminal`]; the epilogue `pop` itself
+//! restores every callee-saved home it names — a promoted local's r4–r8 —
+//! and returns in the same instruction, so no later op can run); (b) a write
+//! BRACKETED BY A SAVE/RESTORE round trip of the same register through the
+//! same frame slot within the same op — the caller-save around a `bl` of a
+//! VFP home (s0–s15 are AAPCS caller-saved and calls carry that clobber in
+//! [`vfp_defs`], so a MISSING restore is a hit) — where the save precedes
+//! every other write of the home in that op and nothing between save and
+//! restore touches the slot, its base register or control flow
+//! ([`write_is_bracketed_by_save_restore`]). Both exemptions were found as
+//! corpus false positives (30 `Return` moves and 2 VFP first-defs on the
+//! first run; the epilogue `pop` and the VFP round trip on the first run
+//! over the FULL corpus) and each carries a unit test for the exempt shape
+//! AND the still-flagged variants.
+//!
 //! The liveness here is deliberately CONSERVATIVE and INDEPENDENT of the
 //! selector's own `param_last_read`: it treats no `local.set` as a kill (a
 //! set on one arm of a branch does not dominate the merge read, #990), so a
@@ -56,6 +74,18 @@ use synth_core::WasmOp;
 /// and states the clobber where a future "keep a param in r0 across a leaf
 /// call" change would trip it.
 const CALL_CLOBBERS: [Reg; 6] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12, Reg::LR];
+
+/// The AAPCS caller-saved VFP registers a `BL`/`BLX`/`Call` may clobber, as
+/// S-register slots: s0–s15 (d0–d7). Unlike the core set this one IS live
+/// across calls — an f32/f64 param, or a #1069-homed float local, keeps its
+/// S/D home in a call-containing function and the selector saves/restores it
+/// around the `bl` (`f32_ops_719.wat` `xhome`/`xcall2`, executed bit-exact by
+/// `f32_ops_719_differential.py`). Stating the clobber is what lets the audit
+/// SEE a missing restore; the round trip that is present is discharged on
+/// the stream by [`write_is_bracketed_by_save_restore`]. Before this was
+/// stated, the RESTORE (`vldr s0, [sp, #24]`) surfaced as the write and the
+/// `bl` that made it necessary was invisible.
+const VFP_CALL_CLOBBERS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /// Every CORE register `op` writes. Exhaustive over `ArmOp` — a new variant
 /// fails compilation here until its writes are stated. Explicit destination
@@ -359,6 +389,11 @@ pub fn vfp_defs(op: &ArmOp) -> Vec<u8> {
         | F64ConvertI64U { dd, .. }
         | F64PromoteF32 { dd, .. }
         | F64ReinterpretI64 { dd, .. } => d(dd),
+        // Calls: the AAPCS VFP caller-saved set (s0–s15). A VFP home IS kept
+        // across a call (saved/restored around the `bl`), so this is the
+        // write the round-trip exemption discharges — and the one a missing
+        // restore leaves standing.
+        Bl { .. } | Blx { .. } | Call { .. } | CallIndirect { .. } => VFP_CALL_CLOBBERS.to_vec(),
         // Reads of the VFP file only (stores, compares, float→int).
         F32Store { .. }
         | F64Store { .. }
@@ -440,9 +475,7 @@ pub fn vfp_defs(op: &ArmOp) -> Vec<u8> {
         | Bhs { .. }
         | Blo { .. }
         | Bcc { .. }
-        | Bl { .. }
         | Bx { .. }
-        | Blx { .. }
         | Push { .. }
         | Pop { .. }
         | Nop
@@ -462,8 +495,6 @@ pub fn vfp_defs(op: &ArmOp) -> Vec<u8> {
         | GlobalGet { .. }
         | GlobalSet { .. }
         | BrTable { .. }
-        | Call { .. }
-        | CallIndirect { .. }
         | I64Add { .. }
         | I64Sub { .. }
         | I64DivS { .. }
@@ -581,7 +612,23 @@ pub enum Home {
 /// A `br_if` that wrote R0 BEFORE its conditional branch would not satisfy
 /// this (a `Bcc` intervenes) and stays a hit — the exemption is checked on
 /// the stream, not assumed from the op name.
+///
+/// The writer may itself BE the terminator: the inline epilogue
+/// `pop {r4-r8, pc}` restores every callee-saved home it names (a
+/// #390-promoted local's r4–r8) and leaves the function in the same
+/// instruction — the mid-function `return` (`cabi_arena_bind.wat` func_0)
+/// and function-level `br_if` (`home_alias_class_1189_promo.wat` p_brif)
+/// shapes. Scanning only PAST the writer missed exactly that: the next
+/// instruction is another op's, or the `br_if`'s own skip label, so the
+/// `pop` read as reaching a later read it can never reach (4 corpus false
+/// positives on the first full-corpus run). `Pop` has no conditional form
+/// in `ArmOp` (the only `cond`-carrying variants are the branches, `SetCond`,
+/// `I64SetCond` and `SelectMove`) and both encoders emit it unconditionally,
+/// so a `pop` naming `pc` returns whenever it executes.
 fn write_is_terminal(instrs: &[ArmInstruction], k: usize, idx: usize) -> bool {
+    if matches!(&instrs[k].op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)) {
+        return true;
+    }
     for ins in &instrs[k + 1..] {
         if ins.source_line != Some(idx) {
             return false;
@@ -603,6 +650,169 @@ fn write_is_terminal(instrs: &[ArmInstruction], k: usize, idx: usize) -> bool {
             | ArmOp::CallIndirect { .. }
             | ArmOp::BrTable { .. } => return false,
             _ => {}
+        }
+    }
+    false
+}
+
+/// The register side of a register↔frame transfer the round-trip check can
+/// pair: a core register, or the S-slots a VFP register covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Xfer {
+    Gp(Reg),
+    Vfp(Vec<u8>),
+}
+
+/// A frame slot as `(base, offset, bytes)`; only a static `[base, #imm]`
+/// address names one (a register-offset address has no slot to pair).
+type Slot = (Reg, i32, i32);
+
+/// `op` as a SAVE — a store of a whole register to a static slot.
+fn save_of(op: &ArmOp) -> Option<(Xfer, Slot)> {
+    match op {
+        ArmOp::Str { rd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Gp(*rd), (addr.base, addr.offset, 4)))
+        }
+        ArmOp::F32Store { sd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Vfp(vfp_slots(*sd)), (addr.base, addr.offset, 4)))
+        }
+        ArmOp::F64Store { dd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Vfp(vfp_slots(*dd)), (addr.base, addr.offset, 8)))
+        }
+        _ => None,
+    }
+}
+
+/// `op` as a RESTORE — a load of a whole register from a static slot.
+fn restore_of(op: &ArmOp) -> Option<(Xfer, Slot)> {
+    match op {
+        ArmOp::Ldr { rd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Gp(*rd), (addr.base, addr.offset, 4)))
+        }
+        ArmOp::F32Load { sd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Vfp(vfp_slots(*sd)), (addr.base, addr.offset, 4)))
+        }
+        ArmOp::F64Load { dd, addr } if addr.offset_reg.is_none() => {
+            Some((Xfer::Vfp(vfp_slots(*dd)), (addr.base, addr.offset, 8)))
+        }
+        _ => None,
+    }
+}
+
+/// What `op` writes to MEMORY, for the "nothing touched the slot" leg of the
+/// round-trip check: `None` for a non-store, `Some(None)` for a store whose
+/// footprint is not static (register offset — treated as touching every
+/// slot), `Some(Some(slot))` for a static one.
+fn store_footprint(op: &ArmOp) -> Option<Option<Slot>> {
+    let at = |addr: &crate::rules::MemAddr, w: i32| -> Option<Slot> {
+        addr.offset_reg
+            .is_none()
+            .then_some((addr.base, addr.offset, w))
+    };
+    match op {
+        ArmOp::Str { addr, .. } | ArmOp::F32Store { addr, .. } => Some(at(addr, 4)),
+        ArmOp::Strh { addr, .. } => Some(at(addr, 2)),
+        ArmOp::Strb { addr, .. } => Some(at(addr, 1)),
+        ArmOp::F64Store { addr, .. } | ArmOp::I64Str { addr, .. } => Some(at(addr, 8)),
+        ArmOp::MveStore { addr, .. } => Some(at(addr, 16)),
+        // A pushed frame moves SP as well; the SP leg below bails on it.
+        ArmOp::Push { .. } => Some(None),
+        _ => None,
+    }
+}
+
+fn slots_overlap(a: &Slot, b: &Slot) -> bool {
+    a.0 == b.0 && a.1 < b.1 + b.2 && b.1 < a.1 + a.2
+}
+
+/// Does `home` (a core register or an S-slot) appear among `op`'s writes?
+fn writes_home(op: &ArmOp, home: &Home) -> bool {
+    match *home {
+        Home::Gp(r, _) => gp_defs(op).contains(&r),
+        Home::Vfp(s, _, _) => vfp_defs(op).contains(&s),
+    }
+}
+
+/// Is the write at `instrs[k]` (attributed to op `idx`) to `home` BRACKETED
+/// by that op's own save/restore of the home through one frame slot? True
+/// iff there are, within the instructions attributed to `idx`,
+///
+///   * a SAVE `j < k`: a store of the home's whole register to a static
+///     slot, with NO write of the home earlier in the same op (so the saved
+///     value IS the local's — `vmov s0, r1; vstr s0, …` would save the
+///     marshalled argument, not the local, and stays a hit);
+///   * a RESTORE `m >= k`: a load of the IDENTICAL register from the
+///     IDENTICAL slot (`m == k` when the writer is the restore itself);
+///   * and between them, exclusive, nothing that could make the restored
+///     value differ from the saved one: no label or branch (a `bl`/`call`
+///     is allowed — it is the point), no store whose footprint touches the
+///     slot (a register-offset store touches every slot), no write of the
+///     slot's base register (an SP move re-addresses `[sp, #n]`), no
+///     `push`/`pop`.
+///
+/// Then every write of the home in `(j, m]` — the call's clobber, an argument
+/// marshal into the home, the restore load — leaves the home holding the
+/// value it had before the save, and no later read can observe a change.
+/// This is the caller-save the selector emits around a `bl` for an S/D home
+/// (`vstr s0, [sp, #24] … bl … vldr s0, [sp, #24]`, `f32_ops_719.wat`
+/// `xhome`/`xcall2`), proven on the stream rather than assumed from the op.
+fn write_is_bracketed_by_save_restore(
+    instrs: &[ArmInstruction],
+    k: usize,
+    idx: usize,
+    home: &Home,
+) -> bool {
+    let same_op = |i: usize| instrs[i].source_line == Some(idx);
+    let covers = |x: &Xfer| match (x, *home) {
+        (Xfer::Gp(r), Home::Gp(h, _)) => *r == h,
+        (Xfer::Vfp(slots), Home::Vfp(s, _, _)) => slots.contains(&s),
+        _ => false,
+    };
+    // The op's contiguous run of instructions around `k`.
+    let mut start = k;
+    while start > 0 && same_op(start - 1) {
+        start -= 1;
+    }
+    let mut end = k;
+    while end + 1 < instrs.len() && same_op(end + 1) {
+        end += 1;
+    }
+    for j in start..k {
+        let Some((xfer, slot)) = save_of(&instrs[j].op) else {
+            continue;
+        };
+        if !covers(&xfer) || (start..j).any(|i| writes_home(&instrs[i].op, home)) {
+            continue;
+        }
+        for m in k..=end {
+            if restore_of(&instrs[m].op) != Some((xfer.clone(), slot)) {
+                continue;
+            }
+            let clean = (j + 1..m).all(|i| {
+                let op = &instrs[i].op;
+                let control = matches!(
+                    op,
+                    ArmOp::Label { .. }
+                        | ArmOp::B { .. }
+                        | ArmOp::BOffset { .. }
+                        | ArmOp::BCondOffset { .. }
+                        | ArmOp::Bhs { .. }
+                        | ArmOp::Blo { .. }
+                        | ArmOp::Bcc { .. }
+                        | ArmOp::Bx { .. }
+                        | ArmOp::BrTable { .. }
+                        | ArmOp::Pop { .. }
+                );
+                let touches_slot = match store_footprint(op) {
+                    None => false,
+                    Some(None) => true,
+                    Some(Some(f)) => slots_overlap(&f, &slot),
+                };
+                !control && !touches_slot && !gp_defs(op).contains(&slot.0)
+            });
+            if clean {
+                return true;
+            }
         }
     }
     false
@@ -720,6 +930,12 @@ pub fn audit(instrs: &[ArmInstruction], wasm_ops: &[WasmOp], homes: &[Home]) -> 
             // A write on a path that leaves the function (inline epilogue
             // straight ahead) cannot reach the later read.
             if write_is_terminal(instrs, k, idx) {
+                continue;
+            }
+            // A write bracketed by the op's own save/restore of the home
+            // through one frame slot (the caller-save around a `bl`) leaves
+            // the home holding the value it had before the save.
+            if write_is_bracketed_by_save_restore(instrs, k, idx, h) {
                 continue;
             }
             report.hits.push(HomeWrite {
@@ -998,6 +1214,253 @@ mod tests {
         let mut other = terminal.clone();
         other[2].source_line = Some(4);
         assert_eq!(audit(&other, &ops, &[Home::Gp(Reg::R0, 0)]).hits.len(), 1);
+    }
+
+    /// The inline epilogue `pop {r4-r8, pc}` WRITES r4–r8 — a promoted
+    /// local's home — and returns in the same instruction. A mid-function
+    /// `return` (op 3 here; the promoted local is read again at op 5 on the
+    /// other path) is not a hit: no later op can run. The first full-corpus
+    /// sweep flagged exactly this on `cabi_arena_bind.wat` func_0 and the
+    /// function-level `br_if` of `home_alias_class_1189_promo.wat` p_brif,
+    /// because the terminal scan started PAST the writer. The same list
+    /// without `pc` — a restore that does not return — stays a hit.
+    #[test]
+    fn epilogue_pop_restoring_a_promoted_home_is_the_return() {
+        use WasmOp::*;
+        //             0            1   2            3        4    5           6
+        let ops = vec![
+            LocalGet(1),
+            If,
+            I32Const(-1),
+            Return,
+            End,
+            LocalGet(1),
+            Drop,
+        ];
+        let epilogue = |regs: Vec<Reg>| ArmInstruction {
+            op: ArmOp::Pop { regs },
+            source_line: Some(3),
+        };
+        let home = Home::Gp(Reg::R4, 1);
+        let stream = vec![
+            mov(Reg::R0, Reg::R4, Some(3)),
+            ArmInstruction {
+                op: ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(16),
+                },
+                source_line: Some(3),
+            },
+            epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]),
+            mov(Reg::R1, Reg::R4, Some(5)), // the later read, another path
+        ];
+        assert!(audit(&stream, &ops, &[home]).hits.is_empty());
+
+        let mut no_return = stream.clone();
+        no_return[2] = epilogue(vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8]);
+        let r = audit(&no_return, &ops, &[home]);
+        assert_eq!(r.hits.len(), 1);
+        assert!(r.hits[0].arm.starts_with("Pop"));
+
+        // The function-level `br_if` shape: `bcc skip; mov r0, r4; pop
+        // {…, pc}; skip:` — the pop is followed by its own skip label in the
+        // SAME op, and the move before it runs straight into the pop.
+        //              0            1            2         3     4            5
+        let ops2 = vec![LocalGet(1), LocalGet(0), BrIf(0), Drop, LocalGet(1), Drop];
+        let brif = vec![
+            ArmInstruction {
+                op: ArmOp::Bcc {
+                    cond: crate::rules::Condition::EQ,
+                    label: "skip".into(),
+                },
+                source_line: Some(2),
+            },
+            mov(Reg::R0, Reg::R4, Some(2)),
+            ArmInstruction {
+                op: ArmOp::Pop {
+                    regs: vec![Reg::R4, Reg::PC],
+                },
+                source_line: Some(2),
+            },
+            ArmInstruction {
+                op: ArmOp::Label {
+                    name: "skip".into(),
+                },
+                source_line: Some(2),
+            },
+            mov(Reg::R1, Reg::R4, Some(4)),
+        ];
+        assert!(audit(&brif, &ops2, &[home]).hits.is_empty());
+    }
+
+    /// A VFP home (S0 = f32 param 0) is live across a `bl`. s0–s15 are
+    /// AAPCS caller-saved, so the call CLOBBERS the home; the selector saves
+    /// it to a frame slot before and reloads it after (`f32_ops_719.wat`
+    /// `xhome`: `vstr s0, [sp, #24] … bl … vldr s0, [sp, #24]`). Neither the
+    /// clobber nor the restore is a hit — proven on the stream. Every way
+    /// the round trip can be broken stays a hit: no restore, a restore from
+    /// another slot, the slot overwritten in between, SP moved in between,
+    /// the home written BEFORE the save (the saved value is not the
+    /// local's), and a save that belongs to a different op.
+    #[test]
+    fn call_save_restore_round_trip_of_a_vfp_home_is_exempt_every_break_is_not() {
+        use WasmOp::*;
+        //             0            1         2            3
+        let ops = vec![LocalGet(1), Call(11), LocalGet(0), Drop];
+        let home = Home::Vfp(0, 0, 0);
+        let at = |k: usize| ArmInstruction {
+            op: ArmOp::Nop,
+            source_line: Some(k),
+        };
+        let slot = MemAddr::imm(Reg::SP, 24);
+        let save = ArmInstruction {
+            op: ArmOp::F32Store {
+                sd: VfpReg::S0,
+                addr: slot.clone(),
+            },
+            ..at(1)
+        };
+        let bl = ArmInstruction {
+            op: ArmOp::Bl {
+                label: "fhelp".into(),
+            },
+            ..at(1)
+        };
+        let restore = ArmInstruction {
+            op: ArmOp::F32Load {
+                sd: VfpReg::S0,
+                addr: slot.clone(),
+            },
+            ..at(1)
+        };
+        let hits = |stream: &[ArmInstruction]| audit(stream, &ops, &[home]).hits;
+
+        // The clobber is now SEEN: a bare call with the home live is a hit.
+        let bare = vec![bl.clone()];
+        let r = hits(&bare);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].arm.starts_with("Bl"), "{}", r[0].arm);
+
+        let good = vec![
+            save.clone(),
+            mov(Reg::R0, Reg::R2, Some(1)), // integer argument marshal
+            bl.clone(),
+            restore.clone(),
+        ];
+        assert!(hits(&good).is_empty());
+
+        // An f32 argument marshalled INTO the home between save and restore
+        // is covered too — the restore brings the local back.
+        let mut arg_in_home = good.clone();
+        arg_in_home.insert(
+            1,
+            ArmInstruction {
+                op: ArmOp::F32Const {
+                    sd: VfpReg::S0,
+                    value: 2.0,
+                },
+                ..at(1)
+            },
+        );
+        assert!(hits(&arg_in_home).is_empty());
+
+        // No restore: the clobber stands.
+        assert_eq!(hits(&[save.clone(), bl.clone()]).len(), 1);
+
+        // Restore from a different slot: clobber AND load are hits.
+        let other = ArmInstruction {
+            op: ArmOp::F32Load {
+                sd: VfpReg::S0,
+                addr: MemAddr::imm(Reg::SP, 28),
+            },
+            ..at(1)
+        };
+        assert_eq!(hits(&[save.clone(), bl.clone(), other]).len(), 2);
+
+        // The slot overwritten between save and restore (a 4-byte store at
+        // an overlapping offset).
+        let smash = ArmInstruction {
+            op: ArmOp::Str {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 26),
+            },
+            ..at(1)
+        };
+        assert_eq!(
+            hits(&[save.clone(), smash, bl.clone(), restore.clone()]).len(),
+            2
+        );
+        // …but a store to a DISJOINT slot (the temp's own save) is fine.
+        let neighbour = ArmInstruction {
+            op: ArmOp::F32Store {
+                sd: VfpReg::S2,
+                addr: MemAddr::imm(Reg::SP, 28),
+            },
+            ..at(1)
+        };
+        assert!(hits(&[save.clone(), neighbour, bl.clone(), restore.clone()]).is_empty());
+
+        // SP moved between: `[sp, #24]` is not the same slot any more.
+        let sub_sp = ArmInstruction {
+            op: ArmOp::Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(8),
+            },
+            ..at(1)
+        };
+        assert_eq!(
+            hits(&[save.clone(), sub_sp, bl.clone(), restore.clone()]).len(),
+            2
+        );
+
+        // The home written BEFORE the save in the same op: the saved value
+        // is the marshalled argument, not the local — three hits (the write,
+        // the clobber, the load).
+        let stale = ArmInstruction {
+            op: ArmOp::F32Const {
+                sd: VfpReg::S0,
+                value: 1.0,
+            },
+            ..at(1)
+        };
+        assert_eq!(
+            hits(&[stale, save.clone(), bl.clone(), restore.clone()]).len(),
+            3
+        );
+
+        // A save attributed to a DIFFERENT op does not pair.
+        let mut split = good.clone();
+        split[0].source_line = Some(0);
+        assert_eq!(hits(&split).len(), 2);
+
+        // A label between save and restore (the save may not dominate).
+        let label = ArmInstruction {
+            op: ArmOp::Label { name: "mid".into() },
+            ..at(1)
+        };
+        assert_eq!(
+            hits(&[save.clone(), label, bl.clone(), restore.clone()]).len(),
+            2
+        );
+    }
+
+    /// Calls carry the AAPCS VFP caller-saved set — s0–s15, never s16–s31 —
+    /// on every call-shaped op.
+    #[test]
+    fn calls_clobber_the_vfp_caller_saved_set() {
+        let want: Vec<u8> = (0..16).collect();
+        assert_eq!(vfp_defs(&ArmOp::Bl { label: "f".into() }), want);
+        assert_eq!(vfp_defs(&ArmOp::Blx { rm: Reg::R3 }), want);
+        assert_eq!(
+            vfp_defs(&ArmOp::Call {
+                rd: Reg::R0,
+                func_idx: 1
+            }),
+            want
+        );
+        assert!(!vfp_defs(&ArmOp::Bl { label: "f".into() }).contains(&16));
     }
 
     /// Unattributed instructions are counted, never audited — the report

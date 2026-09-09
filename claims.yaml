@@ -1574,7 +1574,9 @@ claims:
               walk live in `home_alias.rs`, outside this ceiling); byte-
               invisible unless the variable is set, it is what turns "no
               other consumer writes a live home" from a reading into a sweep
-              (4628 functions, 0 hits) with CI job home-alias-audit-1189.
+              (8317 functions on the full corpus, 0 hits — the 4628 first
+              written here was a suite-only run) with CI job
+              home-alias-audit-1189.
               No new lowering arm and no code-region wildcard (the +2 in the
               tracked total are `_ => None` inside the new #1222 test).
               Value RE-DERIVED after cargo fmt. Byte-identity over 1419

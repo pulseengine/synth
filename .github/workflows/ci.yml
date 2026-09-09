@@ -3305,15 +3305,21 @@ jobs:
     # time. `synth_synthesis::home_alias::audit` (exhaustive over all 222
     # `ArmOp` variants, no wildcard) runs inside `select_with_stack` under
     # `SYNTH_HOME_ALIAS_AUDIT` and turns any write to a LIVE local's home
-    # (other than that local's own set/tee, or a straight-line-to-epilogue
-    # `return` move) into a loud decline naming the instruction. This job
+    # (other than that local's own set/tee, a write that IS or runs straight
+    # into the inline epilogue `pop {…, pc}`, or the save/restore round trip
+    # of a VFP home around a `bl` — calls carry the AAPCS VFP clobber, so a
+    # MISSING restore is a hit) into a loud decline naming the instruction.
+    # Both exemptions are proven on the stream, never from the op name. This job
     # compiles the pinned spec testsuite + tests/wast + tests/wat + fixtures +
     # scripts/repro on both ARM paths x {cortex-m4, cortex-m4f} with it armed
     # and requires ZERO UNEXPLAINED hits — over floors on the WORK DONE
     # (functions audited, homes watched, attributed instructions), so a sweep
     # that silently did less is red, not green (#1113). A hit whose defect is
-    # filed and open is pinned EXACTLY (today: #1226, 16 hits) so the fix
-    # must flip the pin. Needs the suite submodule.
+    # filed and open is pinned EXACTLY so the fix must flip the pin (today:
+    # none — the #1226 hits went silent when the #1222 pair-write was gated
+    # on the declared width; the issue stays open, see the script). Needs the
+    # suite submodule: the numbers below are measured WITH it (1045 module-leg
+    # pairs); a checkout without it fails loudly at 0 audited, never 0/0.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -3336,20 +3342,25 @@ jobs:
         with:
           python-version: "3.x"
       - name: "Run the home-register write audit sweep (RQ-65-ALIASCLASS)"
-        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 4628` header
+        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 8317` header
         # floors the audited population; the greps pin the printed totals
         # EXACTLY (the #1112 pattern) so a corpus or hook change is a visible
-        # diff here, and `hits: 0` is what the artifact claims.
+        # diff here, and `hits: 0` is what the artifact claims. Measured with
+        # the suite submodule present: 1045 (module, leg) pairs, 8317
+        # functions, 8776 homes, 261440 attributed instructions. (The
+        # 4628/2372 first pinned here were a suite-only run — the script's
+        # corpus root resolved one level too shallow.)
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
-          grep -Eq '^functions audited: 4628$' haa1189.txt
-          grep -Eq '^homes watched: 2372$' haa1189.txt
-          # 16 hits, ALL pinned known-open against #1226 (the multi-module
-          # .wast param-width table; 4 functions x 4 legs) — 0 unexplained.
-          # The #1226 fix must flip the in-script pin AND this line.
-          grep -Eq '^hits: 16 \(known-open: 16 \[#1226\], unexplained: 0\)$' haa1189.txt
+          grep -Eq '^functions audited: 8317$' haa1189.txt
+          grep -Eq '^homes watched: 8776$' haa1189.txt
+          # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk
+          # false positives (epilogue pop = the return; VFP caller-save round
+          # trip) fixed in home_alias.rs, and #1226's 16 went silent behind
+          # the #1222 declared-width gate (open, no longer audit-visible).
+          grep -Eq '^hits: 0 \(known-open: 0 \[none\], unexplained: 0\)$' haa1189.txt
           grep -q '^RESULT: PASS' haa1189.txt
       - name: Differential evidence ledger (#910)
         if: always()

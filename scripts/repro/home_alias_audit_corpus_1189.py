@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^functions audited: (\d+)$/ >= 4628
+# ci-checks: stdout /^functions audited: (\d+)$/ >= 8317
 """RQ-65-ALIASCLASS (#1189) — the home-register write audit, swept over the
 local corpus on every ARM direct-selector leg.
 
@@ -17,18 +17,30 @@ HOW. `synth_synthesis::home_alias::audit` (Rust, exhaustive over all 222
 join write) runs inside `select_with_stack` when `SYNTH_HOME_ALIAS_AUDIT` is
 set; a hit becomes a loud per-function decline carrying the needle
 `#1189-class home-register write`, and `=verbose` prints one
-`home-alias-audit:` line per audited function. This script compiles the
-corpus with it armed and asserts:
+`home-alias-audit:` line per audited function. Two writes are EXEMPT, each
+proven ON THE STREAM (never from the op name): a write that IS, or runs
+straight-line into, the inline epilogue `pop {…, pc}` (the epilogue restores
+a promoted local's r4–r8 and returns in the same instruction), and a write
+bracketed by the op's own save/restore of a VFP home through one frame slot
+(the caller-save around a `bl`; calls carry the AAPCS VFP clobber s0–s15, so
+a MISSING restore is a hit). Both were found as false positives of the first
+FULL-corpus run (8 + 4 of its 12 hits) and fixed in the walk, not silenced
+here. This script compiles the corpus with it armed and asserts:
 
   * ZERO UNEXPLAINED hits — every hit is printed with module, leg, op index
     and the exact instruction, and fails the run unless it is pinned in
     KNOWN_OPEN_HITS: a hit whose defect is FILED and OPEN, pinned EXACTLY
     (function, op, register, local, on every leg) so the fix must flip the
-    pin and nothing else can hide behind it. Today's pinned hits are one
-    defect, #1226 — the multi-module .wast merge hands a LATER module's
+    pin and nothing else can hide behind it. Today the table is EMPTY. It
+    carried #1226 (the multi-module .wast merge hands a LATER module's
     function the representative module's param-width table, so an i64 param
-    is homed as i32 and its pair overlaps the next param; the #1222 fix
-    (which writes the pair's hi half) is what made it visible;
+    is homed as i32 and its pair overlaps the next param — 4 spec functions
+    x 4 legs) until the #1222 pair-write was gated on the DECLARED width:
+    `declared_wide_params` reads the same stale table, so `local.set $from`
+    writes only R0 there again and nothing lands on the mis-homed
+    neighbour. That removed the HIT, not the miscompile — `checkRange` still
+    compares `$to` at R1:R2 (bytes on the issue) — so #1226 stays OPEN and is
+    simply no longer visible to this audit; no line here can see it;
   * NON-VACUITY floors on the work done (#1113: a floor on green is not a
     floor on work): functions audited, homes watched, attributed
     instructions, modules compiled — each pinned at a value DERIVED from a
@@ -88,28 +100,34 @@ LEGS = {
     "m4f-self": ["--target", "cortex-m4f"],
 }
 
-# Non-vacuity floors — DERIVED from a run on the pinned corpus (see the PR),
-# re-derive with --print-floors when the corpus or the selector legitimately
-# moves. Every one is a floor on WORK DONE, not on hits.
+# Non-vacuity floors — DERIVED from a run on the pinned corpus WITH the suite
+# submodule present (the 4628/2372/227150 first pinned here were a suite-only
+# run: ROOT resolved one level too shallow, so tests/wast, tests/wat, fixtures
+# and scripts/repro were never found). Re-derive with --print-floors when the
+# corpus or the selector legitimately moves. Every one is a floor on WORK
+# DONE, not on hits.
 FLOORS = {
-    "modules_compiled": 313,   # (module, leg) pairs that produced >=1 audited fn
-    "functions_audited": 4628,
-    "homes_watched": 2372,
-    "attributed_instrs": 227150,
+    "modules_compiled": 1045,  # (module, leg) pairs that produced >=1 audited fn
+    "functions_audited": 8317,
+    "homes_watched": 8776,
+    "attributed_instrs": 261440,
 }
 
 # Hits whose defect is FILED and OPEN, pinned EXACTLY — (module, function,
 # op, written register, local) — and required on EVERY leg in LEGS. A hit
 # outside this table is unexplained (red); a pinned hit that stops occurring
 # means the fix landed (red until the pin is flipped in that PR).
-KNOWN_OPEN_HITS = {
-    # #1226: `(param $from i64) (param $to i64) (param $expected i32)` in a
-    # later module of a multi-module .wast — `$to` homed at R1:R2, so the
-    # #1222-correct `local.set $from` (writing R0:R1) lands on "local 1".
-    ("memory_copy64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1): "#1226",
-    ("memory_fill64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1): "#1226",
-    ("memory_init64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1): "#1226",
-    ("memory_grow64.wast", "check-memory-zero", "op 18 (LocalSet(0))", "R1", 1): "#1226",
+KNOWN_OPEN_HITS: dict = {
+    # Empty since the #1222 declared-width gate. It held #1226's 4 x 4:
+    #   ("memory_copy64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1)
+    #   ("memory_fill64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1)
+    #   ("memory_init64.wast", "checkRange", "op 16 (LocalSet(0))", "R1", 1)
+    #   ("memory_grow64.wast", "check-memory-zero", "op 18 (LocalSet(0))", "R1", 1)
+    # — `$to` homed at R1:R2, the #1222-correct `local.set $from` (R0:R1)
+    # landing on "local 1". The gate now writes R0 only on that stale-width
+    # shape, so the write that made #1226 visible is gone while the wrong
+    # homing remains. A #1226 fix will not flip anything HERE; it is gated by
+    # its own repro on the issue.
 }
 HIT_LINE = re.compile(
     r"skipping function '([^']+)'.*?(op \d+ \(.+?\)) instr \d+ `[^`]*` "
@@ -220,7 +238,7 @@ def main():
     print(f"homes watched: {totals['homes_watched']}")
     print(f"attributed instructions: {totals['attributed_instrs']} "
           f"(unattributed: {totals['unattributed_instrs']})")
-    print(f"hits: {len(all_hits)} (known-open: {known_total} [{', '.join(issues)}], "
+    print(f"hits: {len(all_hits)} (known-open: {known_total} [{', '.join(issues) or 'none'}], "
           f"unexplained: {len(unexplained)})")
 
     if args.print_floors:

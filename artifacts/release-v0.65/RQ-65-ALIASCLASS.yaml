@@ -94,23 +94,69 @@ artifacts:
         leg; block/branch results are fresh temps; `return`/function-level
         `br` result moves run straight into an inline epilogue — checked ON
         THE STREAM by `write_is_terminal`; call-containing functions have no
-        homes; aarch64 TEMPS disjoint from x0..x7; optimized-path local vregs
+        CORE homes, and a VFP home kept across a call is saved/restored
+        around the `bl` — calls carry the AAPCS VFP clobber s0–s15 in
+        `vfp_defs` and the round trip is proven on the stream by
+        `write_is_bracketed_by_save_restore`; the inline epilogue `pop {…,
+        pc}` that restores a promoted local's r4–r8 IS the return;
+        aarch64 TEMPS disjoint from x0..x7; optimized-path local vregs
         never freed), or FIXED (#1221, #1222). STATIC AUDIT, measured on the
-        lane tree after the fixes: `functions audited: 4628`, `homes watched:
-        2372`, `attributed instructions: 227150 (unattributed: 17330)`,
-        `hits: 16 (known-open: 16 [#1226], unexplained: 0)`, RESULT: PASS, on
-        313 (module, leg) pairs that produced >=1 audited function — floors
-        pinned in-script and grepped EXACTLY in ci.yml. The 16 known-open
-        hits are ONE defect the #1222 fix made visible (the pre-fix sweep
-        read 0 hits over the same bytes): #1226, the multi-module .wast merge
-        hands a later module's function the representative module's
-        param-width table, so `(i64 i64 i32)`'s `$to` is homed at R1:R2 and
-        the now-correct `local.set $from` (R0:R1) lands on "local 1" —
-        memory_{copy,fill,init}64 checkRange + memory_grow64
-        check-memory-zero, 4 legs each, pinned (function, op, register,
-        local) per leg so the fix must flip the pin. A CLI-merge defect
-        (#1168 re-threads arg counts, not width masks), filed, not this
-        class, not fixed here.
+        rebased lane tree WITH the suite submodule present (the numbers this
+        field first carried — 4628 functions, 2372 homes, 227150
+        instructions, 313 pairs, 16 known-open hits — were a suite-only run:
+        the script's corpus root resolved one level too shallow and never
+        found tests/wast, tests/wat, fixtures or scripts/repro; in CI it
+        found nothing at all and exited 1 having audited 0): `modules
+        compiled: 1045`, `functions audited: 8317`, `homes watched: 8776`,
+        `attributed instructions: 261440 (unattributed: 33406)`, `hits: 0
+        (known-open: 0 [none], unexplained: 0)`, RESULT: PASS — floors
+        pinned in-script and grepped EXACTLY in ci.yml. The first run over
+        the FULL corpus reported `hits: 12 (known-open: 0, unexplained: 12)`
+        and 16 pinned #1226 hits that did not occur; classified one by one:
+        (a) 8 AUDIT FALSE POSITIVES — `Pop { regs: [R4..R8, PC] }` at op
+        `Return` (cabi_arena_{bind,realloc}.wat func_0, m4/m4f self) and at
+        a function-level `BrIf(0)` (home_alias_class_1189_promo.wat p_brif,
+        all 4 legs), "writes R4 = home of local N, read again at op M": the
+        epilogue pop restores r4 and RETURNS in the same instruction, so op
+        M is unreachable from it; `write_is_terminal` scanned only PAST the
+        writer (the next instruction is another op's, or the br_if's skip
+        label) and never considered the writer as the terminator — fixed in
+        the walk (`Pop` has no conditional form in `ArmOp`; both encoders
+        emit it unconditionally). (b) 4 LEGITIMATE-BUT-SAFE, now proven on
+        the stream — `F32Load { sd: S0, addr: [SP, #24|#28] }` at op
+        `Call(11)` (f32_ops_719.wat xhome/xcall2, m4f-reloc/-self): the
+        caller-save RESTORE of the f32 home from the slot the same op saved
+        it to (`vstr s0, [sp, #0x18] … bl … vldr s0, [sp, #0x18]`); the
+        audit had NOT stated the AAPCS VFP caller-saved clobber on calls,
+        so the `bl` that makes the restore necessary was invisible and the
+        restore surfaced as the write. Calls now carry s0–s15, which makes
+        a MISSING restore a hit (re-swept with the clobber stated: 0 new
+        hits — every VFP home live across a call on this corpus is saved
+        and restored through a clean round trip), and the round trip is
+        exempt only when save and restore name the identical register and
+        static slot, the save precedes every other write of the home in
+        the op, and nothing between them touches the slot, its base or
+        control flow; unit tests cover the exempt shape and 9 broken
+        variants (no restore, other slot, overlapping store, SP move,
+        stale save, split op, label) as still-flagged. Executed: the
+        CI-wired `f32_ops_719_differential.py` runs xhome/xcall2 on m4f
+        under unicorn, 238/238 bit-exact vs wasmtime. Each exemption's
+        negative-control build reproduces exactly its own shape (8 pop
+        hits with the pop check off; the 4 VFP functions — now reported at
+        the `Bl` — with the round trip off) and nothing else; the fixed
+        walk sweeps the identical population (same 1045/8317/8776/261440)
+        to 0 hits. (c) THE 16 #1226 PINS STOPPED OCCURRING because the
+        coordinator's `declared_wide_params` gate reads the SAME stale
+        width table #1226 describes, so on `checkRange` the pair-write no
+        longer fires and nothing lands on `$to`'s R1 — verified on the
+        bytes: the gate removed the HIT, not the MISCOMPILE. `checkRange`
+        still compiles `i64.eq` as `cmp r0, r1; it eq; cmpeq r1, r2` (`$to`
+        read at R1:R2 where AAPCS passes it in R2:R3), `local.set $from` is
+        back to the single-half `mov r0, r5` (`adc r6` dropped), and the
+        `i64.const -1` return sets R0 only. #1226 stays OPEN (comment with
+        the bytes on the issue) and is unpinned here because no sweep line
+        can see it any more; a CLI-merge defect (#1168 re-threads arg
+        counts, not width masks), not this class, not fixed here.
         POTENCY of the audit against the REAL history: built at the pre-#1190
         commit f4780608 with the hook, it declines exactly `bif iboth iloop
         inest ir0 ir1 ir2 ir3 isets` (main fixture) and `i64p` (i64 fixture)
@@ -154,6 +200,8 @@ artifacts:
         NOT VERIFIED, stated: the 805-module real-world census is not on the
         lane machine; hidden encoder-expansion scratch (#1021/#1048 class)
         is outside the ArmOp-level audit (expansion-canary gates own it);
-        VFP homes are audited on the m4f sweep legs but not executed under
-        unicorn here; the other three legs have no per-op attribution and are
-        pinned structurally + by execution, not by an audit of every word.
+        VFP homes are audited on the m4f sweep legs (with the call clobber
+        stated) and the f32-across-call shape is executed by the CI-wired
+        #719 differential, not by this artifact's own oracle; the other
+        three legs have no per-op attribution and are pinned structurally +
+        by execution, not by an audit of every word.
