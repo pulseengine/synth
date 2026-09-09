@@ -5,7 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.65.0] - 2026-09-09
+
+**How much of this is correct by accident?**
+
+v0.64 ended with a silent miscompile found by a lane *strengthening an oracle*,
+not by anything failing — it survived because the then-arm was correct by
+accident. That raised the question nobody here had asked: **what fraction of the
+code generator is covered by an oracle that would notice if it were wrong?**
+
+v0.65 answers it, and the answer arrived with a bill attached.
+
+### The number
+
+**19 % of byte-changing mutants survive** — 4 of 21, seed 1189, 38 mutants drawn
+from 1,538 candidate sites across five anchor-located selector regions, relative
+to a NAMED suite. All three red-first controls were KILLED, without which the
+rate would measure nothing. Survivors classified 4 UNTESTED / 4 DEAD / 5
+EQUIVALENT / 2 UNRESOLVED — only the first is a gap; the DEAD four are deletion
+targets and give the subtraction ratchet its first principled target list. The
+rate is an **upper bound**: more oracles can only kill more.
+
+### 21 defects, all from this release's own work, none from a user report
+
+| n | source |
+|---|---|
+| 12 | **RQ-65-PARITY** — the first EXECUTION of the spec suite through both shipped selectors (#1203-#1215) |
+| 4 | **RQ-65-ALIASCLASS** — the home-register write audit (#1221, #1222, #1223, #1226) |
+| 4 | **RQ-65-MVPCORE** — the census re-derived on the executed path (#1225, #1229, #1230, #1231) |
+| 1 | coordinator review — a CI comment claiming a gap was closed (#1217) |
+
+**20 came from running something new, one came from reading something old.** No
+oracle would ever have flagged #1217, because prose is not in any oracle's corpus.
+
+### What the instruments themselves got wrong
+
+The theme turned on the measuring apparatus more than on the compiler:
+
+- the spec-suite census compiled `.wast` through a path that types every parameter
+  i32, so `i64.add` on two i64 params summed the two halves of the SAME argument —
+  `exit 0`, counted `ok` (#1225). "MVP core 14/114" was wrong in BOTH halves;
+  re-derived on the executed path it is **12/80** on arm, and the reach increment
+  shipped alongside it gained **zero files**, reported as zero.
+- `SYNTH-ARCH-LOUD-DECLINE` pinned "declines loudly" to a function in the DECODER
+  while the failure was one layer down in lowering — green by construction.
+- the home-register audit's first full-corpus run produced 12 hits, ALL walk
+  defects; fixing them exposed that `vfp_defs` claimed calls do not clobber
+  s0-s15, so a MISSING caller-save restore would also have been invisible.
+- `DELIVERY_FLOOR` sat at 28 against a live 67 and passed at EXACTLY its floor on
+  a checkout missing 39 of 67 delivery commits (#1183).
+
+### RQ-65-PARITY (#197) — the second engine we already shipped, used as an oracle
+
+synth ships TWO ARM selectors — the optimized `ir_to_arm` path and the direct
+`select_with_stack` (#197 forces the latter for `--relocatable`) — and had never
+compared them. `scripts/repro/selector_parity_197_differential.py` now compiles
+every spec-corpus module on BOTH, boots both images through their own shipped
+`Reset_Handler` under unicorn, and compares against wasmtime.
+
+First run, MEASURED at authoring: **328 modules both-accepted, 19,145 assertions,
+11 defects** (#1204-#1215), each pinned by exact (file, module, function, kind)
+count so a fix MOVES the pin and the pin moving is the evidence. #1203 — the
+startup seeding R11 with the raw SRAM base while compiled code addressed wasm
+byte 0 — was fixed in the same PR. The CI gate pins a SHAPE and FLOORS rather
+than these counts (`>=1000 assertions over >=100 modules`; script floors 300 /
+14,500), so the corpus can grow without churning a pin. The reference engine is
+pinned (`wasmtime==48.0.0`, `unicorn==2.1.4`): exact-count pins are
+engine-version dependent, which the first CI round proved by disagreeing with a
+lane's local wasmtime 46.
+
+### RQ-65-FUNCN (#1180) — symbol binding lives in the shared ObjectPlan
+
+aarch64 emitted every `func_N` as `STB_GLOBAL`, so two synth objects could not be
+co-linked: both defined `func_0`. Binding now lives in v0.64's shared
+`ObjectPlan`, closing ELF and Mach-O together rather than implementing
+locals-first twice (#656 did it for ARM). The collision class was wider than
+`func_N` alone — `__synth_globals` and `__synth_func_table` had it too.
+
+Verified by a real linker, not by reading: two objects each containing `func_0`
+link with `ld.lld -r`, both instances `STB_LOCAL`, only the exported names global.
+
 
 ### RQ-65-ALIASCLASS (#1189) — the home-register alias class, enumerated on all four legs
 
@@ -277,6 +356,61 @@ old path had mis-typed.
   the first time, is classified by its tag; the summed emulation floor is
   unchanged (the new oracle declares a `compiles` floor, which that sum does
   not include).
+
+### The subtraction metric went the WRONG WAY, and this release says so
+
+v0.58's correction was that a verified rule is not done when it is proven, only
+when the hand-written arm it replaces is DELETED — so the metric became
+subtraction, CI-pinned so it can go the wrong way visibly. Measured at the
+v0.64.0 tag against this tree, parsed from `claims.yaml`:
+
+| metric | v0.64.0 | v0.65.0 | delta |
+|---|---|---|---|
+| `sel_dsl_rules` (must **RISE**) | 80 (0 waivers) | 80 | **+0** |
+| `selector_lines_code` (must **FALL**) | 19740 (17 waivers) | 19896 (20) | **+156** |
+| `selector_wildcard_arms_code` (must FALL) | 55 (1) | 55 | +0 |
+
+**The selector grew 156 lines across three new waivers and the verified-rule count
+did not move.** That is the wrong direction on the metric this project holds
+itself to, and the ratchet worked as designed: every one of those lines needed a
+waiver naming the value and the reason, in the PR that caused it. One waiver moved
+the number DOWN — 19945 to 19896 — when an audit hook collapsed to a single call.
+
+What the growth bought, so the trade is legible rather than excused: two silent
+miscompiles fixed (#1221 aarch64 `rotl` negating its count in place, #1222 an i64
+param's `local.set` writing only the low half in every leaf function), and a
+home-register audit watching 7,191 functions across four legs with a wired
+potency probe. No verified rule was added, so no hand-written arm was deleted. By
+the standard v0.58 set, that is the finding.
+
+### Deferred
+
+**RQ-65-ARCHMODEL (#1136)** — spar#445 re-verified AT CUT TIME and still OPEN
+(last updated 2026-09-03). An external blocker in another repository; generating
+WIT from an AADL model spar will silently mis-validate would produce exactly the
+unearned confidence this programme exists to prevent. Fifth consecutive N/A for
+the same reason, filed rather than waved.
+
+Its second half was discharged and found a live defect: `loop_conformance_check`'s
+steps-1-2 slot matched the first programme-scoped artifact rather than the release
+under test — for a v0.65 run it returned RQ-63-ARCHMODEL, two releases back, while
+v0.65's own artifact was invisible for want of a tag. The recurring N/A could have
+lapsed entirely with the slot green forever. Fixed in #1224, release-scoped, with
+an older match returned marked `stale` so the caller fails loudly naming it.
+
+### Falsification
+
+If a mutation this survey records as KILLED ever survives its recorded killer, the
+`mutation-survey-discrimination` job fails and the 19 % is void. If the home-register
+audit's planted-probe count (192) changes, the instrument moved. If the two shipped
+selectors stop diverging exactly where `selector_parity_197_differential.py` pins
+them, a pin moved and must be explained. All three are CI-pinned; none is asserted
+in prose alone.
+
+An acceptance cost is stated where it is measurable: #1232 makes the multi-module
+`.wast` merge REFUSE modules it would mis-handle, and the home-register audit's
+corpus shrank with them — 1045 to 940 (module, leg) pairs, 8317 to 7191 functions.
+That is decline-honesty's bill, and it lands on a correctness oracle's population.
 
 ## [0.64.0] - 2026-09-07
 

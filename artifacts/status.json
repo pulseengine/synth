@@ -35,7 +35,7 @@
   "selector_lines_total": 30894,
   "selector_wildcard_arms_code": 55,
   "selector_wildcard_arms_total": 93,
-  "version": "0.64.0",
+  "version": "0.65.0",
   "verus_spec_fns": 8,
   "wasm_op_variant_count_pin": "279",
   "wasmcert_bridge_qed": 104
