@@ -37,6 +37,55 @@ every scanned yaml contributes an artifact) because a sum floor structurally
 cannot see one file going invisible. Red-first transcript, churn table and
 mutation counts: `scripts/repro/floorshape_1183_gate.md`.
 
+### RQ-65-DECLINE (#1208) — silent wrong answers on the optimized path become loud declines
+
+Three optimized-path miscompile classes that RQ-65-PARITY found by EXECUTING
+the spec suite — every one exit 0, no warning, no decline — now decline to the
+direct selector with a machine reason, in the #120/#372/#374 pattern:
+
+- **#1208** the nine narrow i64 memory forms (`i64.load8/16/32_{s,u}`,
+  `i64.store8/16/32`). The six loads lowered to an EMPTY body (`bx lr`); the
+  three stores computed the value and DROPPED the store. The #372 guard had
+  fixed the same failure for the full-width pair and its own comment
+  predicted this one ("it would drop them to a stub"). 90 spec assertions
+  (`address.wast` m1) wrong -> `ok`.
+- **#1213** an i64 `select` (register-pair operands): `Opcode::Select` moves
+  one register, so the result was a stray half of the first operand.
+- **#1205** a value-`if` with simple arms and a COMPUTED condition: the
+  select rewrite moved the condition past the arm values, so it compared the
+  constants and selected between the condition's operands (`check_jam`
+  returned its first parameter for every input). Correct only when the arms
+  happened to be those operands.
+
+Every optimized-path-only defect from RQ-65-PARITY is classified, each by the
+bytes and executed result for its own shape: (a) decline sufficient — #1208,
+#1213, #1205, landed; not decline-shaped, left pinned with a measurement —
+#1204 (an unsaved R9-R11 write: the covering predicate diverts 0.9 % of
+optimized functions on the spec corpus but 5.3 % on the repro fixtures, and
+those are the memory-heavy shapes the optimized path exists for; the fix is
+the prologue save) and #1206 (a loop-carried non-param local whose class
+boundary is not statable: `sum_to_n` has the same shape and is correct).
+Wrong on BOTH selectors and not this artifact — #1209/#1210/#1211/#1214/#1215
+stay pinned; #1207 is an acceptance bug.
+
+Reach: no module and no function newly declines in any configuration (the
+fallback is per-function and the direct selector accepts every re-routed
+function): 205 repro inputs x 3 ARM configs, the parity corpus (optimized
+routing 1267 -> 1211, byte-differing functions 1479 -> 1423)
+and the local real modules (221 loom/kiln/relay inputs — default config 37 identical / 0 differing / 0 newly declined (184 decline on BOTH binaries: import-carrying modules need `--relocatable`), `--relocatable` 23 / 0 / 0 (198 both-declined); function and fallback counts equal on both binaries). Byte identity: every module without one
+of the three shapes is byte-identical in all three configurations; the one
+fixture carrying narrow i64 ops (`mem746_wide_static.wat`) changes exactly its
+three narrow-op functions plus one `Reset_Handler` immediate that tracks the
+grown `.text`.
+
+The structural finding: `SYNTH-ARCH-LOUD-DECLINE` was green while the sentence
+it guards was false — its evidence was `fn is_intentionally_ignored` in the
+DECODER, one layer above the lowering that emitted `bx lr`. It is re-pointed at
+the lowering layer (the exact count of optimized-path decline sites, and the
+exact count of pinned optimized-path wrong answers in the parity oracle), with
+sensitivity proved by mutation and the ARCHITECTURE.md sentence now stating
+how it is enforced and what remains pinned.
+
 ## [0.64.0] - 2026-09-07
 
 **The number you plan from.**

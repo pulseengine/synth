@@ -83,7 +83,7 @@ artifacts:
       name the defect it prevents and the fallback that makes it safe. A
       decline added without a measured defect behind it is a reach regression
       wearing a safety costume.
-    status: proposed
+    status: implemented
     release: v0.65
     tags:
       - correctness
@@ -98,9 +98,96 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1208"
+      landed: >-
+        PR #1228 (branch fix/decline-1208), one increment. (1) Three declines in
+        `crates/synth-synthesis/src/optimizer_bridge.rs`, each in the
+        #120/#372/#374 voice and naming its issue: the #372 guard EXTENDED to
+        the nine narrow i64 memory forms (`i64.load8/16/32_{s,u}`,
+        `i64.store8/16/32` — issue #1208); an i64 `select` declined in the
+        `Select` arm of `wasm_to_ir`, read from an `i64_halves` set fed by the
+        one `push_i64` helper every register-pair producer now pushes through
+        (issue #1213); and the value-`if` select rewrite (`preprocess_wasm_ops`,
+        now `Result`) declining a COMPUTED condition instead of reordering it
+        past the arm values (issue #1205). (2) Unit witnesses:
+        `test_1208_narrow_i64_memory_ops_decline_to_direct`,
+        `test_1213_i64_select_declines_i32_select_stays`,
+        `test_1205_computed_condition_value_if_declines` (bridge) and
+        `test_rq65_declined_shapes_default_equals_no_optimize` (arm_backend:
+        default config byte-equals `--no-optimize` on one instance of each
+        class). (3) The RQ-65-PARITY pins for #1208 (address.wast m1, 90),
+        #1213 (select.wast as-convert-operand, 1) and #1205 (anti_pinch
+        check_jam 7, load.wast as-if-cond 1, local_tee.wast as-if-cond 1)
+        REMOVED — the oracle run on the new binary with the OLD table reported
+        each of them as a moved pin, which is the red-first evidence. (4)
+        `SYNTH-ARCH-LOUD-DECLINE` re-pointed from the decoder's
+        `fn is_intentionally_ignored` to the lowering layer (exact count of
+        optimized-path decline sites = 14; exact count of pinned optimized-
+        path wrong answers in the parity oracle = 4), and the ARCHITECTURE.md
+        honesty sentence now states how it is enforced and what remains
+        pinned. Nothing else: no new lowering, no new oracle script, no
+        emulation-floor change (oracle_wiring_check re-derives the summed
+        floor unchanged; the value is never restated here).
       done-when: "manual: every optimized-path-only defect from RQ-65-PARITY is classified (a) decline sufficient, (b) decline with a MEASURED reach cost, or (c) both selectors wrong so decline is not enough; every (a) and (b) lands a decline with a machine reason and the RQ-65-PARITY pin moves from wrong-answer to declined in the same PR; reach delta reported as measured; and SYNTH-ARCH-LOUD-DECLINE is re-pointed at evidence that could fail on a LOWERING-layer silent miscompile, with the ARCHITECTURE.md honesty sentence corrected if a residual leaves it overbroad"
       verified-by: >-
-        PENDING. Red-first is inherited and free: RQ-65-PARITY pins each defect
-        by exact (file, module, function, kind) count, so a decline that
-        actually fires MOVES the pin — and the pin moving is the evidence. Byte
-        identity is required for every module NOT affected by the new declines.
+        CLASSIFICATION of every optimized-path-only RQ-65-PARITY defect, each
+        justified by the bytes and the executed result for THAT shape (the
+        coordinator's correction stands: the direct selector is not globally
+        trustworthy — #1222 is on it — so no blanket claim is made). (a)
+        decline sufficient, LANDED: #1208 — direct bytes read for all nine ops
+        (`ldrsb/ldrb/ldrsh/ldrh/ldr` + sign/zero extend into the pair;
+        `strb.w/strh.w/str.w r1,[fp,r0]`), and address.wast m1's 90 assertions
+        execute equal to wasmtime on the direct leg; #1213 — direct `sel64_lo`
+        moves the PAIR under `it ne/eq` (`movne r5,r1; movne r6,r2; moveq
+        r5,r3; moveq r6,r4`), probe + spec `as-convert-operand` equal to
+        wasmtime; #1205 — direct `vif_gt` is `cmp r0,r1; ite gt; ...; cmp
+        r2,#0; beq` (a real compare on the operands), probe shapes gt_s/add/
+        eqz/mixed-arm + spec check_jam x7, load.wast and local_tee.wast
+        as-if-cond equal to wasmtime. None of the three can relocate a
+        function into #1222's class: `has_wide_param` routes every i64-param
+        function to the direct selector BEFORE the bridge runs. NOT
+        decline-shaped, left pinned with the measurement: #1204 — the only
+        covering predicate ("emitted code writes R9-R11 unsaved") diverts
+        17/1831 optimized functions on the parity corpus (0.9 %) but 19/359
+        (5.3 %) on scripts/repro, and those 19 are the memory-heavy shapes the
+        optimized path exists for (base_cse_branch, redundant_base_
+        materialization, spill_frame_499, stack_canary_687,
+        volatile_segment_543 — several frozen goldens); the fix is the
+        prologue save (`ensure_callee_saved_prologue` hard-codes R4-R8), a
+        codegen change with its own oracle; #1206 — the class boundary is not
+        statable (`countdown`, `countdown_set`, `countdown_nop_first` hang;
+        `countdown_param` and `sum_to_n` with the same pre-loop-defined,
+        in-loop-redefined local are correct; no lever opt-out changes it), so
+        any predicate wide enough to be sure diverts most loops. (c) wrong on
+        BOTH selectors, not this artifact: #1209/#1210/#1211/#1214/#1215;
+        #1207 is an acceptance bug. EVIDENCE RUN: (1) anchor — eleven one-op
+        modules on main: six narrow loads = `7047` (`bx lr`, the whole body),
+        three narrow stores = value to r4:r5, `mov r1,r5; mov r0,r4; pop` (no
+        store), all exit 0, `[path-debug] optimized (ir_to_arm ok)`; on the
+        branch all nine `direct (fallback: ... issue #1208)` and byte-equal to
+        `--no-optimize`. (2) parity oracle, main binary: RESULT PASS, 722
+        pinned assertions / 108 pins, 19145 assertions / 328 modules
+        (reproduces main's table exactly under wasmtime-py 48.0.0 + unicorn
+        2.1.4). New binary, OLD table: exit 1 with exactly five `PINNED DIVERGENCE VANISHED` lines — `anti_pinch.wast m0 check_jam` (pinned 7, #1205), `load.wast m0 as-if-cond` (1, #1205), `local_tee.wast m0 as-if-cond` (1, #1205), `address.wast m1 *` (90, #1208), `select.wast m0 as-convert-operand` (1, #1213) — `unpinned: 0`, every non-vacuity floor met (optimized_funcs 1211 >= 1150, differing_funcs 1423 >= 1350), 19145/19145 assertions over 328 modules. New binary, edited
+        table: the discriminating subset on the rebased tree (`--only address`, `select`, `anti_pinch`, `local_tee`, `load`, plus the untouched controls `control_*`, `r11_clobber`, `int_literals`): `unpinned: 0` in every run, no moved pin, the remaining #1209/#1210/#1204/#1206/#539 pins in those files hold at exactly their counts; the full run is the CI job on the pushed tree. Population: optimized routing 1267 -> 1211,
+        fallback 1527 -> 1583, byte-differing functions 1479 ->
+        1423, verdict ok 12447 -> 12547, parity-divergence 158 ->
+        58, contract-violation 14 -> 14 (#1204, untouched).
+        (3) byte identity, main binary vs branch over 205 scripts/repro
+        inputs x 3 ARM configs: `--relocatable` 137 identical / 0 differing,
+        `--no-optimize` 174 / 0, default self-contained 173 identical / 1
+        differing = `mem746_wide_static.wat`, whose three narrow-op functions
+        change plus ONE `Reset_Handler` immediate (`movw r0,#592` ->
+        `#744`, +0x98 = exactly the `.text` growth 0x278 -> 0x310 of those
+        three bodies); 0 newly declined, 0 newly accepted, function counts
+        equal in every config. (4) reach: no module and no function newly
+        declines in any config — the fallback is per-function and the direct
+        selector accepts every re-routed function; real-module sweep
+        (loom/kiln/relay .wasm on this host; the 805-module corpus is gale's
+        and not local): 221 loom/kiln/relay inputs — default config 37 identical / 0 differing / 0 newly declined (184 decline on BOTH binaries: import-carrying modules need `--relocatable`), `--relocatable` 23 / 0 / 0 (198 both-declined); function and fallback counts equal on both binaries. (5) `SYNTH-ARCH-LOUD-DECLINE` sensitivity:
+        one decline site's message changed -> `derived 13 != documented 14`
+        red; #1208 re-pinned as KNOWN -> `derived 5 != documented 4` red; both
+        restored byte-identical, 62/62 claims hold. (6) unit tests 7/7 bridge
+        + 4/4 backend; `cargo fmt --check`, `cargo clippy --workspace
+        --all-targets -D warnings`, `oracle_wiring_check` with the exact
+        floor CI pins (re-derived, not restated), `claim_check`,
+        `status_evidence_check` all exit 0 before push.
