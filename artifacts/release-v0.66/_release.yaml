@@ -39,7 +39,16 @@
 #
 # FALSIFIABLE IN BOTH DIRECTIONS. Four numbers move or they do not:
 # `selector_lines_code` (19896), `mutants_untested` (4), the known-open pin
-# count (10), and the re-measured silent-subset survival (27 %). If the DEAD
+# count (10), and the re-measured silent-subset survival (27 %).
+#
+# CORRECTION, made before this plan merged: `selector_lines_code` was NOT
+# movable by RQ-66-DELETE. Its glob is the `instruction_selector` family, and
+# all four DEAD sites are in `arm_backend.rs`, outside it — deleting every one
+# would have moved it by zero. The coordinator scoped the headline on a metric
+# the work could not touch. Only R3-direct of the survey's five regions is
+# inside that population, so the survey cannot currently feed the ratchet it
+# was meant to feed. Recorded in RQ-66-DELETE; the release does not get to
+# claim a fall it was never able to produce. If the DEAD
 # code turns out reachable, or the new oracles do not kill their mutants, this
 # release publishes that — the same way v0.65 published that its own metric had
 # gone backwards.

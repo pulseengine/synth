@@ -41,6 +41,35 @@ artifacts:
       REFUSED, not explained." v0.58 proved deletion works under that gate,
       byte-identically, and this artifact uses the same discipline.
 
+      CORRECTION TO THIS ARTIFACT'S OWN PREMISE, made before the plan merged.
+      The scoping claim was that deleting these four would make
+      `selector_lines_code` FALL for the first time. **It could not have.** That
+      ratchet's population is
+
+        glob: crates/synth-synthesis/src/instruction_selector.rs
+              crates/synth-synthesis/src/instruction_selector/**/*.rs
+
+      and all four DEAD sites are in `crates/synth-backend/src/arm_backend.rs`,
+      outside it. Deleting every one of them would have moved the metric by
+      exactly ZERO. The coordinator scoped a release headline on a number the
+      work could not touch.
+
+      THE STRUCTURAL FACT BEHIND THAT, which is worth more than the mistake:
+      only ONE of the survey's five regions is inside the ratchet's population —
+
+        R1-routing    arm_backend.rs                    outside
+        R2-ir_to_arm  optimizer_bridge.rs               outside
+        R3-direct     instruction_selector/select_with_stack.rs   INSIDE
+        R4-shared     liveness.rs                       outside
+        R5-startup    synth-cli/src/main.rs             outside
+
+      So the mutation survey, as framed, CANNOT supply deletion candidates for
+      the metric it was meant to feed, except from R3. Any future release that
+      wants this ratchet to fall on evidence must either sample R3 far more
+      heavily or widen the ratchet's population to the files the survey actually
+      covers — and widening a ceiling is a decision with its own consequences,
+      not a convenience.
+
       "DEAD" MEANS UNREACHED BY THIS CORPUS, and the sample is four. A DEAD
       classification is EVIDENCE, NOT PROOF. Widening the corpus before deleting
       is legitimate and may be the honest first step. **Discovering that a DEAD
