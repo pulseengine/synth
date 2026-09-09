@@ -845,7 +845,7 @@ impl OptimizerBridge {
     /// cond              ; condition
     /// Select            ; pick one
     /// ```
-    fn preprocess_wasm_ops(&self, wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
+    fn preprocess_wasm_ops(&self, wasm_ops: &[WasmOp]) -> Result<Vec<WasmOp>> {
         let mut result = Vec::new();
         let mut i = 0;
 
@@ -950,6 +950,31 @@ impl OptimizerBridge {
                     None
                 };
 
+                // #1205 (RQ-65-DECLINE): this rewrite MOVES the condition op
+                // from before the `if` to after the two arm values. That is
+                // meaning-preserving only when the condition is a zero-input
+                // producer (`local.get`/`global.get`/`i32.const`). A COMPUTED
+                // condition (`i32.gt_s`, `i32.add`, `i32.eqz`, `i32.load`, …)
+                // leaves its operands behind on the stack, so the rewritten
+                // stream compared the ARM CONSTANTS and selected between the
+                // CONDITION'S OPERANDS — `check_jam` returned its first
+                // parameter for every input; `(9,3)` with arms 7/9 returned
+                // 3, the compare's second operand. Correct-by-accident only
+                // when the arms happen to BE the condition's operands. Decline
+                // to the direct selector, which lowers the value-`if` with a
+                // real compare. Pattern 2 above is unaffected: it re-emits the
+                // popped outer condition in place, ahead of the arm values.
+                if let Some(cond) = &condition
+                    && !Self::is_simple_value(cond)
+                {
+                    return Err(Error::UnsupportedInstruction(format!(
+                        "optimized lowering path does not support a value-`if` \
+                         whose condition is a computed op ({cond:?}) — the \
+                         select rewrite would reorder it past the arm values; \
+                         the direct instruction selector lowers it — issue #1205"
+                    )));
+                }
+
                 // Extract the then and else values
                 let then_value = wasm_ops[i + 1].clone();
                 let else_value = wasm_ops[i + 3].clone();
@@ -974,7 +999,7 @@ impl OptimizerBridge {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Check if a WASM op produces a simple value (suitable for if-else→select transform)
@@ -1239,6 +1264,25 @@ impl OptimizerBridge {
         // `.expect("wasm validator + pre-flight check guarantee stack depth")`
         // documents the invariant rather than masking a real bug.
         let mut slot_stack: Vec<u32> = Vec::new();
+
+        // #1213 (RQ-65-DECLINE): every vreg that is the lo or hi HALF of an
+        // i64 value, fed at the one place a pair reaches `slot_stack`
+        // (`push_i64`) — so the i64-`select` decline in the `Select` arm reads
+        // the producers' own pushes rather than a second type walk over the
+        // op stream. An i32 vreg that becomes a pair's lo half by aliasing
+        // (the `i64.extend_i32_*` lowerings) is in the set too.
+        let mut i64_halves: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        fn push_i64(
+            slot_stack: &mut Vec<u32>,
+            i64_halves: &mut std::collections::HashSet<u32>,
+            lo: u32,
+            hi: u32,
+        ) {
+            i64_halves.insert(lo);
+            i64_halves.insert(hi);
+            slot_stack.push(lo);
+            slot_stack.push(hi);
+        }
 
         // #989: vreg -> local index for every vreg that ALIASES a local's home
         // register in `ir_to_arm`'s by-reference model (a `Load`'s dest maps to
@@ -1577,8 +1621,7 @@ impl OptimizerBridge {
                             block_id: 0,
                             is_dead: false,
                         });
-                        slot_stack.push(lo);
-                        slot_stack.push(hi);
+                        push_i64(&mut slot_stack, &mut i64_halves, lo, hi);
                         inst_id += 2; // Two unique IR ids for lo/hi
                         builder.add_instruction(); // Add extra instruction for hi part
                         continue; // Skip the normal instruction push at end of loop
@@ -1640,8 +1683,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(lo);
-                    slot_stack.push(hi);
+                    push_i64(&mut slot_stack, &mut i64_halves, lo, hi);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -1830,8 +1872,7 @@ impl OptimizerBridge {
                         is_dead: false,
                     });
                     // pushes 2 (dest_lo, dest_hi)
-                    slot_stack.push(dest_lo_v);
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2106,8 +2147,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_lo_v);
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2137,8 +2177,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_lo_v);
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2168,8 +2207,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_lo_v);
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2200,8 +2238,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(src_v); // dest_lo aliases src
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, src_v, dest_hi_v); // dest_lo aliases src
                     inst_id += 1; // only dest_hi is a fresh IR id; dest_lo reuses src
                     builder.add_instruction();
                     continue;
@@ -2226,8 +2263,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(src_v);
-                    slot_stack.push(dest_hi_v);
+                    push_i64(&mut slot_stack, &mut i64_halves, src_v, dest_hi_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2286,6 +2322,24 @@ impl OptimizerBridge {
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
                         )
                     })?;
+                    // #1213 (RQ-65-DECLINE): `Opcode::Select` is an i32
+                    // lowering — it moves ONE register. An i64 `select` has
+                    // register-PAIR operands (two slot_stack entries each), so
+                    // the three pops above bind cond/val_false/val_true to the
+                    // wrong halves and the result is a stray half of the first
+                    // operand (spec select.wast `as-convert-operand`; a probe
+                    // returned the FIRST constant's HIGH word for both
+                    // conditions). Decline to the direct selector, whose i64
+                    // select moves the pair. Same honest-degradation pattern
+                    // as #120/#372/#1208.
+                    if i64_halves.contains(&val_true_v) || i64_halves.contains(&val_false_v) {
+                        return Err(Error::UnsupportedInstruction(
+                            "optimized lowering path does not support an i64 `select` \
+                             (register-pair operands); the direct instruction selector \
+                             lowers it — issue #1213"
+                                .to_string(),
+                        ));
+                    }
                     Opcode::Select {
                         dest: OptReg(inst_id as u32),
                         val_true: OptReg(val_true_v),
@@ -2881,6 +2935,42 @@ impl OptimizerBridge {
             )));
         }
 
+        // #1208 (RQ-65-DECLINE): the NARROW i64 memory forms —
+        // `i64.load8/16/32_{s,u}` and `i64.store8/16/32` — have no IR opcode
+        // either, and until v0.65 they fell straight through `wasm_to_ir`'s
+        // `_ => Opcode::Nop` into exactly the stub the #372 comment above
+        // warns about: the six loads lowered to an EMPTY body (`bx lr` — the
+        // function returned whatever R0:R1 held; 90 wrong answers on spec
+        // address.wast m1) and the three stores materialised the value into a
+        // pair, moved it to R0:R1 and DROPPED the store (no store instruction
+        // at all — silent loss of program state). All nine compiled exit 0
+        // with no warning. The #372 predicate matched only the full-width
+        // pair, so the failure mode was known, documented, and fixed for two
+        // of eleven ops. Decline the nine the same way: the direct selector
+        // lowers every one of them correctly (measured leg-vs-leg-vs-wasmtime
+        // by `selector_parity_197_differential.py`, which pins the population),
+        // so the fallback is a COMPLETE fix and no new lowering is needed.
+        // Same decline pattern as #120/#188/#372/#374.
+        if let Some(mem_op) = wasm_ops.iter().find(|op| {
+            matches!(
+                op,
+                WasmOp::I64Load8S { .. }
+                    | WasmOp::I64Load8U { .. }
+                    | WasmOp::I64Load16S { .. }
+                    | WasmOp::I64Load16U { .. }
+                    | WasmOp::I64Load32S { .. }
+                    | WasmOp::I64Load32U { .. }
+                    | WasmOp::I64Store8 { .. }
+                    | WasmOp::I64Store16 { .. }
+                    | WasmOp::I64Store32 { .. }
+            )
+        }) {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support narrow i64 memory \
+                 ops ({mem_op:?}); the direct instruction selector lowers them — issue #1208"
+            )));
+        }
+
         // #374: bulk-memory `memory.copy`/`memory.fill` have no IR opcode in the
         // optimized path (the `Opcode` enum has no bulk-mem). Decline so the
         // backend falls back to the direct selector, which lowers them to a
@@ -2924,7 +3014,7 @@ impl OptimizerBridge {
         // now lowers correctly (byte-verified against `--no-optimize`).
 
         // Preprocess: convert if-else patterns to select
-        let preprocessed = self.preprocess_wasm_ops(wasm_ops);
+        let preprocessed = self.preprocess_wasm_ops(wasm_ops)?;
 
         // #500: a real `if`/`else` that SURVIVES the select-idiom preprocessing
         // has no IR lowering — `wasm_to_ir` dropped `WasmOp::If`/`Else` to
@@ -3051,7 +3141,7 @@ impl OptimizerBridge {
         }
 
         // Preprocess and convert to IR
-        let preprocessed = self.preprocess_wasm_ops(wasm_ops);
+        let preprocessed = self.preprocess_wasm_ops(wasm_ops)?;
         let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
         let result = self.run_passes(&mut cfg, &mut instructions);
 
@@ -8262,6 +8352,164 @@ mod tests {
     }
 
     // ========================================================================
+    // RQ-65-DECLINE (#1208 / #1213 / #1205): silent wrong answers on the
+    // optimized path become LOUD declines with a machine reason. Each test is
+    // the unit-level witness of one shape `selector_parity_197_differential.py`
+    // executed against wasmtime and found wrong on this path only (the direct
+    // selector is correct on every one, so the fallback is a complete fix).
+    // ========================================================================
+
+    /// #1208: the nine narrow i64 memory forms must decline (they fell
+    /// through `_ => Opcode::Nop`: loads to an empty body, stores dropped);
+    /// the full-width pair keeps its own #372 reason.
+    #[test]
+    fn test_1208_narrow_i64_memory_ops_decline_to_direct() {
+        let bridge = OptimizerBridge::new();
+        let loads = [
+            WasmOp::I64Load8S {
+                offset: 0,
+                align: 0,
+            },
+            WasmOp::I64Load8U {
+                offset: 0,
+                align: 0,
+            },
+            WasmOp::I64Load16S {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Load16U {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Load32S {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I64Load32U {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        for op in loads {
+            let err = bridge
+                .optimize_full(&[WasmOp::LocalGet(0), op.clone()])
+                .expect_err("a narrow i64 load must decline on the optimized path");
+            assert!(err.to_string().contains("#1208"), "{op:?}: got {err}");
+        }
+        let stores = [
+            WasmOp::I64Store8 {
+                offset: 0,
+                align: 0,
+            },
+            WasmOp::I64Store16 {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Store32 {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        for op in stores {
+            let err = bridge
+                .optimize_full(&[WasmOp::LocalGet(0), WasmOp::I64Const(7), op.clone()])
+                .expect_err("a narrow i64 store must decline on the optimized path");
+            assert!(err.to_string().contains("#1208"), "{op:?}: got {err}");
+        }
+        // The full-width siblings keep the #372 decline — one predicate per
+        // class, each naming its own defect.
+        let err = bridge
+            .optimize_full(&[
+                WasmOp::LocalGet(0),
+                WasmOp::I64Load {
+                    offset: 0,
+                    align: 3,
+                },
+            ])
+            .expect_err("full-width i64.load declines (#372)");
+        assert!(err.to_string().contains("#372"), "got {err}");
+    }
+
+    /// #1213: an i64 `select` (register-pair operands) must decline — also
+    /// when one operand is an extend-produced pair whose lo half aliases its
+    /// i32 source; an i32 `select` stays on the optimized path.
+    #[test]
+    fn test_1213_i64_select_declines_i32_select_stays() {
+        let bridge = OptimizerBridge::new();
+        let err = bridge
+            .optimize_full(&[
+                WasmOp::I64Const(1),
+                WasmOp::I64Const(0),
+                WasmOp::LocalGet(0),
+                WasmOp::Select,
+                WasmOp::I32WrapI64,
+            ])
+            .expect_err("an i64 select must decline on the optimized path");
+        assert!(err.to_string().contains("#1213"), "got {err}");
+        let err = bridge
+            .optimize_full(&[
+                WasmOp::LocalGet(0),
+                WasmOp::I64ExtendI32U,
+                WasmOp::I64Const(0),
+                WasmOp::LocalGet(1),
+                WasmOp::Select,
+                WasmOp::I32WrapI64,
+            ])
+            .expect_err("an i64 select over an extended operand must decline");
+        assert!(err.to_string().contains("#1213"), "got {err}");
+        bridge
+            .optimize_full(&[
+                WasmOp::I32Const(1),
+                WasmOp::I32Const(0),
+                WasmOp::LocalGet(0),
+                WasmOp::Select,
+            ])
+            .expect("an i32 select stays on the optimized path");
+    }
+
+    /// #1205: the select rewrite reorders the condition past the arm values,
+    /// so a COMPUTED condition must decline; a zero-input condition converts
+    /// (the positive twin of `test_simple_if_else_to_select`).
+    #[test]
+    fn test_1205_computed_condition_value_if_declines() {
+        let bridge = OptimizerBridge::new();
+        for cond in [
+            vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32GtS],
+            vec![WasmOp::LocalGet(0), WasmOp::I32Const(1), WasmOp::I32Add],
+            vec![WasmOp::LocalGet(0), WasmOp::I32Eqz],
+        ] {
+            let mut ops = cond.clone();
+            ops.extend([
+                WasmOp::If,
+                WasmOp::I32Const(7),
+                WasmOp::Else,
+                WasmOp::I32Const(9),
+                WasmOp::End,
+            ]);
+            let err = bridge
+                .preprocess_wasm_ops(&ops)
+                .expect_err("a computed condition must decline the select rewrite");
+            assert!(err.to_string().contains("#1205"), "{cond:?}: got {err}");
+            let err = bridge
+                .optimize_full(&ops)
+                .expect_err("the decline must reach optimize_full");
+            assert!(err.to_string().contains("#1205"), "{cond:?}: got {err}");
+        }
+        let ok = bridge
+            .preprocess_wasm_ops(&[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::I32Const(7),
+                WasmOp::Else,
+                WasmOp::I32Const(9),
+                WasmOp::End,
+            ])
+            .expect("a zero-input condition converts");
+        assert_eq!(ok.last(), Some(&WasmOp::Select));
+    }
+
+    // ========================================================================
     // Branchless Control Flow Pattern Tests
     // ========================================================================
 
@@ -8280,7 +8528,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
@@ -8310,7 +8560,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // The outer condition (LocalGet 0 → R0) must be saved before the inner select
         // runs, because the inner select overwrites R0 with its result.
@@ -8344,7 +8596,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
@@ -8369,7 +8623,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
@@ -8395,7 +8651,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // Should NOT be transformed - pattern doesn't match
         assert_eq!(preprocessed.len(), 8);
@@ -8456,7 +8714,9 @@ mod tests {
             WasmOp::End,
         ];
 
-        let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
+        let preprocessed = bridge
+            .preprocess_wasm_ops(&wasm_ops)
+            .expect("a zero-input condition never declines the select rewrite");
 
         // Both patterns should be transformed
         // First: 1, 2, local.get(0), select

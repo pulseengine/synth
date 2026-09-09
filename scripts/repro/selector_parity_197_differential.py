@@ -102,7 +102,14 @@ loads lower to an empty body; #1209 memory64 accepted and silently wrong;
 #1210 a value live across a call inside a value-carrying block is lost on
 BOTH selectors; #1211 call_indirect ignores the table index; #1213 i64
 select + wrap on the optimized path; #1214 i64 read-before-write local not
-zero-initialised; #1215 branch-in-operand br_table/br_if shapes). An open finding
+zero-initialised; #1215 branch-in-operand br_table/br_if shapes).
+RQ-65-DECLINE (v0.65) then CONVERTED the three optimized-path-only classes
+whose shapes the direct selector already lowers correctly — #1208 (nine
+narrow i64 memory forms), #1213 (i64 select), #1205 (value-`if` with a
+computed condition) — into declines with a machine reason, so their pins
+below moved to `ok` and were removed; #1204/#1206 stay pinned (not
+decline-shaped: a register-contract fix and a class without a statable
+predicate), and the both-selectors-wrong classes stay pinned. An open finding
 is pinned in KNOWN below as (file, module, function, kind) -> (issue, count):
 the oracle is RED when a pinned count MOVES in either direction — the fix
 landed (move the pin, close the issue on the release) or a new instance
@@ -198,19 +205,20 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'contract-violation/optimized'): ('#1204', 3),
     ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'parity-divergence/opt-wrong'): ('#1204', 1),
     ('selector_parity_197_r11_clobber.wast', 0, 'leaf', 'contract-violation/optimized'): ('#1204', 2),
-    # #1205 — optimized path: value-`if` with constant arms and any computed
-    # condition compares the constants and yields a condition operand.
-    ('anti_pinch.wast', 0, 'check_jam', 'parity-divergence/opt-wrong'): ('#1205', 7),
-    ('load.wast', 0, 'as-if-cond', 'parity-divergence/opt-wrong'): ('#1205', 1),
-    ('local_tee.wast', 0, 'as-if-cond', 'parity-divergence/opt-wrong'): ('#1205', 1),
+    # #1205 — optimized path: value-`if` with simple arms and a COMPUTED
+    # condition compared the constants and selected between the condition's
+    # operands. CONVERTED to a decline in v0.65 (RQ-65-DECLINE): the shape
+    # falls back to the direct selector, its 9 pinned wrong answers are `ok`.
     # #1206 — optimized path: loop label placed after the decrement of a
     # pre-loop-defined local; countdown(5)/(10) never terminate.
     ('control_loop.wast', 0, 'countdown', 'parity-divergence/opt-wrong'): ('#1206', 2),
-    # #1208 — optimized path lowers i64.load8/16/32_{s,u} to an EMPTY body (bx lr);
-    # every narrow-load function of address.wast's i64 module, pinned per module.
-    ('address.wast', 1, '*', 'parity-divergence/opt-wrong'): ('#1208', 90),
-    # #1213 — optimized path: i64 select feeding i32.wrap_i64.
-    ('select.wast', 0, 'as-convert-operand', 'parity-divergence/opt-wrong'): ('#1213', 1),
+    # #1208 — optimized path lowered i64.load8/16/32_{s,u} to an EMPTY body
+    # (bx lr) and i64.store8/16/32 to a dropped store. CONVERTED to a decline
+    # in v0.65 (RQ-65-DECLINE, the #372 guard extended to the nine narrow
+    # forms): address.wast m1's 90 pinned wrong answers are `ok`.
+    # #1213 — optimized path: i64 select (register-pair operands). CONVERTED
+    # to a decline in v0.65 (RQ-65-DECLINE): select.wast as-convert-operand
+    # is `ok`.
     # #1209 — memory64 modules accepted and silently wrong on both selectors
     # (i64-offset data segments dropped; optimized mis-addresses i64 addresses).
     # Whole-module pins per kind: one class hits every function.

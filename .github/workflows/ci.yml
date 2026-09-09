@@ -1136,9 +1136,12 @@ jobs:
     # image's OWN shipped Reset_Handler under unicorn, and held to wasmtime.
     # The first run found #1203 (fixed with it), #1204, #1205, #1206 — all
     # silent, exit-0, default-configuration miscompiles the direct-only #928
-    # oracle could not see. The open three are PINNED by exact count inside
+    # oracle could not see. Every open finding is PINNED by exact count inside
     # the script (a pin that moves is red), so this job is green only when
-    # the divergence set is exactly the recorded one.
+    # the divergence set is exactly the recorded one. RQ-65-DECLINE (v0.65)
+    # is the first pin movement: #1205, #1208 and #1213 became declines, and
+    # their pins were removed in the same PR — the moving pin was the
+    # red-first evidence.
     #
     # `submodules: recursive` is load-bearing: the spec suite is a submodule
     # and the script hard-fails on an empty corpus rather than passing 0/0.
