@@ -3423,6 +3423,15 @@ jobs:
     # It runs no new emulation oracle of its own — every step it replays is
     # an already-declared scripts/repro/ oracle, so the summed
     # `ci-checks: emulations` floor is untouched.
+    #
+    # RQ-66-DELETE (#242, #1238): the four v0.65 DEAD sites turned out
+    # REACHABLE under configurations the corpus never compiles (a hard-float
+    # target for the VFP retry ladder, SYNTH_GRAPH_ALLOC=1 for the arbiter).
+    # Their ledger entries carry `want_reach_wide` witnesses, replayed under
+    # REACH_CFGS by the same `ci` run: a witness that goes silent — the code
+    # deleted, made unreachable, or the probe blind — is red HERE, with the
+    # `MUTANTS-REACH-WIDE` line grepped so a subset with no such entry
+    # cannot pass either.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -3445,11 +3454,22 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         run: pip install wasmtime unicorn pyelftools capstone pyyaml
+      - name: "The checker's own tests — the reach-wide decision from both sides (RQ-66-DELETE)"
+        run: python3 scripts/test_mutation_survey.py
       - name: "Replay the pinned mutant subset (controls must die, survivors must reproduce)"
         run: |
           set -euo pipefail
           python3 scripts/mutation_survey.py ci | tee mutants-ci.txt
-          grep -Eq '^MUTANTS-CI subset=[4-9][0-9]* controls=[2-9][0-9]* non-killed=[2-9][0-9]* failures=0$' mutants-ci.txt
+          # A FLOOR IS ARITHMETIC. The previous form asserted these with
+          # character classes -- `subset=[4-9][0-9]*`, written to mean "at
+          # least 4" and actually meaning "the first digit is 4 through 9", so
+          # it accepted 4-9 and 40-99 but REJECTED 10-39. RQ-66-DELETE grew the
+          # pinned subset 7 -> 10 and the gate went red while reporting a
+          # healthy result (controls all killed, survivors reproduced,
+          # failures=0): it reddened because the thing it guards got BIGGER.
+          # See #1243. Exactness assertions stay exact; floors compare as
+          # numbers and print the offending value instead of exiting silently.
+          python3 scripts/ci_mutants_gate.py mutants-ci.txt
 
   home-alias-class-1189-oracle:
     name: "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)"

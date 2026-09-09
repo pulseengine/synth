@@ -111,6 +111,7 @@ Usage:
   python3 scripts/mutation_survey.py run [--per-region N] [--only ID,ID]
   python3 scripts/mutation_survey.py controls              # red-first controls
   python3 scripts/mutation_survey.py ci                    # replay the pinned subset
+  python3 scripts/mutation_survey.py reach [--write]       # RQ-66-DELETE: DEAD sites under REACH_CFGS
   python3 scripts/mutation_survey.py report                # markdown tables
 Env: CARGO_TARGET_DIR (default target/), SYNTH_MUTANTS_LEDGER (default
 docs/status/mutation_survey.json).
@@ -200,6 +201,40 @@ CORPUS_CFGS = {
     "reloc": ["--all-exports", "--relocatable", "--target", "cortex-m4"],
     "self": ["--all-exports", "--target", "cortex-m4"],
     "self-noopt": ["--all-exports", "--target", "cortex-m4", "--no-optimize"],
+}
+
+# RQ-66-DELETE (#242): configurations the survey's corpus does NOT compile.
+# v0.65 classified four sites DEAD ("never evaluated during the corpus
+# compiles") and v0.66 set out to delete them under the byte-identity gate.
+# Every one of them is REACHED here. Three are the GI-FPU-002 VFP retry ladder
+# in `compile_wasm_to_arm` (#881 / #1069), which only a HARD-FLOAT target can
+# enter — CORPUS_CFGS compiles `cortex-m4` (no FPU) and nothing else, while the
+# two fixtures written to exercise that ladder (`vfp_spill_881.wat`,
+# `vfp_local_pressure_1069.wat`) sit IN the corpus and are compiled by their
+# own CI oracles on `cortex-m7dp`. The fourth is the graph-colouring arbiter's
+# literal-pool sizing, behind the flag-off `SYNTH_GRAPH_ALLOC` spike that the
+# `vcr_dec_001_graph_alloc_differential` job turns on. So "DEAD" was a property
+# of the corpus CONFIGURATION, not of the code — an honest verdict for the
+# frame the ledger states, and a wrong deletion list.
+#
+# These run in the `reach` subcommand and, for `ci_subset` entries carrying
+# `want_reach_wide`, in `ci`: every pinned witness module must still print the
+# marker under its configuration. A site that stops being reached is red (the
+# code became unreachable, or the probe went blind — either needs a human), and
+# a deletion removes the site and is red the same way. They are deliberately
+# NOT added to CORPUS_CFGS: the byte-triage baseline and every `changed` set in
+# the ledger are relative to CORPUS_CFGS, and widening that is a re-survey.
+# name -> (synth flags, extra environment)
+REACH_CFGS = {
+    # falcon's exact flags — what the #881 / #1069 execution oracles compile
+    "m7dp-reloc": (["--all-exports", "--relocatable", "--target", "cortex-m7dp"], {}),
+    "m7dp-self": (["--all-exports", "--target", "cortex-m7dp"], {}),
+    # the VCR-DEC-001 spike, flag-on (the vcr_dec_001 differential's setting)
+    "graph-alloc-reloc": (
+        ["--all-exports", "--relocatable", "--target", "cortex-m4"],
+        {"SYNTH_GRAPH_ALLOC": "1"},
+    ),
+    "graph-alloc-self": (["--all-exports", "--target", "cortex-m4"], {"SYNTH_GRAPH_ALLOC": "1"}),
 }
 
 # Seconds per corpus compile. The unmutated compiler needs ~17 ms per module
@@ -619,17 +654,27 @@ def digest_elf(path):
     return h.hexdigest()[:16]
 
 
-def compile_corpus(outdir, capture_marker=False):
-    """{(module, cfg): digest | 'DECLINE'} plus whether MARK appeared."""
+def compile_corpus(outdir, capture_marker=False, cfgs=None, env=None, reached_out=None):
+    """{(module, cfg): digest | 'DECLINE'} plus whether MARK appeared.
+
+    `cfgs` (default CORPUS_CFGS) and `env` (extra environment variables) let
+    the reach probe run configurations the corpus does not (REACH_CFGS);
+    `reached_out`, when a set, collects every `module|cfg` key whose compile
+    printed the marker, so a verdict can name its witnesses."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    cfgs = CORPUS_CFGS if cfgs is None else cfgs
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update(env)
     result = {}
     reached = False
     for mod in corpus_modules():
         if any(v == "TIMEOUT" for v in result.values()):
             result["__triage__"] = "aborted-after-first-compiler-hang"
             break
-        for cfg, flags in CORPUS_CFGS.items():
+        for cfg, flags in cfgs.items():
             o = outdir / f"{Path(mod).name}.{cfg}.elf"
             if o.exists():
                 o.unlink()
@@ -637,7 +682,7 @@ def compile_corpus(outdir, capture_marker=False):
             try:
                 r = subprocess.run(
                     [str(BIN), "compile", mod, *flags, "-o", str(o)],
-                    capture_output=True, text=True, timeout=COMPILE_TIMEOUT, cwd=ROOT,
+                    capture_output=True, text=True, timeout=COMPILE_TIMEOUT, cwd=ROOT, env=run_env,
                 )
             except subprocess.TimeoutExpired as ex:
                 # A mutant that makes the COMPILER hang is a behaviour change
@@ -645,10 +690,14 @@ def compile_corpus(outdir, capture_marker=False):
                 # recorded as such, never dropped (it crashed the first run).
                 if capture_marker and MARK in (ex.stderr or b"").decode(errors="ignore"):
                     reached = True
+                    if reached_out is not None:
+                        reached_out.add(key)
                 result[key] = "TIMEOUT"
                 continue
             if capture_marker and MARK in r.stderr:
                 reached = True
+                if reached_out is not None:
+                    reached_out.add(key)
             if r.returncode == 0 and o.exists():
                 result[key] = digest_elf(o)
             else:
@@ -811,7 +860,10 @@ def save_ledger(path, ledger):
             1 for c in ledger.get("controls", []) if c.get("classification") == "KILLED")
         ledger["summary"]["survey_controls"] = len(ledger.get("controls", []))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(ledger, indent=1, sort_keys=False) + "\n")
+    # indent=2: the committed ledger's format (the v0.65 cold review
+    # re-indented it by hand); writing anything else turns a 400-line
+    # content change into a 28,000-line whitespace diff nobody can review.
+    path.write_text(json.dumps(ledger, indent=2, sort_keys=False) + "\n")
 
 
 def head_commit():
@@ -821,9 +873,12 @@ def head_commit():
 # ---------------------------------------------------------------------------
 # Pipeline per mutant
 # ---------------------------------------------------------------------------
-def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix=""):
+def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wide=True):
     """Run one mutant through: build -> triage -> (probe | suite). Returns the
-    ledger record. The working tree is restored on every path."""
+    ledger record. The working tree is restored on every path. `wide` (default
+    on since RQ-66-DELETE) makes a byte-identical mutant's reach probe also run
+    REACH_CFGS, so no DEAD verdict is ever recorded without the wide evidence
+    beside it."""
     rec = {k: site[k] for k in ("id", "region", "op", "file", "start", "end", "before", "after")}
     t0 = time.time()
     base = ledger["baseline"]["corpus"]
@@ -851,7 +906,7 @@ def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix=""):
             rec.update(run_suite(ledger, log_prefix))
     assert git_clean(site["file"]), f"tree not restored: {site['file']}"
     if not changed:
-        rec.update(reach_probe(site, ledger))
+        rec.update(reach_probe(site, ledger, wide=wide))
     elif not run_oracles:
         rec.update(status="changed-unrun", classification="CHANGED")
     rec["seconds"] = round(time.time() - t0, 1)
@@ -882,7 +937,13 @@ def run_suite(ledger, log_prefix=""):
     return {"status": "survived", "classification": "UNTESTED", "suite_seconds": round(dt, 1)}
 
 
-def reach_probe(site, ledger):
+def reach_probe(site, ledger, wide=False):
+    """Classify a byte-identical mutant EQUIVALENT (its decision was evaluated
+    on the corpus) or DEAD (never evaluated). DEAD is relative to CORPUS_CFGS;
+    with `wide` the same probe binary is also run under REACH_CFGS and the
+    reaching modules are recorded per configuration as `reach_wide` — the
+    evidence that turned v0.65's four DEAD deletion candidates into four
+    reachable sites (RQ-66-DELETE)."""
     if not site.get("probe"):
         return {"status": "identical", "reach": "no-probe", "classification": "UNRESOLVED"}
     with Edit(site, "probe"):
@@ -891,10 +952,59 @@ def reach_probe(site, ledger):
             res = {"status": "identical", "reach": "unknown", "classification": "UNRESOLVED", "probe_error": err[:200]}
         else:
             _, reached = compile_corpus(TARGET_DIR / "probe-corpus", capture_marker=True)
-            res = {"status": "identical", "reach": "reached" if reached else "unreached",
-                   "classification": "EQUIVALENT" if reached else "DEAD"}
+            res = {"status": "identical", "reach": "reached" if reached else "unreached"}
+            wide_res = wide_reach() if wide else None
+            cls, note = classify_identical(reached, wide_res)
+            res["classification"] = cls
+            if note:
+                res["reach_note"] = note
+            if wide:
+                res["reach_wide"] = wide_res
+                res["reach_wide_at"] = head_commit()
     assert git_clean(site["file"]), f"tree not restored after probe: {site['file']}"
     return res
+
+
+def wide_reach():
+    """With a probe binary built: {cfg: sorted module names that printed the
+    marker} over every REACH_CFGS configuration."""
+    out = {}
+    for cfg, (flags, env) in REACH_CFGS.items():
+        keys = set()
+        compile_corpus(TARGET_DIR / f"reach-{cfg}", capture_marker=True,
+                       cfgs={cfg: flags}, env=env, reached_out=keys)
+        out[cfg] = sorted(k.split("|")[0] for k in keys)
+    return out
+
+
+def classify_identical(corpus_reached, wide):
+    """The verdict for a byte-identical mutant, as a pure function (RQ-66-DELETE,
+    #1238 — the salvage of DEAD as a category). EQUIVALENT: the decision was
+    evaluated on the corpus and bytes did not move. DEAD: never evaluated under
+    CORPUS_CFGS AND under every REACH_CFGS configuration — only then is it a
+    deletion CANDIDATE (still not a proof). Reached ONLY under REACH_CFGS is
+    neither: the byte triage was not run under those configurations, so it is
+    UNRESOLVED with a note, never DEAD. v0.65 assigned DEAD from CORPUS_CFGS
+    alone and published four deletion candidates that way; all four were
+    reachable. `wide` is None when the wide probe did not run."""
+    if corpus_reached:
+        return "EQUIVALENT", None
+    if wide is None:
+        return "DEAD", "reach probed under CORPUS_CFGS only — not a deletion candidate until REACH_CFGS agree"
+    hit = {cfg: mods for cfg, mods in wide.items() if mods}
+    if hit:
+        return "UNRESOLVED", ("reached only under REACH_CFGS (" + ", ".join(sorted(hit)) +
+                              ") — byte triage was not run under those configurations; neither DEAD nor EQUIVALENT")
+    return "DEAD", None
+
+
+def reach_wide_failures(want, got):
+    """The `want_reach_wide` check, as a pure function so it is unit-testable:
+    every pinned witness module must still reach the site under its
+    configuration (SUBSET semantics — reach may widen without a ledger edit,
+    but a pinned witness going silent is red). Returns [(cfg, module)]."""
+    got = got or {}
+    return [(cfg, m) for cfg, mods in (want or {}).items() for m in mods if m not in set(got.get(cfg, []))]
 
 
 # ---------------------------------------------------------------------------
@@ -1150,6 +1260,55 @@ def cmd_reanchor(args):
         sys.exit(1)
 
 
+def cmd_reach(args):
+    """RQ-66-DELETE (#242): re-probe DEAD sites under REACH_CFGS — the
+    hard-float / flag-on configurations the corpus never compiles — and name
+    the modules that reach each one. Default: every DEAD mutant in the ledger.
+    `--write` records `reach_wide` on the matching ledger records (then
+    `pin-subset` pins the witnesses for `ci`). A site reached here is NOT a
+    deletion candidate, whatever its `classification` says."""
+    ledger = load_ledger(args.ledger)
+    ensure_symlink()
+    ok, err, _ = build_synth()
+    if not ok:
+        sys.exit(f"build failed: {err}")
+    sites = enumerate_sites()
+    recs = {m["id"]: m for m in ledger["mutants"]}
+    ids = args.only.split(",") if args.only else [m["id"] for m in ledger["mutants"] if m["classification"] == "DEAD"]
+    if not ids:
+        sys.exit("no DEAD mutants in the ledger and no --only")
+    reached_n = missing = 0
+    for sid in ids:
+        site = sites.get(sid)
+        if site is None:
+            log(f"{sid}: site no longer exists on this tree (re-anchor the ledger)")
+            missing += 1
+            continue
+        t0 = time.time()
+        res = reach_probe(site, ledger, wide=True)
+        wide = res.get("reach_wide")
+        if wide is None:
+            log(f"{sid}: probe unusable ({res.get('reach')}: {res.get('probe_error', '')[:80]})")
+            missing += 1
+            continue
+        any_reached = any(wide.values())
+        reached_n += any_reached
+        log(f"{sid}: corpus={res['reach']} wide={'REACHED' if any_reached else 'unreached'} "
+            f"`{site['before'].strip()[:60]}` ({time.time() - t0:.0f}s)")
+        for cfg, mods in wide.items():
+            log(f"    {cfg:18s} {len(mods):3d}/{len(corpus_modules())}  " + "  ".join(mods[:5]) + (" ..." if len(mods) > 5 else ""))
+        if args.write and sid in recs:
+            recs[sid]["reach_wide"] = wide
+            recs[sid]["reach_wide_at"] = res["reach_wide_at"]
+            if any_reached:
+                recs[sid]["reach_note"] = ("reached under REACH_CFGS — NOT a deletion candidate; the recorded "
+                                          "classification is relative to CORPUS_CFGS only (RQ-66-DELETE, #1238)")
+    if args.write:
+        save_ledger(args.ledger, ledger)
+    print(f"MUTANTS-REACH sites={len(ids)} reached-wide={reached_n} unreached-wide={len(ids) - reached_n - missing} unresolved={missing}")
+    sys.exit(1 if missing else 0)
+
+
 def cmd_pin_subset(args):
     """Write the ledger's `ci_subset`: every control (expected KILLED, with
     its recorded killer) plus the first N UNTESTED, EQUIVALENT and DEAD
@@ -1173,6 +1332,13 @@ def cmd_pin_subset(args):
                 entry["want_changed"] = sorted(c["module"] for c in m["changed"])
             else:
                 entry["want_reach"] = m["reach"]
+                # RQ-66-DELETE: a record carrying wide-reach evidence pins its
+                # first N witnesses per configuration (sorted, deterministic);
+                # `ci` requires every one of them to keep reaching the site.
+                if m.get("reach_wide"):
+                    entry["want_reach_wide"] = {
+                        cfg: mods[: args.reach_witnesses] for cfg, mods in m["reach_wide"].items() if mods
+                    }
             subset.append(entry)
     ledger["ci_subset"] = subset
     save_ledger(args.ledger, ledger)
@@ -1199,11 +1365,13 @@ def cmd_ci(args):
     if len(subset) < 4:
         sys.exit(f"VACUOUS: ci_subset has {len(subset)} entries (< 4)")
     failures = []
+    n_wide = n_wide_ok = 0
     for entry in subset:
         sid = entry["id"]
         expect = {"classification": entry["want_classification"], "bytes": entry.get("want_bytes"),
                   "killed_by": entry.get("want_killed_by"), "changed": entry.get("want_changed"),
-                  "reach": entry.get("want_reach")}
+                  "reach": entry.get("want_reach"), "reach_wide": entry.get("want_reach_wide") or {}}
+        n_wide += bool(expect["reach_wide"])
         site = controls.get(sid) or sites.get(sid)
         if site is None:
             failures.append(f"{sid}: site no longer exists on this tree (re-anchor the ledger)")
@@ -1236,7 +1404,8 @@ def cmd_ci(args):
             if verdict != "KILLED":
                 failures.append(f"{sid}: a mutation the ledger records as KILLED now SURVIVES its killer — the oracle lost its power")
         else:
-            rec = evaluate(site, live, run_oracles=(expect["classification"] == "UNTESTED" and args.full))
+            rec = evaluate(site, live, run_oracles=(expect["classification"] == "UNTESTED" and args.full),
+                           wide=bool(expect["reach_wide"]))
             want_bytes = expect["bytes"]
             if rec.get("bytes") != want_bytes:
                 failures.append(f"{sid}: bytes {rec.get('bytes')} != ledger {want_bytes}")
@@ -1250,9 +1419,26 @@ def cmd_ci(args):
             else:
                 if rec.get("reach") != expect["reach"]:
                     failures.append(f"{sid}: reach {rec.get('reach')} != ledger {expect['reach']}")
-            print(f"{sid}: expect {expect['classification']} -> {rec['classification']} ({time.time() - t0:.0f}s)")
+                if expect["reach_wide"]:
+                    # RQ-66-DELETE: the DEAD verdict is relative to CORPUS_CFGS;
+                    # under REACH_CFGS the pinned witnesses must still reach.
+                    silent = reach_wide_failures(expect["reach_wide"], rec.get("reach_wide"))
+                    if silent:
+                        failures.append(
+                            f"{sid}: reach-wide witnesses went SILENT {silent[:4]}"
+                            f"{' ...' if len(silent) > 4 else ''} — the site became unreachable under "
+                            f"REACH_CFGS, was deleted, or the probe went blind; a human decides which")
+                    else:
+                        n_wide_ok += 1
+            wide_tag = ""
+            if expect["reach_wide"]:
+                wide_tag = " wide=" + ",".join(f"{c}:{len(rec.get('reach_wide', {}).get(c, []))}" for c in expect["reach_wide"])
+            print(f"{sid}: expect {expect['classification']} -> {rec['classification']}{wide_tag} ({time.time() - t0:.0f}s)")
     n_killed = sum(1 for e in subset if e["want_classification"] == "KILLED")
     n_other = len(subset) - n_killed
+    # RQ-66-DELETE: printed and grepped separately, so a subset with no wide-
+    # reach entry at all cannot pass the reach-wide grep (entries >= 1).
+    print(f"MUTANTS-REACH-WIDE entries={n_wide} reached={n_wide_ok} unreached={n_wide - n_wide_ok}")
     print(f"MUTANTS-CI subset={len(subset)} controls={n_killed} non-killed={n_other} failures={len(failures)}")
     for f in failures:
         print("FAIL:", f)
@@ -1313,6 +1499,9 @@ def cmd_report(args):
             detail = f"{len(m['changed'])} corpus objects changed"
         elif m.get("reach"):
             detail = f"reach={m['reach']}"
+            if m.get("reach_wide") is not None:
+                n = sum(len(v) for v in m["reach_wide"].values())
+                detail += f"; REACH_CFGS: {n} reaching (module, cfg)" if n else "; REACH_CFGS: unreached"
         print(f"| `{m['id']}` | {m['op']} | `{Path(m['file']).name}:{m['start']}` | `{b}` -> `{a}` | {m['classification']} | {detail} |")
     print()
     print("| id | operator | site | diff | objects changed | killed by |")
@@ -1359,17 +1548,22 @@ def main():
     sub.add_parser("l2")
     sub.add_parser("attribute")
     sub.add_parser("reanchor")
+    p = sub.add_parser("reach", help="RQ-66-DELETE: probe DEAD sites under REACH_CFGS and name the reaching modules")
+    p.add_argument("--only", help="comma-separated site ids (default: every DEAD mutant in the ledger)")
+    p.add_argument("--write", action="store_true", help="record reach_wide on the ledger records")
     p = sub.add_parser("pin-subset")
     p.add_argument("--untested", type=int, default=2)
     p.add_argument("--equivalent", type=int, default=1)
     p.add_argument("--dead", type=int, default=1)
+    p.add_argument("--reach-witnesses", type=int, default=4,
+                   help="RQ-66-DELETE: witnesses pinned per REACH_CFGS configuration for records carrying reach_wide")
     p = sub.add_parser("ci")
     p.add_argument("--full", action="store_true", help="also re-run the suite for UNTESTED entries")
     sub.add_parser("report")
     args = ap.parse_args()
     {"sites": cmd_sites, "sample": cmd_sample, "baseline": cmd_baseline, "run": cmd_run,
      "controls": cmd_controls, "l2": cmd_l2, "attribute": cmd_attribute, "reanchor": cmd_reanchor,
-     "pin-subset": cmd_pin_subset, "ci": cmd_ci, "report": cmd_report}[args.cmd](args)
+     "pin-subset": cmd_pin_subset, "ci": cmd_ci, "report": cmd_report, "reach": cmd_reach}[args.cmd](args)
 
 
 if __name__ == "__main__":
