@@ -56,8 +56,7 @@ artifacts:
       issue: "#1189"
       done-when: "manual: a selector mutation survey exists with its sampling frame stated; a survival rate is published and CI-pinned; every survivor is classified untested / dead / equivalent; and the untested set is enumerated so v0.66 can be scoped from it"
       landed: >-
-        branch feat/mutants-1189 (PR number recorded in the follow-up commit
-        once `gh pr create` returns), one increment: `scripts/mutation_survey.py`
+        PR #1233 (branch feat/mutants-1189), one increment: `scripts/mutation_survey.py`
         (the harness — anchor-located frame, six mechanical operators, seeded
         stratified sampling, byte-triage + reach probe, a suite DERIVED from
         ci.yml, red-first controls, `ci` replay, `reanchor`/`attribute`/
