@@ -326,3 +326,18 @@ artifacts:
         merged, not an ancestor of this branch's base — the coordinator's
         "currently 104, has just landed" does not hold here; noted as a
         one-line follow-up once #1242 merges.
+
+        LIVE CONFIRMATION (run 34384697392, job 102577926865, current head
+        910a06cb): landed on a THIRD distinct runner, `pulseengine-ci-01-11`.
+        `varve verify` found the SAME known hazard again
+        (`rivet` -> `/var/lib/runners/runner11/.cargo/bin/rivet`) — three
+        different runners now, same mechanism, strengthening rather than
+        weakening the case that this is fleet-wide, not a one-off. The
+        Shadowing gate step's own output: "varve shadow pins: 1 known-open
+        (rivet), all present at their pinned path shape, no new or
+        different hazard." Every step in the job, INCLUDING the Shadowing
+        gate, reports `success` — the job's overall conclusion is
+        **SUCCESS**. `Claim Check` also passed on the same commit, with the
+        new `test_check_varve_shadow_pins.py` step included. The known-open
+        pin design is confirmed working end-to-end in real CI, not just
+        locally.
