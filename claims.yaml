@@ -414,6 +414,19 @@ status_fields:
         # case-weighting.
       - file: scripts/repro/home_alias_audit_corpus_1189.py
         name: KNOWN_OPEN_HITS
+      # RQ-66-UNWATCHED (#1229): four tables from this release's WATCHED
+      # disposition for findings that previously had NO oracle at all. Each is
+      # a `KNOWN`-shaped suppression -- a CI-wired oracle consults it to pass
+      # over a divergence it OBSERVES on the live compiler, keyed to an issue
+      # with an exact count -- this population's stated inclusion criterion.
+      - file: scripts/repro/invalid_accept_1207_differential.py
+        name: KNOWN
+      - file: scripts/repro/false_reject_1229_differential.py
+        name: KNOWN
+      - file: scripts/repro/ra003_join_1230_differential.py
+        name: KNOWN
+      - file: scripts/repro/aarch64_operand_class_1231_differential.py
+        name: KNOWN
   # The same tables summed by pinned CASE — pinned `track` beside the entry
   # ceiling because the parity oracle accepts one '*' wildcard pin per
   # (file, module, kind): merging three per-function pins into one would
@@ -2397,8 +2410,24 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 27
+        value: 85
         baseline: 27
+        waivers:
+          # RQ-66-UNWATCHED (#1207/#1229/#1230/#1231): 27 -> 85. THE PIN DEBT DID NOT
+          # GROW -- ITS MEASUREMENT DID. These four findings previously had no
+          # oracle at all: not pinned, not asserted in ci.yml, not covered by a
+          # test, present only as issue prose. They were the fourth disposition
+          # this release says does not exist. Giving each a red-first oracle
+          # converts prose into 58 counted wrong answers, so the number rises
+          # because the compiler is now being measured where it was not before,
+          # not because it got worse. A waiver rather than a baseline move: the
+          # obligation to drive these to zero is real and stays on the books.
+          - to: 85
+            reason: >-
+              four previously-unwatched findings gain red-first pinned oracles
+              (#1207 13 fixtures x 3 backends, #1229 74 arm + 56 riscv false
+              rejections, #1230 five VCR-RA-003 declines, #1231 four aarch64
+              operand-class confusions) -- newly MEASURED debt, not new debt
       # THE ANTI-COARSENING COMPLEMENT. Slack-free but undirected: the
       # summed case count moves when the spec testsuite grows or a fixture
       # is added — honest work, so it costs a number update and not a
@@ -2407,7 +2436,7 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 56
+        value: 114
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the four tables in the
       # population or one of the two PINNED_WRONG red-half fixtures excluded
@@ -2424,7 +2453,7 @@ claims:
       - kind: count-eq
         pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'
         glob: ['scripts/repro/**/*.py']
-        expect: 6
+        expect: 10
       - kind: verbatim                       # the prose names what is OUT
         text: "EXCLUDED, by design"
       - kind: count-eq                       # the derivation exists…
@@ -3126,7 +3155,14 @@ claims:
     #   re-derived on the MERGED tree, never carried textually across a
     #   rebase. A textual merge here would have silently dropped 18,372
     #   emulations from the enforced floor.)
-    text: "--exact-emulation-floor 346751"
+    # v0.66 — RQ-66-UNWATCHED (#1230): +8 for ra003_join_1230_differential.py
+    #   — a frozen-fixture dynamic proof that VCR-RA-003's `switch` decline
+    #   (labels.wast) is a REAL allocator miscompile, not a validator false
+    #   positive: 4 poisoned-register unicorn replays x 2 poison values of
+    #   the captured bytes. Value RE-DERIVED from `oracle_wiring_check.py`
+    #   AFTER rebasing onto origin/main (fcb8be4f, a dependency bump only):
+    #   346751 -> 346759.
+    text: "--exact-emulation-floor 346759"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
