@@ -3509,8 +3509,8 @@ jobs:
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
-          grep -Eq '^functions audited: 7059$' haa1189.txt
-          grep -Eq '^homes watched: 8056$' haa1189.txt
+          grep -Eq '^functions audited: 7065$' haa1189.txt
+          grep -Eq '^homes watched: 8066$' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
