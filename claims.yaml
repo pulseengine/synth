@@ -2432,7 +2432,7 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 133
+        value: 127
         baseline: 27
         waivers:
           # RQ-66-UNWATCHED (#1207/#1229/#1230/#1231): 27 -> 85. THE PIN DEBT DID NOT
@@ -2472,13 +2472,13 @@ claims:
           # honest shape of a release whose disposition for previously
           # UNWATCHED findings is to start counting them, and it is stated in
           # the release notes as a headline rather than left in this waiver.
-          - to: 133
+          - to: 127
             reason: >-
               the combined effect of both lanes on the merged tree, DERIVED not
               summed: RQ-66-BOTHWRONG closed 77 pins (104 -> 27), then
               RQ-66-UNWATCHED (+58) and RQ-66-WATCHED (+48) added oracles for
               ten findings that previously had none. Net +29 against the v0.65
-              baseline of 104; the obligation to drive all 133 to zero stays on
+              baseline of 104; the obligation to drive all 127 to zero stays on
               the books.
       # THE ANTI-COARSENING COMPLEMENT. Slack-free but undirected: the
       # summed case count moves when the spec testsuite grows or a fixture
@@ -2488,7 +2488,7 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 521
+        value: 505
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in

@@ -175,6 +175,13 @@ COMPARED_FLOOR = 17_000
 # which the spec allows, while wasmtime grows.
 GROW_ENVELOPE = "memory.grow on a fixed-memory image fails (-1): spec-legal, the #539 envelope"
 KNOWN: dict[tuple[str, str, str, str], tuple[str, int]] = {
+    # RQ-66-BOTHWRONG (#1211) FIXED these six: ('aarch64_call_indirect_851.wat',
+    # {self, self-noopt} x {bin, bin_dup, bin_t1}, 'mismatch') recorded 3/3/2
+    # each and now measure 0. Deleted rather than pinned to 0, per this sweep's
+    # own "fixed: delete the pin" instruction. This is a THIRD independent
+    # witness to that fix, after the parity table and the ARM corpus sweep --
+    # a different module, a different backend leg, and an oracle written
+    # against the pre-fix tree.
     # #1204
     ('base_cse_branch.wat', 'self', 'init_branch', 'contract'): ('#1204', 10),
     ('block_brif_483.wat', 'self', 'init_branch', 'contract'): ('#1204', 10),
@@ -200,12 +207,6 @@ KNOWN: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ('spill_frame_499.wat', 'self', 'nested', 'contract'): ('#1204', 2),
     ('stack_canary_687.wat', 'self', 'set_canary', 'contract'): ('#1204', 12),
     # #1211
-    ('aarch64_call_indirect_851.wat', 'self', 'bin', 'mismatch'): ('#1211', 3),
-    ('aarch64_call_indirect_851.wat', 'self', 'bin_dup', 'mismatch'): ('#1211', 3),
-    ('aarch64_call_indirect_851.wat', 'self', 'bin_t1', 'mismatch'): ('#1211', 2),
-    ('aarch64_call_indirect_851.wat', 'self-noopt', 'bin', 'mismatch'): ('#1211', 3),
-    ('aarch64_call_indirect_851.wat', 'self-noopt', 'bin_dup', 'mismatch'): ('#1211', 3),
-    ('aarch64_call_indirect_851.wat', 'self-noopt', 'bin_t1', 'mismatch'): ('#1211', 2),
     # #1240 — found by this oracle
     ('i64_high_reg_zero_fill_916.wat', 'self', 'clz64', 'mismatch'): ('#1240', 10),
     ('i64_high_reg_zero_fill_916.wat', 'self', 'ctz64', 'mismatch'): ('#1240', 10),
