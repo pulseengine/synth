@@ -46,7 +46,7 @@ artifacts:
       sampling frame is overwritten by the tool that reads it. v0.65 shipped
       `per_region: 12` for a sample drawn at 8, and a coordinator check that
       "the frames match" was reading the overwritten value.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - oracle
@@ -62,8 +62,114 @@ artifacts:
       verification-track: review
       issue: "#1189"
       done-when: "manual: the survey probes every suite step on the UNMUTATED tree and refuses to start when any is unrunnable, distinguishing 'oracle failed' from 'oracle could not run'; meta records the frame actually used rather than argparse defaults; both shown red-first by making a step unrunnable and confirming the survey refuses instead of scoring"
+      landed: >-
+        PR #1248 (branch feat/potency-1189, stacked on fix/delete-242 / #1239).
+        `classify_unrunnable(code, out)` (pure) tells "could not execute"
+        (exit 127/126, `command not found`, `ModuleNotFoundError`, an `env`
+        shebang failing to find its interpreter) from "executed and is red
+        for a real reason" (everything else, including
+        fact_spec_div_494_differential.py's real local/CI divergence and a
+        script's own deliberate `FileNotFoundError` on a missing fixture).
+        `probe_l1` runs every L1 step once and splits it into green /
+        unrunnable / red; `preflight_l1` REFUSES (`sys.exit`) on any
+        unrunnable step and otherwise returns a COPY of the L1 list with
+        red-but-runnable steps dropped for THAT CALL's scoring — the
+        persisted `suite["l1"]` is left untouched (only the new
+        `l1_excluded_at_preflight` audit-trail field is written to it), so a
+        transiently-red step cannot silently and permanently shrink the
+        ledger's own record of the derived suite across repeated `run`
+        invocations (`cmd_run`/`cmd_controls` are RESUMABLE, called many
+        times per survey). `run_suite`/`evaluate` take an explicit `l1`
+        override so the preflight-filtered list can be used for scoring
+        without mutating the ledger. L2 (`cargo test --workspace` and
+        friends) is handled differently depending on the caller's usage
+        pattern, not by one function: `preflight_suite` (used by
+        `cmd_run`/`cmd_controls`, both resumed against a tree that is not
+        expected to move between invocations) composes `preflight_l1` with
+        the CHEAP `l2_is_current(ledger, current_commit=None)` check — L2's
+        validated-green status (`suite["l2_validated_at"]`, now set by both
+        `cmd_baseline` and `cmd_l2`) is trusted iff it equals the commit the
+        tree is at now, avoiding a real multi-minute re-execution
+        (RQ-66-DELETE's own evidence: 278 s) on every resume. `cmd_ci`
+        instead runs L2 directly, once, on the unmutated tree, whenever its
+        subset can reach it (`--full`, or a pinned KILLED-type entry whose
+        recorded killer layer is not `execution`) — `l2_is_current`'s
+        commit-match check would be WRONG there, since `ci` inherently
+        replays against a tree expected to have moved since `baseline`.
+        `cmd_ci` without `--full` also probes only the L1 steps its pinned
+        subset's execution-layer killers actually depend on (`ci` replays "a
+        small fixed subset... not a re-run of the survey", per its own
+        module doc); both unrunnable and red refuse there, since a KILLED
+        verdict is meaningless if the killer step is not green before
+        mutating. Second-order fix: `draw_frame(existing_meta, seed,
+        per_region, oversample)` (pure) writes the sampling frame ONCE; a
+        later `run` must reproduce the same three numbers or it refuses with
+        both the recorded and requested values shown, rather than silently
+        overwriting (the exact v0.65 `per_region: 12`-for-8 shape).
+        `candidate_sites` (live tree-state context, not a sampling
+        parameter) is still refreshed every run and is not part of the
+        locked frame. 16 new tests in `scripts/test_mutation_survey.py`.
       verified-by: >-
-        PENDING. The red-first is easy and must be run: remove an interpreter
-        from PATH (or point a step at a missing binary) and confirm the survey
-        REFUSES rather than reporting a flattering rate. That is the exact
-        failure v0.65 hit.
+        RED-FIRST, run for real, not asserted, and reviewed by a second pass
+        that found two real defects in the first cut before it shipped (both
+        fixed here, not merely noted): `preflight_suite` was mutating
+        `suite["l1"]` in place (a transient exclusion would have become
+        permanent the next `save_ledger`), and it unconditionally paid a
+        full `cargo test --workspace` on every `run`/`controls` invocation.
+        (1) `preflight_suite` against a synthetic suite containing one step
+        invoking a genuinely-absent binary (`totally_fake_binary_xyz_1189`)
+        alongside real, working repro scripts (with L2 pre-seeded validated
+        at the current commit): REFUSED naming the exact step and reason
+        (`'totally_fake_binary_xyz_1189' not found on PATH`), while the SAME
+        call's other real steps (including the actual
+        `cmp_select_two_move_differential.py` oracle via `oracle_run.py`,
+        run through the harness's existing bare-`python`->`python3`
+        substitution) executed and passed; a second ledger with only the
+        working steps PROCEEDED, returning the working list WITHOUT touching
+        `suite["l1"]`; a third ledger with L2 not validated at the current
+        commit REFUSED on that check specifically. A separate demo with one
+        real, legitimately-failing (not unrunnable) step confirmed
+        `suite["l1"]` is BYTE-IDENTICAL before and after `preflight_suite`
+        while the returned list has that step excluded and
+        `l1_excluded_at_preflight` records it. (2) `draw_frame`/`cmd_run`:
+        seeded a ledger with `meta == {seed:1189, per_region:8,
+        oversample:4}` (the real v0.65 shape) and ran `mutation_survey.py
+        run --seed 1189 --per-region 12 --oversample 4` against it — REFUSED
+        (`exit 1`) with the message showing both `{'per_region': 8, ...}`
+        (recorded) and `{'per_region': 12, ...}` (requested); the ledger
+        file's sha256 was BYTE-IDENTICAL before and after — the frame was
+        not touched, where the pre-fix code would have silently written 12.
+        A second run with the MATCHING frame (`--per-region 8`) proceeded
+        past the frame check (failed only on an unrelated, expected
+        `--only` site-id lookup). (3) `cmd_ci`'s targeted L2 check: computed
+        `needs_l2` against the real committed
+        `docs/status/mutation_survey.json` ci_subset and confirmed it
+        evaluates `True` because of `CONTROL/startup-r10-seeded-into-r9`
+        (the one `freeze-only`-layer control) — the gap the first cut missed
+        entirely. `python3 scripts/test_mutation_survey.py`: 34/34 (16 new:
+        `classify_unrunnable` on exit-127/126, `command not found`,
+        `ModuleNotFoundError`, an `env` shebang failure, a real assertion
+        failure (fact_spec_div_494_differential.py's shape), a script's own
+        deliberate `FileNotFoundError`, a generic application-level
+        `ImportError`, and a LIVE example pulled from this week's own CI —
+        the `home-alias-audit-oracle` job's `POTENCY: PASS` / `RESULT: PASS`
+        output followed by a stale `grep -Eq` count assertion further down
+        the same step, which failed the STEP while the oracle itself said
+        PASS; `draw_frame` on first-draw, matching no-op, the exact 1189
+        regression, a different seed, and `candidate_sites` exclusion from
+        the locked frame; `l2_is_current` on validated-at-current-commit, a
+        moved commit, never-validated, and the pre-fix
+        docs/status/mutation_survey.json shape that has `l2_baseline_seconds`
+        but no `l2_validated_at`). `python3 scripts/claim_check.py
+        claims.yaml`: 66/66 (unaffected — this fix adds no `KNOWN*`/`PINNED*`
+        table, so RQ-66-PINDEBT's new `known_open_pins` ratchet is unmoved at
+        104, `known_open_pinned_cases` at 623). `cargo fmt --check`, `cargo
+        clippy --workspace --all-targets -- -D warnings` and `cargo test
+        --workspace` clean (no Rust file changed by this fix). STATED
+        RESIDUAL: preflight is a point-in-time check before the mutant loop
+        starts, not a per-invocation guard inside `run_suite`/`run_l2`
+        themselves — an environment failure that develops mid-run, between
+        preflight and a specific mutant's execution, would still
+        misattribute. Scoped deliberately (the measured incident was a
+        stale/foreign ledger reused without re-baselining, which preflight
+        fully covers), not silently accepted.
