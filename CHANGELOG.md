@@ -5,121 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### RQ-66-DELETE (#242, #1238) — the four "DEAD" sites are reachable; nothing deleted, and the reason is now a gate
-
-v0.65's mutation survey handed this release its first principled deletion
-list: four mutants whose flip changed no byte AND whose site the corpus never
-evaluated. RQ-66-DELETE tried to REACH each site before deleting it, with the
-survey's own probe, and **all four fired**: the three VFP-retry-ladder rungs in
-`arm_backend.rs` (`vfp.is_ok()`, the `"spilling the VFP register file"` match,
-`grown.is_ok()`) on `vfp_spill_881.wat` / `vfp_local_pressure_1069.wat` under
-`--target cortex-m7dp` (and `cortex-m4f`), and the graph-colouring arbiter's
-`literals > 0` on 171 of 203 modules under `SYNTH_GRAPH_ALLOC=1`. Under the
-survey's own three `cortex-m4` configurations every probe stays silent — the
-v0.65 verdict reproduces exactly. "DEAD" was a property of the corpus
-CONFIGURATION (soft-float only, no flag-on run), not of the code: on
-`cortex-m4` the selector refuses every scalar float op (`GI-FPU-002: scalar
-f32 requires a…`, 8 of 8 and 5 of 5 functions skipped) before any VFP pressure
-can arise, and no corpus compile sets `SYNTH_GRAPH_ALLOC`. The probe itself is
-sound — `evaluate` never infers reach from byte-identity. **v0.65.0's published
-"4 DEAD (deletion candidates)" — CHANGELOG, `MUTATION_SURVEY.md`, RQ-65-MUTANTS
-— is therefore false, 4 of 4**; the v0.65 text is left as shipped and the
-correction is carried beside the verdicts in the ledger (#1238).
-
-- **Deleted: nothing.** `selector_lines_code` stays 19,896, no waiver — and it
-  could not have moved: the ratchet counts `instruction_selector*.rs`, all four
-  sites are in `arm_backend.rs`, and four of the survey's five regions lie
-  outside the ratchet's population.
-- **Guarded instead:** `scripts/mutation_survey.py reach [--write]` re-probes
-  DEAD sites under `REACH_CFGS` (hard-float targets, `SYNTH_GRAPH_ALLOC=1`)
-  and records the reaching modules on the ledger; `pin-subset` pins witnesses
-  (`want_reach_wide`); `ci` requires every witness to keep reaching and prints
-  `MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0`, grepped by the
-  `mutation-survey-discrimination` job. The decision function is pure and
-  unit-tested from both sides (`scripts/test_mutation_survey.py`, wired).
-- **DEAD salvaged as a category:** `classify_identical` assigns DEAD only when
-  a byte-identical mutant is unreached under `CORPUS_CFGS` AND every
-  `REACH_CFGS` configuration (`evaluate` always runs the wide probe now);
-  reached only under `REACH_CFGS` is UNRESOLVED with a note, never DEAD.
-- `docs/status/MUTATION_SURVEY.md` gains the follow-up section and the DEAD
-  table is annotated; `claims.yaml` pins it (`SYNTH-MUTATION-DEAD-REACHABLE-RQ66`)
-  and the `ci_subset` non-killed side moves 4 -> 7.
-- No Rust file changed: emitted bytes are unchanged by construction.
-### RQ-66-WATCHED (#1189) — the survey's four UNTESTED mutants, each watched by an oracle proven to kill it
-
-v0.65's mutation survey named four codegen decisions no oracle watches: an
-equality's condition code inverted on the direct selector, an i64 result's
-high-half move deleted on the optimized path, an AAPCS dead-at-return register
-dropped from the realloc pass, and the startup's data-copy count register
-changed — bytes moved, the whole named suite stayed green. Each is now watched,
-and "watched" was defined as red-first: the oracle fails on the recorded mutant
-(applied with `mutation_survey.py`'s own `Edit`) and passes on the clean tree.
-
-- `cmn_residual_compare_1189` — the direct selector's hand-written
-  negative-immediate `cmn` compare table, all ten conditions at three
-  magnitudes, executed on both self-contained legs against wasmtime: **160
-  wrong values on the mutant, 2,636/2,636 clean.**
-- `i64_result_pair_1189` — 22 i64-result shapes on the OPTIMIZED path with R1
-  poisoned: **400 wrong high halves on the mutant, clean green.**
-- `liveness::tests::aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189`
-  — the conservative mutant no execution differential can see, pinned as
-  behaviour in both directions through BOTH hand-maintained copies of the set
-  (pass + validator): **fails on the mutant with the exact lost recolouring.**
-- `self_contained_boot_sweep_1189` — **every self-contained corpus image booted
-  through its own shipped `Reset_Handler`** on zeroed RAM, the boot ASSERTED
-  to reach the entry scaffold, every register-signature export executed
-  against wasmtime (331 images, 17,850 vectors): **210 findings on the mutant
-  — 22 images never finish booting, 12 boot with a TRUNCATED copy** (the
-  mutant's `movt r2` still lands the high half of the count, so an image whose
-  data is ≥ 64 KiB looks healthy and is missing its tail). No harness had ever
-  asserted a boot *finished*.
-
-**No 38-mutant re-sampling ran this release** — this host has no bare
-`python`, and `mutation_survey.py`'s suite replay scores any non-zero step
-exit as KILLED, so a replay here would misclassify every mutant on an
-environment defect rather than an oracle observing wrongness (see
-`docs/status/MUTATION_SURVEY.md`, "why `mutants_untested` does not fall").
-The headline is therefore UNCHANGED: 4 of 21 byte-changing mutants survive
-(19 %). What changed in KIND, not in value: **Silent subset** — the v0.65
-cold review's own rule ("loud" iff the mutant's own corpus triage recorded
->= 1 module `newly-declined`/`compile-timeout`, a property of the mutant's
-effect, not of which CI job caught it) existed only as prose until this
-release; `mutation_survey.py` had NO loud/silent classification at all.
-Mechanized as `is_loud_effect` and re-run directly over the existing v0.65
-ledger (no oracle invocation, no re-sampling), it reproduces the published
-figure exactly: **4 of 15 = 26.7 %, rounding to the published 27 %.** One
-record is borderline and the review named it: `arm_backend.rs:1006:8`
-newly-declines exactly 1 of 104 corpus effects; counting it silent instead
-(the review's own stated alternate) gives **4 of 16 = 25.0 %**. Both are
-pinned; neither replaces the other — see `MUTATION_SURVEY.md` "The silent
-subset" for the full derivation and a correction note (an earlier pass of
-this PR treated 25.0 % as a correction to 27 % before finding the review's
-written rule; it is not one).
-`mutants_untested` ratchet: **4 → 4, unchanged** — the four oracles above are
-independently proven red-first by hand, but reclassifying the ledger's
-`UNTESTED` records honestly requires a genuine suite replay (CI, where a real
-`python` exists), which this PR does not attempt to fake.
-
-**The boot sweep's first run found two new optimized-path miscompiles** (exit
-0, direct selector correct): **#1240** `i64.clz`/`ctz`/`popcnt` leave the
-input's high word in the result; **#1241** an i64 non-param local loses its
-value, a half of it visible in R9/R10/R11 — plausibly #1204's root (the
-optimized path treats R9–R11 as allocatable and never saves them, which the
-sweep reports on 23 module/export pairs). Every known-open finding is pinned
-by exact count (#1204, #1211, #1240, #1241, the spec-legal `memory.grow`
-failure on a fixed-memory image); a pin that moves in either direction is red.
-
-**Caveat this release owes (#1238, measured by the sibling lane):** the
-survey corpus is `cortex-m4` soft-float in all three configurations, so a
-DEAD verdict means "unreached by a soft-float, flag-off corpus", not a deletion
-candidate; UNTESTED is unaffected; every rate describes that slice.
-
-Emulation floor 346751 → 367759 on the released tree (three new
-`# ci-checks: emulations`
-declarations; re-derived by `oracle_wiring_check.py`, never summed by hand).
-
 ## [0.66.0] - 2026-09-10
 
 **Watched, fixed, or deleted**
@@ -171,6 +56,9 @@ What did move:
 - **Two new silent miscompiles found (#1240, #1241)** by EXECUTING the
   self-contained corpus images — compiled 400 times per survey run and never
   once run until this release.
+- **The emulation floor rose 346751 -> 367759** on the released tree (three
+  new `# ci-checks: emulations` declarations), re-derived by
+  `oracle_wiring_check.py` and enforced as an EQUALITY, never summed by hand.
 
 The compiler got materially more correct, the instruments got materially more
 honest, and the subtraction metric this project installed as its own scoreboard
