@@ -2466,7 +2466,9 @@ claims:
               and chose to live with.
           # THE MERGED RESULT. The two entries above record each lane's own
           # contribution, measured against the 27 that RQ-66-BOTHWRONG earned
-          # by closing 84 of 89 pinned entries. Landing together the release
+          # by closing 77 of the 103 pinned entries the v0.65.0 tag carried
+          # (the "84 of 89" first published measured a DIFFERENT base — the
+          # table after RQ-65-DECLINE, mid-release). Landing together the release
           # goes 104 -> 27 -> 133: it CLOSED 77 wrong-answer pins and ADDED 106
           # newly-measured ones, ending +29 above where it began. That is the
           # honest shape of a release whose disposition for previously

@@ -252,6 +252,15 @@ narrowly-scoped investigation.
 | #1214 | 1 / 1 | 1 / 1 | none |
 | #1215 | 6 / 11 | 10 / 21 | 5 entries / 11 assertions PINNED — one coherent unaddressed mechanism |
 
+> **BASE NOTE added by the v0.66 cold review.** The counts below are against
+> the table as it stood when this lane STARTED (89 entries / 595 assertions,
+> after RQ-65-DECLINE converted #1205/#1208/#1213). That is a valid base for
+> this lane's own work and is left as measured. It is NOT the
+> release-over-release figure: against the v0.65.0 tag the table held 103 / 622
+> and now holds 26 / 55, so the release closed 77 entries / 567 assertions.
+> Publishing this lane's base as the release figure is the error the cold
+> review caught.
+
 **89 of 89 pinned entries touched by a decision; 84 of 89 (585 of 595
 assertions) move from wrong to correct or to a loud decline; 5 entries (11
 assertions), all one coherent unaddressed mechanism (a branch used as a

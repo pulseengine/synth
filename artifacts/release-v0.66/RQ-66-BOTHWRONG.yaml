@@ -62,7 +62,7 @@ artifacts:
         defect (a phantom operand-stack push for every callee regardless of
         arity), #1211 is TWO independent bugs and its issue title was wrong,
         #1214 an initialisation-contract gap, #1209 refused rather than fixed
-        with the acceptance delta reported as NOT MEASURED. 84 of 89 pinned
+        with the acceptance delta reported as NOT MEASURED. 77 of the 103 pinned
         entries (585 of 595 assertions) moved from wrong-answer to
         correct-or-refused; `known_open_pins` 104 -> 27, the first fall that
         ratchet has recorded. Five frozen goldens re-frozen, each with a
@@ -107,7 +107,16 @@ artifacts:
 
         RESULT (before -> after, `selector_parity_197_differential.py`,
         same corpus, same reference engine): the five issues' pins fell from
-        89 entries / 595 assertions to 5 entries / 11 assertions — 84 of 89
+        BASE MATTERS AND WAS NOT NAMED, which is how the first published
+        figure went wrong (cold review, v0.66). Against the v0.65.0 TAG the
+        parity table held 103 entries / 622 assertions and now holds 26 / 55:
+        77 entries / 567 assertions closed. Against the MID-RELEASE table
+        (after RQ-65-DECLINE converted #1205/#1208/#1213) it was 89 / 595, and
+        that is the base the "84 of 89" came from. The release-over-release
+        figure is the first one. Live residual: 12 entries / 28 assertions of
+        real wrong answers across #1204 (15), #1206 (2) and #1215 (11), plus a
+        14-entry / 27-assertion `#539-grow-fails` envelope that is not a
+        miscompile. Superseded text: 89 entries / 595 assertions to 5 / 11 — 84 of 89
         pinned entries (585 of 595 assertions) move from wrong-answer to
         correct-or-loudly-refused in this PR. Residual: 5 entries / 11
         assertions, ALL one coherent, unaddressed mechanism (1215c) — a

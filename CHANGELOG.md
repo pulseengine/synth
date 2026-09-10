@@ -116,7 +116,8 @@ survey corpus is `cortex-m4` soft-float in all three configurations, so a
 DEAD verdict means "unreached by a soft-float, flag-off corpus", not a deletion
 candidate; UNTESTED is unaffected; every rate describes that slice.
 
-Emulation floor 346751 → 367751 (three new `# ci-checks: emulations`
+Emulation floor 346751 → 367759 on the released tree (three new
+`# ci-checks: emulations`
 declarations; re-derived by `oracle_wiring_check.py`, never summed by hand).
 
 ## [0.66.0] - 2026-09-10
@@ -159,8 +160,12 @@ exists to prevent.
 
 What did move:
 
-- **84 of 89 pinned parity entries — 585 of 595 assertions — went from a WRONG
-  ANSWER to correct-or-refused.**
+- **77 of 103 pinned parity entries — 567 of 622 assertions — went from a WRONG
+  ANSWER to correct-or-refused.** (Corrected by this release's own cold review:
+  the first published figure said "84 of 89 / 585 of 595", which contradicted
+  the scorecard fifteen lines above it and was wrong in every term. Re-derived
+  by `ast.literal_eval` over the parity `KNOWN` table at the v0.65.0 tag and at
+  HEAD.)
 - **`known_open_pins` recorded its first fall ever**, 104 -> 27.
 - **Ten findings that had no oracle at all are now watched.**
 - **Two new silent miscompiles found (#1240, #1241)** by EXECUTING the
@@ -204,8 +209,16 @@ ratchet's population at all. `reach` became a subcommand and a CI gate.
   reported as unmeasured rather than estimated. Five real memory64 spec files
   move to `module_decline`; the census `arm: ok` 16 -> 15 is `load64.wast`
   alone, a module that previously compiled while computing wrong answers.
-- **#1215's remaining 5 entries stay pinned** as one coherent unaddressed
-  mechanism: a branch used as a value-producing operand to another branch.
+- **12 entries / 28 assertions stay pinned as live wrong answers**, across
+  THREE issues, not one: #1215 (11 assertions, a branch used as a
+  value-producing operand to another branch — one coherent unaddressed
+  mechanism), **#1204 (15) and #1206 (2), both untouched by this release**. The
+  first published residual said "5 entries / 11 assertions" and named only
+  #1215; #1204 and #1206 still compute wrong answers and were undisclosed.
+  Caught by the cold review. The parity table's full residual is 26 entries /
+  55 assertions; the remaining 14 entries / 27 assertions are the
+  `#539-grow-fails` envelope — `memory.grow` legitimately failing in a
+  fixed-SRAM image — not miscompiles.
 
 ### RQ-66-UNWATCHED (#1207/#1229/#1230/#1231) — the fourth disposition
 
