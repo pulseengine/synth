@@ -73,7 +73,7 @@ artifacts:
       that is mistaken, and do not weaken the validator to make the red go
       away. Determining WHICH of the two is wrong is the deliverable; either
       answer is a result.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - oracle
@@ -89,6 +89,22 @@ artifacts:
       verification-track: differential
       issue: "#1229"
       done-when: "manual: each of #1207, #1229, #1230, #1231 has a red-first oracle that fails on main, records its wrong behaviour by exact count, and is wired into ci.yml; #1207 and #1229 are triaged together with a stated verdict on whether they share a root cause; #1230 states whether the allocator or the validator is wrong, with evidence; any finding fixed rather than merely watched moves its own pin in the same PR"
+      landed: >-
+        PR #1246 (branch feat/unwatched-1229). Four red-first pinned oracles,
+        58 pins, for findings that previously had NO oracle at all:
+        `invalid_accept_1207_differential.py` (13 curated spec fixtures x 3
+        backends), `false_reject_1229_differential.py` (74 arm + 56 riscv false
+        rejections pinned per file), `ra003_join_1230_differential.py` (a frozen
+        object plus a poisoned-register replay proving the refused bytes are a
+        REAL miscompile) and `aarch64_operand_class_1231_differential.py`.
+        Verdicts: #1230 is "the allocator is wrong, the validator is right";
+        #1207 and #1229 share one missing capability but close 1-of-13 and
+        fully respectively. Zero Rust source changes.
+
+        THIS ARTIFACT WAS ITSELF LEFT `proposed` AFTER ITS WORK SHIPPED, and the
+        v0.66 cold review caught it — the same #1250 gate hole this release
+        fixed for three other artifacts and missed here, on the one artifact
+        whose own subject is findings nothing watches.
       verified-by: >-
         PENDING. Red-first is the whole point here and it is not inherited —
         these four have no pin to move, so each oracle must be DEMONSTRATED to
