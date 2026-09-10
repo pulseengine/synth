@@ -1762,13 +1762,46 @@ def is_loud_effect(m):
 
 
 # The one mutant the review names as borderline (see block comment above).
-BORDERLINE_LOUD_IDS = frozenset({"R1-routing/GUARD/arm_backend.rs:1006:8"})
+#
+# IDENTIFIED BY ITS `before` TEXT, NOT BY ITS ID. v0.66: this was a frozenset of
+# the literal id "R1-routing/GUARD/arm_backend.rs:1006:8". RQ-66-BOTHWRONG added
+# 16 lines to arm_backend.rs, `reanchor` correctly relocated the site to
+# :1022:8, the frozenset then matched NOTHING, and the alternate frame silently
+# became identical to the primary — reporting 6/15 under the alternate's name
+# where it should report 5/16. No error, no warning: a set-membership test
+# against a mutable key is a silent no-op when the key moves, which is the worst
+# failure mode for a rule whose output is a published number. Every other part
+# of this file anchors by `before` text precisely because line numbers move;
+# this consumer did not, so the operation designed to keep the ledger correct
+# was what broke it.
+BORDERLINE_LOUD_BEFORE = "        || has_br_table"
+BORDERLINE_LOUD_REGION = "R1-routing"
 
 
-def is_loud_effect_1006_8_silent(m):
+def _borderline_ids(mutants):
+    """Resolve the borderline record by its STABLE anchor, and refuse to be
+    silent about a miss. Exactly one record must match; zero means the anchor
+    has drifted (the v0.66 failure) and more than one means it is ambiguous.
+    Either way the alternate frame would be meaningless, so say so loudly."""
+    hits = [m["id"] for m in mutants
+            if m.get("region") == BORDERLINE_LOUD_REGION
+            and m.get("before") == BORDERLINE_LOUD_BEFORE]
+    if len(hits) != 1:
+        raise SystemExit(
+            f"borderline-record anchor resolved {len(hits)} mutants, expected 1 "
+            f"(before={BORDERLINE_LOUD_BEFORE!r} region={BORDERLINE_LOUD_REGION!r}). "
+            f"The alternate silent-subset frame cannot be computed: with 0 matches "
+            f"it would silently equal the primary frame, which is how v0.66 shipped "
+            f"6/15 under the 25 % alternate's name. Re-point the anchor at the "
+            f"record the cold review names, or drop the alternate frame outright.")
+    return frozenset(hits)
+
+
+def is_loud_effect_1006_8_silent(m, borderline):
     """`is_loud_effect`, with the review's named borderline record forced
-    silent — the review's own acknowledged alternate reading (25.0 %)."""
-    return is_loud_effect(m) and m["id"] not in BORDERLINE_LOUD_IDS
+    silent — the review's own acknowledged alternate reading (25.0 %).
+    `borderline` comes from `_borderline_ids`, which refuses a zero-match."""
+    return is_loud_effect(m) and m["id"] not in borderline
 
 
 def _silent_frame(changed, loud_fn):
@@ -1800,7 +1833,8 @@ def summarize(ledger):
     # PRIMARY frame: the cold review's canonical corpus-effect rule (27 %).
     primary = _silent_frame(changed, is_loud_effect)
     # ALTERNATE frame: the review's own named alternate, 1006:8 forced silent (25.0 %).
-    alt = _silent_frame(changed, is_loud_effect_1006_8_silent)
+    borderline = _borderline_ids(ms)
+    alt = _silent_frame(changed, lambda m: is_loud_effect_1006_8_silent(m, borderline))
     return {
         "sampled": len(ms), "uncompilable": len(by("UNCOMPILABLE")), "compiled": len(compiled),
         "changed": len(changed), "identical": len(compiled) - len(changed),

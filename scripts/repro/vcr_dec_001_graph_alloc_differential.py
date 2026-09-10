@@ -62,6 +62,18 @@ REPRO = Path(__file__).resolve().parent
 
 # Canonical frozen fixtures (fixture, golden .text sha256, golden len) — the exact
 # pins from crates/synth-cli/tests/frozen_codegen_bytes.rs oracle_001.
+#
+# THIS LIST IS A HAND-MAINTAINED MIRROR AND THAT IS THE DEFECT, not the stale
+# value it produced. v0.66: RQ-66-BOTHWRONG re-froze flight_seam in the Rust
+# golden with a written cause and an executing differential, did not know this
+# copy existed, and main went red for five consecutive merges. CLAUDE.md's
+# first invariant names exactly this shape: derive what you check against from
+# the artifact you ship, never mirror it.
+#
+# Until this reads the goldens directly, the cheap check is:
+#     grep -o '"[0-9a-f]\{64\}"' crates/synth-cli/tests/frozen_codegen_bytes.rs
+# and confirm every hash below appears in that output. A hash here that is NOT
+# there is a stale mirror, not a compiler regression. Filed as #1254.
 FROZEN = [
     # Synced to frozen_codegen_bytes.rs oracle_001 default block after the #846
     # shift-mask elision went default-on (v0.50.1): the shift-carrying anchors
@@ -69,8 +81,14 @@ FROZEN = [
     # flight_seam_flat 1010→842 (−168). signed_div_const is inert (no shift).
     ("control_step.wasm",
      "8b3f1f6fe3a40994dacca91614cc19590f330eb49e8dcc8eb5b0ffc78338a1d9", 288),
+    # RQ-66-BOTHWRONG (#1210) moved this anchor 706 -> 718 in
+    # frozen_codegen_bytes.rs and this MIRROR was not updated with it, which
+    # reddened main for five merges. `flight_algo` calls the VOID function
+    # `filter_step`; before that fix `call` pushed a phantom operand-stack
+    # result for every callee regardless of arity, and the phantom's later
+    # removal happened to shrink code elsewhere.
     ("flight_seam.wasm",
-     "e7152735df88a699f4600574dc5b6f5bc34efcb8cba020f78ec78f59d9d20f8a", 706),
+     "e47705fd59f682ab8894bb6fbf941472c32a3c5725b001a6fd8138ff7bc768d4", 718),
     ("flight_seam_flat.wasm",
      "5a5d675772544662fefdee6f267d07be98da1560af0626b0671e7d79b1644f37", 842),
     ("signed_div_const.wasm",

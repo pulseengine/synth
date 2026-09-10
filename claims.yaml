@@ -3680,7 +3680,15 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # the stated sample size
-        pattern: '"survey_sampled": 38\b'
+      # v0.66: 38 -> 37. One site was RETIRED, not lost: RQ-66-BOTHWRONG
+      # (#1215b) replaced the guard `R3-direct/BOUND/select_with_stack.rs`
+      # mutated, so the construct no longer exists and `reanchor` reported
+      # NOT FOUND rather than relocating it to a lookalike. The entry moved
+      # to the ledger's `retired` list with its reason (#1257 asks the tool
+      # for a first-class state). A denominator that moves needs provenance
+      # as much as a numerator does — silently dropping a member shifts every
+      # derived rate with no record.
+        pattern: '"survey_sampled": 37\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # every red-first control KILLED
