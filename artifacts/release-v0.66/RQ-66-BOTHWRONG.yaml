@@ -56,6 +56,17 @@ artifacts:
       verification-track: differential
       issue: "#1210"
       done-when: "manual: the five classes are triaged by ROOT CAUSE with shared causes named; every class closed moves its RQ-65-PARITY pin from wrong-answer to correct in the same PR; #1209 is either fixed or LOUDLY DECLINED with the acceptance delta measured; every residual stays pinned with a stated reason"
+      landed: >-
+        PR #1249 (branch fix/bothwrong-1210). Five both-selectors-wrong classes
+        triaged to FOUR root causes: #1210 and one slice of #1215 are the SAME
+        defect (a phantom operand-stack push for every callee regardless of
+        arity), #1211 is TWO independent bugs and its issue title was wrong,
+        #1214 an initialisation-contract gap, #1209 refused rather than fixed
+        with the acceptance delta reported as NOT MEASURED. 84 of 89 pinned
+        entries (585 of 595 assertions) moved from wrong-answer to
+        correct-or-refused; `known_open_pins` 104 -> 27, the first fall that
+        ratchet has recorded. Five frozen goldens re-frozen, each with a
+        written cause and an executing differential.
       verified-by: >-
         TRIAGE (full evidence: scripts/repro/bothwrong_1210_1211_1214_triage.md).
         The five pinned classes resolved to FOUR root causes, not five, and not

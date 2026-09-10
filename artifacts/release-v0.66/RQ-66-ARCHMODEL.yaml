@@ -51,6 +51,20 @@ artifacts:
       issue: "#1136"
       carried-from: RQ-65-ARCHMODEL
       done-when: "manual: spar#445 is re-checked AT CUT TIME with the observed state and date recorded; if still open the deferral is filed as the sixth recurrence; if closed, an AADL model is generated to WIT and the loop's steps 1-2 are exercised"
+      landed: >-
+        NOT LANDED — DEFERRED a 6th consecutive time, on an external blocker
+        RE-VERIFIED AT CUT. spar#445 ("spar accepts property associations from
+        UNDECLARED property sets silently (rc=0)") checked 2026-09-10, the day
+        this release was cut: still OPEN, last updated 2026-09-03. That date is
+        the cut-time check, not a carried-forward preview — v0.65 found that
+        this artifact was invisible to the loop-conformance matcher for want of
+        a `feature-loop` tag, so a recurring N/A could have lapsed with the slot
+        showing green. It carries the tag and registers as NA-FILED.
+
+        SIXTH CONSECUTIVE N/A IS ITSELF THE FINDING. The feature loop's own rule
+        is that a step marked N/A for the same reason three features running is
+        a backlog item, not an exemption (#1136). This is twice that. The
+        release states it rather than letting the slot stay quietly green.
       verified-by: >-
         PENDING. Record the blocker's state and the date it was checked, not a
         restatement of the previous release's finding. Six consecutive N/As is
