@@ -1726,6 +1726,67 @@ def cmd_ci(args):
     sys.exit(1 if failures else 0)
 
 
+# ---------------------------------------------------------------------------
+# THE SILENT SUBSET (RQ-66-WATCHED). The CANONICAL rule is the v0.65 cold
+# review's own (docs/reviews/v0.65-cold-review.md, "The one that matters
+# most: what 'caught' means in the headline"): LOUD is a property of the
+# MUTANT'S OWN CORPUS EFFECT — the byte-triage `changed[]` list recorded
+# during the compile-and-diff pass BEFORE any oracle ran — not of which
+# killer/layer happened to catch it:
+#
+#   loud   := the mutant's `changed[]` list contains >= 1 entry whose `kind`
+#             is `newly-declined` or `compile-timeout`, ANYWHERE in the
+#             corpus (independent of which CI job ultimately killed it)
+#   silent := byte-changing and not loud — every `changed[]` entry is a
+#             plain `kind: bytes` diff
+#
+# On this ledger: loud=6, silent=15, 4 survive -> 4/15 = 27 %, which
+# reproduces the review's published figure EXACTLY (is_loud_effect below).
+#
+# One record is BORDERLINE, and the review names it explicitly:
+# `R1-routing/GUARD/arm_backend.rs:1006:8` changes 103 modules' bytes and
+# ALSO newly-declines a single 104th (`aarch64_surface_851.wat|self`) — one
+# incidental decline out of 104 effects trips the >=1 threshold. What
+# actually killed it was 9 `cargo test` assertions (byte-count / golden /
+# WCET-bound expectations — value comparisons, not a compiler refusal), so
+# BY WHAT CAUGHT IT this reads as a silent catch. The review states both
+# readings ("27 % (25 % if `1006:8` is counted silent)") and did not pick
+# one; `is_loud_effect_1006_8_silent` below is that DELIBERATE alternate,
+# not a correction — the published 27 % is the primary number.
+# ---------------------------------------------------------------------------
+def is_loud_effect(m):
+    """The cold review's canonical rule: loud iff the mutant's OWN changed-
+    module triage recorded >= 1 `newly-declined` or `compile-timeout` entry,
+    independent of which layer/oracle ultimately killed it."""
+    return any(c.get("kind") in ("newly-declined", "compile-timeout") for c in m.get("changed", []))
+
+
+# The one mutant the review names as borderline (see block comment above).
+BORDERLINE_LOUD_IDS = frozenset({"R1-routing/GUARD/arm_backend.rs:1006:8"})
+
+
+def is_loud_effect_1006_8_silent(m):
+    """`is_loud_effect`, with the review's named borderline record forced
+    silent — the review's own acknowledged alternate reading (25.0 %)."""
+    return is_loud_effect(m) and m["id"] not in BORDERLINE_LOUD_IDS
+
+
+def _silent_frame(changed, loud_fn):
+    """(loud_count, silent_changed, silent_untested, silent_killed_execution/
+    structure/freeze_only) for one loud/silent partition function."""
+    loud = [m for m in changed if loud_fn(m)]
+    silent = [m for m in changed if not loud_fn(m)]
+    silent_killed = [m for m in silent if m["classification"] == "KILLED"]
+    return {
+        "loud": len(loud),
+        "silent_changed": len(silent),
+        "silent_untested": sum(1 for m in silent if m["classification"] == "UNTESTED"),
+        "silent_killed_execution": sum(1 for m in silent_killed if m["killed_by"]["layer"] == "execution"),
+        "silent_killed_structure": sum(1 for m in silent_killed if m["killed_by"]["layer"] == "structure"),
+        "silent_killed_freeze_only": sum(1 for m in silent_killed if m["killed_by"]["layer"] == "freeze-only"),
+    }
+
+
 def summarize(ledger):
     ms = [m for m in ledger["mutants"]]
     compiled = [m for m in ms if m["classification"] != "UNCOMPILABLE"]
@@ -1736,6 +1797,10 @@ def summarize(ledger):
     struct_k = [m for m in killed if m["killed_by"]["layer"] == "structure"]
     freeze_k = [m for m in killed if m["killed_by"]["layer"] == "freeze-only"]
     timeout_k = [m for m in killed if m["killed_by"]["layer"] == "timeout"]
+    # PRIMARY frame: the cold review's canonical corpus-effect rule (27 %).
+    primary = _silent_frame(changed, is_loud_effect)
+    # ALTERNATE frame: the review's own named alternate, 1006:8 forced silent (25.0 %).
+    alt = _silent_frame(changed, is_loud_effect_1006_8_silent)
     return {
         "sampled": len(ms), "uncompilable": len(by("UNCOMPILABLE")), "compiled": len(compiled),
         "changed": len(changed), "identical": len(compiled) - len(changed),
@@ -1743,6 +1808,21 @@ def summarize(ledger):
         "killed_freeze_only": len(freeze_k), "killed_timeout": len(timeout_k),
         "untested": len(by("UNTESTED")), "equivalent": len(by("EQUIVALENT")), "dead": len(by("DEAD")),
         "unresolved": len(by("UNRESOLVED")),
+        # the silent subset (RQ-66-WATCHED), PRIMARY = the review's canonical
+        # >=1-newly-declined-or-timeout rule — matches the published 27 %.
+        "killed_loud": primary["loud"], "silent_changed": primary["silent_changed"],
+        "silent_killed_execution": primary["silent_killed_execution"],
+        "silent_killed_structure": primary["silent_killed_structure"],
+        "silent_killed_freeze_only": primary["silent_killed_freeze_only"],
+        "silent_untested": primary["silent_untested"],
+        # ALTERNATE = same rule with the review's named borderline record
+        # (`arm_backend.rs:1006:8`) forced silent — the review's own
+        # acknowledged "25 % if 1006:8 is counted silent" reading.
+        "killed_loud_1006_8_silent": alt["loud"], "silent_changed_1006_8_silent": alt["silent_changed"],
+        "silent_killed_execution_1006_8_silent": alt["silent_killed_execution"],
+        "silent_killed_structure_1006_8_silent": alt["silent_killed_structure"],
+        "silent_killed_freeze_only_1006_8_silent": alt["silent_killed_freeze_only"],
+        "silent_untested_1006_8_silent": alt["silent_untested"],
     }
 
 
@@ -1751,6 +1831,17 @@ def cmd_report(args):
     s = summarize(ledger)
     rate = (100.0 * s["untested"] / s["changed"]) if s["changed"] else float("nan")
     print(f"survival rate: {s['untested']}/{s['changed']} byte-changing mutants = {rate:.1f}% UNTESTED")
+    srate = (100.0 * s["silent_untested"] / s["silent_changed"]) if s["silent_changed"] else float("nan")
+    print(f"SILENT-subset rate (PRIMARY, cold review's canonical >=1-newly-declined/timeout rule): "
+          f"{s['silent_untested']}/{s['silent_changed']} silently byte-changing mutants "
+          f"= {srate:.1f}% UNTESTED ({s['killed_loud']} loud mutants removed by corpus effect; "
+          f"silent kills: execution {s['silent_killed_execution']}, structure {s['silent_killed_structure']}, "
+          f"freeze-only {s['silent_killed_freeze_only']})")
+    arate = (100.0 * s["silent_untested_1006_8_silent"] / s["silent_changed_1006_8_silent"]
+             ) if s["silent_changed_1006_8_silent"] else float("nan")
+    print(f"SILENT-subset rate (ALTERNATE, `arm_backend.rs:1006:8` forced silent per the review's own "
+          f"named caveat): {s['silent_untested_1006_8_silent']}/{s['silent_changed_1006_8_silent']} "
+          f"= {arate:.1f}% UNTESTED")
     print(json.dumps(s, indent=1))
     print()
     print("| region | sampled | uncompilable | identical (equiv/dead/unres.) | changed | killed (exec/struct/freeze-only/timeout) | UNTESTED | survival |")

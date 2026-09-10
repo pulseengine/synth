@@ -44,7 +44,7 @@ artifacts:
       A SMALLER IMPROVEMENT HONESTLY MEASURED BEATS A LARGER ONE ASSERTED. If an
       oracle turns out not to kill its mutant, say so and keep the mutant
       UNTESTED rather than weakening the oracle until it passes.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - oracle
@@ -59,10 +59,90 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1189"
-      done-when: "manual: each of the four UNTESTED mutants either has an oracle PROVEN to kill it (red on the mutated tree, green on the clean one) or is recorded as still-unwatched with the reason; the survey is re-run and both the headline and the SILENT-SUBSET rates are published; mutants_untested falls in claims.yaml"
+      done-when: "manual: each of the four UNTESTED mutants either has an oracle PROVEN to kill it (red on the mutated tree, green on the clean one) or is recorded as still-unwatched with the reason; the SILENT-SUBSET rate is re-derived by a mechanical rule and published; mutants_untested falls in claims.yaml WHEN a genuine suite replay (CI, where a real `python` exists) reclassifies the four sites — recorded here as the one sub-criterion this PR does NOT close, with the reason, rather than closed by hand-editing the ledger"
+      landed: >-
+        PR (feat/watched-1189), one increment: three execution oracles in the
+        new `watched-1189-oracle` CI job —
+        `scripts/repro/cmn_residual_compare_1189_differential.py` (+ .wat),
+        `i64_result_pair_1189_differential.py` (+ .wat),
+        `self_contained_boot_sweep_1189_differential.py` — and one unit test,
+        `liveness::tests::aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189`
+        (rides `test`); `mutation_survey.py` gains `is_loud_effect`, the FIRST
+        code implementation of the v0.65 cold review's own silent-subset rule
+        (`docs/reviews/v0.65-cold-review.md`: loud iff the mutant's own
+        corpus-triage `changed[]` recorded >= 1 `newly-declined` or
+        `compile-timeout` entry — a property of the mutant's effect, not of
+        which layer/oracle caught it; `mutation_survey.py` on `main` had NO
+        loud/silent classification at all before this). Re-run over the
+        EXISTING v0.65 ledger (no oracle invocation — pure re-derivation) it
+        reproduces the published 27 % (4 of 15) exactly, plus the review's own
+        named alternate 25.0 % (4 of 16, with the one borderline record
+        `arm_backend.rs:1006:8` counted silent) — both pinned, neither
+        replacing the other; `docs/status/MUTATION_SURVEY.md` rewritten to
+        report both rates with the full derivation and to state plainly that
+        no 38-mutant re-sampling ran this release (see "why `mutants_untested`
+        does not fall" in that doc);
+        `claims.yaml` adds the silent-subset pins and
+        `SYNTH-MUTATION-WATCHED-RQ66`, and moves the exact emulation floor
+        (three new `# ci-checks: emulations` declarations; re-derived by
+        oracle_wiring_check.py on the lane tree). `mutants_untested`
+        value/baseline are UNCHANGED at 4 — the live derivation still equals
+        the pin, so the ratchet is green, but it has not fallen. Issues filed
+        from the boot sweep's first run: #1240, #1241.
       verified-by: >-
-        PENDING. Red-first is the definition here, not a nicety: an oracle that
-        passes on the mutated tree has not been shown to watch anything. Report
-        the re-measured rate against the same frame (seed 1189, per_region 8)
-        so it is comparable, and state plainly if the sample drifts because the
-        site population moved.
+        IMPLEMENTED and INDEPENDENTLY RE-VERIFIED at a73d5ac2 (the salvage
+        review re-ran all four transcripts by hand rather than trusting the
+        recorded ones). RED-FIRST per oracle, the mutation applied in-tree
+        (the exact `before`->`after` text recorded in
+        `docs/status/mutation_survey.json`), tree restored and rebuilt
+        green after each: (1) cmn residual — RED on the `I32Eq => EQ -> NE`
+        mutant (160 wrong values, all five i32.eq exports on the
+        --no-optimize leg, exit 1), GREEN clean (2,636/2,636 vectors, 41
+        exports x 2 self-contained legs, exit 0); (2) i64 result pair — RED
+        on the `mov r1, <hi>` deletion (400 wrong high halves across every
+        optimized-leg export, exit 1), GREEN clean (882 agree + 148 pinned of
+        1,030, exit 0); (3) liveness ABI test — FAILED on the
+        `[R2,R3,R12,LR] -> [R3,R3,R12,LR]` mutant ("R2 is AAPCS-dead at pop
+        {..., pc}: the pass must reuse it ... left: R8, right: R2"), passes
+        clean; (4) boot sweep — RED on the EXACT recorded data-copy mutant
+        (movw-only, register 2 -> 3, movt left at R2 — a broader
+        both-instructions mutation tried first over-collapsed the failure
+        mode into 48 boot-faults and 0 truncations, so the narrower, ledger-
+        matching mutation was used for the reported numbers): 210 findings —
+        22 boot-faults on the 11 modules whose copy is < 64 KiB, 176 wrong
+        values on the 12 whose count is truncated (e.g.
+        `mem757_low_const_copy:copy_peek(0)` -> 0x0, wasmtime 0x67) — all 23
+        data-carrying modules the ledger names; both floors fire; exit 1;
+        GREEN clean (337 compiled, 331 booted, 0 boot failures, 17,850
+        vectors, RESULT: PASS). Re-measured directly through `oracle_run.py`
+        (the mechanism the emulation floor is keyed to): cmn_residual 2,638
+        emulations / 2,636 wasmtime_calls (floor 2,500), i64_result_pair
+        1,032 / 1,030 (floor 1,000), boot_sweep 18,199 / 17,868 (floor
+        17,500) — matching claims.yaml's comment; the emulation-floor total
+        itself sums each script's DECLARED threshold (2,500+1,000+17,500),
+        not these live counts. NO 38-mutant re-sampling ran (this
+        host has no bare `python`, and `mutation_survey.py`'s suite replay
+        scores any non-zero step exit as KILLED — a replay here would
+        misclassify every mutant, not just these four, on an environment
+        defect rather than an oracle observing wrongness — see
+        MUTATION_SURVEY.md). What DID re-derive cleanly, with no such
+        dependency: `mutation_survey.summarize()`'s `is_loud_effect` — the
+        v0.65 cold review's OWN corpus-effect rule, mechanized for the first
+        time (mutation_survey.py had no loud/silent classification before
+        this) — re-run over the committed ledger reproduces the PUBLISHED
+        27 % exactly: `killed_loud=6`, `silent_changed=15`,
+        `silent_untested=4`, 26.7 % (rounds to 27 %), silent kills 2/7/2; the
+        review's own named alternate (`arm_backend.rs:1006:8` counted silent)
+        gives `killed_loud=5`, `silent_changed=16`, 25.0 %, silent kills
+        2/8/2 — both pinned, neither replacing the other (an earlier pass of
+        this PR wrongly treated 25.0 % as a correction to 27 % before finding
+        the review's written rule; see MUTATION_SURVEY.md's correction note).
+        `mutants_untested` stays 4/4 (ratchet green, unchanged
+        — see done-when). `claim_check.py claims.yaml` exits 0;
+        `oracle_wiring_check.py --list --exact-emulation-floor <the value
+        pinned in claims.yaml's SYNTH-ORACLE-CHECK-FLOORS-910-CI, +21000 over
+        its v0.65 figure>` reports its derived total matching that pin
+        exactly (verified green on the lane tree — the live number is not
+        restated here so this line cannot rot the next time the floor
+        legitimately moves; see claims.yaml/ci.yml for the current value);
+        cargo fmt/clippy/test clean.

@@ -1,4 +1,272 @@
-# Mutation survey — v0.65 (RQ-65-MUTANTS, #1189)
+# Mutation survey — v0.66 (RQ-66-WATCHED, #1189)
+
+**NOT a re-sampled survey.** This release does two honest things to the v0.65
+ledger and stops short of a third it cannot do on this host. It (1) writes
+four oracles, each PROVEN red-first against its recorded v0.65 UNTESTED
+mutant (mutation applied by hand with `mutation_survey.py`'s own `Edit`
+context manager, tree-restoration asserted, transcripts below) and wires
+three of them into a new CI job, `watched-1189-oracle`; and (2) MECHANIZES
+the v0.65 cold review's own silent-subset rule (`is_loud_effect` in
+`mutation_survey.py`), which until this release existed only as prose in
+`docs/reviews/v0.65-cold-review.md` and had never been implemented in code —
+so `mutation_survey.py summarize()` had no loud/silent classification at
+all, and the published "27 %" was a hand tally from the start. It does NOT
+re-sample or re-run the 38-mutant survey against the expanded suite — see
+"Why `mutants_untested` does not fall" below for why that is a real
+limitation of this host, not an oversight.
+
+Every verdict is in the committed ledger `docs/status/mutation_survey.json`;
+the numbers below are derived from it and pinned in `claims.yaml`
+(`SYNTH-MUTATION-SURVEY-RQ65`, `SYNTH-MUTATION-WATCHED-RQ66`).
+
+> **THE HEADLINE DOES NOT MOVE THIS RELEASE.** The v0.65 ledger still reads
+> 4 of 21 byte-changing mutants UNTESTED — **19 % survival**, unchanged,
+> because no re-sampling ran (see below).
+>
+> **THE SILENT-SUBSET RATE IS UNCHANGED IN VALUE AND NEW IN KIND: it is now
+> DERIVED rather than hand-tallied, and it reproduces the published figure
+> exactly.** The v0.65 cold review's own canonical rule — loud iff the
+> mutant's OWN corpus-effect triage recorded >= 1 module `newly-declined` or
+> a `compile-timeout`, a property of the mutant, not of which CI job caught
+> it — mechanized in `mutation_survey.py`'s `is_loud_effect` and re-run over
+> the SAME v0.65 ledger, gives **4 of 15 = 26.7 % (rounds to the published
+> 27 %)**. One record is BORDERLINE and the review named it explicitly:
+> `arm_backend.rs:1006:8` crosses the >=1-decline threshold on a single
+> incidental decline out of 104 corpus effects, and what actually killed it
+> was 9 ordinary `cargo test` value-comparisons, not a compiler refusal.
+> Counting that one record silent instead — the review's own stated
+> alternate — gives **4 of 16 = 25.0 %**. Both numbers are pinned; see "The
+> silent subset" for the full derivation, and see the correction note below
+> for how this document and the PR that produced it briefly (and wrongly)
+> treated 25.0 % as a correction to 27 % before finding the review's own
+> written rule.
+>
+> **`mutants_untested`: 4 → 4 (unchanged, ratchet green — `value` still
+> equals the live derivation).** All four oracles below are independently
+> verified red-first by direct invocation (not through the survey harness).
+> They are not yet reflected in the ledger's per-mutant `classification`
+> field, because doing that honestly requires re-running
+> `mutation_survey.py`'s own suite-replay (`evaluate`/`run_suite`) against
+> each site, and that replay is not valid on this machine (see below). The
+> reclassification — and the ratchet's actual fall — is CI's to do on the
+> next full survey run.
+
+## Why `mutants_untested` does not fall this release
+
+`mutation_survey.py`'s suite replay (`run_suite`) executes each CI oracle
+job's `run:` step verbatim through `bash -c`, and scores ANY non-zero exit as
+`KILLED` — including a step failing for a reason that has nothing to do with
+the mutant. This host has no bare `python` (only `python3`), and roughly
+three quarters of `ci.yml`'s ~200 oracle-invoking steps literally read
+`python scripts/...`. Replayed here, the FIRST such step exits 127 before any
+real oracle runs, and every mutant — not just the four this release cares
+about — reads as trivially KILLED for the wrong reason. That is the failure
+mode v0.65's own cold review warned about (a dead oracle reads as perfect
+coverage), and it is why this document does not hand-flip the four
+`UNTESTED` records to `KILLED`, or invent a `killed_by` job/step for them:
+which job would actually catch each mutant in real CI is only knowable by
+actually running the replay there, not by asserting it here. The honest
+state is: proven-by-hand-red-first, not yet proven-by-the-harness. CI running
+`scripts/mutation_survey.py ci --full` against these four sites (or a fresh
+sample) is the next step, and it is the one that can legitimately move the
+ratchet.
+
+## RQ-66-WATCHED — four oracles, each proven to kill its mutant
+
+The v0.65 survey classified four sampled mutants UNTESTED: bytes change, the
+whole named suite stays green. Each was read as the specification for an
+oracle that did not exist, and "done" was defined as red-first: the oracle
+must FAIL on the mutated tree and PASS on the clean one, with the mutation
+applied by `mutation_survey.py`'s own `Edit` context manager (which asserts
+the tree is restored). All four transcripts are in PR (feat/watched-1189).
+
+| v0.65 UNTESTED mutant | oracle | red on the mutant | green on clean |
+|---|---|---|---|
+| `R3-direct/COND` — `I32Eq => Condition::EQ` → `NE` in the direct selector's hand-written **`cmn` residual** (negative-immediate compare) | `scripts/repro/cmn_residual_compare_1189_differential.py` + `.wat` — all ten conditions at −1 / −37 / −255, the SetCond value consumed and as a select condition, positive-immediate / reg-reg / −256 controls; both self-contained legs booted through the shipped `Reset_Handler`, executed against wasmtime | **160 wrong values**, all five `i32.eq` exports on the `--no-optimize` leg (`eq_m1`, `eq_m37`, `eq_m255`, `used_eq_m1`, `sel_eq_m1`), e.g. `sel_eq_m1(255)` → 0xb, wasmtime 0x16; exit 1 | 2,636 / 2,636 vectors agree over 41 exports × 2 legs; exit 0 |
+| `R2-ir_to_arm/DROPMOV` — the optimized path's i64-result **`mov r1, <hi>`** epilogue move deleted | `scripts/repro/i64_result_pair_1189_differential.py` + `.wat` — 22 i64-result exports with i32-only params (an i64 param diverts to the direct selector), R1 POISONED when not an argument; R0:R1 held to wasmtime's 64-bit result | **400 wrong high halves** across every optimized-leg export (`const64`, the extends, shifts, clz/ctz, add/sub/mul, div/rem …), the poison 0xFEEDFACE where the hi word should be; exit 1 | 1,030 vectors: 882 agree, 148 pinned (#1204 R9 clobbers, #1240 `popcnt64`), 42 div-by-zero traps honoured on both sides, 12 envelope trap-misses; exit 0 |
+| `R4-shared/REG` — `aapcs_dead_at_return = [R2, R3, R12, LR]` → R2 replaced by R3 in the realloc pass | `liveness::tests::aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189` — a return-terminated segment whose only spare colour is the probe register: R2/R3/R12 MUST be reused past their last use at a `pop {…, pc}`, must NOT be when the segment does not return, and R1/R5 must NOT be even at a return; `validator_rejects == 0` so the pass's copy AND the validator's copy of the set are both exercised | **FAILED**: "R2 is AAPCS-dead at `pop {…, pc}`: the pass must reuse it … left: R8, right: R2" — exactly the recolouring the mutant loses on 49 corpus objects | passes |
+| `R5-startup/IMM` — the ROM→RAM data-copy COUNT written into `r3` instead of `r2` in `generate_minimal_startup` | `scripts/repro/self_contained_boot_sweep_1189_differential.py` — EVERY corpus module in the survey's two self-contained configurations booted through its own shipped `Reset_Handler` on ZEROED RAM, the boot ASSERTED to reach the entry `blx r0`, then every register-signature export executed against wasmtime with per-vector RAM/register restore | **210 findings**: 22 boot-faults (11 modules whose copy is < 64 KiB — `r2` keeps its reset value, `subs r2, #1` wraps, the loop reads off the end of flash) + 176 wrong values (12 modules whose copy is ≥ 64 KiB — `movt r2` still lands the high half, so the count is TRUNCATED and the data is partly missing: `mem757_low_const_copy:copy_peek(0)` → 0, wasmtime 0x67) — all 23 data-carrying modules the ledger names; both non-vacuity floors fire; exit 1 | 337 images compiled, 331 booted (0 boot failures), 17,850 vectors compared: 15,597 agree + 412 traps honoured, 1,582 envelope trap-misses, 18 budget skips; exit 0 |
+
+Why the R5 oracle had to ASSERT the boot finished: the one existing harness
+that booted a shipped startup (`self_contained_data_758_differential.py`)
+runs the reset path "up to N instructions" and then calls exports. Under this
+mutant an image whose copy loop never terminates parks the PC inside the loop
+with R10/R11 never written; a harness that does not check where the boot
+stopped sees only whatever the exports then return. The truncated-copy shape
+is the sharper lesson — the boot completes, the image looks healthy, and only
+a load from the last data segment is wrong.
+
+The liveness mutant is the odd one: removing R2 from the dead-at-return set is
+a CONSERVATIVE change (the pass pins more, recolours less), so no execution
+differential can see it by construction — a byte golden would, as a change
+detector. The oracle written for it therefore pins the ABI FACT as behaviour,
+in both directions, through both hand-maintained copies of the set at once.
+
+### What the new oracles found on the clean tree (filed, pinned by exact count)
+
+The boot sweep is the first EXECUTION of the self-contained corpus images —
+the survey compiled them 400 times per run and nothing ran one. Its first run
+produced 277 non-ok verdicts on `main`, every one triaged:
+
+| class | verdict | where | issue |
+|---|---|---|---|
+| the optimized path writes R9/R10/R11 and never saves them (`alloc_i64_pair`'s `(R8,R9)`/`(R10,R11)` fallback pairs, the `Const` allocator's R9/R10/R11 fallback) | `contract` | 23 (module, export) pairs on the default leg | **#1204** (known-open; R11 was the reported register, the class is R9–R11) |
+| multi-table `call_indirect` dispatches through the wrong table | `mismatch` | `aarch64_call_indirect_851` `bin`/`bin_dup`/`bin_t1`, both legs | **#1211** (known-open) |
+| `i64.clz` / `i64.ctz` / `i64.popcnt` leave the INPUT's high word in the result's high word on the optimized path (direct selector correct — the #916 class on the other selector) | `mismatch` | `i64_high_reg_zero_fill_916` `clz64`/`ctz64` (10 vectors each), `i64_result_pair_1189` `popcnt64` (3) | **#1240 — NEW** |
+| an i64 non-param local loses its value on the optimized path, a half of it visible in R9/R10/R11 (plausibly #1204's root) | `mismatch` | `aarch64_locals_851:i64_local` → 1 (wasmtime 0x0123456789abcdf0), `brif_local_zeroinit_990:bl_brif_i64` → the high half in both words, `i64_width_vstack_946:f_brif` → 0 | **#1241 — NEW** |
+| `memory.grow` on a fixed-memory bare-metal image fails with −1 while wasmtime grows | `mismatch` | `mem_grow_539:grow2` (both legs), `aarch64_surface_851:mgrow` | spec-legal (the #539 envelope), pinned as such |
+| the image exceeds its instruction budget where Cranelift closes a counted loop into arithmetic | budget skip | 18 vectors (`countdown(-1)` and kin) | not a verdict — the ARM corpus sweep's rule |
+| wasmtime traps (out-of-bounds), the default image reads whatever is there | `trap-miss` | 1,582 vectors | the compliance envelope (CLAUDE.md), recorded |
+
+Every pin is an exact count that goes red in either direction.
+
+## The silent subset — the cold review's own rule, mechanized
+
+"KILLED" means CI went red. That counts the compiler REFUSING (`#952`, a
+decline-census `NEW DECLINE`), a PANIC, a non-vacuity FLOOR firing and a
+compiler HANG — none of which is an oracle noticing wrong code. The v0.65
+cold review (`docs/reviews/v0.65-cold-review.md`, "The one that matters
+most: what 'caught' means in the headline") drew this distinction and
+published **"4 of 15, 27 %"** — but the rule that produces 15 lived only in
+that document's prose. `mutation_survey.py` on `main` has **no loud/silent
+classification at all**: the number was a hand tally from the start, and
+nothing re-derived it or could catch it drifting.
+
+**The rule, precisely, as the review states it:** loud is a property of the
+**mutant's own corpus effect**, not of which layer/oracle killed it. Every
+mutant's byte-triage records a `changed[]` list — one entry per corpus
+module whose compiled output differs, tagged `kind: bytes` (a plain content
+diff), `kind: newly-declined` (a module that used to compile and now
+refuses), or `kind: compile-timeout` (the compiler hangs). A mutant is
+**loud** iff that list contains at least one `newly-declined` or
+`compile-timeout` entry ANYWHERE in the 204-module corpus — regardless of
+which specific CI job eventually reported it KILLED. Everything else —
+every mutant whose entire corpus effect is plain byte diffs — is **silent**.
+
+This is now mechanized as `is_loud_effect` in `mutation_survey.py`, and
+re-running it over the **unmodified, already-shipped v0.65 ledger** (no
+re-sampling, no oracle invocation, no `python`-availability dependency)
+reproduces the published figure exactly:
+
+| | byte-changing | loud (>=1 newly-declined/timeout) | **silent subset** | survivors | **silent survival** | silent kills: execution / structure / freeze-only |
+|---|---|---|---|---|---|---|
+| **PRIMARY** — `is_loud_effect` | 21 | **6** | **15** | 4 | **26.7 % (published: 27 %)** | 2 / 7 / 2 |
+
+The six loud mutants: `select_with_stack.rs:902:0` (425 modules newly
+declined, `#952`/VACUOUS), `select_with_stack.rs:6045:0` (9 newly declined,
+`NEW DECLINE` census), `select_with_stack.rs:206:45` (1 newly declined,
+`#952`), `optimizer_bridge.rs:3658:0` (a panic — `index out of bounds` —
+plus a VACUOUS floor), `select_with_stack.rs:561:46` (a `compile-timeout`),
+and `arm_backend.rs:1006:8` (104 modules changed, of which **1** newly
+declines).
+
+### The borderline record, named the way the review named it
+
+`arm_backend.rs:1006:8` is the one entry in the loud six that is not a clean
+call. Its `changed[]` list holds 103 plain `kind: bytes` diffs and exactly
+ONE `kind: newly-declined` (`aarch64_surface_851.wat|self`) — a single
+incidental decline among 104 corpus effects trips the >=1 threshold. What
+actually reported it `KILLED`, separately, was **9 `cargo test`
+assertions** (`base_cse_flip_468`, `cabi_arena_bind_418`,
+`const_cse_reduction_242`, `i64_pair_exhaust_587`, `spill_on_exhaust_242`,
+`synth-backend(unit)`, `volatile_segment_phase2_543`, `wast_compile`,
+`wcet_bound_gate`) comparing bytes/bounds against expectations — value
+comparisons, not a compiler refusal. By WHAT CAUGHT IT this reads as a
+silent catch; by the review's corpus-effect rule it is loud on one declined
+module out of 104. The review states both readings and does not pick one:
+
+> "On the silent 15 the survival is 27 % (25 % if `1006:8` is counted
+> silent)"
+
+`is_loud_effect_1006_8_silent` is that named alternate, mechanized the same
+way — NOT a correction to 27 %, a documented, deliberate re-reading of one
+acknowledged borderline record:
+
+| | byte-changing | loud | **silent subset** | survivors | **silent survival** | silent kills: execution / structure / freeze-only |
+|---|---|---|---|---|---|---|
+| **ALTERNATE** — `1006:8` forced silent | 21 | 5 | **16** | 4 | **25.0 %** | 2 / 8 / 2 |
+
+**The review's own prose decomposes exactly to the PRIMARY frame's per-layer
+counts.** It states: "the execution-oracle layer ... caught 2 of 15; 9 of
+the 11 silent kills came from `cargo test`, and 2 of those from byte goldens
+alone." Silent-KILLED = 11 = 2 `execution` + 9 `cargo test`; "cargo test"
+here is the umbrella covering BOTH `structure` and `freeze-only` layers
+(both are literal `cargo test` failures), and "2 of those [9] from byte
+goldens" is exactly `freeze-only`. So 9 `cargo test` = 7 `structure` + 2
+`freeze-only`, which is precisely the PRIMARY row's `2 / 7 / 2` above — `9`
+was never a miscount of `structure` alone (8); it is `structure` (7, with
+`1006:8` moved to the loud side) plus `freeze-only` (2). This is the
+reconciliation the review's own words support once `1006:8`'s corpus effect
+is read out of the ledger rather than assumed.
+
+**A prior draft of this document and its PR wrongly treated 25.0 % as "the
+correction" to 27 %,** having derived only `is_loud_effect_1006_8_silent`
+(then called `is_loud_kill`, defined by killer-tail content rather than
+corpus effect) without first finding the review's own written corpus-effect
+rule. That was wrong: 27 % is the review's PRIMARY, published figure and
+this release does not replace it — it mechanizes it, names its one
+borderline record precisely, and pins both readings so neither can drift
+silently again.
+
+The ledger's `summary` block carries `survey_killed_loud`,
+`survey_silent_changed`, `survey_silent_untested` and the per-layer silent
+counts for the PRIMARY frame, and the same five fields suffixed
+`_1006_8_silent` for the ALTERNATE; `claims.yaml` pins all of them by exact
+text against `docs/status/mutation_survey.json`
+(`SYNTH-MUTATION-SURVEY-RQ65`), so either rate drifting from the ledger it
+is derived from is now a red gate, not a rediscovery a release later.
+
+## The corpus's configuration coverage — a caveat this document owes (#1238)
+
+The survey's byte triage compiles 204 modules in THREE configurations and
+**all three are `cortex-m4`, soft-float, every lever at its default**
+(`--relocatable`, self-contained, self-contained `--no-optimize`). The
+sibling lane RQ-66-DELETE measured today (#1238) that all four v0.65 "DEAD"
+sites are REACHABLE: the VFP / hard-float retry rungs read as unreached
+because no configuration exercises them. Consequences here, stated rather
+than fixed (the fix is #1238's):
+
+- a **DEAD** verdict in this ledger means "unreached by a soft-float, flag-off
+  corpus" — it is NOT a deletion candidate; 4 such verdicts are recorded
+  in this ledger (`survey_dead`) and labelled so;
+- the **UNTESTED** classification is unaffected: it means bytes CHANGED under
+  a configuration the corpus does compile and the suite stayed green, which
+  does not depend on the reach probe;
+- every rate in this document describes that soft-float, flag-off slice of
+  the compiler, and v0.65 did not say so.
+
+## v0.66 — what actually happened, and what is left for CI
+
+No re-sampling of the 38-mutant frame ran this release, and the four
+per-mutant `classification` records in `docs/status/mutation_survey.json`
+are unchanged from v0.65 (verified by structural diff — the only ledger
+change this release makes is the `meta.reanchored_at` bump from re-anchoring
+site line numbers to the current tree, and the `summary` block extension
+above; every mutant/control/ci_subset record's `before`/`after`/
+`classification` is byte-identical). "Why `mutants_untested` does not fall"
+above states the reason: this host cannot validly replay
+`mutation_survey.py`'s CI-step suite (bare `python` is absent, and a replay
+step failing on that gets scored `KILLED` for the wrong reason, which would
+silently corrupt every mutant's classification, not just these four).
+
+What CI can do that this host cannot: run
+`python3 scripts/mutation_survey.py ci --full` (or a fresh `run`) with a real
+`python` on PATH, which replays the actual suite — now including
+`watched-1189-oracle` — against the recorded sites. `R2-ir_to_arm/DROPMOV`
+and `R4-shared/REG` are already in `ci_subset`; a green `--full` run there
+that reports "ledger says UNTESTED, suite now says KILLED" is the actual
+trigger to update their `classification`, `ci_subset` `want_classification`,
+and the `claims.yaml` `mutants_untested` ratchet together, in one commit, on
+the merged tree. `R3-direct/COND` and `R5-startup/IMM` are not currently in
+`ci_subset` and would need adding once verified the same way.
+
+---
+
+# v0.65 — the first measurement (RQ-65-MUTANTS, #1189), kept as history
+
+The sections below are the v0.65 report as published, with its numbers; the
+v0.66 re-measurement above supersedes them. The v0.65 UNTESTED list is the
+specification the four oracles above were written to.
 
 **Measured 2026-09-09** on synth at `580d53f9` (RQ-65-PARITY merged), with
 `scripts/mutation_survey.py`; every verdict, the exact text diff of every

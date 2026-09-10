@@ -246,8 +246,12 @@ ever-growing pile of locally-correct patches.**
 > source — never a hand tally) from the suppression tables the CI-wired
 > oracles consult on the LIVE compiler: the selector-parity `KNOWN` table,
 > the ARM corpus sweep's `KNOWN_ARM_MISMATCHES`, the home-alias class
-> differential's `KNOWN_OPEN` and the home-alias audit's `KNOWN_OPEN_HITS`.
-> Every entry counts, the envelope-reasoned `#539-grow-fails` ones included
+> differential's `KNOWN_OPEN`, the home-alias audit's `KNOWN_OPEN_HITS`, and
+> — added by RQ-66-WATCHED, v0.66, whose new oracles are what FOUND the
+> entries they now pin — the i64-result-pair differential's `KNOWN`
+> (#1204/#1240) and the self-contained boot sweep's `KNOWN` (#1204/#1211/
+> #1240/#1241/the `#539` grow-fails envelope). Every entry counts, the
+> envelope-reasoned `#539-grow-fails` ones included
 > — a suppression hides whatever else goes wrong behind it, whatever its
 > stated reason.
 > EXCLUDED, by design: the `PINNED_WRONG` red-half fixtures (recorded wrong

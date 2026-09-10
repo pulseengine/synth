@@ -16524,6 +16524,132 @@ mod tests {
         );
     }
 
+    /// RQ-66-WATCHED (#1189) — the AAPCS dead-at-return exemption, pinned as
+    /// BEHAVIOUR rather than as a list.
+    ///
+    /// The pass (`try_reallocate_segment`) and its validator
+    /// (`validate_segment_rewrite_exempting`) each carry the same four-entry
+    /// set — `[R2, R3, R12, LR]` are caller-saved scratch, dead past a
+    /// `pop {…, pc}` return — and until this test the only thing that
+    /// checked either copy was the other copy. The v0.65 mutation survey
+    /// replaced R2 by R3 in the PASS's copy and the whole suite stayed
+    /// green: 49 corpus objects changed (every return-terminated segment
+    /// lost a legal recolouring onto r2) and nothing noticed, because a
+    /// CONSERVATIVE mutation is invisible to every execution differential
+    /// by construction. So the fact is pinned here in both directions, and
+    /// through both copies at once: the pass must PROPOSE the recolouring
+    /// (its copy) and the validator must CERTIFY it (`validator_rejects ==
+    /// 0`, its copy), so a defect in either list is red.
+    ///
+    /// The segment: a value on `probe` dies at 1; a 4-byte intermediate on
+    /// r8 (def 2, last use 3) is NOT r8's exit holder (a second r8 range at
+    /// 4 is), so it is free to recolour, and the pool is `{probe, R8}` so
+    /// `probe` is the only other colour. It is taken iff `probe`'s exit
+    /// value is unobservable — iff `probe` is in the dead-at-return set AND
+    /// the segment ends in a return.
+    #[test]
+    fn aapcs_dead_at_return_exemption_is_exactly_the_scratch_set_1189() {
+        fn segment(probe: Reg, ends_in_return: bool) -> Vec<ArmInstruction> {
+            let mut v = vec![
+                ins(ArmOp::Movw {
+                    rd: probe,
+                    imm16: 5,
+                }),
+                ins(ArmOp::Add {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(probe),
+                }),
+                // The intermediate the exemption frees a colour for.
+                ins(ArmOp::Movw {
+                    rd: Reg::R8,
+                    imm16: 7,
+                }),
+                ins(ArmOp::Adds {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R8),
+                }),
+                // r8's exit holder: pinned, so the intermediate above is not.
+                ins(ArmOp::Movw {
+                    rd: Reg::R8,
+                    imm16: 9,
+                }),
+                ins(ArmOp::Adds {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R8),
+                }),
+            ];
+            v.push(if ends_in_return {
+                ins(ArmOp::Pop {
+                    regs: vec![Reg::R4, Reg::PC],
+                })
+            } else {
+                ins(ArmOp::Add {
+                    rd: Reg::R1,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(1),
+                })
+            });
+            v
+        }
+        let intermediate_reg = |out: &[ArmInstruction]| match &out[2].op {
+            ArmOp::Movw { rd, imm16: 7 } => *rd,
+            other => panic!("instruction 2 is no longer the intermediate: {other:?}"),
+        };
+
+        // (a) The dead-at-return scratch set IS reusable past its last use
+        //     when the segment returns — the recolouring the survey's mutant
+        //     silently lost on 49 objects.
+        for probe in [Reg::R2, Reg::R3, Reg::R12] {
+            let seg = segment(probe, true);
+            let (out, stats) = reallocate_function(&seg, &[probe, Reg::R8]);
+            assert_eq!(
+                intermediate_reg(&out),
+                probe,
+                "{probe:?} is AAPCS-dead at `pop {{…, pc}}`: the pass must reuse it \
+                 for the intermediate (and its validator must certify that): {out:?}"
+            );
+            assert_eq!(
+                stats.validator_rejects, 0,
+                "{probe:?}: the pass proposed the reuse but the validator's copy of \
+                 the dead-at-return set refused it — the two lists disagree"
+            );
+        }
+        // (b) NOT at a return: the same registers' exit values are observable
+        //     by whatever follows, so the reuse must not happen.
+        for probe in [Reg::R2, Reg::R3, Reg::R12] {
+            let seg = segment(probe, false);
+            let (out, stats) = reallocate_function(&seg, &[probe, Reg::R8]);
+            assert_eq!(
+                intermediate_reg(&out),
+                Reg::R8,
+                "{probe:?} is live-out of a non-returning segment: reusing it would \
+                 clobber a value the next segment may read: {out:?}"
+            );
+            assert_eq!(
+                stats.validator_rejects, 0,
+                "{probe:?}: unsound rewrite proposed"
+            );
+        }
+        // (c) Registers OUTSIDE the set stay pinned even at a return: R1 may
+        //     carry the hi half of an i64 result, R5 is callee-saved.
+        for probe in [Reg::R1, Reg::R5] {
+            let seg = segment(probe, true);
+            let (out, stats) = reallocate_function(&seg, &[probe, Reg::R8]);
+            assert_eq!(
+                intermediate_reg(&out),
+                Reg::R8,
+                "{probe:?} is NOT dead at return: reusing it is a miscompile: {out:?}"
+            );
+            assert_eq!(
+                stats.validator_rejects, 0,
+                "{probe:?}: unsound rewrite proposed"
+            );
+        }
+    }
+
     #[test]
     fn validator_accepts_a_legitimate_internal_rename() {
         // Hand-built valid rewrite: the interior r5 range (born 0, dies 1) of
