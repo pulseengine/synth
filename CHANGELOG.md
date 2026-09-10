@@ -19,11 +19,19 @@ no fourth. "Still pinned known-open" is not a disposition.
 
 | metric | v0.65 | v0.66 | |
 |---|---|---|---|
-| `selector_lines_code` | 19896 | **20097** | +201, **eighth consecutive rise** (21 waivers) |
+| `selector_lines_code` | 19896 | **20097** | +201; **eight releases since v0.58, not one fall** (21 waivers) |
 | `selector_wildcard_arms_code` | 55 | **56** | +1 (2 waivers) |
 | `known_open_pins` | 104 | **127** | rose against a baseline of 27, 3 waivers |
-| `sel_dsl_rules` | 80 | 80 | flat, thirteenth release |
+| `sel_dsl_rules` | 80 | 80 | unchanged since v0.59.0 — eighth release at 80 |
 | `mutants_untested` | 4 | 4 | flat, deliberately |
+
+Both "since" counts are derived, not remembered, and an earlier draft of this
+table got each of them wrong. `sel_dsl_rules` last CHANGED at v0.59.0 (50 at
+v0.47-v0.57, 74 at v0.58, 80 since) — counted over `coq/vcr_sel_rules.manifest`
+at every tag, the file `claims.yaml` derives the pin from; the draft said
+"thirteenth release". And `selector_lines_code` has risen at seven of the eight
+releases since v0.58, not eight: v0.63 was exactly +0, so "never fallen" is the
+claim the history supports and "consecutive rise" is not.
 
 Every one of those +201 selector lines is RQ-66-BOTHWRONG's, and every one is a
 real fix for a real miscompile. That is exactly the tension v0.58's correction
@@ -62,7 +70,7 @@ What did move:
 
 The compiler got materially more correct, the instruments got materially more
 honest, and the subtraction metric this project installed as its own scoreboard
-went the wrong way for the eighth release running. All three are true.
+has not fallen once in the eight releases since v0.58. All three are true.
 
 ### RQ-66-DELETE (#242, #1238) — nothing deleted, and that is the result
 
