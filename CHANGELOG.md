@@ -119,6 +119,151 @@ candidate; UNTESTED is unaffected; every rate describes that slice.
 Emulation floor 346751 → 367751 (three new `# ci-checks: emulations`
 declarations; re-derived by `oracle_wiring_check.py`, never summed by hand).
 
+## [0.66.0] - 2026-09-10
+
+**Watched, fixed, or deleted**
+
+v0.65 asked what fraction of the code generator any oracle would catch being
+wrong, and answered with a list: 21 defects, ten wrong-answer classes pinned
+known-open, four mutants no oracle watches, four nothing reaches. v0.66's rule
+was that every one of those gets exactly one of three dispositions and there is
+no fourth. "Still pinned known-open" is not a disposition.
+
+### The scorecard, unflattered
+
+| metric | v0.65 | v0.66 | |
+|---|---|---|---|
+| `selector_lines_code` | 19896 | **20097** | +201, **eighth consecutive rise** (21 waivers) |
+| `selector_wildcard_arms_code` | 55 | **56** | +1 (2 waivers) |
+| `known_open_pins` | 104 | **127** | rose against a baseline of 27, 3 waivers |
+| `sel_dsl_rules` | 80 | 80 | flat, thirteenth release |
+| `mutants_untested` | 4 | 4 | flat, deliberately |
+
+Every one of those +201 selector lines is RQ-66-BOTHWRONG's, and every one is a
+real fix for a real miscompile. That is exactly the tension v0.58's correction
+named: a rule is not done when it is proven, it is done when the hand-written
+arm it replaces is DELETED. This release fixed hand-written arms rather than
+replacing them, so the arm count grew.
+
+`known_open_pins` went **104 -> 27 -> 127**. It CLOSED 77 wrong-answer pins and
+ADDED 100 newly-measured ones, ending +23 above where it began. The pin debt did
+not grow; its MEASUREMENT did — ten findings that previously had no oracle at
+all now have counted pins. Three waivers, each bound to the value the tree
+actually holds, record the rise rather than moving the baseline.
+
+`mutants_untested` did not fall, and that was a decision. Reclassifying the four
+UNTESTED records needs a suite replay that is invalid on a host without a bare
+`python`, where the harness scores exit 127 as a KILL. Inventing a `killed_by`
+nobody verified would have been the fabricated-evidence failure this release
+exists to prevent.
+
+What did move:
+
+- **84 of 89 pinned parity entries — 585 of 595 assertions — went from a WRONG
+  ANSWER to correct-or-refused.**
+- **`known_open_pins` recorded its first fall ever**, 104 -> 27.
+- **Ten findings that had no oracle at all are now watched.**
+- **Two new silent miscompiles found (#1240, #1241)** by EXECUTING the
+  self-contained corpus images — compiled 400 times per survey run and never
+  once run until this release.
+
+The compiler got materially more correct, the instruments got materially more
+honest, and the subtraction metric this project installed as its own scoreboard
+went the wrong way for the eighth release running. All three are true.
+
+### RQ-66-DELETE (#242, #1238) — nothing deleted, and that is the result
+
+All four "DEAD" mutants v0.65 offered as a deletion list are REACHABLE. Three
+VFP-retry-ladder rungs fire under `--target cortex-m7dp`; the graph-colouring
+arbiter's `literals > 0` fires on 171 of 203 modules under `SYNTH_GRAPH_ALLOC=1`.
+"DEAD" was a property of the corpus CONFIGURATION — three soft-float `cortex-m4`
+runs, no flag-on run — not of the code. v0.65's published "4 DEAD (deletion
+candidates)" is false, 4 of 4; each ledger record now carries a `published_as`
+field naming the false claim and where it appeared.
+
+Deleting them could not have moved `selector_lines_code` regardless: that
+ratchet's population is the `instruction_selector` family and all four sites are
+in `arm_backend.rs`. Only ONE of the survey's five regions lies inside the
+ratchet's population at all. `reach` became a subcommand and a CI gate.
+
+### RQ-66-BOTHWRONG (#1210) — five classes, four root causes
+
+- **#1210 and one slice of #1215 are the SAME defect**: `call` pushed a phantom
+  operand-stack result for every callee regardless of arity, so a call to a VOID
+  function corrupted every later depth-dependent operation.
+- **#1211 was TWO independent bugs**, and the issue's own title
+  ("call_indirect ignores the table index") was wrong: a register-liveness
+  failure in `free_callee_saved`, and an extended-const decode gap in the
+  element-segment offset reader. Confirmed fixed by THREE independent oracles —
+  the parity table, the ARM corpus sweep, and the boot sweep, the last written
+  against the pre-fix tree by a different lane.
+- **#1214** an initialisation-contract gap: a declared-i64, never-written local
+  invisible to dataflow-only width inference.
+- **#1209 memory64 is REFUSED, not fixed.** The acceptance delta was NOT
+  measured — the 805-module corpus is absent from the build sandbox — and is
+  reported as unmeasured rather than estimated. Five real memory64 spec files
+  move to `module_decline`; the census `arm: ok` 16 -> 15 is `load64.wast`
+  alone, a module that previously compiled while computing wrong answers.
+- **#1215's remaining 5 entries stay pinned** as one coherent unaddressed
+  mechanism: a branch used as a value-producing operand to another branch.
+
+### RQ-66-UNWATCHED (#1207/#1229/#1230/#1231) — the fourth disposition
+
+Auditing the plan against its own rule found four findings with none of the
+three dispositions: no oracle, no CI assertion, no pin, no test, present only as
+issue prose. Each now has a red-first pinned oracle, 58 pins.
+
+- **#1230's verdict: the allocator is wrong, the validator is right.**
+  VCR-RA-003 caught a genuine constant-materialization bug at a control-flow
+  join, proven with a poisoned-register replay. RQ-66-BOTHWRONG then fixed 2 of
+  its 5 declines — the two whose functions contain a call — and the other three
+  are byte-identical, verified 220/220.
+- **#1207 and #1229 share one missing capability** but close very differently:
+  #1229 fully, #1207 only 1 of 13.
+
+### RQ-66-WATCHED (#1189) and RQ-66-POTENCY (#1189)
+
+Four oracles written to the survey's own UNTESTED mutants, each proven red on
+its recorded mutant before wiring. The **silent-subset rule is mechanized for
+the first time** (`is_loud_effect`), reproducing the published **27 %** exactly
+from the v0.65 cold review's own written rule — loud is a property of the
+MUTANT's corpus effect, not of which oracle caught it. The review's named 25 %
+alternate, hinging on one borderline record, is pinned beside it. Two
+independent attempts to re-derive that figure had failed before the rule was
+found; the number was never wrong, its definition simply did not travel with it.
+
+`mutation_survey.py` now REFUSES to start when any suite step is unrunnable
+rather than scoring exit 127 as a KILL, and locks the sampling frame on first
+draw so a later read cannot overwrite it with argparse defaults.
+
+### RQ-66-VARVE (#1236) — RECORDED, a disposition the rule did not have
+
+The pin rotated to layer 2026.09.2 with a re-derived digest and a >=0.33.0
+client floor. Making one CI job dispatch through it surfaced a real cross-job
+PATH-shadowing hazard on the self-hosted runners — and five real runs showed it
+is NON-DETERMINISTIC, the same runner shadowed once and clean once. An
+exact-match gate on that observable would be flaky, and a flaky gate is worse
+than either a hard red or a clean green. So it reports rather than gates, with
+the known observation pinned: **RECORDED, not WATCHED**, and nothing in CI
+drives that pin toward zero. Closure needs a runner-side change.
+
+### Known residuals this release does NOT claim to have closed
+
+- #1215's five remaining entries (11 assertions).
+- #1207 closes 1 of 13.
+- #1230's allocator bug is WATCHED, not FIXED.
+- The varve PATH-shadowing hazard is RECORDED, with no CI pressure toward zero.
+- **RQ-66-ARCHMODEL defers a SIXTH consecutive time** on spar#445, re-verified
+  OPEN at cut on 2026-09-10. The feature loop's own rule is that three
+  consecutive N/As make a backlog item, not an exemption (#1136). This is twice
+  that.
+- **#1250**: `status_evidence` exits 0 with an artifact whose work SHIPPED still
+  marked `proposed` — R3 cannot see a `manual:` done-when, R4's subject
+  convention no longer matches this repo's commit style, and R10 passes anyway.
+  Found while deriving these release notes.
+- **#1243**: a CI floor written `[4-9][0-9]*` meant "first digit 4-9", not "at
+  least 4", so it reddened when the pinned subset GREW past 9. Fixed here.
+
 ## [0.65.0] - 2026-09-09
 
 **How much of this is correct by accident?**

@@ -257,6 +257,17 @@ artifacts:
       verification-track: review
       issue: "#1236"
       done-when: "manual: varve.toml resolves against the rotated realm from the PUBLISHED realms asset (not a pasted key), `varve install` verifies signatures and digests, `varve which` reports a layer for the loop's tools, and the layer identity is recorded with the release; or the step is declared UNPINNED with the reason"
+      landed: >-
+        PR #1244 (branch feat/varve-1236). Realm rotated to the v0.33.0
+        published asset, layer 2026.09.2, digest re-derived not copied, client
+        floor >=0.33.0 recorded on the pin. The advisory federated CI job now
+        installs varve and dispatches rivet THROUGH it, which surfaced a real
+        cross-job PATH-shadowing hazard on the self-hosted runners. The first
+        gate design was exact-match and proved FLAKY across five real runs
+        (including the same runner shadowed once and clean once), so it was
+        redesigned to report-not-gate with the known observation pinned:
+        disposition RECORDED, not WATCHED, and the release says so along with
+        the cost that nothing in CI drives it toward zero.
       verified-by: >-
         Layer 2026.09.2, manifest digest
         sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025,

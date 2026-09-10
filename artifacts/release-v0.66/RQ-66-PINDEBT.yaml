@@ -41,7 +41,7 @@ artifacts:
       one must redden; closing one must let the number fall. A ratchet nobody
       has watched fire is a ratchet being guessed at — RQ-63-FLOOREQ and
       RQ-65-FLOORSHAPE both established that bar and this must meet it.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - ratchet
@@ -57,6 +57,20 @@ artifacts:
       verification-track: review
       issue: "#242"
       done-when: "manual: the known-open pin count is DERIVED from the oracles, pinned in claims.yaml with a FALL direction and a waiver channel, printed by claim_check --metric, and shown red-first to REDDEN when a pin is added without one being closed"
+      landed: >-
+        PR #1242 (branch feat/pindebt-242) and PR #1247 (fix/pintable-comp-242),
+        two increments. #1242: `known_open_pins` / `known_open_pinned_cases` as
+        derived `kind: pin-table` ratchets over the oracles' OWN suppression
+        tables (an `ast` walk, never running them), a `count-eq` population
+        tripwire so a new table cannot appear unnoticed, the population and its
+        exclusions documented in the claim's own text, and both directions
+        demonstrated. #1247: `_pin_table` taught to count a
+        statically-determinable DictComp after RQ-66-UNWATCHED's real table
+        (13 fixtures x 3 backends, `FIXTURES` loop-built) proved uncountable —
+        literal path first, the file's own `assert len(NAME) == K` as a scoped
+        rescue only when a literal binding is later mutated, ambiguous asserts
+        refused. Both merged; the ratchet then recorded its first fall (104 ->
+        27 under RQ-66-BOTHWRONG) and its first waived rises.
       verified-by: >-
         PENDING. The demonstration is the deliverable: add a synthetic pin and
         show the gate red; close one and show the number fall. Report the
