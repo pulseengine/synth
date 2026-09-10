@@ -88,6 +88,48 @@ fn rbw_i64_local_zeroes_both_words_457() {
     );
 }
 
+/// #1214: the `func.wast` `init-local-i64` shape — a local declared i64 that
+/// is READ before any write and NEVER WRITTEN AT ALL anywhere in the
+/// function (`(local i64) (local.get 0)`, no `local.set`/`local.tee` for
+/// `infer_i64_locals`'s dataflow walk to learn its width from). Without the
+/// declared-width side-table this silently defaults to i32 and only the low
+/// word gets zeroed — the upper word leaks whatever was on the stack.
+#[test]
+fn rbw_i64_local_never_written_zeroes_both_words_1214() {
+    let ops = vec![WasmOp::LocalGet(0), WasmOp::End];
+    let mut sel = InstructionSelector::new(vec![]);
+    sel.set_declared_i64_locals(vec![true]);
+    let instrs = sel.select_with_stack(&ops, 0).expect("select_with_stack");
+    let offs = zeroed_sp_offsets(&instrs);
+    assert!(
+        offs.len() >= 2,
+        "a declared-i64, never-written local must zero both slot words \
+         (off, off+4), got offsets {offs:?}"
+    );
+    assert!(
+        offs.windows(2).any(|w| w[1] == w[0] + 4),
+        "expected adjacent word zero-init (off, off+4), got {offs:?}"
+    );
+}
+
+/// The other half of #1214: WITHOUT the declared-width input (the pre-fix
+/// state every other test in this file already exercises via `lower()`), the
+/// exact same never-written shape only gets the plain 4-byte zero-init —
+/// pinning the bug itself so a regression in the OR-in logic is caught here,
+/// not just downstream in the RQ-65-PARITY oracle.
+#[test]
+fn rbw_i64_local_never_written_without_declared_width_only_zeroes_low_word_1214() {
+    let ops = vec![WasmOp::LocalGet(0), WasmOp::End];
+    let instrs = lower(&ops, 0); // no declared_i64_locals set — legacy dataflow-only inference
+    let offs = zeroed_sp_offsets(&instrs);
+    assert_eq!(
+        offs.len(),
+        1,
+        "sanity: without #1214's declared-width input, a never-written local \
+         only gets the legacy 4-byte zero-init, got {offs:?}"
+    );
+}
+
 /// Byte-neutrality guard: a WRITE-first local gets NO zero-init — functions
 /// without read-before-write locals keep their pre-#457 prologue.
 #[test]

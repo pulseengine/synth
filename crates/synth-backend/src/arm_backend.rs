@@ -115,6 +115,13 @@ impl Backend for ArmBackend {
                 .get(func.index as usize)
                 .copied()
                 .unwrap_or(false);
+            // #1214: THIS function's declared-i64-local side-table. Guarded by
+            // `.any(i64)`, not `!is_empty()` — every function with ANY declared
+            // local (i32 included) has a non-empty vector, and that would
+            // widen this memoization guard to nearly every function for no
+            // reason; only a function that actually declares an i64 local
+            // needs the extra clone.
+            let declared_i64_locals = &func.declared_i64_locals;
             let func_config = if params.is_some()
                 || params_f32.is_some()
                 || params_f64.is_some()
@@ -122,6 +129,7 @@ impl Backend for ArmBackend {
                 || declared_params.is_some()
                 || ret_f32
                 || ret_f64
+                || declared_i64_locals.iter().any(|&b| b)
             {
                 Some(CompileConfig {
                     current_func_params_i64: params.cloned().unwrap_or_default(),
@@ -130,6 +138,7 @@ impl Backend for ArmBackend {
                     current_func_ret_f32: ret_f32,
                     current_func_ret_f64: ret_f64,
                     current_func_block_arity: func.block_arity.clone(),
+                    current_func_declared_i64_locals: declared_i64_locals.clone(),
                     current_func_param_count: declared_params,
                     ..config.clone()
                 })
@@ -562,6 +571,9 @@ fn compile_wasm_to_arm(
         selector.set_memory_pages(config.memory_pages.clone());
         // #311: i64 call results are register PAIRS — tag them.
         selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
+        // #1210: per-function result COUNT (0 = void) — `func_ret_i64` alone
+        // cannot tell a void callee from an i32-returning one.
+        selector.set_func_result_counts(config.func_result_counts.clone());
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
         // path can refuse 64-bit params (Ok-or-Err). Empty ⇒ assume i32.
         selector.set_params_i64(config.current_func_params_i64.clone());
@@ -592,6 +604,10 @@ fn compile_wasm_to_arm(
         // designated result register instead of dropping it. Empty ⇒ legacy
         // void-block lowering.
         selector.set_block_arity(config.current_func_block_arity.clone());
+        // #1214: THIS function's declared-i64-local side-table — see
+        // `compute_local_layout`'s use of it. Empty ⇒ exactly the prior
+        // dataflow-only width inference.
+        selector.set_declared_i64_locals(config.current_func_declared_i64_locals.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.

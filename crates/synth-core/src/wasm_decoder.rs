@@ -45,6 +45,16 @@ pub struct WasmMemory {
     pub max_pages: Option<u32>,
     /// Whether memory is shared (requires threads proposal)
     pub shared: bool,
+    /// #1209: whether this memory is 64-bit-INDEXED (the memory64 proposal,
+    /// `(memory i64 ...)`) rather than the default 32-bit index type. No
+    /// codegen path in this crate handles an i64 memory index — data-segment
+    /// offsets are decoded `i32.const`-only (silently DROPPING an
+    /// `i64.const`-offset segment) and every address-materialization path
+    /// assumes a 32-bit address, so a memory64 module compiled today produces
+    /// EXECUTABLE, WRONG code rather than failing to compile. This flag is
+    /// consumed by `refuse_memory64_module` in `synth-cli` to turn that into a
+    /// loud decline at decode time, the #1046 pattern.
+    pub memory64: bool,
 }
 
 /// A captured constant global initializer (#649). Only INTEGER `t.const` init
@@ -1117,6 +1127,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         initial_pages: mem.initial as u32,
                         max_pages: mem.maximum.map(|m| m as u32),
                         shared: mem.shared,
+                        memory64: mem.memory64,
                     });
                 }
             }
@@ -1192,6 +1203,23 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         offset_expr,
                     } = data.kind
                     {
+                        // FOUND, NOT FIXED HERE (found while fixing #1211):
+                        // this offset reader has the SAME
+                        // "only the first operator" gap
+                        // `eval_extended_const_i32_offset` closes for the
+                        // elem-segment offset below — an extended-const data
+                        // offset like `(i32.add (i32.const 1) (i32.const
+                        // 2))` reads as a bare `i32.const 1` here (WRONG
+                        // placement, silently) rather than `unverifiable`
+                        // (SAFE fallback) the way the pre-#1211 elem code
+                        // failed. Deliberately NOT fixed in this lane: no
+                        // RQ-65-PARITY pin exercises it, so there is no
+                        // oracle proof either the current or a changed
+                        // behavior is correct here — see
+                        // scripts/repro/bothwrong_1210_1211_1214_triage.md.
+                        // Extending `eval_extended_const_i32_offset` to this
+                        // call site is a reasonable follow-up, gated on its
+                        // own oracle evidence.
                         let mut ops = offset_expr.get_operators_reader();
                         let const_off = match ops.read() {
                             Ok(wasmparser::Operator::I32Const { value }) => Some(value as u32),
@@ -1252,19 +1280,17 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     // offset of an ACTIVE segment into its target table (any
                     // table index: the R11 region is contiguous, #650);
                     // anything else is unverifiable and poisons the
-                    // closed-world type check.
+                    // closed-world type check. #1211: the offset expression
+                    // may be an extended-const arithmetic expression, not
+                    // just a bare `i32.const` — see
+                    // `eval_extended_const_i32_offset`.
                     let (seg_table, seg_offset): (u32, Option<u32>) = match &elem.kind {
                         wasmparser::ElementKind::Active {
                             table_index,
                             offset_expr,
                         } => {
-                            let mut ops = offset_expr.get_operators_reader();
-                            let off = match ops.read() {
-                                Ok(wasmparser::Operator::I32Const { value }) => {
-                                    u32::try_from(value).ok()
-                                }
-                                _ => None,
-                            };
+                            let off =
+                                eval_extended_const_i32_offset(offset_expr.get_operators_reader());
                             (table_index.unwrap_or(0), off)
                         }
                         _ => (0, None),
@@ -1329,7 +1355,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, mut unsupported) =
+                let (ops, op_offsets, block_arity, mut unsupported, declared_i64_locals) =
                     decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
                 // #680: a v128 param/result reaches the body only through
                 // type-agnostic ops (a `local.get 0` passthrough compiles to
@@ -1358,6 +1384,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     op_offsets,
                     unsupported,
                     block_arity,
+                    declared_i64_locals,
                 });
                 func_index += 1;
             }
@@ -1595,7 +1622,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, mut unsupported) =
+                let (ops, op_offsets, block_arity, mut unsupported, declared_i64_locals) =
                     decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
                 // #680: v128 param/result — see `decode_wasm_module`.
                 if unsupported.is_none()
@@ -1621,6 +1648,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     op_offsets,
                     unsupported,
                     block_arity,
+                    declared_i64_locals,
                 });
                 func_index += 1;
             }
@@ -1691,6 +1719,23 @@ pub struct FunctionOps {
     /// empty table (hand-built op streams in unit tests) keeps the legacy
     /// void-block lowering.
     pub block_arity: Vec<(u8, u8)>,
+    /// #1214: which of this function's DECLARED non-parameter locals are i64
+    /// (8-byte), by declaration order (index 0 = the first local after the
+    /// signature's parameters) — independent of how, or whether, the op
+    /// stream ever WRITES it. `infer_i64_locals` (the dataflow pass every
+    /// selector otherwise relies on for local width) can only learn a
+    /// local's width from a `local.set`/`local.tee` that stores a known-i64
+    /// value; a local that is read before ANY write and never written at
+    /// all — the exact #1214 shape, `(local i64) (local.get 0)` with no
+    /// `local.set` anywhere in the function — never gets a dataflow-inferred
+    /// width and silently defaults to i32, leaving its upper word un-zeroed.
+    /// This is the one place the WASM binary format states a local's width
+    /// outright; `compute_local_layout` ORs it into the dataflow-inferred
+    /// set, so every OTHER function (where inference and declaration
+    /// necessarily agree, or the module would not validate) is unaffected
+    /// byte-for-byte. Empty on the lighter `decode_wasm_functions` callers
+    /// that build the same vector — never hand-omitted.
+    pub declared_i64_locals: Vec<bool>,
 }
 
 /// #509: `(param_count, result_count)` of a wasm blocktype, for the
@@ -1708,10 +1753,61 @@ fn blocktype_arity(bt: &wasmparser::BlockType, type_block_arity: &[(u8, u8)]) ->
     }
 }
 
+/// #1211 (elem half): evaluate a WASM "extended-const" i32 offset expression
+/// — plain `i32.const`, or `i32.add`/`i32.sub`/`i32.mul` over `i32.const`
+/// operands (the Wasm 2.0 extended-const proposal's restricted grammar; no
+/// `global.get`, which stays unverifiable here). `None` for anything else
+/// (an unsupported form, a stack that doesn't end with exactly one value, or
+/// a malformed reader) — the caller then treats the segment's placement as
+/// unverifiable, exactly as a bare non-`i32.const` offset always has.
+///
+/// Before this, an elem segment offset that was anything but a single
+/// `i32.const` (e.g. `(i32.add (i32.const 1) (i32.const 2))`, spec
+/// `elem.wast`'s "extended constant expressions" tests) silently poisoned
+/// the segment as unverifiable — the table image shipped with every slot
+/// null, so a `call_indirect` that should land on a real function instead
+/// dispatched through the null word and executed garbage (#1211).
+fn eval_extended_const_i32_offset(mut ops: wasmparser::OperatorsReader<'_>) -> Option<u32> {
+    let mut stack: Vec<i32> = Vec::new();
+    loop {
+        let op = ops.read().ok()?;
+        match op {
+            wasmparser::Operator::I32Const { value } => stack.push(value),
+            wasmparser::Operator::I32Add => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.wrapping_add(b));
+            }
+            wasmparser::Operator::I32Sub => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.wrapping_sub(b));
+            }
+            wasmparser::Operator::I32Mul => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.wrapping_mul(b));
+            }
+            wasmparser::Operator::End => break,
+            _ => return None,
+        }
+    }
+    match stack.as_slice() {
+        [v] => u32::try_from(*v).ok(),
+        _ => None,
+    }
+}
+
 /// The per-function payload [`decode_function_body`] extracts: `(ops,
-/// op_offsets, block_arity, unsupported)` — see the matching
-/// [`FunctionOps`] fields for each component's contract.
-type DecodedBody = (Vec<WasmOp>, Vec<u32>, Vec<(u8, u8)>, Option<String>);
+/// op_offsets, block_arity, unsupported, declared_i64_locals)` — see the
+/// matching [`FunctionOps`] fields for each component's contract.
+type DecodedBody = (
+    Vec<WasmOp>,
+    Vec<u32>,
+    Vec<(u8, u8)>,
+    Option<String>,
+    Vec<bool>,
+);
 
 /// Decode a single function body to WasmOp sequence.
 ///
@@ -1739,6 +1835,9 @@ fn decode_function_body(
     // operators (`local.get`/`local.set`/`local.tee` are type-agnostic), but
     // every selector lowers those as 4-byte (or 8-byte i64) register moves —
     // silently truncating the 16-byte value. Flag the declaration up front.
+    // #1214: same pass also records which locals are DECLARED i64, by
+    // declaration order — see `FunctionOps::declared_i64_locals`.
+    let mut declared_i64_locals: Vec<bool> = Vec::new();
     for local in body.get_locals_reader()? {
         let (count, ty) = local.context("Failed to read local declaration")?;
         if unsupported.is_none() && count > 0 && ty == wasmparser::ValType::V128 {
@@ -1749,6 +1848,10 @@ fn decode_function_body(
                     .to_string(),
             );
         }
+        declared_i64_locals.extend(std::iter::repeat_n(
+            ty == wasmparser::ValType::I64,
+            count as usize,
+        ));
     }
 
     let ops_reader = body.get_operators_reader()?;
@@ -1853,7 +1956,13 @@ fn decode_function_body(
         }
     }
 
-    Ok((ops, op_offsets, block_arity, unsupported))
+    Ok((
+        ops,
+        op_offsets,
+        block_arity,
+        unsupported,
+        declared_i64_locals,
+    ))
 }
 
 /// Operators that `convert_operator` returns `None` for *on purpose* — they
@@ -4000,6 +4109,51 @@ mod tests {
         assert_eq!(guards.type_ids_byte_offset, None, "no heterogeneous table");
         assert!(guards.type_ids_image.is_empty());
         assert!(guards.type_class_ids.is_empty());
+    }
+
+    /// #1211: an element segment's offset may be a WASM "extended-const"
+    /// arithmetic expression (`i32.add`/`i32.sub`/`i32.mul` over
+    /// `i32.const` operands), not only a bare `i32.const` — spec
+    /// `elem.wast`'s "Extended constant expressions" tests use exactly this
+    /// shape. Before the fix, only the FIRST operator of the offset
+    /// expression was read, so `(i32.add (i32.const 1) (i32.const 2))`
+    /// silently evaluated to 1 instead of 3 and the funcref landed in the
+    /// wrong table slot (`call_indirect.wast`/`elem.wast` `call_in_table`).
+    #[test]
+    fn test_elem_segment_extended_const_offset_1211() {
+        let wat = r#"
+            (module
+                (table 10 funcref)
+                (func $f (result i32) (i32.const 42))
+                (elem (table 0) (offset (i32.add (i32.const 1) (i32.const 2))) funcref (ref.func $f))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        assert_eq!(module.elem_segments.len(), 1);
+        assert_eq!(
+            module.elem_segments[0].offset,
+            Some(3),
+            "1 + 2 == 3, not the first operand alone"
+        );
+    }
+
+    /// #1211: anything outside the extended-const grammar (here `global.get`
+    /// on an imported immutable global) still declines — the fix widens
+    /// what is EVALUATED, not what is ACCEPTED as statically known.
+    #[test]
+    fn test_elem_segment_non_extended_const_offset_still_declines_1211() {
+        let wat = r#"
+            (module
+                (import "env" "base" (global $base i32))
+                (table 10 funcref)
+                (func $f (result i32) (i32.const 42))
+                (elem (table 0) (offset (global.get $base)) funcref (ref.func $f))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        assert_eq!(module.elem_segments[0].offset, None);
     }
 
     /// #642: no table at all → no compile-time bound → table_size None and

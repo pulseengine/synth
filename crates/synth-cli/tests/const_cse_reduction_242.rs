@@ -211,10 +211,22 @@ fn corpus_offon(rel: &str, tag: &str) -> (HashMap<String, usize>, HashMap<String
 /// CLAIM 3 (PR2) — flag ON recovers real byte wins on functions with register
 /// HEADROOM, while never growing any function across the whole corpus.
 ///
-///   - `flight_seam.wat` `flight_algo`: the greedy selector re-materializes the
-///     same constant into one register at two reuses (the register is clobbered
-///     between), so Pass 1's still-resident fold cannot see it. The PR2
-///     same-register hoist pins it in a free register and drops the repeat.
+///   - `flight_seam.wat` `flight_algo`: UNTIL RQ-66-BOTHWRONG (#1210), the
+///     greedy selector re-materialized the same constant into one register at
+///     two reuses because a phantom operand-stack push from `flight_algo`'s
+///     call to the VOID function `filter_step` (#1210's root cause — `call`
+///     unconditionally pushed a result for every callee regardless of its
+///     actual WASM arity) clobbered the register between them, so Pass 1's
+///     still-resident fold could not see it; the PR2 same-register hoist
+///     pinned it in a free register and dropped the repeat, an 8B win.
+///     #1210's fix removed the phantom push, which removed the clobber PR2
+///     was recovering FROM at the root — `off` and `on` are now
+///     BYTE-IDENTICAL for this whole fixture (verified: `SYNTH_CONST_CSE=0`
+///     vs default emit the same ELF). PR2 has nothing left to recover here;
+///     asserted `<=`, not `<`, and left in the corpus as a live negative
+///     control — if a future change reintroduces the redundancy, PR2 must
+///     recover it again or this assertion should be revisited deliberately,
+///     not silently.
 ///   - `const_cse.wat` `spill12`: a 32-bit `movw+movt` constant re-materialized
 ///     12× — recovered only because [`const_units`] reconstructs the pair (PR2
 ///     item 1) so the hoist recognizes the value at all. This is the largest win
@@ -228,12 +240,14 @@ fn corpus_offon(rel: &str, tag: &str) -> (HashMap<String, usize>, HashMap<String
 /// Here it must merely NOT GROW, which `corpus_offon` checks.
 #[test]
 fn const_cse_pr2_recovers_headroom_wins_without_growth_242() {
-    // flight_seam: flight_algo shrinks; nothing grows.
+    // flight_seam: flight_algo no longer has a redundancy for PR2 to recover
+    // (RQ-66-BOTHWRONG/#1210 removed it at the root — see doc comment above);
+    // nothing may grow, which is all that remains to assert here.
     let (fs_off, fs_on) = corpus_offon("scripts/repro/flight_seam.wat", "fseam");
     let (off, on) = (fs_off["flight_algo"], fs_on["flight_algo"]);
     assert!(
-        on < off,
-        "PR2 must shrink flight_seam::flight_algo on headroom: off={off}B on={on}B"
+        on <= off,
+        "flight_seam::flight_algo must not GROW under default const-CSE: off={off}B on={on}B"
     );
 
     // spill12: the 32-bit movw+movt hoist — the headline recovered win.

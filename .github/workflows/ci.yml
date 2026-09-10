@@ -3493,20 +3493,24 @@ jobs:
         with:
           python-version: "3.x"
       - name: "Run the home-register write audit sweep (RQ-65-ALIASCLASS)"
-        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 8317` header
+        # The `ci-checks: stdout /^functions audited: (\d+)$/ >= 7059` header
         # floors the audited population; the greps pin the printed totals
         # EXACTLY (the #1112 pattern) so a corpus or hook change is a visible
-        # diff here, and `hits: 0` is what the artifact claims. Measured with
-        # the suite submodule present: 1045 (module, leg) pairs, 8317
-        # functions, 8776 homes, 261440 attributed instructions. (The
-        # 4628/2372 first pinned here were a suite-only run — the script's
-        # corpus root resolved one level too shallow.)
+        # diff here, and `hits: 0` is what the artifact claims. RQ-66-BOTHWRONG
+        # (#1210) re-derived these a second time: `refuse_memory64_module`
+        # (#1209) now refuses every memory64 module outright, so the ~13
+        # memory64-only spec files drop out of the corpus across all 4 legs —
+        # 940 -> 928 (module, leg) pairs, 7191 -> 7059 functions, 8100 -> 8056
+        # homes, 219807 -> 216333 attributed instructions (`hits: 0` on this
+        # run, so it is corpus shrinkage from a deliberate refusal, not a new
+        # home-alias defect — see scripts/repro/home_alias_audit_corpus_1189.py
+        # for the full derivation and the first RQ-65-MVPCORE fall it follows).
         run: |
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
-          grep -Eq '^functions audited: 7191$' haa1189.txt
-          grep -Eq '^homes watched: 8100$' haa1189.txt
+          grep -Eq '^functions audited: 7059$' haa1189.txt
+          grep -Eq '^homes watched: 8056$' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

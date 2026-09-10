@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^functions audited: (\d+)$/ >= 7191
+# ci-checks: stdout /^functions audited: (\d+)$/ >= 7059
 """RQ-65-ALIASCLASS (#1189) — the home-register write audit, swept over the
 local corpus on every ARM direct-selector leg.
 
@@ -130,11 +130,31 @@ LEGS = {
 # rather than left to be rediscovered as "the floor mysteriously dropped". The
 # floors move DOWN here exactly once, with that reason; a further fall without
 # one is scan rot and must stay red.
+#
+# RE-DERIVED again after RQ-66-BOTHWRONG (#1210). Same shape, second time:
+# `refuse_memory64_module` (crates/synth-cli/src/main.rs) now REFUSES every
+# `(memory i64 ...)` module outright (#1209 — accepted and silently wrong on
+# both selectors is the worst class this project's compliance envelope names,
+# and no backend implements i64 linear-memory addressing to fix it INTO). The
+# ~13 memory64-only spec files (memory64.wast, load64.wast, float_memory64.wast,
+# memory_grow64/copy64/fill64/init64/trap64.wast, memory64-imports.wast,
+# memory_redundancy64.wast, address64.wast, align64.wast, endianness64.wast,
+# bulk64.wast) drop out of the corpus across all 4 legs:
+#
+#   modules compiled    940 -> 928    (-12 refused)
+#   functions audited  7191 -> 7059
+#   homes watched      8100 -> 8056
+#   attributed instrs 219807 -> 216333
+#
+# `hits: 0` on this run — the refusal fires before the audit ever sees these
+# functions, so it is corpus shrinkage, not a new home-alias defect. Floors
+# move DOWN here a second time, with this reason; a further fall without one
+# is scan rot and must stay red.
 FLOORS = {
-    "modules_compiled": 940,  # (module, leg) pairs that produced >=1 audited fn
-    "functions_audited": 7191,
-    "homes_watched": 8100,
-    "attributed_instrs": 219807,
+    "modules_compiled": 928,  # (module, leg) pairs that produced >=1 audited fn
+    "functions_audited": 7059,
+    "homes_watched": 8056,
+    "attributed_instrs": 216333,
 }
 
 # Hits whose defect is FILED and OPEN, pinned EXACTLY — (module, function,

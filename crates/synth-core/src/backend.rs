@@ -303,6 +303,15 @@ pub struct CompileConfig {
     /// [`FunctionOps::block_arity`]: crate::wasm_decoder::FunctionOps::block_arity
     pub current_func_block_arity: Vec<(u8, u8)>,
 
+    /// #1214: THIS function's declared-i64-local side-table — see
+    /// [`FunctionOps::declared_i64_locals`]. Set per function by the driver
+    /// loop (like [`current_func_block_arity`]). Empty ⇒ no declared-width
+    /// correction (hand-built op streams / unit tests): behavior is exactly
+    /// the prior dataflow-only inference in `infer_i64_locals`.
+    ///
+    /// [`FunctionOps::declared_i64_locals`]: crate::wasm_decoder::FunctionOps::declared_i64_locals
+    pub current_func_declared_i64_locals: Vec<bool>,
+
     /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
     /// transfer window). Each range `[base, base+len)` names a region of the fused
     /// linear memory that an EXTERNAL agent (the DMA engine, modelled by gale as a
@@ -554,6 +563,9 @@ impl Default for CompileConfig {
             // #509: empty ⇒ legacy void-block lowering (unit tests / hand-built
             // op streams); the driver loops fill it per function.
             current_func_block_arity: Vec::new(),
+            // #1214: empty ⇒ no declared-width correction (unit tests /
+            // hand-built op streams); the driver loops fill it per function.
+            current_func_declared_i64_locals: Vec::new(),
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),

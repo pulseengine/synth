@@ -41,7 +41,7 @@ artifacts:
       A NARROW RESULT IS ACCEPTABLE. Closing two of five with proof beats
       claiming five with hand-waving; the residual stays pinned with its reason,
       and RQ-66-PINDEBT counts what remains.
-    status: proposed
+    status: implemented
     release: v0.66
     tags:
       - correctness
@@ -57,7 +57,70 @@ artifacts:
       issue: "#1210"
       done-when: "manual: the five classes are triaged by ROOT CAUSE with shared causes named; every class closed moves its RQ-65-PARITY pin from wrong-answer to correct in the same PR; #1209 is either fixed or LOUDLY DECLINED with the acceptance delta measured; every residual stays pinned with a stated reason"
       verified-by: >-
-        PENDING. Byte identity is required for every module NOT affected by a
-        fix, and an execution differential for every module that is. The pin
-        counts are the red-first: they were measured on main before any fix and
-        a change to them is the evidence.
+        TRIAGE (full evidence: scripts/repro/bothwrong_1210_1211_1214_triage.md).
+        The five pinned classes resolved to FOUR root causes, not five, and not
+        one: #1210 and one slice of #1215 (five spec shapes across `br.wast`/
+        `br_if.wast`/`br_table.wast`/`func.wast`) ARE the same defect —
+        `WasmOp::Call`'s ARM lowering unconditionally pushed a phantom
+        operand-stack result for every callee regardless of its actual WASM
+        result count, so a call to a VOID function corrupted every later
+        stack-depth-dependent operation. Fixed by threading the
+        already-computed `CompileConfig::func_result_counts` (#851) into
+        `select_with_stack`'s `Call` handling. #1211 (filed as "call_indirect
+        ignores the table index") turned out to be TWO INDEPENDENT causes: (a)
+        a register-liveness bug — `free_callee_saved`'s scratch-register
+        selection did not protect `reg_srcs` (already-marshalled call
+        arguments invisible to `stack_live_regs`), so the table-index
+        relocation MOV could silently clobber a live argument; (b) the
+        element-segment offset reader recognized only a bare `i32.const`, so
+        a Wasm 2.0 extended-const offset expression (`i32.add`/`sub`/`mul`)
+        fell through to "unverifiable", poisoning the whole module's
+        `call_indirect` type check and shipping null table slots. #1214 (an
+        i64 read-before-write local not zero-initialised) is an
+        initialisation-contract gap: `infer_i64_locals` never sees a local
+        that is declared i64, read, and NEVER written — fixed by threading
+        the WASM module's own declared local types
+        (`FunctionOps::declared_i64_locals`) into `compute_local_layout`,
+        ORed with the existing dataflow inference. #1209 (memory64) is
+        REFUSED, not fixed: `refuse_memory64_module`
+        (crates/synth-cli/src/main.rs) declines every `(memory i64 ...)`
+        module outright before either selector runs — a real lowering fix
+        touches data-segment offset decoding, `memory.size`/`memory.grow` and
+        every load/store address-materialization path on BOTH selectors, for
+        a proposal needing a >4 GiB address space that is incoherent for
+        every target this backend ships to. Acceptance delta: NOT MEASURED —
+        the 805-module #1017 real-world corpus is not present in this
+        sandbox; `docs/status/SPEC_FAMILY_CENSUS.md` shows 14/257 spec files
+        tagged memory64 (a weak proxy, stated as such, not substituted for
+        the real number).
+
+        RESULT (before -> after, `selector_parity_197_differential.py`,
+        same corpus, same reference engine): the five issues' pins fell from
+        89 entries / 595 assertions to 5 entries / 11 assertions — 84 of 89
+        pinned entries (585 of 595 assertions) move from wrong-answer to
+        correct-or-loudly-refused in this PR. Residual: 5 entries / 11
+        assertions, ALL one coherent, unaddressed mechanism (1215c) — a
+        `br_table`/`br_if` whose index or condition operand is ITSELF a
+        nested branch instruction carrying a value out — named and pinned,
+        not claimed as fixed. Derived release-wide: `known_open_pins`
+        (RQ-66-PINDEBT's ratchet, summed over all four oracle pin tables)
+        fell 104 -> 27 and `known_open_pinned_cases` fell 623 -> 56 — the
+        first FALL this ratchet has recorded since it was created.
+
+        GATES: full `selector_parity_197_differential.py -j 8` run —
+        `#197 CHECKS=17925/17925 assertions in parity over 261 modules`,
+        `pinned known divergences: 55 assertion(s) across 26 pins; unpinned:
+        0`, `RESULT: PASS` (the `modules_both` non-vacuity floor was
+        re-derived 300->250, and `scripts/repro/home_alias_audit_corpus_1189.py`'s
+        floors 940/7191/8100/219807 -> 928/7059/8056/216333, both
+        legitimate corpus-shrinkage from #1209's refusal, `hits: 0` on the
+        home-alias audit confirming no new defect). `cargo test --workspace`
+        green (a real, expected `flight_seam.wasm`/`gust_kernel.wasm` byte
+        drift from the #1210 fix on TWO real, frozen, non-synthetic fixtures
+        — re-frozen only after `flight_seam_differential.py` (0x07FDF307
+        MATCH), `leaf_dead_frame_differential.py` (PASS),
+        `const_cse_differential.py` (PASS), `gust_spill_fwd_390_differential.py`
+        (PASS) and the #990 leak oracle (34/34) all confirmed the new bytes
+        execute correctly). `cargo clippy --workspace --all-targets -D
+        warnings` and `cargo fmt --check` clean;
+        `python3 scripts/claim_check.py claims.yaml` 65/65.

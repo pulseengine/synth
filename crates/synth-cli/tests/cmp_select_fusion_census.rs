@@ -100,9 +100,26 @@ fn census(fix: &str) -> (usize, usize) {
 
 /// Per-fixture baseline: `(fixture, total_fused, two_move)`. Measured 2026-06-23
 /// on the v0.12.0 selector. `in_place = total - two_move`.
+///
+/// RQ-66-BOTHWRONG (#1210): `flight_seam.wasm` 12 -> 11, re-measured
+/// deliberately (gale notified — the flip blast radius moved). Root cause is
+/// a CORRECTNESS fix, not a fusion regression: `flight_algo` calls the VOID
+/// function `filter_step` (`(func $filter_step (type 1) (param i32 i32))`,
+/// no result) and immediately does `local.get 0 / local.set 2` — before
+/// #1210, `call` unconditionally pushed a phantom result for every callee
+/// regardless of its actual WASM arity, so this void call left a stray
+/// value on the operand-stack MODEL that was never wasm-valid to begin
+/// with. Removing that phantom changes the surrounding instruction stream
+/// (one fewer preserve/restore around the call), which shifts which cmp/
+/// movcc pairs end up adjacent for the fusion peephole to match — the
+/// census is an informational blast-radius measurement of exactly this kind
+/// of shift, not a correctness gate (see the module doc). `flight_seam_flat.wasm`
+/// (the same program's flattened/inlined form, no separate `filter_step`
+/// call site) is UNCHANGED at 12, confirming the drift is specific to the
+/// void-call site #1210 fixed, not a general regression.
 const BASELINE: &[(&str, usize, usize)] = &[
     ("control_step.wasm", 3, 0),
-    ("flight_seam.wasm", 12, 0),
+    ("flight_seam.wasm", 11, 0),
     ("flight_seam_flat.wasm", 12, 0),
     ("signed_div_const.wasm", 0, 0),
 ];
