@@ -7,34 +7,70 @@ stream on spec modules — `JoinValueNotAvailable { reg: R4/R5, ... }` — on
 dynamic proof: **the allocator is wrong; the validator is right.** This is a
 caught would-be miscompile, not a validator false positive.
 
+RE-DERIVED POST-BOTHWRONG (v0.66, RQ-66-BOTHWRONG #1210, commit 4a3f6080,
+landed on `main` while this PR was open). BOTHWRONG's central fix was that
+`call` unconditionally pushed a phantom operand-stack result for every
+callee regardless of its actual WASM arity. That is an operand-stack defect
+in the SAME selector this oracle's census reads, so the census was
+RE-MEASURED against the post-BOTHWRONG tree rather than assumed unaffected,
+and the answer is a SPLIT, not a single verdict:
+
+  * 2 of the original 5 instances (`br.wast` and `br_table.wast`, both named
+    `as-block-mid`, both containing `(call $dummy)`) are GENUINELY FIXED.
+    Verified, not assumed: both now compile with exit 0, and their
+    disassembly shows clean code with NO join-register read at all at the
+    point that used to violate the invariant — the phantom void-call result
+    that manufactured a spurious "joined value" is gone, so there is nothing
+    left to reconcile. This is BOTHWRONG's bug, closed by BOTHWRONG's fix.
+  * 3 of the original 5 (`labels.wast`'s `switch`, `br_if.wast`'s
+    `nested-br-value` and `nested-br_table-value`) contain NO `call` at
+    all and are UNCHANGED: the VCR-RA-003 messages are byte-for-byte
+    identical (same register, same `join_block` ordinal) to the pre-
+    BOTHWRONG measurement, and `switch`'s emitted `.text` — re-captured
+    fresh from the current tree via the same probe-and-delete recipe below
+    — is BYTE-IDENTICAL to the frozen fixture (verified: 220/220 bytes,
+    `bytes ==` true). These three were never in BOTHWRONG's scope (no
+    `call`, so no phantom push to remove) and their defect is a DIFFERENT
+    root cause that happens to produce the same validator error shape.
+
+So the original "5 instances, one class" framing UNDER-RESOLVED two
+different bugs into one error message. The dynamic proof below is
+RE-ESTABLISHED on the unchanged bytes, not merely carried forward: the
+poisoned-register replay was re-run against the freshly-recaptured `switch`
+object (not just the old frozen one) and produces the identical wrong
+values, confirming the proof still holds on what the CURRENT compiler
+emits, not just on what an old compiler once emitted.
+
 THE DECLINE CENSUS (measures today's `main`/lane tree; no bypass involved):
 
     VCR-RA-003: register-allocation validation FAILED —
     JoinValueNotAvailable { reg: R4, join_block: N }.
 
-  file            functions   register
-  --------------  ----------  --------
-  br.wast              1        R4
-  br_if.wast           2        R5
-  br_table.wast        1        R4
-  labels.wast          1        R4
-  TOTAL                5
+  file            functions   register   status
+  --------------  ----------  --------   -------------------------------
+  br.wast              0        —        FIXED by BOTHWRONG (was 1, R4)
+  br_if.wast           2        R5       unchanged
+  br_table.wast        0        —        FIXED by BOTHWRONG (was 1, R4)
+  labels.wast          1        R4       unchanged
+  TOTAL                3                 (was 5 pre-BOTHWRONG)
 
-`labels.wast` is the SOLE blocker of that one file; the other three each
-carry an unrelated decline too. The decline is honest and load-bearing:
-VCR-RA-003 is the acceptance oracle the allocator endgame (CLAUDE.md
-"ALLOCATOR ENDGAME") is designed to be built against, so whether it is right
-to refuse here is not a side question — it is the question.
+`labels.wast` is the SOLE blocker of that one file; `br_if.wast` carries an
+unrelated decline too. The decline is honest and load-bearing: VCR-RA-003 is
+the acceptance oracle the allocator endgame (CLAUDE.md "ALLOCATOR ENDGAME")
+is designed to be built against, so whether it is right to refuse here is
+not a side question — it is the question.
 
 THE INVESTIGATION. A previous agent on this lane left an uncommitted,
 never-shipped local patch to `arm_backend.rs` gating the VCR-RA-003 refusal
 behind `SYNTH_RA003_PROBE_BYPASS`, purely to let `finish_allocated_stream`
 emit the object it would otherwise refuse, for inspection. That patch was
-used ONCE to capture the bytes below and was then DELETED — this repo never
-ships a lever that disables "refusing to emit a miscompiled object." What
-survives is the captured object, frozen in
+restored TWICE (once pre-BOTHWRONG to capture the original bytes, once
+post-BOTHWRONG to confirm they had not moved) and DELETED again both times —
+this repo never ships a lever that disables "refusing to emit a miscompiled
+object." What survives is the captured object, frozen in
 `ra003_join_1230_red_main.json` (`labels.wast`'s `switch`, extracted to
-`ra003_switch_1230.wat`), and the proof this oracle re-runs every time.
+`ra003_switch_1230.wat`), confirmed byte-identical across the rebase, and
+the proof this oracle re-runs every time.
 
 THE PROOF. Disassembly of the frozen `switch` object
 (`arm-none-eabi-objdump`, ARM cortex-m4) shows the join block (reached from
@@ -69,13 +105,18 @@ disassembly). Two different poison values are used to prove the result
 tracks the poison (not merely "happens to be 10 by accident of the harness's
 own R4 value at call time").
 
-VERDICT: the allocator's join-value-materialization has a genuine bug for
-this control-flow shape — it decides a value should be homed in a register
-at a join without ensuring every incoming edge writes it there — and
-VCR-RA-003 catches it correctly. Nothing here should be "fixed" by loosening
-the validator; the fix (not attempted in this lane, per its "WATCHED not
-FIXED" mandate) belongs to the allocator's join/constant-materialization
-logic.
+VERDICT (unchanged by BOTHWRONG, re-confirmed on fresh bytes): the
+allocator's join-value-materialization has a genuine bug for this
+NO-CALL control-flow shape — it decides a value should be homed in a
+register at a join without ensuring every incoming edge writes it there —
+and VCR-RA-003 catches it correctly. Nothing here should be "fixed" by
+loosening the validator; the fix (not attempted in this lane, per its
+"WATCHED not FIXED" mandate) belongs to the allocator's join/constant-
+materialization logic, and is DEMONSTRABLY DIFFERENT from BOTHWRONG's
+call-arity fix (that fix's own scope — functions containing `call` — does
+not include `switch`, `nested-br-value` or `nested-br_table-value`, all
+call-free; BOTHWRONG closing 2 of the original 5 is a real, welcome, and
+UNRELATED overlap in symptom, not in cause).
 
 Usage:
   python3 scripts/repro/ra003_join_1230_differential.py [--synth PATH]
@@ -106,11 +147,20 @@ SWITCH_WAT = HERE / "ra003_switch_1230.wat"
 # ---------------------------------------------------------------------------
 # THE DECLINE CENSUS — KNOWN: (file, register) -> exact count. A pin that
 # moves in EITHER direction is red.
+#
+# br.wast/R4 and br_table.wast/R4 are pinned at 0, not omitted: both were 1
+# pre-BOTHWRONG (#1210, commit 4a3f6080), both are their functions' own
+# `call $dummy`-containing `as-block-mid`, and both are now VERIFIED FIXED
+# (exit 0, disassembly shows no join-register read at all — the phantom
+# void-call push BOTHWRONG removed was the only thing manufacturing a
+# "joined value" here). Pinning 0 explicitly, rather than deleting the row,
+# makes a REGRESSION back to 1 a caught pin-mismatch instead of a silently
+# ignored new key.
 # ---------------------------------------------------------------------------
 KNOWN: dict[tuple[str, str], int] = {
-    ("br.wast", "R4"): 1,
+    ("br.wast", "R4"): 0,
     ("br_if.wast", "R5"): 2,
-    ("br_table.wast", "R4"): 1,
+    ("br_table.wast", "R4"): 0,
     ("labels.wast", "R4"): 1,
 }
 FILES = ["br.wast", "br_if.wast", "br_table.wast", "labels.wast"]
@@ -281,10 +331,14 @@ def main() -> int:
         for f in fails:
             print(f"  {f}")
         return 1
-    print("RESULT: PASS — VCR-RA-003's 5 declines pinned exactly; the "
-          "allocator's join-register bug reproduces exactly as captured "
-          "(poison flows into the emitted multiply on every affected path); "
-          "VERDICT: the allocator is wrong, the validator is right")
+    print(f"RESULT: PASS — VCR-RA-003's {total_declines} remaining declines "
+          f"pinned exactly (2 of the original 5 — br.wast, br_table.wast — "
+          f"verified FIXED by RQ-66-BOTHWRONG #1210, unrelated call-arity "
+          f"fix); the allocator's join-register bug on the 3 call-free "
+          f"survivors reproduces exactly as captured, RE-VERIFIED "
+          f"byte-identical post-BOTHWRONG (poison flows into the emitted "
+          f"multiply on every affected path); VERDICT: the allocator is "
+          f"wrong, the validator is right")
     return 0
 
 

@@ -4646,12 +4646,17 @@ jobs:
     #   #1229 — the ARM/RISC-V direct selectors REJECT valid WASM (dead code
     #           after an unconditional terminator) — 74 arm + 56 riscv false
     #           rejects, pinned per file.
-    #   #1230 — VCR-RA-003 refuses synth's own emitted stream (5 declines,
-    #           R4/R5 join-value-not-available) — PLUS a frozen-fixture
-    #           dynamic proof (poisoned-register unicorn replay) that the
-    #           refused bytes are a REAL miscompile, not a validator false
-    #           positive: verdict is "the allocator is wrong, the validator
-    #           is right."
+    #   #1230 — VCR-RA-003 refuses synth's own emitted stream (originally 5
+    #           declines, R4/R5 join-value-not-available; RE-MEASURED after
+    #           RQ-66-BOTHWRONG #1210 landed mid-PR and touched this same
+    #           selector — 2 of 5, both containing `call`, are VERIFIED
+    #           FIXED by BOTHWRONG's unrelated call-arity fix; 3 call-free
+    #           survivors remain, byte-identical pre/post-BOTHWRONG) — PLUS
+    #           a frozen-fixture dynamic proof (poisoned-register unicorn
+    #           replay, RE-VERIFIED against a fresh post-BOTHWRONG capture)
+    #           that the refused bytes are a REAL miscompile, not a
+    #           validator false positive: verdict is "the allocator is
+    #           wrong, the validator is right."
     #   #1231 — the AArch64 selector confuses GP/FP operand classes on
     #           `local.set` (4 instances across 3 sources, one a single-
     #           module extraction of a shape the file-level census cannot
@@ -4706,8 +4711,8 @@ jobs:
           set -euo pipefail
           python scripts/oracle_run.py \
             scripts/repro/ra003_join_1230_differential.py | tee /tmp/1230.txt
-          grep -qE '^#1230 decline TOTAL=5 \(pin 5\)$' /tmp/1230.txt
-          grep -qE '^#1230 CHECKS: 5 declines \+ 6 spec confirmations \+ 8 poisoned emulations$' /tmp/1230.txt
+          grep -qE '^#1230 decline TOTAL=3 \(pin 3\)$' /tmp/1230.txt
+          grep -qE '^#1230 CHECKS: 3 declines \+ 6 spec confirmations \+ 8 poisoned emulations$' /tmp/1230.txt
           grep -q '^RESULT: PASS' /tmp/1230.txt
       - name: "#1231 — AArch64 selector confuses GP/FP operand classes on local.set"
         run: |
