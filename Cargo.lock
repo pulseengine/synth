@@ -1204,7 +1204,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasmparser 0.256.0",
- "wast 258.0.0",
+ "wast",
  "wat",
 ]
 
@@ -1291,7 +1291,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
- "wast 258.0.0",
+ "wast",
  "wat",
 ]
 
@@ -1621,19 +1621,6 @@ dependencies = [
 
 [[package]]
 name = "wast"
-version = "258.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97f7defc7ecca8b19ac7f824598eadd0c53985ee00c74060d65051e9da5b58a1"
-dependencies = [
- "bumpalo",
- "leb128fmt",
- "memchr",
- "unicode-width",
- "wasm-encoder 0.258.0",
-]
-
-[[package]]
-name = "wast"
 version = "259.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c69beba8d9da07af9a0971b559149a2ac4729895b55144de4fddbf5a02660648"
@@ -1651,7 +1638,7 @@ version = "1.259.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6eec44b0c80391b20fb7ad9ea440c72c5d382385bdf74444bb18321c425017e"
 dependencies = [
- "wast 259.0.0",
+ "wast",
 ]
 
 [[package]]
