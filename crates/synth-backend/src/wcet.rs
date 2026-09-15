@@ -352,6 +352,16 @@ fn op_cost(op: &ArmOp) -> OpCost {
         Push { regs } => Cycles(1 + regs.len() as u64 + 3),
         Pop { regs } => Cycles(1 + regs.len() as u64 + 3),
 
+        // RQ-67-VFPREACH (#1267): VPUSH/VPOP {d8-d15} move EIGHT doubles =
+        // SIXTEEN 32-bit words, so the same `1 + N` transfer model gives
+        // 1 + 16, and we keep the `+ 3` refill margin the core PUSH/POP pair
+        // carries. 20 cycles is therefore a SOUND OVER-ESTIMATE for VPUSH (no
+        // refill) and for VPOP (not a branch — unlike POP-to-PC, the VFP pop
+        // never writes PC, so the margin is pure slack here). Sound-critical:
+        // this bound feeds `--emit-wcet`, where a number that is too LOW is a
+        // defect and one that is too high is only pessimism.
+        VPushCalleeSavedVfp | VPopCalleeSavedVfp => Cycles(1 + 16 + 3),
+
         // === off-path pseudo-ops ===
         // Label/Nop are zero-cost real placeholders. The rest are verification-only
         // pseudo-ops the encoder REFUSES (Ok-or-Err, #615): a compile that reached

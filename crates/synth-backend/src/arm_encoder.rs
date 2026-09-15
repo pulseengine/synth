@@ -2057,6 +2057,17 @@ impl ArmEncoder {
                     "F32 i64 conversion not supported (requires register pairs on 32-bit ARM)",
                 ));
             }
+            // RQ-67-VFPREACH (#1267): the callee-saved VFP save/restore is
+            // emitted only by the Cortex-M (Thumb-2) VFP-pressure rung. The A32
+            // path has no such rung, so reaching here means a caller built the
+            // op for the wrong profile — refuse LOUDLY rather than encode
+            // something plausible (#615: expand-or-loud-reject, never a silent
+            // NOP).
+            ArmOp::VPushCalleeSavedVfp | ArmOp::VPopCalleeSavedVfp => {
+                return Err(synth_core::Error::synthesis(
+                    "VPUSH/VPOP {d8-d15} is Thumb-2 only in this backend (RQ-67-VFPREACH, #1267)",
+                ));
+            }
             ArmOp::F32ReinterpretI32 { sd, rm } => encode_vmov_core_sreg(true, sd, rm)?,
             ArmOp::I32ReinterpretF32 { rd, sm } => encode_vmov_core_sreg(false, sm, rd)?,
             ArmOp::I32TruncF32S { rd, sm } => {
@@ -6971,7 +6982,32 @@ impl ArmEncoder {
                 self.encode_thumb_mve_lane_wise_f32_sqrt(qd, qm)
             }
 
+            // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP half.
+            //
+            // Encodings taken from llvm-mc, not derived by hand:
+            //   llvm-mc -triple=thumbv7em-none-eabi -mattr=+vfp4 -show-encoding
+            //     vpush {d8-d15}  ->  [0x2d,0xed,0x10,0x8b]   (ED2D 8B10)
+            //     vpop  {d8-d15}  ->  [0xbd,0xec,0x10,0x8b]   (ECBD 8B10)
+            //   imm8 is 2 x the double count (0x10 = 16 = 2 x 8), and the
+            //   `8B` nibble selects the 64-bit form — `vpush {d8}` is 8B02,
+            //   which is how that field was confirmed rather than assumed.
+            //
+            // NOTE FOR ANYONE ADDING AN OP BELOW THIS POINT: the catch-all that
+            // follows returns a NOP, so an op that reaches it is encoded as
+            // nothing at all. These two arms exist ABOVE it deliberately.
+            ArmOp::VPushCalleeSavedVfp => Ok(vec![0x2d, 0xed, 0x10, 0x8b]),
+            ArmOp::VPopCalleeSavedVfp => Ok(vec![0xbd, 0xec, 0x10, 0x8b]),
+
             // Catch-all for any remaining ops
+            //
+            // #615 FIXED THIS CLASS ON THE A32 PATH AND NOT HERE. Thumb-2 is
+            // the DEFAULT target, and this arm silently encodes any unhandled
+            // op as `NOP`. RQ-67-VFPREACH hit it directly: the two VFP
+            // save/restore ops above compiled clean and would have emitted a
+            // save that does nothing. Filed rather than widened in this lane —
+            // turning it into a typed Err is a behaviour change across every
+            // op that currently lands here, which needs its own byte-identity
+            // evidence.
             _ => {
                 let instr: u16 = 0xBF00; // NOP
                 Ok(instr.to_le_bytes().to_vec())

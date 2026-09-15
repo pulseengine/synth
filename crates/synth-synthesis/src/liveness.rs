@@ -12252,6 +12252,15 @@ mod tests {
             | SetCond { .. }
             | SelectMove { .. }
             | Select { .. }
+            // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP
+            // save/restore. MODELLED, and the classification is the same
+            // as `Push`/`Pop`: they touch no register the CORE allocator
+            // hands out. D8-D15 are outside its file entirely, and SP's
+            // writeback is not modelled for `Push` either. Saying `true`
+            // here asserts the allocator may see them without its def/use
+            // model being wrong — not that it allocates them.
+            | VPushCalleeSavedVfp
+            | VPopCalleeSavedVfp
             | Push { .. }
             | Pop { .. }
             | Udf { .. }
