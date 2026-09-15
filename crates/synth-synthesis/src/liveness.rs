@@ -4983,19 +4983,37 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
 
     // New save list: used callee-saved registers, padded with the lowest
     // unused one if the total (incl. LR/PC) would be odd.
+    //
+    // #1204: `CALLEE_SAVED` here is R4-R8, and shrink RECOMPUTES the list from
+    // scratch — so a reserved register `ensure_callee_saved_prologue` added
+    // (R9/R10/R11, which the optimized path writes) was silently stripped back
+    // out on any body shrink accepts. That is exactly how
+    // `control_nested_select.wast:nested_const_conds` kept violating the
+    // contract after the prologue fix landed: `mov r11, r0` in the body,
+    // `push {r4, r5, r6, lr}` at the top. Carry the reserved defs through.
+    let reserved = callee_saved_reserved_defs(instrs);
     let mut saves: Vec<Reg> = CALLEE_SAVED
         .iter()
         .filter(|r| used.contains(r))
         .copied()
         .collect();
-    if !(saves.len() + 1).is_multiple_of(2)
-        && let Some(pad) = CALLEE_SAVED.iter().find(|r| !used.contains(r))
-    {
-        saves.push(*pad);
-        saves.sort();
+    let kept = saves.len();
+    saves.extend(reserved.iter().copied());
+    if !(saves.len() + 1).is_multiple_of(2) {
+        // Prefer an unused low callee-saved as the pad (free, and keeps the
+        // list contiguous); fall back to R12, the encoder scratch, when every
+        // one of R4-R8 is already live.
+        match CALLEE_SAVED.iter().find(|r| !used.contains(r)) {
+            Some(pad) => saves.push(*pad),
+            None => saves.push(Reg::R12),
+        }
     }
-    // Nothing to shrink?
-    if saves.len() == CALLEE_SAVED.len() {
+    saves.sort();
+    saves.dedup();
+    // Nothing to shrink? (No low register dropped — adding a reserved one is
+    // not a shrink, and returning None here would leave the caller's wider
+    // list intact, which is what we want.)
+    if kept == CALLEE_SAVED.len() {
         return None;
     }
 
@@ -5523,7 +5541,26 @@ pub enum RaFinalVerdict {
 /// is no silent pass on a shape the checker cannot analyze.
 pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     use ArmOp::*;
-    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    // #1204: this validator is described as "the construction-level answer to
+    // the #490/#496/#331/#782b clobber class" and it ran on every ARM
+    // compilation while modelling only R4-R8 — so it was blind to three of the
+    // eight AAPCS callee-saved registers, which is why it never saw the
+    // optimized path writing R9/R10/R11. R9 (globals base), R10 (memory size)
+    // and R11 (memory base) are reserved by the register contract AND
+    // callee-saved by AAPCS; a clobber of one is exactly the invariant-1
+    // violation this checks for. Widening it cannot move a byte — it only
+    // inspects — so a green corpus after the widening is independent evidence
+    // that no reserved-register clobber survives anywhere.
+    const CALLEE_SAVED: [Reg; 8] = [
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+        Reg::R8,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+    ];
 
     // ---- Invariant 1: callee-saved preservation (#490), whole-function ----
     //

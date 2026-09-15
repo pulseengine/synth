@@ -221,11 +221,6 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     # selector's memory base). Value right, the next direct-routed caller wrong —
     # executed by the r11_clobber fixture's `caller`.
     ('control_nested_select.wast', 0, 'nested_const_conds', 'contract-violation/optimized'): ('#1204', 4),
-    ('control_nested_select.wast', 0, 'nested_if_else', 'contract-violation/optimized'): ('#1204', 4),
-    ('int_literals.wast', 0, 'i64.inc_smin', 'contract-violation/optimized'): ('#1204', 1),
-    ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'contract-violation/optimized'): ('#1204', 3),
-    ('selector_parity_197_r11_clobber.wast', 0, 'caller', 'parity-divergence/opt-wrong'): ('#1204', 1),
-    ('selector_parity_197_r11_clobber.wast', 0, 'leaf', 'contract-violation/optimized'): ('#1204', 2),
     # #1205 — optimized path: value-`if` with simple arms and a COMPUTED
     # condition compared the constants and selected between the condition's
     # operands. CONVERTED to a decline in v0.65 (RQ-65-DECLINE): the shape
