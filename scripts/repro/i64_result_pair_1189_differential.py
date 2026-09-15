@@ -113,15 +113,6 @@ COMPARED_FLOOR = 1_000
 # (leg, export, kind) -> (issue, exact count). See the docstring.
 KNOWN: dict[tuple[str, str, str], tuple[str, int]] = {
     ("self", "popcnt64", "mismatch"): ("#1240", 3),
-    ("self", "add64", "contract"): ("#1204", 14),
-    ("self", "sub64", "contract"): ("#1204", 19),
-    ("self", "mul64", "contract"): ("#1204", 18),
-    ("self", "xor64", "contract"): ("#1204", 42),
-    ("self", "shl", "contract"): ("#1204", 12),
-    ("self", "shru", "contract"): ("#1204", 7),
-    ("self", "shrs", "contract"): ("#1204", 16),
-    ("self", "divs", "contract"): ("#1204", 11),
-    ("self", "rems", "contract"): ("#1204", 6),
 }
 
 
