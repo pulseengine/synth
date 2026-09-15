@@ -163,19 +163,47 @@ fn func_sizes(elf: &[u8]) -> HashMap<String, usize> {
 /// base-vs-branch byte comparison (156 self-contained images: startup-only,
 /// 1 byte; 132 relocatable images: identical). The base-CSE flip/rollback
 /// claim this gate pins is untouched by that byte.
+/// RQ-67-CALLEESAVE (#1204, v0.67) — ALL FOUR goldens re-recorded. The
+/// optimized path writes R9/R10/R11 (base-CSE's R11 hoist, the i64 pair table,
+/// synthetic local 255) and `ensure_callee_saved_prologue` saved only R4-R8, so
+/// a callee-saved register was destroyed across the AAPCS boundary. The
+/// prologue now saves any reserved register the body DEFINES, which changes the
+/// prologue/epilogue register lists on both of these modules.
+///
+/// BOTH legs moved, which is expected rather than surprising: the ON leg writes
+/// R11 through the base-CSE hoist, and the OFF leg still reaches R9/R10/R11
+/// through the i64 pair table, so disabling base-CSE does not remove the
+/// clobber. The flip/rollback claim this gate exists to pin is unaffected —
+/// what moved is the prologue, identically in kind on both legs.
+///
+///   redundant_base_materialization  ON 226 -> 226   OFF 328 -> 328
+///   volatile_segment_543            ON 196 -> 200   OFF 258 -> 258
+///
+/// THREE OF FOUR ARE SAME-LENGTH: the 32-bit STMDB/LDMIA form was already in
+/// use, so only the register-list bits changed. `volatile_segment_543`'s ON leg
+/// grows 4 bytes because its 16-bit `push {r4-r7,lr}` cannot encode a high
+/// register and becomes the 32-bit form. That is the real cost of the fix on a
+/// function that was silently wrong before.
+///
+/// THE NEW BYTES ARE PROVEN, NOT ASSUMED. Both modules are EXECUTED by
+/// `self_contained_boot_sweep_1189_differential.py` on both legs (`self` and
+/// `self-noopt`, 12 vectors each), booted through their own shipped
+/// `Reset_Handler` on zeroed RAM and compared against wasmtime; that oracle
+/// passes on this tree. Re-recording a golden without an execution oracle
+/// behind it is what this repo refuses.
 const GOLDENS: [(&str, &str, usize, &str, usize); 2] = [
     (
         "scripts/repro/redundant_base_materialization.wat",
-        "8099bd3de7187cceca6aee714d2bf2da7fbf7b156233a1fb5b0a6c0bee7ebb55",
+        "3ed316e7602f29510431f7834d3a007db7c1ef4ba5f2f8b276325bb056faae25",
         226,
-        "dfa4c2a5d201104ac0a495a2ec621273184d67c3edc6e345d5f3667fe2b765e0",
+        "1ffdcd7de5750f26411c9e2b07a0bfa48365df6d7bcd67aa1d2976c061f13881",
         328,
     ),
     (
         "scripts/repro/volatile_segment_543.wat",
-        "3f22df1e50ce199575d6466471ef8226247e8455b71a7952c6744f5858f6cbfc",
-        196,
-        "6e7b129da9f9e359d759299cde4ce0968fa1216b1772759d69e60d6cc6b80cbe",
+        "904b0ff32276e89b14c4f89bc4b4dae32f9687ab0cac72ffd44be7d04a67fddd",
+        200,
+        "eeedd0984e632da91095577ba68f06752ec60e400027b3a7f2942a56adfcbce6",
         258,
     ),
 ];

@@ -4983,19 +4983,37 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
 
     // New save list: used callee-saved registers, padded with the lowest
     // unused one if the total (incl. LR/PC) would be odd.
+    //
+    // #1204: `CALLEE_SAVED` here is R4-R8, and shrink RECOMPUTES the list from
+    // scratch — so a reserved register `ensure_callee_saved_prologue` added
+    // (R9/R10/R11, which the optimized path writes) was silently stripped back
+    // out on any body shrink accepts. That is exactly how
+    // `control_nested_select.wast:nested_const_conds` kept violating the
+    // contract after the prologue fix landed: `mov r11, r0` in the body,
+    // `push {r4, r5, r6, lr}` at the top. Carry the reserved defs through.
+    let reserved = callee_saved_reserved_defs(instrs);
     let mut saves: Vec<Reg> = CALLEE_SAVED
         .iter()
         .filter(|r| used.contains(r))
         .copied()
         .collect();
-    if !(saves.len() + 1).is_multiple_of(2)
-        && let Some(pad) = CALLEE_SAVED.iter().find(|r| !used.contains(r))
-    {
-        saves.push(*pad);
-        saves.sort();
+    let kept = saves.len();
+    saves.extend(reserved.iter().copied());
+    if !(saves.len() + 1).is_multiple_of(2) {
+        // Prefer an unused low callee-saved as the pad (free, and keeps the
+        // list contiguous); fall back to R12, the encoder scratch, when every
+        // one of R4-R8 is already live.
+        match CALLEE_SAVED.iter().find(|r| !used.contains(r)) {
+            Some(pad) => saves.push(*pad),
+            None => saves.push(Reg::R12),
+        }
     }
-    // Nothing to shrink?
-    if saves.len() == CALLEE_SAVED.len() {
+    saves.sort();
+    saves.dedup();
+    // Nothing to shrink? (No low register dropped — adding a reserved one is
+    // not a shrink, and returning None here would leave the caller's wider
+    // list intact, which is what we want.)
+    if kept == CALLEE_SAVED.len() {
         return None;
     }
 
@@ -5068,6 +5086,75 @@ pub fn body_uses_callee_saved(instrs: &[ArmInstruction]) -> bool {
     false
 }
 
+/// #1204 (RQ-67-CALLEESAVE, epic #242): the RESERVED-register half of the
+/// callee-saved set the optimized path can actually clobber.
+///
+/// `body_uses_callee_saved` and `shrink_callee_saved_saves` both model R4-R8,
+/// which is correct for the DIRECT selector: its allocator universe is
+/// `ALLOCATABLE_REGS` = R0-R8 and `index_to_reg` carries a contract that the
+/// result is never R9/R10/R11 (`docs/embedder-abi-relocatable-arm.md` publishes
+/// that to embedders as "reserved — never allocated, never written").
+///
+/// The OPTIMIZED path hands them out anyway, and not by accident — three
+/// deliberate mechanisms do it:
+///
+///   - `BASE_CSE_REG = R11` (#468), which hoists the linear-memory base into
+///     R11 once per function precisely BECAUSE R11 is outside the
+///     `reallocate_function` pool and so survives untouched;
+///   - `SPILL_I64_PAIR_CANDIDATES`, whose own comment says "R9/R10/R11 appear
+///     here because `alloc_i64_pair` has ALWAYS handed them out";
+///   - synthetic-local-255 (`Select` nesting), which uses R11.
+///
+/// Each reasoned about the register's freedom WITHIN a function and none about
+/// the AAPCS boundary. R9/R10/R11 are callee-saved, and in a self-contained
+/// image they are also the startup-seeded globals base, memory size and memory
+/// base that DIRECT-routed functions in the same image read. So a mixed image
+/// has two selectors disagreeing about one register contract, which is #1204:
+/// return values are correct and the NEXT function loads through garbage.
+///
+/// KEYED ON DEFS, NOT USES — the load-bearing choice. The direct selector READS
+/// R11 as the memory base in essentially every memory-touching function; keying
+/// on uses would push R11 across the whole corpus and move bytes everywhere for
+/// no correctness gain. Only a WRITE breaks the caller's value.
+///
+/// Conservative on an unmodeled op, matching `body_uses_callee_saved`'s own
+/// `None => return true`: if `reg_effect` cannot see what an op does, assume it
+/// may write all three. The byte cost of that conservatism is MEASURED over the
+/// corpus rather than assumed — see the artifact's byte-identity gate.
+pub fn callee_saved_reserved_defs(instrs: &[ArmInstruction]) -> Vec<Reg> {
+    use ArmOp::*;
+    const RESERVED: [Reg; 3] = [Reg::R9, Reg::R10, Reg::R11];
+    let mut defs: BTreeSet<Reg> = BTreeSet::new();
+    for ins in instrs {
+        match &ins.op {
+            // Same allowlist as `body_uses_callee_saved`: these carry no
+            // register data effect of their own.
+            Push { .. }
+            | Pop { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => match reg_effect(op) {
+                Some(e) => {
+                    for r in e.defs.iter() {
+                        if RESERVED.contains(r) {
+                            defs.insert(*r);
+                        }
+                    }
+                }
+                // Unmodeled op → assume it may write any of them.
+                None => return RESERVED.to_vec(),
+            },
+        }
+    }
+    defs.into_iter().collect()
+}
+
 /// #490 (epic #242): give the optimized path the callee-saved prologue/epilogue
 /// it is missing. The optimized selector uses r4-r8 as scratch / promoted locals
 /// but emits no `push`/`pop`, so a caller's r4-r8 are silently clobbered — a
@@ -5092,21 +5179,44 @@ pub fn ensure_callee_saved_prologue(instrs: &[ArmInstruction]) -> Vec<ArmInstruc
     {
         return instrs.to_vec();
     }
-    if !body_uses_callee_saved(instrs) {
+    // #1204: a body that writes ONLY a reserved callee-saved register (R9/R10/
+    // R11) and no R4-R8 still needs a prologue — `body_uses_callee_saved` models
+    // R4-R8 alone, so it answers `false` on exactly the functions base-CSE's R11
+    // hoist produces.
+    if !body_uses_callee_saved(instrs) && callee_saved_reserved_defs(instrs).is_empty() {
         return instrs.to_vec();
     }
+    // #1204: R9/R10/R11 are callee-saved too, and the optimized path writes
+    // them (base-CSE's R11, the i64 pair table's (R8,R9)/(R10,R11), synthetic
+    // local 255). Save exactly the ones this body DEFINES — never the ones it
+    // merely reads, or every memory-touching function would push R11 for
+    // nothing. An empty extra set reproduces the pre-#1204 lists byte for byte,
+    // which is what keeps every currently-correct function unchanged.
+    let extra = callee_saved_reserved_defs(instrs);
+    let mut saves: Vec<Reg> = vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    saves.extend(extra.iter().copied());
+    // AAPCS wants SP 8-byte aligned; the base list plus LR is already even, so
+    // pad only when an odd number of extras made it odd. R12 is the encoder
+    // scratch and is never live across this boundary, so it is the safe filler.
+    if !(saves.len() + 1).is_multiple_of(2) {
+        saves.push(Reg::R12);
+        saves.sort();
+    }
+    let mut push_regs = saves.clone();
+    push_regs.push(Reg::LR);
+    let mut pop_regs = saves.clone();
+    pop_regs.push(Reg::PC);
+
     let mut out = Vec::with_capacity(instrs.len() + 1);
     out.push(ArmInstruction {
-        op: Push {
-            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
-        },
+        op: Push { regs: push_regs },
         source_line: None,
     });
     for ins in instrs {
         if matches!(&ins.op, Bx { rm } if *rm == Reg::LR) {
             out.push(ArmInstruction {
                 op: Pop {
-                    regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                    regs: pop_regs.clone(),
                 },
                 source_line: ins.source_line,
             });
@@ -5431,7 +5541,26 @@ pub enum RaFinalVerdict {
 /// is no silent pass on a shape the checker cannot analyze.
 pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     use ArmOp::*;
-    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    // #1204: this validator is described as "the construction-level answer to
+    // the #490/#496/#331/#782b clobber class" and it ran on every ARM
+    // compilation while modelling only R4-R8 — so it was blind to three of the
+    // eight AAPCS callee-saved registers, which is why it never saw the
+    // optimized path writing R9/R10/R11. R9 (globals base), R10 (memory size)
+    // and R11 (memory base) are reserved by the register contract AND
+    // callee-saved by AAPCS; a clobber of one is exactly the invariant-1
+    // violation this checks for. Widening it cannot move a byte — it only
+    // inspects — so a green corpus after the widening is independent evidence
+    // that no reserved-register clobber survives anywhere.
+    const CALLEE_SAVED: [Reg; 8] = [
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+        Reg::R8,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+    ];
 
     // ---- Invariant 1: callee-saved preservation (#490), whole-function ----
     //
@@ -14355,6 +14484,71 @@ mod tests {
         let out = ensure_callee_saved_prologue(&seq);
         assert!(matches!(&out[0].op, ArmOp::Push { regs } if regs.contains(&Reg::LR)));
         assert_eq!(shrink_callee_saved_saves(&out), None);
+    }
+
+    #[test]
+    fn ensure_prologue_saves_r11_when_the_body_writes_it_1204() {
+        // #1204 RED-FIRST. The optimized path's base-CSE hoists the
+        // linear-memory base into R11 (`BASE_CSE_REG`) precisely because R11 is
+        // outside the realloc pool — but R11 is AAPCS callee-saved and, in a
+        // self-contained image, the register direct-routed functions read as
+        // the memory base. Before the fix the prologue was {r4-r8,lr} and the
+        // caller's R11 was silently destroyed: measured on
+        // control_nested_select.wast, R11 = 0x00000001 after
+        // nested_if_else(1,1) returned.
+        let seq = vec![
+            ins(ArmOp::Mov {
+                rd: Reg::R11,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert_eq!(callee_saved_reserved_defs(&seq), vec![Reg::R11]);
+        let out = ensure_callee_saved_prologue(&seq);
+        match &out[0].op {
+            ArmOp::Push { regs } => {
+                assert!(regs.contains(&Reg::R11), "prologue must save R11: {regs:?}");
+                assert!(regs.contains(&Reg::LR));
+                // Even total keeps the 8-byte AAPCS SP alignment.
+                assert!(regs.len().is_multiple_of(2), "unaligned push: {regs:?}");
+            }
+            other => panic!("expected a Push, got {other:?}"),
+        }
+        let epi = out.last().expect("epilogue");
+        match &epi.op {
+            ArmOp::Pop { regs } => {
+                assert!(
+                    regs.contains(&Reg::R11),
+                    "epilogue must restore R11: {regs:?}"
+                );
+                assert!(regs.contains(&Reg::PC));
+            }
+            other => panic!("expected a Pop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_prologue_does_not_save_a_reserved_register_it_only_reads_1204() {
+        // THE LOAD-BEARING HALF. The direct selector READS R11 as the memory
+        // base in essentially every memory-touching function. Keying the save
+        // on USES instead of DEFS would push R11 across the whole corpus and
+        // move bytes everywhere for no correctness gain — only a WRITE can
+        // destroy the caller's value. Measured: with defs-only, 601 of 621
+        // corpus compiles are byte-identical and all 20 that move are in the
+        // optimized self-contained config.
+        let seq = vec![
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R11),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert!(
+            callee_saved_reserved_defs(&seq).is_empty(),
+            "a read of R11 must not request a save"
+        );
+        // No R4-R8 either, so this stays the untouched leaf it was before.
+        assert_eq!(ensure_callee_saved_prologue(&seq), seq);
     }
 
     #[test]

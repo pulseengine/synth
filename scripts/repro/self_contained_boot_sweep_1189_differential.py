@@ -183,29 +183,6 @@ KNOWN: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # a different module, a different backend leg, and an oracle written
     # against the pre-fix tree.
     # #1204
-    ('base_cse_branch.wat', 'self', 'init_branch', 'contract'): ('#1204', 10),
-    ('block_brif_483.wat', 'self', 'init_branch', 'contract'): ('#1204', 10),
-    ('cf_shapes_500.wat', 'self', 'seqblocks', 'contract'): ('#1204', 11),
-    ('i64_divs_317.wat', 'self', 'divs', 'contract'): ('#1204', 3),
-    ('i64_divs_317.wat', 'self', 'rems', 'contract'): ('#1204', 2),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'clz64', 'contract'): ('#1204', 2),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'ctz64', 'contract'): ('#1204', 2),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'shl_keep_low', 'contract'): ('#1204', 8),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'shrs_keep_high', 'contract'): ('#1204', 12),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'shru_keep_high', 'contract'): ('#1204', 6),
-    ('i64_result_pair_1189.wat', 'self', 'add64', 'contract'): ('#1204', 5),
-    ('i64_result_pair_1189.wat', 'self', 'divs', 'contract'): ('#1204', 3),
-    ('i64_result_pair_1189.wat', 'self', 'mul64', 'contract'): ('#1204', 3),
-    ('i64_result_pair_1189.wat', 'self', 'rems', 'contract'): ('#1204', 2),
-    ('i64_result_pair_1189.wat', 'self', 'shl', 'contract'): ('#1204', 8),
-    ('i64_result_pair_1189.wat', 'self', 'shrs', 'contract'): ('#1204', 12),
-    ('i64_result_pair_1189.wat', 'self', 'shru', 'contract'): ('#1204', 6),
-    ('i64_result_pair_1189.wat', 'self', 'sub64', 'contract'): ('#1204', 6),
-    ('i64_result_pair_1189.wat', 'self', 'xor64', 'contract'): ('#1204', 12),
-    ('join_alias_1189.wat', 'self', 'inest', 'contract'): ('#1204', 12),
-    ('redundant_base_materialization.wat', 'self', 'init_fields', 'contract'): ('#1204', 12),
-    ('spill_frame_499.wat', 'self', 'nested', 'contract'): ('#1204', 2),
-    ('stack_canary_687.wat', 'self', 'set_canary', 'contract'): ('#1204', 12),
     # #1211
     # #1240 — found by this oracle
     ('i64_high_reg_zero_fill_916.wat', 'self', 'clz64', 'mismatch'): ('#1240', 10),
