@@ -67,3 +67,50 @@ artifacts:
       verification-track: differential
       issue: "#1204"
       done-when: "manual: the optimized path preserves every callee-saved register its allocator can hand out, proven red-first on #1204's recorded repro; the boot sweep and the selector-parity oracle are RE-RUN over the whole cluster and the artifact NAMES BY MEASUREMENT which issues closed and which did not; every path the fix does not target is gated on byte-identity or an execution differential, including --safety-bounds software and mask; every closed pin moves in the same PR"
+      landed: >-
+        LANDED. The attribution was MEASURED, not predicted, and the measurement
+        changed two things the plan assumed.
+
+        ROOT CAUSE, corrected from this artifact's own premise. It is not a
+        missing prologue. `ALLOCATABLE_REGS` is R0-R8, `index_to_reg` carries a
+        contract that its result is never R9/R10/R11, and
+        docs/embedder-abi-relocatable-arm.md publishes that as "reserved — never
+        allocated, never written". The DIRECT selector honours it; the OPTIMIZED
+        path hands them out through three DELIBERATE mechanisms — BASE_CSE_REG =
+        R11 (#468), SPILL_I64_PAIR_CANDIDATES containing (R8,R9) and (R10,R11),
+        and synthetic-local-255 — each of which reasoned about the register
+        WITHIN a function and none about the AAPCS boundary.
+
+        THREE SITES NEEDED CHANGING AND EACH WAS FOUND SEPARATELY, by a
+        different oracle failing: the prologue (`ensure_callee_saved_prologue` /
+        `body_uses_callee_saved`), then `shrink_callee_saved_saves` which
+        RECOMPUTES the save list from its own R4-R8 copy and silently stripped
+        the fix back out on every leaf, then `validate_final_allocation` — the
+        unconditional VCR-RA-003 validator whose own doc calls it "the
+        construction-level answer to the #490 clobber class" and which modelled
+        five of the eight callee-saved registers, so it was blind to exactly
+        this. Filed as #1270 (five copies of the constant in one file).
+
+        KEYED ON DEFS, NOT USES — the load-bearing choice. The direct selector
+        READS R11 in nearly every memory-touching function.
+
+        CLOSED, by re-running both oracles: boot sweep 23 of 23 entries / 161 of
+        161 cases; selector parity 6 of 6 entries / 15 cases. ZERO #1204 pins
+        remain in either table. known_open_pins 127 -> 98, cases 505 -> 329.
+
+        THE NEGATIVE CONTROL HELD: #1240 closed 0 of 3 entries (0 of 23 cases),
+        so it is a separate mechanism and RQ-67-HIGHWORD stays its own artifact.
+
+        #1241's OWN TITLE IS REFUTED: it asks "(#1204's pair class?)" and not one
+        of its 3 entries / 33 cases moved. The value is wrong before any call
+        boundary is crossed, so a caller-side save was never what it lacked.
+        Recorded on the issue.
+
+        BYTE GATE, 1242 compiles across SIX configurations: 621 over
+        reloc/self/self-noopt (599 identical, 22 changed) and 621 over
+        --safety-bounds software/mask/software+relocatable (603 identical, 18
+        changed). EVERY change is in an optimized-path config; both
+        direct-selector configs are byte-identical corpus-wide, including under
+        --safety-bounds. 0 newly-declined and 0 newly-compiling in all six.
+        The widened validator then stays green over all 621 compiles, which is
+        construction-level evidence independent of the two execution oracles.
