@@ -1,0 +1,92 @@
+artifacts:
+  - id: RQ-67-VFPREACH
+    type: system-req
+    title: "synth allocates from HALF the VFP register file — S16-S31/D8-D15 are never used because no prologue saves them, and a real flight tick declines because of it"
+    description: >
+      A REAL WORKLOAD, REPORTED BY A USER (#1267, gale, on shipped v0.66.0).
+      The falcon flight cascade compiles 21 of its 22 functions for
+      `--target cortex-m7dp`, including 1408- and 1468-byte ones. Exactly one
+      declines: the exported tick, where `FlightCore::step` inlines the whole
+      cascade -- IEKF estimator, geometric SE(3) attitude, ADRC inner loop,
+      mixer with rotor-out FDI, altitude and position loops.
+
+        GI-FPU-002: VFP register file exhausted (S0..S15 all live)
+
+      Target sensitivity, same input and same binary: m7dp skips 1 of 22, m4f
+      and m7 skip 3, m3 (no FPU) skips 16.
+
+      THE REPORTER ASKED A DIRECT QUESTION -- is per-stage `#[inline(never)]` in
+      the guest the intended remedy, or is VFP spilling expected to cover a tick
+      of this size? THE ANSWER IS NEITHER, and it is a defect on synth's side.
+
+      DERIVED FROM THE SOURCE, not inferred from the message:
+
+        crates/synth-synthesis/src/instruction_selector.rs  `vfp_home: &[bool; 16]`,
+          `let mut set = [false; 16]`, and the doc comment "These reside in
+          S0..S15, which are AAPCS-VFP CALLER-saved"
+        crates/synth-backend/src/arm_encoder.rs  encodes `VfpReg::S0` through
+          `VfpReg::S31` -- the upper half is ENCODABLE
+        VPUSH / VPOP  appear NOWHERE in the encoder
+        crates/synth-synthesis/src/liveness.rs:5977  "D8..D15 are CALLEE-saved,
+          out of scope for a caller-side check"
+
+      Every FPU target synth supports (FPv4-SP-D16, FPv5-D16) has D0-D15 =
+      S0-S31. synth allocates within S0-S15 / D0-D7 and never touches the other
+      half. The reason is structural rather than arbitrary: S16-S31 / D8-D15 are
+      AAPCS CALLEE-saved, so using them requires a VPUSH/VPOP prologue the
+      encoder cannot currently emit. The register file is not exhausted when
+      this error fires -- HALF OF IT IS UNUSED.
+
+      THIS IS THE SAME SHAPE AS RQ-67-CALLEESAVE, IN THE OTHER REGISTER FILE,
+      and noticing that is why both belong in one release. On the integer side
+      the prologue saves R4-R8 while the allocator hands out R9-R11, so a
+      callee-saved register is clobbered -- a SILENT WRONG ANSWER. On the float
+      side nothing saves D8-D15, so the allocator refuses to hand them out at
+      all -- a LOUD DECLINE. One release, one root shape: the callee-saved
+      contract and the allocator disagree about which registers exist. The
+      failure modes differ only in which direction the disagreement points.
+
+      WHY IT RANKS AS A `must`. Reach is part of correctness -- the North Star's
+      second invariant -- and this is the reach half made concrete by someone
+      trying to use the compiler. The reporter already did the work on their
+      side: they split the export into a thin forwarder plus an
+      `#[inline(never)]` body, and the decline simply MOVED WITH THE BODY,
+      converting a partial object into an unlinkable one (#952 then #1102). So
+      the pressure is inherent to the tick body, the guest-side workaround does
+      not exist, and the honest remedy is to stop leaving half the hardware
+      unused.
+
+      RECORDED IN THE REPORTER'S FAVOUR: #952 and #1102 both exited non-zero
+      with an explicit explanation rather than shipping something a `$?` gate
+      would accept, and the reporter credits that as what made this diagnosable
+      in one pass. Loud-decline-over-silent-miscompile is the differentiator
+      this project claims; here it paid.
+
+      HONEST RISK. A VPUSH/VPOP prologue changes the frame layout of every
+      function that uses an upper-half register, and the VFP callee-saved set
+      interacts with the existing #881 spill ladder and the #1069 frame-homed
+      local path -- both of which v0.66 proved are REACHABLE on exactly these
+      targets. Functions that compile today must not move a byte: gate on
+      byte-identity over the corpus for everything that already lowered, and
+      admit the new registers only on the path that would otherwise DECLINE.
+      This is the #881 rung discipline ("deliberately LAST, so any function that
+      compiled yesterday is produced by exactly yesterday's path") applied to a
+      wider register file.
+    status: proposed
+    release: v0.67
+    tags:
+      - vcr
+      - reach
+      - gi-fpu-002
+      - aapcs
+      - register-allocation
+      - user-report
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1267"
+      done-when: "manual: the encoder emits VPUSH/VPOP for the AAPCS callee-saved VFP set and the allocator can use S16-S31/D8-D15 behind a prologue that saves them; #1267's falcon cascade tick is measured again on cortex-m7dp and the artifact reports the function count that lowers, whether or not it reaches 22 of 22; every function that lowered before the change is proven BYTE-IDENTICAL over the corpus, so the wider file is admitted only on paths that would otherwise decline; if the tick still declines, the artifact publishes the measured remaining pressure rather than restating the cap"

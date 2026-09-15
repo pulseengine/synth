@@ -66,5 +66,28 @@
 # prose at or after the cold review. The release notes are the one surface with
 # no gate, and v0.67 gives them one.
 #
-# Scope: 5 new + 1 carried. ARCHMODEL carries a SEVENTH time; spar#445 is
+# ADDED AFTER THE PLAN WAS WRITTEN, from a USER REPORT (#1267, gale, on shipped
+# v0.66.0): the falcon flight cascade lowers 21 of 22 functions on cortex-m7dp
+# and declines exactly one -- the tick -- with "VFP register file exhausted
+# (S0..S15 all live)". Reading the source rather than the message: the selector
+# allocates within S0-S15/D0-D7 (`vfp_home: &[bool; 16]`), the encoder can
+# already encode S0-S31, VPUSH/VPOP appear nowhere, and liveness.rs says in so
+# many words that D8-D15 are callee-saved and out of scope. Every FPU target
+# synth supports has S0-S31. THE FILE IS NOT EXHAUSTED WHEN THAT ERROR FIRES --
+# HALF OF IT IS UNUSED, because using it needs a prologue that cannot be
+# emitted.
+#
+# THAT MAKES THE RELEASE MORE COHERENT, NOT LESS. It is RQ-67-CALLEESAVE's shape
+# in the other register file. Integer side: the prologue saves R4-R8 while the
+# allocator hands out R9-R11, so a callee-saved register is clobbered -- a
+# SILENT WRONG ANSWER. Float side: nothing saves D8-D15, so the allocator
+# refuses to hand them out -- a LOUD DECLINE. One root shape, the callee-saved
+# contract and the allocator disagreeing about which registers exist, pointing
+# in opposite directions. The reporter also asked a direct question, and the
+# answer is that neither of their two options is right: guest-side
+# `#[inline(never)]` does not help (they tried it, and the decline moved with
+# the body), and VFP spilling was never going to cover a tick this size while
+# half the hardware sits unused.
+#
+# Scope: 6 new + 1 carried. ARCHMODEL carries a SEVENTH time; spar#445 is
 # external, in another repository, and is re-verified at cut rather than copied.
