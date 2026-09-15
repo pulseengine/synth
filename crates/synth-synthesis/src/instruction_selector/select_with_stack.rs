@@ -626,8 +626,8 @@ impl InstructionSelector {
         // is byte-identical.
         let fpu = self.fpu;
         let params_f32 = self.params_f32.clone();
-        let mut vfp_used = [false; 16];
-        let mut vfp_home = [false; 16];
+        let mut vfp_used = [false; crate::instruction_selector::VFP_FILE];
+        let mut vfp_home = [false; crate::instruction_selector::VFP_FILE];
         let mut f32_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
         {
             let has_f32_param =
