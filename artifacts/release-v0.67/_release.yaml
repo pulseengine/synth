@@ -1,0 +1,70 @@
+# v0.67 — "One root cause, not five symptoms"
+#
+# v0.66 built oracles that had never existed and ran them on code that had never
+# been executed. The self-contained corpus images had been COMPILED roughly 400
+# times per survey run and never once BOOTED; the first run of the boot sweep
+# found two silent miscompiles. That release closed 77 of 103 pinned parity
+# entries and still ended with `known_open_pins` at 127, because the instruments
+# kept finding things faster than the fixes closed them.
+#
+# THE RESIDUE IS A CLUSTER THAT READS AS SEPARATE DEFECTS AND IS NOT. #1204,
+# #1241 and a run of optimized-path wrong answers all report R9/R10/R11
+# clobbered. #1241 asks the question in its own TITLE: "(#1204's pair class?)".
+# #1204 already names the mechanism -- `ensure_callee_saved_prologue` covers
+# R4-R8 while the allocator hands out R9-R11, and in a self-contained image R11
+# is the LINEAR-MEMORY BASE and R10 backs the software bounds guard.
+#
+# So this release does the thing RQ-66-BOTHWRONG got right and generalises it:
+# TRIAGE BY ROOT CAUSE FIRST, and write the attribution as a MEASUREMENT.
+#
+# FALSIFIABLE IN BOTH DIRECTIONS, and the negative control is built in. If the
+# callee-saved fix closes #1240 -- explicitly the #916 zero-fill class, a
+# different mechanism, owned by its own artifact -- then the attribution is
+# wrong somewhere and this release publishes that. If it closes fewer issues
+# than the cluster suggests, it publishes the measured set and leaves the rest
+# pinned and named. What it may not do is claim a count it did not measure.
+#
+# FOUR NUMBERS MOVE OR THEY DO NOT:
+#
+#   selector_lines_code   20097, never fallen in nine releases, 21 waivers
+#   sel_dsl_rules         80, unmoved since v0.59.0, eight releases
+#   known_open_pins       127 against a baseline of 27, 3 waivers
+#   the named closed set  measured by re-running the oracles, not predicted
+#
+# THE SUBTRACTION LEVER IS NAMED BEFORE THE WORK STARTS, because "find something
+# to delete" is the instruction that produced eight consecutive rises. v0.66
+# killed the previous lever honestly -- all four "DEAD" sites were REACHABLE,
+# and all four were outside the ratchet's population anyway, so deleting every
+# one would have moved the metric by zero. What remains is v0.58's own
+# correction: a rule is done when the hand-written arm it replaces is DELETED.
+# That makes `sel_dsl_rules` RISING the precondition for `selector_lines_code`
+# FALLING, so they are ONE artifact. The candidate is the i64 IMMEDIATE family:
+# i32 carries sixteen proven `_imm` rules, i64 carries ZERO of the 80, the
+# hand-written arms exist, and the Rocq proofs follow a pattern already
+# discharged. If that family yields a small fall, the release publishes the
+# small number rather than widening scope mid-flight.
+#
+# HONEST RISKS, recorded before the work:
+#   - THE HEADLINE IS THE DANGEROUS ONE. R11 and R10 are not spare registers;
+#     they carry the register contract and the software bounds guard. Changing
+#     what the optimized path saves can move emitted bytes across the whole
+#     corpus and interacts with --safety-bounds. A green oracle on the FIXED
+#     path is not evidence about the paths the fix was not aimed at. Those are
+#     gated on byte-identity or an execution differential, or the change is
+#     REFUSED. An explanation is not a gate.
+#   - THE CLUSTER MAY NOT BE ONE BUG. v0.66's five both-selectors-wrong classes
+#     turned out to be four root causes, not one and not five -- two issues were
+#     one defect, and one issue was two independent causes. The honest outcome
+#     here is whatever the re-run says.
+#   - PINDOWN'S RISE ARGUMENT IS SPENT. "The debt did not grow, its measurement
+#     did" is true exactly once per finding. A second release ending higher on
+#     the same explanation is the accumulation the ratchet exists to prevent.
+#
+# THE CHEAP ONE MUST NOT BE DROPPED FIRST. RQ-67-NOTESGATE is about five lines
+# per half and its red-first demonstration is free, on two commits that already
+# exist. Three consecutive releases have found a defect in their own release
+# prose at or after the cold review. The release notes are the one surface with
+# no gate, and v0.67 gives them one.
+#
+# Scope: 5 new + 1 carried. ARCHMODEL carries a SEVENTH time; spar#445 is
+# external, in another repository, and is re-verified at cut rather than copied.

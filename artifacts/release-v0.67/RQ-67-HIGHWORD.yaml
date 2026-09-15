@@ -1,0 +1,46 @@
+artifacts:
+  - id: RQ-67-HIGHWORD
+    type: system-req
+    title: "i64.clz / i64.ctz / i64.popcnt leave the high word uncleared on the optimized path — the #916 defect class, on the other selector"
+    description: >
+      On the DEFAULT self-contained image (`--all-exports --target cortex-m4`,
+      the optimized `ir_to_arm` path) `i64.clz`, `i64.ctz` and `i64.popcnt`
+      return the correct count in the LOW word and leave the HIGH word equal to
+      the INPUT's high word instead of zero. The `--no-optimize` image of the
+      same module -- the direct selector -- is correct on every vector.
+
+      This is the #916 defect class, whose direct-selector half was fixed in a
+      v0.5x release, surviving on the other selector. It exits 0 and declines
+      nothing: a silent wrong answer.
+
+      FOUND BY AN ORACLE THAT DID NOT EXIST TWO RELEASES AGO. #1240 came out of
+      RQ-66-WATCHED's `self_contained_boot_sweep_1189_differential.py`, on its
+      FIRST RUN -- the first time synth's self-contained corpus images had ever
+      been BOOTED through their own shipped `Reset_Handler` and executed, having
+      been compiled roughly 400 times per survey run and never once run. That
+      is the argument for the WATCHED disposition, made concrete.
+
+      KEPT SEPARATE FROM RQ-67-CALLEESAVE ON PURPOSE. Both are optimized-path
+      i64 wrong answers found by the same oracle in the same run, which is
+      exactly the shape that invites collapsing them into one story. The
+      mechanisms differ: this one is a missing zero-fill of a result half, not a
+      register the prologue forgot to save. It is the release's NEGATIVE
+      CONTROL on its own attribution -- if it closes when the callee-saved set
+      is fixed, the attribution in that artifact is wrong and the release says
+      so.
+    status: proposed
+    release: v0.67
+    tags:
+      - vcr
+      - optimized-path
+      - i64
+      - silent-miscompile
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1240"
+      done-when: "manual: i64.clz/ctz/popcnt zero the high word on the optimized path, shown red-first on the boot sweep's recorded vectors (wrong before, correct after, direct selector unchanged); the fix is verified INDEPENDENT of RQ-67-CALLEESAVE by landing or measuring it separately, so the release can state whether the two are one mechanism or two; the pin moves in the same PR"

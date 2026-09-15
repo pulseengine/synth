@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-67-PINDOWN
+    type: system-req
+    title: "known_open_pins must fall — v0.66 closed 77 and still ended 23 above where it began"
+    description: >
+      `known_open_pins` is 127 against a baseline of 27, carried by three
+      waivers. v0.66 installed this ratchet (RQ-66-PINDEBT), derived it from the
+      oracles' OWN suppression tables by an `ast` walk rather than a hand tally,
+      and then recorded its first fall: 104 -> 27, closing 77 wrong-answer pins.
+      It ended at 127 anyway, because the new oracles that release wrote kept
+      FINDING things -- 100 newly-measured pins across ten findings that
+      previously had no oracle at all.
+
+      THAT RISE WAS HONEST AND IT DOES NOT GET TO REPEAT UNEXAMINED. v0.66's own
+      waiver text says the pin debt did not grow, its MEASUREMENT did. That
+      argument is available exactly once per finding. A second release that ends
+      higher than it started, with the same explanation, is the accumulation
+      this ratchet exists to prevent -- and this project has measured that shape
+      three times now (20 selector waivers, `sel_dsl_rules` flat for eight
+      releases, a delivery floor sitting at 28 against a live 67 for eleven).
+
+      THIS ARTIFACT IS NOT NEW MACHINERY. The derivation, the waiver channel and
+      the population tripwire all shipped in v0.66. Its job is to make the
+      movement VISIBLE for this release and to hold the direction: every issue
+      RQ-67-CALLEESAVE, RQ-67-HIGHWORD and RQ-67-SUBTRACT close must move its
+      pins in the same PR that closes it, and the release must not end with more
+      pins than it began.
+
+      DERIVE, NEVER TALLY. The count comes from `_pin_table` reading the tables
+      the oracles themselves consult. A hand count is a second source of truth
+      about the first, which is the failure the North Star's first invariant
+      names.
+    status: proposed
+    release: v0.67
+    tags:
+      - vcr
+      - pin-debt
+      - ratchet
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#242"
+      done-when: "manual: known_open_pins ends the release BELOW 127, derived by claim_check from the oracle tables and never hand-counted; every pin closed by another v0.67 artifact moves in the PR that closes it; any rise carries a waiver with a written reason in the same PR, and the release notes state the start value, the end value and the net rather than only the closures"
