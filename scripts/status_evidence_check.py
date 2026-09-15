@@ -430,9 +430,9 @@ DECLARE_SINCE = (0, 60)
 # a wrong hand-copy fails A1/A2 in the same PR. claims.yaml pins the three
 # lines verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183) so every move is a
 # visible ledger diff, and pins that the `!=` checks stay wired.
-ANCHOR_TAG = "v0.65.0"
+ANCHOR_TAG = "v0.66.0"
 ANCHOR_DELIVERY = 69
-ANCHOR_PROGRAMME = 409
+ANCHOR_PROGRAMME = 417
 # A3-programme waiver channel, empty by construction: the programme count has
 # never decreased at any of the 129 first-parent commits touching artifacts/
 # since v0.56.0 (measured). A deliberate net deletion declares its size here

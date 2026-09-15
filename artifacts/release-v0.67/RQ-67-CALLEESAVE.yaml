@@ -1,0 +1,69 @@
+artifacts:
+  - id: RQ-67-CALLEESAVE
+    type: system-req
+    title: "The optimized path's callee-saved set stops at R8 while its allocator hands out R9-R11 — one root cause behind a cluster of issues filed as separate defects"
+    description: >
+      THE FACT THAT SCOPES THIS RELEASE. `liveness::ensure_callee_saved_prologue`
+      (#490) saves and restores R4-R8. The optimized path's register allocator
+      hands out R9, R10 and R11. Under AAPCS all three are callee-saved, and in
+      a synth self-contained image they are not spare registers at all:
+
+        R11  the direct selector's LINEAR-MEMORY BASE, seeded 0x2000_0100 by the
+             generated startup (the register contract, CLAUDE.md)
+        R10  the register the SOFTWARE bounds guard compares against
+        R9   allocatable, and observed clobbered alongside the other two
+
+      MEASURED, NOT INFERRED (#1204, found by RQ-65-PARITY booting the shipped
+      `Reset_Handler` under unicorn): on the default `--target cortex-m4` image
+      of `tests/wast/control_nested_select.wast`, after `nested_if_else(1,1)`
+      returns R11 = 0x00000001; after `nested_if_else(0,1)`, R11 = 0x00000000.
+      The RETURN VALUES ARE CORRECT. It is the NEXT function that breaks, when
+      it loads through what it believes is the memory base.
+
+      WHY THIS IS THE HEADLINE AND NOT ONE FIX AMONG SIX. v0.66 closed 77 of
+      103 pinned parity entries and still ended with `known_open_pins` at 127,
+      because the oracles it built kept FINDING things. Several of what they
+      found are filed as separate issues and read as separate defects. #1241
+      asks the question in its own title -- "each with R9/R10/R11 clobbered
+      (#1204's pair class?)". This artifact answers it by measurement.
+
+      THE DISCIPLINE, carried from RQ-66-BOTHWRONG which got this right: TRIAGE
+      BY ROOT CAUSE, and write the attribution as a MEASUREMENT rather than a
+      prediction. Fix the callee-saved set, then RE-RUN the boot sweep
+      (`self_contained_boot_sweep_1189_differential.py`) and the selector-parity
+      oracle over the WHOLE cluster, and report which issues actually closed, by
+      name. Five fixes for one bug is worse than one honestly attributed -- and
+      so is one fix claimed to have closed five things it did not touch.
+
+      THE NEGATIVE CONTROL IS PART OF THE WORK. #1240 (i64.clz/ctz/popcnt leave
+      the high word uncleared) is explicitly the #916 zero-fill class -- a
+      DIFFERENT mechanism, owned by RQ-67-HIGHWORD. If #1240 closes as a side
+      effect of this fix, the attribution was wrong somewhere and THAT IS A
+      FINDING to publish, not a bonus to claim.
+
+      HONEST RISK, recorded before the work. This is not a one-line change.
+      Changing what the optimized path saves, or how it allocates R9-R11, can
+      move emitted bytes across the whole corpus, and it interacts with
+      `--safety-bounds software|mask` (which derive their guard from R10) and
+      with every self-contained image (which depends on R11 surviving a call).
+      A green oracle on the FIXED path is not sufficient evidence. The
+      unaffected paths are gated on byte-identity or an execution differential,
+      per CLAUDE.md: a change that moves emitted bytes without an oracle proving
+      the new bytes correct is REFUSED, not explained.
+    status: proposed
+    release: v0.67
+    tags:
+      - vcr
+      - optimized-path
+      - aapcs
+      - register-allocation
+      - root-cause
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1204"
+      done-when: "manual: the optimized path preserves every callee-saved register its allocator can hand out, proven red-first on #1204's recorded repro; the boot sweep and the selector-parity oracle are RE-RUN over the whole cluster and the artifact NAMES BY MEASUREMENT which issues closed and which did not; every path the fix does not target is gated on byte-identity or an execution differential, including --safety-bounds software and mask; every closed pin moves in the same PR"

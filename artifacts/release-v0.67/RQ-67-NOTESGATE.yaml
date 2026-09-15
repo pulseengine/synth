@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-67-NOTESGATE
+    type: system-req
+    title: "The release notes are the one surface with no gate — two defects reached the v0.66 tag candidate past a cold review and 67 green checks"
+    description: >
+      Every load-bearing claim in this repository is pinned, derived or
+      oracle-gated. The document that DESCRIBES those claims is not checked by
+      anything, and in v0.66 it carried two defects all the way to the tag
+      candidate, past the release PR, a clean-room review and 67 green CI
+      checks. Both were found by hand at the tag gate and fixed in #1258 before
+      the tag; filed as #1259.
+
+      DEFECT CLASS 1 -- a release PR can APPEND instead of RENAME. v0.66's
+      release PR wrote a fresh `## [0.66.0]` section BELOW the existing
+      `## [Unreleased]` heading rather than renaming it, so two of the release's
+      own artifacts stayed filed as unreleased. The cold review edited INSIDE
+      that block, correcting a stale number in it, without questioning the block
+      itself. The discriminating evidence was not reasoning: `git show` of the
+      three previous tags shows NO `[Unreleased]` heading at all. Nothing
+      machine-reads it -- `claims.yaml` lists CHANGELOG.md as `unpinned_ok`,
+      which is correct for its CONTENT and silent about its STRUCTURE.
+
+      DEFECT CLASS 2 -- a count of releases carried in prose that no derivation
+      produces. Two of five scorecard rows were wrong: "flat, thirteenth
+      release" for `sel_dsl_rules` (derived: unchanged since v0.59.0, the eighth
+      release at 80) and "eighth consecutive rise" for `selector_lines_code`
+      (derived: eight releases without a fall, seven of them rises, since v0.63
+      was exactly +0). Both derive in one command over data the ledger already
+      trusts. This is the same shape as the "84 of 89" figure that release's OWN
+      cold review corrected: a real measurement restated with an unnamed base.
+
+      THE RECIPE IS ALREADY WRITTEN, in #1259, and both halves are about five
+      lines. (1) A `loop_conformance_check.py` slot asserting that at cut the
+      topmost `## [` section IS the release being cut and no `## [Unreleased]`
+      heading exists -- red-first is free, since it reddens on 0cfcc160 and
+      greens on 2e1a8287, two commits that already exist. (2) Have
+      `claim_check --metric` print, per ratchet, the tag at which the value LAST
+      CHANGED and the number of releases since, so release prose quotes a
+      derived number instead of a remembered one.
+
+      WHY IT IS A `should` AND STILL MUST NOT BE DROPPED FIRST. It is the cheap
+      win that survives a slipping headline. Three consecutive releases have now
+      found a defect in their own release prose at or after the cold review
+      (v0.64 a fabricated evidence line, v0.65 four prose defects, v0.66 these
+      two plus the review's own). That is a pattern, not three accidents.
+    status: proposed
+    release: v0.67
+    tags:
+      - release-process
+      - gate-hole
+      - loop-conformance
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1259"
+      done-when: "manual: loop_conformance_check gains a slot that FAILS when a non-empty [Unreleased] heading survives at cut, demonstrated red on 0cfcc160 and green on 2e1a8287; claim_check --metric prints each ratchet's last-change tag and the releases-since count, and v0.67's own release notes quote those printed numbers rather than restating them"

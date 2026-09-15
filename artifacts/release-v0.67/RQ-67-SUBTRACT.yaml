@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-67-SUBTRACT
+    type: system-req
+    title: "Make selector_lines_code fall for the first time — and the only remaining lever is a verified rule replacing a hand-written arm"
+    description: >
+      THE METRIC, DERIVED ACROSS EVERY TAG SINCE THE RATCHET EXISTED:
+
+        v0.58 17961 | v0.59 +327 | v0.60 +911 | v0.61 +14 | v0.62 +14
+        v0.63 +0    | v0.64 +513 | v0.65 +156 | v0.66 +201
+
+      `selector_lines_code` is 20097 against a baseline of 17897, +2200 across
+      21 waivers, and it has NEVER FALLEN. Eight releases have risen and one
+      (v0.63) was exactly flat. `sel_dsl_rules` is 80 and has not moved since
+      v0.59.0 -- eight releases at the same number, counted over
+      `coq/vcr_sel_rules.manifest` at every tag rather than remembered.
+
+      v0.66 KILLED THE LEVER IT WAS SCOPED ON, and that is useful. Its plan was
+      to delete four sites the v0.65 mutation survey called DEAD. All four
+      turned out REACHABLE, so nothing was deleted -- and separately, all four
+      were in `arm_backend.rs`, OUTSIDE this ratchet's population, so deleting
+      every one would have moved the number by zero. Deletion-by-DEAD-mutant is
+      not the lever. Recorded so it is not retried.
+
+      THE REMAINING LEVER IS THE ONE v0.58's CORRECTION NAMED: a rule is not
+      done when it is proven, it is done when the hand-written arm it replaces
+      is DELETED. That makes `sel_dsl_rules` RISING the PRECONDITION for
+      `selector_lines_code` FALLING. They are ONE artifact, not two, and
+      scoping them separately is part of why the number never moved.
+
+      THE NAMED CANDIDATE, chosen from the manifest before this release began
+      rather than searched for during it: THE i64 IMMEDIATE FAMILY. The i32
+      immediate forms carry SIXTEEN proven rules -- `i32_add_imm`,
+      `i32_sub_imm`, `i32_and_imm`, `i32_or_imm`, `i32_xor_imm` and the eleven
+      comparison forms. The i64 immediate forms carry ZERO of the 80. That
+      asymmetry is the lever: the hand-written arms exist (in
+      `instruction_selector/select_with_stack.rs` from roughly line 6371, and in
+      `instruction_selector.rs`), and the Rocq proofs follow the i32 `_imm`
+      pattern already discharged by `synth_binop_proof`, so this is a
+      well-trodden path rather than new proof engineering.
+
+      SCOPE DISCIPLINE, stated as a constraint rather than an aspiration: DO NOT
+      WIDEN PAST THIS FAMILY. "Find something to delete" is precisely the
+      instruction that produced eight consecutive rises. If the family proves
+      smaller than hoped, the honest outcome is a SMALL fall with the reason
+      published -- not a search for a bigger target mid-release.
+
+      THE GATE IS NOT NEGOTIABLE. CLAUDE.md: refactoring the selector without a
+      per-step execution oracle is how this project would inject the miscompiles
+      it exists to prevent. Every deletion is gated on byte-identity over the
+      full corpus, or on an execution differential proving the new bytes
+      correct. An explanation is not a gate.
+    status: proposed
+    release: v0.67
+    tags:
+      - vcr
+      - vcr-sel-001
+      - subtraction-ratchet
+      - rocq
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: sel_dsl_rules RISES above 80 with each new rule carrying its own Qed, AND selector_lines_code FALLS below 20097 with the superseded hand-written arms DELETED, every deletion gated on byte-identity over the full corpus or an execution differential; both ratchet values and their baselines move together in claims.yaml in the same PR, so the win cannot be silently given back; if the family yields a smaller fall than expected the artifact publishes the measured number rather than widening scope"
