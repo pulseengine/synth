@@ -8,8 +8,9 @@ artifacts:
         v0.58 17961 | v0.59 +327 | v0.60 +911 | v0.61 +14 | v0.62 +14
         v0.63 +0    | v0.64 +513 | v0.65 +156 | v0.66 +201
 
-      `selector_lines_code` is 20097 against a baseline of 17897, +2200 across
-      21 waivers, and it has NEVER FALLEN. Eight releases have risen and one
+      `selector_lines_code` was 20097 at plan time against a baseline of 17897,
+      +2200 across 21 waivers; it is 20224 as this artifact closes (RQ-67-VFPREACH
+      +127, waived), and it has NEVER FALLEN. Eight releases have risen and one
       (v0.63) was exactly flat. `sel_dsl_rules` is 80 and has not moved since
       v0.59.0 -- eight releases at the same number, counted over
       `coq/vcr_sel_rules.manifest` at every tag rather than remembered.
@@ -65,3 +66,72 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: sel_dsl_rules RISES above 80 with each new rule carrying its own Qed, AND selector_lines_code FALLS below 20097 with the superseded hand-written arms DELETED, every deletion gated on byte-identity over the full corpus or an execution differential; both ratchet values and their baselines move together in claims.yaml in the same PR, so the win cannot be silently given back; if the family yields a smaller fall than expected the artifact publishes the measured number rather than widening scope"
+      landed: >-
+        NOT LANDED. THE NAMED LEVER DOES NOT EXIST, AND THAT REFUTATION IS THE
+        DELIVERABLE. sel_dsl_rules stays 80, selector_lines_code stays 20224,
+        no ratchet value moves and no waiver is added, because nothing grew.
+        The done-when required BOTH numbers to move together and neither can.
+
+        REFUTATION 1 — THE i64 IMMEDIATE FAMILY HAS NOTHING TO DELETE. The plan
+        reasoned from a manifest asymmetry: 16 i32 `_imm` rules, 0 i64. The
+        inference was that hand-written i64 `_imm` arms therefore exist. They do
+        not. The i32 `_imm` rules were paid for by a CONST FOLD that already
+        existed: the fold guard builds `Operand2::Imm(c)` in the selector and
+        increment 5 deleted only the EMISSION, which the surviving arm says in
+        its own words ("the hand-written ArmOp::Add construction is deleted").
+        `git log -S` dates that guard to RQ-58-SPLIT, a pure relocation, so it
+        predates the rule. THERE IS NO i64 CONST FOLD ANYWHERE in either
+        selector -- `i64.add` of a constant materializes the constant via
+        `I64Const` and does a register-register add. So i64 has 0 `_imm` rules
+        because it has no fold to dispatch from, not because its arms are
+        unproven. Building the folds would ADD selector lines: the DSL's own
+        division of labour puts the fold guard on the SELECTOR side and gives
+        the rule only the emission. That is the wrong direction for this
+        ratchet while looking exactly like progress on it.
+
+        REFUTATION 2 — NOTHING RULE-COVERED STILL HAND-EMITS. A sweep of all 60
+        rule-covered WasmOps against the selector's non-test region flagged four
+        arms as "rule exists, still hand-emitting": I64Mul, I32Popcnt,
+        I32Extend8S, I32Extend16S. All four are FALSE POSITIVES, and reading
+        them says why in their own comments -- "the only path (RQ-58-RETIRE)"
+        and "the only path (increment 6, RQ-59-SUBTRACT)". I64Mul dispatches
+        through the `i64_pair_bin_rule` helper rather than a literal
+        `generated::rule_` call, which is what the sweep keyed on. Four for
+        four. RQ-58-RETIRE and RQ-59-SUBTRACT already consumed this lever;
+        there is no rule-covered op left with a surviving hand-written arm.
+
+        WHAT THE TWO FAILED PLANS HAVE IN COMMON, which is worth more than the
+        small fall would have been. v0.66 scoped deletion-by-DEAD-mutant and all
+        four sites turned out reachable -- and separately were outside this
+        ratchet's population, so deleting every one would have moved the number
+        by zero. v0.67 scoped the i64 immediate family and it does not exist.
+        BOTH plans named a lever from an ASYMMETRY IN A MANIFEST without
+        checking the selector source the lever would act on. The rule that
+        follows: a SUBTRACT candidate must be verified against the code before
+        it enters a release plan, not after.
+
+        THE NEXT LEVER, NAMED WITH ITS EVIDENCE AND ITS UNMEASURED PART MARKED
+        AS UNMEASURED. `instruction_selector/select_default.rs` is 2509 non-test
+        lines INSIDE this ratchet's population, and its own module header says
+        "Production ARM codegen does NOT enter through here -- `arm_backend.rs`
+        calls `select_with_stack` exclusively, and `select_with_stack` matches
+        all covered ops before its `_ =>` fallthrough delegates to
+        `select_default`. This path is reachable in full only via the `pub fn
+        select()` API used by tests and benchmarks." Every arm there for an op
+        `select_with_stack` matches explicitly is therefore production-dead.
+        HOW MANY LINES THAT IS HAS NOT BEEN MEASURED. A first attempt used a
+        hand-rolled match-arm parser that had already produced four false
+        positives in refutation 2, and its answer is not reported here for that
+        reason. The measurement, and the reachability proof the deletion would
+        be gated on, are the first work of that lane -- the gate is
+        REACHABILITY, not byte-identity, which is a different and weaker
+        instrument than this programme's deletions have used so far, and that
+        is exactly why it needs its own release rather than the tail of this one.
+      verified-by: >-
+        The refutations are verified by the selector source itself, not by the
+        sweep that raised them: the surviving i32 `_imm` arm's own comment, the
+        `git log -S` date on the fold guard, the absence of any i64 fold, and
+        the four "the only path" comments on the four flagged arms. The
+        ratchet is unchanged at 80 rules / 20224 lines and `claim_check` holds
+        at 67/67 with no waiver added, which is the mechanical statement that
+        this artifact grew nothing.
