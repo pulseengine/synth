@@ -207,7 +207,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 |-------|--------|----------|
 | **Rocq** | Partial | i32 + i64 T1 result-correspondence; float/SIMD T2; selector-DSL rule theorems stated directly about the GENERATED model (VCR-ISA-001 #667); all four i32 div/rem trap guards discharged (#73). Counts: `artifacts/status.json` (CI-re-derived; badges above) |
 | **Kani** | Starting | Bounded model checking harnesses for the ARM encoder (count: `artifacts/status.json`) |
-| **Verus** | Starting | Spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` (count: `artifacts/status.json`) |
+| **Verus** | Starting — **not run** | Spec functions in `synth-synthesis/src/contracts.rs` (count: `artifacts/status.json`) — a count of spec DECLARATIONS, not a verification result. The `//crates:verify_contracts` target is run by no CI job, and cannot currently run: the pinned `rules_verus` toolchain fails to load its verifier (`librustc_driver` hash mismatch on darwin-arm64, rules_verus#18; linux-x86_64, rules_verus#25). Measured #1281. |
 | **Lean** | Not started | — |
 
 See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 through VG-008).

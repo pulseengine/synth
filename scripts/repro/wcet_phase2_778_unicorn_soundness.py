@@ -66,6 +66,13 @@ def load_elf(elf_path):
         return text[0], text[1], syms
 
 
+LINMEM_BASE = 0x20000100
+LINMEM_SIZE = 0x10000  # one wasm page (#1276: R10 is a SIZE)
+# The mapped RAM is 0x20000000..0x20040000 with SP at 0x2003FF00; linear
+# memory must end below the stack or the harness would overlap them.
+assert LINMEM_BASE + LINMEM_SIZE < 0x2003FF00
+
+
 def run_func(text, text_addr, addr, args=()):
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     base = text_addr & ~0xFFF
@@ -76,8 +83,14 @@ def run_func(text, text_addr, addr, args=()):
     mu.mem_map(RETURN_MAGIC & ~0xFFF, 0x1000)
     mu.reg_write(UC_ARM_REG_SP, 0x2003FF00)
     mu.reg_write(UC_ARM_REG_LR, RETURN_MAGIC | 1)  # thumb return-to-magic
-    mu.reg_write(UC_ARM_REG_R10, 0x20000100)
-    mu.reg_write(UC_ARM_REG_R11, 0x20000100)
+    # #1276 (RQ-68-ORACLEABI): R10 is the linear-memory SIZE by the register
+    # contract (the software bounds guard compares against it), NOT a second copy
+    # of the base. This harness compiles with no --safety-bounds, so no guard is
+    # emitted and R10 cannot affect what it measures (the WCET cycle bound); the
+    # value is corrected anyway, because a BASE here (~512 MiB read as a size)
+    # would make any future bounds-checked variant of this harness unable to fail.
+    mu.reg_write(UC_ARM_REG_R10, LINMEM_SIZE)  # size, not base
+    mu.reg_write(UC_ARM_REG_R11, LINMEM_BASE)
     for i, v in enumerate(args):
         mu.reg_write(UC_ARM_REG_R0 + i, v)
 

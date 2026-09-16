@@ -49,10 +49,16 @@ from wcet_phase2_778_unicorn_soundness import load_elf, sidecar_entry  # noqa: E
 
 SYNTH = os.environ.get("SYNTH", "synth")
 RETURN_MAGIC = 0x0000FFFE  # even address outside .text: stop when PC reaches it
-MEM_BASE = 0x20000100  # matches the R10==R11 linear-memory-base convention
-# `i64_effective_base` (arm_encoder.rs) and the phase-2/3/4/5 scripts' `run_func`
-# both key off — see `generate_i64_store_with_bounds_check`'s doc: "R11 = memory
-# base".
+MEM_BASE = 0x20000100  # R11 = linear-memory BASE (`i64_effective_base`,
+# arm_encoder.rs; `generate_i64_store_with_bounds_check`: "R11 = memory base").
+MEM_SIZE = 0x10000  # R10 = linear-memory SIZE (one wasm page).
+# #1276: this comment used to claim an "R10==R11 linear-memory-base convention".
+# There is no such convention — R10 is the SIZE the software bounds guard
+# compares against. No guard is emitted here (no --safety-bounds), so the
+# old value could not change this oracle's result, but it was a trap for any
+# bounds-checked variant: a base read as a size is ~512 MiB, and the guard
+# would never fire.
+assert MEM_BASE + MEM_SIZE < 0x2003FF00  # stays below the harness stack
 
 
 def compile_wat_relocatable(wat_path, elf_path):
@@ -88,7 +94,7 @@ def run_leaf(text, text_addr, addr, args=(), mem_writes=()):
         mu.mem_write(waddr, wval)
     mu.reg_write(UC_ARM_REG_SP, 0x2003FF00)
     mu.reg_write(UC_ARM_REG_LR, RETURN_MAGIC | 1)  # thumb return-to-magic
-    mu.reg_write(UC_ARM_REG_R10, MEM_BASE)
+    mu.reg_write(UC_ARM_REG_R10, MEM_SIZE)  # size, not base (#1276)
     mu.reg_write(UC_ARM_REG_R11, MEM_BASE)
     for i, v in enumerate(args):
         mu.reg_write(UC_ARM_REG_R0 + i, v)
