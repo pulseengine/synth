@@ -656,7 +656,7 @@
       }
     },
     {
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6705:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6750:0",
       "want_bytes": "changed",
       "want_changed": [
         "a32_i64_615.wat|self",
@@ -2291,7 +2291,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "2fdad0a2",
+    "reanchored_at": "04aaebe3",
     "seed": 1189
   },
   "mutants": [
@@ -2355,13 +2355,13 @@
       ],
       "changed_note": "RE-MEASURED at v0.66 against a LIVE baseline (compile the corpus with the unmutated current binary, then with the mutation, diff those) after RQ-66-BOTHWRONG widened it 8 -> 9. Byte triage only \u2014 Edit/build_synth/compile_corpus/diff_corpus, no L2 and no kill scoring, so the L2 guard (which protects kill scoring against an unvalidated baseline) is respected rather than bypassed. A first attempt diffed against the ledger's RECORDED baseline at ad52535a and got 33: that folded in 46 entries of tree drift the survey itself warns about. The wrong REFERENCE, not a wrong operation.",
       "classification": "UNTESTED",
-      "end": 6708,
+      "end": 6753,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6705:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6750:0",
       "op": "DROPMOV",
       "region": "R2-ir_to_arm",
       "seconds": 270.4,
-      "start": 6705,
+      "start": 6750,
       "status": "survived",
       "suite_seconds": 240.1
     },
@@ -3441,14 +3441,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 6848,
+      "end": 6893,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/BOUND/optimizer_bridge.rs:6848:40",
+      "id": "R2-ir_to_arm/BOUND/optimizer_bridge.rs:6893:40",
       "op": "BOUND",
       "reach": "reached",
       "region": "R2-ir_to_arm",
       "seconds": 31.3,
-      "start": 6848,
+      "start": 6893,
       "status": "identical"
     },
     {
@@ -7368,13 +7368,13 @@
       "before": "                                op2: Operand2::Imm(n),",
       "build_error": "error: expected one of `)`, `,`, `if`, or `|`, found `.`",
       "classification": "UNCOMPILABLE",
-      "end": 6854,
+      "end": 6899,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6854:37",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6899:37",
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 1.0,
-      "start": 6854,
+      "start": 6899,
       "status": "uncompilable"
     },
     {
@@ -8865,9 +8865,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 6396,
+      "end": 6441,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6396:46",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6441:46",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468"
@@ -8883,7 +8883,7 @@
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 396.9,
-      "start": 6396,
+      "start": 6441,
       "status": "killed"
     },
     {
@@ -12738,9 +12738,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 5655,
+      "end": 5700,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:5652:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:5697:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -12752,7 +12752,7 @@
       "op": "DROPMOV",
       "region": "R2-ir_to_arm",
       "seconds": 17.6,
-      "start": 5652,
+      "start": 5697,
       "status": "killed"
     },
     {
@@ -14125,13 +14125,13 @@
       "before": "                            op2: Operand2::Imm(0),",
       "build_error": "error[E0689]: can't call method `wrapping_add` on ambiguous numeric type `{integer}`",
       "classification": "UNCOMPILABLE",
-      "end": 5856,
+      "end": 5901,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:5856:33",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:5901:33",
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 1.1,
-      "start": 5856,
+      "start": 5901,
       "status": "uncompilable"
     },
     {
