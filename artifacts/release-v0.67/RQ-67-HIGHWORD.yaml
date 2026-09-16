@@ -45,7 +45,8 @@ artifacts:
       issue: "#1240"
       done-when: "manual: i64.clz/ctz/popcnt zero the high word on the optimized path, shown red-first on the boot sweep's recorded vectors (wrong before, correct after, direct selector unchanged); the fix is verified INDEPENDENT of RQ-67-CALLEESAVE by landing or measuring it separately, so the release can state whether the two are one mechanism or two; the pin moves in the same PR"
       landed: >-
-        LANDED, AND THE ISSUE'S OWN TITLE NAMED THE WRONG MECHANISM. There was
+        LANDED (#1240, merged as PR #1296), AND THE ISSUE'S OWN TITLE NAMED
+        THE WRONG MECHANISM. There was
         never a missing zero-fill. `ir_to_arm` emits `movw rd_hi, #0` for all
         three ops and has since #1048 — it is visible two instructions before
         the return in every affected function. The EPILOGUE returned a
