@@ -2762,6 +2762,38 @@ claims:
       - kind: status-field
         name: kani_harnesses
 
+  # ---------------------------------------------------------------------------
+  # #1278 (RQ-68-ORACLEABI): the linear-memory base, held in TWO places that
+  # nothing tied together. Rust: `OPTIMIZED_LINMEM_BASE` in synth-core, which
+  # the optimized ARM path materializes as its linmem base (shifted only by
+  # `--stack-layout=low`). Python: the literal 0x20000100 in 13 CI-wired oracle
+  # scripts that map linear memory there.
+  #
+  # MEASURED BEFORE PINNING, so the pin describes a CORRECT state rather than
+  # papering over a wrong one: none of the 13 passes `--stack-layout=low`, so
+  # every copy equals synth's real base today. The defect is latent drift: move
+  # the constant and each harness keeps mapping the old address, where a wide
+  # `mem_map` returns zeros rather than faulting — a silent wrong answer in the
+  # oracle, not a crash. "Read the base from the emitted artifact" is not
+  # implementable yet: the self-contained image carries no symbol for it, and
+  # adding one would change every build's bytes.
+  #
+  # So both copies are pinned in one claim. Changing the Rust constant reds the
+  # first pin; adding, removing or re-valuing an oracle copy reds the second.
+  # Either way the drift is a visible diff in the PR that causes it.
+  - id: SYNTH-LINMEM-BASE-ORACLE-COPIES-1278
+    doc: crates/synth-core/src/backend.rs
+    text: "the differential-harness contract for\n/// optimized-path fixtures maps linmem here"
+    evidence:
+      - kind: count-eq
+        pattern: '^pub const OPTIMIZED_LINMEM_BASE: u32 = 0x2000_0100;$'
+        glob: ['crates/synth-core/src/backend.rs']
+        expect: 1
+      - kind: count-eq                       # 20 OCCURRENCES across 13 files —
+        pattern: '0x20000100'                # count-eq counts matching lines, and
+        glob: ['scripts/repro/*.py']         # the first draft of this pin said 13
+        expect: 20                           # (the file count) and went red at once
+
   - id: SYNTH-VERUS-SPECS
     doc: README.md
     text: "Spec functions in `synth-synthesis/src/contracts.rs`"

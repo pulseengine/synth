@@ -47,3 +47,32 @@ artifacts:
       verification-track: differential
       issue: "#1276"
       done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"
+      disposition: partial
+      landed: >-
+        PARTIAL — two increments landed, three items remain (#1282, #1277, and
+        the lane's close-out). Status stays `proposed` with `disposition:
+        partial` because the artifact's outcome does not yet hold.
+
+        INCREMENT 1 (#1276, #1281). #1276: FIVE of six WCET oracles ran with R10
+        = the linear-memory BASE (phases 2-5 through phase 2's shared
+        `run_func`, phase 6 through its own `run_leaf`; phase 7 does not
+        emulate) — measured by call graph after a first count of "two" that
+        tallied only the files writing R10. None compiles with --safety-bounds,
+        so no guard is emitted and R10 could not affect them; the latent trap (a
+        false "R10==R11" convention, and a base read as a ~512 MiB size) is
+        removed by setting R10 to one wasm page. All five re-run to PASS. The
+        done-when's planted-OOB red-first is INAPPLICABLE to these oracles (no
+        guard exists to fire) and is recorded so. #1281: `verify_contracts` is
+        run by no CI step and cannot run — its verifier fails to load on
+        darwin-arm64 (librustc_driver hash mismatch, rules_verus#18) and on
+        linux-x86_64 (rules_verus#25) — so the README's Verus row now says the
+        count is of spec declarations, not a verification result.
+
+        INCREMENT 2 (#1278). The base lives in Rust (`OPTIMIZED_LINMEM_BASE`)
+        and as 20 literal occurrences across 13 oracle scripts. All 20 are
+        correct today (none passes --stack-layout=low, the only flag that moves
+        it). "Read it from the emitted artifact" is not implementable — the
+        image carries no symbol for it and adding one would change every build's
+        bytes — so SYNTH-LINMEM-BASE-ORACLE-COPIES-1278 pins both halves exactly.
+        Red-first: moving the constant reds the claim.
+
