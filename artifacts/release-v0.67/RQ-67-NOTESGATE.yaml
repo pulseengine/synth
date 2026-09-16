@@ -59,7 +59,8 @@ artifacts:
       issue: "#1259"
       done-when: "manual: loop_conformance_check gains a slot that FAILS when a non-empty [Unreleased] heading survives at cut, demonstrated red on 0cfcc160 and green on 2e1a8287; claim_check --metric prints each ratchet's last-change tag and the releases-since count, and v0.67's own release notes quote those printed numbers rather than restating them"
       landed: >-
-        LANDED (#1259, delivered as PR #1298), both halves, each with its
+        LANDED (#1259, delivered as PR #1298 alongside RQ-67-PINDOWN #242 —
+        one commit carries both), both halves, each with its
         red-first paid rather than asserted.
 
         HALF 1 -- `loop_conformance_check.py` gains a `changelog structure`
