@@ -1,0 +1,72 @@
+# v0.68 — "No success without the work"
+#
+# v0.67 closed on a request, not a finding. relay built bleeding-edge drone
+# software to wasm and through synth twice, and the two outputs were not the
+# same file. The ask that followed was an audit — things we build and do not
+# test, things we claim and do not do — with every finding fixed next
+# iteration. Four audit lanes filed 21 issues (#1272-#1294). This release is
+# that iteration.
+#
+# THE PLAN WAS VERIFIED AGAINST SOURCE BEFORE IT WAS WRITTEN, and that is the
+# lesson of the last two releases applied first rather than learned again.
+# v0.66 scoped a lever from a mutation-survey signal and v0.67 scoped one from
+# a manifest asymmetry; neither lever existed. Grouping 21 issues by their
+# TITLES is the same move. So every artifact here was checked on 9e519fec
+# (the v0.67.0 tag) with the command that would refute it, and three things
+# changed as a result:
+#
+#   - #1289 is REAL and is the same mechanism as #1272. The WCET argument says
+#     `encode_thumb` refuses `ArmOp::Call`; the only refusal is in `encode_arm`
+#     (A32). On Thumb-2 a Call falls to the NOP catch-all. One artifact.
+#   - #1284's first byte test was on the WRONG PATH. `--all-exports` does not
+#     emit startup code, where MPU programming would live. Re-measured on
+#     `--cortex-m` and `-b riscv`: still byte-identical on all three. The
+#     finding stands, on three paths instead of one.
+#   - #1280 is NOT the same fix as #1270/#1274. A set declared five times is
+#     fixed by one source; `caller_saved_prefix` assuming the pool's ORDER is
+#     not, and gets its own red-first test.
+#
+# Three of the audit's own numbers were also wrong on re-measurement (13
+# oracle files hard-code the base, not 12; synth-memory fails with 7 errors,
+# not 6; the 805-module rates are superseded by a ladder on a DIFFERENT
+# corpus, so no cross-denominator ratio is restated). The artifacts carry the
+# measured figure.
+#
+# THE SHAPE, AND WHAT IT IS NOT. Every artifact here is a success signal that
+# is not coupled to the work: an encoder that returns Ok(NOP), a safety flag
+# that compiles and emits nothing, an SBOM that cannot tell two builds apart,
+# an oracle that cannot fail on the fact it checks, a document that lists a
+# feature the code declines, a status gate that is green because it is
+# disarmed. That is a CLASS with several mechanisms. This plan does NOT claim
+# a shared root cause, and the release notes may not either — v0.67's own
+# negative control is what showed a tidy "one root cause" story was half wrong.
+#
+# PRIORITY, because nine artifacts is more than v0.67's seven and CI rounds
+# have taken 2.5 hours under contention:
+#
+#   must    NOPCLASS   silent-miscompile class on the DEFAULT target + a false
+#                      WCET soundness premise
+#   must    REPRO      the relay report; codegen is deterministic, nothing
+#                      enforces it, and the SBOM cannot distinguish builds
+#   must    MPUHONEST  an advertised memory-safety mode that emits nothing
+#   should  ONESOURCE, ORACLEABI, CLAIMSDRIFT, STATUSGATE
+#   carried SUBTRACT (measure first), ARCHMODEL (8th N/A)
+#
+# If capacity runs out, the three musts ship and the rest defer WITH THEIR
+# MEASUREMENTS, named in the release notes. All 21 audit issues are mapped to
+# an artifact; none is dropped silently. #1267 (falcon tick) stays open outside
+# the plan: the capability shipped in v0.67 and the reporter's measurement is
+# still owed, and only their module can discharge it.
+#
+# HONEST RISKS, recorded before the work:
+#   - NOPCLASS CAN MAKE COMPILING FUNCTIONS DECLINE. Each one is a NOP shipping
+#     today where an operation belongs — a silent miscompile surfacing, not a
+#     regression — but every one is COUNTED and NAMED, never discovered by a
+#     user.
+#   - MPUHONEST IS A USER-VISIBLE BEHAVIOUR CHANGE if it refuses the flag. That
+#     leads the release notes. It does not implement MPU programming; that
+#     still waits on #1145's two-tenant criterion on MPU-bearing silicon.
+#   - REPRO'S LEVER COUNT IS THE AUDIT'S until re-derived from the source. It
+#     is not restated before then.
+#   - SUBTRACT IS ON ITS THIRD LEVER. It measures before it deletes, and a
+#     measured zero is a publishable outcome.

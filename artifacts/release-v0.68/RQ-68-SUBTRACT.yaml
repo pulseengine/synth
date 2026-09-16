@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-68-SUBTRACT
+    type: system-req
+    title: "selector_lines_code has not fallen in nine releases — the next lever is select_default.rs, and its size is MEASURED before it enters scope, because the last two named levers did not exist"
+    description: >
+      v0.66 scoped deletion-by-dead-mutant; all four sites were reachable and outside
+      the ratchet's population. v0.67 scoped the i64 immediate family; it does not
+      exist (no i64 const fold anywhere, so no arms to delete). Both plans named a
+      lever from an asymmetry in a report without checking the code it acts on.
+
+      SO THIS ARTIFACT'S FIRST OBLIGATION IS A MEASUREMENT, not a deletion.
+      `instruction_selector/select_default.rs` is 2509 non-test lines INSIDE this
+      ratchet's population, and its own module header states "Production ARM codegen
+      does NOT enter through here". Every arm there for an op that `select_with_stack`
+      matches explicitly is production-dead. HOW MANY LINES THAT IS IS UNMEASURED. A
+      hand-rolled match-arm parser was tried in v0.67 and produced four false
+      positives in a row, so its answer was not reported; the measurement uses a
+      real instrument (coverage over the shipped entry points, or the compiler's own
+      dead-code analysis once the test-only entry point is gated), not a regex.
+
+      THE GATE IS REACHABILITY, which is a weaker instrument than the byte-identity
+      gate this programme's deletions have used. That is stated up front: deleting
+      unreachable code is byte-identical by construction for shipped paths, but it
+      breaks the tests and benchmarks that reach it through `pub fn select()`, and
+      those must be migrated or retired explicitly, not deleted as a side effect.
+
+      IF THE MEASURED NUMBER IS SMALL OR ZERO, THE ARTIFACT PUBLISHES IT. A third
+      refutation, published, is a better outcome than a third scope hunt.
+    status: proposed
+    release: v0.68
+    tags:
+      - subtraction-ratchet
+      - vcr-sel-001
+      - select-default
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: the production-dead line count of select_default.rs is measured by an instrument other than a hand-rolled parser and published before any deletion; if it is non-zero, the dead arms are deleted with byte-identity over the full corpus for every shipped path and the tests that reached them through select() are migrated or retired by name; selector_lines_code's value and baseline move together in claims.yaml in the same PR; if the measured number is zero or small, the artifact publishes it as the outcome"

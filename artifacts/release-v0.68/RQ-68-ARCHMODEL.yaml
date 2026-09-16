@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-68-ARCHMODEL
+    type: system-req
+    title: "Feature-loop steps 1-2 (spar AADL -> WIT) — carried an EIGHTH time on an external blocker, re-verified at cut"
+    description: >
+      spar#445 (spar accepts property associations from UNDECLARED property sets
+      silently, rc=0) was OPEN at the v0.67 cut, checked 2026-09-16, last updated
+      2026-09-03. Generating WIT from an AADL model that spar will silently
+      mis-validate would manufacture the unearned confidence this programme exists to
+      prevent.
+
+      v0.67's cold review noted that artifacts for this N/A exist only from v0.63
+      onward (five files); recurrences one and two predate the artifact, so the
+      ordinal rests on prose in RQ-63-ARCHMODEL. The count is carried as the chain of
+      `carried-from:` links, which is re-derivable, and not as a remembered number.
+
+      The obligation is to re-check spar#445 AT CUT TIME and record the observed state
+      and date. If it has closed, the deferral ends and the AADL -> WIT path is
+      exercised for real.
+    status: proposed
+    release: v0.68
+    tags:
+      - spar
+      - aadl
+      - feature-loop
+      - recurring-na
+      - external-blocker
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1136"
+      done-when: "manual: spar#445 is re-checked AT CUT TIME with the observed state and date recorded; if still open the deferral is filed with the carried-from chain as its count; if closed, an AADL model is generated to WIT and the loop's steps 1-2 are exercised"
+      carried-from: RQ-67-ARCHMODEL
