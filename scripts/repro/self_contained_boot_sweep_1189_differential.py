@@ -184,10 +184,20 @@ KNOWN: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # against the pre-fix tree.
     # #1204
     # #1211
-    # #1240 — found by this oracle
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'clz64', 'mismatch'): ('#1240', 10),
-    ('i64_high_reg_zero_fill_916.wat', 'self', 'ctz64', 'mismatch'): ('#1240', 10),
-    ('i64_result_pair_1189.wat', 'self', 'popcnt64', 'mismatch'): ('#1240', 3),
+    # #1240 — found by this oracle, and FIXED by RQ-67-HIGHWORD. The three
+    # entries recorded 10 / 10 / 3 mismatches and now measure 0, so they are
+    # DELETED rather than pinned to 0, per this sweep's own "fixed: delete the
+    # pin" instruction and the #1211 precedent above.
+    #
+    # The root cause was NOT a missing zero-fill. `movw rd_hi, #0` was emitted
+    # correctly all along; the EPILOGUE returned a different register. It
+    # resolves the i64 result's high half as `last_result_vreg_hi ->
+    # vreg_to_arm` and only falls back `.or(last_result_vreg_hi_reg)`, the
+    # physical stash these three ops set. `last_result_vreg_hi` was assigned
+    # `Some(..)` in 25 places and `None` in none, so after ANY earlier i64 op
+    # in the same function the fallback was unreachable and the epilogue
+    # returned the STALE pair's hi — the operand's high word, which is exactly
+    # what this oracle observed. Fix: the three arms clear it.
     # #1241 — found by this oracle
     ('aarch64_locals_851.wat', 'self', 'i64_local', 'mismatch'): ('#1241', 12),
     ('brif_local_zeroinit_990.wat', 'self', 'bl_brif_i64', 'mismatch'): ('#1241', 9),
