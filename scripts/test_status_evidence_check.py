@@ -1785,5 +1785,143 @@ class FloorProseRule(unittest.TestCase):
         self.assertTrue(fails, "a zero-population scan must fail")
 
 
+class StatusGate1250(unittest.TestCase):
+    """RQ-68-STATUSGATE (#1250). v0.67's release candidate 63b95dc5 carried all
+    seven artifacts at `proposed` -- five of them fully delivered -- and every
+    rule was green: R2 fires only on claiming statuses, R3 cannot fire on a
+    `manual:` done-when under a non-claiming one, and R4 was satisfied by a
+    `landed:` record naming the PR, which is exactly what `landed:` was built
+    to mean for a PARTIAL increment. RQ-67-VFPREACH, the worst case, had no
+    `landed:` at all and was never seen, because its squash subject was
+    `feat(codegen): RQ-67-VFPREACH ...` and R4 matched only subjects STARTING
+    with the id.
+
+    Replayed against the real commits before these tests were written: the new
+    checker reds 63b95dc5 on exactly the five delivered artifacts (four R11,
+    plus VFPREACH and CALLEESAVE through the widened R4) and stays green on
+    9e519fec, where both refuted/deferred artifacts say "NOT LANDED"."""
+
+    MANUAL = "manual: the stated outcome holds"
+    SUBJ_CONV = ("feat(codegen): RQ-67-VFPREACH (#1267) — reach the "
+                 "callee-saved VFP half (#1295)")
+
+    # -- R11 ---------------------------------------------------------------
+
+    def test_r11_delivered_but_unflipped_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-CALLEESAVE.yaml", [art(
+            "RQ-67-CALLEESAVE", "proposed",
+            {"done-when": self.MANUAL, "landed": "LANDED. The attribution was MEASURED."},
+        )])
+        self.assertTrue(has(fx.run([]), "R11 RQ-67-CALLEESAVE"), fails(fx.run([])))
+
+    def test_r11_green_once_flipped_with_a_basis(self):
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-CALLEESAVE.yaml", [art(
+            "RQ-67-CALLEESAVE", "implemented",
+            {"done-when": self.MANUAL, "landed": "LANDED (#1204, PR #1271).",
+             "verified-by": "boot sweep re-run over the whole cluster"},
+        )])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_r11_v067_prose_disposition_is_accepted(self):
+        # 9e519fec's RQ-67-SUBTRACT and RQ-67-ARCHMODEL: refuted / deferred,
+        # stated in the only form that release had.
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-ARCHMODEL.yaml", [art(
+            "RQ-67-ARCHMODEL", "proposed",
+            {"done-when": self.MANUAL,
+             "landed": "NOT LANDED — DEFERRED a seventh consecutive time."},
+        )])
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_r11_prose_is_NOT_accepted_from_v068(self):
+        # Prose-matching is how a gate goes soft; from v0.68 only the field.
+        fx = Fixture()
+        fx.release("release-v0.68/RQ-68-ARCHMODEL.yaml", [art(
+            "RQ-68-ARCHMODEL", "proposed",
+            {"done-when": self.MANUAL, "landed": "NOT LANDED — deferred."},
+        )])
+        self.assertTrue(has(fx.run([]), "R11 RQ-68-ARCHMODEL"), fails(fx.run([])))
+
+    def test_r11_structured_disposition_is_green(self):
+        for disp in ("partial", "refuted", "deferred"):
+            with self.subTest(disposition=disp):
+                fx = Fixture()
+                fx.release("release-v0.68/RQ-68-SUBTRACT.yaml", [art(
+                    "RQ-68-SUBTRACT", "proposed",
+                    {"done-when": self.MANUAL, "landed": "PR #1400",
+                     "disposition": disp},
+                )])
+                self.assertEqual(fails(fx.run([])), [])
+
+    def test_r11_unknown_disposition_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.68/RQ-68-SUBTRACT.yaml", [art(
+            "RQ-68-SUBTRACT", "proposed",
+            {"done-when": self.MANUAL, "landed": "PR #1400",
+             "disposition": "mostly-done"},
+        )])
+        self.assertTrue(has(fx.run([]), "R11 RQ-68-SUBTRACT"), fails(fx.run([])))
+
+    def test_r11_claiming_status_with_non_delivery_disposition_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.68/RQ-68-SUBTRACT.yaml", [art(
+            "RQ-68-SUBTRACT", "implemented",
+            {"done-when": self.MANUAL, "landed": "PR #1400",
+             "verified-by": "x", "disposition": "refuted"},
+        )])
+        self.assertTrue(has(fx.run([]), "R11 RQ-68-SUBTRACT"), fails(fx.run([])))
+
+    def test_r11_exempts_history_before_v067(self):
+        # RQ-62-REACH / RQ-65-ARCHMODEL: legitimate partial increments recorded
+        # the way `landed:` was designed, before a disposition existed.
+        fx = Fixture()
+        fx.release("release-v0.65/RQ-65-ARCHMODEL.yaml", [art(
+            "RQ-65-ARCHMODEL", "proposed",
+            {"done-when": self.MANUAL, "landed": "PR #1224 — the SECOND half"},
+        )])
+        self.assertEqual(fails(fx.run([])), [])
+
+    # -- R4 widened to the conventional-subject shape ------------------------
+
+    def test_r4_conventional_subject_with_no_acknowledgement_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-VFPREACH.yaml", [art(
+            "RQ-67-VFPREACH", "proposed", {"done-when": self.MANUAL},
+        )])
+        r = fx.run([self.SUBJ_CONV])
+        self.assertTrue(has(r, "R4 RQ-67-VFPREACH"), fails(r))
+
+    def test_r4_conventional_subject_acknowledged_by_landed_is_green(self):
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-VFPREACH.yaml", [art(
+            "RQ-67-VFPREACH", "proposed",
+            {"done-when": self.MANUAL, "landed": "NOT LANDED yet: PR #1295 landed the machinery"},
+        )])
+        self.assertEqual(fails(fx.run([self.SUBJ_CONV])), [])
+
+    def test_r4_conventional_match_does_not_move_the_anchor_population(self):
+        # A3 counts the documented START-with-id convention; the widened
+        # match is an acknowledgement check only.
+        fx = Fixture()
+        fx.release("release-v0.67/RQ-67-VFPREACH.yaml", [art(
+            "RQ-67-VFPREACH", "implemented",
+            {"done-when": self.MANUAL, "verified-by": "x"},
+        )])
+        start_only = fx.run(["RQ-67-VFPREACH (#1267): x (#1295)"])
+        with_conv = fx.run(["RQ-67-VFPREACH (#1267): x (#1295)", self.SUBJ_CONV])
+        self.assertEqual(start_only[2], with_conv[2])
+
+    def test_r4_plan_and_chore_subjects_are_not_matched(self):
+        fx = Fixture()
+        fx.release("release-v0.68/RQ-68-NOPCLASS.yaml", [art(
+            "RQ-68-NOPCLASS", "proposed", {"done-when": self.MANUAL},
+        )])
+        r = fx.run(['plan(v0.68): scope the release — "No success without the work" (#1300)',
+                    "chore(deps): bump wast (#1266)"])
+        self.assertEqual(fails(r), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

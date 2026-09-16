@@ -71,6 +71,19 @@ Two independent derivations over `artifacts/release-v*.yaml`:
       `fields.landed` (the machine-readable statement "increment landed, the
       stated outcome does NOT yet hold" — exactly RQ-60-VFPPRESSURE after
       #1073). Silence — work landed, artifact says nothing — is red.
+    - R4 also covers (#1250, RQ-68-STATUSGATE) a CONVENTIONAL subject whose
+      description starts with the id and whose TYPE is delivery-typed (R10's
+      DELIVERY_TYPES) -- `feat(codegen): RQ-67-VFPREACH (#1267)`
+      -- because a squash merge keeps the first commit's subject, and that is
+      how RQ-67-VFPREACH shipped with no `landed:` and nothing noticed. Those
+      matches do not count toward `delivery_hits` (the A3 anchor population).
+    - R11 (#1250, RQ-68-STATUSGATE): from v0.67, a `landed:` record beside a
+      NON-claiming status must carry `disposition: partial|refuted|deferred`
+      (v0.67 files may instead begin `landed:` with "NOT LANDED"); a
+      disposition beside a CLAIMING status is a contradiction. `landed:` was
+      built to mean "increment landed, outcome not yet" and cannot tell that
+      from full delivery left unflipped -- v0.67's release candidate had all
+      seven artifacts `proposed` and every other rule green.
     - R1: an artifact in a release file >= v0.60 with no `done-when` is red,
       so a new artifact must choose its signature (or write down that it has
       none) in the PR that creates it.
@@ -350,6 +363,21 @@ CLAIMING = {"implemented", "verified", "accepted"}
 # and backfilling evidence for them would itself be a hand-written mirror.
 DECLARE_SINCE = (0, 60)
 
+# R11 (#1250, RQ-68-STATUSGATE). `landed:` was designed to mean "an increment
+# landed, the stated outcome does NOT yet hold" -- so a non-claiming status
+# beside a `landed:` record is legitimate BY CONSTRUCTION (RQ-62-REACH and
+# RQ-65-ARCHMODEL are exactly that). v0.67 used the same field to record FULL
+# delivery and never flipped the status: its release candidate 63b95dc5 had all
+# seven artifacts `proposed`, five of them fully delivered, and every rule was
+# green. The field cannot distinguish the two; only the author can, so R11
+# makes them SAY which. From DISPOSITION_SINCE the demand applies; v0.67 files
+# predate the field and may state it in prose (`landed:` beginning "NOT
+# LANDED", that release's own convention); from DISPOSITION_FIELD_SINCE only
+# the structured field counts, because prose-matching is how a gate goes soft.
+DISPOSITION_SINCE = (0, 67)
+DISPOSITION_FIELD_SINCE = (0, 68)
+DISPOSITIONS = {"partial", "refuted", "deferred"}
+
 # ---- Release-anchored non-vacuity (A-rules, #1183 / RQ-65-FLOORSHAPE) ------
 #
 # Two population counts guard this script against doing LESS work than
@@ -609,6 +637,18 @@ SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[^a-z\s])")
 STALENESS_CITATIONS = 34
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
+# R4-conv (#1250). R4's population is subjects that START with the artifact id.
+# A squash merge keeps the FIRST commit's conventional subject, so a lane whose
+# first commit was `feat(codegen): RQ-67-VFPREACH (#1267) ...` landed on main
+# under a subject R4 never saw: RQ-67-VFPREACH shipped with NO `landed:` and a
+# `proposed` status, and nothing noticed. The widened match REUSES
+# `CONVENTIONAL` and `DELIVERY_TYPES` (R10's own definitions) and R4's own
+# `ARTIFACT_ID` on the description, so there is no second pattern to drift --
+# and `plan(` / `chore(` / `salvage(` stay out, the documented non-delivery
+# convention `test_r4_noise_subjects_do_not_trip` pins (a first draft that
+# matched ANY conventional type reddened exactly that test). Measured on the
+# real commits: 9e519fec stays green, 63b95dc5 reds VFPREACH #1295 and
+# CALLEESAVE #1271. Kept OUT of `delivery_hits`, the A3 anchor population.
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
 
 # R4-issue / R10 (#1119): conventional-commit subjects. Only the SCOPE
@@ -1429,6 +1469,34 @@ def check(root: Path, release_glob: str, subjects: list[str],
     git_state: str | None = None  # probed lazily, once
     prev_tags: dict[tuple, str | None] = {}
     for path, version, art_id, status, fields, _links, _release in artifacts:
+        # R11 (#1250): a `landed:` record beside a non-claiming status must say
+        # WHY it is not claiming; a non-delivery disposition beside a claiming
+        # status is a contradiction. See DISPOSITION_SINCE.
+        if version >= DISPOSITION_SINCE:
+            landed_txt = str(fields.get("landed", "")).strip()
+            disp = str(fields.get("disposition", "")).strip().lower()
+            if disp and disp not in DISPOSITIONS:
+                failures.append(
+                    f"R11 {art_id}: `disposition: {disp}` is not one of "
+                    f"{sorted(DISPOSITIONS)}"
+                )
+            elif disp and status in CLAIMING:
+                failures.append(
+                    f"R11 {art_id}: status `{status}` claims the outcome holds "
+                    f"but `disposition: {disp}` says it does not — pick one"
+                )
+            elif landed_txt and status not in CLAIMING and not disp:
+                prose_ok = (version < DISPOSITION_FIELD_SINCE
+                            and landed_txt.upper().startswith("NOT LANDED"))
+                if not prose_ok:
+                    failures.append(
+                        f"R11 {art_id}: status `{status}` beside a `landed:` "
+                        f"record with no `disposition:` — `landed:` alone "
+                        f"cannot tell an increment from full delivery left "
+                        f"unflipped (v0.67 cut with all seven artifacts "
+                        f"`proposed`, #1250); flip to a claiming status, or "
+                        f"set `disposition: partial|refuted|deferred`"
+                    )
         done_when = fields.get("done-when")
         if done_when is None:
             if version >= DECLARE_SINCE:
@@ -1539,6 +1607,25 @@ def check(root: Path, release_glob: str, subjects: list[str],
     # ---- Delivery-commit floor (R4) ---------------------------------------
     delivery_hits = 0
     flagged: set[tuple[str, str]] = set()
+    def _acknowledge(art_id: str, subject: str, rule: str) -> None:
+        _, _, _, status, fields, _links, _release = by_id[art_id]
+        if status in CLAIMING:
+            return
+        prs = PR_NUMBER.findall(subject)
+        pr = prs[-1] if prs else None
+        if pr is not None and pr in landed_prs(fields):
+            return
+        key = (art_id, pr or subject)
+        if key in flagged:
+            return
+        flagged.add(key)
+        failures.append(
+            f"{rule} {art_id}: delivery commit on main ({subject.split(':')[0]}"
+            f"{f' / PR #{pr}' if pr else ''}) but status is `{status}` and "
+            f"`landed:` does not acknowledge it — flip the status or record "
+            f"the increment"
+        )
+
     for subject in subjects:
         m = ARTIFACT_ID.match(subject)
         if not m:
@@ -1551,23 +1638,19 @@ def check(root: Path, release_glob: str, subjects: list[str],
             )
             continue
         delivery_hits += 1
-        _, _, _, status, fields, _links, _release = by_id[art_id]
-        if status in CLAIMING:
+        _acknowledge(art_id, subject, "R4")
+
+    # R4-conv (#1250): the delivery-typed conventional subject R4 never saw.
+    for subject in subjects:
+        if ARTIFACT_ID.match(subject):
             continue
-        prs = PR_NUMBER.findall(subject)
-        pr = prs[-1] if prs else None
-        if pr is not None and pr in landed_prs(fields):
+        conv = CONVENTIONAL.match(subject)
+        if not conv or conv.group(1) not in DELIVERY_TYPES:
             continue
-        key = (art_id, pr or subject)
-        if key in flagged:
+        m = ARTIFACT_ID.match(subject[conv.end():])
+        if not m or m.group(1) not in by_id:
             continue
-        flagged.add(key)
-        failures.append(
-            f"R4 {art_id}: delivery commit on main ({subject.split(':')[0]}"
-            f"{f' / PR #{pr}' if pr else ''}) but status is `{status}` and "
-            f"`landed:` does not acknowledge it — flip the status or record "
-            f"the increment"
-        )
+        _acknowledge(m.group(1), subject, "R4")
 
     # ---- Issue-anchored delivery claims (R4-issue) + attribution floor
     # ---- (R10) — both #1119, both scoped to the release window ------------

@@ -22,7 +22,7 @@ artifacts:
       explicit non-delivery disposition (refuted, deferred) with its reason. Red-first
       is free: v0.67's release candidate 63b95dc5 must red under the new rule, and
       9e519fec must green.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - status-evidence
@@ -37,3 +37,53 @@ artifacts:
       verification-track: differential
       issue: "#1250"
       done-when: "manual: status_evidence fails when an artifact whose delivery commit is on main stays at a non-claiming status without an explicit refuted or deferred disposition; shown red on 63b95dc5 (v0.67's release candidate, all seven artifacts proposed) and green on 9e519fec; the rule has its own potency test in the checker's unit tests"
+      landed: >-
+        LANDED (#1250). Two rules, each red-first on the real commits rather than
+        on a fixture alone.
+
+        R11. `landed:` was designed to mean "an increment landed, the stated
+        outcome does NOT yet hold", so a non-claiming status beside a `landed:`
+        record is legitimate by construction -- RQ-62-REACH and RQ-65-ARCHMODEL
+        are exactly that, and both are still `proposed` on 9e519fec. v0.67 used
+        the same field to record FULL delivery and never flipped the status.
+        The field cannot tell the two apart; only the author can, so from v0.67
+        a `landed:` beside a non-claiming status must carry `disposition:
+        partial|refuted|deferred`. v0.67 files predate the field and may state
+        it the way that release did (`landed:` beginning "NOT LANDED"); from
+        v0.68 only the structured field counts, because prose-matching is how a
+        gate goes soft. A disposition beside a CLAIMING status is red too.
+
+        R4, WIDENED. R4 matched only subjects STARTING with the artifact id. A
+        squash merge keeps the first commit's subject, so RQ-67-VFPREACH landed
+        as `feat(codegen): RQ-67-VFPREACH (#1267) ...` with NO `landed:` at all
+        and a `proposed` status, and R4 never saw it -- the worst case the
+        v0.67 cold review found. R4 now also matches a DELIVERY-TYPED
+        conventional subject whose description starts with the id, reusing
+        R10's own `CONVENTIONAL` and `DELIVERY_TYPES` and R4's own `ARTIFACT_ID`
+        so there is no second pattern to drift. Those matches stay OUT of
+        `delivery_hits`, the A3 anchor population, and the tree's delivery count
+        is unchanged at 72.
+
+        A FIRST DRAFT WAS WRONG, AND THE CHECKER's OWN TESTS SAID SO. It widened
+        R4 to ANY conventional type, and `test_r4_noise_subjects_do_not_trip`
+        went red on `chore(rivet): RQ-59-MEASURE ...` and `salvage(#242):
+        RQ-59-CRSWEEP ...` -- the documented convention that plan/chore/salvage
+        commits are not delivery commits. Restricting to delivery types fixed
+        it; the real-commit replay was re-run on the restricted rule rather
+        than assumed to still hold.
+      verified-by: >-
+        RED-FIRST ON THE REAL COMMITS, measured with detached worktrees and the
+        new checker copied in. 63b95dc5 (v0.67's release candidate): the OLD
+        checker exits 0 with 0 failures, the NEW checker exits 1 with 6 -- R11 on
+        RQ-67-CALLEESAVE, HIGHWORD, NOTESGATE and PINDOWN, and R4 on RQ-67-
+        VFPREACH (feat(codegen), PR #1295) and CALLEESAVE (fix(codegen), PR
+        #1271). Those are exactly the five artifacts that shipped while still
+        `proposed`, and nothing else. 9e519fec (the v0.67.0 tag): old and new
+        both exit 0 with 0 failures; RQ-67-SUBTRACT and RQ-67-ARCHMODEL pass
+        because their `landed:` records say "NOT LANDED".
+
+        POTENCY TESTS: `StatusGate1250` in scripts/test_status_evidence_check.py,
+        12 tests. Against the OLD checker 5 fail -- every red case -- and the 7
+        green controls pass, as controls should. The full suite is 108/108 on
+        the new checker.
+
