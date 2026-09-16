@@ -72,7 +72,7 @@ artifacts:
       This is the #881 rung discipline ("deliberately LAST, so any function that
       compiled yesterday is produced by exactly yesterday's path") applied to a
       wider register file.
-    status: proposed
+    status: implemented
     release: v0.67
     tags:
       - vcr
@@ -90,3 +90,66 @@ artifacts:
       verification-track: differential
       issue: "#1267"
       done-when: "manual: the encoder emits VPUSH/VPOP for the AAPCS callee-saved VFP set and the allocator can use S16-S31/D8-D15 behind a prologue that saves them; #1267's falcon cascade tick is measured again on cortex-m7dp and the artifact reports the function count that lowers, whether or not it reaches 22 of 22; every function that lowered before the change is proven BYTE-IDENTICAL over the corpus, so the wider file is admitted only on paths that would otherwise decline; if the tick still declines, the artifact publishes the measured remaining pressure rather than restating the cap"
+      landed: >-
+        LANDED (#1267, merged as PR #1295) — the CAPABILITY, with the REACH
+        HALF OF ITS OWN DONE-WHEN UNMET AND SAID SO HERE RATHER THAN ONLY IN
+        THE RELEASE NOTES.
+
+        WHAT SHIPPED. The encoder emits `vpush {d8-d15}` / `vpop {d8-d15}`
+        (`ED2D 8B10` / `ECBD 8B10`, taken from llvm-mc, with `vpush {d8}`
+        assembled separately as the control that confirms the size field rather
+        than assuming it). The selector tracks the full S0-S31 file and
+        allocates the caller-saved half by default; a last-resort rung on the
+        recovery ladder admits S16-S31/D8-D15 for a function that has exhausted
+        every earlier escape and would otherwise decline `GI-FPU-002`. Entered
+        automatically; no flag.
+
+        BYTE-IDENTITY HELD: 621 of 621 corpus compiles identical (207 fixtures
+        x 3 configs: relocatable / self / self-noopt), measured four times.
+        The wider file is admitted ONLY where the compile would otherwise
+        decline, which is the #881 rung's discipline.
+
+        THE MEASUREMENT THE DONE-WHEN ASKED FOR IS NOT AVAILABLE, AND IS NOT
+        SUBSTITUTED FOR. The reporter's `falcon_cascade_cm.wasm` is in no
+        artifact reachable from this machine: gale's releases carry the msgq
+        and mutex modules but no cascade, jess publishes no `.wasm`, and an
+        org-wide code search finds only WIT interfaces. So the tick's lowered
+        function count is UNPUBLISHED rather than estimated, and no proxy is
+        offered in its place -- see `verified-by` for the proxy I withdrew.
+        The request is open on #1267 with both ways to close it.
+
+        WHAT WAS MEASURED INSTEAD, INCLUDING THE PART THAT IS NOT A WIN: NO
+        MODULE IN THE CORPUS REACHES THE NEW RUNG. Not one. The existing #881
+        VFP-spill and #1069 VFP-frame-locals rungs rescue every shape we hold,
+        including two written to defeat them. The rung is therefore exercised
+        by its own tests (`crates/synth-backend/tests/vfp_wide_file_1267.rs`,
+        4 tests driving the flag directly) rather than by any module. A fix
+        whose trigger nothing in our corpus fires is a fix we cannot yet show
+        working on a real program, and that is disclosed rather than smoothed.
+
+        A SECOND DEFECT FELL OUT AND IS FILED SEPARATELY (#1272): the Thumb-2
+        encoder ended in a catch-all returning `Ok(NOP)` for any unhandled op,
+        and Thumb-2 is the default target. Both new VFP ops compiled CLEAN
+        before their encoder arms existed and would have emitted a save that
+        saves nothing. Caught only by asserting exact bytes.
+      verified-by: >-
+        Byte-identity over 621 corpus compiles (the denominator is
+        re-derivable: `git ls-tree --name-only HEAD scripts/repro/ | grep -cE
+        '\.(wat|wasm)$'` = 207, x 3 configs); llvm-mc as the encoding oracle
+        with `vpush {d8}` as the size-field control; four tests in
+        `vfp_wide_file_1267.rs` covering off-emits-neither, on-saves-and-
+        restores with pops == rets, vpush-precedes-frame-sub, and the
+        stack-parameter refusal.
+
+        A PROXY WAS WITHDRAWN RATHER THAN REPORTED. I named
+        `vfp_spill_881.wat` and `vfp_local_pressure_1069.wat` on
+        `--target cortex-m7dp` as proxies for the reporter's shape, then
+        measured that both are rescued by the EARLIER rungs and never reach the
+        ladder's end. They are not proxies for the tick and were retracted on
+        #1267 rather than published as one.
+
+        OUTSTANDING, stated as an obligation and not as a caveat: the tick's
+        measured function count on cortex-m7dp, and the measured remaining
+        pressure if it still declines. Neither can be produced without the
+        module. Requested on #1267; unmet at this tag.
+

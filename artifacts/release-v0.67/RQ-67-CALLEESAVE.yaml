@@ -50,7 +50,7 @@ artifacts:
       unaffected paths are gated on byte-identity or an execution differential,
       per CLAUDE.md: a change that moves emitted bytes without an oracle proving
       the new bytes correct is REFUSED, not explained.
-    status: proposed
+    status: implemented
     release: v0.67
     tags:
       - vcr
@@ -114,3 +114,27 @@ artifacts:
         --safety-bounds. 0 newly-declined and 0 newly-compiling in all six.
         The widened validator then stays green over all 621 compiles, which is
         construction-level evidence independent of the two execution oracles.
+      verified-by: >-
+        EVERY ATTRIBUTION IN THE `landed:` RECORD IS A RE-RUN, NOT A
+        PREDICTION. The boot sweep
+        (`self_contained_boot_sweep_1189_differential.py`), the selector-parity
+        oracle and the i64-result-pair differential were each re-run over the
+        whole cluster after the fix, and the pins moved or did not move on
+        their own evidence:
+
+          CLOSED  #1204 — 38 pins / 321 cases across all three tables; zero
+                  #1204 pins remain anywhere in scripts/.
+          NOT CLOSED, and this is the finding the artifact was written to
+                  produce: #1240 measured 0 of 23 cases closed, so it is a
+                  DIFFERENT mechanism and the release states two causes rather
+                  than one (RQ-67-HIGHWORD fixed it separately, in the
+                  epilogue's register selection, touching no register-saving
+                  code). #1241's own title asks the shared-root question; it
+                  measured 0 of 33 closed, so the answer is no.
+
+        Paths the fix does not target are gated on byte-identity over the
+        corpus rather than on a green oracle for the fixed path, including
+        `--safety-bounds software` and `mask`. Every closed pin moved in this
+        artifact's own PR (#1271), taking `known_open_pins` 127 -> 89 and
+        `known_open_pinned_cases` 505 -> 184.
+

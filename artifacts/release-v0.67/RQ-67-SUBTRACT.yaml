@@ -30,9 +30,18 @@ artifacts:
 
       THE NAMED CANDIDATE, chosen from the manifest before this release began
       rather than searched for during it: THE i64 IMMEDIATE FAMILY. The i32
-      immediate forms carry SIXTEEN proven rules -- `i32_add_imm`,
-      `i32_sub_imm`, `i32_and_imm`, `i32_or_imm`, `i32_xor_imm` and the eleven
-      comparison forms. The i64 immediate forms carry ZERO of the 80. That
+      immediate forms carry FIFTEEN proven rules -- `i32_add_imm`,
+      `i32_sub_imm`, `i32_and_imm`, `i32_or_imm`, `i32_xor_imm` and the TEN
+      comparison forms (eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s,
+      ge_u). THIS SENTENCE ORIGINALLY SAID SIXTEEN AND ELEVEN, and v0.67's
+      cold review caught it: `grep -c '^rule_i32_.*_imm$'
+      coq/vcr_sel_rules.manifest` is 15. No gate covers the subset --
+      `sel_dsl_rules` counts total manifest lines, never the `_imm` family --
+      so the error propagated from the plan into this artifact and into the
+      release notes before anything noticed. It does not change the
+      refutation, which turns on i64 carrying ZERO and on there being no i64
+      fold to dispatch from; it is corrected because a wrong number beside a
+      right conclusion is still a wrong number. The i64 immediate forms carry ZERO of the 80. That
       asymmetry is the lever: the hand-written arms exist (in
       `instruction_selector/select_with_stack.rs` from roughly line 6371, and in
       `instruction_selector.rs`), and the Rocq proofs follow the i32 `_imm`
@@ -73,7 +82,8 @@ artifacts:
         The done-when required BOTH numbers to move together and neither can.
 
         REFUTATION 1 — THE i64 IMMEDIATE FAMILY HAS NOTHING TO DELETE. The plan
-        reasoned from a manifest asymmetry: 16 i32 `_imm` rules, 0 i64. The
+        reasoned from a manifest asymmetry: 15 i32 `_imm` rules, 0 i64 (the plan
+        said 16; see the description -- the count was wrong too). The
         inference was that hand-written i64 `_imm` arms therefore exist. They do
         not. The i32 `_imm` rules were paid for by a CONST FOLD that already
         existed: the fold guard builds `Operand2::Imm(c)` in the selector and

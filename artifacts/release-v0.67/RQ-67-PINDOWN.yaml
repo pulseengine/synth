@@ -30,7 +30,7 @@ artifacts:
       the oracles themselves consult. A hand count is a second source of truth
       about the first, which is the failure the North Star's first invariant
       names.
-    status: proposed
+    status: implemented
     release: v0.67
     tags:
       - vcr

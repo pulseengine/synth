@@ -28,7 +28,7 @@ artifacts:
       CONTROL on its own attribution -- if it closes when the callee-saved set
       is fixed, the attribution in that artifact is wrong and the release says
       so.
-    status: proposed
+    status: implemented
     release: v0.67
     tags:
       - vcr

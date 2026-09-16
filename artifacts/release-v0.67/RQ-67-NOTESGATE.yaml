@@ -43,7 +43,7 @@ artifacts:
       found a defect in their own release prose at or after the cold review
       (v0.64 a fabricated evidence line, v0.65 four prose defects, v0.66 these
       two plus the review's own). That is a pattern, not three accidents.
-    status: proposed
+    status: implemented
     release: v0.67
     tags:
       - release-process
