@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-68-REPRO
+    type: system-req
+    title: "Same source, same file — relay built its drone firmware twice and got two different files; codegen IS deterministic, but nothing enforces it and the SBOM cannot tell builds apart"
+    description: >
+      THE REPORT. relay compiled bleeding-edge drone software to wasm and through
+      synth twice, and the outputs were not the same file. For a toolchain whose moat
+      is certification evidence, "same input, different bytes" is disqualifying
+      whether or not the code differs.
+
+      WHAT IS MEASURED, and it narrows the problem. On 9e519fec, the same module
+      compiled twice to `--target cortex-m4 --all-exports --sbom`: the ELF is
+      BYTE-IDENTICAL and the SBOM DIFFERS in exactly one field, a wall-clock
+      `"timestamp"` (#1292). The v0.67 audit reported codegen determinism holding
+      across a large matrix (#1291's figure: 207 modules, 282 .wast files, 12
+      configurations) — that is the audit's measurement and this artifact re-derives
+      it rather than restating it.
+
+      THREE GAPS, EACH A DIFFERENT MECHANISM:
+        #1291  nothing ENFORCES determinism. `ci.yml` has no job that builds twice
+               and compares; the property holds today by accident of implementation.
+        #1292  the SBOM carries a wall-clock timestamp and ignores
+               SOURCE_DATE_EPOCH, so two correct builds are never byte-identical.
+        #1293  the SBOM and the object record nothing about how they were built.
+               The audit reports several `SYNTH_*` environment levers that change
+               emitted bytes; two ELFs that DIFFER can carry indistinguishable SBOMs.
+               That is the likeliest explanation for a user seeing two different
+               files from "the same" build, and it is the one that matters most.
+
+      WHAT THIS IS NOT. It is not a claim that synth's codegen was non-deterministic;
+      the measurement says it was not. It is a claim that a user cannot currently
+      PROVE which build produced which file, and that CI would not notice if
+      determinism broke. The lever count behind #1293 is re-derived by enumerating
+      the levers the source actually reads, not taken from the issue.
+    status: proposed
+    release: v0.68
+    tags:
+      - reproducibility
+      - sbom
+      - provenance
+      - relay
+      - certification-evidence
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1291"
+      done-when: "manual: a CI job compiles a fixed module set twice with independent target directories and fails on any byte difference in the object OR the SBOM; the SBOM honours SOURCE_DATE_EPOCH and emits no wall-clock value when it is set; every environment or flag input that changes emitted bytes is enumerated from the source and recorded in the SBOM, shown red-first by two builds that differ only in one such input producing SBOMs that differ; the lever count is published as derived, not as the audit's figure; relay's report is answered on the issue with what was measured"

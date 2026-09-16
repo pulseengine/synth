@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-68-ONESOURCE
+    type: system-req
+    title: "Register-contract facts are declared many times across files — CALLEESAVE needed three copies changed, and graph_alloc silently assumes the ORDER of a const array in another crate"
+    description: >
+      VERIFIED ON 9e519fec: `liveness.rs` declares `const CALLEE_SAVED: [Reg; 5] =
+      [R4..R8]` at least twice (lines 4922 and 5056); `liveness.rs:7754` hard-codes
+      `ALLOCATABLE_POOL: usize = 9`, a magic number about `ALLOCATABLE_REGS: [Reg; 9]`
+      in `instruction_selector.rs:146`; `optimizer_bridge.rs:6950` still says the
+      optimized path "must not touch" R9/R10/R11/R12, which v0.67 established is the
+      opposite of what it does (#1290). RQ-67-CALLEESAVE had to change three of the
+      callee-saved copies to fix one defect (#1270, #1274).
+
+      TWO DIFFERENT FAILURES, NOT ONE, and the fix for the first does not cover the
+      second. A SET declared five times drifts when one copy is missed; a single
+      source fixes that. But `graph_alloc.rs:99` `caller_saved_prefix` computes
+      `take_while(R0..R3).count()` over the pool — it assumes the pool is ORDERED with
+      R0-R3 first. Single-sourcing the set leaves that assumption exactly as silent
+      (#1280). It needs its own guard: an asserted or typed ordering, with a test that
+      reorders the pool and goes red.
+
+      ALSO IN SCOPE, each verified present: `frame_size + 24` hard-codes the prologue
+      size in the direct selector's incoming stack-param addressing, commented
+      "24 = the fixed push {r4-r8,lr}" (#1273). v0.67 changed what the prologue saves.
+      On the DIRECT selector R9-R11 are not allocated, so the push is expected to stay
+      24 and the defect is expected to be LATENT — that expectation is VERIFIED FIRST
+      by an execution differential with a stack parameter, not assumed. The #649
+      globals-table guard is duplicated across the two self-contained image builders
+      (`main.rs:7723` and `:9245`, #1283).
+
+      THIS IS A PURE REFACTOR AND IS GATED AS ONE. North Star invariant 1 — derive
+      what you check against from the artifact you ship — applied to the register
+      contract. Byte-identity over the full corpus, or it does not land.
+    status: proposed
+    release: v0.68
+    tags:
+      - register-contract
+      - single-source
+      - refactor
+      - north-star-1
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1270"
+      done-when: "manual: each register-contract set (callee-saved, allocatable pool, caller-saved/argument) is declared once and referenced, with no magic number standing in for another file's array length; caller_saved_prefix's ordering assumption is asserted or typed and a test that reorders the pool goes red; the prologue size used for stack-param addressing is derived from the prologue actually emitted, with #1273 first verified live or latent by an execution differential; the #649 guard exists once; stale must-not-touch comments are corrected; byte-identity holds over the full corpus"

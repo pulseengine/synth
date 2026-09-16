@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-68-STATUSGATE
+    type: system-req
+    title: "A release artifact left at `status: proposed` with a `manual:` done-when is invisible to BOTH the over-report and under-report rules — v0.67 cut with all seven artifacts unclaimed"
+    description: >
+      MEASURED ON v0.67's OWN CUT. The release commit said "5 implemented" while all
+      seven v0.67 artifacts were `status: proposed`, and RQ-67-VFPREACH had no
+      `landed:` at all for work that had shipped. status_evidence stayed green. The
+      cold review established why: R2 fires only on CLAIMING statuses, and R3 cannot
+      fire on a `manual:` done-when under a non-claiming status (the script says so
+      itself). With `proposed` + `manual:` across the board, both rules were
+      structurally inert for the entire artifact set. Flipping the five delivered
+      artifacts to `implemented` immediately re-armed R2, which then failed on two
+      missing `verified-by:`.
+
+      FOURTH INSTANCE. #1250 filed the class after v0.66; v0.66's cold review found a
+      live instance; v0.67 found a third and a fourth in one cut. A class this
+      recurrent is a gate defect, not a discipline problem.
+
+      THE FIX IS A RULE, NOT A REMINDER: when a release's delivery commit for an
+      artifact is on main, that artifact must either carry a claiming status or an
+      explicit non-delivery disposition (refuted, deferred) with its reason. Red-first
+      is free: v0.67's release candidate 63b95dc5 must red under the new rule, and
+      9e519fec must green.
+    status: proposed
+    release: v0.68
+    tags:
+      - status-evidence
+      - gate-potency
+      - release-gate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1250"
+      done-when: "manual: status_evidence fails when an artifact whose delivery commit is on main stays at a non-claiming status without an explicit refuted or deferred disposition; shown red on 63b95dc5 (v0.67's release candidate, all seven artifacts proposed) and green on 9e519fec; the rule has its own potency test in the checker's unit tests"

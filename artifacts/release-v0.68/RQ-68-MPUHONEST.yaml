@@ -1,0 +1,80 @@
+artifacts:
+  - id: RQ-68-MPUHONEST
+    type: system-req
+    title: "`--safety-bounds mpu` is accepted and emits NOTHING on ARM and RV32 — byte-identical to `none` on every path measured — while the docs advertise it as a safety mode"
+    description: >
+      MEASURED ON THREE PATHS, 9e519fec, same module:
+        --target cortex-m4 --all-exports   mpu == none, byte-identical
+        --cortex-m (full image + startup)  mpu == none, byte-identical
+        -b riscv                           mpu == none, byte-identical
+      No warning is printed.
+
+      `pmp` is a SECOND, UNDOCUMENTED spelling of the same mode:
+      `synth-core/src/backend.rs:55` parses `"mpu" | "pmp"` to `SafetyBounds::Mpu`,
+      neither `--help` nor the unknown-value error's "expected one of" list names it,
+      and `-b riscv --safety-bounds pmp` is byte-identical to both `none` and `mpu`
+      (measured). THE CLI's OWN `--help` IS AN ADVERTISING SURFACE: it describes
+      `mpu` as "rely on ARM MPU / RV32 PMP hardware enforcement". An invented value
+      is correctly rejected, so this is not a parser accepting anything -- it is two
+      real spellings that do nothing.
+
+      The only observable difference is a safety manifest
+      recording `"safety_bounds": "mpu"` with `"linear_memory_bytes": 0` and no
+      region description. `crates/synth-backend/src/mpu.rs` and `mpu_allocator.rs`
+      exist; nothing in `crates/synth-cli/src` drives either.
+
+      THIS IS THE MOST SERIOUS CLASS IN THE AUDIT, because the thing silently absent
+      is a memory-safety control a user selected by name. A user who passes
+      `--safety-bounds mpu` receives the "fastest, unsafe" default with a manifest
+      that says otherwise.
+
+      WHAT THIS ARTIFACT DOES NOT DO: implement MPU programming. CLAUDE.md records
+      that accepting `mpu` waits on gale's two-tenant fault criterion executing on an
+      MPU-bearing venue (#1145). The honest v0.68 deliverable is to STOP CLAIMING it:
+      refuse the flag loudly where synth emits nothing — the precedent already exists,
+      AArch64 hard-errors `mask`/`mpu` "rather than silently degrading" — and correct
+      every doc that advertises it (`docs/binary-safety-design.md` advertises
+      `--safety rtos` with MPU/PMP bounds and a `--safety-bounds <mpu|pmp|soft|mask|off>`
+      spelling; `docs/status/FEATURE_MATRIX.md`; the roadmap).
+
+      THE FORK, recorded, and NOT pre-decided for the lane: REFUSE (typed error,
+      matches AArch64, a user-visible behaviour change that must lead the release
+      notes) versus WARN (keeps a silent no-op compiling). The artifact implements
+      REFUSE for synth's own surfaces -- but if ANY consumer outside synth's own
+      tests and oracles is found passing `mpu` or `pmp` on ARM/RV32, the lane STOPS
+      and surfaces it, and the change becomes a two-step deprecation (warn in v0.68,
+      refuse after) rather than breaking a caller in one release.
+
+      EXTERNAL-CONSUMER CHECK, RUN AT PLAN TIME so the lane need not redo it
+      (2026-09-16, `gh search code` over org:pulseengine, excluding synth itself):
+      `"safety-bounds pmp"`, `"safety-bounds=mpu"` and `"safety-bounds=pmp"` return
+      nothing. `"safety-bounds mpu"` returns ONE hit and it is NOT an invocation:
+      pulseengine/gale `artifacts/gust_os_roadmap.yaml` states a future requirement
+      that each tenant's linear memory sit in a distinct MPU-protected region, tagged
+      `blocked-synth-1145`. jess's two synth invocations pass `--safety-bounds
+      software`. So no consumer found passes `mpu` or `pmp`, and REFUSE is safe for
+      v0.68 -- with the stated limit that code search indexes default branches only.
+      gale is the stakeholder a refusal naming #1145 should reach, and it is already
+      tracking that issue.
+
+      The existing
+      multi-memory ×
+      mpu refusal (`multi_memory_406.rs`, `mem_isolation_red_1145.py`) must keep its
+      current diagnostic, and no CI-wired oracle may depend on `mpu` compiling on
+      ARM/RV32 — checked before the change, not after it reds.
+    status: proposed
+    release: v0.68
+    tags:
+      - safety-bounds
+      - mpu
+      - claim-drift
+      - loud-decline
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1284"
+      done-when: "manual: --safety-bounds mpu (and its undocumented alias pmp) no longer compiles silently to the unsafe default on any ARM or RV32 path: it is refused with a typed diagnostic naming #1145, shown red-first by the byte-identity of mpu and none before the change; the multi-memory refusal keeps its diagnostic; every surface that advertises mpu as an available safety mode is corrected, the CLI --help text included, and pmp is documented or removed, and the release notes lead with the behaviour change"

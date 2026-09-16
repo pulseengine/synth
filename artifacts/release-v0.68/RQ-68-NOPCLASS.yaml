@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-68-NOPCLASS
+    type: system-req
+    title: "The Thumb-2 encoder returns Ok(NOP) for any op it does not handle — #615's class on the DEFAULT target, and the WCET soundness argument rests on a refusal that only exists on A32"
+    description: >
+      VERIFIED AGAINST SOURCE BEFORE SCOPING, on 9e519fec. `arm_encoder.rs:7011` is
+      a `_ =>` catch-all in the Thumb-2 encoder that returns the halfword `0xBF00`
+      (NOP) as `Ok`. Thumb-2 is the default ARM target. #615 fixed exactly this class
+      on the A32 path, where the matching arms return a typed `Err` ("refusing to emit
+      a silent NOP (#615)", `encode_arm`, `arm_encoder.rs:1934`), and never reached
+      the Thumb-2 encoder.
+
+      IT IS NOT HYPOTHETICAL. RQ-67-VFPREACH's two new ops compiled CLEAN before their
+      Thumb-2 arms existed and would have emitted a callee-saved VFP save that saves
+      nothing; only an exact-byte assertion caught it (#1272).
+
+      IT MAKES A SOUNDNESS ARGUMENT FALSE (#1289). `wcet_loops.rs:1074-1080` argues
+      that `may_move_sp` need not model `ArmOp::Call` because "`encode_thumb` REFUSES
+      it with a typed `Err` (#615)". The only refusal of `ArmOp::Call` in the encoder
+      is in `encode_arm` — the A32 path. On Thumb-2 a `Call` reaching the encoder falls
+      to the catch-all and becomes a NOP, so the premise the WCET bound depends on is
+      false on the default target. Fixing #1272 is what makes #1289's premise TRUE;
+      they are one mechanism, which is why they are one artifact.
+
+      SAME SHAPE, ONE LAYER UP (#1275, half-fixed in v0.67). `liveness.rs`
+      `vfp_word_effect` ends `_ => some2(vec![], vec![])` — an assertion of an EMPTY
+      VFP footprint for every variant it does not name. v0.67 added the two VPUSH/VPOP
+      arms (cf3eba66); the wildcard that claims "provably no S-word footprint" for the
+      remainder is still there.
+
+      THE RISK, recorded before the work. Turning a silent NOP into a typed Err can
+      make currently-"compiling" functions decline. Every such function is today
+      shipping a NOP where an operation should be, so each newly-loud decline is a
+      silent miscompile surfacing, not a regression — but it must be COUNTED and
+      NAMED, not discovered by a user. Gate on byte-identity over the corpus; any
+      function that changes from compiled to declined is listed by name with the op
+      that reached the catch-all.
+    status: proposed
+    release: v0.68
+    tags:
+      - vcr
+      - encoder
+      - silent-miscompile
+      - wcet
+      - 615-class
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1272"
+      done-when: "manual: the Thumb-2 encoder returns a typed Err for any op it does not encode, with no Ok(NOP) catch-all; wcet_loops.rs may_move_sp's premise is re-stated to match the encoder it now describes, or the op is modelled; vfp_word_effect's wildcard is conservative rather than claiming an empty footprint; byte-identity holds over the full corpus and every function that moves from compiled to declined is NAMED with the op that reached the catch-all, or the count is published as zero"

@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-68-ORACLEABI
+    type: system-req
+    title: "Oracles that hard-code the ABI facts they are meant to check — a bounds guard that cannot fail in its own harness, a contract spec nothing runs, generators nothing keeps fresh"
+    description: >
+      THE SHAPE: a check that encodes the fact it checks, so it agrees with the code
+      whether or not the code is right. Verified on 9e519fec where noted; the rest
+      are verified FIRST in the lane, and any that do not reproduce are closed with
+      the measurement rather than fixed.
+
+        #1276  six CI-wired WCET oracles set R10 to a linear-memory BASE and document
+               an "R10==R11 linear-memory-base convention". R10 is the memory SIZE
+               (the register contract; the software guard compares against it). With
+               R10 a large address, the bounds guard in that harness cannot fire, so
+               the oracle cannot observe a bounds defect. HIGHEST PRIORITY in this
+               artifact: an oracle unable to fail on a safety property.
+        #1278  13 oracle files under scripts/repro/ contain the literal 0x20000100
+               (measured by file grep; the issue said twelve). Rust computes the base
+               as OPTIMIZED_LINMEM_BASE + stack_reserve, and a wide memory map turns
+               a base shift into zeros read rather than a fault — so a moved base
+               reads as a quiet wrong answer in the harness, not a crash.
+        #1281  `//crates:verify_contracts` is defined in crates/BUILD.bazel and
+               invoked by no ci.yml step; claims.yaml pins the spec's LINE COUNT as
+               evidence. A spec nothing runs is a mirror that cannot fail.
+        #1282  two fixture generators have no staleness gate.
+        #1277  synth-abi / synth-analysis / synth-memory are reported to contribute
+               no symbols to the shipped `synth` binary while component-model
+               requirements are `implemented` on their unit tests — tested, not
+               shipped. The evidence-transfer class.
+
+      Each fix is shown RED-FIRST: plant the defect the oracle exists to catch and
+      confirm it now reds. #1276 in particular must demonstrate an out-of-bounds
+      access that the corrected harness catches and the current one misses.
+    status: proposed
+    release: v0.68
+    tags:
+      - gate-potency
+      - oracle
+      - evidence-transfer
+      - abi
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1276"
+      done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"

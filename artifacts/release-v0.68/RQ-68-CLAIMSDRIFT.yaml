@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-68-CLAIMSDRIFT
+    type: system-req
+    title: "Documents that claim what the code does not do — f32 min/max, a link mode that always fails, superseded acceptance rates, a size ratio from an estimate, a stale Spectre policy, feature flags that do not build"
+    description: >
+      VERIFIED ON 9e519fec unless noted. The code is right in each case; the prose is
+      wrong, and no gate reads the prose.
+
+        #1285  FEATURE_MATRIX line 46 lists f32 "min/max" as lowering via VFP. Both
+               selectors decline: `F32Min not supported on ARM32: the available
+               lowering is not WASM NaN/±0-correct` — measured on cortex-m4f,
+               self-contained and --relocatable.
+        #1294  `synth compile --cortex-m --link` fails every time: synth passes its
+               own ET_EXEC output to arm-none-eabi-ld, which refuses it ("cannot use
+               executable file ... as input to a link"). README lists --link as
+               Implemented. Fix the path or stop listing it; the artifact decides with
+               evidence which one.
+        #1286  CLAUDE.md quotes 531/805 (66 %), 113 (14 %), 13 (1.6 %) as live
+               figures. They are marked SUPERSEDED by RQ-64-SCOPEGAP (#1085) in
+               favour of docs/status/ACCEPTANCE_LADDER.md (a 243-module REACHABLE
+               corpus, e.g. AArch64 49/243 = 20.2 %). NOTE THE DENOMINATOR CHANGE:
+               the ladder and the 805 figures measure different corpora, so the
+               correction cites the ladder rather than restating an "N-times
+               overstated" ratio across denominators.
+        #1287  docs/status/POC_ACHIEVEMENTS.md headlines "0.85x native code size
+               (15% smaller)". The issue reports that figure came from an ESTIMATED
+               baseline and measures 1.64x today; the re-measurement is re-derived
+               before the doc is corrected (a measured number replaces an estimated
+               one, never a remembered one).
+        #1288  docs/spectre-policy.md — stale citations and missing backend rows;
+               verified in lane.
+        #1279  `cargo build -p synth-memory --no-default-features` fails (7 errors
+               measured; the issue said six), and `--no-default-features` appears in
+               no CI job.
+    status: proposed
+    release: v0.68
+    tags:
+      - claim-drift
+      - docs
+      - claim-verification
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1285"
+      done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
