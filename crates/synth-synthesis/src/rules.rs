@@ -883,6 +883,24 @@ pub enum ArmOp {
         sd: VfpReg,
         sm: VfpReg,
     }, // VSQRT.F32 Sd, Sm
+
+    // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP set, D8-D15.
+    //
+    // synth has always allocated inside S0-S15 / D0-D7 — `vfp_home: &[bool; 16]`
+    // — because the other half of the register file is CALLEE-saved and nothing
+    // could save it: `VPUSH`/`VPOP` did not exist in the encoder at all. So
+    // "VFP register file exhausted (S0..S15 all live)" fires with HALF the
+    // hardware unused on every FPU target synth supports (FPv4-SP-D16 and
+    // FPv5-D16 both have D0-D15 = S0-S31).
+    //
+    // Saving the whole set in one instruction costs 64 bytes of stack. That is
+    // deliberate for the first increment: these are emitted ONLY on the retry
+    // rung reached by a function that would otherwise DECLINE outright, so the
+    // cost lands exclusively on code that does not compile today. Saving only
+    // the used subset is the obvious follow-up and needs the allocator to
+    // report its high-half usage.
+    VPushCalleeSavedVfp, // VPUSH {d8-d15}
+    VPopCalleeSavedVfp,  // VPOP  {d8-d15}
     F32Ceil {
         sd: VfpReg,
         sm: VfpReg,

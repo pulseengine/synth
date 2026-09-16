@@ -35,7 +35,13 @@
 /// Deliberately the SAME number the #615 tripwire pins
 /// (`a32_no_silent_nop_615.rs`'s `ARM_OP_VARIANT_COUNT`); the two are
 /// independent readings of one enum, so they disagree only if one went stale.
-const ARM_OP_VARIANT_COUNT: usize = 222;
+// RQ-67-VFPREACH (#1267): 222 -> 224. `VPushCalleeSavedVfp` /
+// `VPopCalleeSavedVfp` — the AAPCS callee-saved VFP save/restore. Both
+// SP-effect arms say `true`: they are the `sp!` writeback form and move
+// SP by 64 bytes. The two copies of this constant are pinned EQUAL to
+// each other by claims.yaml (`SYNTH-A32-TRIPWIRE-UNIVERSE`), which is why
+// bumping one without the other is caught rather than silently divergent.
+const ARM_OP_VARIANT_COUNT: usize = 224;
 
 const RULES_SRC: &str = include_str!("../../synth-synthesis/src/rules.rs");
 const WCET_LOOPS_SRC: &str = include_str!("../src/wcet_loops.rs");

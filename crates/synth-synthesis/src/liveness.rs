@@ -5980,6 +5980,24 @@ fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
         | MveReplaceLaneF32 { .. }
         | MveDivF32 { .. }
         | MveSqrtF32 { .. } => None,
+        // RQ-67-VFPREACH (#1267), found by the v0.67 built-but-untested audit
+        // (#1275). These two were falling through to the wildcard below, which
+        // this function's own doc defines as "an integer op PROVABLY touches no
+        // S-word". They touch SIXTEEN: the Thumb encoder emits them as
+        // `ED2D 8B10` / `ECBD 8B10` — `VPUSH`/`VPOP {d8-d15}` — and
+        // `home_alias.rs` already models the same pair as slots 16..32.
+        //
+        // The path is live: arm_backend -> `validate_final_allocation` ->
+        // `check_vfp_slot_aliasing` (#881). A wrong "no footprint" here lets the
+        // validator pass an allocation that aliases the registers this very
+        // lane saves. `home_alias.rs` has the #615/#946 variant-count tripwire
+        // that FORCED the classification there; this function has none, which
+        // is why the same lane got one right and one wrong. #1275 covers the
+        // other 25 variants and the missing tripwire.
+        //
+        // VPUSH READS d8-d15 (uses); VPOP WRITES them (defs). S16..S31.
+        VPushCalleeSavedVfp => some2(vec![], (16..32).collect()),
+        VPopCalleeSavedVfp => some2((16..32).collect(), vec![]),
         // Every other op is integer-only: provably no S-word footprint.
         _ => some2(vec![], vec![]),
     }
@@ -12252,6 +12270,15 @@ mod tests {
             | SetCond { .. }
             | SelectMove { .. }
             | Select { .. }
+            // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP
+            // save/restore. MODELLED, and the classification is the same
+            // as `Push`/`Pop`: they touch no register the CORE allocator
+            // hands out. D8-D15 are outside its file entirely, and SP's
+            // writeback is not modelled for `Push` either. Saying `true`
+            // here asserts the allocator may see them without its def/use
+            // model being wrong — not that it allocates them.
+            | VPushCalleeSavedVfp
+            | VPopCalleeSavedVfp
             | Push { .. }
             | Pop { .. }
             | Udf { .. }

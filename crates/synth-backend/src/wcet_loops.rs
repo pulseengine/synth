@@ -1082,6 +1082,10 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
 fn may_move_sp(op: &ArmOp) -> bool {
     use ArmOp::*;
     match op {
+        // RQ-67-VFPREACH (#1267): VPUSH/VPOP {d8-d15} are the `sp!`
+        // writeback forms — they move SP by 64 bytes. Answering `true`
+        // is both correct and the conservative direction here.
+        VPushCalleeSavedVfp | VPopCalleeSavedVfp => true,
         // ---- Defines a named destination register: SP iff that register is SP ----
         Add { rd, .. }
         | Sub { rd, .. }

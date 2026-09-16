@@ -208,6 +208,41 @@ impl InstructionSelector {
             source_line: None,
         });
 
+        // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP half is in play
+        // for this compilation, so save it. TWO CONSTRAINTS, both derived from
+        // the emitted bytes rather than assumed:
+        //
+        // 1. PLACEMENT. `VPUSH {d8-d15}` moves SP by 64 bytes, and the #881
+        //    spill slots are addressed `[sp,#off]` against the frame the
+        //    `Sub SP` below allocates. Emitting the VPUSH HERE — after the core
+        //    push, BEFORE that Sub — leaves every frame offset intact, because
+        //    the frame still sits directly above the final SP. Anywhere after
+        //    the Sub would shift all of them silently.
+        //
+        // 2. STACK-PASSED PARAMS ARE REFUSED, NOT ADJUSTED. Incoming stack args
+        //    are addressed `frame_size + 24 + nsaa_k`, where 24 is the six
+        //    pushed registers, HARDCODED (#1273). A 64-byte VPUSH makes that
+        //    arithmetic read 64 bytes from the wrong place — silently, with no
+        //    fault. Until #1273 derives that offset from the emitted prologue,
+        //    this rung declines such functions LOUDLY. A loud decline is the
+        //    honest answer when the alternative is a wrong offset; it is also
+        //    what the function already did before this rung existed.
+        if self.vfp_wide_file {
+            if !param_layout.stack.is_empty() {
+                return Err(synth_core::Error::synthesis(
+                    "GI-FPU-002 wide-VFP rung: function has stack-passed \
+                     parameters, whose incoming offsets hardcode the prologue \
+                     size (#1273); refusing rather than emitting a 64-byte \
+                     VPUSH that would shift them silently"
+                        .to_string(),
+                ));
+            }
+            instructions.push(ArmInstruction {
+                op: ArmOp::VPushCalleeSavedVfp,
+                source_line: None,
+            });
+        }
+
         // GI-FPU-002 phase 3 (#369): does any direct call in this function
         // cross a FLOAT ABI boundary (float args or a float result)? Such a
         // call needs the VFP call-spill area (arg staging + result liveness)
@@ -626,8 +661,12 @@ impl InstructionSelector {
         // is byte-identical.
         let fpu = self.fpu;
         let params_f32 = self.params_f32.clone();
-        let mut vfp_used = [false; 16];
-        let mut vfp_home = [false; 16];
+        // RQ-67-VFPREACH (#1267): the occupancy map carries the allocation
+        // policy as INITIAL STATE — the callee-saved half arrives pre-marked
+        // taken unless this compilation opted in, so none of the four VFP
+        // allocators needed a width argument.
+        let mut vfp_used = crate::instruction_selector::new_vfp_used(self.vfp_wide_file);
+        let mut vfp_home = [false; crate::instruction_selector::VFP_FILE];
         let mut f32_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
         {
             let has_f32_param =
@@ -8472,6 +8511,30 @@ impl InstructionSelector {
             &f32_home,
             &f64_home,
         )?;
+
+        // RQ-67-VFPREACH (#1267): restore the callee-saved VFP half before every
+        // return. Done as ONE post-pass over the finished stream rather than at
+        // each epilogue site, so a site added later cannot silently miss the
+        // restore — the same reason `ensure_callee_saved_prologue` wraps a
+        // stream instead of editing emission points.
+        //
+        // The VPOP goes immediately BEFORE the `Pop {..., PC}`, which is after
+        // the frame `Add SP` — the mirror of the prologue's placement, and the
+        // only order that leaves the frame offsets the #881 spill slots use
+        // untouched.
+        if self.vfp_wide_file {
+            let mut out = Vec::with_capacity(instructions.len() + 2);
+            for ins in instructions {
+                if matches!(&ins.op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)) {
+                    out.push(ArmInstruction {
+                        op: ArmOp::VPopCalleeSavedVfp,
+                        source_line: ins.source_line,
+                    });
+                }
+                out.push(ins);
+            }
+            return Ok(out);
+        }
 
         Ok(instructions)
     }

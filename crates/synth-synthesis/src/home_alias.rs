@@ -145,6 +145,10 @@ pub fn gp_defs(op: &ArmOp) -> Vec<Reg> {
         | Blo { .. }
         | Bcc { .. }
         | Bx { .. }
+        // RQ-67-VFPREACH (#1267): both touch only the VFP file and SP's
+        // writeback, which this table does not model for `Push` either.
+        | VPushCalleeSavedVfp
+        | VPopCalleeSavedVfp
         | Push { .. }
         | Nop
         | Udf { .. } => vec![],
@@ -415,8 +419,16 @@ pub fn vfp_defs(op: &ArmOp) -> Vec<u8> {
         | I64ReinterpretF64 { .. }
         | I64TruncF64S { .. }
         | I64TruncF64U { .. }
-        | I32TruncF64S { .. }
-        | I32TruncF64U { .. } => vec![],
+        | I32TruncF64S { .. }        | I32TruncF64U { .. }
+        // RQ-67-VFPREACH (#1267): VPUSH READS d8-d15 and writes no VFP
+        // register; the matching VPOP is what writes them.
+        | VPushCalleeSavedVfp => vec![],
+        // VPOP {d8-d15} restores the AAPCS callee-saved half, S16..S31.
+        // Slots above 15 are representable (`vfp_slots` covers 0..32) and
+        // both consumers test MEMBERSHIP rather than indexing a fixed-width
+        // array, so naming them is safe as well as honest — this table's own
+        // test already asserts a call does NOT clobber slot 16.
+        | VPopCalleeSavedVfp => (16u8..32).collect(),
         // Everything that never touches the VFP file.
         Add { .. }
         | Sub { .. }
@@ -1880,8 +1892,15 @@ mod tests {
                     );
                 }
             }
+            // RQ-67-VFPREACH (#1267): 222 -> 224. `VPushCalleeSavedVfp` and
+            // `VPopCalleeSavedVfp` — the AAPCS callee-saved VFP save/restore
+            // that lets the allocator reach S16-S31/D8-D15. This pin is doing
+            // its job by requiring the bump: it is the #615/#946 tripwire that
+            // makes a new op a CONSCIOUS addition to the def/use tables rather
+            // than a silent one, and this lane had to classify both ops in
+            // `gp_defs` and `vfp_defs` before it would pass.
             assert_eq!(
-                variants, 222,
+                variants, 224,
                 "ArmOp variant count drifted from the #615/#946 pin"
             );
         }

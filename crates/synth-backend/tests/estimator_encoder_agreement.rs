@@ -1165,7 +1165,15 @@ fn coverage(op: &ArmOp) -> Coverage {
         | MveExtractLaneF32 { .. }
         | MveReplaceLaneF32 { .. }
         | MveDivF32 { .. }
-        | MveSqrtF32 { .. } => OffPath,
+        | MveSqrtF32 { .. }
+        // RQ-67-VFPREACH (#1267): emitted by the DIRECT selector's wide-VFP
+        // rung (`select_with_stack`), not by `ir_to_arm`, so it never flows
+        // through the optimized path's `byte_offsets` estimator this oracle
+        // compares against. OffPath for the same reason the direct-path i64
+        // ops above are — and, like them, this is a hand-asserted claim the
+        // file's own doc says it cannot prove exhaustively.
+        | VPushCalleeSavedVfp
+        | VPopCalleeSavedVfp => OffPath,
     }
 }
 
