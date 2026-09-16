@@ -198,6 +198,45 @@ def http_status(url: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def changelog_structure_verdict(text: str | None, bare_version: str) -> tuple[str, str]:
+    """RQ-67-NOTESGATE (#1259) — is the CHANGELOG's TOP describing this release?
+
+    PURE so it can be tested against real commits without a tag. The red-first
+    is free: `git show 0cfcc160:CHANGELOG.md` has `## [Unreleased]` above 115
+    lines, `git show 2e1a8287:CHANGELOG.md` has `## [0.66.0]`. Both already
+    exist; see scripts/test_loop_conformance_changelog.py.
+
+    Returns (status, detail).
+    """
+    if text is None:
+        return DERIVED_FAIL, "CHANGELOG.md absent at ref"
+    secs = re.findall(r"^## \[([^\]]+)\](.*?)(?=^## \[|\Z)", text, re.M | re.S)
+    if not secs:
+        return DERIVED_FAIL, "no `## [` section headings — the notes have no parseable structure"
+    top = secs[0][0].strip()
+    unrel = [(h, b) for h, b in secs if h.strip().lower() == "unreleased"]
+    # A heading with nothing under it is a harmless leftover; one CARRYING
+    # entries means this release's own work is filed as not-yet-released,
+    # which is the v0.66 defect exactly.
+    loaded = [b for h, b in unrel if b.strip()]
+    if loaded:
+        return DERIVED_FAIL, (
+            f"`## [Unreleased]` survives at cut carrying "
+            f"{len(loaded[0].strip().splitlines())} lines — this release's own "
+            f"entries are filed as unreleased (#1259); RENAME the heading to "
+            f"[{bare_version}], do not append a new section below it"
+        )
+    if top != bare_version:
+        return DERIVED_FAIL, (
+            f"topmost `## [` section is [{top}], but the release being cut is "
+            f"[{bare_version}] — the notes do not describe this release (#1259)"
+        )
+    return DERIVED_PASS, (
+        f"topmost `## [` section is [{top}] and no non-empty [Unreleased] "
+        f"heading survives ({len(secs)} sections parsed)"
+    )
+
+
 def release_scope(version: str) -> str:
     """`v0.65.0` -> `v0.65` — the value artifacts carry in their `release:`
     field. The conformance check is invoked with a full vX.Y.Z tag; artifacts
@@ -719,6 +758,33 @@ class Check:
         else:
             rc, _ = run([sys.executable, "scripts/check_version_pins.py"])
             self.add("8", "pin sweep live run", DERIVED_PASS if rc == 0 else DERIVED_FAIL, f"exit {rc}")
+
+        # RQ-67-NOTESGATE (#1259) — THE RELEASE NOTES ARE THE ONE SURFACE WITH
+        # NO GATE. Every load-bearing claim in this repo is pinned, derived or
+        # oracle-gated; the document DESCRIBING those claims was checked by
+        # nothing, and in v0.66 it carried two defects to the tag candidate
+        # past the release PR, a clean-room review and 67 green checks.
+        #
+        # The class this slot catches: a release PR that APPENDS a fresh
+        # `## [0.66.0]` BELOW the existing `## [Unreleased]` heading instead of
+        # RENAMING it, leaving two of that release's own artifacts filed as
+        # unreleased. The cold review edited INSIDE that block — correcting a
+        # stale number in it — without questioning the block itself.
+        #
+        # The discriminating evidence was never reasoning: `git show` of the
+        # three tags before v0.66 shows NO `[Unreleased]` heading at all. So
+        # the rule is structural and checkable, and its red-first is FREE —
+        # 0cfcc160 (the tag candidate) has `## [Unreleased]` on top of 115
+        # lines, 2e1a8287 (the tag) has `## [0.66.0]`. Both commits already
+        # exist; no fixture had to be invented to prove this slot can fail.
+        #
+        # `claims.yaml` lists CHANGELOG.md as `unpinned_ok`, which is right
+        # about its CONTENT and silent about its STRUCTURE. This is the
+        # structure half.
+        status, detail = changelog_structure_verdict(
+            tree_read(self.ref, "CHANGELOG.md"), self.bare_version
+        )
+        self.add("8", "changelog structure", status, detail)
 
         self.add(
             "8",

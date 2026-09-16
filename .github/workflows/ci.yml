@@ -470,6 +470,18 @@ jobs:
       - name: Unit-test the loop-conformance gate — corpora replay (1136)
         run: python3 scripts/test_loop_conformance_check.py
 
+      # RQ-67-NOTESGATE (#1259): the release NOTES were the one surface with
+      # no gate, and in v0.66 they carried two defects to the tag candidate
+      # past the release PR, a clean-room review and 67 green checks. The new
+      # changelog-structure slot ships with its own potency tests, and its
+      # red-first is FREE — 0cfcc160 (tag candidate, `## [Unreleased]` over
+      # 115 lines) reds and 2e1a8287 (the tag) greens, two commits that
+      # already exist. The history-backed cases SKIP on a shallow clone
+      # rather than passing vacuously, so `fetch-depth: 0` is what makes them
+      # real here.
+      - name: Unit-test the changelog-structure slot — real-commit red/green (1259)
+        run: python3 scripts/test_loop_conformance_changelog.py
+
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
       # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —
