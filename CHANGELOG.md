@@ -68,17 +68,25 @@ was run rather than assumed.
 
 ### Measured
 
-Every number below is printed by `claim_check --metric`, not restated.
+Provenance, stated precisely because this release added the gate that demands
+it: the **v0.67.0**, **last changed** and **held** columns are printed by
+`claim_check --metric`. The **v0.66.0** column is read from
+`git show v0.66.0:claims.yaml`, and **delta** is the difference between the
+two — a previous-release comparison `--metric` does not print (its own `delta`
+column is against the ratchet *baseline*, not the previous tag). `held` counts
+releases carrying the value **including this one**, the same convention as
+"ninth release without a fall" below.
 
 | ratchet | v0.66.0 | v0.67.0 | delta | last changed | held |
 |---|---:|---:|---:|---|---:|
-| `known_open_pins` | 127 | **85** | **−42** | v0.66.0 | 1 |
-| `known_open_pinned_cases` | 505 | **158** | **−347** | v0.66.0 | 1 |
-| `selector_lines_code` | 20097 | 20224 | +127 | v0.66.0 | 1 |
-| `sel_dsl_rules` | 80 | 80 | +0 | **v0.59.0** | **8** |
-| `selector_wildcard_arms_code` | 56 | 56 | +0 | v0.66.0 | 1 |
-| `mirror_obligation_files` | 24 | 24 | +0 | v0.58.0 | 9 |
-| `mutants_untested` | 4 | 4 | +0 | v0.65.0 | 2 |
+| `known_open_pins` | 127 | **85** | **−42** | (this release) | 1 |
+| `known_open_pinned_cases` | 505 | **158** | **−347** | (this release) | 1 |
+| `selector_lines_code` | 20097 | 20224 | +127 | (this release) | 1 |
+| `sel_dsl_rules` | 80 | 80 | +0 | **v0.59.0** | **9** |
+| `selector_wildcard_arms_code` | 56 | 56 | +0 | v0.66.0 | 2 |
+| `mirror_marker_files` | 60 | 60 | +0 | v0.64.0 | 4 |
+| `mirror_obligation_files` | 24 | 24 | +0 | v0.58.0 | 10 |
+| `mutants_untested` | 4 | 4 | +0 | v0.65.0 | 3 |
 
 **RQ-67-PINDOWN (#242): the pin debt ends below where it began**, which it did
 not last release — start 127, end 85, net −42, every one moved in the PR that
@@ -89,7 +97,8 @@ did") was not invoked a second time; no new finding raised the count.
 
 - **RQ-67-SUBTRACT (#242)** — `selector_lines_code` does not fall, and the
   reason is that **the named lever does not exist**. The plan reasoned from a
-  manifest asymmetry (16 i32 `_imm` rules, 0 i64) to hand-written i64 arms
+  manifest asymmetry (**15** i32 `_imm` rules — the plan said 16, and that was
+  also wrong — against 0 i64) to hand-written i64 arms
   awaiting replacement. The i32 rules were paid for by a const fold that
   already existed; the rule increment deleted only the *emission*. **There is
   no i64 fold anywhere**, so there is nothing to delete, and building one would

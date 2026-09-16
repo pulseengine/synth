@@ -1363,7 +1363,7 @@ def _check_evidence(ev, kind, c, doc, text, root, status_spec, status):
     return fails
 
 
-def ratchet_value_history(root, names):
+def ratchet_value_history(root, names, live_values=None):
     """RQ-67-NOTESGATE (#1259) — per ratchet, the tag its value LAST CHANGED at
     and how many releases it has held that value.
 
@@ -1425,11 +1425,20 @@ def ratchet_value_history(root, names):
 
     out = {}
     for name in names:
-        live = None
-        for _, vals in hist:
-            if name in vals:
-                live = vals[name]
-                break
+        # THE WORKING TREE IS THE POINT OF COMPARISON, NOT THE NEWEST TAG.
+        # Seeding `live` from the newest tag made this helper describe the
+        # PREVIOUS release at exactly the moment a release is cut: a value that
+        # fell 127 -> 85 in the tree being tagged would still print "last
+        # changed v0.66.0, held 1", contradicting the delta printed two columns
+        # to its left. v0.67's cold review caught that in the release notes
+        # this helper was written to make trustworthy. `live_values` is the
+        # derived status map; the tag walk is only the history behind it.
+        live = (live_values or {}).get(name)
+        if live is None:
+            for _, vals in hist:
+                if name in vals:
+                    live = vals[name]
+                    break
         if live is None:
             out[name] = (None, None)
             continue
@@ -1441,14 +1450,23 @@ def ratchet_value_history(root, names):
             if vals.get(name) != live:
                 break
             held += 1
+        # ONE COUNTING CONVENTION, and it INCLUDES THE RELEASE BEING CUT --
+        # the same convention release prose already uses when it says "ninth
+        # release without a fall". v0.67's cold review found this section
+        # carrying BOTH conventions at once: `held 8` for a value that v0.67 is
+        # the ninth release to carry, eleven lines from a "ninth" that counted
+        # the cut. Two conventions for one kind of quantity, in the section
+        # this gate exists to make trustworthy.
         if held == 0:
-            out[name] = (None, None)
+            # The live value differs from every tag: it moved in the CURRENT
+            # window, so the release being cut is the FIRST at this value.
+            out[name] = ("(this release)", 1)
         elif held == len(hist):
             # Unchanged across every tag examined — say ">= N", not a number
             # the window cannot support.
-            out[name] = (f">={hist[-1][0]}", held)
+            out[name] = (f">={hist[-1][0]}", held + 1)
         else:
-            out[name] = (hist[held - 1][0], held)
+            out[name] = (hist[held - 1][0], held + 1)
     return out
 
 
@@ -1493,7 +1511,7 @@ def report_metric(claims, status, root=None):
     # shipped "flat, thirteenth release" for sel_dsl_rules (derived: v0.59.0,
     # held 8) and "eighth consecutive rise" for selector_lines_code to its tag
     # candidate. "—" means the history was not readable here; it never means 0.
-    hist = ratchet_value_history(root, [r[0] for r in rows])
+    hist = ratchet_value_history(root, [r[0] for r in rows], status)
     for r in rows:
         tag, held = hist.get(r[0], (None, None))
         r.append(tag or "—")
@@ -1509,8 +1527,10 @@ def report_metric(claims, status, root=None):
             f"{name.ljust(w)}  {live:>7}  {base:>8}  {delta:>6}  {arrow:<10}  "
             f"{nw}        {tag:>12}  {held:>4}"
         )
-    print("(last-change = the tag this value last MOVED at; held = releases at "
-          "this value, both derived from claims.yaml across tags — #1259)")
+    print("(last-change = the tag this value last MOVED at, or (this release) "
+          "if it moved in the tree being cut; held = releases carrying this "
+          "value INCLUDING the one being cut — the same convention as \"Nth "
+          "release without a fall\"; both derived from claims.yaml — #1259)")
     print()
     return True
 
