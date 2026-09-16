@@ -32,7 +32,7 @@ artifacts:
       PROVE which build produced which file, and that CI would not notice if
       determinism broke. The lever count behind #1293 is re-derived by enumerating
       the levers the source actually reads, not taken from the issue.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - reproducibility
@@ -49,3 +49,63 @@ artifacts:
       verification-track: differential
       issue: "#1291"
       done-when: "manual: a CI job compiles a fixed module set twice with independent target directories and fails on any byte difference in the object OR the SBOM; the SBOM honours SOURCE_DATE_EPOCH and emits no wall-clock value when it is set; every environment or flag input that changes emitted bytes is enumerated from the source and recorded in the SBOM, shown red-first by two builds that differ only in one such input producing SBOMs that differ; the lever count is published as derived, not as the audit's figure; relay's report is answered on the issue with what was measured"
+      landed: >-
+        LANDED (#1291, #1292, #1293). THREE GAPS, THREE MECHANISMS, AND THE
+        MEASUREMENT NARROWED THE REPORT BEFORE ANY CODE WAS WRITTEN: codegen was
+        already deterministic. What was missing was any way to prove it, any gate
+        that would notice if it stopped, and any record of the levers a build ran
+        under.
+
+        #1292 -- THE TIMESTAMP IS WALL-CLOCK BY DESIGN, and that design is kept.
+        `sbom.rs` documents it ("a CycloneDX SBOM records when the build
+        happened"). The reproducible-builds.org convention reconciles the two:
+        `SOURCE_DATE_EPOCH`, when set, IS the build time; unset, the wall clock
+        is used exactly as before. A malformed value fails the build, as that
+        specification asks, instead of silently falling back to the clock.
+
+        #1293 -- THE LEVER COUNT WAS MEASURED, NOT TAKEN FROM THE ISSUE. The
+        population is every `env::var("SYNTH_...")` read outside tests: 36. A
+        census set each to "1" and to "0" over 60 fixtures x 3 configs and
+        compared digests against an unset run: 14 change bytes (the audit said
+        6 of 22). That 14 is a LOWER BOUND -- three configs, two values, 60 of
+        207 fixtures -- and is exactly why the SBOM records EVERY `SYNTH_*`
+        variable set at build time, read from the environment, rather than a
+        hard-coded list of 14 that would drift the day a lever is added. They
+        land in `metadata.properties` as `synth:build-env:<NAME>`, sorted, and
+        the field is omitted when none is set, so a default build's SBOM is
+        byte-identical to before. The ELF is deliberately NOT annotated:
+        provenance in the object would change every build's bytes, and the SBOM
+        is already bound to the ELF by a serialNumber derived from its SHA-256.
+
+        #1291 -- `scripts/determinism_check.py`, wired into the cmp-select oracle
+        job rather than a new one (55 of 63 jobs already queue on
+        ubuntu-latest). A second compiler is built into its own target
+        directory, uncached on purpose, and every scripts/repro/*.wat fixture is
+        compiled by both into separate output directories under a pinned
+        SOURCE_DATE_EPOCH and a scrubbed SYNTH_* environment; any exit-code,
+        object or SBOM difference is red, and comparing fewer than 100 pairs is
+        red too. Measured locally on two independently built compilers: 382
+        compiles each over 191 fixtures x 2 configs, 284 compared, 98 failing
+        identically on both, ZERO differences. The two compiler BINARIES
+        themselves differ -- each embeds its own target-directory path -- which
+        concerns the compiler's bytes, not its output, and the gate measures
+        output.
+      verified-by: >-
+        RED-FIRST THROUGH THE SHIPPED BINARY. `crates/synth-cli/tests/
+        sbom_reproducible_1292.rs` (3 tests) fails all three against the pre-fix
+        `sbom.rs` and `main.rs`: two SOURCE_DATE_EPOCH builds gave different
+        SBOMs, a malformed SOURCE_DATE_EPOCH did not fail the build, and the
+        SBOM named no lever. Unit tests in `sbom.rs` pin the epoch arithmetic
+        (1700000000 -> 2023-11-14T22:13:20Z), the malformed-value refusal, the
+        sorted SYNTH_-only property list, and the empty-field omission.
+
+        THE GATE's POTENCY IS TESTED, NOT ASSUMED. `scripts/
+        test_determinism_check.py`: the same binary on both sides passes;
+        SYNTH_RANGE_REALLOC=0 planted on the second side only -- the census's
+        largest effect, 84 outputs moved -- is caught as "OBJECT bytes differ";
+        a --min-pairs the corpus cannot meet is red. All three run in CI after
+        the gate itself.
+
+        Census harness: /Volumes/Work/planning/lever_census.py. relay's report
+        is answered on #1291 with what was measured.
+

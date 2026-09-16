@@ -1374,6 +1374,25 @@ jobs:
         run: pip install wasmtime unicorn pyelftools
       - name: Run two-move execution oracle
         run: python scripts/oracle_run.py scripts/repro/cmp_select_two_move_differential.py
+      # RQ-68-REPRO (#1291): the determinism gate synth never had. relay built
+      # drone software through synth twice and got two different files; the ELF
+      # was identical and the SBOM differed only in a wall-clock timestamp, so
+      # codegen was deterministic by ACCIDENT, with nothing to notice if that
+      # changed. A SECOND compiler is built into its own target dir (an uncached
+      # build, deliberately — a shared target would hide build-time
+      # non-determinism), then every scripts/repro/*.wat fixture is compiled by
+      # both into separate output dirs under a pinned SOURCE_DATE_EPOCH and a
+      # scrubbed SYNTH_* environment, failing on ANY exit-code, object or SBOM
+      # difference. Placed in this job, not a new one: 55 of 63 jobs already
+      # target ubuntu-latest (#1062), and a new queue slot costs more than a
+      # longer step. The potency tests plant one byte-changing lever on the
+      # second build and require red.
+      - name: Build a second, independent synth (#1291)
+        run: cargo build -p synth-cli --target-dir target-repro
+      - name: Determinism gate — two independent compilers, every fixture (#1291)
+        run: python3 scripts/determinism_check.py target/debug/synth target-repro/debug/synth
+      - name: Determinism gate potency — a planted lever must go red (#1291)
+        run: python3 scripts/test_determinism_check.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
