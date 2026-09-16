@@ -673,7 +673,7 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R4-shared/REG/liveness.rs:7154:36",
+      "id": "R4-shared/REG/liveness.rs:7172:36",
       "want_bytes": "changed",
       "want_changed": [
         "aarch64_param_homing_851.wat|reloc",
@@ -733,13 +733,13 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R1-routing/BOUND/arm_backend.rs:1581:21",
+      "id": "R1-routing/BOUND/arm_backend.rs:1626:21",
       "want_bytes": "identical",
       "want_classification": "EQUIVALENT",
       "want_reach": "reached"
     },
     {
-      "id": "R1-routing/BOUND/arm_backend.rs:1332:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:1377:36",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -759,7 +759,7 @@
       }
     },
     {
-      "id": "R1-routing/GUARD/arm_backend.rs:852:24",
+      "id": "R1-routing/GUARD/arm_backend.rs:867:24",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -773,7 +773,7 @@
       }
     },
     {
-      "id": "R1-routing/GUARD/arm_backend.rs:878:0",
+      "id": "R1-routing/GUARD/arm_backend.rs:894:0",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -787,7 +787,7 @@
       }
     },
     {
-      "id": "R1-routing/GUARD/arm_backend.rs:824:0",
+      "id": "R1-routing/GUARD/arm_backend.rs:839:0",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -2291,7 +2291,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "6394030f",
+    "reanchored_at": "2fdad0a2",
     "seed": 1189
   },
   "mutants": [
@@ -2301,14 +2301,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 1581,
+      "end": 1626,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:1581:21",
+      "id": "R1-routing/BOUND/arm_backend.rs:1626:21",
       "op": "BOUND",
       "reach": "reached",
       "region": "R1-routing",
       "seconds": 25.7,
-      "start": 1581,
+      "start": 1626,
       "status": "identical"
     },
     {
@@ -2584,9 +2584,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 2620,
+      "end": 2659,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/REG/select_with_stack.rs:2620:24",
+      "id": "R3-direct/REG/select_with_stack.rs:2659:24",
       "killed_by": {
         "binaries": [
           "issue_95_const_addr_load"
@@ -2602,7 +2602,7 @@
       "op": "REG",
       "region": "R3-direct",
       "seconds": 277.5,
-      "start": 2620,
+      "start": 2659,
       "status": "killed"
     },
     {
@@ -2610,13 +2610,13 @@
       "before": "            op2: Operand2::Imm(v),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 8717,
+      "end": 8735,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:8717:17",
+      "id": "R4-shared/IMM/liveness.rs:8735:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.4,
-      "start": 8717,
+      "start": 8735,
       "status": "uncompilable"
     },
     {
@@ -3390,9 +3390,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1022,
+      "end": 1067,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:1022:8",
+      "id": "R1-routing/GUARD/arm_backend.rs:1067:8",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -3432,7 +3432,7 @@
       "op": "GUARD",
       "region": "R1-routing",
       "seconds": 314.0,
-      "start": 1022,
+      "start": 1067,
       "status": "killed"
     },
     {
@@ -5158,9 +5158,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 903,
+      "end": 942,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:903:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:942:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -5172,7 +5172,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 10.6,
-      "start": 903,
+      "start": 942,
       "status": "killed"
     },
     {
@@ -5394,13 +5394,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7154,
+      "end": 7172,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:7154:36",
+      "id": "R4-shared/REG/liveness.rs:7172:36",
       "op": "REG",
       "region": "R4-shared",
       "seconds": 326.8,
-      "start": 7154,
+      "start": 7172,
       "status": "survived",
       "suite_seconds": 290.1
     },
@@ -6562,9 +6562,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 1332,
+      "end": 1377,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:1332:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:1377:36",
       "op": "BOUND",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under graph-alloc-reloc, graph-alloc-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -6859,7 +6859,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 26.6,
-      "start": 1332,
+      "start": 1377,
       "status": "identical"
     },
     {
@@ -6961,13 +6961,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 6984,
+      "end": 7023,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:6984:37",
+      "id": "R3-direct/COND/select_with_stack.rs:7023:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 6984,
+      "start": 7023,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7340,9 +7340,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 852,
+      "end": 867,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:852:24",
+      "id": "R1-routing/GUARD/arm_backend.rs:867:24",
       "op": "GUARD",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under m7dp-reloc, m7dp-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -7360,7 +7360,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 25.9,
-      "start": 852,
+      "start": 867,
       "status": "identical"
     },
     {
@@ -7420,9 +7420,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 6189,
+      "end": 6228,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:6189:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:6228:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7434,7 +7434,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 6189,
+      "start": 6228,
       "status": "killed"
     },
     {
@@ -8795,9 +8795,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 878,
+      "end": 894,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:878:0",
+      "id": "R1-routing/GUARD/arm_backend.rs:894:0",
       "op": "GUARD",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under m7dp-reloc, m7dp-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -8815,7 +8815,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 26.1,
-      "start": 878,
+      "start": 894,
       "status": "identical"
     },
     {
@@ -12210,9 +12210,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1193,
+      "end": 1238,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/REG/arm_backend.rs:1193:12",
+      "id": "R1-routing/REG/arm_backend.rs:1238:12",
       "killed_by": {
         "binaries": [
           "const_cse_reduction_242",
@@ -12236,7 +12236,7 @@
       "op": "REG",
       "region": "R1-routing",
       "seconds": 346.8,
-      "start": 1193,
+      "start": 1238,
       "status": "killed"
     },
     {
@@ -12457,14 +12457,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 1691,
+      "end": 1730,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:1691:39",
+      "id": "R3-direct/BOUND/select_with_stack.rs:1730:39",
       "op": "BOUND",
       "reach": "reached",
       "region": "R3-direct",
       "seconds": 28.8,
-      "start": 1691,
+      "start": 1730,
       "status": "identical"
     },
     {
@@ -12690,9 +12690,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 824,
+      "end": 839,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:824:0",
+      "id": "R1-routing/GUARD/arm_backend.rs:839:0",
       "op": "GUARD",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under m7dp-reloc, m7dp-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -12712,7 +12712,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 26.7,
-      "start": 824,
+      "start": 839,
       "status": "identical"
     },
     {
@@ -14109,15 +14109,15 @@
       "bytes": "identical",
       "changed": [],
       "classification": "UNRESOLVED",
-      "end": 1345,
+      "end": 1390,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:1345:67",
+      "id": "R1-routing/BOUND/arm_backend.rs:1390:67",
       "op": "BOUND",
       "probe_error": "error: prefix `REACHED` is unknown",
       "reach": "unknown",
       "region": "R1-routing",
       "seconds": 16.0,
-      "start": 1345,
+      "start": 1390,
       "status": "identical"
     },
     {
@@ -14153,9 +14153,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 562,
+      "end": 597,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:562:46",
+      "id": "R3-direct/BOUND/select_with_stack.rs:597:46",
       "killed_by": {
         "job": "(compiler hang)",
         "layer": "timeout",
@@ -14164,7 +14164,7 @@
       "op": "BOUND",
       "region": "R3-direct",
       "seconds": 185.7,
-      "start": 562,
+      "start": 597,
       "status": "killed",
       "triage_note": "aborted-after-first-compiler-hang"
     }

@@ -3431,7 +3431,7 @@ claims:
         glob: ['scripts/mcdc_gate.py']
         expect: 1
       - kind: count-eq
-        pattern: '^CEILING_DEAD = 50$'
+        pattern: '^CEILING_DEAD = 51$'
         glob: ['scripts/mcdc_gate.py']
         expect: 1
       - kind: count-eq                       # the enforcement itself exists…

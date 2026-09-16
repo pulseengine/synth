@@ -222,19 +222,19 @@ SCORED_PREFIXES = (
 # ci-checks: mcdc scored conditions >= 130
 # ci-checks: mcdc scored conditions proved >= 56
 # ci-checks: mcdc fully-proved decisions >= 3
-# ci-checks: mcdc dead conditions <= 50
+# ci-checks: mcdc dead conditions <= 51
 FLOOR_DECISIONS = 21
 FLOOR_CONDITIONS = 130
 FLOOR_PROVED = 56
 FLOOR_FULL_MCDC_DECISIONS = 3
-# DEAD is CEILINGED, not ignored. 50 scored conditions are never evaluated —
+# DEAD is CEILINGED, not ignored. 51 scored conditions are never evaluated —
 # 40 of them in `is_straight_line`, whose match arms cover RV32 opcodes the row
 # set does not construct. (This is the one count that is IDENTICAL on both
 # hosts, which is what you would expect of "never reached".) That is an honest residual, but an
 # UNFLOORED residual is how a number rots: a change that stopped reaching the
 # segment barriers would raise `dead`, lower nothing else, and pass. It is also
 # a third potency surface — mutation (a) moved dead 50 -> 52.
-CEILING_DEAD = 50
+CEILING_DEAD = 51
 
 # ───────────────────────────────────────────────────────────────────────────
 # RE-STATEMENT LEDGER (#1100 / RQ-61-MCDCFLOOR) — every movement of the
@@ -324,6 +324,17 @@ RESTATEMENTS = (
             "build_options -1, validate_reloc_resolutions -1; offset by "
             "validate_served_image 0->4 scored cond, runtime_image +1, "
             "spanned +1"
+        ),
+    },
+    {
+        "date": "2026-09-16",
+        "refs": "#1267 / PR #1295 (RQ-67-VFPREACH); upstream witness#208",
+        "floors": {"decisions": 21, "conditions": 130, "proved": 56, "full": 3, "dead": 51},
+        "population_evidence": (
+            'THE CLEANEST POPULATION EVIDENCE THIS LEDGER HAS CARRIED, and the reason this is a RESTATEMENT and not a loosening. The gate\'s own line: "BRANCH_POPULATION exact-match on this run: 176 branches across 20 scored functions, every pin equal" -- every pin, not 19 of 20 (#1093) and not 175->176 (#990). The instrument side did not move at all. DEAD ROSE BECAUSE THE RECONSTRUCTION GOT BIGGER, NOT BECAUSE COVERAGE GOT WORSE: this run reconstructed 149 conditions against a pinned floor of 130 and PROVED 65 against a floor of 56 -- every floor beaten by a WIDER margin than the statement being restated -- and the one extra dead condition sits inside that larger reconstruction (compile_function_with_opts cond 4->8 of its pinned-equal 10, of which dead 3->4). CAUSE: RQ-67-VFPREACH changes synth-synthesis, a path dependency of synth-backend-riscv, so inlining moved under witness in EIGHT functions the branch never edits -- none of the lane\'s own ARM code is in the scored surface at all (it is static_data_addr / alloc_validator / wasm_op). witness#208 layout sensitivity, third occurrence, same shape as #990 and #1093.'
+        ),
+        "drift": (
+            'is_ret dec 1 full 1 cond 2 prov 2 gap 0 dead 0 -> dec 2 full 2 cond 4 prov 4 gap 0 dead 0; validate_final_allocation_rv32 dec 12 full 6 cond 35 prov 23 gap 12 dead 0 -> dec 11 full 5 cond 45 prov 28 gap 17 dead 0; compile_function_with_opts dec 1 full 0 cond 4 prov 1 gap 0 dead 3 -> dec 3 full 0 cond 8 prov 2 gap 2 dead 4; resolve_owner dec 1 full 0 cond 2 prov 0 gap 2 dead 0 -> dec 1 full 0 cond 3 prov 2 gap 1 dead 0; runtime_image dec 1 full 0 cond 3 prov 2 gap 1 dead 0 -> dec 1 full 0 cond 2 prov 1 gap 1 dead 0; validate_reloc_resolutions dec 1 full 1 cond 3 prov 3 gap 0 dead 0 -> dec 2 full 0 cond 7 prov 3 gap 4 dead 0; validate_reloc_resolutions_spanned dec 2 full 0 cond 12 prov 7 gap 5 dead 0 -> dec 3 full 2 cond 10 prov 8 gap 2 dead 0; validate_served_image dec 2 full 1 cond 4 prov 2 gap 2 dead 0 -> dec 1 full 0 cond 3 prov 1 gap 2 dead 0'
         ),
     },
 )
