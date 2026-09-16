@@ -45,3 +45,42 @@ artifacts:
       verification-track: review
       issue: "#242"
       done-when: "manual: known_open_pins ends the release BELOW 127, derived by claim_check from the oracle tables and never hand-counted; every pin closed by another v0.67 artifact moves in the PR that closes it; any rise carries a waiver with a written reason in the same PR, and the release notes state the start value, the end value and the net rather than only the closures"
+      landed: >-
+        LANDED (#242, recorded in PR #1298). THE PIN DEBT ENDS THIS RELEASE
+        BELOW WHERE IT BEGAN, WHICH IT DID NOT LAST TIME.
+
+          start (v0.66.0 tag, read from claims.yaml at the tag)   127
+          end   (derived live by claim_check)                      85
+          net                                                     -42
+
+        Every one of those 42 moved in the PR that closed it, never in a
+        sweep at the end:
+
+          RQ-67-CALLEESAVE (#1204, PR #1271)  127 -> 89   38 pins / 321 cases
+                across THREE oracle tables -- the boot sweep, the
+                selector-parity table, and the i64-result-pair differential
+                whose table CI found and the first local pass missed.
+          RQ-67-HIGHWORD   (#1240, PR #1296)   89 -> 85    4 pins /  26 cases
+                across TWO tables, the second found this time by grepping the
+                issue tag rather than remembered.
+
+        `known_open_pinned_cases` moved 184 -> 158 beside it, so the fall is
+        not the coarsening this pin's companion exists to catch.
+
+        NO NEW FINDING RAISED THE COUNT THIS RELEASE, so v0.66's waiver
+        argument -- "the debt did not grow, its MEASUREMENT did" -- was not
+        invoked a second time. That argument is available once per finding and
+        this release did not need it.
+
+        DERIVED, NEVER TALLIED. Both numbers come from `claim_check`'s
+        `_pin_table` `ast` walk over the tables the oracles themselves consult.
+        A hand breakdown of the residual 85 is deliberately NOT written beside
+        it: that would be a second source of truth about the first, which is
+        the failure the North Star's first invariant names. One attempt at a
+        per-issue breakdown during this release disagreed with the walker
+        twice and was discarded rather than published.
+      verified-by: >-
+        `claim_check --metric` prints the live value, and as of RQ-67-NOTESGATE
+        it prints the tag each ratchet last moved at beside it, so the release
+        notes quote the start, the end and the net from a derivation rather
+        than from memory -- which is this artifact's done-when.

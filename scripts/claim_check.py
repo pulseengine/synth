@@ -149,6 +149,7 @@ import glob
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 try:
@@ -1362,7 +1363,96 @@ def _check_evidence(ev, kind, c, doc, text, root, status_spec, status):
     return fails
 
 
-def report_metric(claims, status):
+def ratchet_value_history(root, names):
+    """RQ-67-NOTESGATE (#1259) — per ratchet, the tag its value LAST CHANGED at
+    and how many releases it has held that value.
+
+    WHY THIS EXISTS. v0.66's scorecard carried two counts that no derivation
+    produced: "flat, thirteenth release" for `sel_dsl_rules` (it had been
+    unchanged since v0.59.0, the EIGHTH release at 80) and "eighth consecutive
+    rise" for `selector_lines_code` (eight releases without a FALL, seven of
+    them rises — v0.63 was exactly +0). Both were remembered, not measured, and
+    both survived to the tag candidate. The numbers are cheap to derive from
+    data the ledger already trusts, so release prose can QUOTE a printed number
+    instead of restating one.
+
+    Reads `claims.yaml` at each release tag with `git show` and extracts the
+    `value:` under each `name:` by scan — deliberately NOT a YAML parse, which
+    would fail on older schema shapes and turn an archaeology question into a
+    hard error. Returns {name: (last_change_tag, releases_held)}; a name whose
+    history cannot be read maps to (None, None) and PRINTS as "—", never as a
+    confident zero.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root or "."), "tag", "--list", "v*.*.*"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if out.returncode != 0:
+            return {}
+        def key(t):
+            m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", t.strip())
+            return tuple(int(g) for g in m.groups()) if m else None
+        tags = sorted((t.strip() for t in out.stdout.split() if key(t.strip())),
+                      key=key, reverse=True)[:20]
+    except Exception:
+        return {}
+
+    def values_at(tag):
+        try:
+            r = subprocess.run(["git", "-C", str(root or "."), "show", f"{tag}:claims.yaml"],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return None
+        except Exception:
+            return None
+        found, cur = {}, None
+        for line in r.stdout.splitlines():
+            m = re.match(r"\s*name:\s*(\S+)\s*$", line)
+            if m:
+                cur = m.group(1)
+                continue
+            m = re.match(r"\s*value:\s*(-?\d+)\s*$", line)
+            if m and cur is not None:
+                found.setdefault(cur, int(m.group(1)))
+                cur = None
+        return found
+
+    hist = [(t, values_at(t)) for t in tags]
+    hist = [(t, v) for t, v in hist if v is not None]
+    if not hist:
+        return {}
+
+    out = {}
+    for name in names:
+        live = None
+        for _, vals in hist:
+            if name in vals:
+                live = vals[name]
+                break
+        if live is None:
+            out[name] = (None, None)
+            continue
+        # Walk newest -> oldest. `held` counts the tags already carrying the
+        # newest tagged value; the value was SET at the tag just before the
+        # first disagreement.
+        held = 0
+        for tag, vals in hist:
+            if vals.get(name) != live:
+                break
+            held += 1
+        if held == 0:
+            out[name] = (None, None)
+        elif held == len(hist):
+            # Unchanged across every tag examined — say ">= N", not a number
+            # the window cannot support.
+            out[name] = (f">={hist[-1][0]}", held)
+        else:
+            out[name] = (hist[held - 1][0], held)
+    return out
+
+
+def report_metric(claims, status, root=None):
     """Print the subtraction metric (RQ-58-METRIC) with its delta from baseline.
 
     A gate nobody can read is a gate nobody defends: CI prints this table on
@@ -1386,7 +1476,7 @@ def report_metric(claims, status):
                 # `track` pins have no baseline; print "—", never a bare None
                 # next to a direction they do not have.
                 delta, base_s = "—", "—"
-            rows.append((name, str(live), base_s, delta, arrow, len(ev.get("waivers") or [])))
+            rows.append([name, str(live), base_s, delta, arrow, len(ev.get("waivers") or [])])
     if not rows:
         # ANTI-VACUITY. Deleting the pins does not make a claim fail — an
         # evidence-less claim passes trivially — so the ABSENCE of the metric
@@ -1398,11 +1488,29 @@ def report_metric(claims, status):
             "unmeasured. Restore them or this gate measures nothing."
         )
         return False
+    # RQ-67-NOTESGATE (#1259): the last two columns exist so release prose
+    # QUOTES a derived number instead of restating a remembered one. v0.66
+    # shipped "flat, thirteenth release" for sel_dsl_rules (derived: v0.59.0,
+    # held 8) and "eighth consecutive rise" for selector_lines_code to its tag
+    # candidate. "—" means the history was not readable here; it never means 0.
+    hist = ratchet_value_history(root, [r[0] for r in rows])
+    for r in rows:
+        tag, held = hist.get(r[0], (None, None))
+        r.append(tag or "—")
+        r.append(str(held) if held is not None else "—")
     w = max(len(r[0]) for r in rows)
     print(f"\n=== subtraction metric (epic #242) — {len(rows)} directed pins ===")
-    print(f"{'metric'.ljust(w)}  {'now':>7}  {'baseline':>8}  {'delta':>6}  direction   waivers")
-    for name, live, base, delta, arrow, nw in rows:
-        print(f"{name.ljust(w)}  {live:>7}  {base:>8}  {delta:>6}  {arrow:<10}  {nw}")
+    print(
+        f"{'metric'.ljust(w)}  {'now':>7}  {'baseline':>8}  {'delta':>6}  "
+        f"direction   waivers  {'last-change':>12}  {'held':>4}"
+    )
+    for name, live, base, delta, arrow, nw, tag, held in rows:
+        print(
+            f"{name.ljust(w)}  {live:>7}  {base:>8}  {delta:>6}  {arrow:<10}  "
+            f"{nw}        {tag:>12}  {held:>4}"
+        )
+    print("(last-change = the tag this value last MOVED at; held = releases at "
+          "this value, both derived from claims.yaml across tags — #1259)")
     print()
     return True
 
@@ -1431,7 +1539,7 @@ def main():
         print(f"emitted {STATUS_JSON} + {FEATURE_MATRIX}")
 
     bad = 0
-    if metric and not report_metric(claims, status):
+    if metric and not report_metric(claims, status, root):
         bad += 1
 
     for c in claims:
