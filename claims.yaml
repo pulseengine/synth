@@ -1715,10 +1715,10 @@ claims:
         # line, decline text) moved OUT of select_with_stack.rs into
         # `home_alias::selector_hook` — one call remains. A FALL, no waiver;
         # value RE-DERIVED after cargo fmt.
-        value: 20165
+        value: 20224
         baseline: 17897
         waivers:
-          # RQ-67-VFPREACH (#1267): 20097 -> 20165, +68. THE TWENTY-SECOND
+          # RQ-67-VFPREACH (#1267): 20097 -> 20224, +127. THE TWENTY-SECOND
           # WAIVER ON THIS RATCHET, and the release states that rather than
           # letting it pass quietly — twenty-two permissions to grow, against a
           # metric that has never once fallen, is the accumulation v0.58's
@@ -1737,15 +1737,21 @@ claims:
           # the compensating fall, and if that artifact does not land, v0.67
           # ends with this number UP for the TENTH consecutive release and must
           # say so in the notes rather than netting it against this waiver.
-          - to: 20165
+          - to: 20224
             reason: >-
-              RQ-67-VFPREACH: the VFP file tracked at its true width, the
-              encoder taught the callee-saved save/restore, and the wide-file
-              opt-in threaded to the occupancy map. Every step byte-identical
-              (621/621, three times). ONE waiver AMENDED as the lane's cost
-              became known rather than a second waiver stacked beside it —
-              this is one growth event, not two. Reach work on a real user
-              report (#1267); RQ-67-SUBTRACT owes the compensating fall.
+              RQ-67-VFPREACH, complete: VFP file tracked at its true width,
+              encoder taught the callee-saved save/restore, opt-in threaded to
+              the occupancy map, and the ladder's last rung with its
+              save/restore emission and stack-param refusal. Byte-identical at
+              every step (621/621, four times). ONE waiver AMENDED three times
+              as the lane's cost became known — one growth event, not three.
+              HONEST COST/BENEFIT: +127 lines whose benefit is UNMEASURED,
+              because nothing in the corpus reaches the rung (measured: the
+              #881 and #1069 rungs rescue every shape, including two
+              deliberately constructed to defeat them). The rung is exercised
+              by unit test, not by a module. Its one known consumer is the
+              reporter's flight tick, which no published artifact carries.
+              RQ-67-SUBTRACT owes a fall LARGER than this.
           - to: 20097
             reason: >-
               RQ-66-BOTHWRONG (#1210/#1211/#1214/#1215): 19896 -> 20097
@@ -2234,7 +2240,7 @@ claims:
         # +201 code, see selector_lines_code, + 5 test module — the new
         # `declared_i64_locals` argument threaded through the five
         # compute_local_layout test call sites in instruction_selector.rs).
-        value: 31168
+        value: 31227
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
