@@ -30,7 +30,13 @@ const NOP_WORD: [u8; 4] = [0x00, 0x00, 0xA0, 0xE1];
 
 /// Bump when adding an `ArmOp` variant — and add a representative instance to
 /// `representatives()` (the completeness check below counts unique variants).
-const ARM_OP_VARIANT_COUNT: usize = 222;
+// RQ-67-VFPREACH (#1267): 222 -> 224. `VPushCalleeSavedVfp` /
+// `VPopCalleeSavedVfp` — the AAPCS callee-saved VFP save/restore. Both
+// SP-effect arms say `true`: they are the `sp!` writeback form and move
+// SP by 64 bytes. The two copies of this constant are pinned EQUAL to
+// each other by claims.yaml (`SYNTH-A32-TRIPWIRE-UNIVERSE`), which is why
+// bumping one without the other is caught rather than silently divergent.
+const ARM_OP_VARIANT_COUNT: usize = 224;
 
 /// How the A32 encoder must treat each op.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -293,7 +299,15 @@ fn classify(op: &ArmOp) -> Expect {
         | ArmOp::MveExtractLaneF32 { .. }
         | ArmOp::MveReplaceLaneF32 { .. }
         | ArmOp::MveDivF32 { .. }
-        | ArmOp::MveSqrtF32 { .. } => LoudErr,
+        | ArmOp::MveSqrtF32 { .. }
+        // RQ-67-VFPREACH (#1267): the AAPCS callee-saved VFP save/restore.
+        // Emitted ONLY by the Cortex-M (Thumb-2) wide-VFP rung; the A32 path
+        // has no such rung, so reaching the A32 encoder with one means a
+        // caller built it for the wrong profile. LoudErr is this tripwire's
+        // whole point — and it EARNED it here: this test refused to compile
+        // until both ops were classified, which is exactly the #615 contract.
+        | ArmOp::VPushCalleeSavedVfp
+        | ArmOp::VPopCalleeSavedVfp => LoudErr,
     }
 }
 
@@ -1392,6 +1406,14 @@ fn representatives() -> Vec<ArmOp> {
             qd: QReg::Q0,
             qm: QReg::Q1,
         },
+        // RQ-67-VFPREACH (#1267): unit variants — the register set is fixed by
+        // AAPCS (d8-d15), so there is nothing to parameterise. Classified
+        // `LoudErr` above: this pair is Thumb-2 only, and the #615 contract is
+        // that the A32 encoder REFUSES rather than inventing bytes. The
+        // representative is what lets this test actually encode them and check
+        // the refusal is loud, instead of trusting the classification.
+        VPushCalleeSavedVfp,
+        VPopCalleeSavedVfp,
     ]
 }
 
