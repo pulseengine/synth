@@ -47,3 +47,24 @@ artifacts:
       verification-track: review
       issue: "#1285"
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
+      disposition: partial
+      landed: >-
+        PARTIAL — increment 1 of the lane (#1285); #1294, #1286, #1287, #1288 and
+        #1279 remain. Status stays `proposed` with `disposition: partial`.
+
+        #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
+        the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
+        cortex-m7 and cortex-m7dp, self-contained and `--relocatable` — 12 of 12
+        combinations — while `f64.{min,max}` lower on cortex-m7dp. The README row
+        also called f32 "Complete" with one residual listed, but
+        `f32.{ceil,floor,trunc,nearest}` ALSO decline on cortex-m4f and
+        cortex-m7dp (the feature matrix already said so; the README did not). So
+        the README now lists all six declining f32 operations, and the matrix
+        template stops listing min/max as lowering.
+
+        THE MATRIX TEMPLATE's FACT CENSUS REFUSED THE FIRST DRAFT: it introduced
+        the bare numbers "12 of 12" and the 0 in "±0", and every number in that
+        template must be derived, pinned or declared. Reworded rather than
+        exempted — the measured count lives in this record, not as an unpinned
+        number in a generated document.
+
