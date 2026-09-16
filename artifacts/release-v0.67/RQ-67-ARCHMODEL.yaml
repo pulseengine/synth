@@ -47,3 +47,33 @@ artifacts:
       issue: "#1136"
       carried-from: RQ-66-ARCHMODEL
       done-when: "manual: spar#445 is re-checked AT CUT TIME with the observed state and date recorded; if still open the deferral is filed as the seventh recurrence and stated in the release notes; if closed, an AADL model is generated to WIT and the loop's steps 1-2 are exercised"
+      landed: >-
+        NOT LANDED — DEFERRED A SEVENTH CONSECUTIVE TIME, on an external
+        blocker RE-VERIFIED AT CUT rather than carried forward.
+
+        spar#445 ("spar accepts property associations from UNDECLARED property
+        sets silently (rc=0)") checked 2026-09-16, the day this release was
+        cut: still OPEN, last updated 2026-09-03. That is a cut-time
+        observation with its date recorded, not a restatement of the previous
+        release's finding.
+
+        WHY IT IS STILL RIGHT TO DEFER. Generating WIT from an AADL model that
+        spar will silently mis-validate would manufacture exactly the unearned
+        confidence this programme exists to prevent: a green result whose
+        checker cannot fail. That is the same shape as every defect this
+        release fixed, one layer up.
+
+        SEVEN CONSECUTIVE N/As IS ITSELF THE FINDING, and it is stated in the
+        release notes rather than left green in an artifact nobody reads. The
+        feature loop's own rule is that a step marked N/A for the same reason
+        THREE features running becomes a backlog item, not an exemption
+        (#1136). This is more than twice that. The measurable half was already
+        discharged in v0.65: the conformance matcher was release-scoped so an
+        older artifact can no longer silently satisfy this slot, and this
+        artifact carries the `feature-loop` tag that makes it visible to that
+        matcher at all.
+      verified-by: >-
+        `gh issue view 445 --repo pulseengine/spar` at cut on 2026-09-16:
+        state=OPEN, updatedAt=2026-09-03. Recorded as observed. If it closes
+        before v0.68 is cut, the deferral ends and the AADL -> WIT path gets
+        exercised for real rather than deferred an eighth time.

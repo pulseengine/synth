@@ -5,6 +5,115 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.0] - 2026-09-16
+
+**"One root cause, not five symptoms"** — and the release's own headline claim
+is the one its measurements refused. Seven artifacts: five implemented, one
+delivered as a **measured refutation** of its own plan, one deferred a seventh
+time on a cut-verified external blocker.
+
+### The theme, inverted by its own negative control
+
+The plan argued that the release's integer and float defects were one root
+shape in two register files: the prologue saves R4-R8 while the allocator hands
+out R9-R11 (a **silent wrong answer**), and nothing saves D8-D15 so the
+allocator refuses them (a **loud decline**). That half held.
+
+The plan also treated `i64.clz/ctz/popcnt` returning the operand's high word as
+possibly the same mechanism, and made it the release's **negative control**: if
+it closed when the callee-saved set was fixed, the attribution was wrong
+somewhere. It did not close. After RQ-67-CALLEESAVE landed, all 23 of its
+vectors were still wrong, and the fix that closed them touches no
+register-saving code. **Two mechanisms, stated as two**, because the control
+was run rather than assumed.
+
+### Fixed
+
+- **RQ-67-CALLEESAVE (#1204)** — the optimized path writes R9, R10 and R11 and
+  saved none of them. R11 is the direct selector's linear-memory base and R10
+  backs the software bounds guard, so these were never spare. Three distinct
+  sites hand them out, each found by a different oracle failing. Closed 38
+  pinned wrong-answer entries across three oracle tables.
+- **RQ-67-HIGHWORD (#1240)** — `i64.clz`, `i64.ctz` and `i64.popcnt` returned
+  the operand's high word on the optimized path. **The issue named the wrong
+  mechanism.** There was never a missing zero-fill; `movw rd_hi, #0` is emitted
+  correctly and always has been. The epilogue returned a *different* register:
+  it resolves an i64 result's high half through a field assigned `Some(..)` in
+  25 places and `None` in none, so after any earlier i64 op the intended
+  fallback was dead code. Five emitted instructions change, each a register
+  field; the direct selector is byte-identical.
+- **RQ-67-VFPREACH (#1267)** — reported by a user against shipped v0.66.0. The
+  encoder now emits `vpush`/`vpop {d8-d15}` (llvm-mc-verified, with
+  `vpush {d8}` assembled separately as the size-field control), and a
+  last-resort rung admits the callee-saved half for a function that would
+  otherwise decline with `GI-FPU-002`. **621 of 621 corpus compiles
+  byte-identical.** Disclosed honestly: *no module in the corpus reaches the
+  new rung* — the existing #881 and #1069 rungs rescue every shape we hold,
+  including two built to defeat them — so it is exercised by test, and the
+  reporter's own module remains unobtainable, so their count is unpublished
+  rather than estimated.
+
+### Added
+
+- **RQ-67-NOTESGATE (#1259)** — the release notes were the one load-bearing
+  surface with no gate, and in v0.66 carried two defects to the tag candidate
+  past the release PR, a clean-room review and 67 green checks. A
+  `changelog structure` slot now fails when an `## [Unreleased]` heading
+  survives at cut carrying entries, or when the topmost section is not the
+  release being cut. Its red-first cost nothing: `0cfcc160` (the v0.66 tag
+  candidate) reds and `2e1a8287` (the tag) greens — two commits that already
+  existed. `claim_check --metric` now prints each ratchet's last-change tag and
+  releases-held; the derivation independently reproduces the figure v0.66 got
+  wrong.
+
+### Measured
+
+Every number below is printed by `claim_check --metric`, not restated.
+
+| ratchet | v0.66.0 | v0.67.0 | delta | last changed | held |
+|---|---:|---:|---:|---|---:|
+| `known_open_pins` | 127 | **85** | **−42** | v0.66.0 | 1 |
+| `known_open_pinned_cases` | 505 | **158** | **−347** | v0.66.0 | 1 |
+| `selector_lines_code` | 20097 | 20224 | +127 | v0.66.0 | 1 |
+| `sel_dsl_rules` | 80 | 80 | +0 | **v0.59.0** | **8** |
+| `selector_wildcard_arms_code` | 56 | 56 | +0 | v0.66.0 | 1 |
+| `mirror_obligation_files` | 24 | 24 | +0 | v0.58.0 | 9 |
+| `mutants_untested` | 4 | 4 | +0 | v0.65.0 | 2 |
+
+**RQ-67-PINDOWN (#242): the pin debt ends below where it began**, which it did
+not last release — start 127, end 85, net −42, every one moved in the PR that
+closed it. v0.66's waiver argument ("the debt did not grow, its *measurement*
+did") was not invoked a second time; no new finding raised the count.
+
+### Refuted
+
+- **RQ-67-SUBTRACT (#242)** — `selector_lines_code` does not fall, and the
+  reason is that **the named lever does not exist**. The plan reasoned from a
+  manifest asymmetry (16 i32 `_imm` rules, 0 i64) to hand-written i64 arms
+  awaiting replacement. The i32 rules were paid for by a const fold that
+  already existed; the rule increment deleted only the *emission*. **There is
+  no i64 fold anywhere**, so there is nothing to delete, and building one would
+  *add* selector lines. A sweep of all 60 rule-covered ops flagged four arms as
+  still hand-emitting; all four are false positives that say "the only path" in
+  their own comments — RQ-58-RETIRE and RQ-59-SUBTRACT already took this lever.
+
+  This is the ratchet's **ninth release without a fall**. Both this plan and
+  v0.66's named a target from an asymmetry in a manifest without checking the
+  code the target lives in. The next candidate is named with its evidence, and
+  its size is marked *unmeasured* rather than reported from a parser that had
+  just been wrong four times.
+
+### Deferred
+
+- **RQ-67-ARCHMODEL (#1136)** — feature-loop steps 1-2 (spar AADL → WIT) N/A a
+  **seventh** consecutive time. spar#445 (spar accepts property associations
+  from undeclared property sets silently, rc=0) re-verified at cut on
+  2026-09-16: still OPEN, last updated 2026-09-03. Generating WIT from a model
+  spar will silently mis-validate would manufacture the unearned confidence
+  this programme exists to prevent. The loop's own rule is that three N/As make
+  a backlog item, not an exemption; this is more than twice that, and it is
+  stated here rather than left green in an artifact nobody reads.
+
 ## [0.66.0] - 2026-09-10
 
 **Watched, fixed, or deleted**
