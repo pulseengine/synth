@@ -626,7 +626,11 @@ impl InstructionSelector {
         // is byte-identical.
         let fpu = self.fpu;
         let params_f32 = self.params_f32.clone();
-        let mut vfp_used = [false; crate::instruction_selector::VFP_FILE];
+        // RQ-67-VFPREACH (#1267): the occupancy map carries the allocation
+        // policy as INITIAL STATE — the callee-saved half arrives pre-marked
+        // taken unless this compilation opted in, so none of the four VFP
+        // allocators needed a width argument.
+        let mut vfp_used = crate::instruction_selector::new_vfp_used(self.vfp_wide_file);
         let mut vfp_home = [false; crate::instruction_selector::VFP_FILE];
         let mut f32_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
         {

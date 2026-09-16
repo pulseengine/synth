@@ -122,6 +122,27 @@ pub(crate) const VFP_FILE: usize = 32;
 /// The AAPCS caller-saved half, S0-S15 / D0-D7.
 pub(crate) const VFP_ALLOC_DEFAULT: usize = 16;
 
+/// RQ-67-VFPREACH (#1267): a fresh VFP occupancy map.
+///
+/// `wide == false` (every path that compiles today) pre-marks S16-S31 as TAKEN,
+/// so the four allocators skip them without knowing the policy exists — which
+/// is why this change needed no new argument on any of their call sites, and
+/// why it is byte-identical by construction rather than by review.
+///
+/// `wide == true` is the opt-in for the retry rung reached only by a function
+/// that would otherwise DECLINE with `GI-FPU-002`. A function that lands there
+/// must emit `VPushCalleeSavedVfp`/`VPopCalleeSavedVfp`, because the AAPCS
+/// contract says the callee preserves this half.
+pub(crate) fn new_vfp_used(wide: bool) -> [bool; VFP_FILE] {
+    let mut used = [false; VFP_FILE];
+    if !wide {
+        for slot in used.iter_mut().skip(VFP_ALLOC_DEFAULT) {
+            *slot = true;
+        }
+    }
+    used
+}
+
 const ALLOCATABLE_REGS: [Reg; 9] = [
     Reg::R0,
     Reg::R1,
@@ -2999,12 +3020,13 @@ fn vfp_s_index(r: VfpReg) -> Option<usize> {
 /// function that exhausts even under the spill rung stays a loud skip. (The
 /// substring is the retry trigger — keep it stable.)
 fn alloc_vfp_temp(used: &mut [bool; VFP_FILE]) -> Result<VfpReg> {
-    // RQ-67-VFPREACH (#1267): the ARRAY is the full file (S0-S31) so the upper
-    // half is representable, but allocation stops at `VFP_ALLOC_DEFAULT`. That
-    // keeps every function that compiles today on exactly today's registers —
-    // the widening is byte-identical by construction, and reaching into
-    // S16-S31 is an opt-in for the retry rung that would otherwise DECLINE.
-    for (i, slot) in used.iter_mut().take(VFP_ALLOC_DEFAULT).enumerate() {
+    // RQ-67-VFPREACH (#1267): the ARRAY is the full file (S0-S31); which half is
+    // AVAILABLE is carried as INITIAL STATE by `new_vfp_used`, not as a limit
+    // argument. The callee-saved half arrives pre-marked taken unless a caller
+    // opted in, so this scan needs no width parameter and none of the ~57 call
+    // sites of the four VFP allocators had to change — the array that was
+    // already threaded everywhere carries the policy.
+    for (i, slot) in used.iter_mut().enumerate() {
         if !*slot {
             *slot = true;
             return Ok(index_to_vfp_reg(i as u8));
@@ -6144,6 +6166,12 @@ pub struct InstructionSelector {
     /// before the ops that consume them. Bit-identity is structural, like the
     /// two integer rungs above.
     vfp_spill_on_exhaustion: bool,
+    /// RQ-67-VFPREACH (#1267): may this compilation allocate from the AAPCS
+    /// CALLEE-saved half of the VFP file (S16-S31 / D8-D15)? False on every
+    /// path that compiles today; set only by the retry rung reached by a
+    /// function that would otherwise DECLINE with `GI-FPU-002`. A function
+    /// that uses it MUST carry the VPUSH/VPOP save-restore.
+    vfp_wide_file: bool,
     /// #1069: LAST-resort residence lever for fresh f32/f64 local homes —
     /// see [`SpillState::vfp_frame_home_locals`]. Set (together with
     /// `vfp_spill_on_exhaustion`) only by the backend's final VFP retry,
@@ -6247,6 +6275,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
+            vfp_wide_file: false,
             vfp_frame_home_locals: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
@@ -6301,6 +6330,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
+            vfp_wide_file: false,
             vfp_frame_home_locals: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
@@ -6342,6 +6372,19 @@ impl InstructionSelector {
     /// register-file exhaustion `Err` — enabling it reserves the shared spill
     /// area in the frame, so calling it for a function that compiles without
     /// it would change its bytes.
+    /// RQ-67-VFPREACH (#1267): allow allocation from the AAPCS CALLEE-saved
+    /// half of the VFP file (S16-S31 / D8-D15). Intended ONLY as the backend's
+    /// LAST retry, after every existing escape ended in a `GI-FPU-002`
+    /// exhaustion `Err` — the same discipline the #881 rung documents, so a
+    /// function that compiles today is produced by exactly today's path.
+    ///
+    /// The wider file is not free: a function that uses it owes a VPUSH/VPOP of
+    /// d8-d15 — 64 bytes of stack and ~20 cycles each way — which is why this
+    /// is a rung and not a default.
+    pub fn set_vfp_wide_file(&mut self, enabled: bool) {
+        self.vfp_wide_file = enabled;
+    }
+
     pub fn set_vfp_spill_on_exhaustion(&mut self, enabled: bool) {
         self.vfp_spill_on_exhaustion = enabled;
     }
