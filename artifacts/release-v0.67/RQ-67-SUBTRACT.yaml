@@ -67,8 +67,8 @@ artifacts:
       issue: "#242"
       done-when: "manual: sel_dsl_rules RISES above 80 with each new rule carrying its own Qed, AND selector_lines_code FALLS below 20097 with the superseded hand-written arms DELETED, every deletion gated on byte-identity over the full corpus or an execution differential; both ratchet values and their baselines move together in claims.yaml in the same PR, so the win cannot be silently given back; if the family yields a smaller fall than expected the artifact publishes the measured number rather than widening scope"
       landed: >-
-        NOT LANDED. THE NAMED LEVER DOES NOT EXIST, AND THAT REFUTATION IS THE
-        DELIVERABLE. sel_dsl_rules stays 80, selector_lines_code stays 20224,
+        NOT LANDED AS A CODE CHANGE. THE NAMED LEVER DOES NOT EXIST, AND THAT
+        REFUTATION IS THE DELIVERABLE (#242, delivered as PR #1297). sel_dsl_rules stays 80, selector_lines_code stays 20224,
         no ratchet value moves and no waiver is added, because nothing grew.
         The done-when required BOTH numbers to move together and neither can.
 
