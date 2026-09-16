@@ -673,7 +673,7 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R4-shared/REG/liveness.rs:7172:36",
+      "id": "R4-shared/REG/liveness.rs:7212:36",
       "want_bytes": "changed",
       "want_changed": [
         "aarch64_param_homing_851.wat|reloc",
@@ -2291,7 +2291,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "04aaebe3",
+    "reanchored_at": "5ef29ef6",
     "seed": 1189
   },
   "mutants": [
@@ -2610,13 +2610,13 @@
       "before": "            op2: Operand2::Imm(v),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 8735,
+      "end": 8775,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:8735:17",
+      "id": "R4-shared/IMM/liveness.rs:8775:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.4,
-      "start": 8735,
+      "start": 8775,
       "status": "uncompilable"
     },
     {
@@ -5394,13 +5394,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7172,
+      "end": 7212,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:7172:36",
+      "id": "R4-shared/REG/liveness.rs:7212:36",
       "op": "REG",
       "region": "R4-shared",
       "seconds": 326.8,
-      "start": 7172,
+      "start": 7212,
       "status": "survived",
       "suite_seconds": 290.1
     },

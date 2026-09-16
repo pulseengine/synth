@@ -1077,7 +1077,17 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
 /// argument is `ArmOp::Call`: `classify_call` returns `Direct` for it and
 /// `continue`s, so it never reaches the `op_cost` check at all. It is
 /// unreachable for a different reason — `encode_thumb` REFUSES it with a typed
-/// `Err` (#615), so a compile carrying one has already failed.
+/// `Err`, so a compile carrying one has already failed.
+///
+/// #1289: UNTIL #1272 THIS PREMISE WAS FALSE ON THE TARGET IT RUNS ON. The
+/// refusal it cited (#615) existed only in `encode_arm`, the A32 path. On
+/// Thumb-2 — the default target, and the only one this WCET model prices — an
+/// `ArmOp::Call` reached a `_ =>` catch-all that returned a NOP as `Ok`, so the
+/// compile SUCCEEDED and this predicate's argument did not hold. #1272 replaced
+/// the catch-all with a typed refusal, which is what makes the sentence above
+/// true; `thumb2_refuses_call_pseudo_op_so_the_wcet_premise_holds`
+/// (crates/synth-backend/tests/a32_no_silent_nop_615.rs) pins it, and goes red
+/// against the pre-#1272 encoder.
 #[allow(clippy::match_same_arms)] // grouped by REASON, not by answer
 fn may_move_sp(op: &ArmOp) -> bool {
     use ArmOp::*;

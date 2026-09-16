@@ -35,7 +35,7 @@ artifacts:
       NAMED, not discovered by a user. Gate on byte-identity over the corpus; any
       function that changes from compiled to declined is listed by name with the op
       that reached the catch-all.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - vcr
@@ -52,3 +52,75 @@ artifacts:
       verification-track: differential
       issue: "#1272"
       done-when: "manual: the Thumb-2 encoder returns a typed Err for any op it does not encode, with no Ok(NOP) catch-all; wcet_loops.rs may_move_sp's premise is re-stated to match the encoder it now describes, or the op is modelled; vfp_word_effect's wildcard is conservative rather than claiming an empty footprint; byte-identity holds over the full corpus and every function that moves from compiled to declined is NAMED with the op that reached the catch-all, or the count is published as zero"
+      landed: >-
+        LANDED (#1272, #1289, #1275). THE PLAN UNDERCOUNTED ITS OWN ARTIFACT:
+        it named one catch-all; there were SEVEN silent-NOP sites in the Thumb-2
+        encoder, and #1275's wildcard absorbed 25 VFP-touching variants, not the
+        "27" the audit reported.
+
+        #1272 -- every NOP-emitting site in `encode_thumb` was classified by
+        reading it, not by pattern: 12 are legitimate (the explicit `ArmOp::Nop`
+        arm; seven are `0xBF00 | cond | mask`, the IT/ITE opcode base, not a
+        NOP; two are deliberate padding inside fixed-layout expansions;
+        `I32WrapI64` when the value is already in place). SEVEN were silent
+        fallbacks, and all seven now return a typed Err: the `_ =>` catch-all,
+        plus the final `else` of the MOV, AND, ORR, EOR, CMP and MVN arms, each
+        of which returned Ok(NOP) for an operand form the arm does not encode
+        (`RegShift`, and `Imm` for MVN). Against the pre-fix encoder, NINE
+        representative variants came back as a bare NOP: Mvn, Select,
+        LocalGet, LocalSet, LocalTee, GlobalGet, GlobalSet, BrTable, Call.
+
+        THE STATED RISK RESOLVED TO ZERO, SCOPED TO THE 207-MODULE CORPUS.
+        Baseline (the frozen v0.67.0 binary) vs candidate, 1035 compiles each
+        over five configs (cortex-m4 relocatable / self / self-noopt,
+        cortex-m7dp, cortex-m55): 823 byte-identical, 212 failing identically,
+        0 exit-code changes, 0 digest changes, 0 function-level decline
+        changes. A separate scan of 1449 candidate compiles over seven Thumb-2
+        targets -- failing compiles included -- found the #1272 diagnostic in
+        NO output. The candidate binary carries the seven refusal strings and
+        the baseline none, so the zero is not two identical binaries.
+
+        #1289 -- `may_move_sp` argued that `encode_thumb` refuses ArmOp::Call.
+        The only refusal was in `encode_arm` (A32). #1272's catch-all refusal is
+        what makes the premise TRUE on the target the WCET model prices; the
+        comment now says so and names the test that pins it.
+
+        #1275 -- `vfp_word_effect`'s wildcard asserts "an integer op provably
+        touches no S-word", and the #881 across-call checker scans PAST an op
+        with that claim. THE OBVIOUS FIX WAS MEASURED AND REJECTED:
+        `_ => None` kept the corpus byte-identical and all 771 synth-synthesis
+        lib tests green, and would have made the across-call checker VACUOUS
+        -- it breaks its scan at the integer `mov` that sets up nearly every
+        call. Instead, the 25 integer-MVE variants join their 16 float-MVE
+        siblings in the existing `None` arm. Derived two ways that agree: the
+        shipped Thumb-2 encoder emits VFP/SIMD instructions for 23 of them, and
+        the enum's own Mve* set names the 2 more (MveLoad, MveStore) whose
+        load/store forms fall outside the byte decoder's predicate. The deeper
+        weakness this exposed -- `None => break` means the across-call checker
+        reports nothing through ANY unmodeled op, all 41 MVE variants included
+        -- predates this lane and is filed as #1303, not widened into it.
+      verified-by: >-
+        RED-FIRST, every new test backed out and watched fail.
+        `a32_no_silent_nop_615.rs` gains four tests. Against the pre-#1272
+        encoder, three fail: `thumb2_encoder_has_no_silent_nop_for_any_variant`
+        (reusing the existing 224-variant `representatives()` universe rather
+        than a second list; it named the nine variants above),
+        `thumb2_unencoded_operand_forms_refuse_loudly` (MOV returned
+        Ok([00, bf])), and `thumb2_refuses_call_pseudo_op_so_the_wcet_premise_holds`
+        (Call returned Ok([0, 191])). With the 25 MVE arms backed out,
+        `vfp_footprint_matches_encoder_1275` fails naming exactly 25 distinct
+        Mve variants.
+
+        WHAT THE CORPUS CANNOT MEASURE, stated rather than implied: #1275's
+        REACH effect. The corpus contains no SIMD input -- zero .wat fixtures
+        mention v128, and of the 173 cortex-m55 images that compile, none has a
+        Q-register operand in `synth disasm` -- so byte identity is silent on
+        it. The encoder-derived oracle is the evidence; the effect on real
+        Helium code is UNMEASURED. A first attempt to answer this by scanning
+        whole ELF files for MVE-space words reported 57 of 173 and was
+        discarded: it was matching symbol tables and data, which the fixture
+        names (a32_ldst_offset, aarch64_globals) made obvious.
+
+        Harness: /Volumes/Work/planning/byte_triage.py (baseline and candidate
+        in separate target directories, never shared).
+
