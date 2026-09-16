@@ -5523,6 +5523,21 @@ impl OptimizerBridge {
                         op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
+                    // #1240: CLEAR the vreg-based hi, do not merely set the
+                    // physical stash. The epilogue resolves the result hi as
+                    // `last_result_vreg_hi -> vreg_to_arm` FIRST and only falls
+                    // back `.or(last_result_vreg_hi_reg)`. `last_result_vreg_hi`
+                    // is assigned `Some(dest_hi.0)` in 25 places and `None` in
+                    // none, so after ANY earlier i64 op in the same function it
+                    // is permanently Some — and the fallback this arm's `rd_hi`
+                    // zero depends on became UNREACHABLE. The epilogue then
+                    // returned the STALE pair's hi register, which is why the
+                    // observed high word was the OPERAND's high word rather
+                    // than the 0 that `movw rd_hi, #0` had correctly written
+                    // two instructions earlier. These three ops carry no
+                    // `dest_hi` vreg, so None is the accurate state, not a
+                    // workaround.
+                    last_result_vreg_hi = None;
                     last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }
@@ -5549,6 +5564,21 @@ impl OptimizerBridge {
                         op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
+                    // #1240: CLEAR the vreg-based hi, do not merely set the
+                    // physical stash. The epilogue resolves the result hi as
+                    // `last_result_vreg_hi -> vreg_to_arm` FIRST and only falls
+                    // back `.or(last_result_vreg_hi_reg)`. `last_result_vreg_hi`
+                    // is assigned `Some(dest_hi.0)` in 25 places and `None` in
+                    // none, so after ANY earlier i64 op in the same function it
+                    // is permanently Some — and the fallback this arm's `rd_hi`
+                    // zero depends on became UNREACHABLE. The epilogue then
+                    // returned the STALE pair's hi register, which is why the
+                    // observed high word was the OPERAND's high word rather
+                    // than the 0 that `movw rd_hi, #0` had correctly written
+                    // two instructions earlier. These three ops carry no
+                    // `dest_hi` vreg, so None is the accurate state, not a
+                    // workaround.
+                    last_result_vreg_hi = None;
                     last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }
@@ -5575,6 +5605,21 @@ impl OptimizerBridge {
                         op2: Operand2::Imm(0),
                     });
                     last_result_vreg = Some(dest.0);
+                    // #1240: CLEAR the vreg-based hi, do not merely set the
+                    // physical stash. The epilogue resolves the result hi as
+                    // `last_result_vreg_hi -> vreg_to_arm` FIRST and only falls
+                    // back `.or(last_result_vreg_hi_reg)`. `last_result_vreg_hi`
+                    // is assigned `Some(dest_hi.0)` in 25 places and `None` in
+                    // none, so after ANY earlier i64 op in the same function it
+                    // is permanently Some — and the fallback this arm's `rd_hi`
+                    // zero depends on became UNREACHABLE. The epilogue then
+                    // returned the STALE pair's hi register, which is why the
+                    // observed high word was the OPERAND's high word rather
+                    // than the 0 that `movw rd_hi, #0` had correctly written
+                    // two instructions earlier. These three ops carry no
+                    // `dest_hi` vreg, so None is the accurate state, not a
+                    // workaround.
+                    last_result_vreg_hi = None;
                     last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }

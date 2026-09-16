@@ -44,3 +44,56 @@ artifacts:
       verification-track: differential
       issue: "#1240"
       done-when: "manual: i64.clz/ctz/popcnt zero the high word on the optimized path, shown red-first on the boot sweep's recorded vectors (wrong before, correct after, direct selector unchanged); the fix is verified INDEPENDENT of RQ-67-CALLEESAVE by landing or measuring it separately, so the release can state whether the two are one mechanism or two; the pin moves in the same PR"
+      landed: >-
+        LANDED, AND THE ISSUE'S OWN TITLE NAMED THE WRONG MECHANISM. There was
+        never a missing zero-fill. `ir_to_arm` emits `movw rd_hi, #0` for all
+        three ops and has since #1048 — it is visible two instructions before
+        the return in every affected function. The EPILOGUE returned a
+        DIFFERENT register.
+
+        It resolves an i64 return value's high half as `last_result_vreg_hi ->
+        vreg_to_arm` and only falls back `.or(last_result_vreg_hi_reg)`, the
+        physical stash Clz/Ctz/Popcnt set because those three ops carry no
+        `dest_hi` vreg to record. `last_result_vreg_hi` is assigned `Some(..)`
+        in 25 places and `None` in NONE, so after ANY earlier i64 op in the
+        same function it is permanently Some, the fallback is DEAD CODE, and
+        the epilogue moves the STALE pair's high register into R1 — still
+        holding the operand's high word. That is why the bug was
+        input-dependent rather than universal: a bare `i64.clz` on a parameter
+        takes the fallback and was always correct, which is how it survived to
+        be found by EXECUTION rather than inspection.
+
+        Fix: the three arms clear the field. Five emitted instructions change
+        across the two fixtures, each one a register field (`mov r1,r9 ->
+        mov r1,r11` twice; `mov r1,r5 -> mov r1,r7` three times), in every case
+        naming the register zeroed two instructions earlier. Layout, lengths
+        and all other bytes are unchanged, and BOTH fixtures are byte-identical
+        on `--relocatable`: the direct selector was never wrong here, as this
+        artifact required.
+
+        FOUR pins closed across TWO tables (boot sweep clz64 10, ctz64 10,
+        popcnt64 3; i64-result-pair popcnt64 3), each measured by re-running
+        the oracle to PASS. The fourth lives in the second table — the one CI
+        caught the CALLEESAVE lane missing — and was found this time by
+        grepping the issue tag rather than remembered. Zero `#1240` pins remain
+        in scripts/. known_open_pins 89 -> 85, pinned cases 184 -> 158.
+
+        THE FIRST REGRESSION TEST WAS VACUOUS AND IS REPORTED AS SUCH. It
+        shifted a widened i32 right by a constant 32 — provably 0 — so the
+        optimizer folded away the very op that poisons the field, and it passed
+        against a deliberately un-fixed tree. The shipped shape shifts a
+        constant by a RUNTIME amount and, backed out, fails all three cases
+        naming R9, the register the disassembly shows. The assertion is
+        structural rather than a pinned `R11`, which would pass for the wrong
+        reason the day the allocator changes.
+      verified-by: >-
+        THE NEGATIVE CONTROL HELD, so the release states TWO causes without
+        hedging. This artifact was kept separate from RQ-67-CALLEESAVE on the
+        explicit condition that if it closed when the callee-saved set was
+        fixed, the attribution there was wrong. It did not: after CALLEESAVE
+        landed, all 23 #1240 vectors were still wrong, and this fix touches no
+        register-saving code at all. Two oracles, both CI-wired, both re-run to
+        PASS: `self_contained_boot_sweep_1189_differential.py` and
+        `i64_result_pair_1189_differential.py`, plus
+        `crates/synth-synthesis/tests/regression_1240_i64_count_result_hi.rs`
+        in `cargo test --workspace`.

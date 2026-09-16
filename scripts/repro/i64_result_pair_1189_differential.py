@@ -112,7 +112,11 @@ COMPARED_FLOOR = 1_000
 
 # (leg, export, kind) -> (issue, exact count). See the docstring.
 KNOWN: dict[tuple[str, str, str], tuple[str, int]] = {
-    ("self", "popcnt64", "mismatch"): ("#1240", 3),
+    # #1240 FIXED by RQ-67-HIGHWORD: recorded 3, now 0 — deleted, not pinned
+    # to 0. The epilogue resolved the i64 result's high half through the STALE
+    # `last_result_vreg_hi` vreg (assigned `Some(..)` in 25 places, `None` in
+    # none) and so never reached the `.or(last_result_vreg_hi_reg)` fallback
+    # that carries these three ops' correctly-zeroed `rd_hi`.
 }
 
 
