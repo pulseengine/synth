@@ -715,6 +715,7 @@ impl SpillState {
         self.used[i] = true;
         Some(self.base + (i as i32) * 8)
     }
+
     /// Release the slot at byte offset `off` so it can be reused.
     fn free(&mut self, off: i32) {
         let i = ((off - self.base) / 8) as usize;
@@ -986,10 +987,10 @@ fn preserve_vfp_caller_saved(
     let mut preserved: Vec<(VfpReg, i32)> = Vec::with_capacity(live.len());
     for k in live {
         let off = base + (k as i32) * 4;
-        if off > 1020 {
+        if off > VFP_SP_IMM_MAX {
             return Err(synth_core::Error::synthesis(format!(
                 "GI-FPU-002 phase 2: VFP spill slot offset {off} exceeds the \
-                 VSTR/VLDR [sp,#imm] range (1020) — frame too large; declining \
+                 VSTR/VLDR [sp,#imm] range ({VFP_SP_IMM_MAX}) — frame too large; declining \
                  (#719/#369)"
             )));
         }
@@ -2190,6 +2191,12 @@ fn compute_local_layout(
     aeabi_builtin_calls: bool,
     outgoing_arg_bytes: i32,
     i64_spill_slots: usize,
+    // RQ-69-FALCON (#1318): the frame-home rung is on, so the VFP call-spill
+    // area is placed where VSTR/VLDR can reach it. Only ever true for a
+    // function that already failed every earlier rung.
+    vfp_reachable_area: bool,
+    // RQ-69-FALCON (#1318): this call is the re-lay with the area up front.
+    place_vfp_early: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(
@@ -2227,6 +2234,28 @@ fn compute_local_layout(
     // is always a multiple of 8 (rounded by the caller) so the downstream
     // `offset % 8` alignment checks are preserved exactly.
     let mut offset: i32 = outgoing_arg_bytes;
+    // RQ-69-FALCON (#1318): under the frame-home rung the VFP call-spill area is
+    // reserved HERE, before the locals and the (grown) spill pool, instead of
+    // after every other field.
+    //
+    // Why it has to move: `VSTR`/`VLDR` encode `[sp,#imm]` as imm8*4, so they
+    // reach 1020 bytes; the area is placed last precisely so no existing frame
+    // offset moves, and when the pool grows to its 120-slot cap (960 bytes) the
+    // area lands at 1248 on #1318's `step`. Every recovery rung then dies on
+    // the VSTR range rather than on register pressure — measured on the
+    // reporter's module, all four rungs.
+    //
+    // Why moving it is safe: the flag is set only by the backend's frame-home
+    // rung, which runs only after every earlier rung has failed, so the
+    // functions whose layout changes are exactly the functions that emit no
+    // bytes today. Byte-identity over the corpus holds by construction.
+    let vfp_early_base = if place_vfp_early {
+        let base = offset;
+        offset += 16 * 4;
+        Some(base)
+    } else {
+        None
+    };
     for &idx in &used {
         // #1214: OR in the DECLARED width for a local the dataflow walk
         // never saw written (read-before-write, never written at all) — see
@@ -2388,7 +2417,12 @@ fn compute_local_layout(
         // flag is computed from the per-callee signature tables, which this
         // free function cannot see.
         || force_vfp_area;
-    let vfp_spill_base = if has_f32 && has_call {
+    let vfp_spill_base = if let Some(base) = vfp_early_base {
+        // Reserved up front (#1318); `has_f32 && has_call` governs whether it is
+        // USED, exactly as before — an unused reservation only costs 64 bytes of
+        // frame on a function that would otherwise not compile at all.
+        Some(base)
+    } else if has_f32 && has_call {
         let base = offset;
         offset += 16 * 4;
         Some(base)
@@ -2425,6 +2459,41 @@ fn compute_local_layout(
         }
     }
 
+    // RQ-69-FALCON (#1318): `VSTR`/`VLDR` reach VFP_SP_IMM_MAX; integer LDR/STR
+    // reach 4095. The VFP call-spill area is placed after every other frame
+    // field so adding it never moved an existing offset — but once the pool
+    // grows for a float-dense function the area lands out of range and every
+    // recovery rung dies on the encoding, not on pressure. Re-lay ONCE with the
+    // area up front, and ONLY when it is genuinely unreachable: a function whose
+    // area is already in range keeps its exact frame (the corpus caught this —
+    // `vfp_local_pressure_1069` compiles TODAY through the frame-home rung, and
+    // gating on the rung alone moved its bytes), and a function whose accesses
+    // cannot be encoded declines today, so it has no bytes to preserve.
+    if !place_vfp_early
+        && vfp_reachable_area
+        && vfp_spill_base.is_some_and(|b| b + 15 * 4 > VFP_SP_IMM_MAX)
+    {
+        return compute_local_layout(
+            wasm_ops,
+            num_params,
+            params_i64,
+            declared_i64_locals,
+            params_f32,
+            params_f64_vfp,
+            func_ret_i64,
+            type_ret_i64,
+            func_arg_counts,
+            type_arg_counts,
+            force_spill_area,
+            force_param_backing,
+            force_vfp_area,
+            aeabi_builtin_calls,
+            outgoing_arg_bytes,
+            i64_spill_slots,
+            vfp_reachable_area,
+            true,
+        );
+    }
     LocalLayout {
         locals,
         frame_size,
@@ -3145,6 +3214,18 @@ const VFP_HOME_CAP_S: usize = 7;
 /// The D-register twin of [`VFP_HOME_CAP_S`]: fresh f64 local homes may pin
 /// D0..D3; D4..D7 stay temp territory under the rung.
 const VFP_HOME_CAP_D: usize = 3;
+
+/// The furthest byte `VSTR`/`VLDR` can address as `[sp,#imm]`: the offset is
+/// encoded as `imm8*4`, so `0..=1020`. Integer `LDR`/`STR` reach `imm12`
+/// (0..=4095) — the asymmetry is why a frame that is fine for the integer side
+/// can put the VFP areas out of encoding range (#1318).
+///
+/// ONE definition. The same number was written out three times — the #881 spill
+/// range check, the #719 call-spill preserve, and the #369 phase-3 arg-staging
+/// slot — plus the layout decision added for #1318. A limit that is a property
+/// of the ENCODING should not be re-typed per call site: that is the
+/// second-source-of-truth shape this project keeps paying for elsewhere.
+pub const VFP_SP_IMM_MAX: i32 = 1020;
 
 /// The #1069 frame-homed-local slot-pool exhaustion message. SUBSTRING IS
 /// CONTROL FLOW (the #881 lesson, pinned red-first by the `live24` fixture
@@ -3910,10 +3991,10 @@ fn pop_double(stack: &mut Vec<StackVal>) -> Result<VfpReg> {
 /// instruction pushed; `Err` is the loud VSTR-range decline.
 fn vfp_check_slot_range(slot: i32, is_double: bool) -> Result<()> {
     let hi = slot + if is_double { 4 } else { 0 };
-    if !(0..=1020).contains(&hi) || !(0..=1020).contains(&slot) {
+    if !(0..=VFP_SP_IMM_MAX).contains(&hi) || !(0..=VFP_SP_IMM_MAX).contains(&slot) {
         return Err(synth_core::Error::synthesis(format!(
             "#881: VFP spill slot offset {slot} exceeds the VSTR/VLDR \
-             [sp,#imm] range (1020) — frame too large; declining loudly"
+             [sp,#imm] range ({VFP_SP_IMM_MAX}) — frame too large; declining loudly"
         )));
     }
     Ok(())
@@ -8253,7 +8334,7 @@ impl InstructionSelector {
         })?;
         let slot = |w: usize| -> Result<i32> {
             let off = base + (w as i32) * 4;
-            if off > 1020 {
+            if off > VFP_SP_IMM_MAX {
                 return Err(synth_core::Error::synthesis(format!(
                     "GI-FPU-002 phase 3: VFP arg-staging slot offset {off} \
                      exceeds the VLDR/VSTR [sp,#imm] range — frame too large"
@@ -17137,6 +17218,8 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
+            false,
         );
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
@@ -17167,6 +17250,8 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
+            false,
         );
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
@@ -17201,6 +17286,8 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
+            false,
         );
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
@@ -17238,6 +17325,8 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
+            false,
         );
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
@@ -17277,6 +17366,8 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
+            false,
         );
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));

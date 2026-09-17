@@ -739,6 +739,56 @@ fn compile_wasm_to_arm(
         // is reached ONLY by functions that exhaust WITH promotion, so promotion-on
         // output is untouched by construction (frozen byte gate stays green).
         let promote = std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err();
+        // RQ-69-FALCON (#1318): per-rung reporting, because the summary line
+        // below CANNOT distinguish the two failures it is asked about. `rung`
+        // is only assigned when an attempt SUCCEEDS, so a function that climbs
+        // the whole ladder and exhausts every rung prints `rung=base
+        // result=exhausted` — identical to one that never climbed at all. Worse,
+        // the Err the caller finally reports is stage 2's, so a stage-3
+        // (wide-file) failure is invisible even in the user-facing message:
+        // #1318's `step` reports the #1069 slot-pool message while the wide-file
+        // rung it also failed says nothing. Measured on the reporter's module
+        // before this was written; reading the source was the only way to tell
+        // which of the two had happened.
+        //
+        // Logging only, behind the same env var, so emitted bytes are unchanged
+        // and the frozen byte gate is unaffected.
+        let stats = std::env::var("SYNTH_RECOVERY_STATS").is_ok();
+        // Every rung's Err, in attempt order (#1318). The ladder keeps the
+        // EARLIER attempt's Err whenever a later rung also fails — stage 3
+        // falls back to stage 2's `fh`, each pool-grow falls back to its
+        // ungrown attempt — so the reporter of #1318 was told "spill-slot pool
+        // exhausted" while the wall three of the four rungs actually hit was
+        // the VSTR/VLDR [sp,#imm] window. Reporting the LAST rung's Err is no
+        // better: the last rung attempted is the wide-file one, whose Err is
+        // the pool message again. So report what was actually tried, deduped.
+        // Control flow is untouched — every rung still runs exactly when it
+        // ran before, and the substrings other code matches on are all still
+        // present in the joined message.
+        let tried: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let note = |name: &str, r: &Result<Vec<ArmInstruction>, synth_core::Error>| {
+            if let Err(e) = r {
+                let m = e.to_string();
+                let first = m.lines().next().unwrap_or("").to_string();
+                tried.borrow_mut().push((name.to_string(), first));
+            }
+            if stats {
+                match r {
+                    Ok(_) => eprintln!("[recovery-stats]   tried rung={name} -> ok"),
+                    Err(e) => {
+                        let m = e.to_string();
+                        let first = m
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(140)
+                            .collect::<String>();
+                        eprintln!("[recovery-stats]   tried rung={name} -> exhausted: {first}");
+                    }
+                }
+            }
+        };
         // The full pre-#587 recovery sequence (promotion-on ladder, then the
         // #474 promotion-off fallback), parameterized on the pool size so the
         // pool-grow retry below reruns it verbatim.
@@ -794,6 +844,7 @@ fn compile_wasm_to_arm(
             let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
             let (grown, _, grown_dropped) =
                 full_sequence(Some(depth.saturating_add(4)), false, false, false);
+            note("pool-grow", &grown);
             if grown.is_ok() {
                 attempt = grown;
                 rung = "pool-grow";
@@ -821,6 +872,7 @@ fn compile_wasm_to_arm(
             // (sequence, pool sizing and all): any function it rescues is
             // byte-identical to what it shipped yesterday, by construction.
             let (vfp, vfp_rung, vfp_dropped) = full_sequence(None, true, false, false);
+            note("vfp-spill", &vfp);
             let (vfp, vfp_rung, vfp_dropped) = if vfp.as_ref().err().is_some_and(|e| {
                 let msg = e.to_string();
                 msg.contains(SLOT_EXHAUSTION) || msg.contains("spilling the VFP register file")
@@ -828,6 +880,7 @@ fn compile_wasm_to_arm(
                 let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
                 let (grown, grown_rung, grown_dropped) =
                     full_sequence(Some(depth.saturating_add(4)), true, false, false);
+                note("vfp-spill+pool-grow", &grown);
                 if grown.is_ok() {
                     (grown, grown_rung, grown_dropped)
                 } else {
@@ -855,6 +908,7 @@ fn compile_wasm_to_arm(
                 // functions that failed every prior escape, so nothing that
                 // compiles today moves a byte.
                 let (fh, fh_rung, fh_dropped) = full_sequence(None, true, true, false);
+                note("vfp-frame-locals", &fh);
                 let (fh, fh_rung, fh_dropped) = if fh.as_ref().err().is_some_and(|e| {
                     let msg = e.to_string();
                     // The frame-homed-local slot demand (a PERMANENT slot per
@@ -891,6 +945,13 @@ fn compile_wasm_to_arm(
                         true,
                         false,
                     );
+                    note(
+                        &format!(
+                            "vfp-frame-locals+pool-grow({})",
+                            depth.saturating_add(local_targets.len()).saturating_add(4)
+                        ),
+                        &grown,
+                    );
                     if grown.is_ok() {
                         (grown, grown_rung, grown_dropped)
                     } else {
@@ -924,6 +985,7 @@ fn compile_wasm_to_arm(
                     // REFUSES functions with stack-passed params (#1273), so a
                     // failure here stays the honest loud decline it already was.
                     let (wide, wide_rung, wide_dropped) = full_sequence(None, true, true, true);
+                    note("vfp-wide-file", &wide);
                     if wide.is_ok() {
                         attempt = wide;
                         rung = match wide_rung {
@@ -943,7 +1005,12 @@ fn compile_wasm_to_arm(
         // of the failure surface a verified allocator must subsume (see
         // scripts/repro/register_exhaustion_recovery_ladder.md). Logging only:
         // emitted bytes are unchanged, so the frozen byte gate is unaffected.
-        if std::env::var("SYNTH_RECOVERY_STATS").is_ok() {
+        if stats {
+            // `rung` holds the last SUCCESSFUL rung; on total exhaustion it is
+            // still "base", which said nothing about how far the ladder climbed
+            // (#1318). Report it as `none` and let the per-rung lines above
+            // carry the detail.
+            let rung = if attempt.is_ok() { rung } else { "none" };
             eprintln!(
                 "[recovery-stats] rung={rung}{} result={}",
                 if promotion_dropped {
@@ -954,7 +1021,30 @@ fn compile_wasm_to_arm(
                 if attempt.is_ok() { "ok" } else { "exhausted" },
             );
         }
-        attempt.map_err(|e| format!("instruction selection failed: {}", e))
+        attempt.map_err(|e| {
+            // The kept Err first (so every substring any caller or test matches
+            // on is exactly where it was), then the rungs that were tried and
+            // what each one hit. Deduped by message: three rungs reporting one
+            // wall should say so once, and name the three (#1318).
+            let base = format!("instruction selection failed: {}", e);
+            let rungs = tried.borrow();
+            if rungs.len() < 2 {
+                return base;
+            }
+            let mut by_msg: Vec<(String, Vec<String>)> = Vec::new();
+            for (rung, msg) in rungs.iter() {
+                match by_msg.iter_mut().find(|(m, _)| m == msg) {
+                    Some((_, names)) => names.push(rung.clone()),
+                    None => by_msg.push((msg.clone(), vec![rung.clone()])),
+                }
+            }
+            let detail = by_msg
+                .iter()
+                .map(|(msg, names)| format!("{} -> {}", names.join(" + "), msg))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("{base} [every recovery rung failed: {detail}]")
+        })
     };
 
     // Instruction selection: optimized or direct.

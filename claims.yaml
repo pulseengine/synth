@@ -1836,9 +1836,33 @@ claims:
         # Byte-identical over the corpus (826 identical / 209 identical
         # failures / 0 changed, per increment). A FALL, no waiver; value
         # RE-DERIVED after cargo fmt.
-        value: 20201
+        value: 20284
         baseline: 17897
         waivers:
+          - to: 20284
+            reason: >-
+              RQ-69-FALCON (#1318): 20201 -> 20284, +83. THE TWENTY-FOURTH
+              WAIVER on a ceiling that has never once fallen below its
+              baseline, and the release says so rather than letting it pass.
+              What the lines buy, measured on the reporter's module: the VFP
+              call-spill area is re-laid ONCE, up front, when it would
+              otherwise sit outside the VSTR/VLDR [sp,#imm] window — the wall
+              every recovery rung on `step` actually hit (offset 1248 against
+              1020), while the message blamed the spill pool. The re-lay is a
+              single recursive call guarded on reachability, NOT on which rung
+              is running: the corpus proved the rung-only gate wrong by moving
+              `vfp_local_pressure_1069`'s bytes, and the narrowed gate is
+              byte-identical over 1035 compiles (826 identical / 209
+              identically failing / 0 changed).
+              WHAT WAS TRIED AND REMOVED rather than waived: a wrapper around a
+              renamed inner function (two 17-argument call sites, ~40 lines
+              more) became one recursive call; a two-ended pool allocator and a
+              pool-grow composition into the wide-file rung were each measured
+              to change no outcome and deleted. Three hand-copied `1020`
+              literals became one `VFP_SP_IMM_MAX` the checks and the
+              diagnostics both read — a subtraction inside the growth, since
+              the limit is a property of the instruction encoding and not of
+              any call site. Value RE-DERIVED after cargo fmt.
           - to: 20201
             reason: >-
               RQ-68-ONESOURCE (#1270/#1274/#1280/#1273): a FALL, 20224 -> 20201,
@@ -2375,7 +2399,7 @@ claims:
         # RQ-68-ONESOURCE: 31227 -> 31204 (-23 code, see selector_lines_code;
         # the new reg_contract tests live in reg_contract.rs, outside this
         # population).
-        value: 31204
+        value: 31297
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

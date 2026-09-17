@@ -49,4 +49,45 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1318"
+      disposition: partial
       done-when: "manual: the reporter's fused.wasm and opt.wasm both compile with 0 skipped functions on their own command line, OR every remaining decline is reported with a NAMED ceiling the reporter can act on; the GI-FPU-002 half is discharged against an execution differential proving the lowered float path returns what wasmtime returns, never against 'it compiles now'; both modules are added to the corpus so the pair cannot regress silently"
+      landed: >-
+        INCREMENT 1 of #1318, not the whole artifact — the status stays
+        `proposed` because the reporter's export still declines.
+
+        WHAT THE LADDER WAS HIDING. `step` does not fail on register pressure.
+        Instrumenting every rung (the first commit here) shows all four hitting
+        one wall: with the pool grown to its 120-slot cap, the VFP call-spill
+        area lands at offset 1248 and `VSTR`/`VLDR` reach 1020. The message the
+        reporter saw named the spill pool, which is what the SECOND rung hit,
+        because the ladder keeps the earlier Err whenever a later rung also
+        fails. Reporting the LAST rung is no better — that one is the wide-file
+        rung, whose Err is the pool message again — so the decline now carries
+        every rung's wall, deduped.
+
+        WHAT CHANGED IN CODEGEN. The frame is re-laid ONCE with the VFP area up
+        front when that area would otherwise be unreachable. Gated on
+        REACHABILITY, not on which rung is running: the corpus refuted the
+        rung-only gate by moving `vfp_local_pressure_1069`'s bytes (1 of 1035).
+        After the narrowing: 826 byte-identical / 209 identically failing / 0
+        changed / 0 rc changes / 0 skip-set differences.
+
+        THE CEILING, NAMED. Past the encoding wall `step` reaches VCR-RA-003,
+        which refuses the stream with
+        `SpillSlotAliased { slot: 184, first_store: 11113, overwriting_store: 11150, stale_reload: 11159 }`.
+        Diagnosed to a CHECKER-MODEL gap, filed as #1321: slot 184 is wasm local
+        45's permanent home (the layout puts locals below 256 and the spill area
+        at 256; the pool never hands out 184), local 45 is an f32 with 9
+        assignments and 21 reads, and the rule treats a second store to a slot
+        whose value was not reloaded as aliasing. For a spill slot that is a
+        bug; for a local's home it is assignment. NOT verified: the emitted
+        window at those three op indices, so the fix must not land on this
+        reasoning alone.
+
+        Also measured and REMOVED rather than shipped: a two-ended spill pool
+        (integer slots high, VFP low) and a pool-grow composition into the
+        wide-file rung — each changed no outcome on either module. Three
+        hand-copied `1020` literals became one `VFP_SP_IMM_MAX`.
+
+        Landed in #1318, PR #1322.
+

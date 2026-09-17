@@ -299,6 +299,8 @@ impl InstructionSelector {
             aeabi_builtin_calls,
             outgoing_arg_bytes,
             self.i64_spill_slots,
+            self.vfp_frame_home_locals,
+            false,
         );
         // #359 Ok-or-Err (#180/#185): an incoming stack-passed param is read via
         // `ldr rd,[sp,#off]` where `off = frame_size + DIRECT_PROLOGUE_BYTES + nsaa_k` and
