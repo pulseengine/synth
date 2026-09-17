@@ -9,6 +9,12 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// #1279: without `std` the crate still needs `Vec` (bounds.rs), which lives in
+// `alloc`. Before this line `--no-default-features` failed with six
+// "cannot find type `Vec`" errors, and no CI job built that configuration.
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod bounds;
 pub mod descriptor;
 pub mod table;

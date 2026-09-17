@@ -32,7 +32,7 @@ artifacts:
         #1279  `cargo build -p synth-memory --no-default-features` fails (7 errors
                measured; the issue said six), and `--no-default-features` appears in
                no CI job.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - claim-drift
@@ -47,3 +47,170 @@ artifacts:
       verification-track: review
       issue: "#1285"
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
+      verified-by: >-
+        Per item, the check that fails if the correction regresses. #1285: the
+        BEHAVIOUR is gated (`test_f32_min_max_loud_declined_on_m4f` in
+        synth-backend's f32 operations tests fails if min/max start lowering),
+        but the corrected PROSE is not — the matrix's fact census checks only
+        numbers and its staleness gate only render-versus-template, so
+        re-listing f32 min/max as lowering would have stayed green, so
+        SYNTH-F32-MINMAX-RESIDUAL-1285 now binds the residual sentence in the
+        matrix template and the README to the decline test's existence
+        (red-first: removing the template sentence reds it). #1294: link_refuses_linked_executable_1294.rs — both
+        refusal tests fail with the refusal removed; a negative control keeps
+        `--relocatable --link` reaching the linker. #1286:
+        SYNTH-ACCEPTANCE-CITES-LADDER-1286 reds on a re-introduced old figure or
+        a removed citation. #1287: SYNTH-POC-SIZE-ESTIMATE-GONE-1287 reds on a
+        second copy of the retired ratio. #1279: the required Clippy job builds
+        and lints synth-memory on thumbv7em-none-eabihf without std and with each
+        platform feature (six compile errors before the fix). #1288:
+        SYNTH-SPECTRE-POLICY-SYMBOLS-1288 reds on a renamed guard symbol, a
+        line-number citation or a removed sentence. #1306:
+        SYNTH-NO-SHIPPED-LOAD-ELIMINATION-1306 reds on a planted
+        PeepholeOptimizer constructor. Workspace fmt/clippy/test green on the
+        lane; claim_check 71/71; rivet unchanged at 40 errors / 439 warnings.
+      landed: >-
+        IMPLEMENTED — seven increments (#1285, #1294, #1286, #1287, #1279, #1288,
+        and #1306 added in lane), each below. ONE DEVIATION FROM THE DONE-WHEN'S
+        LETTER, stated: the measurements were taken on the v0.68 lane base, not
+        on the release commit, which does not exist yet. What makes that
+        acceptable is that every correction whose fact can drift is PINNED and
+        re-derived by claim_check on every commit, the release commit included;
+        the unpinned measured numbers (the 1.64x size ratio, the RV32 guard
+        sizes) are stated only in this record and in generated reports, never
+        on a hand-maintained surface. Status stays `proposed` with `disposition: partial`.
+
+        #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
+        the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
+        cortex-m7 and cortex-m7dp, self-contained and `--relocatable` — 12 of 12
+        combinations — while `f64.{min,max}` lower on cortex-m7dp. The README row
+        also called f32 "Complete" with one residual listed, but
+        `f32.{ceil,floor,trunc,nearest}` ALSO decline on cortex-m4f and
+        cortex-m7dp (the feature matrix already said so; the README did not). So
+        the README now lists all six declining f32 operations, and the matrix
+        template stops listing min/max as lowering.
+
+        THE MATRIX TEMPLATE's FACT CENSUS REFUSED THE FIRST DRAFT: it introduced
+        the bare numbers "12 of 12" and the 0 in "±0", and every number in that
+        template must be derived, pinned or declared. Reworded rather than
+        exempted — the measured count lives in this record, not as an unpinned
+        number in a generated document.
+
+        #1294 — THE LINK PATH WAS NOT BROKEN; THE COMBINATION WAS. Measured on the
+        v0.68 base with arm-none-eabi-gcc installed: `--relocatable --link` emits
+        an ET_REL object and links it into an ET_EXEC firmware ELF;
+        `--cortex-m --link` and `--target cortex-m4 --all-exports --link` both
+        emit an ET_EXEC and hand it to the linker, which refuses an executable
+        as input — "Linker failed", every time. So the done-when's second branch
+        was taken: the self-contained combination is no longer listed as
+        implemented. `link_firmware` now reads the artifact's own ELF header and
+        refuses ET_EXEC with a diagnostic naming the working combination, BEFORE
+        any toolchain lookup, so the refusal is identical with or without a
+        cross toolchain and is tested in CI
+        (crates/synth-cli/tests/link_refuses_linked_executable_1294.rs). The
+        README row now reads "`--relocatable` output only" and still says the
+        link itself is not CI-tested, because it is not.
+
+        RED-FIRST: with the refusal block removed, both refusal tests fail — the
+        diagnostic never names #1294. A third test is the negative control —
+        `--relocatable --link` must never reach the refusal. THE FIRST RUN OF
+        THE TESTS WAS FLAKY FOR A REASON IN THE TEST: both wrote the same output
+        path from parallel threads of one process, so one compile truncated the
+        ELF whose header the other was reading. Each test now owns its output.
+
+        #1286 — REMOVED THE COPY RATHER THAN REFRESHING IT. Both CLAUDE.md sites
+        reproduced as filed: the North Star's "reach" invariant and, worse, the
+        compliance envelope's instruction to PUBLISH the v0.59 #1017 rates of
+        the 805-module corpus, which RQ-64-SCOPEGAP had superseded in favour of
+        the acceptance ladder over a different, 243-module reachable corpus.
+        Restating the ladder's numbers in CLAUDE.md would only create a second
+        copy to rot, and the done-when forbids restating a number without
+        re-measuring it, so neither site carries a number now. Both cite
+        `docs/status/ACCEPTANCE_LADDER.md` with its date, commit and corpus; the
+        envelope adds "re-measure before publishing if the ladder predates the
+        build being compared" (it is dated v0.63). The 805-corpus blocker counts
+        in the reach invariant went too — a blocker count is not a reach estimate
+        (the ladder's own finding), and the conclusion they supported stands
+        without them. No cross-denominator ratio is stated anywhere.
+        SYNTH-ACCEPTANCE-CITES-LADDER-1286 pins the citation and the ABSENCE of
+        the old census's literals in CLAUDE.md. Red-first: re-appending the old
+        sentence reds it (2 matches), and removing the citation reds it.
+
+        #1287 — REPRODUCED WITH THE BENCHMARK'S OWN INSTRUMENT. On the v0.68 lane
+        binary, `SYNTH=<lane>/debug/synth python3
+        scripts/repro/parity_benchmark/run.py --only falcon_axis` measures synth
+        AOT (cortex-m4f) at 72 B against arm-none-eabi-gcc 13.2.1 -Os at 44 B:
+        1.64x LARGER, not 0.85x. (A first attempt read the symbol size with a
+        hand-written pyelftools script and found no `.symtab` on the
+        `--all-exports` image — abandoned for the instrument that generates
+        artifacts/parity-benchmark.md, per the don't-hand-roll-a-parser rule.)
+        The 0.85x was never measured: the page's "native" column was headed
+        "Native Est". Following the PROJECT_STATUS.md precedent the page is
+        replaced by a pointer to the generated benchmark instead of being
+        re-synced, so the measured figure is stated here and in the generated
+        report, not on a third surface. SYNTH-POC-SIZE-ESTIMATE-GONE-1287 pins
+        the pointer and allows exactly one `0.85x` across the status docs,
+        README and CLAUDE.md (the pointer's own sentence naming what it
+        retired). Red-first: a second occurrence in README reds it.
+
+        #1279 — THE ISSUE'S COUNT WAS RIGHT AND THIS PLAN'S WAS NOT. The plan
+        said "7 errors measured; the issue said six". Re-measured: six compile
+        errors, all `Vec` out of scope in bounds.rs; the seventh line was cargo's
+        own "could not compile ... due to 6 previous errors" summary, counted as
+        an error by a grep for `^error`. The crate declares
+        `#![cfg_attr(not(feature = "std"), no_std)]` but never brought in
+        `alloc`, and a doc comment in bounds.rs called the configuration
+        "aspirational". Fixed rather than removed: `extern crate alloc` under
+        `not(std)` and `use alloc::vec::Vec` in both scopes that need it (the
+        nested `codegen` module does not inherit its parent's import — the
+        first fix left four errors for that reason). Measured green after the
+        fix: `--no-default-features` on the host and on thumbv7em-none-eabihf,
+        each of bare-metal / zephyr / freertos on thumbv7em-none-eabihf, the std
+        build, and clippy -D warnings on the no_std target. The required Clippy
+        job (self-hosted rust-cpu, name unchanged so the required context cannot
+        deadlock) now installs thumbv7em-none-eabihf and runs that clippy plus
+        the three platform-feature builds. NOTE, from #1277: synth-memory is a
+        library the `synth` binary does not link — this makes its declared
+        configuration build, it does not put the crate in the compiler.
+
+        #1288 — THE POLICY CITED LINES, ANALYSED TWO OF FOUR BACKENDS, AND GAVE
+        AN INCOMPLETE REASON FOR ITS ONE LIVE RISK. Every `file.rs:line`
+        citation is now a symbol plus its file, and a pin reds on renaming the
+        six load-bearing guard functions or on any line-number citation.
+        Re-measured with the v0.68 lane binary: the RV32 bounds knob exists
+        (one load plus one store, rv32imac: `.text` 52 B none, 92 B software
+        with two bltu/ebreak guards, 108 B mask — independently re-measured by
+        the coordinator, identical), so that accepted residual is retired (21
+        rows: 19 D, 1 opt-in F, 1 A). The "rely on MPU" row was false as
+        written: `--safety-bounds mpu` emits bytes identical to `none` on both
+        relocatable and self-contained output, so synth programs no MPU (the
+        held MPU decision's own subject). The call_indirect row now says the
+        runtime type check exists only for mixed-type tables. The
+        add_with_shift CVE analog stays latent, but the old reason was
+        incomplete: `RuleApplicator` does not rewrite, while
+        `InstructionSelector::select` does emit rule replacements and is reached
+        only from tests; the regression test does not watch that route. Scope
+        narrowed in the policy and the README: A32 and A64 are unanalysed —
+        and A32 is ALSO the default untargeted ARM output (confirmed from
+        `resolve_target_spec` and the object's attributes: Realtime profile, ARM
+        ISA), so plain `synth compile` output is outside the policy; A64 emits a
+        compare-and-branch guard before the dereference with no `csdb`, links
+        into arm64-Linux programs, and runs on speculating cores. NOT
+        re-verified in this pass, and kept as written: the Cortex-M7/M55
+        speculation descriptions and the Helium `f64x2.splat` sentence.
+
+        #1306 — SCOPE ADDITION, FOUND BY THE #1288 WORK AND FILED BEFORE FIXING.
+        CLAUDE.md's trap-preservation section named peephole store-to-load
+        forwarding as "the one load elimination that exists". The forwarding
+        lives in `PeepholeOptimizer`, which only two synth-backend test files
+        construct (both paired with the test-only `select()` path). The
+        optimized path's IR peephole does not touch loads. A suspected second
+        case was REFUTED before filing: synth-opt's CSE does eliminate
+        `Opcode::Load`, but that opcode is a wasm LocalGet keyed by local index,
+        and `MemLoad` is explicitly not CSE'd — the section's CSE sentence is
+        right. So the shipped path eliminates NO linear-memory load: the
+        compliance statement was stronger than written, but it pointed reviewers
+        at a pass that does not run. The bullet now says so;
+        SYNTH-NO-SHIPPED-LOAD-ELIMINATION-1306 reds when `PeepholeOptimizer` is
+        constructed in shipped code. Red-first: a planted constructor in
+        synth-backend reds it.

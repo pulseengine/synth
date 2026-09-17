@@ -785,8 +785,6 @@ readme_link_coverage:
       rationale: append-only release narrative; historical record, no live current-state claims
     - path: CONTRIBUTING.md
       rationale: process document; carries no capability or verification claims
-    - path: docs/spectre-policy.md
-      rationale: normative policy statement reviewed per lowering-rule PR; qualitative, no derived counts
     - path: docs/architecture/SYNTH_LOOM_RELATIONSHIP.md
       rationale: qualitative two-tier (loom optimizes / synth compiles) design note; no derived counts
     - path: docs/requirements/REQUIREMENTS.md
@@ -888,6 +886,105 @@ claims:
         pattern: 'no out-of-bounds trap'
         glob: ['CLAUDE.md']
         min: 1
+
+  # #1286 (RQ-68-CLAIMSDRIFT): CLAUDE.md told readers to publish the v0.59
+  # 805-module acceptance rates two releases after RQ-64-SCOPEGAP superseded
+  # them. The fix removes the copy rather than refreshing it, so the pin is on
+  # the ABSENCE of a second copy: the guidance must cite the ladder, and no
+  # acceptance-rate literal from the old census may reappear in CLAUDE.md.
+  - id: SYNTH-ACCEPTANCE-CITES-LADDER-1286
+    doc: CLAUDE.md
+    text: "Cite the\n  ladder in `docs/status/ACCEPTANCE_LADDER.md` with its measurement date,"
+    evidence:
+      - kind: file-exists
+        path: docs/status/ACCEPTANCE_LADDER.md
+      - kind: count-eq                       # the superseded census, in any of
+        pattern: '531/805|\(66 %\)|\b1\.6 %|805 (REAL|real)'   # the forms it was quoted in
+        glob: ['CLAUDE.md']
+        expect: 0
+
+  # #1287 (RQ-68-CLAIMSDRIFT): docs/status/POC_ACHIEVEMENTS.md headlined a
+  # "0.85x native" size ratio whose native half was an ESTIMATE; measured
+  # against gcc -Os the ratio inverts. The page now points at the generated
+  # benchmark, and the estimate may not reappear on a status surface.
+  - id: SYNTH-POC-SIZE-ESTIMATE-GONE-1287
+    doc: docs/status/POC_ACHIEVEMENTS.md
+    text: "An estimate-based ratio should\nnot survive in any form."
+    evidence:
+      - kind: file-exists
+        path: artifacts/parity-benchmark.md
+      - kind: count-eq                       # one mention: the sentence above,
+        pattern: '0\.85 ?x'                 # which names the figure it retired
+        glob: ['docs/status/*.md', 'README.md', 'CLAUDE.md']
+        expect: 1
+
+  # #1288 (RQ-68-CLAIMSDRIFT): docs/spectre-policy.md cited every lowering as
+  # `file.rs:line`, and every citation had drifted onto unrelated code. The
+  # rows now cite SYMBOLS; this pin makes the load-bearing ones red when they
+  # are renamed or removed (the doc must move in the same PR), and forbids the
+  # line-number citation style from coming back.
+  # #1285 (RQ-68-CLAIMSDRIFT): the matrix listed f32 min/max as lowering via
+  # VFP while both ARM selectors decline them. The decline is gated by
+  # `test_f32_min_max_loud_declined_on_m4f`; this pin gates the PROSE, which
+  # neither the fact census (numbers only) nor the staleness gate
+  # (render-versus-template) could see. Both surfaces must keep naming the
+  # residual while the decline test exists.
+  - id: SYNTH-F32-MINMAX-RESIDUAL-1285
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "**Residual: `f32.{min,max}` LOUD-DECLINE on every ARM target** (#1285)"
+    evidence:
+      - kind: count-eq
+        pattern: 'fn test_f32_min_max_loud_declined_on_m4f\('
+        glob: ['crates/synth-backend/tests/f32_operations_test.rs']
+        expect: 1
+      - kind: count-min                      # README's f32 row names it too
+        pattern: 'f32\.\{min,max\}` and `f32\.\{ceil,floor,trunc,nearest\}` on every ARM targ'
+        glob: ['README.md']
+        min: 1
+
+  # #1306 (RQ-68-CLAIMSDRIFT): CLAUDE.md's trap-preservation section named
+  # peephole store-to-load forwarding as "the one load elimination that
+  # exists"; the pass is constructed only by tests. The sentence now says no
+  # load elimination runs on the shipped path, and this pin reds the moment
+  # `PeepholeOptimizer` is constructed in shipped code, so the compliance
+  # section is revisited in the same PR.
+  - id: SYNTH-NO-SHIPPED-LOAD-ELIMINATION-1306
+    doc: CLAUDE.md
+    text: "No linear-memory load elimination runs on the shipped path (#1306)."
+    evidence:
+      - kind: count-eq
+        pattern: 'PeepholeOptimizer::new|PeepholeOptimizer::default|PeepholeOptimizer \{'
+        glob: ['crates/synth-cli/src/**/*.rs', 'crates/synth-backend/src/**/*.rs', 'crates/synth-backend-riscv/src/**/*.rs', 'crates/synth-backend-aarch64/src/**/*.rs', 'crates/synth-synthesis/src/optimizer_bridge.rs', 'crates/synth-synthesis/src/instruction_selector.rs', 'crates/synth-synthesis/src/instruction_selector/*.rs', 'crates/synth-opt/src/**/*.rs']
+        expect: 0
+
+  - id: SYNTH-SPECTRE-POLICY-SYMBOLS-1288
+    doc: docs/spectre-policy.md
+    text: "Each row cites a\n**symbol** (function, type or match arm) and its file — never a line number,"
+    evidence:
+      - kind: count-eq                       # the ARM software guard both ARM paths share
+        pattern: 'pub fn software_bounds_guard\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'fn generate_load_with_bounds_check\(|fn generate_store_with_bounds_check\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 2
+      - kind: count-eq                       # the masking rows
+        pattern: 'fn mask_effective_address\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: count-eq                       # the RV32 rows
+        pattern: 'fn emit_bounds_check\('
+        glob: ['crates/synth-backend-riscv/src/selector.rs']
+        expect: 1
+      - kind: count-eq                       # the UNANALYSED A64 guard named in section 1
+        pattern: 'let bounds_check = \|words: &mut Vec<u32>,'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        expect: 1
+      - kind: count-eq                       # no `file.rs:NNN` citation style
+        pattern: '\.rs:[0-9]'
+        glob: ['docs/spectre-policy.md']
+        expect: 0
 
   - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
     doc: crates/synth-core/src/wasm_op.rs

@@ -145,16 +145,19 @@ ever-growing pile of locally-correct patches.**
 >    silent claim that the expansion is scratch-free.
 >
 > 2. **Reach is part of correctness.** A proof about input we refuse is worth
->    nothing. Measured on 805 REAL-WORLD modules (#1017 — toolchain output and
->    wasm.directory components, not spec fixtures): ARM accepts **531/805
->    (66 %)**, RISC-V **113 (14 %)**, AArch64 **13 (1.6 %)**. A verified compiler
->    that accepts 1.6 % of real AArch64 input is verified about almost nothing.
->    The ranked blockers are all WELL-TRODDEN ELSEWHERE and closable WITHOUT
->    spending the trust story: AArch64 import dispatch (~121 modules, and 88 of
->    101 real components) is the Wasker/wasm2c undefined-symbol pattern, which IS
->    synth's own ARM `--relocatable` design ported; multi-memory (124 modules)
->    became a **Wasm 3.0 standard on 2025-09-17**, so declining it is no longer
->    "we only do standardized wasm".
+>    nothing, and a verified compiler that refuses most real input is verified
+>    about almost nothing. The live acceptance figures are the LADDER in
+>    `docs/status/ACCEPTANCE_LADDER.md` — per backend, per invocation rung, over
+>    a named real-world corpus, with its measurement date and commit — and they
+>    are cited from there, never copied here (#1286: the single rates this
+>    paragraph used to quote were the v0.59 #1017 census of a DIFFERENT,
+>    805-module corpus, marked superseded by RQ-64-SCOPEGAP, and a second copy
+>    of a measured number is how it goes stale). The research conclusion does not
+>    depend on those rates: the largest blockers were WELL-TRODDEN ELSEWHERE and
+>    closable WITHOUT spending the trust story — AArch64 import dispatch is the
+>    Wasker/wasm2c undefined-symbol pattern, which IS synth's own ARM
+>    `--relocatable` design ported; multi-memory became a **Wasm 3.0 standard on
+>    2025-09-17**, so declining it is no longer "we only do standardized wasm".
 >
 > **What the research also says NOT to do**, recorded so it is not re-litigated:
 > the search strategy is not where allocator quality lives. LLVM moved to greedy
@@ -479,9 +482,12 @@ comparison into flattery. So:
   bounds-check mode, trap-preservation status, and which spec categories each
   configuration passes. Where a competitor's status is unverified, write
   "unverified" rather than repeating a claim.
-- **Publish the acceptance rate as the denominator, and as a feature.** Measured
-  on 805 real modules (#1017): ARM 66 %, RV32 14 %, AArch64 1.6 %. Perf numbers
-  describe the accepted subset only. Loud-decline-over-silent-miscompile is the
+- **Publish the acceptance rate as the denominator, and as a feature.** Cite the
+  ladder in `docs/status/ACCEPTANCE_LADDER.md` with its measurement date,
+  commit and corpus: every rung separately, never one summed rate, and never a
+  figure from a different corpus set beside it as if it were a trend (#1286).
+  If the ladder predates the build being compared, re-measure before
+  publishing. Perf numbers describe the accepted subset only. Loud-decline-over-silent-miscompile is the
   actual differentiator against systems that accept everything and are quietly
   wrong on some of it — disclosed, selection bias becomes a soundness story;
   undisclosed, it is the same flattery.
@@ -526,9 +532,14 @@ which is a fragile reason to be right:
   lost.
 - CSE explicitly refuses `MemLoad`/`MemStore` (`synth-opt/src/lib.rs`: "there is
   no alias analysis for linear memory; any MemStore can invalidate any address").
-- The one load elimination that exists — peephole store-to-load forwarding — is
-  trap-preserving because the same-address, same-width store executes
-  immediately before: if the address were OOB the store faults first.
+- No linear-memory load elimination runs on the shipped path (#1306). The
+  store-to-load forwarding in `synth-synthesis/src/peephole.rs`
+  (`PeepholeOptimizer`) is reachable only from tests; the optimized path's
+  IR peephole (`synth-opt`) does not touch loads. That forwarding would be
+  trap-preserving if wired — the same-address, same-width store executes
+  immediately before, so an OOB address faults at the store — but wiring it,
+  or any load forwarding, onto the shipped path is a change this section
+  must be updated for.
 
 **THE RULE, for any future alias-aware CSE/LICM in synth-opt or loom:** a
 wasm-level linear-memory load may be removed only if (a) it is dominated by a

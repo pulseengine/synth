@@ -59,9 +59,11 @@ processor problem**: the right unit of evidence is verifiable code
 generation from a small, well-defined source language (WASM) to a small,
 well-defined target ISA (Thumb-2 / RV32), not a verified silicon core.
 Synth contributes the codegen half of that workflow: a compiler whose
-lowering steps come with mechanized proofs and an explicit
+lowering steps come with mechanized proofs and, for the Thumb-2 and RV32
+backends, an explicit
 [Spectre / speculative-execution policy](docs/spectre-policy.md) per
-lowering rule.
+lowering rule. The A32 and AArch64 backends have not been analysed yet; the
+policy says why AArch64 is the one where it matters.
 
 ## Installation
 
@@ -111,7 +113,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 |----------|--------|-------|
 | i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
 | i64 (register pairs): arithmetic, shifts, rotates, div/rem, compare | **Tested** | full pair lowering — right shifts fixed v0.28.0 (#599), rot/div/rem v0.30.1 (#610), A32 completeness v0.30.2 (#615); differential vs wasmtime |
-| Scalar f32/f64 via VFP on FPU targets | **Implemented** | Complete f32 (v0.41) + f64 (v0.43, #369 closed) incl. AAPCS-VFP marshalling; execution differentials vs wasmtime; non-FPU targets loud-reject; residual: `i64.trunc_sat_f32_*` declines on single-precision FPUs (needs the f64 promote). The falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail closed in v0.53 (#881); `trunc_sat` shipped v0.49 (#782) |
+| Scalar f32/f64 via VFP on FPU targets | **Implemented** | f32 (v0.41) + f64 (v0.43, #369 closed) incl. AAPCS-VFP marshalling; execution differentials vs wasmtime; non-FPU targets loud-reject; residuals, each a LOUD decline: `f32.{min,max}` and `f32.{ceil,floor,trunc,nearest}` on every ARM target (no WASM-correct lowering yet; the f64 twins do lower — measured on cortex-m4f and cortex-m7dp, #1285), and `i64.trunc_sat_f32_*` on single-precision FPUs (needs the f64 promote). This row said "Complete f32" until v0.68. The falcon `--relocatable cortex-m7dp` D-register-pressure + RA tail closed in v0.53 (#881); `trunc_sat` shipped v0.49 (#782) |
 | WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
 | Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
 | Function calls (direct, indirect) | Implemented | `call_indirect` traps per WASM §4.4.8 (OOB index, type mismatch, null slot); self-contained `--cortex-m` dispatch via a PC-relative flash funcref table since v0.47 (#275), execution-differential-gated vs wasmtime |
@@ -119,7 +121,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | Globals, select | Implemented | R9-based globals; unit tests only |
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
-| Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
+| Cross-compilation (`--link` flag) | Implemented — `--relocatable` output only | Requires `arm-none-eabi-gcc` (or `arm-none-eabi-ld`) in PATH; the link itself is not CI-tested. `--link` on an already-linked self-contained image (`--cortex-m`, or `--all-exports` without `--relocatable`) is REFUSED with a diagnostic, and that refusal IS tested; before v0.68 it was accepted and failed every time with a raw linker error (#1294) |
 | Rocq mechanized proofs | CI-derived (badges above) | i32 + i64 T1 correctness proofs; the selector-DSL rule theorems are stated directly about the GENERATED model (VCR-ISA-001 #667 — `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v`); all four i32 div/rem trap guards discharged against the branch-taking executor (#73); counts re-derived into `artifacts/status.json` on every commit |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | Compile census gated in CI (`Spec Suite` workflow → `scripts/spec_compile_census.py`, #1095) | All 257 top-level .wast files compiled per backend, declines counted separately from errors: full-module compile 15 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0 — every count exact-pinned, an empty/missing suite is RED; measured on the single-module path (a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow, #1225) with the multi-module merge refusing what it cannot represent; compilation only — not executed on emulator |

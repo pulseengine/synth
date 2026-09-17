@@ -3,6 +3,8 @@
 //! Provides pluggable bounds checking for memory access safety.
 
 use crate::{MemoryDescriptor, Trap};
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 /// Bounds checking strategy trait
 ///
@@ -97,9 +99,8 @@ impl BoundsChecker for SoftwareBoundsChecker {
 /// `synth-memory` is `publish = false` while `synth-cli` is published, so a
 /// path dep is impossible without changing the published surface.
 ///
-/// Uses `Vec` like the sibling [`codegen`] module does; this crate's
-/// `no_std` cfg is aspirational today (`--no-default-features` does not build
-/// for that reason, and did not before this type existed).
+/// Uses `Vec` like the sibling [`codegen`] module does; without `std` it comes
+/// from `alloc`, and `--no-default-features` is built in CI (#1279).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProvenSafeSites {
     /// Sorted, de-duplicated `(func, pc)` pairs. Site counts per module are
@@ -328,6 +329,9 @@ impl BoundsChecker for MpuBoundsChecker {
 ///
 /// These functions generate ARM Thumb-2 instruction sequences for inline bounds checking.
 pub mod codegen {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+
     /// Generate software bounds check instructions
     ///
     /// Generates: CMP Raddr, Rsize; BHS trap

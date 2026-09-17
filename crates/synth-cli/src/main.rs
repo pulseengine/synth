@@ -336,7 +336,10 @@ enum Commands {
         #[arg(long)]
         verify: bool,
 
-        /// Link the compiled object into a final firmware ELF using arm-none-eabi-gcc
+        /// Link the compiled object into a final firmware ELF using arm-none-eabi-gcc.
+        /// Requires `--relocatable` output: a self-contained image (`--cortex-m`,
+        /// or `--all-exports` without `--relocatable`) is already linked and is
+        /// refused (#1294)
         #[arg(long)]
         link: bool,
 
@@ -9965,6 +9968,31 @@ fn link_firmware(
     _target_spec: &TargetSpec,
 ) -> Result<()> {
     use std::process::Command;
+
+    // #1294 (RQ-68-CLAIMSDRIFT): `--link` links a RELOCATABLE object. The
+    // self-contained outputs (`--cortex-m`, `--all-exports` without
+    // `--relocatable`) are already a linked ET_EXEC, which a linker refuses as
+    // input ("cannot use executable file ... as input to a link"), so this
+    // combination failed every time with a raw toolchain error. Decide from the
+    // artifact's own ELF header, not from flag names, and refuse BEFORE looking
+    // for a toolchain, so the diagnostic is the same with or without one
+    // installed.
+    const ET_EXEC: u16 = 2;
+    let header = std::fs::read(object_path)
+        .with_context(|| format!("--link: cannot read {}", object_path.display()))?;
+    if header.len() >= 18 && &header[..4] == b"\x7fELF" {
+        let e_type = u16::from_le_bytes([header[16], header[17]]);
+        if e_type == ET_EXEC {
+            anyhow::bail!(
+                "--link was given, but {} is already a LINKED executable (ELF ET_EXEC) — \
+                 the self-contained output (`--cortex-m`, or `--all-exports` without \
+                 `--relocatable`) needs no further link, and a linker refuses it as \
+                 input. Drop `--link`, or compile with `--relocatable --link` to produce \
+                 a relocatable object and link it (#1294).",
+                object_path.display()
+            );
+        }
+    }
 
     // Find cross-compiler
     let gcc = ["arm-none-eabi-gcc", "arm-none-eabi-ld"]
