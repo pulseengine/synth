@@ -16,6 +16,12 @@ artifacts:
       (.wit) files. Includes tests for malformed input rejection with
       descriptive error messages, Component Model binary validation, and
       target specification file parsing (TOML/YAML).
+
+      `-p synth-abi` was removed from the run (#1277): it tested a library the
+      compiler does not link, so it verified nothing about synth's input
+      handling. The compiler accepts no `.wit` input today and its WIT parser
+      (synth-wit) is not linked either, so the WIT part of this verification
+      has no evidence — recorded as such rather than borrowed from a library.
     status: implemented
     tags: [parsing, input-formats, unit-tests]
     links:
@@ -24,7 +30,7 @@ artifacts:
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-cli -p synth-core -p synth-abi"
+        run: "cargo test -p synth-cli -p synth-core"
         coverage: "Input format parsing and validation"
 
   - id: SWVER-002
@@ -76,6 +82,10 @@ artifacts:
       memory layout configuration (flash/RAM sizes, stack sizes),
       optimization level settings, and safety mode configuration
       (hardware vs software bounds checking, trap handling strategy).
+
+      `-p synth-memory` was removed from the run (#1277): it tested a library
+      the compiler does not link. The MPU-region part of this verification is
+      tracked in #1284.
     status: implemented
     tags: [configuration, targets, settings]
     links:
@@ -84,7 +94,7 @@ artifacts:
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-backend -p synth-synthesis -p synth-memory"
+        run: "cargo test -p synth-backend -p synth-synthesis"
         coverage: "Target profiles, MPU config, memory layout"
 
   - id: SWVER-005

@@ -31,7 +31,7 @@ artifacts:
       Each fix is shown RED-FIRST: plant the defect the oracle exists to catch and
       confirm it now reds. #1276 in particular must demonstrate an out-of-bounds
       access that the corrected harness catches and the current one misses.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - gate-potency
@@ -41,9 +41,147 @@ artifacts:
     links:
       - type: derives-from
         target: BR-001
+      - type: traces-to
+        target: ARCH-005
+      - type: traces-to
+        target: SWA-007
+      - type: traces-to
+        target: SWA-008
+      - type: traces-to
+        target: SWVER-001
+      - type: traces-to
+        target: SWVER-004
     fields:
       req-type: functional
       priority: should
       verification-track: differential
       issue: "#1276"
       done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"
+      verified-by: >-
+        Each item, by the check that would fail if it were not done. #1276: the
+        five emulating WCET oracles re-run to PASS with R10 = one wasm page
+        (phases 2-6); the planted-OOB red-first is inapplicable and recorded.
+        #1278: SYNTH-LINMEM-BASE-ORACLE-COPIES-1278 reds when the Rust constant
+        moves. #1281: SYNTH-VERUS-SPECS reds when either qualifier ("not a
+        verification result" in README, "never verified" in the matrix
+        template) is dropped. #1282: `check_generated_fixtures` reds on a hand
+        edit to either fixture family and on an unregistered generator (live
+        plant, three FAILs); a stubbed gate reddens 4 of its 6 unit tests.
+        #1277: SYNTH-UNLINKED-LIBRARIES-1277 reds on a planted dependency edge
+        from synth-cli and on removal of the crate-map wording; the census is
+        `cargo metadata` plus `nm` (0 symbols for the four crates, control
+        synth_backend 1294). All on the v0.68 base; claim_check 69/69, rivet
+        unchanged at 40 errors / 439 warnings.
+      landed: >-
+        IMPLEMENTED — five increments (#1276/#1281, #1278, #1282, #1277, and the
+        #1281 close-out), each red-first where a red half exists. TWO DEVIATIONS
+        FROM THE DONE-WHEN'S LETTER, stated rather than hidden: (1) the planted
+        out-of-bounds red-first for the WCET oracles is INAPPLICABLE — none of
+        them compiles with --safety-bounds, so no guard exists to catch or miss
+        the access (increment 1); (2) oracle scripts do NOT read the base from
+        the emitted artifact — the image carries no symbol for it and adding one
+        changes every build's bytes — so both halves are pinned exactly instead,
+        and the pin IS red-first by a moved base (increment 2). Every other
+        clause is met as written, and every item reproduced (#1282 in its latent
+        form).
+
+        INCREMENT 1 (#1276, #1281). #1276: FIVE of six WCET oracles ran with R10
+        = the linear-memory BASE (phases 2-5 through phase 2's shared
+        `run_func`, phase 6 through its own `run_leaf`; phase 7 does not
+        emulate) — measured by call graph after a first count of "two" that
+        tallied only the files writing R10. None compiles with --safety-bounds,
+        so no guard is emitted and R10 could not affect them; the latent trap (a
+        false "R10==R11" convention, and a base read as a ~512 MiB size) is
+        removed by setting R10 to one wasm page. All five re-run to PASS. The
+        done-when's planted-OOB red-first is INAPPLICABLE to these oracles (no
+        guard exists to fire) and is recorded so. #1281: `verify_contracts` is
+        run by no CI step and cannot run — its verifier fails to load on
+        darwin-arm64 (librustc_driver hash mismatch, rules_verus#18) and on
+        linux-x86_64 (rules_verus#25) — so the README's Verus row now says the
+        count is of spec declarations, not a verification result.
+
+        INCREMENT 2 (#1278). The base lives in Rust (`OPTIMIZED_LINMEM_BASE`)
+        and as 20 literal occurrences across 13 oracle scripts. All 20 are
+        correct today (none passes --stack-layout=low, the only flag that moves
+        it). "Read it from the emitted artifact" is not implementable — the
+        image carries no symbol for it and adding one would change every build's
+        bytes — so SYNTH-LINMEM-BASE-ORACLE-COPIES-1278 pins both halves exactly.
+        Red-first: moving the constant reds the claim.
+
+        INCREMENT 3 (#1282). The issue's census held: exactly two pure fixture
+        generators exist (`scripts/gen_*.py`), and both reproduced their
+        committed .wat byte-identically on the v0.68 base — the latent form, not
+        a live drift. Every other script that writes a committed file either
+        already runs `--check` in CI (model_coverage_audit, proof_inventory) or
+        writes a MEASUREMENT report from compiler/toolchain output, which is not
+        reproducible byte-for-byte and is out of scope. `check_generated_fixtures`
+        in the required claim-check job now re-runs each registered generator in
+        a scratch copy (never against the repo) and byte-compares, and pins the
+        population: an unregistered `scripts/gen_*.py` is red. Potency on the
+        live repo: a one-line hand edit to each fixture family and a planted
+        `gen_extra_probe.py` gave three FAILs; restored, 68/68. Red-first on the
+        unit tests: stubbing the gate to return nothing reddens 4 of the 6
+        `GeneratedFixtures1282` tests (the two that stay green assert that FRESH
+        fixtures pass, which a stub also satisfies). The vfp generator's header
+        said "there is nothing for CI to fail on"; it now names the gate.
+
+        INCREMENT 4 (#1277). REPRODUCED, AND WIDER THAN FILED. `cargo metadata`
+        closure of synth-cli under default features, cross-checked with `nm` on
+        the built binary: synth-abi, synth-analysis and synth-memory are outside
+        the closure with 0 symbols (control: synth_backend 1294), all `publish =
+        false` — and so is synth-wit, a FOURTH crate the crate map lists as a
+        compiler component, which the issue missed because synth-abi depends on
+        it (so it is not an orphan, only unlinked). Full census of the 19
+        members: 9 linked; 3 feature-gated and published (verify, awsm,
+        wasker — `synth verify` without the feature refuses loudly, honest); 7
+        unlinked and unpublished (the four above plus the declared tooling
+        mcdc-harness, qemu, test). No Cargo consumer exists elsewhere in the
+        org, but kiln's and meld's STPA name `synth-abi/src/layout.rs` as
+        synth's side of canonical-ABI sizing (XH-2/XH-3) — so deleting the crate
+        is refused, and the honest statement is a cross-toolchain contract
+        surface the compiler does not yet consume.
+
+        RE-SCOPED, NOT DEMOTED. Statuses stay `implemented` (a demotion to
+        `proposed` would disarm the status gate while looking like honesty);
+        the scope text is corrected instead. The load-bearing defects were the
+        EVIDENCE: the canonical-ABI roundtrip verification said its tests
+        "exercise the same code paths that synth-compiled modules use" — false,
+        rewritten; SWVER-001 ran
+        `-p synth-abi` as verification of the compiler's input parsing, and the
+        compiler accepts no `.wit` input at all; SWVER-004 ran `-p synth-memory`
+        for target configuration. Both runs dropped the library, and the gap is
+        recorded rather than borrowed. SWA-007 claimed synth-analysis results
+        are "consumed by the synthesis and optimization stages" — nothing
+        consumes them. The Memory and ABI architecture components (ARCH-005 and
+        its ABI sibling), SWA-008 and its memory sibling, the four canonical-ABI
+        software requirements, the end-to-end ABI-compatibility check and both
+        crate maps carry the scope. MPU-region handling is left to
+        #1284 (held for a maintainer decision), not folded in here.
+
+        PINNED: SYNTH-UNLINKED-LIBRARIES-1277 counts every Cargo dependency edge
+        onto the four (one today: synth-abi -> synth-wit, both unlinked), their
+        `publish = false`, and the workspace population (19), because the
+        claim-check job has no Rust toolchain to run `cargo metadata`. Wiring a
+        library in is a WANTED change that reds the pin on purpose, so the
+        wording moves in the same PR. Red-first: a planted `synth-abi` dependency
+        in synth-cli reds it; removing the crate-map wording reds it.
+
+        rivet warnings first rose 439 -> 443: its prose-mention rule matches the
+        SUFFIX of a multi-segment id (a mention of a canonical-ABI requirement
+        warned about the unrelated input-format requirement whose id is its
+        suffix, suggesting a false trace) — filed as pulseengine/rivet#972; the prose
+        was reworded to name no id, back to 439 / 40 errors, identical to base.
+
+        INCREMENT 5 (#1281 close-out). The done-when offered two exits: run the
+        verifier in CI, or stop letting a line count stand as its evidence. The
+        verifier cannot load on either platform (increment 1), so the second
+        exit is taken. The count is still derived (`^pub open spec fn ` over
+        contracts.rs), because a count is honest evidence for a claim about
+        DECLARATIONS; what changed is what it is allowed to claim. The generated
+        feature matrix listed it in the verification-tools table as "N spec
+        functions"; it now reads "N spec declarations — never verified" with the
+        reason. SYNTH-VERUS-SPECS pinned only the phrase "Spec functions in
+        contracts.rs", so the README's qualifier could be deleted with the count
+        still green; the claim now binds the qualifier in the README AND the
+        matrix template. Red-first: dropping the README qualifier reds it;
+        dropping the matrix qualifier and regenerating reds it.

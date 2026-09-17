@@ -149,8 +149,10 @@ import glob
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 try:
     import yaml
@@ -842,6 +844,98 @@ def check_generated_fresh(status, root):
                 f"`python3 scripts/claim_check.py claims.yaml --emit-status` "
                 f"and commit the result"
             )
+    return fails
+
+
+# #1282 (RQ-68-ORACLEABI) — FIXTURE GENERATORS get the same staleness gate.
+#
+# `check_generated_fresh` covers the two documents this file renders itself.
+# A committed `.wat` produced by a pure generator script had nothing: the
+# generator said "the checked-in .wat is the fixture of record", so a hand edit
+# (to "just add one case", or a merge resolution) left the generator behind
+# with no signal, while the corpus audit sweep and the execution oracle both
+# treated the edited file as authoritative. Each registered generator is run
+# in a scratch copy — never against the repo — and its output byte-compared.
+#
+# `emits` says where a generator writes: "stdout", or "repro-dir" (it writes
+# into `Path(__file__).parent / "repro"`, so the scratch copy gets its own).
+# The population is pinned: every `scripts/gen_*.py` must be registered here,
+# so a new generator cannot land unwatched. Writers of MEASUREMENT reports
+# (compiler/toolchain output) are not pure generators and are out of scope;
+# `model_coverage_audit.py` and `proof_inventory.py` already run `--check` in CI.
+GENERATED_FIXTURES = (
+    {
+        "generator": "scripts/gen_vfp_local_1069.py",
+        "emits": "stdout",
+        "outputs": ("scripts/repro/vfp_local_pressure_1069.wat",),
+    },
+    {
+        "generator": "scripts/gen_home_alias_class_1189.py",
+        "emits": "repro-dir",
+        "outputs": (
+            "scripts/repro/home_alias_class_1189_i32.wat",
+            "scripts/repro/home_alias_class_1189_i64.wat",
+            "scripts/repro/home_alias_class_1189_promo.wat",
+        ),
+    },
+)
+
+
+def check_generated_fixtures(root, pairs=GENERATED_FIXTURES):
+    """Every registered fixture generator must reproduce its committed outputs
+    byte-for-byte, and every `scripts/gen_*.py` must be registered."""
+    fails = []
+    registered = {pair["generator"] for pair in pairs}
+    for gen in sorted((root / "scripts").glob("gen_*.py")):
+        rel = gen.relative_to(root).as_posix()
+        if rel not in registered:
+            fails.append(
+                f"unregistered fixture generator: {rel} — add it to "
+                f"GENERATED_FIXTURES in scripts/claim_check.py (#1282)"
+            )
+    for pair in pairs:
+        src = root / pair["generator"]
+        if not src.exists():
+            fails.append(f"registered fixture generator missing: {pair['generator']} (#1282)")
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            scratch = pathlib.Path(td)
+            shutil.copy(src, scratch / src.name)
+            (scratch / "repro").mkdir()
+            run = subprocess.run(
+                [sys.executable, src.name],
+                cwd=scratch,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if run.returncode != 0:
+                fails.append(
+                    f"fixture generator failed: {pair['generator']} exited "
+                    f"{run.returncode}: {run.stderr.strip()[-300:]} (#1282)"
+                )
+                continue
+            for out in pair["outputs"]:
+                if pair["emits"] == "stdout":
+                    produced = run.stdout
+                else:
+                    made = scratch / "repro" / pathlib.PurePosixPath(out).name
+                    if not made.exists():
+                        fails.append(
+                            f"fixture generator {pair['generator']} no longer "
+                            f"produces {out} (#1282)"
+                        )
+                        continue
+                    produced = made.read_text()
+                committed = root / out
+                if not committed.exists():
+                    fails.append(f"generated fixture missing: {out} (#1282)")
+                elif committed.read_text() != produced:
+                    fails.append(
+                        f"generated fixture STALE or hand-edited: {out} differs "
+                        f"from what {pair['generator']} produces now — edit the "
+                        f"generator and regenerate, never the fixture (#1282)"
+                    )
     return fails
 
 
@@ -1575,6 +1669,7 @@ def main():
     extra = []
     if status_spec:
         extra += check_generated_fresh(status, root)
+    extra += check_generated_fixtures(root)
     extra += check_template_facts(data, claims, root)
     extra += check_readme_links(data, claims, root)
     for f in extra:

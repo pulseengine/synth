@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # NOTE on home: this lives in scripts/ (with claim_check.py and
 # tier_census_1021.py — tooling over shipped artifacts), not
-# scripts/repro/ (defect oracles). It GENERATES a fixture; it does not
-# assert anything, so there is nothing for CI to fail on. Keeping it out
-# of scripts/repro/ also keeps it off the `# ci-status:` manual budget,
-# which is a real ceiling (count-max 8) and not a place to park tooling.
+# scripts/repro/ (defect oracles). It GENERATES a fixture and asserts
+# nothing itself; the required claim-check job re-runs it and byte-compares
+# its output against the committed .wat (`check_generated_fixtures`, #1282).
+# Keeping it out of scripts/repro/ also keeps it off the `# ci-status:`
+# manual budget, which is a real ceiling and not a place to park tooling.
 """Generator for scripts/repro/vfp_local_pressure_1069.wat (#1069 increment 2).
 
 Regenerate with:  python3 scripts/gen_vfp_local_1069.py > scripts/repro/vfp_local_pressure_1069.wat
-The checked-in .wat is the fixture of record; this generator documents its shape.
+This generator is the source of truth: edit it and regenerate, never the .wat.
+claim_check.py fails the build when the two disagree (#1282).
 """
 
 HEADER = """;; #1069 (RQ-60-VFPPRESSURE increment 2) — VFP pressure from HOMED LOCALS,

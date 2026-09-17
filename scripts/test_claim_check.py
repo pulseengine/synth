@@ -30,6 +30,7 @@ from claim_check import (  # noqa: E402
     _count,
     _pin_table,
     _region,
+    check_generated_fixtures,
     check_ratchet,
     derive_status,
 )
@@ -830,6 +831,72 @@ class LedgerIsParsedStrictly(unittest.TestCase):
         if not ledger.exists():  # pragma: no cover
             self.skipTest("claims.yaml not present")
         yaml.load(ledger.read_text(), Loader=StrictLoader)
+
+
+class GeneratedFixtures1282(unittest.TestCase):
+    """#1282: a committed fixture must equal what its generator produces now,
+    and no `scripts/gen_*.py` may exist unregistered."""
+
+    STDOUT_GEN = 'print("(module)")\n'
+    DIR_GEN = (
+        "from pathlib import Path\n"
+        "(Path(__file__).parent / 'repro' / 'a.wat').write_text('(module)\\n')\n"
+    )
+
+    def _root(self, td, gen_name, gen_src, fixture_text):
+        root = pathlib.Path(td)
+        (root / "scripts" / "repro").mkdir(parents=True)
+        (root / "scripts" / gen_name).write_text(gen_src)
+        (root / "scripts" / "repro" / "a.wat").write_text(fixture_text)
+        return root
+
+    def _pair(self, gen_name, emits):
+        return ({"generator": f"scripts/{gen_name}", "emits": emits,
+                 "outputs": ("scripts/repro/a.wat",)},)
+
+    def test_fresh_stdout_fixture_passes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "gen_a.py", self.STDOUT_GEN, "(module)\n")
+            self.assertEqual(check_generated_fixtures(root, self._pair("gen_a.py", "stdout")), [])
+
+    def test_hand_edited_stdout_fixture_is_red(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "gen_a.py", self.STDOUT_GEN, "(module)\n;; one more case\n")
+            fails = check_generated_fixtures(root, self._pair("gen_a.py", "stdout"))
+            self.assertEqual(len(fails), 1)
+            self.assertIn("STALE or hand-edited: scripts/repro/a.wat", fails[0])
+
+    def test_repro_dir_generator_is_run_in_a_scratch_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "gen_a.py", self.DIR_GEN, "(module)\n")
+            self.assertEqual(check_generated_fixtures(root, self._pair("gen_a.py", "repro-dir")), [])
+            (root / "scripts" / "repro" / "a.wat").write_text("(module) ;; edited\n")
+            fails = check_generated_fixtures(root, self._pair("gen_a.py", "repro-dir"))
+            self.assertEqual(len(fails), 1)
+            # The gate compares; it never regenerates the committed copy.
+            self.assertEqual((root / "scripts" / "repro" / "a.wat").read_text(), "(module) ;; edited\n")
+
+    def test_generator_that_crashes_is_red_not_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "gen_a.py", "raise SystemExit(3)\n", "(module)\n")
+            fails = check_generated_fixtures(root, self._pair("gen_a.py", "stdout"))
+            self.assertEqual(len(fails), 1)
+            self.assertIn("exited 3", fails[0])
+
+    def test_unregistered_generator_is_red(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "gen_a.py", self.STDOUT_GEN, "(module)\n")
+            (root / "scripts" / "gen_b.py").write_text(self.STDOUT_GEN)
+            fails = check_generated_fixtures(root, self._pair("gen_a.py", "stdout"))
+            self.assertEqual(fails, [
+                "unregistered fixture generator: scripts/gen_b.py — add it to "
+                "GENERATED_FIXTURES in scripts/claim_check.py (#1282)"
+            ])
+
+    def test_the_repos_own_fixtures_are_fresh(self):
+        # Non-vacuity against the real generators and fixtures.
+        root = pathlib.Path(__file__).resolve().parent.parent
+        self.assertEqual(check_generated_fixtures(root), [])
 
 
 if __name__ == "__main__":

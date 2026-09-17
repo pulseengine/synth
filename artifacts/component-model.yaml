@@ -258,6 +258,12 @@ artifacts:
       alignment), variants/options/results (discriminant + aligned payload),
       tuples, enums, and flags. The align_to function shall use
       ceiling division: align_to(x, a) = ((x + a - 1) / a) * a.
+
+      SCOPE (#1277, measured on the v0.68 base: outside synth-cli's dependency
+      closure (`cargo metadata`), 0 symbols in the binary against 1294 for
+      synth_backend, and `publish = false`): synth-abi is a LIBRARY the
+      `synth` compiler does not link. This requirement is met by that library
+      and its unit tests; nothing synth emits is produced by it.
     status: implemented
     tags: [canonical-abi, type-layout, synth-abi]
     links:
@@ -282,6 +288,10 @@ artifacts:
       all primitive types: bool, s8, u8, s16, u16, s32, u32, s64, u64,
       f32, f64. Roundtrip identity shall hold: lift(lower(v)) == v for
       all valid values.
+
+      SCOPE (#1277): synth-abi is not linked into the `synth` binary (the
+      measurement is recorded on the type-layout requirement above), so this
+      requirement is met by the library and not by anything synth emits.
     status: implemented
     tags: [canonical-abi, lift-lower, primitives, synth-abi]
     links:
@@ -308,6 +318,10 @@ artifacts:
       results (Ok/Err discriminant), enums (case index), and flags
       (bitset). All compound type operations use the Memory trait for
       linear memory access.
+
+      SCOPE (#1277): synth-abi is not linked into the `synth` binary (the
+      measurement is recorded on the type-layout requirement above), so this
+      requirement is met by the library and not by anything synth emits.
     status: implemented
     tags: [canonical-abi, lift-lower, compound-types, synth-abi]
     links:
@@ -334,6 +348,10 @@ artifacts:
       be implementable by both synth's test harness (SimpleMemory) and
       kiln's runtime memory (via adapter). The allocator shall support
       alignment-aware allocation for the canonical ABI realloc pattern.
+
+      SCOPE (#1277): synth-abi is not linked into the `synth` binary (the
+      measurement is recorded on the type-layout requirement above), so this
+      requirement is met by the library and not by anything synth emits.
     status: implemented
     tags: [canonical-abi, memory, synth-abi]
     links:
@@ -414,8 +432,15 @@ artifacts:
       Tests verifying that lift(lower(v)) == v for all supported WIT type
       families in synth-abi. Covers primitives, strings (all three
       encodings), records, variants, options, results, enums, flags, and
-      lists. These tests exercise the same code paths that synth-compiled
-      modules use for component boundary crossings.
+      lists. These tests exercise the synth-abi LIBRARY only. They do NOT
+      exercise code that synth-compiled modules use — an earlier version of
+      this sentence said they did — because the compiler does not link
+      synth-abi (#1277, measured on the v0.68 base: outside synth-cli's
+      dependency closure (`cargo metadata`), 0 symbols in the binary against
+      1294 for synth_backend, and `publish = false`). Kiln's and meld's STPA
+      hazards XH-2/XH-3 name `synth-abi/src/layout.rs` as synth's side of
+      canonical-ABI element sizing; that attribution holds only once the
+      compile path consumes the library, which is a named follow-up.
     status: implemented
     tags: [canonical-abi, roundtrip, synth-abi]
     links:

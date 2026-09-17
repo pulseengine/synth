@@ -2,6 +2,8 @@
 # One-shot generator for the committed
 # scripts/repro/home_alias_class_1189_*.wat modules; the oracle that executes them is
 # scripts/repro/home_alias_class_1189_differential.py. Re-run only to regenerate them.
+# This generator is the source of truth: claim_check.py re-runs it in a scratch
+# copy and fails the build when a committed .wat differs (#1282).
 """RQ-65-ALIASCLASS (#1189) — generate the per-consumer-family modules.
 
 Every function takes params HOMED IN R0..R3 (AAPCS, call-free) — or, in the

@@ -121,6 +121,12 @@ artifacts:
       and bare-metal environments. Handles linear memory allocation,
       bounds check generation, and MPU region mapping for hardware-
       assisted memory protection.
+
+      The crate named below, synth-memory, is not linked into the `synth`
+      binary (#1277): the bounds-check code and memory layout the compiler
+      emits come from synth-synthesis and the backends, and the Zephyr/Linux
+      abstraction exists only in the library. MPU region handling is tracked
+      in #1284.
     status: implemented
     tags: [memory, abstraction, mpu]
     links:
@@ -142,6 +148,11 @@ artifacts:
       WebAssembly Component Model canonical ABI implementation for
       lift/lower operations. Ensures ABI compatibility with Meld (fuser)
       and Kiln (runtime) for the __meld_dispatch_import bridge interface.
+
+      The crate named below, synth-abi, is not linked into the `synth` binary
+      (#1277): the import-dispatch stubs the compiler emits
+      (`__meld_dispatch_import`) come from synth-backend, and synth-abi's
+      lift/lower is not called from the compile path.
     status: implemented
     tags: [abi, component-model, interop]
     links:
