@@ -41,3 +41,54 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: the production-dead line count of select_default.rs is measured by an instrument other than a hand-rolled parser and published before any deletion; if it is non-zero, the dead arms are deleted with byte-identity over the full corpus for every shipped path and the tests that reached them through select() are migrated or retired by name; selector_lines_code's value and baseline move together in claims.yaml in the same PR; if the measured number is zero or small, the artifact publishes it as the outcome"
+      disposition: partial
+      landed: >-
+        PARTIAL (#242, PR #1314) — the measurement is published, no deletion is made, no
+        number in claims.yaml moves and no waiver is added. Status stays
+        `proposed`. (Note: selector_lines_code DID fall this release, 20224 ->
+        20201, but through RQ-68-ONESOURCE's single-sourcing (#1311), not
+        through this artifact.)
+
+        MEASURED WITH COVERAGE, NOT A PARSER. cargo-llvm-cov over the SHIPPED
+        CLI only (no tests run): an instrumented `synth` built at 17c5345e
+        compiled every scripts/repro/*.wat (191 modules) under four ARM
+        configurations (cortex-m4 self-contained, `--relocatable`,
+        `--no-optimize`, cortex-m7dp) — 764 compiles. select_default.rs:
+        34 of 1616 EXECUTABLE lines executed (2.1 %), 1 of 4 functions.
+        Controls on the same run, so the instrument is live: select_with_stack.rs
+        79.1 %, instruction_selector.rs 75.2 %. Harness and report are recorded
+        outside the repo (the corpus run is a measurement, not a gate).
+
+        WHAT THE NUMBER IS NOT. llvm-cov counts executable lines (1616), not
+        the ratchet's non-test source lines, so no `selector_lines_code` delta
+        may be read off it. And not-executed is not unreachable: select_default
+        has exactly one production entry — the `_ =>` fallthrough of
+        `select_with_stack` — so any op that arm forwards reaches it, and a
+        corpus that happens not to contain such an op proves nothing about it.
+        1582 unexecuted lines is an UPPER BOUND on production-dead code, not a
+        deletion set.
+
+        ONE PART IS SETTLED FROM SOURCE, AND IT REFUTES THIS LANE'S OWN FIRST
+        CAUTION. The lane first assumed the Helium/MVE arms were reachable by
+        v128 input the corpus lacked. They are not: 88 arms in select_default
+        are guarded `if self.has_helium`; the production constructors set
+        `has_helium: false` and the only `set_helium(true)` call is inside
+        instruction_selector.rs's `#[cfg(test)]` module; and independently the
+        decoder refuses EVERY SIMD operator on every target before selection
+        (#680, `is_simd_operator`). Measured: a v128 module
+        (`i32x4.add`, `v128.and`, `v128.load/store`) compiled with the
+        instrumented binary on cortex-m55 (Helium) and cortex-m4, self-contained
+        and `--relocatable`, is refused at decode in all four runs, and
+        select_default executes 0 of 1616 lines. So those 88 arms are
+        production-dead by construction, twice over.
+
+        WHY NO DELETION THIS RELEASE. The done-when requires the dead arms to be
+        deleted with corpus byte-identity AND the tests reaching them through
+        `select()` migrated or retired by name, with the ratchet moving in the
+        same PR. For the 88 Helium arms that is well-defined (the tests that
+        call `set_helium(true)` are the migration set) and is recorded as a
+        v0.69 candidate. For the rest, splitting the remaining unexecuted lines
+        into forwarded-by-the-fallthrough versus shadowed needs the compiler's
+        own answer — gate `pub fn select()` to tests and read rustc's dead-code
+        output — which breaks the `select()` tests and benchmarks and is a lane
+        of its own, not a tail increment of this release.
