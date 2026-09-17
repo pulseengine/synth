@@ -318,12 +318,12 @@ the machine-derived badges above stayed correct.
 | `synth-cfg` | Control flow graph construction and analysis |
 | `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
 | `synth-verify` | SMT translation validation — ordeal (pure-Rust QF_BV) default, Z3 feature-gated differential oracle |
-| `synth-analysis` | SSA, control flow analysis, call graph |
-| `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
-| `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
+| `synth-analysis` | SSA, control flow analysis, call graph — **library only**: not linked into the `synth` binary and not published (#1277) |
+| `synth-abi` | WebAssembly Component Model ABI (lift/lower) — **library only**: not linked into the `synth` binary and not published (#1277) |
+| `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) — **library only**: not linked into the `synth` binary and not published (#1277) |
 | `synth-qemu` | QEMU integration for testing |
 | `synth-test` | WAST-to-Robot Framework test generator for Renode |
-| `synth-wit` | WIT (WebAssembly Interface Types) parser |
+| `synth-wit` | WIT (WebAssembly Interface Types) parser — **library only**: not linked into the `synth` binary and not published (#1277) |
 
 ## Testing
 

@@ -41,6 +41,16 @@ artifacts:
     links:
       - type: derives-from
         target: BR-001
+      - type: traces-to
+        target: ARCH-005
+      - type: traces-to
+        target: SWA-007
+      - type: traces-to
+        target: SWA-008
+      - type: traces-to
+        target: SWVER-001
+      - type: traces-to
+        target: SWVER-004
     fields:
       req-type: functional
       priority: should
@@ -49,9 +59,10 @@ artifacts:
       done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"
       disposition: partial
       landed: >-
-        PARTIAL — three increments landed, two items remain (#1277, and the
-        lane's close-out). Status stays `proposed` with `disposition:
-        partial` because the artifact's outcome does not yet hold.
+        PARTIAL — four increments landed; the lane's close-out remains (the
+        done-when's Verus clause is only half met, see increment 1). Status
+        stays `proposed` with `disposition: partial` because the artifact's
+        outcome does not yet hold.
 
         INCREMENT 1 (#1276, #1281). #1276: FIVE of six WCET oracles ran with R10
         = the linear-memory BASE (phases 2-5 through phase 2's shared
@@ -92,3 +103,50 @@ artifacts:
         `GeneratedFixtures1282` tests (the two that stay green assert that FRESH
         fixtures pass, which a stub also satisfies). The vfp generator's header
         said "there is nothing for CI to fail on"; it now names the gate.
+
+        INCREMENT 4 (#1277). REPRODUCED, AND WIDER THAN FILED. `cargo metadata`
+        closure of synth-cli under default features, cross-checked with `nm` on
+        the built binary: synth-abi, synth-analysis and synth-memory are outside
+        the closure with 0 symbols (control: synth_backend 1294), all `publish =
+        false` — and so is synth-wit, a FOURTH crate the crate map lists as a
+        compiler component, which the issue missed because synth-abi depends on
+        it (so it is not an orphan, only unlinked). Full census of the 19
+        members: 9 linked; 3 feature-gated and published (verify, awsm,
+        wasker — `synth verify` without the feature refuses loudly, honest); 7
+        unlinked and unpublished (the four above plus the declared tooling
+        mcdc-harness, qemu, test). No Cargo consumer exists elsewhere in the
+        org, but kiln's and meld's STPA name `synth-abi/src/layout.rs` as
+        synth's side of canonical-ABI sizing (XH-2/XH-3) — so deleting the crate
+        is refused, and the honest statement is a cross-toolchain contract
+        surface the compiler does not yet consume.
+
+        RE-SCOPED, NOT DEMOTED. Statuses stay `implemented` (a demotion to
+        `proposed` would disarm the status gate while looking like honesty);
+        the scope text is corrected instead. The load-bearing defects were the
+        EVIDENCE: the canonical-ABI roundtrip verification said its tests
+        "exercise the same code paths that synth-compiled modules use" — false,
+        rewritten; SWVER-001 ran
+        `-p synth-abi` as verification of the compiler's input parsing, and the
+        compiler accepts no `.wit` input at all; SWVER-004 ran `-p synth-memory`
+        for target configuration. Both runs dropped the library, and the gap is
+        recorded rather than borrowed. SWA-007 claimed synth-analysis results
+        are "consumed by the synthesis and optimization stages" — nothing
+        consumes them. The Memory and ABI architecture components (ARCH-005 and
+        its ABI sibling), SWA-008 and its memory sibling, the four canonical-ABI
+        software requirements, the end-to-end ABI-compatibility check and both
+        crate maps carry the scope. MPU-region handling is left to
+        #1284 (held for a maintainer decision), not folded in here.
+
+        PINNED: SYNTH-UNLINKED-LIBRARIES-1277 counts every Cargo dependency edge
+        onto the four (one today: synth-abi -> synth-wit, both unlinked), their
+        `publish = false`, and the workspace population (19), because the
+        claim-check job has no Rust toolchain to run `cargo metadata`. Wiring a
+        library in is a WANTED change that reds the pin on purpose, so the
+        wording moves in the same PR. Red-first: a planted `synth-abi` dependency
+        in synth-cli reds it; removing the crate-map wording reds it.
+
+        rivet warnings first rose 439 -> 443: its prose-mention rule matches the
+        SUFFIX of a multi-segment id (a mention of a canonical-ABI requirement
+        warned about the unrelated input-format requirement whose id is its
+        suffix, suggesting a false trace) — filed as pulseengine/rivet#972; the prose
+        was reworded to name no id, back to 439 / 40 errors, identical to base.

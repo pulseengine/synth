@@ -125,8 +125,12 @@ artifacts:
     description: >
       Static analysis passes including SSA construction, control flow
       analysis, dependency graph building, and data flow analysis.
-      Provides analysis results consumed by the synthesis and optimization
-      stages.
+      Nothing in the compiler consumes its results: the crate is not linked
+      into the `synth` binary (#1277, measured on the v0.68 base: outside
+      synth-cli's dependency closure (`cargo metadata`), 0 symbols in the
+      binary against 1294 for synth_backend, and `publish = false`). The
+      control-flow and liveness analyses the shipped compiler runs live in
+      synth-cfg, synth-opt and synth-synthesis.
     status: implemented
     tags: [analysis, ssa, control-flow]
     links:
@@ -143,6 +147,10 @@ artifacts:
       WebAssembly Component Model canonical ABI implementation for
       lift/lower operations. Handles WIT interface type definitions
       and ensures ABI compatibility for component composition.
+
+      Not linked into the `synth` binary (#1277): a library whose lift/lower
+      the compiler does not call; the canonical ABI roundtrip verification records
+      the measurement.
     status: implemented
     tags: [abi, component-model]
     links:
@@ -160,6 +168,11 @@ artifacts:
       and bare-metal environments. Handles linear memory allocation,
       bounds check generation, MPU region mapping, and memory layout
       configuration for target-specific flash/RAM sizes.
+
+      Not linked into the `synth` binary (#1277). The bounds-check code and
+      memory layout the compiler emits come from synth-synthesis and the
+      backends (synth-backend, synth-backend-riscv, synth-backend-aarch64),
+      not from this crate. MPU region handling is tracked in #1284.
     status: implemented
     tags: [memory, abstraction, mpu]
     links:

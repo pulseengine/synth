@@ -241,8 +241,8 @@ artifacts:
     type: sys-verification
     title: "Component round-trip: ABI compatibility validation"
     description: >
-      Verification that the canonical ABI encoding produced by synth-abi
-      (at compile time) matches the canonical ABI decoding in kiln-builtins
+      Verification that the canonical ABI encoding produced at compile time
+      (synth-abi is not yet in the compile path — #1277) matches the canonical ABI decoding in kiln-builtins
       (at runtime). For each WIT type family (primitives, strings, records,
       variants, options, results, lists, enums, flags), a test component
       passes values through the import boundary and verifies that the
