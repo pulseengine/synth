@@ -95,11 +95,25 @@ fn loop_weight(depth: u32) -> u64 {
 
 /// The caller-saved prefix of the pool (R0-R3): the registers a value can
 /// move INTO for free, because they need no prologue save. The tie-break
-/// input of [`color_webs_costed`].
+/// input of [`color_webs_costed`], which reads every colour INDEX below this
+/// count as caller-saved.
+///
+/// That reading is only true if the pool lists the argument registers BEFORE
+/// everything else — the order `reg_contract::ALLOCATABLE` is declared in. A
+/// pool that put one after a callee-saved register would give a SHORTER prefix
+/// and silently price that register as needing a save (#1280). So the order is
+/// asserted, not assumed: an argument register past the prefix is an internal
+/// contract violation and panics rather than mis-steering the colourer.
 fn caller_saved_prefix(pool: &[Reg]) -> usize {
-    pool.iter()
-        .take_while(|r| matches!(r, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3))
-        .count()
+    use crate::reg_contract::ARGUMENT;
+    let prefix = pool.iter().take_while(|r| ARGUMENT.contains(r)).count();
+    assert!(
+        pool[prefix..].iter().all(|r| !ARGUMENT.contains(r)),
+        "graph_alloc: the allocatable pool must list the argument registers \
+         (R0-R3) before any other register — the colourer reads colour indices \
+         below the argument prefix as caller-saved (#1280); got {pool:?}"
+    );
+    prefix
 }
 
 /// The VCR-VER-004 acceptance gate, applied on top of whichever dataflow
@@ -2005,6 +2019,32 @@ mod tests {
         Reg::R7,
         Reg::R8,
     ];
+
+    #[test]
+    fn caller_saved_prefix_of_the_shipped_pool_is_the_four_argument_registers() {
+        assert_eq!(caller_saved_prefix(&crate::reg_contract::ALLOCATABLE), 4);
+        assert_eq!(caller_saved_prefix(&POOL), 4);
+    }
+
+    /// #1280 red-first: a pool that lists an argument register AFTER a
+    /// callee-saved one used to yield a silently shorter prefix (here 0), which
+    /// the colourer would read as "no free caller-saved colours".
+    #[test]
+    #[should_panic(expected = "#1280")]
+    fn a_pool_with_an_argument_register_after_a_callee_saved_one_is_refused() {
+        let reordered = [
+            Reg::R4,
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ];
+        let _ = caller_saved_prefix(&reordered);
+    }
 
     #[test]
     fn colours_a_straight_line_function_and_validates() {

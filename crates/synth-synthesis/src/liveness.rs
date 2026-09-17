@@ -4919,7 +4919,7 @@ pub struct ReallocStats {
 ///     allowed return).
 pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
     use ArmOp::*;
-    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const CALLEE_SAVED: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
 
     // Pass 1: classify. Find the single LR-push and the PC-pops; collect the
     // callee-saved registers the rest of the body touches; decline on
@@ -5053,7 +5053,7 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
 /// scratch has already been lowered to r0-r3, so only genuine clobbers remain.
 pub fn body_uses_callee_saved(instrs: &[ArmInstruction]) -> bool {
     use ArmOp::*;
-    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const CALLEE_SAVED: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
     for ins in instrs {
         match &ins.op {
             // Function-boundary markers and pure label control flow carry no
@@ -5123,7 +5123,7 @@ pub fn body_uses_callee_saved(instrs: &[ArmInstruction]) -> bool {
 /// corpus rather than assumed — see the artifact's byte-identity gate.
 pub fn callee_saved_reserved_defs(instrs: &[ArmInstruction]) -> Vec<Reg> {
     use ArmOp::*;
-    const RESERVED: [Reg; 3] = [Reg::R9, Reg::R10, Reg::R11];
+    const RESERVED: [Reg; 3] = crate::reg_contract::RESERVED_CALLEE_SAVED;
     let mut defs: BTreeSet<Reg> = BTreeSet::new();
     for ins in instrs {
         match &ins.op {
@@ -5193,7 +5193,7 @@ pub fn ensure_callee_saved_prologue(instrs: &[ArmInstruction]) -> Vec<ArmInstruc
     // nothing. An empty extra set reproduces the pre-#1204 lists byte for byte,
     // which is what keeps every currently-correct function unchanged.
     let extra = callee_saved_reserved_defs(instrs);
-    let mut saves: Vec<Reg> = vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    let mut saves: Vec<Reg> = crate::reg_contract::CALLEE_SAVED_POOL.to_vec();
     saves.extend(extra.iter().copied());
     // AAPCS wants SP 8-byte aligned; the base list plus LR is already even, so
     // pad only when an odd number of extras made it odd. R12 is the encoder
@@ -5551,16 +5551,7 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     // violation this checks for. Widening it cannot move a byte — it only
     // inspects — so a green corpus after the widening is independent evidence
     // that no reserved-register clobber survives anywhere.
-    const CALLEE_SAVED: [Reg; 8] = [
-        Reg::R4,
-        Reg::R5,
-        Reg::R6,
-        Reg::R7,
-        Reg::R8,
-        Reg::R9,
-        Reg::R10,
-        Reg::R11,
-    ];
+    const CALLEE_SAVED: [Reg; 8] = crate::reg_contract::AAPCS_CALLEE_SAVED;
 
     // ---- Invariant 1: callee-saved preservation (#490), whole-function ----
     //
@@ -6555,7 +6546,7 @@ fn build_join_cfg(
 /// `pop {…, pc}` epilogue (no contract → nothing is assumed available; a
 /// `bx lr`-return function gets the STRICT semantics).
 fn preserved_callee_saved(instrs: &[ArmInstruction]) -> BTreeSet<Reg> {
-    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const CALLEE_SAVED: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
     // Prologue save-set: the first LR-push (mirrors invariant 1's detection).
     let mut pushed: BTreeSet<Reg> = BTreeSet::new();
     let mut has_prologue = false;
@@ -7004,7 +6995,7 @@ fn join_cfg_livein_defb(
 /// The caller-saved set a `bl`/`blx`/`call` DEFINES across the JOIN CFG (all get
 /// fresh values across the AAPCS call boundary — R0/R1 = return, R2/R3/R12 =
 /// clobbered). Shared by both JOIN-CFG builders.
-const JOIN_CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
+const JOIN_CALL_DEFS: [Reg; 5] = crate::reg_contract::CALL_CLOBBERED;
 
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
@@ -7788,16 +7779,17 @@ fn safe_cse_uses(
     None // rd not redefined in the segment → may be live-out → decline
 }
 
-/// Size of the general-purpose allocatable register pool (R0..R8). The
-/// optimized ARM path reserves R9/R10/R11 (linmem base / scratch) and R12 (IP,
-/// encoder scratch), so nine registers remain for values (#212).
-const ALLOCATABLE_POOL: usize = 9;
+/// Size of the general-purpose allocatable register pool (R0..R8), derived from
+/// `reg_contract::ALLOCATABLE`. R9/R10/R11 are outside the pool because the
+/// register contract reserves them (globals base, memory size, memory base) —
+/// not because the optimized path never writes them; it does, and saves what it
+/// defines (#1204, #1290) — and R12 is the encoder's scratch (#212).
+const ALLOCATABLE_POOL: usize = crate::reg_contract::ALLOCATABLE.len();
 
 /// The allocatable pool in preference order (low first, so a retargeted use is
 /// less likely to flip a 16-bit Thumb encoding to its 32-bit form).
 fn hoist_pool() -> [Reg; ALLOCATABLE_POOL] {
-    use Reg::*;
-    [R0, R1, R2, R3, R4, R5, R6, R7, R8]
+    crate::reg_contract::ALLOCATABLE
 }
 
 /// A constant-materialization *unit* in a straight-line segment: either a single
@@ -8233,7 +8225,7 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
     // input: a stream in which the hoist had picked an unsaved callee-saved
     // register would already hard-fail VCR-RA-003, so no compiling fixture
     // exercises the changed choice.
-    const CALLEE_SAVED_HOIST: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const CALLEE_SAVED_HOIST: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
     let prologue_saved: BTreeSet<Reg> = instrs
         .iter()
         .find_map(|i| match &i.op {

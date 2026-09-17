@@ -12,6 +12,7 @@ pub mod optimizer_bridge;
 pub mod parallel_move;
 pub mod pattern_matcher;
 pub mod peephole;
+pub mod reg_contract;
 pub mod rules;
 pub mod sel_dsl;
 pub mod wasm_decoder;

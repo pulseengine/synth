@@ -1230,17 +1230,7 @@ fn compile_wasm_to_arm(
     let realloc_on = std::env::var("SYNTH_RANGE_REALLOC").map_or(true, |v| v != "0");
     let (arm_instrs, ran_realloc) = if realloc_on {
         use synth_synthesis::rules::Reg;
-        const POOL: [Reg; 9] = [
-            Reg::R0,
-            Reg::R1,
-            Reg::R2,
-            Reg::R3,
-            Reg::R4,
-            Reg::R5,
-            Reg::R6,
-            Reg::R7,
-            Reg::R8,
-        ];
+        const POOL: [Reg; 9] = synth_synthesis::reg_contract::ALLOCATABLE;
         // VCR-DEC-001 (epic #242, the North Star's first foothold): the
         // SYNTH_GRAPH_ALLOC graph-colouring allocator SPIKE. When enabled it
         // replaces STEP 1 of the re-allocation (the segment-based

@@ -3298,7 +3298,7 @@ impl OptimizerBridge {
 
         // Map local indices to ARM registers for params
         // AAPCS: first 4 params in R0-R3
-        let param_regs = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+        let param_regs = crate::reg_contract::ARGUMENT;
 
         // Reserved param registers: R0..R(min(num_params,4)). These hold incoming
         // AAPCS arguments that must NOT be clobbered by i64 op handlers — at least
@@ -3517,7 +3517,7 @@ impl OptimizerBridge {
                                  param_reserved_regs: &[Reg],
                                  extra_avoid: &[Reg]|
          -> Reg {
-            const CANDIDATES: &[Reg] = &[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+            const CANDIDATES: &[Reg] = &crate::reg_contract::CALLEE_SAVED_POOL;
             let is_in_use = |r: Reg| -> bool {
                 vreg_to_arm.values().any(|&v| v == r)
                     || local_to_reg.values().any(|&v| v == r)
@@ -6946,15 +6946,15 @@ impl OptimizerBridge {
 // ---------------------------------------------------------------------------
 
 /// The register pool `alloc_i32_scratch` draws from. The spill pre-step frees
-/// registers in exactly this pool (and only this pool — params live in R0-R3,
-/// R9/R10/R11/R12 are reserved conventions the optimized path must not touch).
-const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = [
-    crate::rules::Reg::R4,
-    crate::rules::Reg::R5,
-    crate::rules::Reg::R6,
-    crate::rules::Reg::R7,
-    crate::rules::Reg::R8,
-];
+/// registers in exactly this pool, and only this pool: params live in R0-R3,
+/// and R9/R10/R11/R12 are outside it. That is NOT because the optimized path
+/// never touches them — it does (#1290): the i64 pair table below hands out
+/// (R8,R9) and (R10,R11), base-CSE hoists the linear-memory base into R11, and
+/// the spill reload itself loads into R12. R9-R11 are outside the pool because
+/// the register contract reserves them (globals base, memory size, memory
+/// base; a function that defines one saves it, #1204), and R12 because it is
+/// the encoder's scratch.
+const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
 
 /// The CONSECUTIVE even-aligned register pairs `alloc_i64_pair` searches, in
 /// search order. The #587 pair-spill pre-step frees and reloads pairs from

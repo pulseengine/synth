@@ -19,6 +19,24 @@ Every verdict is in the committed ledger `docs/status/mutation_survey.json`;
 the numbers below are derived from it and pinned in `claims.yaml`
 (`SYNTH-MUTATION-SURVEY-RQ65`, `SYNTH-MUTATION-WATCHED-RQ66`).
 
+> **v0.68 — THREE RECORDS RETIRED, NOT RE-SAMPLED (RQ-68-ONESOURCE, #1270).**
+> Single-sourcing the register contract deleted the three literals these
+> records mutated (`R3-direct/REG/select_with_stack.rs:206:45`,
+> `R4-shared/REG/liveness.rs:5056:45`, `R1-routing/REG/arm_backend.rs:1238:12`),
+> so `reanchor` had nothing to relocate them to. Each moved to the ledger's
+> `retired` list with its reason, as the one v0.66 record did; a mutation of
+> the new single declaration is a DIFFERENT mutant (it moves every former copy
+> at once), so relocating a record there would assert a classification nobody
+> measured. Re-derived from the ledger by `summarize()`: the live headline is
+> **4 of 19 byte-changing mutants UNTESTED (21 %)** over 34 sampled; the
+> silent subset is **4 of 14 = 28.6 %** (PRIMARY) and **4 of 15 = 26.7 %**
+> with the borderline record counted silent (ALTERNATE). THE RATES ROSE ONLY
+> BECAUSE THE DENOMINATOR SHRANK — two KILLED records (one loud, one silent)
+> and one UNRESOLVED left; no survivor was added and no oracle weakened. The
+> v0.65/v0.66 figures below (4 of 21, 27 %, 25 %) are that ledger's history
+> and stay as written. Drawing replacements in `reg_contract.rs` needs the
+> suite replay, which is CI's to run (see below for why this host cannot).
+>
 > **THE HEADLINE DOES NOT MOVE THIS RELEASE.** The v0.65 ledger still reads
 > 4 of 21 byte-changing mutants UNTESTED — **19 % survival**, unchanged,
 > because no re-sampling ran (see below).

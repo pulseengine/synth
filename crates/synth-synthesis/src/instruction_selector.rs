@@ -143,17 +143,7 @@ pub(crate) fn new_vfp_used(wide: bool) -> [bool; VFP_FILE] {
     used
 }
 
-const ALLOCATABLE_REGS: [Reg; 9] = [
-    Reg::R0,
-    Reg::R1,
-    Reg::R2,
-    Reg::R3,
-    Reg::R4,
-    Reg::R5,
-    Reg::R6,
-    Reg::R7,
-    Reg::R8,
-];
+const ALLOCATABLE_REGS: [Reg; 9] = crate::reg_contract::ALLOCATABLE;
 
 /// Convert register index to Reg enum.
 /// Skips reserved registers R9 (globals), R10 (mem size), R11 (mem base).
@@ -1892,13 +1882,13 @@ fn alloc_consecutive_pair(
 /// R4–R8 are callee-saved (pushed in the prologue) and survive calls untouched;
 /// they are deliberately excluded.
 fn is_caller_saved(reg: Reg) -> bool {
-    matches!(reg, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3 | Reg::R12)
+    crate::reg_contract::CALL_CLOBBERED.contains(&reg)
 }
 
 /// AAPCS integer/pointer argument registers, in order: R0, R1, R2, R3.
 /// Arguments beyond the fourth are passed on the stack (not yet handled — see
 /// the scope note on `marshal_call_args`).
-const ARG_REGS: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+const ARG_REGS: [Reg; 4] = crate::reg_contract::ARGUMENT;
 
 /// Given the low register of an i64 register pair, return the high register.
 ///
@@ -1971,7 +1961,8 @@ struct LocalLayout {
     /// 8-byte NSAA slot; a narrow param AFTER a stack-spilled wide one is
     /// itself stack-passed — AAPCS C.5, no register back-fill). Computed AFTER
     /// `frame_size` is finalized: param k sits at
-    /// `[sp, frame_size + 24 + nsaa_k]` (24 = the fixed `push {r4-r8,lr}`).
+    /// `[sp, frame_size + DIRECT_PROLOGUE_BYTES + nsaa_k]` (the fixed
+    /// `push {r4-r8,lr}`, derived from its register list — #1273).
     /// For an all-i32 signature `nsaa_k == (k-4)*4`, byte-identical to the
     /// legacy formula.
     incoming_params: std::collections::HashMap<u32, (i32, bool)>,
@@ -2410,14 +2401,13 @@ fn compute_local_layout(
 
     // #359/#503: locate the incoming stack-passed params (the wasm indices the
     // width-aware AAPCS walk put on the caller's stack). After
-    // `push {r4-r8,lr}` (24 bytes) + `sub sp,#frame_size`, param k sits at
-    // `[sp, frame_size + 24 + nsaa_k]` where `nsaa_k` is its AAPCS stacked
+    // `push {r4-r8,lr}` (`DIRECT_PROLOGUE_BYTES`) + `sub sp,#frame_size`, param k
+    // sits at `[sp, frame_size + DIRECT_PROLOGUE_BYTES + nsaa_k]` where `nsaa_k` is its AAPCS stacked
     // offset ((k-4)*4 for an all-i32 signature — byte-identical to the legacy
     // formula; 8-byte aligned for a wide param). Only the params actually
     // referenced are recorded.
     let mut incoming_params: HashMap<u32, (i32, bool)> = HashMap::new();
     if !aapcs.stack.is_empty() {
-        const FIXED_PUSH_BYTES: i32 = 24; // push {r4,r5,r6,r7,r8,lr}
         let mut used_incoming: BTreeSet<u32> = BTreeSet::new();
         for op in wasm_ops {
             let k = match op {
@@ -2430,7 +2420,7 @@ fn compute_local_layout(
         }
         for &k in &used_incoming {
             let (nsaa, is_wide) = aapcs.stack[&k];
-            let off = frame_size + FIXED_PUSH_BYTES + nsaa;
+            let off = frame_size + crate::reg_contract::DIRECT_PROLOGUE_BYTES + nsaa;
             incoming_params.insert(k, (off, is_wide));
         }
     }
@@ -2536,7 +2526,7 @@ fn compute_local_promotion(
         }
     }
 
-    const PROMO_REGS: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const PROMO_REGS: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
     let mut eligible: Vec<u32> = info
         .iter()
         .filter(|(idx, e)| {
@@ -9013,7 +9003,7 @@ impl InstructionSelector {
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         _layout: &LocalLayout,
     ) -> Result<Reg> {
-        const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+        const CALLEE_SAVED: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
         for &reg in &CALLEE_SAVED {
             let on_stack = stack.contains(&reg)
                 || stack

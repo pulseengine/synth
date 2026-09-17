@@ -203,7 +203,7 @@ impl InstructionSelector {
         // frame_size below is rounded to 8 to preserve it.
         instructions.push(ArmInstruction {
             op: ArmOp::Push {
-                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+                regs: crate::reg_contract::DIRECT_PROLOGUE_PUSH.to_vec(),
             },
             source_line: None,
         });
@@ -220,11 +220,12 @@ impl InstructionSelector {
         //    the Sub would shift all of them silently.
         //
         // 2. STACK-PASSED PARAMS ARE REFUSED, NOT ADJUSTED. Incoming stack args
-        //    are addressed `frame_size + 24 + nsaa_k`, where 24 is the six
-        //    pushed registers, HARDCODED (#1273). A 64-byte VPUSH makes that
-        //    arithmetic read 64 bytes from the wrong place — silently, with no
-        //    fault. Until #1273 derives that offset from the emitted prologue,
-        //    this rung declines such functions LOUDLY. A loud decline is the
+        //    are addressed `frame_size + DIRECT_PROLOGUE_BYTES + nsaa_k`, and
+        //    that constant is derived from the CORE push list only (#1273). A
+        //    64-byte VPUSH is not in it, so it would make that arithmetic read
+        //    64 bytes from the wrong place — silently, with no fault. Until the
+        //    VPUSH is folded into the derived prologue size, this rung declines
+        //    such functions LOUDLY. A loud decline is the
         //    honest answer when the alternative is a wrong offset; it is also
         //    what the function already did before this rung existed.
         if self.vfp_wide_file {
@@ -300,7 +301,7 @@ impl InstructionSelector {
             self.i64_spill_slots,
         );
         // #359 Ok-or-Err (#180/#185): an incoming stack-passed param is read via
-        // `ldr rd,[sp,#off]` where `off = frame_size + 24 + nsaa_k` and
+        // `ldr rd,[sp,#off]` where `off = frame_size + DIRECT_PROLOGUE_BYTES + nsaa_k` and
         // `frame_size` is unbounded (a function with a large locals frame). The
         // Thumb-2 `ldr [sp,#imm]` immediate is 12-bit (0..4095); refuse rather
         // than silently emit an out-of-range encoding. Checked once here over the
@@ -4285,14 +4286,7 @@ impl InstructionSelector {
                             }
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Pop {
-                                    regs: vec![
-                                        Reg::R4,
-                                        Reg::R5,
-                                        Reg::R6,
-                                        Reg::R7,
-                                        Reg::R8,
-                                        Reg::PC,
-                                    ],
+                                    regs: crate::reg_contract::DIRECT_EPILOGUE_POP.to_vec(),
                                 },
                                 source_line: Some(idx),
                             });
@@ -4431,14 +4425,7 @@ impl InstructionSelector {
                             }
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Pop {
-                                    regs: vec![
-                                        Reg::R4,
-                                        Reg::R5,
-                                        Reg::R6,
-                                        Reg::R7,
-                                        Reg::R8,
-                                        Reg::PC,
-                                    ],
+                                    regs: crate::reg_contract::DIRECT_EPILOGUE_POP.to_vec(),
                                 },
                                 source_line: Some(idx),
                             });
@@ -4617,7 +4604,7 @@ impl InstructionSelector {
                         }
                         instructions.push(ArmInstruction {
                             op: ArmOp::Pop {
-                                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                                regs: crate::reg_contract::DIRECT_EPILOGUE_POP.to_vec(),
                             },
                             source_line: Some(idx),
                         });
@@ -4758,7 +4745,7 @@ impl InstructionSelector {
                     // Restore callee-saved registers and return via PC
                     instructions.push(ArmInstruction {
                         op: ArmOp::Pop {
-                            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                            regs: crate::reg_contract::DIRECT_EPILOGUE_POP.to_vec(),
                         },
                         source_line: Some(idx),
                     });
@@ -8483,7 +8470,7 @@ impl InstructionSelector {
         // POP {R4-R8, PC} restores registers and returns (PC = saved LR)
         instructions.push(ArmInstruction {
             op: ArmOp::Pop {
-                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                regs: crate::reg_contract::DIRECT_EPILOGUE_POP.to_vec(),
             },
             source_line: None,
         });

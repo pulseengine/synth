@@ -7785,6 +7785,33 @@ fn encode_thumb_bl(bl_addr: u32, target_addr: u32) -> [u8; 4] {
     bytes
 }
 
+/// #649: refuse to emit a PARTIAL R9 globals table in a self-contained image.
+///
+/// The startup materializer writes the table with `STR.W [R9, #imm12]`, whose
+/// offset field is 0..=4095. The last of `n` words sits at offset `(n-1)*4`, so
+/// the table is fully addressable exactly when `(n-1)*4 <= 4095` — which for a
+/// byte count that is a multiple of 4 is `n*4 <= 4096`. That is why the limit
+/// compared below is 4096 while the addressing limit is 4095 (#1283 found the
+/// two numbers side by side with this step written down nowhere, twice).
+///
+/// Shared by both self-contained image builders (`build_cortex_m_elf` and
+/// `build_multi_func_cortex_m_elf`), so their acceptance limits cannot drift
+/// apart the way two independent copies of this arithmetic could.
+fn refuse_partial_globals_table(globals_words: usize) -> Result<()> {
+    // Largest table the `#imm12` materializer can address completely.
+    const MAX_TABLE_BYTES: usize = 4096;
+    let table_bytes = globals_words * 4;
+    if table_bytes > MAX_TABLE_BYTES {
+        anyhow::bail!(
+            "globals table ({} bytes) exceeds the startup materializer's \
+             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
+             table (#649)",
+            table_bytes
+        );
+    }
+    Ok(())
+}
+
 /// Build a complete Cortex-M multi-function ELF with vector table.
 ///
 /// ## The self-contained SRAM layout contract (#687)
@@ -7881,17 +7908,9 @@ fn build_multi_func_cortex_m_elf(
     let linear_memory_pages = memories.first().map(|m| m.initial_pages).unwrap_or(1);
     let linear_memory_size = linear_memory_pages * 64 * 1024; // 64KB per page
 
-    // #649: the R9 globals table lives immediately above linear memory. The
-    // startup materializer addresses it with `STR.W [R9, #imm12]` (max 4095).
+    // #649: the R9 globals table lives immediately above linear memory.
+    refuse_partial_globals_table(globals_words.len())?;
     let globals_table_bytes = (globals_words.len() as u32) * 4;
-    if globals_table_bytes > 4096 {
-        anyhow::bail!(
-            "globals table ({} bytes) exceeds the startup materializer's \
-             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
-             table (#649)",
-            globals_table_bytes
-        );
-    }
 
     // #758: build the ROM init image for active memory-0 data segments. The
     // self-contained image has NO loader that populates RAM from PT_LOAD (the
@@ -9403,16 +9422,8 @@ fn build_cortex_m_elf(
     };
 
     // #649: R9 globals table just above linear memory (0x2001_0000); the
-    // stack grows down from 0x2002_0000, leaving it 64KB of headroom. The
-    // startup materializer addresses the table with STR.W #imm12 (max 4095).
-    if globals_words.len() * 4 > 4096 {
-        anyhow::bail!(
-            "globals table ({} bytes) exceeds the startup materializer's \
-             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
-             table (#649)",
-            globals_words.len() * 4
-        );
-    }
+    // stack grows down from 0x2002_0000, leaving it 64KB of headroom.
+    refuse_partial_globals_table(globals_words.len())?;
 
     // Calculate addresses
     let vector_table_addr = flash_base;
@@ -10046,6 +10057,22 @@ fn link_firmware(
 
 #[cfg(test)]
 mod tests {
+    /// #1283: the shared #649 guard accepts exactly the tables the `#imm12`
+    /// materializer can address: 1024 words (last offset 4092) is the largest,
+    /// 1025 (last offset 4096) the first refused — with the message unchanged.
+    #[test]
+    fn globals_table_guard_boundary_is_1024_words_1283() {
+        assert!(refuse_partial_globals_table(0).is_ok());
+        assert!(refuse_partial_globals_table(1024).is_ok());
+        let err = refuse_partial_globals_table(1025).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "globals table (4100 bytes) exceeds the startup materializer's \
+             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
+             table (#649)"
+        );
+    }
+
     use super::*;
 
     // ---- #739: baked static-region MOVW/MOVT scan (oracle-vacuity fix) --------

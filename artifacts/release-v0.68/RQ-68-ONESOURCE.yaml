@@ -31,7 +31,7 @@ artifacts:
       THIS IS A PURE REFACTOR AND IS GATED AS ONE. North Star invariant 1 — derive
       what you check against from the artifact you ship — applied to the register
       contract. Byte-identity over the full corpus, or it does not land.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - register-contract
@@ -47,3 +47,104 @@ artifacts:
       verification-track: differential
       issue: "#1270"
       done-when: "manual: each register-contract set (callee-saved, allocatable pool, caller-saved/argument) is declared once and referenced, with no magic number standing in for another file's array length; caller_saved_prefix's ordering assumption is asserted or typed and a test that reorders the pool goes red; the prologue size used for stack-param addressing is derived from the prologue actually emitted, with #1273 first verified live or latent by an execution differential; the #649 guard exists once; stale must-not-touch comments are corrected; byte-identity holds over the full corpus"
+      verified-by: >-
+        Per item, the check that fails if it regresses. Byte identity: the lane
+        byte-triage (207 corpus modules x 5 configs = 1035 compiles per binary)
+        against a baseline binary built from the unmodified 7c514760 tree, run
+        after EVERY code increment — 826 byte-identical, 209 identical failures,
+        0 return-code / digest / skip-set changes each time. #1273: the stack-
+        param addressing now reads reg_contract::DIRECT_PROLOGUE_BYTES, derived
+        from the push list the selector emits; SYNTH-EMBEDDER-ABI-RELOCATABLE-1131
+        pins both the declaration and the emitting call site, and the CI-wired
+        stack_args_503 and i64_stack_param_503 differentials pass on the
+        candidate. #1270/#1274/#1280: the sets are declared once in
+        reg_contract.rs, composites derived by a const concat that fails to
+        compile on a length mismatch; unit tests pin each set's members and
+        order; SYNTH-ARCH-REGISTER-POOL now binds the pool's MEMBERS. #1280:
+        `a_pool_with_an_argument_register_after_a_callee_saved_one_is_refused`
+        FAILS with the ordering assertion backed out. #1283:
+        `globals_table_guard_boundary_is_1024_words_1283` pins 1024 words
+        accepted / 1025 refused with the unchanged message, and FAILS when the
+        limit is planted as 4095. #1290: comments only, each claim checked in
+        source. Workspace fmt/clippy/test, claim_check, status_evidence,
+        version pins and oracle wiring green on the lane; rivet unchanged.
+      landed: >-
+        IMPLEMENTED on the lane branch, in seven commits (subjects name #1273,
+        #1270, #1274, #1280, #1283, #1290, and #1270 again for the re-anchor).
+
+        #1273 FIRST, AS A MEASUREMENT — LATENT, NOT LIVE. On the base (the
+        NOPCLASS head), 133 corpus modules compiled on the direct path
+        (--relocatable, cortex-m4): all 349 of 1492 functions that address
+        `[sp, ...]` begin with exactly `push.w {r4, r5, r6, r7, r8, lr}`, the
+        24 bytes the literal assumed (a capstone census over ELF-symtab
+        function bodies). A unicorn-vs-wasmtime probe reusing the CI-wired
+        stack-args harness, with stack params read inside a loop over a local
+        frame, across if/else arms and a select, and beside i64 locals, matched
+        on 9 of 9 vectors; stack_args_503 and i64_stack_param_503 pass. The
+        static reason it is latent: ensure_callee_saved_prologue is a no-op
+        when an LR-push already exists (always, on the direct path) and
+        shrink_callee_saved_saves declines on any SP-relative access. Then the
+        literal was replaced: DIRECT_PROLOGUE_PUSH / DIRECT_EPILOGUE_POP are
+        derived from the callee-saved pool and DIRECT_PROLOGUE_BYTES from the
+        push length, used by the emitter, the four epilogues and the addressing.
+        The wide-VFP rung still refuses stack params (its 64-byte VPUSH is not
+        in the derived size), and its comment now says exactly that.
+
+        #1270 / #1274 / #1280 — THE SETS. A census over non-test source found
+        more copies than the issues listed: callee-saved R4-R8 in eight places
+        (including the direct prologue and the optimized path's
+        alloc_i32_scratch CANDIDATES and SPILL_ON_EXHAUST_POOL, which must agree
+        by their own comments), R4-R11 once, R9-R11 once; the allocatable pool
+        three times across two crates plus the magic `ALLOCATABLE_POOL = 9`; the
+        argument / call-clobbered family six times. All reference
+        synth_synthesis::reg_contract now. Sets that are a DIFFERENT contract
+        were left alone and are named so they are not mistaken for misses: the
+        graph allocator's 16-register analysis universe and Thumb low-register
+        set, liveness's entry seed and register universe, the optimized path's
+        R4-R11-then-R3 temp pool, contracts.rs's Verus RESERVED_REGS (includes
+        R12), and pools declared inside test modules.
+
+        #1280 — THE ORDER, SEPARATELY. Single-sourcing the set does not protect
+        caller_saved_prefix's assumption that R0-R3 come FIRST in the pool; it
+        now asserts it, panicking on an argument register past the prefix
+        instead of silently returning a shorter prefix the colourer reads as
+        "no free caller-saved colours". Red-first as above.
+
+        #1283 — the #649 guard is one function called by both self-contained
+        builders, with the 4095-versus-4096 reconciliation written down: the
+        last of n words sits at (n-1)*4. #1290 — both "must not touch
+        R9/R10/R11/R12" comments rewritten after checking source: the optimized
+        path hands out (R8,R9) and (R10,R11), base-CSE hoists into R11 and the
+        spill reload loads R12.
+
+        RATCHET: selector_lines_code 20224 -> 20201 (a fall, recorded as a
+        value-bound waiver), selector_lines_total 31227 -> 31204.
+
+        MUTATION SURVEY — THREE RECORDS RETIRED, THE PUBLISHED NUMBERS MOVED
+        WITH THEM. The re-anchor found 3 sites NOT FOUND because this lane
+        deleted the literals they mutated (`select_with_stack.rs:206:45` and
+        `arm_backend.rs:1238:12`, both KILLED; `liveness.rs:5056:45`,
+        UNRESOLVED; none in the CI-replayed subset; the other 34 anchors are
+        exact). Following the v0.66 precedent they moved to the ledger's
+        `retired` list with reasons, through the tool's own `save_ledger`, so
+        the summary was re-derived, not typed: sampled 37 -> 34, byte-changing
+        21 -> 19, killed 17 -> 15, silent-changed 15 -> 14 — UNTESTED stays 4.
+        `mutation_survey.py report` now reads 4/19 = 21.1 % and silent 4/14 =
+        28.6 % (alternate 4/15 = 26.7 %). Relocating the records onto the new
+        single declarations was refused: a mutation there moves every former
+        copy at once, a different mutant whose classification needs the CI
+        suite replay. Every affected claims.yaml pin moved in the same commit;
+        the headline pin moved off the v0.65 sentence ("4 of 21", kept as
+        history) onto a dated v0.68 note in MUTATION_SURVEY.md that says the
+        rates rose only because the denominator shrank. Verified semantically:
+        exactly three records left `mutants`, every remaining record and the
+        v0.66 retirement are identical, controls/ci_subset/baseline/meta
+        unchanged.
+
+        DEVIATION: disk was full on the work volume, so the baseline binary was
+        built from the clean base tree into the lane's own target dir and
+        SNAPSHOTTED (sha256 recorded) before any candidate build, instead of a
+        second worktree and target dir; every comparison was snapshot vs
+        snapshot. The shared byte_triage.py raced on `flight_seam.wat` vs
+        `flight_seam.wasm` (same output stem across threads); the lane used a
+        copy keyed by the full file name.
