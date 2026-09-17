@@ -49,8 +49,8 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increments 1-5 of the lane (#1285, #1294, #1286, #1287, #1279);
-        #1288 remains. Status stays `proposed` with `disposition: partial`.
+        PARTIAL — increments 1-6 of the lane (#1285, #1294, #1286, #1287, #1279,
+        #1288); the lane's close-out remains. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
@@ -144,3 +144,29 @@ artifacts:
         the three platform-feature builds. NOTE, from #1277: synth-memory is a
         library the `synth` binary does not link — this makes its declared
         configuration build, it does not put the crate in the compiler.
+
+        #1288 — THE POLICY CITED LINES, ANALYSED TWO OF FOUR BACKENDS, AND GAVE
+        AN INCOMPLETE REASON FOR ITS ONE LIVE RISK. Every `file.rs:line`
+        citation is now a symbol plus its file, and a pin reds on renaming the
+        six load-bearing guard functions or on any line-number citation.
+        Re-measured with the v0.68 lane binary: the RV32 bounds knob exists
+        (one load plus one store, rv32imac: `.text` 52 B none, 92 B software
+        with two bltu/ebreak guards, 108 B mask — independently re-measured by
+        the coordinator, identical), so that accepted residual is retired (21
+        rows: 19 D, 1 opt-in F, 1 A). The "rely on MPU" row was false as
+        written: `--safety-bounds mpu` emits bytes identical to `none` on both
+        relocatable and self-contained output, so synth programs no MPU (the
+        held MPU decision's own subject). The call_indirect row now says the
+        runtime type check exists only for mixed-type tables. The
+        add_with_shift CVE analog stays latent, but the old reason was
+        incomplete: `RuleApplicator` does not rewrite, while
+        `InstructionSelector::select` does emit rule replacements and is reached
+        only from tests; the regression test does not watch that route. Scope
+        narrowed in the policy and the README: A32 and A64 are unanalysed —
+        and A32 is ALSO the default untargeted ARM output (confirmed from
+        `resolve_target_spec` and the object's attributes: Realtime profile, ARM
+        ISA), so plain `synth compile` output is outside the policy; A64 emits a
+        compare-and-branch guard before the dereference with no `csdb`, links
+        into arm64-Linux programs, and runs on speculating cores. NOT
+        re-verified in this pass, and kept as written: the Cortex-M7/M55
+        speculation descriptions and the Helium `f64x2.splat` sentence.

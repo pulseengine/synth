@@ -59,9 +59,11 @@ processor problem**: the right unit of evidence is verifiable code
 generation from a small, well-defined source language (WASM) to a small,
 well-defined target ISA (Thumb-2 / RV32), not a verified silicon core.
 Synth contributes the codegen half of that workflow: a compiler whose
-lowering steps come with mechanized proofs and an explicit
+lowering steps come with mechanized proofs and, for the Thumb-2 and RV32
+backends, an explicit
 [Spectre / speculative-execution policy](docs/spectre-policy.md) per
-lowering rule.
+lowering rule. The A32 and AArch64 backends have not been analysed yet; the
+policy says why AArch64 is the one where it matters.
 
 ## Installation
 

@@ -785,8 +785,6 @@ readme_link_coverage:
       rationale: append-only release narrative; historical record, no live current-state claims
     - path: CONTRIBUTING.md
       rationale: process document; carries no capability or verification claims
-    - path: docs/spectre-policy.md
-      rationale: normative policy statement reviewed per lowering-rule PR; qualitative, no derived counts
     - path: docs/architecture/SYNTH_LOOM_RELATIONSHIP.md
       rationale: qualitative two-tier (loom optimizes / synth compiles) design note; no derived counts
     - path: docs/requirements/REQUIREMENTS.md
@@ -919,6 +917,40 @@ claims:
         pattern: '0\.85 ?x'                 # which names the figure it retired
         glob: ['docs/status/*.md', 'README.md', 'CLAUDE.md']
         expect: 1
+
+  # #1288 (RQ-68-CLAIMSDRIFT): docs/spectre-policy.md cited every lowering as
+  # `file.rs:line`, and every citation had drifted onto unrelated code. The
+  # rows now cite SYMBOLS; this pin makes the load-bearing ones red when they
+  # are renamed or removed (the doc must move in the same PR), and forbids the
+  # line-number citation style from coming back.
+  - id: SYNTH-SPECTRE-POLICY-SYMBOLS-1288
+    doc: docs/spectre-policy.md
+    text: "Each row cites a\n**symbol** (function, type or match arm) and its file — never a line number,"
+    evidence:
+      - kind: count-eq                       # the ARM software guard both ARM paths share
+        pattern: 'pub fn software_bounds_guard\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'fn generate_load_with_bounds_check\(|fn generate_store_with_bounds_check\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 2
+      - kind: count-eq                       # the masking rows
+        pattern: 'fn mask_effective_address\('
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: count-eq                       # the RV32 rows
+        pattern: 'fn emit_bounds_check\('
+        glob: ['crates/synth-backend-riscv/src/selector.rs']
+        expect: 1
+      - kind: count-eq                       # the UNANALYSED A64 guard named in section 1
+        pattern: 'let bounds_check = \|words: &mut Vec<u32>,'
+        glob: ['crates/synth-backend-aarch64/src/selector.rs']
+        expect: 1
+      - kind: count-eq                       # no `file.rs:NNN` citation style
+        pattern: '\.rs:[0-9]'
+        glob: ['docs/spectre-policy.md']
+        expect: 0
 
   - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
     doc: crates/synth-core/src/wasm_op.rs
