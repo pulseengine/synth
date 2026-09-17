@@ -905,6 +905,21 @@ claims:
         glob: ['CLAUDE.md']
         expect: 0
 
+  # #1287 (RQ-68-CLAIMSDRIFT): docs/status/POC_ACHIEVEMENTS.md headlined a
+  # "0.85x native" size ratio whose native half was an ESTIMATE; measured
+  # against gcc -Os the ratio inverts. The page now points at the generated
+  # benchmark, and the estimate may not reappear on a status surface.
+  - id: SYNTH-POC-SIZE-ESTIMATE-GONE-1287
+    doc: docs/status/POC_ACHIEVEMENTS.md
+    text: "An estimate-based ratio should\nnot survive in any form."
+    evidence:
+      - kind: file-exists
+        path: artifacts/parity-benchmark.md
+      - kind: count-eq                       # one mention: the sentence above,
+        pattern: '0\.85 ?x'                 # which names the figure it retired
+        glob: ['docs/status/*.md', 'README.md', 'CLAUDE.md']
+        expect: 1
+
   - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
     doc: crates/synth-core/src/wasm_op.rs
     text: "pub fn count_params_heuristic"

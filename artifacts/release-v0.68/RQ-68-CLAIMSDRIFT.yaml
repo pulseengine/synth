@@ -49,7 +49,7 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increments 1-3 of the lane (#1285, #1294, #1286); #1287, #1288
+        PARTIAL — increments 1-4 of the lane (#1285, #1294, #1286, #1287); #1288
         and #1279 remain. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
@@ -107,3 +107,20 @@ artifacts:
         SYNTH-ACCEPTANCE-CITES-LADDER-1286 pins the citation and the ABSENCE of
         the old census's literals in CLAUDE.md. Red-first: re-appending the old
         sentence reds it (2 matches), and removing the citation reds it.
+
+        #1287 — REPRODUCED WITH THE BENCHMARK'S OWN INSTRUMENT. On the v0.68 lane
+        binary, `SYNTH=<lane>/debug/synth python3
+        scripts/repro/parity_benchmark/run.py --only falcon_axis` measures synth
+        AOT (cortex-m4f) at 72 B against arm-none-eabi-gcc 13.2.1 -Os at 44 B:
+        1.64x LARGER, not 0.85x. (A first attempt read the symbol size with a
+        hand-written pyelftools script and found no `.symtab` on the
+        `--all-exports` image — abandoned for the instrument that generates
+        artifacts/parity-benchmark.md, per the don't-hand-roll-a-parser rule.)
+        The 0.85x was never measured: the page's "native" column was headed
+        "Native Est". Following the PROJECT_STATUS.md precedent the page is
+        replaced by a pointer to the generated benchmark instead of being
+        re-synced, so the measured figure is stated here and in the generated
+        report, not on a third surface. SYNTH-POC-SIZE-ESTIMATE-GONE-1287 pins
+        the pointer and allows exactly one `0.85x` across the status docs,
+        README and CLAUDE.md (the pointer's own sentence naming what it
+        retired). Red-first: a second occurrence in README reds it.
