@@ -34,10 +34,22 @@ const fn concat<const A: usize, const B: usize, const C: usize>(
     out
 }
 
+/// The AAPCS integer/pointer argument registers, in order (r0-r3). All are
+/// caller-saved: a call may clobber every one.
+pub const ARGUMENT: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+
 /// The callee-saved registers inside the allocatable pool (AAPCS r4-r8). R9,
 /// R10 and R11 are callee-saved too, but the register contract reserves them;
 /// see [`RESERVED_CALLEE_SAVED`].
 pub const CALLEE_SAVED_POOL: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+
+/// The general-purpose allocatable pool (r0-r8), in PREFERENCE order: the
+/// argument registers first, then the callee-saved ones. The order is part of
+/// the contract, not a convenience — low registers keep 16-bit Thumb
+/// encodings, and the graph allocator reads colour indices below the argument
+/// prefix as caller-saved (#1280). R12 is the encoder's scratch and SP/LR/PC are
+/// not values, so neither half grows.
+pub const ALLOCATABLE: [Reg; 9] = concat(ARGUMENT, CALLEE_SAVED_POOL);
 
 /// The callee-saved registers the register contract RESERVES: R9 (globals
 /// base), R10 (linear-memory size), R11 (linear-memory base). Never in the
@@ -74,6 +86,24 @@ pub const DIRECT_PROLOGUE_BYTES: i32 = 4 * DIRECT_PROLOGUE_PUSH.len() as i32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocatable_pool_is_r0_through_r8_arguments_first() {
+        assert_eq!(
+            ALLOCATABLE,
+            [
+                Reg::R0,
+                Reg::R1,
+                Reg::R2,
+                Reg::R3,
+                Reg::R4,
+                Reg::R5,
+                Reg::R6,
+                Reg::R7,
+                Reg::R8
+            ]
+        );
+    }
 
     #[test]
     fn aapcs_callee_saved_is_r4_through_r11_in_order() {

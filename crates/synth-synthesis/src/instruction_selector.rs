@@ -143,17 +143,7 @@ pub(crate) fn new_vfp_used(wide: bool) -> [bool; VFP_FILE] {
     used
 }
 
-const ALLOCATABLE_REGS: [Reg; 9] = [
-    Reg::R0,
-    Reg::R1,
-    Reg::R2,
-    Reg::R3,
-    Reg::R4,
-    Reg::R5,
-    Reg::R6,
-    Reg::R7,
-    Reg::R8,
-];
+const ALLOCATABLE_REGS: [Reg; 9] = crate::reg_contract::ALLOCATABLE;
 
 /// Convert register index to Reg enum.
 /// Skips reserved registers R9 (globals), R10 (mem size), R11 (mem base).

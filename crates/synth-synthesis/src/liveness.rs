@@ -7782,13 +7782,12 @@ fn safe_cse_uses(
 /// Size of the general-purpose allocatable register pool (R0..R8). The
 /// optimized ARM path reserves R9/R10/R11 (linmem base / scratch) and R12 (IP,
 /// encoder scratch), so nine registers remain for values (#212).
-const ALLOCATABLE_POOL: usize = 9;
+const ALLOCATABLE_POOL: usize = crate::reg_contract::ALLOCATABLE.len();
 
 /// The allocatable pool in preference order (low first, so a retargeted use is
 /// less likely to flip a 16-bit Thumb encoding to its 32-bit form).
 fn hoist_pool() -> [Reg; ALLOCATABLE_POOL] {
-    use Reg::*;
-    [R0, R1, R2, R3, R4, R5, R6, R7, R8]
+    crate::reg_contract::ALLOCATABLE
 }
 
 /// A constant-materialization *unit* in a straight-line segment: either a single
