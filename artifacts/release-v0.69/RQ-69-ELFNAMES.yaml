@@ -1,0 +1,41 @@
+artifacts:
+  - id: RQ-69-ELFNAMES
+    type: system-req
+    title: "The ARM ELF builder names `.strtab` and `.symtab` one byte early, so both sections read as unnamed and a tool looking either up by name finds nothing"
+    description: >
+      REPRODUCED ON THE v0.68.0 TAG before this artifact was written. A
+      `--target cortex-m4 --all-exports --relocatable` object's section headers:
+
+        idx 1  '.shstrtab'  sh_name=1
+        idx 2  ''           sh_name=10   <- SHT_STRTAB
+        idx 3  ''           sh_name=18   <- SHT_SYMTAB
+
+      `.shstrtab` occupies bytes 1..10 of the string table, so offset 10 is its
+      terminating NUL: both headers point one byte short of their own name. Every
+      other section resolves correctly, which is why this survived — the object
+      links and runs.
+
+      WHAT IT COSTS. A consumer that looks up `.symtab` BY NAME gets nothing and
+      concludes the object has no symbol table, rather than getting an error. That is
+      not hypothetical: it is how this was found. During v0.68 a differential harness
+      read a synth object with pyelftools, found no `.symtab` by name, and the first
+      hypothesis was a missing symbol table. The silence was read as absence.
+
+      This is a two-offset fix in hand-written header construction. Its value is not
+      the fix but the GATE: an assertion that every emitted section header resolves
+      to a non-empty name, which no test made before.
+    status: proposed
+    release: v0.69
+    tags:
+      - elf
+      - tooling
+      - silent-drop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1307"
+      done-when: "manual: every section header in an emitted ARM object and self-contained image resolves to its intended non-empty name, checked by a test that walks the whole section table rather than the two known-bad entries, red-first against the current emitter; a name-based `.symtab` lookup succeeds on both object kinds"

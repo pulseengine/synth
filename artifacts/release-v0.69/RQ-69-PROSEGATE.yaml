@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-69-PROSEGATE
+    type: system-req
+    title: "R11 reads the structured status; it cannot see an artifact's PROSE claiming a different one — and the naive rule that would fire 2 false positives out of 3"
+    description: >
+      v0.68 shipped R11 (#1250): a delivered artifact must carry a claiming status or
+      an explicit disposition. R11 is not vacuous — deleting an artifact's
+      `disposition` in a copy reds it, which v0.68's cold review checked. In the same
+      release that review found `RQ-68-CLAIMSDRIFT.yaml` saying "Status stays
+      `proposed` with `disposition: partial`" while the artifact was `implemented`
+      with no disposition. The gate reads fields; the false statement was in prose.
+
+      THE OBVIOUS RULE IS REFUTED, AND THAT REFUTATION IS PART OF THE SCOPE. Scanning
+      all 433 artifact blocks on v0.68.0 for `status (stays|remains|is) X` against the
+      structured `status:` gives three mismatches:
+
+        RQ-68-CLAIMSDRIFT  implemented  "Status stays `proposed` ..."   LIVE FALSE CLAIM
+        RQ-61-CICAP        implemented  "Status stays proposed"        NARRATIVE — the
+                           same sentence continues "This sentence read 'Status stays
+                           proposed' when written one commit earlier — corrected"
+        RQ-62-EMBEDDER     implemented  "Status stays proposed:"       NARRATIVE — the
+                           record continues "CLOSED ON THE INTEGRATOR'S CONFIRMATION
+                           (#1131)"
+
+      Two of three are records correctly narrating their own history. A rule matching
+      prose against the field fires 2 false positives out of 3, and a gate people
+      route around is worse than no gate — this project has twice shipped a checker
+      that was itself the defect.
+
+      SO THE ARTIFACT IS SHAPED AROUND ITS NEGATIVE CONTROL: any rule must red on
+      RQ-68-CLAIMSDRIFT as written and stay green on RQ-61-CICAP and RQ-62-EMBEDDER,
+      WITHOUT naming them. If no such rule exists that is not hand-tuned per
+      artifact, the honest outcome is to publish the measurement and ship no gate —
+      a refutation, like RQ-67-SUBTRACT's, not a failure.
+    status: proposed
+    release: v0.69
+    tags:
+      - status-evidence
+      - gate-potency
+      - release-gate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1319"
+      done-when: "manual: either status_evidence reds on an artifact whose CURRENT prose claim contradicts its structured status — shown red on RQ-68-CLAIMSDRIFT as v0.68 wrote it and green on the RQ-61-CICAP and RQ-62-EMBEDDER records, with neither named in the rule — or the measurement is published with a stated reason why no non-hand-tuned rule separates them, and no gate ships"

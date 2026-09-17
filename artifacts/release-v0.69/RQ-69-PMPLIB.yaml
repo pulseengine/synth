@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-69-PMPLIB
+    type: system-req
+    title: "v0.68 made the CLI refuse `--safety-bounds pmp`; the PUBLISHED library still parses it to Mpu, with a unit test pinning the alias"
+    description: >
+      FOUND BY v0.68's CLEAN-ROOM REVIEW (F8) and re-measured on the v0.68.0 binary
+      before this artifact was written. Two residuals of RQ-68-MPUHONEST:
+
+        - `synth-core/src/backend.rs:55` still has `"mpu" | "pmp" => Ok(SafetyBounds::
+          Mpu)`, and `backend.rs:997` asserts it. `synth-core` is published to
+          crates.io — a library caller gets exactly the silent alias the CLI refuses.
+        - On AArch64 `--safety-bounds pmp` IS refused, but by the pre-existing #865
+          check, whose message says "--safety-bounds mpu is not implemented on the
+          aarch64 backend". One backend answers a `pmp` request by talking about
+          `mpu`, which is the aliasing the v0.68 notes say no longer happens. On
+          `--cortex-m` and `-b riscv` the same flag gets the RQ-68 diagnostic.
+
+      The v0.68 release notes were narrowed to state exactly this rather than
+      shipping the broader claim. The claim and the code are now consistent; making
+      the CODE match the intent is this artifact.
+
+      SMALL, AND THAT IS THE POINT. The fix is a parse arm, a flipped pinned test,
+      and a check-ordering change. It is here because a refusal that holds only at
+      the outermost layer is a refusal with a hole, and the hole is in the half we
+      publish for other people to build on.
+    status: proposed
+    release: v0.69
+    tags:
+      - api
+      - safety-bounds
+      - published-crate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1317"
+      done-when: "manual: `SafetyBounds::parse(\"pmp\")` returns an error naming #1284 instead of Mpu, the unit test that pinned the alias is flipped and shown red against the current parse first, and all three backends answer a `pmp` request with one diagnostic that names `pmp`"

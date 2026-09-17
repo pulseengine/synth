@@ -1,0 +1,86 @@
+# v0.69 — "The failure a user can see"
+#
+# v0.68 was an audit release: 23 issues about things built but never tested and
+# things claimed but not done. It shipped on 2026-09-17. Within three hours of
+# the tag, two downstream reports arrived that outrank everything the audit
+# left behind:
+#
+#   - #1318 (cpetig): a meld'ed falcon-cascade module does not compile. The
+#     EXPORTED entry point declines. Reproduced on the v0.68.0 tag with the
+#     reporter's own command line and modules.
+#   - #1315 (gale): a declared custom page size is accepted and ignored, so a
+#     1-byte memory is reported and reserved as 64 KiB — and the per-memory
+#     MPU region table #1145 ships is derived from that number.
+#
+# So this release is ordered by who is blocked, not by what is tidiest.
+#
+# EVERY ARTIFACT HERE WAS VERIFIED AGAINST SOURCE ON v0.68.0 (bd81bc8c) BEFORE
+# IT WAS WRITTEN, with the command that would refute it. Three candidates died
+# that way and are recorded rather than quietly dropped:
+#
+#   - "memory64 modules are accepted and silently wrong" — REFUTED. `(memory
+#     i64 1 1)` is refused loudly today with a diagnostic naming the proposal.
+#     #1209's headline is stale; if a silent path remains it is the i64-offset
+#     data-segment one, which must be re-measured before it is scoped.
+#   - "the start section is dropped on `--target cortex-m4 --all-exports`" —
+#     REFUTED. The emitted image is ET_EXEC and its `Reset_Handler` does
+#     `bl func_0` before the entry call. #1046's refusal has no hole there.
+#   - "artifact prose contradicting `status:` can be gated by matching the two"
+#     — REFUTED AS STATED. Of the three prose/status mismatches in 433 artifact
+#     blocks, two are records correctly NARRATING their own history. A naive
+#     rule fires 2 false positives out of 3, which is the "the checker was the
+#     defect" class this project has already paid for twice. The artifact
+#     survives with those two as its NEGATIVE CONTROL, or it publishes the
+#     measurement and ships no gate.
+#
+# THE SHAPE, AND WHAT IT IS NOT. The two musts are downstream-visible failures
+# with DIFFERENT mechanisms — register pressure on a real module, and a
+# declaration synth never reads. The shoulds are places where synth's own
+# signals are missing rather than wrong: a checker that stops at an op it
+# cannot model and returns "no violation", section names no tool can resolve,
+# an alias that survives inside a published library, tests that share a fixed
+# path. This plan does NOT claim a shared root cause, and the release notes may
+# not either.
+#
+# PRIORITY:
+#
+#   must    FALCON    #1318 — a real downstream module's exported entry point
+#                     declines; two mechanisms, two reproductions
+#   must    PAGESIZE  #1315 — a declared bound accepted and ignored, feeding
+#                     the #1145 region table
+#   should  VFPUNKNOWN #1303 — a checker that stops looking reports success
+#   should  ELFNAMES  #1307 — two section headers name their strings one byte
+#                     early; tools looking up `.symtab` find nothing
+#   should  PMPLIB    #1317 — the CLI refuses `pmp`; the published library
+#                     still aliases it to `mpu`
+#   should  PROSEGATE #1319 — with its refutation above built in
+#   should  TESTISO   #1309 — fixed temp dirs shared across test processes
+#   carried SUBTRACT  #242 — v0.68 MEASURED the 88 Helium arms production-dead
+#                     by construction; this release DELETES them or says why not
+#   carried ARCHMODEL #1136 — spar#445, re-verified at cut
+#
+# If capacity runs out, the two musts ship and the rest defer WITH THEIR
+# MEASUREMENTS, named in the release notes.
+#
+# THE PLAN PR ITSELF CARRIES ONE MANDATORY CHANGE, because nothing else forces
+# it: the status-evidence release anchor moves to v0.68.0 (ANCHOR_TAG,
+# ANCHOR_DELIVERY, ANCHOR_PROGRAMME re-derived by the checker itself, the
+# waiver channel reset) together with its claims.yaml pin. v0.66's and v0.67's
+# planning PRs did this; v0.68's did not, and the whole release printed the
+# one-minor ANCHOR-LAG warning. Two minors is red.
+#
+# HONEST RISKS, recorded before the work:
+#   - FALCON'S #1069 HALF MAY BE A CAP, NOT A BUG. If the pool genuinely cannot
+#     hold that function's frame-resident float locals, the outcome is a raised
+#     cap with a measured ceiling, or a loud decline with the ceiling NAMED —
+#     not a claim that the module compiles.
+#   - FALCON'S GI-FPU-002 HALF CARRIES A CORRECTNESS OBLIGATION. An unlowered
+#     float op reaching the integer path is fixed against an execution
+#     differential, never against "it compiles now".
+#   - PAGESIZE'S REFUSAL IS A USER-VISIBLE BEHAVIOUR CHANGE, small but real:
+#     modules that compile today will stop. gale asked for exactly that, and
+#     the external-consumer check runs again before it lands.
+#   - SUBTRACT IS ON ITS FOURTH LEVER, and the first three did not exist. This
+#     one was MEASURED in v0.68 rather than named: 88 arms, `set_helium`
+#     test-only, the decoder refusing every SIMD operator on every target
+#     including cortex-m55. Byte-identity over the corpus gates the deletion.

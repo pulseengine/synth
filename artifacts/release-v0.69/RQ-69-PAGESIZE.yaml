@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-69-PAGESIZE
+    type: system-req
+    title: "A declared custom page size is accepted and ignored — a 1-byte memory is reported and reserved as 64 KiB, and the #1145 MPU region table is derived from that number"
+    description: >
+      REPRODUCED ON THE v0.68.0 TAG with gale's module before this artifact was
+      written. `(memory $a 1 1 (pagesize 1))` twice over, compiled
+      `--target cortex-m3 --all-exports --relocatable --embedder-data-init`: rc=0,
+      no diagnostic, `__synth_mem_size_0` = `__synth_mem_size_1` = 0x10000, and
+      `__synth_mem_base_1` carries st_size 65536. The declared memory is ONE BYTE.
+
+      NOT A MULTI-MEMORY QUIRK. A single `(memory 1 1 (pagesize 1))` module with an
+      `i32.load` also compiles rc=0 on `--cortex-m`, on `--target cortex-m3
+      --all-exports --relocatable`, and on `-b riscv --all-exports`. The mechanism is
+      one line of evidence: `grep -rn page_size_log2 crates --include='*.rs'` returns
+      ZERO hits. No code reads the declared page size, so every memory is sized in
+      64 KiB pages.
+
+      WHY IT IS A MUST AND NOT A CURIOSITY. `__synth_mem_size_N` is what the embedder
+      programs one MPU region from (#1145, shipped v0.62). A tenant declaring a 1-byte
+      memory receives a 64 KiB grant — the region table over-grants by the page-size
+      ratio, and the isolation story built on that table inherits the error. gale's
+      REQ-OS-MULTITENANT-001 is blocked on page-granular region sizing, which makes
+      the declared page size the DECLARATIVE route to small per-tenant regions: the
+      tenant states its size instead of synth inferring it.
+
+      SECOND MEMBER OF THE SAME CLASS, MEASURED WHILE VERIFYING THE FIRST:
+      `(memory 1 1 shared)` also compiles rc=0 with no diagnostic. Atomic operations
+      are loudly declined, so the practical blast radius is smaller, but `shared` is
+      a declared property synth neither honours nor mentions. The lane enumerates the
+      class rather than fixing one member: every module-level declaration the decoder
+      accepts and no backend reads.
+
+      SCOPE IS THE REFUSAL, NOT THE CAPABILITY. gale asked for exactly this ordering
+      — refuse `(pagesize N)` with N != 65536 until it is honoured, then consider
+      honouring it as the first per-memory sizing mechanism. Honouring it is
+      capability work with its own oracle and is NOT in this artifact.
+    status: proposed
+    release: v0.69
+    tags:
+      - silent-drop
+      - multi-memory
+      - downstream
+      - mpu
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1315"
+      done-when: "manual: a module declaring any page size other than 65536 is refused with a typed diagnostic naming #1315 on every backend and every path measured above (self-contained, relocatable, RV32), red-first by the module that compiles rc=0 today; the class sweep is published — every module-level declaration the decoder accepts and no backend reads, each one either honoured, refused, or NAMED with its measurement; `shared` is dispositioned by that sweep; the external-consumer check is re-run before the refusal lands, as MPUHONEST's was"
