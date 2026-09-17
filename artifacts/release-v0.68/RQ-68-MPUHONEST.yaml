@@ -62,7 +62,7 @@ artifacts:
       mpu refusal (`multi_memory_406.rs`, `mem_isolation_red_1145.py`) must keep its
       current diagnostic, and no CI-wired oracle may depend on `mpu` compiling on
       ARM/RV32 — checked before the change, not after it reds.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - safety-bounds
@@ -78,3 +78,77 @@ artifacts:
       verification-track: differential
       issue: "#1284"
       done-when: "manual: --safety-bounds mpu (and its undocumented alias pmp) no longer compiles silently to the unsafe default on any ARM or RV32 path: it is refused with a typed diagnostic naming #1145, shown red-first by the byte-identity of mpu and none before the change; the multi-memory refusal keeps its diagnostic; every surface that advertises mpu as an available safety mode is corrected, the CLI --help text included, and pmp is documented or removed, and the release notes lead with the behaviour change"
+      verified-by: >-
+        Per item, the check that fails if it regresses, all on the v0.68 base
+        (31378008). Refusals: crates/synth-cli/tests/mpu_honest_1284.rs, whose
+        eight contract tests ALL fail with the three code files at origin/main
+        and pass after (self-contained ARM on three spellings of the path,
+        single-function path, RV32 mpu/pmp incl. --relocatable, pmp on ARM,
+        relocatable mpu without the acknowledgment, the acknowledgment without
+        mpu, acceptance byte-identical to `none` with the manifest field, and
+        multi-memory acceptance byte-identical to the plain object). Alignment:
+        `memory_k_section_is_aligned_to_its_mpu_region_1145` fails at origin/main
+        (align 0x4) and passes (0x10000); scripts/repro/mem_isolation_red_1145.py
+        (CI-wired) now pins the alignment and the acknowledged acceptance, and
+        FAILS on the baseline binary. Wording: SYNTH-MPU-EMBEDDER-PROGRAMMED-1284
+        reds when the self-contained refusal is deleted or the CLAUDE.md sentence
+        removed. Byte triage (fixed tool, 207 modules x 5 configs, 1035/binary):
+        825 identical, 209 failed identically, 0 rc / 0 skip-set changes, 1
+        digest change — mem406_multi_memory.wat under `reloc`, where section 5's
+        sh_addralign moved 4 -> 262144 (memory 1 is three pages) and nothing else:
+        same size, 2 bytes, contents and symbols identical. Frozen byte fixtures
+        10/10 unchanged. Oracles run with python3 on the candidate:
+        mem_isolation_red_1145, multi_memory_406_differential,
+        aarch64_bounds_865_differential — all PASS.
+      landed: >-
+        IMPLEMENTED, WITH THE SCOPE CHANGED — and the change is the point of this
+        record. The description above (kept as written) planned to REFUSE `mpu`
+        on every ARM and RV32 path, on the premise that accepting it "waits on
+        gale's two-tenant fault criterion". That premise was STALE when the plan
+        was written: gale ran the criterion on Renode on 2026-09-06 (#1145,
+        comment 5560839867 — CONTAINED with regions programmed, ESCAPED without,
+        nPRIV read back), with the MPU programmed by the EMBEDDER from synth's
+        region table, and asked synth to decide acceptance. Nobody answered for
+        eleven days, and the plan's external-consumer check was a CODE SEARCH,
+        which finds callers, not needs. Refusing everywhere would have blocked
+        gale's path. The loop replied (5708642906), gale answered the three
+        questions (5708673325), and the scope below was fixed in 5708705485.
+
+        WHAT SHIPPED. (1) `mpu` REFUSES on self-contained ARM images (decided in
+        compile_all_exports, where the output kind is known — a module with
+        imports is relocatable even without the flag), on the single-function
+        path, and on every RV32 path; `pmp` REFUSES everywhere and is never an
+        alias. (2) NEW `--embedder-mpu`, the acknowledgment gale asked for
+        instead of a notice (its scripts discard synth's output, and an unstated
+        embedder obligation had just failed silently on real boards, gale#398):
+        ARM relocatable `mpu` refuses without it, single and multi-memory; with
+        it the object is byte-identical to `none` and the safety manifest records
+        `"mpu_programming": "embedder"` (the key is omitted otherwise, so every
+        other manifest keeps its bytes); the flag alone refuses. (3) Every
+        multi-memory relocatable object aligns `.synth.wasm_mem_k` to its MPU
+        region size, whether or not `mpu` is passed. (4) CLAUDE.md, the CLI
+        help, the embedder ABI doc (both of gale's findings), the design doc, the
+        feature matrix and the roadmap now say synth programs no MPU —
+        embedder-programmed; containment demonstrated by gale on Renode, not
+        silicon (#1145).
+
+        FOUND WHILE BUILDING IT: multi-memory `mpu --embedder-mpu` first failed
+        #952 — memory k's access was declined as if `mpu` emitted a guard. The
+        memory-k decline now uses `is_passthrough()`; the selector comment was
+        rewritten at zero net lines, so selector_lines_code stays 20224.
+
+        DEVIATIONS FROM THE DONE-WHEN'S LETTER, stated: `mpu` still compiles on
+        ONE path — ARM relocatable with the explicit acknowledgment — because
+        gale's executed criterion and answers made that the honest contract; it
+        is not silent there (flag + manifest). The multi-memory diagnostic kept
+        every pinned needle but its text changed, since "stays refused until the
+        criterion has executed" is no longer true. The release notes must lead
+        with the behaviour change; that is a cut-time obligation, not this lane's.
+
+        NAMED DEFERRALS, not done: a used-extent symbol (`__synth_mem_used_N`,
+        gale's request, not a blocker); the per-memory data-base contract
+        (r11-relative `0x10_0000+k`, gale#398 — meld pack or synth report, a
+        joint decision); synth-programmed MPU in a self-contained startup; the
+        ARMv8-M (PMSAv8) and RV32 PMP encoders; ARMv6-M's 256 B minimum region
+        (with #1301); gale's silicon run on the NUCLEO-WB55RG, which alone can
+        change "Renode" to "silicon".
