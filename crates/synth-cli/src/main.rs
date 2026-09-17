@@ -6272,7 +6272,6 @@ fn find_baked_static_movw_movt(
     None
 }
 
-#[allow(clippy::too_many_arguments)]
 /// RQ-68-MPUHONEST (#1145, gale's request): the `sh_addralign` of a
 /// `.synth.wasm_mem_k` region — the smallest power of two covering the
 /// memory's declared size, never below the ARMv7-M (PMSAv7) minimum region of
@@ -6292,6 +6291,7 @@ fn mpu_region_align(mem_bytes: u32) -> u32 {
     region.min(1u64 << 31) as u32
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
