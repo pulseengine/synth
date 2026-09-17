@@ -1290,8 +1290,24 @@ claims:
     doc: ARCHITECTURE.md
     text: "Allocatable pool: R0–R8"
     evidence:
+      # RQ-68-ONESOURCE (#1274): the pool is declared ONCE, in reg_contract.rs,
+      # and the selector references it. The pin moved with it — and got
+      # stronger: it used to check only that a 9-register array existed; it now
+      # binds the MEMBERS (R0-R3 then R4-R8) the doc's "R0–R8" states.
       - kind: count-eq
-        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = \['
+        pattern: 'pub const ALLOCATABLE: \[Reg; 9\] = concat\(ARGUMENT, CALLEE_SAVED_POOL\);'
+        glob: ['crates/synth-synthesis/src/reg_contract.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'pub const ARGUMENT: \[Reg; 4\] = \[Reg::R0, Reg::R1, Reg::R2, Reg::R3\];'
+        glob: ['crates/synth-synthesis/src/reg_contract.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'pub const CALLEE_SAVED_POOL: \[Reg; 5\] = \[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8\];'
+        glob: ['crates/synth-synthesis/src/reg_contract.rs']
+        expect: 1
+      - kind: count-eq                       # and the selector uses that pool
+        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = crate::reg_contract::ALLOCATABLE;'
         glob: ['crates/synth-synthesis/src/instruction_selector.rs']
         expect: 1
       - kind: verbatim
@@ -1715,9 +1731,28 @@ claims:
         # line, decline text) moved OUT of select_with_stack.rs into
         # `home_alias::selector_hook` — one call remains. A FALL, no waiver;
         # value RE-DERIVED after cargo fmt.
-        value: 20224
+        # RQ-68-ONESOURCE (#1270/#1274/#1280/#1273): 20224 -> 20201. The
+        # selector's register-contract literals (ALLOCATABLE_REGS, the direct
+        # prologue push, four epilogue pops, the promotion and free-callee-
+        # saved pools, ARG_REGS, the FIXED_PUSH_BYTES literal) became
+        # references to `reg_contract.rs`, which is outside this population.
+        # Byte-identical over the corpus (826 identical / 209 identical
+        # failures / 0 changed, per increment). A FALL, no waiver; value
+        # RE-DERIVED after cargo fmt.
+        value: 20201
         baseline: 17897
         waivers:
+          - to: 20201
+            reason: >-
+              RQ-68-ONESOURCE (#1270/#1274/#1280/#1273): a FALL, 20224 -> 20201,
+              recorded because every value above the baseline is bound to a
+              waiver. The selector's register-contract literals — the
+              allocatable pool, the direct prologue push and its four epilogue
+              pops, the promotion and free-callee-saved pools, ARG_REGS and the
+              hard-coded 24-byte prologue size — became references to
+              `synth_synthesis::reg_contract`, which sits outside this
+              population. No lowering arm added or removed; byte-identical over
+              the corpus at every increment. Value RE-DERIVED after cargo fmt.
           # RQ-67-VFPREACH (#1267): 20097 -> 20224, +127. THE TWENTY-SECOND
           # WAIVER ON THIS RATCHET, and the release states that rather than
           # letting it pass quietly — twenty-two permissions to grow, against a
@@ -2240,7 +2275,10 @@ claims:
         # +201 code, see selector_lines_code, + 5 test module — the new
         # `declared_i64_locals` argument threaded through the five
         # compute_local_layout test call sites in instruction_selector.rs).
-        value: 31227
+        # RQ-68-ONESOURCE: 31227 -> 31204 (-23 code, see selector_lines_code;
+        # the new reg_contract tests live in reg_contract.rs, outside this
+        # population).
+        value: 31204
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3571,9 +3609,9 @@ claims:
       - kind: verbatim                       # the load-bearing size semantics
         text: "`LSR rd, R10, #16`"
       - kind: count-eq                       # allocator universe stops at R8:
-        pattern: 'const ALLOCATABLE_REGS: \[Reg; 9\] = \['   # R9/R10/R11/R12
-        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
-        expect: 1                            # reserved (doc: "never allocated")
+        pattern: 'pub const ALLOCATABLE: \[Reg; 9\] = concat\(ARGUMENT, CALLEE_SAVED_POOL\);'   # R9/R10/R11/R12
+        glob: ['crates/synth-synthesis/src/reg_contract.rs']   # reserved (doc: "never allocated");
+        expect: 1                            # declared once since RQ-68-ONESOURCE (#1274)
       - kind: count-min                      # memory accesses are R11-based
         pattern: 'MemAddr::reg_imm\(Reg::R11'
         glob: ['crates/synth-synthesis/src/instruction_selector.rs']
@@ -3594,10 +3632,14 @@ claims:
         pattern: 'reg_to_bits\(&Reg::R10\)'  # R10 itself, not a copy
         glob: ['crates/synth-backend/src/arm_encoder.rs']
         min: 1
-      - kind: count-min                      # the prologue saves ONLY R4-R8+LR
-        pattern: 'regs: vec!\[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR\]'
+      - kind: count-eq                       # the prologue saves ONLY R4-R8+LR, declared
+        pattern: 'pub const DIRECT_PROLOGUE_PUSH: \[Reg; 6\] = concat\(CALLEE_SAVED_POOL, \[Reg::LR\]\);'
+        glob: ['crates/synth-synthesis/src/reg_contract.rs']   # once (RQ-68-ONESOURCE #1273)
+        expect: 1                            # (adding a reserved reg changes this)
+      - kind: count-eq                       # and the direct selector emits exactly that
+        pattern: 'regs: crate::reg_contract::DIRECT_PROLOGUE_PUSH\.to_vec\(\)'
         glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
-        min: 1                               # (adding a reserved reg changes this)
+        expect: 1
       - kind: count-eq                       # --relocatable forces the direct
         pattern: '`--relocatable` \(host-link ET_REL\) forces the direct selector'
         glob: ['crates/synth-backend/src/arm_backend.rs']
