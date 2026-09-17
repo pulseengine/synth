@@ -49,8 +49,8 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increment 1 of the lane (#1285); #1294, #1286, #1287, #1288 and
-        #1279 remain. Status stays `proposed` with `disposition: partial`.
+        PARTIAL — increments 1-2 of the lane (#1285, #1294); #1286, #1287, #1288
+        and #1279 remain. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
@@ -68,3 +68,24 @@ artifacts:
         exempted — the measured count lives in this record, not as an unpinned
         number in a generated document.
 
+        #1294 — THE LINK PATH WAS NOT BROKEN; THE COMBINATION WAS. Measured on the
+        v0.68 base with arm-none-eabi-gcc installed: `--relocatable --link` emits
+        an ET_REL object and links it into an ET_EXEC firmware ELF;
+        `--cortex-m --link` and `--target cortex-m4 --all-exports --link` both
+        emit an ET_EXEC and hand it to the linker, which refuses an executable
+        as input — "Linker failed", every time. So the done-when's second branch
+        was taken: the self-contained combination is no longer listed as
+        implemented. `link_firmware` now reads the artifact's own ELF header and
+        refuses ET_EXEC with a diagnostic naming the working combination, BEFORE
+        any toolchain lookup, so the refusal is identical with or without a
+        cross toolchain and is tested in CI
+        (crates/synth-cli/tests/link_refuses_linked_executable_1294.rs). The
+        README row now reads "`--relocatable` output only" and still says the
+        link itself is not CI-tested, because it is not.
+
+        RED-FIRST: with the refusal block removed, both refusal tests fail — the
+        diagnostic never names #1294. A third test is the negative control —
+        `--relocatable --link` must never reach the refusal. THE FIRST RUN OF
+        THE TESTS WAS FLAKY FOR A REASON IN THE TEST: both wrote the same output
+        path from parallel threads of one process, so one compile truncated the
+        ELF whose header the other was reading. Each test now owns its output.
