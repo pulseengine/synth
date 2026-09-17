@@ -38,6 +38,15 @@ const fn concat<const A: usize, const B: usize, const C: usize>(
 /// caller-saved: a call may clobber every one.
 pub const ARGUMENT: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
 
+/// The core registers a `BL`/`BLX`/`Call` DEFINES with a fresh value: the
+/// argument registers (r0/r1 carry the return) and r12 (IP, the veneer
+/// scratch AAPCS lets a call clobber).
+pub const CALL_CLOBBERED: [Reg; 5] = concat(ARGUMENT, [Reg::R12]);
+
+/// [`CALL_CLOBBERED`] plus LR, which a `BL` also overwrites — the set a pass
+/// must assume lost across a call when it tracks LR as a value.
+pub const CALL_CLOBBERED_AND_LR: [Reg; 6] = concat(CALL_CLOBBERED, [Reg::LR]);
+
 /// The callee-saved registers inside the allocatable pool (AAPCS r4-r8). R9,
 /// R10 and R11 are callee-saved too, but the register contract reserves them;
 /// see [`RESERVED_CALLEE_SAVED`].
@@ -86,6 +95,18 @@ pub const DIRECT_PROLOGUE_BYTES: i32 = 4 * DIRECT_PROLOGUE_PUSH.len() as i32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_clobbered_sets_are_the_arguments_plus_ip_then_lr() {
+        assert_eq!(
+            CALL_CLOBBERED,
+            [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12]
+        );
+        assert_eq!(
+            CALL_CLOBBERED_AND_LR,
+            [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12, Reg::LR]
+        );
+    }
 
     #[test]
     fn allocatable_pool_is_r0_through_r8_arguments_first() {

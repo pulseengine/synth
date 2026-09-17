@@ -6995,7 +6995,7 @@ fn join_cfg_livein_defb(
 /// The caller-saved set a `bl`/`blx`/`call` DEFINES across the JOIN CFG (all get
 /// fresh values across the AAPCS call boundary — R0/R1 = return, R2/R3/R12 =
 /// clobbered). Shared by both JOIN-CFG builders.
-const JOIN_CALL_DEFS: [Reg; 5] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12];
+const JOIN_CALL_DEFS: [Reg; 5] = crate::reg_contract::CALL_CLOBBERED;
 
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the

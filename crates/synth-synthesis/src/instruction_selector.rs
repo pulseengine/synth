@@ -1882,13 +1882,13 @@ fn alloc_consecutive_pair(
 /// R4–R8 are callee-saved (pushed in the prologue) and survive calls untouched;
 /// they are deliberately excluded.
 fn is_caller_saved(reg: Reg) -> bool {
-    matches!(reg, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3 | Reg::R12)
+    crate::reg_contract::CALL_CLOBBERED.contains(&reg)
 }
 
 /// AAPCS integer/pointer argument registers, in order: R0, R1, R2, R3.
 /// Arguments beyond the fourth are passed on the stack (not yet handled — see
 /// the scope note on `marshal_call_args`).
-const ARG_REGS: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+const ARG_REGS: [Reg; 4] = crate::reg_contract::ARGUMENT;
 
 /// Given the low register of an i64 register pair, return the high register.
 ///

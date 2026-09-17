@@ -3298,7 +3298,7 @@ impl OptimizerBridge {
 
         // Map local indices to ARM registers for params
         // AAPCS: first 4 params in R0-R3
-        let param_regs = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+        let param_regs = crate::reg_contract::ARGUMENT;
 
         // Reserved param registers: R0..R(min(num_params,4)). These hold incoming
         // AAPCS arguments that must NOT be clobbered by i64 op handlers — at least

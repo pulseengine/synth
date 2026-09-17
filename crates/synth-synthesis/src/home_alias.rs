@@ -73,7 +73,7 @@ use synth_core::WasmOp;
 /// function frame-backs its params (#193/#204), so listing them costs nothing
 /// and states the clobber where a future "keep a param in r0 across a leaf
 /// call" change would trip it.
-const CALL_CLOBBERS: [Reg; 6] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R12, Reg::LR];
+const CALL_CLOBBERS: [Reg; 6] = crate::reg_contract::CALL_CLOBBERED_AND_LR;
 
 /// The AAPCS caller-saved VFP registers a `BL`/`BLX`/`Call` may clobber, as
 /// S-register slots: s0–s15 (d0–d7). Unlike the core set this one IS live
