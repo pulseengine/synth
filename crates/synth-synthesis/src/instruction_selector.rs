@@ -2536,7 +2536,7 @@ fn compute_local_promotion(
         }
     }
 
-    const PROMO_REGS: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    const PROMO_REGS: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
     let mut eligible: Vec<u32> = info
         .iter()
         .filter(|(idx, e)| {
@@ -9013,7 +9013,7 @@ impl InstructionSelector {
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         _layout: &LocalLayout,
     ) -> Result<Reg> {
-        const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+        const CALLEE_SAVED: [Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
         for &reg in &CALLEE_SAVED {
             let on_stack = stack.contains(&reg)
                 || stack

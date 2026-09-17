@@ -3517,7 +3517,7 @@ impl OptimizerBridge {
                                  param_reserved_regs: &[Reg],
                                  extra_avoid: &[Reg]|
          -> Reg {
-            const CANDIDATES: &[Reg] = &[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+            const CANDIDATES: &[Reg] = &crate::reg_contract::CALLEE_SAVED_POOL;
             let is_in_use = |r: Reg| -> bool {
                 vreg_to_arm.values().any(|&v| v == r)
                     || local_to_reg.values().any(|&v| v == r)
@@ -6948,13 +6948,7 @@ impl OptimizerBridge {
 /// The register pool `alloc_i32_scratch` draws from. The spill pre-step frees
 /// registers in exactly this pool (and only this pool — params live in R0-R3,
 /// R9/R10/R11/R12 are reserved conventions the optimized path must not touch).
-const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = [
-    crate::rules::Reg::R4,
-    crate::rules::Reg::R5,
-    crate::rules::Reg::R6,
-    crate::rules::Reg::R7,
-    crate::rules::Reg::R8,
-];
+const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
 
 /// The CONSECUTIVE even-aligned register pairs `alloc_i64_pair` searches, in
 /// search order. The #587 pair-spill pre-step frees and reloads pairs from

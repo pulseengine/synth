@@ -39,6 +39,17 @@ const fn concat<const A: usize, const B: usize, const C: usize>(
 /// see [`RESERVED_CALLEE_SAVED`].
 pub const CALLEE_SAVED_POOL: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
 
+/// The callee-saved registers the register contract RESERVES: R9 (globals
+/// base), R10 (linear-memory size), R11 (linear-memory base). Never in the
+/// allocatable pool — but the optimized path does WRITE them (the i64 pair
+/// table's (R8,R9)/(R10,R11), base-CSE's R11, synthetic local 255), so any
+/// function that defines one must save it (#1204).
+pub const RESERVED_CALLEE_SAVED: [Reg; 3] = [Reg::R9, Reg::R10, Reg::R11];
+
+/// Every AAPCS callee-saved core register (r4-r11): the pool's callee-saved
+/// half followed by the reserved half.
+pub const AAPCS_CALLEE_SAVED: [Reg; 8] = concat(CALLEE_SAVED_POOL, RESERVED_CALLEE_SAVED);
+
 /// The direct selector's (`select_with_stack`) fixed prologue:
 /// `push {r4-r8, lr}`. Six registers — an even count, so the 8-byte AAPCS SP
 /// alignment holds at every call site once the frame is rounded to 8.
@@ -63,6 +74,23 @@ pub const DIRECT_PROLOGUE_BYTES: i32 = 4 * DIRECT_PROLOGUE_PUSH.len() as i32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aapcs_callee_saved_is_r4_through_r11_in_order() {
+        assert_eq!(
+            AAPCS_CALLEE_SAVED,
+            [
+                Reg::R4,
+                Reg::R5,
+                Reg::R6,
+                Reg::R7,
+                Reg::R8,
+                Reg::R9,
+                Reg::R10,
+                Reg::R11
+            ]
+        );
+    }
 
     #[test]
     fn direct_prologue_is_the_callee_saved_pool_plus_lr() {
