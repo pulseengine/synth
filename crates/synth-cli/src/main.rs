@@ -1703,7 +1703,11 @@ fn emit_sbom(
         backend: backend_name,
         imports,
     };
-    let sbom = synth_core::CycloneDxSbom::new(&inputs, synth_core::sbom::now_rfc3339());
+    // #1292: SOURCE_DATE_EPOCH, when set, pins the timestamp (malformed = error).
+    // #1293: record every SYNTH_* lever set for this build.
+    let timestamp = synth_core::sbom::build_timestamp_rfc3339().map_err(|e| anyhow::anyhow!(e))?;
+    let sbom = synth_core::CycloneDxSbom::new(&inputs, timestamp)
+        .with_build_environment(&synth_core::sbom::synth_build_environment());
     std::fs::write(sbom_path, sbom.to_json())
         .with_context(|| format!("Failed to write SBOM: {}", sbom_path.display()))?;
     info!(

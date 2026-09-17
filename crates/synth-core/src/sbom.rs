@@ -45,6 +45,20 @@
 //! deterministically from the output ELF's SHA-256, so it too is stable for a
 //! given binary.
 //!
+//! #1292 (RQ-68-REPRO): when `SOURCE_DATE_EPOCH` is set the timestamp is THAT
+//! instant instead of the wall clock — the reproducible-builds.org convention,
+//! which keeps the by-design meaning ("when this was built") while letting two
+//! builds of the same source produce the same SBOM. A malformed value is an
+//! error, as that specification asks, never a silent fall-back to the clock.
+//!
+//! #1293: `metadata.properties` records every `SYNTH_*` environment variable
+//! SET for the compilation (`synth:build-env:<NAME>`). A census of the variables
+//! non-test source reads found 14 of 36 that change emitted bytes on a 60-module
+//! sample — a lower bound, since it covered three configs and the values `1` and
+//! `0` only — so the list is read from the environment at build time rather than
+//! hard-coded, and cannot drift when a lever is added. When none is set the
+//! field is omitted, so a default build's SBOM is byte-identical to before.
+//!
 //! Path convention: when the compiler emits `foo.elf`, the SBOM is written to
 //! `foo.cdx.json` next to it.
 
@@ -84,11 +98,17 @@ pub struct CycloneDxSbom {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SbomMetadata {
-    /// ISO-8601 / RFC-3339 UTC timestamp of when the SBOM was emitted.
-    /// The one intentionally non-deterministic field.
+    /// ISO-8601 / RFC-3339 UTC timestamp of when the SBOM was emitted — the
+    /// wall clock by default, or `SOURCE_DATE_EPOCH` when set (#1292), which
+    /// makes it deterministic for a reproducible build.
     pub timestamp: String,
     /// The tool(s) that produced the described artifact — here, synth itself.
     pub tools: Vec<Tool>,
+    /// #1293: the build environment that can change emitted bytes — every
+    /// `SYNTH_*` variable set for this compilation, sorted by name. Omitted
+    /// when empty so a default build's SBOM is unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<Property>,
 }
 
 /// CycloneDX `metadata.tools` entry — "what built it".
@@ -326,6 +346,7 @@ impl CycloneDxSbom {
                     name: "synth".to_string(),
                     version: inputs.synth_version.to_string(),
                 }],
+                properties: Vec::new(),
             },
             components,
             dependencies,
@@ -333,6 +354,25 @@ impl CycloneDxSbom {
     }
 
     /// Serialise to pretty-printed CycloneDX 1.5 JSON.
+    /// #1293: record the byte-changing build environment. `vars` are
+    /// `(NAME, value)` pairs; only `SYNTH_*` names are kept, sorted, so the
+    /// property order never depends on the order the OS returned them in.
+    pub fn with_build_environment(mut self, vars: &[(String, String)]) -> Self {
+        let mut kept: Vec<&(String, String)> = vars
+            .iter()
+            .filter(|(k, _)| k.starts_with("SYNTH_"))
+            .collect();
+        kept.sort();
+        self.metadata.properties = kept
+            .into_iter()
+            .map(|(k, v)| Property {
+                name: format!("synth:build-env:{k}"),
+                value: v.clone(),
+            })
+            .collect();
+        self
+    }
+
     pub fn to_json(&self) -> String {
         // `serde_json` preserves struct field declaration order, so the
         // output is deterministic (the timestamp aside).
@@ -404,6 +444,44 @@ fn uuid_urn_from_digest(digest_hex: &str) -> String {
 ///
 /// Hand-rolled from `SystemTime` (civil-date conversion) to avoid pulling a
 /// date/time crate into `synth-core`, which is upstream of every backend.
+/// #1292: the SBOM build timestamp. `SOURCE_DATE_EPOCH` (seconds since the Unix
+/// epoch) wins when set; otherwise the wall clock. A value that is set but is
+/// not a non-negative integer is an error — the reproducible-builds.org
+/// specification asks for that rather than a silent fall-back, because a
+/// fall-back reintroduces exactly the non-determinism the variable exists to
+/// remove.
+pub fn build_timestamp_rfc3339() -> Result<String, String> {
+    timestamp_from_source_date_epoch(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref())
+}
+
+/// Pure core of [`build_timestamp_rfc3339`], so it is testable without
+/// mutating the process environment.
+pub fn timestamp_from_source_date_epoch(value: Option<&str>) -> Result<String, String> {
+    match value {
+        None => Ok(now_rfc3339()),
+        Some(raw) => raw
+            .trim()
+            .parse::<u64>()
+            .map(rfc3339_from_unix)
+            .map_err(|_| {
+                format!(
+                    "SOURCE_DATE_EPOCH={raw:?} is not a non-negative integer number of \
+                 seconds since the Unix epoch — refusing to fall back to the wall \
+                 clock, which would make the SBOM non-reproducible (#1292)"
+                )
+            }),
+    }
+}
+
+/// #1293: every `SYNTH_*` variable in the current process environment, sorted.
+pub fn synth_build_environment() -> Vec<(String, String)> {
+    let mut vars: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("SYNTH_"))
+        .collect();
+    vars.sort();
+    vars
+}
+
 pub fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -625,5 +703,83 @@ mod tests {
         assert_eq!(rfc3339_from_unix(0), "1970-01-01T00:00:00Z");
         // A leap-year date: 2024-02-29T00:00:00Z == 1709164800.
         assert_eq!(rfc3339_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
+    }
+    // -- #1292 / #1293 (RQ-68-REPRO) --------------------------------------
+
+    #[test]
+    fn source_date_epoch_pins_the_timestamp_1292() {
+        // 1700000000 = 2023-11-14T22:13:20Z.
+        assert_eq!(
+            timestamp_from_source_date_epoch(Some("1700000000")).unwrap(),
+            "2023-11-14T22:13:20Z"
+        );
+        assert_eq!(
+            timestamp_from_source_date_epoch(Some("0")).unwrap(),
+            "1970-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn malformed_source_date_epoch_is_an_error_not_a_fallback_1292() {
+        for bad in ["", "yesterday", "-5", "1.5"] {
+            let err = timestamp_from_source_date_epoch(Some(bad)).unwrap_err();
+            assert!(err.contains("#1292"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn build_environment_is_recorded_sorted_and_synth_only_1293() {
+        let inputs = sample_inputs_for_env_test();
+        let sbom = CycloneDxSbom::new(&inputs, "2023-11-14T22:13:20Z".to_string())
+            .with_build_environment(&[
+                ("SYNTH_SPILL_REALLOC".to_string(), "0".to_string()),
+                ("HOME".to_string(), "/leak".to_string()),
+                ("SYNTH_CONST_CSE".to_string(), "0".to_string()),
+            ]);
+        let names: Vec<&str> = sbom
+            .metadata
+            .properties
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "synth:build-env:SYNTH_CONST_CSE",
+                "synth:build-env:SYNTH_SPILL_REALLOC"
+            ]
+        );
+        let json = sbom.to_json();
+        assert!(json.contains("synth:build-env:SYNTH_CONST_CSE"), "{json}");
+        assert!(
+            !json.contains("/leak"),
+            "a non-SYNTH_ variable leaked into the SBOM"
+        );
+    }
+
+    #[test]
+    fn default_build_sbom_has_no_metadata_properties_1293() {
+        let inputs = sample_inputs_for_env_test();
+        let json = CycloneDxSbom::new(&inputs, "2023-11-14T22:13:20Z".to_string())
+            .with_build_environment(&[])
+            .to_json();
+        let meta = &json[json.find("\"metadata\"").unwrap()..json.find("\"components\"").unwrap()];
+        assert!(
+            !meta.contains("properties"),
+            "an SBOM with no SYNTH_* levers set must serialize exactly as before: {meta}"
+        );
+    }
+
+    fn sample_inputs_for_env_test() -> SbomInputs<'static> {
+        SbomInputs {
+            synth_version: "0.0.0-test",
+            input_path: std::path::Path::new("in.wasm"),
+            input_bytes: b"\0asm",
+            output_path: std::path::Path::new("out.elf"),
+            output_bytes: b"\x7fELF",
+            target_triple: "thumbv7em-none-eabi",
+            backend: "arm",
+            imports: &[],
+        }
     }
 }
