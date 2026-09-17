@@ -49,8 +49,8 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increments 1-4 of the lane (#1285, #1294, #1286, #1287); #1288
-        and #1279 remain. Status stays `proposed` with `disposition: partial`.
+        PARTIAL — increments 1-5 of the lane (#1285, #1294, #1286, #1287, #1279);
+        #1288 remains. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
@@ -124,3 +124,23 @@ artifacts:
         the pointer and allows exactly one `0.85x` across the status docs,
         README and CLAUDE.md (the pointer's own sentence naming what it
         retired). Red-first: a second occurrence in README reds it.
+
+        #1279 — THE ISSUE'S COUNT WAS RIGHT AND THIS PLAN'S WAS NOT. The plan
+        said "7 errors measured; the issue said six". Re-measured: six compile
+        errors, all `Vec` out of scope in bounds.rs; the seventh line was cargo's
+        own "could not compile ... due to 6 previous errors" summary, counted as
+        an error by a grep for `^error`. The crate declares
+        `#![cfg_attr(not(feature = "std"), no_std)]` but never brought in
+        `alloc`, and a doc comment in bounds.rs called the configuration
+        "aspirational". Fixed rather than removed: `extern crate alloc` under
+        `not(std)` and `use alloc::vec::Vec` in both scopes that need it (the
+        nested `codegen` module does not inherit its parent's import — the
+        first fix left four errors for that reason). Measured green after the
+        fix: `--no-default-features` on the host and on thumbv7em-none-eabihf,
+        each of bare-metal / zephyr / freertos on thumbv7em-none-eabihf, the std
+        build, and clippy -D warnings on the no_std target. The required Clippy
+        job (self-hosted rust-cpu, name unchanged so the required context cannot
+        deadlock) now installs thumbv7em-none-eabihf and runs that clippy plus
+        the three platform-feature builds. NOTE, from #1277: synth-memory is a
+        library the `synth` binary does not link — this makes its declared
+        configuration build, it does not put the crate in the compiler.

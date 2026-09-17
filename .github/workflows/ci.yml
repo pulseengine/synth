@@ -125,6 +125,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          # #1279: the no_std build of synth-memory below needs a bare-metal target.
+          targets: thumbv7em-none-eabihf
       - name: Cache Cargo dependencies
         uses: actions/cache@v6
         with:
@@ -137,6 +139,18 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # #1279 (RQ-68-CLAIMSDRIFT): synth-memory declares
+      # `#![cfg_attr(not(feature = "std"), no_std)]`, yet `--no-default-features`
+      # failed with six `Vec` errors and no job built that configuration. It is
+      # built and linted here on a real no_std target, with each platform feature,
+      # so the declared configuration cannot rot silently again.
+      - name: synth-memory builds without std (#1279)
+        run: |
+          set -euo pipefail
+          cargo clippy -p synth-memory --no-default-features --target thumbv7em-none-eabihf -- -D warnings
+          for f in bare-metal zephyr freertos; do
+            cargo build -p synth-memory --no-default-features --features "$f" --target thumbv7em-none-eabihf
+          done
 
   fmt:
     name: Format
