@@ -49,8 +49,8 @@ artifacts:
       done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"
       disposition: partial
       landed: >-
-        PARTIAL — two increments landed, three items remain (#1282, #1277, and
-        the lane's close-out). Status stays `proposed` with `disposition:
+        PARTIAL — three increments landed, two items remain (#1277, and the
+        lane's close-out). Status stays `proposed` with `disposition:
         partial` because the artifact's outcome does not yet hold.
 
         INCREMENT 1 (#1276, #1281). #1276: FIVE of six WCET oracles ran with R10
@@ -76,3 +76,19 @@ artifacts:
         bytes — so SYNTH-LINMEM-BASE-ORACLE-COPIES-1278 pins both halves exactly.
         Red-first: moving the constant reds the claim.
 
+        INCREMENT 3 (#1282). The issue's census held: exactly two pure fixture
+        generators exist (`scripts/gen_*.py`), and both reproduced their
+        committed .wat byte-identically on the v0.68 base — the latent form, not
+        a live drift. Every other script that writes a committed file either
+        already runs `--check` in CI (model_coverage_audit, proof_inventory) or
+        writes a MEASUREMENT report from compiler/toolchain output, which is not
+        reproducible byte-for-byte and is out of scope. `check_generated_fixtures`
+        in the required claim-check job now re-runs each registered generator in
+        a scratch copy (never against the repo) and byte-compares, and pins the
+        population: an unregistered `scripts/gen_*.py` is red. Potency on the
+        live repo: a one-line hand edit to each fixture family and a planted
+        `gen_extra_probe.py` gave three FAILs; restored, 68/68. Red-first on the
+        unit tests: stubbing the gate to return nothing reddens 4 of the 6
+        `GeneratedFixtures1282` tests (the two that stay green assert that FRESH
+        fixtures pass, which a stub also satisfies). The vfp generator's header
+        said "there is nothing for CI to fail on"; it now names the gate.
