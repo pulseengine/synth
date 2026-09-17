@@ -889,6 +889,22 @@ claims:
         glob: ['CLAUDE.md']
         min: 1
 
+  # #1286 (RQ-68-CLAIMSDRIFT): CLAUDE.md told readers to publish the v0.59
+  # 805-module acceptance rates two releases after RQ-64-SCOPEGAP superseded
+  # them. The fix removes the copy rather than refreshing it, so the pin is on
+  # the ABSENCE of a second copy: the guidance must cite the ladder, and no
+  # acceptance-rate literal from the old census may reappear in CLAUDE.md.
+  - id: SYNTH-ACCEPTANCE-CITES-LADDER-1286
+    doc: CLAUDE.md
+    text: "Cite the\n  ladder in `docs/status/ACCEPTANCE_LADDER.md` with its measurement date,"
+    evidence:
+      - kind: file-exists
+        path: docs/status/ACCEPTANCE_LADDER.md
+      - kind: count-eq                       # the superseded census, in any of
+        pattern: '531/805|\(66 %\)|\b1\.6 %|805 (REAL|real)'   # the forms it was quoted in
+        glob: ['CLAUDE.md']
+        expect: 0
+
   - id: SYNTH-COUNT-PARAMS-SINGLE-SOURCE
     doc: crates/synth-core/src/wasm_op.rs
     text: "pub fn count_params_heuristic"

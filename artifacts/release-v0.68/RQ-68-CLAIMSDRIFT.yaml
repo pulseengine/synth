@@ -49,7 +49,7 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increments 1-2 of the lane (#1285, #1294); #1286, #1287, #1288
+        PARTIAL — increments 1-3 of the lane (#1285, #1294, #1286); #1287, #1288
         and #1279 remain. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
@@ -89,3 +89,21 @@ artifacts:
         THE TESTS WAS FLAKY FOR A REASON IN THE TEST: both wrote the same output
         path from parallel threads of one process, so one compile truncated the
         ELF whose header the other was reading. Each test now owns its output.
+
+        #1286 — REMOVED THE COPY RATHER THAN REFRESHING IT. Both CLAUDE.md sites
+        reproduced as filed: the North Star's "reach" invariant and, worse, the
+        compliance envelope's instruction to PUBLISH the v0.59 #1017 rates of
+        the 805-module corpus, which RQ-64-SCOPEGAP had superseded in favour of
+        the acceptance ladder over a different, 243-module reachable corpus.
+        Restating the ladder's numbers in CLAUDE.md would only create a second
+        copy to rot, and the done-when forbids restating a number without
+        re-measuring it, so neither site carries a number now. Both cite
+        `docs/status/ACCEPTANCE_LADDER.md` with its date, commit and corpus; the
+        envelope adds "re-measure before publishing if the ladder predates the
+        build being compared" (it is dated v0.63). The 805-corpus blocker counts
+        in the reach invariant went too — a blocker count is not a reach estimate
+        (the ladder's own finding), and the conclusion they supported stands
+        without them. No cross-denominator ratio is stated anywhere.
+        SYNTH-ACCEPTANCE-CITES-LADDER-1286 pins the citation and the ABSENCE of
+        the old census's literals in CLAUDE.md. Red-first: re-appending the old
+        sentence reds it (2 matches), and removing the citation reds it.
