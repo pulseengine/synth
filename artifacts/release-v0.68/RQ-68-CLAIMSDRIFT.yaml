@@ -49,8 +49,8 @@ artifacts:
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
       disposition: partial
       landed: >-
-        PARTIAL — increments 1-6 of the lane (#1285, #1294, #1286, #1287, #1279,
-        #1288); the lane's close-out remains. Status stays `proposed` with `disposition: partial`.
+        PARTIAL — increments 1-7 of the lane (#1285, #1294, #1286, #1287, #1279,
+        #1288, and #1306 added in lane); the lane's close-out remains. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,
@@ -170,3 +170,19 @@ artifacts:
         into arm64-Linux programs, and runs on speculating cores. NOT
         re-verified in this pass, and kept as written: the Cortex-M7/M55
         speculation descriptions and the Helium `f64x2.splat` sentence.
+
+        #1306 — SCOPE ADDITION, FOUND BY THE #1288 WORK AND FILED BEFORE FIXING.
+        CLAUDE.md's trap-preservation section named peephole store-to-load
+        forwarding as "the one load elimination that exists". The forwarding
+        lives in `PeepholeOptimizer`, which only two synth-backend test files
+        construct (both paired with the test-only `select()` path). The
+        optimized path's IR peephole does not touch loads. A suspected second
+        case was REFUTED before filing: synth-opt's CSE does eliminate
+        `Opcode::Load`, but that opcode is a wasm LocalGet keyed by local index,
+        and `MemLoad` is explicitly not CSE'd — the section's CSE sentence is
+        right. So the shipped path eliminates NO linear-memory load: the
+        compliance statement was stronger than written, but it pointed reviewers
+        at a pass that does not run. The bullet now says so;
+        SYNTH-NO-SHIPPED-LOAD-ELIMINATION-1306 reds when `PeepholeOptimizer` is
+        constructed in shipped code. Red-first: a planted constructor in
+        synth-backend reds it.

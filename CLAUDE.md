@@ -532,9 +532,14 @@ which is a fragile reason to be right:
   lost.
 - CSE explicitly refuses `MemLoad`/`MemStore` (`synth-opt/src/lib.rs`: "there is
   no alias analysis for linear memory; any MemStore can invalidate any address").
-- The one load elimination that exists — peephole store-to-load forwarding — is
-  trap-preserving because the same-address, same-width store executes
-  immediately before: if the address were OOB the store faults first.
+- No linear-memory load elimination runs on the shipped path (#1306). The
+  store-to-load forwarding in `synth-synthesis/src/peephole.rs`
+  (`PeepholeOptimizer`) is reachable only from tests; the optimized path's
+  IR peephole (`synth-opt`) does not touch loads. That forwarding would be
+  trap-preserving if wired — the same-address, same-width store executes
+  immediately before, so an OOB address faults at the store — but wiring it,
+  or any load forwarding, onto the shipped path is a change this section
+  must be updated for.
 
 **THE RULE, for any future alias-aware CSE/LICM in synth-opt or loom:** a
 wasm-level linear-memory load may be removed only if (a) it is dominated by a
