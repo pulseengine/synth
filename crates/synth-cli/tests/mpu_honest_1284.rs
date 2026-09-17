@@ -70,7 +70,11 @@ fn run(input: &Path, tag: &str, extra: &[&str]) -> (bool, String) {
 fn bytes(input: &Path, tag: &str, extra: &[&str]) -> (Vec<u8>, PathBuf) {
     let out = artifact_guard::unique_artifact(&format!("mpu1284_{tag}"), "o");
     let mut cmd = Command::new(synth());
-    cmd.arg("compile").arg(input).arg("-o").arg(&out).args(extra);
+    cmd.arg("compile")
+        .arg(input)
+        .arg("-o")
+        .arg(&out)
+        .args(extra);
     (
         artifact_guard::compile_bytes_or_panic(&mut cmd, &out, tag),
         out,
@@ -81,7 +85,10 @@ fn assert_refused(input: &Path, tag: &str, extra: &[&str], needles: &[&str]) {
     let (ok, err) = run(input, tag, extra);
     assert!(!ok, "{tag}: expected a refusal, got success. stderr: {err}");
     for n in needles {
-        assert!(err.contains(n), "{tag}: refusal does not mention {n:?}: {err}");
+        assert!(
+            err.contains(n),
+            "{tag}: refusal does not mention {n:?}: {err}"
+        );
     }
 }
 
@@ -92,7 +99,13 @@ fn self_contained_arm_refuses_mpu_1284() {
         ("cortex_m", vec!["--cortex-m", "--safety-bounds", "mpu"]),
         (
             "all_exports",
-            vec!["--target", "cortex-m3", "--all-exports", "--safety-bounds", "mpu"],
+            vec![
+                "--target",
+                "cortex-m3",
+                "--all-exports",
+                "--safety-bounds",
+                "mpu",
+            ],
         ),
         ("untargeted", vec!["--safety-bounds", "mpu"]),
     ] {
@@ -183,7 +196,10 @@ fn relocatable_mpu_without_the_acknowledgment_is_refused_1284() {
             "--safety-bounds",
             "mpu",
         ],
-        &["requires --embedder-mpu", "docs/embedder-abi-relocatable-arm.md"],
+        &[
+            "requires --embedder-mpu",
+            "docs/embedder-abi-relocatable-arm.md",
+        ],
     );
 }
 
@@ -219,13 +235,19 @@ fn relocatable_mpu_with_the_acknowledgment_is_accepted_and_recorded_1284() {
         "reloc_none",
         &[&common[..], &["--safety-bounds", "none"]].concat(),
     );
-    assert_eq!(mpu, none, "mpu + --embedder-mpu must be byte-identical to none");
+    assert_eq!(
+        mpu, none,
+        "mpu + --embedder-mpu must be byte-identical to none"
+    );
     let manifest = std::fs::read_to_string(mpu_path.with_file_name(format!(
         "{}.safety-manifest.json",
         mpu_path.file_stem().unwrap().to_str().unwrap()
     )))
     .expect("safety manifest written next to the object");
-    assert!(manifest.contains("\"safety_bounds\": \"mpu\""), "{manifest}");
+    assert!(
+        manifest.contains("\"safety_bounds\": \"mpu\""),
+        "{manifest}"
+    );
     assert!(
         manifest.contains("\"mpu_programming\": \"embedder\""),
         "the manifest must record that the EMBEDDER programs the MPU: {manifest}"
