@@ -58,10 +58,11 @@ artifacts:
         encoder, and #1275's wildcard absorbed 25 VFP-touching variants, not the
         "27" the audit reported.
 
-        #1272 -- every NOP-emitting site in `encode_thumb` was classified by
-        reading it, not by pattern: 12 are legitimate (the explicit `ArmOp::Nop`
-        arm; seven are `0xBF00 | cond | mask`, the IT/ITE opcode base, not a
-        NOP; two are deliberate padding inside fixed-layout expansions;
+        #1272 -- every NOP-emitting site in `encode_thumb` and its helper
+        encoders was classified by reading it, not by pattern: 11 are
+        legitimate (the explicit `ArmOp::Nop` arm; seven are
+        `0xBF00 | cond | mask`, the IT/ITE opcode base, not a NOP -- four in
+        `encode_thumb`, three in its f32/f64 helper encoders; two are deliberate padding inside fixed-layout expansions;
         `I32WrapI64` when the value is already in place). SEVEN were silent
         fallbacks, and all seven now return a typed Err: the `_ =>` catch-all,
         plus the final `else` of the MOV, AND, ORR, EOR, CMP and MVN arms, each

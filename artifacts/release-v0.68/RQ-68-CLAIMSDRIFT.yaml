@@ -78,7 +78,8 @@ artifacts:
         re-derived by claim_check on every commit, the release commit included;
         the unpinned measured numbers (the 1.64x size ratio, the RV32 guard
         sizes) are stated only in this record and in generated reports, never
-        on a hand-maintained surface. Status stays `proposed` with `disposition: partial`.
+        on a hand-maintained surface. Status is `implemented`: every correction
+        this artifact names landed in PR #1313.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,

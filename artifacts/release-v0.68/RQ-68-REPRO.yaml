@@ -64,7 +64,11 @@ artifacts:
         specification asks, instead of silently falling back to the clock.
 
         #1293 -- THE LEVER COUNT WAS MEASURED, NOT TAKEN FROM THE ISSUE. The
-        population is every `env::var("SYNTH_...")` read outside tests: 36. A
+        population is every `env::var("SYNTH_...")` read outside tests: 36 read
+        by literal name. The v0.68 cold review found a 37th, read through a
+        constant (`SYNTH_HOME_ALIAS_AUDIT`, `home_alias::AUDIT_ENV`), which
+        the census did not set; the SBOM records it anyway, because it
+        records by prefix, not by list. A
         census set each to "1" and to "0" over 60 fixtures x 3 configs and
         compared digests against an unset run: 14 change bytes (the audit said
         6 of 22). That 14 is a LOWER BOUND -- three configs, two values, 60 of

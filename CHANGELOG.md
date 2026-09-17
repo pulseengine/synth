@@ -23,8 +23,10 @@ bytes identical to `none` on self-contained ARM images and on every RV32 path,
 with no warning: synth emits no MPU or PMP programming.
 
 - **Refused** on self-contained ARM images and on every RV32 path, with a
-  diagnostic naming #1145 and #1284. `pmp` is refused on every backend and is
-  never an alias.
+  diagnostic naming #1145 and #1284. The CLI refuses `pmp` on every backend.
+  Two residuals remain: on AArch64 the refusal is the existing
+  mask/mpu one, whose message names `mpu`; and the `synth-core` library's
+  `SafetyBounds::parse` still maps `pmp` to `Mpu` (#1317).
 - **ARM `--relocatable`** now requires the acknowledgment flag
   **`--embedder-mpu`**, for single- and multi-memory objects alike. With it the
   object is byte-identical to the previous `mpu` object, and the safety
@@ -55,8 +57,9 @@ with no warning: synth emits no MPU or PMP programming.
   compilers independently and compares object **and** SBOM over the fixture
   set (284 pairs, 0 differences when measured), and fails below 100 compared
   pairs. The SBOM honours `SOURCE_DATE_EPOCH` and records every `SYNTH_*`
-  variable set at build time. Of the 36 variables read outside tests, at least
-  14 change bytes (a lower bound).
+  variable set at build time. 37 are read outside tests (36 by literal name,
+  one through a constant); of the 36 the census set, at least 14 change bytes
+  (a lower bound).
 
 ### Changed — claims corrected, evidence pinned
 
@@ -120,7 +123,11 @@ with no warning: synth emits no MPU or PMP programming.
   - rivet#972.
   - gale's requests: a used-extent symbol `__synth_mem_used_N`, and the
     per-memory data-base contract (gale#398).
-  - ARMv6-M's 256 B MPU minimum region (#1301).
+  - #1303: the across-call VFP checker stops at an op it does not model, and
+    reports nothing past it. The 25 MVE ops NOPCLASS stopped calling
+    VFP-free now take that path.
+  - #1301: there is no ARMv6-M (Cortex-M0/M0+) target profile; its 256 B
+    MPU minimum region is one part of it.
 
 ## [0.67.0] - 2026-09-16
 
