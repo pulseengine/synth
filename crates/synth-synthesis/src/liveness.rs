@@ -7779,9 +7779,11 @@ fn safe_cse_uses(
     None // rd not redefined in the segment → may be live-out → decline
 }
 
-/// Size of the general-purpose allocatable register pool (R0..R8). The
-/// optimized ARM path reserves R9/R10/R11 (linmem base / scratch) and R12 (IP,
-/// encoder scratch), so nine registers remain for values (#212).
+/// Size of the general-purpose allocatable register pool (R0..R8), derived from
+/// `reg_contract::ALLOCATABLE`. R9/R10/R11 are outside the pool because the
+/// register contract reserves them (globals base, memory size, memory base) —
+/// not because the optimized path never writes them; it does, and saves what it
+/// defines (#1204, #1290) — and R12 is the encoder's scratch (#212).
 const ALLOCATABLE_POOL: usize = crate::reg_contract::ALLOCATABLE.len();
 
 /// The allocatable pool in preference order (low first, so a retargeted use is

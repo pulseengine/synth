@@ -6946,8 +6946,14 @@ impl OptimizerBridge {
 // ---------------------------------------------------------------------------
 
 /// The register pool `alloc_i32_scratch` draws from. The spill pre-step frees
-/// registers in exactly this pool (and only this pool — params live in R0-R3,
-/// R9/R10/R11/R12 are reserved conventions the optimized path must not touch).
+/// registers in exactly this pool, and only this pool: params live in R0-R3,
+/// and R9/R10/R11/R12 are outside it. That is NOT because the optimized path
+/// never touches them — it does (#1290): the i64 pair table below hands out
+/// (R8,R9) and (R10,R11), base-CSE hoists the linear-memory base into R11, and
+/// the spill reload itself loads into R12. R9-R11 are outside the pool because
+/// the register contract reserves them (globals base, memory size, memory
+/// base; a function that defines one saves it, #1204), and R12 because it is
+/// the encoder's scratch.
 const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = crate::reg_contract::CALLEE_SAVED_POOL;
 
 /// The CONSECUTIVE even-aligned register pairs `alloc_i64_pair` searches, in
