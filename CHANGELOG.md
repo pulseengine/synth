@@ -113,6 +113,10 @@ with no warning: synth emits no MPU or PMP programming.
   - #1308: the advisory federated-graph job saw a new varve PATH shadow (`spar`)
     on a shared runner.
   - #1309: the proven-safe #901 unit tests share a fixed temp dir.
+  - #1315 (reported by gale, reproduced on this release's candidate): a
+    declared custom page size, `(memory 1 1 (pagesize 1))`, is accepted
+    and ignored on every path measured, so the memory is sized in 64 KiB
+    pages. It has the same accepted-but-dropped shape as #1284.
   - rivet#972.
   - gale's requests: a used-extent symbol `__synth_mem_used_N`, and the
     per-memory data-base contract (gale#398).
