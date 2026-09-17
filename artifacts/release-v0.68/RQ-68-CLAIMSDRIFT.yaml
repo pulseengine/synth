@@ -32,7 +32,7 @@ artifacts:
         #1279  `cargo build -p synth-memory --no-default-features` fails (7 errors
                measured; the issue said six), and `--no-default-features` appears in
                no CI job.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - claim-drift
@@ -47,10 +47,38 @@ artifacts:
       verification-track: review
       issue: "#1285"
       done-when: "manual: each listed document states only what a command run on the release commit demonstrates, with the command recorded beside the correction; --cortex-m --link either links successfully under an execution check or is no longer listed as implemented; every replaced number is re-measured rather than restated, and where a denominator changed the correction says so; synth-memory builds without default features or the feature is removed, and a CI job builds that configuration"
-      disposition: partial
+      verified-by: >-
+        Per item, the check that fails if the correction regresses. #1285: the
+        BEHAVIOUR is gated (`test_f32_min_max_loud_declined_on_m4f` in
+        synth-backend's f32 operations tests fails if min/max start lowering),
+        but the corrected PROSE is not — the matrix's fact census checks only
+        numbers and its staleness gate only render-versus-template, so
+        re-listing f32 min/max as lowering would have stayed green, so
+        SYNTH-F32-MINMAX-RESIDUAL-1285 now binds the residual sentence in the
+        matrix template and the README to the decline test's existence
+        (red-first: removing the template sentence reds it). #1294: link_refuses_linked_executable_1294.rs — both
+        refusal tests fail with the refusal removed; a negative control keeps
+        `--relocatable --link` reaching the linker. #1286:
+        SYNTH-ACCEPTANCE-CITES-LADDER-1286 reds on a re-introduced old figure or
+        a removed citation. #1287: SYNTH-POC-SIZE-ESTIMATE-GONE-1287 reds on a
+        second copy of the retired ratio. #1279: the required Clippy job builds
+        and lints synth-memory on thumbv7em-none-eabihf without std and with each
+        platform feature (six compile errors before the fix). #1288:
+        SYNTH-SPECTRE-POLICY-SYMBOLS-1288 reds on a renamed guard symbol, a
+        line-number citation or a removed sentence. #1306:
+        SYNTH-NO-SHIPPED-LOAD-ELIMINATION-1306 reds on a planted
+        PeepholeOptimizer constructor. Workspace fmt/clippy/test green on the
+        lane; claim_check 71/71; rivet unchanged at 40 errors / 439 warnings.
       landed: >-
-        PARTIAL — increments 1-7 of the lane (#1285, #1294, #1286, #1287, #1279,
-        #1288, and #1306 added in lane); the lane's close-out remains. Status stays `proposed` with `disposition: partial`.
+        IMPLEMENTED — seven increments (#1285, #1294, #1286, #1287, #1279, #1288,
+        and #1306 added in lane), each below. ONE DEVIATION FROM THE DONE-WHEN'S
+        LETTER, stated: the measurements were taken on the v0.68 lane base, not
+        on the release commit, which does not exist yet. What makes that
+        acceptable is that every correction whose fact can drift is PINNED and
+        re-derived by claim_check on every commit, the release commit included;
+        the unpinned measured numbers (the 1.64x size ratio, the RV32 guard
+        sizes) are stated only in this record and in generated reports, never
+        on a hand-maintained surface. Status stays `proposed` with `disposition: partial`.
 
         #1285 WAS WIDER THAN FILED. The issue named f32 min/max. Re-measured on
         the v0.68 base: `(f32.min x y)` and `(f32.max x y)` decline on cortex-m4f,

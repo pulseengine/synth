@@ -923,6 +923,25 @@ claims:
   # rows now cite SYMBOLS; this pin makes the load-bearing ones red when they
   # are renamed or removed (the doc must move in the same PR), and forbids the
   # line-number citation style from coming back.
+  # #1285 (RQ-68-CLAIMSDRIFT): the matrix listed f32 min/max as lowering via
+  # VFP while both ARM selectors decline them. The decline is gated by
+  # `test_f32_min_max_loud_declined_on_m4f`; this pin gates the PROSE, which
+  # neither the fact census (numbers only) nor the staleness gate
+  # (render-versus-template) could see. Both surfaces must keep naming the
+  # residual while the decline test exists.
+  - id: SYNTH-F32-MINMAX-RESIDUAL-1285
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "**Residual: `f32.{min,max}` LOUD-DECLINE on every ARM target** (#1285)"
+    evidence:
+      - kind: count-eq
+        pattern: 'fn test_f32_min_max_loud_declined_on_m4f\('
+        glob: ['crates/synth-backend/tests/f32_operations_test.rs']
+        expect: 1
+      - kind: count-min                      # README's f32 row names it too
+        pattern: 'f32\.\{min,max\}` and `f32\.\{ceil,floor,trunc,nearest\}` on every ARM targ'
+        glob: ['README.md']
+        min: 1
+
   # #1306 (RQ-68-CLAIMSDRIFT): CLAUDE.md's trap-preservation section named
   # peephole store-to-load forwarding as "the one load elimination that
   # exists"; the pass is constructed only by tests. The sentence now says no
