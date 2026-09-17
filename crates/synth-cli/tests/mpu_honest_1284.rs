@@ -16,9 +16,14 @@
 //! | RV32 `mpu` / `pmp`, any path                       | refuse                       |
 //! | `pmp` on ARM                                       | refuse (never an alias)      |
 //! | `--embedder-mpu` without `--safety-bounds mpu`     | refuse (meaningless)         |
+//!
+//! Plus the object change gale asked for: `.synth.wasm_mem_k` carries
+//! `sh_addralign` = its MPU region size in every multi-memory relocatable object.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use object::{Object, ObjectSection};
 
 mod artifact_guard;
 
@@ -249,5 +254,33 @@ fn multi_memory_mpu_with_the_acknowledgment_matches_the_plain_object_1284() {
     assert_eq!(
         mpu, plain,
         "two-memory mpu + --embedder-mpu must equal the plain relocatable object"
+    );
+}
+
+/// gale's #1145 request: a misaligned `.synth.wasm_mem_k` base makes a verified
+/// MPU switch refuse the table in a way that reads as "no MPU". The section's
+/// alignment is now its MPU region size (one 64 KiB page => 2^16).
+#[test]
+fn memory_k_section_is_aligned_to_its_mpu_region_1145() {
+    let (obj, _) = bytes(
+        &two_tenant_fixture(),
+        "two_align",
+        &[
+            "--target",
+            "cortex-m3",
+            "--all-exports",
+            "--relocatable",
+            "--embedder-data-init",
+        ],
+    );
+    let file = object::File::parse(&*obj).expect("parse ELF");
+    let sec = file
+        .section_by_name(".synth.wasm_mem_1")
+        .expect(".synth.wasm_mem_1 present");
+    assert_eq!(sec.size(), 0x10000, "one wasm page");
+    assert_eq!(
+        sec.align(),
+        0x10000,
+        "sh_addralign must equal the MPU region size (smallest power of two >= size, >= 32 B)"
     );
 }

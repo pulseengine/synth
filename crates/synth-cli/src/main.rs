@@ -6273,6 +6273,25 @@ fn find_baked_static_movw_movt(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// RQ-68-MPUHONEST (#1145, gale's request): the `sh_addralign` of a
+/// `.synth.wasm_mem_k` region — the smallest power of two covering the
+/// memory's declared size, never below the ARMv7-M (PMSAv7) minimum region of
+/// 32 B. A PMSAv7 region's base must be aligned to its power-of-two size;
+/// aligning the section lets the linker place it legally, instead of the
+/// embedder's verified MPU switch refusing a misaligned base in a way that
+/// reads as "no MPU". Only the section header's alignment field moves — the
+/// ELF builder pads no file offset by section alignment, so contents and
+/// symbol values are unchanged. ARMv6-M's 256 B minimum region is NOT applied:
+/// it lands with ARMv6-M support (#1301). Capped at 2^31 (ELF32
+/// `sh_addralign` is 32-bit; no single MPU region covers more).
+fn mpu_region_align(mem_bytes: u32) -> u32 {
+    const PMSAV7_MIN_REGION: u64 = 32;
+    let region = u64::from(mem_bytes)
+        .next_power_of_two()
+        .max(PMSAV7_MIN_REGION);
+    region.min(1u64 << 31) as u32
+}
+
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
@@ -7190,7 +7209,7 @@ fn build_relocatable_elf(
             Section::new(&name, ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
-                .with_align(4)
+                .with_align(mpu_region_align(mem_bytes))
                 .with_size(mem_bytes)
         } else {
             let mut blob = vec![0u8; mem_bytes as usize];
@@ -7200,7 +7219,7 @@ fn build_relocatable_elf(
             Section::new(&name, ElfSectionType::ProgBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
-                .with_align(4)
+                .with_align(mpu_region_align(mem_bytes))
                 .with_data(blob)
         };
         elf_builder.add_section(section);
