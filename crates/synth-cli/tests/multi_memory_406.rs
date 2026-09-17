@@ -17,7 +17,7 @@
 //! | multi-memory, self-contained --cortex-m| refuse (same)                  |
 //! | multi-memory × `--native-pointer-abi`  | refuse (static region is mem-0)|
 //! | multi-memory × `--shadow-stack-size`   | refuse (shrinks mem-0 geometry)|
-//! | multi-memory × `--safety-bounds mpu`   | refuse (MPU-startup interlock)  |
+//! | multi-memory × `--safety-bounds mpu`   | refuse without --embedder-mpu  |
 //! | multi-memory on riscv / aarch64        | refuse (no per-memory base)    |
 //! | cross-/non-default memory.copy/fill    | loud-skip naming the op        |
 //! | i64/f32 access on memory k > 0         | loud-skip (i32 family only)    |
@@ -355,8 +355,9 @@ fn multi_memory_shadow_stack_refuses() {
 /// R11 base). So no path both emits synth's startup AND lowers > 1 memory; the
 /// cross-memory OOB fault gate cannot be armed. Refuse rather than accept a
 /// silent MPU no-op. #1145 (option 3) ships the per-memory REGION TABLE the
-/// embedder programs the MPU from; the flag itself stays refused until the
-/// two-tenant fault criterion has executed on an MPU-bearing venue.
+/// embedder programs the MPU from. Since RQ-68-MPUHONEST (#1284) the flag is
+/// ACCEPTED with the caller's explicit `--embedder-mpu` acknowledgment
+/// (mpu_honest_1284.rs); without it, this refusal stands.
 #[test]
 fn multi_memory_safety_bounds_mpu_refuses() {
     let out = compile(
@@ -372,7 +373,8 @@ fn multi_memory_safety_bounds_mpu_refuses() {
     // #1145: the refusal no longer does tracker duty for the closed "#406
     // phase 2" — it names the shipped region table (the embedder's MPU
     // programming input), where the obligation is documented, and what gates
-    // acceptance (the two-tenant cross-region fault criterion).
+    // acceptance (the two-tenant cross-region fault criterion, and since
+    // RQ-68-MPUHONEST the `--embedder-mpu` acknowledgment).
     assert_refused(
         &out,
         &[

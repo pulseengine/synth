@@ -3550,7 +3550,13 @@ impl InstructionSelector {
                     // Validates the configuration (relocatable, no
                     // native-pointer ABI, known index) — pages unused here.
                     self.multi_memory_pages(*memory)?;
-                    if self.bounds_check != BoundsCheckConfig::None {
+                    // RQ-68-MPUHONEST (#1284): `mpu` emits NO inline guard on
+                    // any memory (`is_passthrough`), so it is lowered exactly
+                    // like `none` here — the embedder's per-memory MPU region
+                    // (from the #1145 region table) is the enforcement. Only
+                    // the INLINE guard modes (software/mask) need a size
+                    // register memory k does not have.
+                    if !self.bounds_check.is_passthrough() {
                         // #1145 root cause, stated where it bites: the
                         // software guard compares against R10 and mask mode
                         // derives `size-1` from R10 — and R10 holds MEMORY

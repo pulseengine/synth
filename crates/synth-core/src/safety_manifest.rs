@@ -37,6 +37,13 @@ pub struct SafetyManifest {
     /// Linear-memory size in bytes that the bounds/mask check was sized for.
     /// Recorded so an auditor can spot a manifest/ELF mismatch.
     pub linear_memory_bytes: u32,
+    /// RQ-68-MPUHONEST (#1284, #1145): WHO programs the MPU when
+    /// `safety_bounds` is `mpu`. synth emits no MPU programming on any path,
+    /// so the only accepted value is `"embedder"` — the caller acknowledged
+    /// the obligation with `--embedder-mpu` on an ARM `--relocatable` object.
+    /// `None` omits the key, so every manifest that is not an
+    /// embedder-programmed `mpu` object is byte-identical to before.
+    pub mpu_programming: Option<String>,
 }
 
 impl SafetyManifest {
@@ -67,10 +74,13 @@ impl SafetyManifest {
             self.safety_div_overflow
         ));
         out.push_str(&format!(
-            "  \"linear_memory_bytes\": {}\n",
+            "  \"linear_memory_bytes\": {}",
             self.linear_memory_bytes
         ));
-        out.push_str("}\n");
+        if let Some(who) = &self.mpu_programming {
+            out.push_str(&format!(",\n  \"mpu_programming\": {}", json_string(who)));
+        }
+        out.push_str("\n}\n");
         out
     }
 
@@ -126,6 +136,7 @@ mod tests {
             safety_div_zero: true,
             safety_div_overflow: true,
             linear_memory_bytes: 65536,
+            mpu_programming: Some("embedder".to_string()),
         }
     }
 
@@ -150,6 +161,21 @@ mod tests {
         assert!(json.contains("\"safety_div_zero\": true"));
         assert!(json.contains("\"safety_div_overflow\": true"));
         assert!(json.contains("\"linear_memory_bytes\": 65536"));
+        assert!(json.contains("\"mpu_programming\": \"embedder\""));
+    }
+
+    #[test]
+    fn json_omits_mpu_programming_when_absent_1284() {
+        // Every manifest that is not an embedder-programmed `mpu` object keeps
+        // its pre-v0.68 shape byte-for-byte.
+        let m = SafetyManifest {
+            safety_bounds: SafetyBounds::Software,
+            mpu_programming: None,
+            ..sample()
+        };
+        let json = m.to_json();
+        assert!(!json.contains("mpu_programming"));
+        assert!(json.ends_with("\"linear_memory_bytes\": 65536\n}\n"));
     }
 
     #[test]

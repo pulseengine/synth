@@ -312,9 +312,16 @@ enum Commands {
         ///
         /// Accepted values:
         /// - `none`     — no inline check, no MPU/PMP setup (fastest, unsafe)
-        /// - `mpu`      — rely on ARM MPU / RV32 PMP hardware enforcement
+        /// - `mpu`      — the EMBEDDER programs the ARM MPU; synth emits no MPU
+        ///   programming and no inline check (bytes identical to `none`).
+        ///   Accepted ONLY on an ARM relocatable object with `--embedder-mpu`;
+        ///   refused on self-contained ARM images, on RV32 and on AArch64
+        ///   (#1145, #1284)
         /// - `software` — emit CMP + inline UDF trap (ARM) or BGEU+EBREAK (RV32) per access
         /// - `mask`     — AND addr with `mem_size - 1` (requires power-of-two size)
+        ///
+        /// `pmp` is refused on every backend: synth emits no RV32 PMP
+        /// programming, and it is never a silent alias for `mpu`.
         #[arg(long, value_name = "MODE")]
         safety_bounds: Option<String>,
 
@@ -403,6 +410,22 @@ enum Commands {
         /// acknowledgment (the #952 / `--embedder-data-init` shape).
         #[arg(long)]
         embedder_global_init: bool,
+
+        /// RQ-68-MPUHONEST (#1284, #1145): declare that the EMBEDDER programs
+        /// the ARM MPU for this relocatable object — one region per linear
+        /// memory, granted per execution context (never every memory at
+        /// once), from the R11/R10 values it loads and the object's region
+        /// table (`__synth_mem_base_N` / `__synth_mem_size_N`). Required for
+        /// `--safety-bounds mpu` on an ARM relocatable object, which REFUSES
+        /// without it: synth emits no MPU programming on any path, so a
+        /// silently accepted `mpu` would be a no-op on a memory-safety
+        /// control. Emitted bytes are identical to `--safety-bounds none`; the
+        /// flag records the obligation in the safety manifest
+        /// (`"mpu_programming": "embedder"`). Refused without
+        /// `--safety-bounds mpu`, where it would mean nothing. Obligations:
+        /// docs/embedder-abi-relocatable-arm.md.
+        #[arg(long)]
+        embedder_mpu: bool,
 
         /// #237: native-pointer ABI for host-pointer drop-ins. Emits wasm function
         /// statics as a base-independent `.data` section (`__synth_wasm_data`,
@@ -769,6 +792,7 @@ fn main() -> Result<()> {
             object_format,
             embedder_data_init,
             embedder_global_init,
+            embedder_mpu,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom,
@@ -842,6 +866,12 @@ fn main() -> Result<()> {
             // single-line deprecation notice when used.
             let resolved_safety_bounds =
                 resolve_safety_bounds(safety_bounds.as_deref(), bounds_check, &backend)?;
+            check_mpu_request(
+                safety_bounds.as_deref(),
+                resolved_safety_bounds,
+                &backend,
+                embedder_mpu,
+            )?;
 
             // Resolve the CycloneDX SBOM destination. `--sbom` with no value
             // means "next to the ELF" (`<output>.cdx.json`); `--sbom PATH`
@@ -871,6 +901,7 @@ fn main() -> Result<()> {
                 object_format,
                 embedder_data_init,
                 embedder_global_init,
+                embedder_mpu,
                 native_pointer_abi,
                 no_bind_cabi_arena,
                 sbom_path,
@@ -1414,6 +1445,50 @@ fn maybe_run_loom(enabled: bool, wasm_bytes: Vec<u8>) -> Result<Vec<u8>> {
 /// Reconcile `--safety-bounds` and the legacy `--bounds-check` flag. Prints a
 /// one-line deprecation notice when the legacy flag is used. Phase 1 of
 /// `docs/binary-safety-design.md` §2 (CLI surface).
+/// RQ-68-MPUHONEST (#1284, #1145): the `--safety-bounds mpu` / `pmp` refusals
+/// decidable from the command line alone. synth emits NO MPU or PMP
+/// programming on any path, so `mpu` is honest only where an embedder has
+/// explicitly taken the obligation: an ARM relocatable object with
+/// `--embedder-mpu` — checked in `compile_all_exports`, where the output kind
+/// is known. The AArch64 refusal lives in `resolve_safety_bounds` (#865).
+fn check_mpu_request(
+    raw_safety_bounds: Option<&str>,
+    resolved: SafetyBounds,
+    backend: &str,
+    embedder_mpu: bool,
+) -> Result<()> {
+    if embedder_mpu && resolved != SafetyBounds::Mpu {
+        anyhow::bail!(
+            "--embedder-mpu acknowledges the obligation --safety-bounds mpu creates \
+             (the embedder programs the MPU from the region table); without \
+             --safety-bounds mpu it would have no effect, so it is refused rather \
+             than silently ignored (#1284)"
+        );
+    }
+    if resolved != SafetyBounds::Mpu {
+        return Ok(());
+    }
+    if raw_safety_bounds == Some("pmp") {
+        anyhow::bail!(
+            "--safety-bounds pmp is refused on every backend: synth emits no RV32 \
+             PMP programming, and `pmp` is never a silent alias for `mpu`. The only \
+             accepted MPU mode is --safety-bounds mpu --embedder-mpu on an ARM \
+             relocatable object, where YOUR startup programs the MPU from the region \
+             table (#1145, #1284)"
+        );
+    }
+    if backend == "riscv" {
+        anyhow::bail!(
+            "--safety-bounds mpu is refused on the RISC-V backend: synth emits no \
+             PMP programming, and RV32 objects carry no region table for an embedder \
+             to program one from, so the flag would be a silent no-op on a \
+             memory-safety control. Use --safety-bounds software (per-access \
+             BGEU+EBREAK guards) or an explicit --safety-bounds none (#1145, #1284)"
+        );
+    }
+    Ok(())
+}
+
 fn resolve_safety_bounds(
     safety_bounds: Option<&str>,
     legacy_bounds_check: bool,
@@ -1466,6 +1541,8 @@ fn maybe_emit_safety_manifest(
     target_spec: &TargetSpec,
     safety_bounds: SafetyBounds,
     linear_memory_bytes: u32,
+    // RQ-68-MPUHONEST (#1284): `--embedder-mpu` was passed.
+    embedder_mpu: bool,
 ) -> Result<()> {
     if safety_bounds == SafetyBounds::None {
         return Ok(());
@@ -1481,6 +1558,11 @@ fn maybe_emit_safety_manifest(
         safety_div_zero: true,
         safety_div_overflow: true,
         linear_memory_bytes,
+        // RQ-68-MPUHONEST (#1284): record WHO programs the MPU. `mpu` is only
+        // ever accepted with --embedder-mpu, so this is never absent for an
+        // `mpu` manifest; every other manifest keeps its pre-v0.68 bytes.
+        mpu_programming: (safety_bounds == SafetyBounds::Mpu && embedder_mpu)
+            .then(|| "embedder".to_string()),
     };
     let sidecar = SafetyManifest::sidecar_path(elf_path);
     let json = manifest.to_json();
@@ -1746,6 +1828,9 @@ fn compile_command(
     // evaluates global initializers and seeds the R9 table; suppresses the
     // relocatable-path init-materialization refusal.
     embedder_global_init: bool,
+    // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
+    // MPU; the only condition under which `--safety-bounds mpu` is accepted.
+    embedder_mpu: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep the arena import an external symbol.
     no_bind_cabi_arena: bool,
@@ -1804,6 +1889,19 @@ fn compile_command(
     let use_all_exports =
         all_exports || (input.is_some() && func_index.is_none() && func_name_arg.is_none());
 
+    // RQ-68-MPUHONEST (#1284, #1145): the single-function path always builds a
+    // synth-owned image (it never emits a relocatable object), and synth
+    // programs no MPU — `--safety-bounds mpu` here could only be a silent no-op.
+    if !use_all_exports && safety_bounds == SafetyBounds::Mpu {
+        anyhow::bail!(
+            "--safety-bounds mpu is refused on the single-function path \
+             (--func-index / --func-name): it builds a synth-owned image and synth \
+             emits no MPU programming, so the flag would silently protect nothing. \
+             Compile the whole module with --relocatable --embedder-mpu, where YOUR \
+             startup programs the MPU from the region table (#1145, #1284)"
+        );
+    }
+
     // VCR-MEM-004 (#901): the single-function path (`--func-index` /
     // `--func-name`) has no verdict ingestion, no elision marks and no
     // attestation surface. Accepting `--proven-safe` there would be a SILENT
@@ -1837,6 +1935,7 @@ fn compile_command(
             object_format,
             embedder_data_init,
             embedder_global_init,
+            embedder_mpu,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom_path,
@@ -2336,6 +2435,8 @@ fn compile_command(
         target_spec,
         safety_bounds,
         single_func_linear_memory_bytes,
+        // The single-function path refuses `mpu` up front.
+        false,
     )?;
 
     // Emit a CycloneDX SBOM when requested. Only possible when synth compiled
@@ -3568,6 +3669,9 @@ fn compile_all_exports(
     // evaluates global initializers and seeds the R9 table; suppresses the
     // relocatable-path init-materialization refusal.
     embedder_global_init: bool,
+    // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
+    // MPU; the only condition under which `--safety-bounds mpu` is accepted.
+    embedder_mpu: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep a sole `env::__cabi_arena_realloc`
     // import an external symbol instead of binding it in-image.
@@ -4236,39 +4340,33 @@ fn compile_all_exports(
                 all_memories.len()
             );
         }
-        // #406 / Lane B: per-memory MPU isolation is an architectural interlock,
-        // NOT yet realizable — refuse loudly rather than accept `--safety-bounds
-        // mpu` as a silent no-op (the #377 passthrough) on a multi-memory image.
-        // Programming an MPU region per memory needs synth to emit the startup
-        // that writes MPU_RBAR/RASR — i.e. the SELF-CONTAINED reset handler. But
-        // multi-memory only compiles on `--relocatable` (an ET_REL object whose
-        // startup the HOST linker/runtime owns, where synth writes no MPU
-        // programming), and the self-contained path DECLINES multi-memory above
-        // (one R11 base, every memory aliases). So there is no path today on
-        // which synth both emits its own startup AND lowers > 1 memory — the
-        // cross-memory OOB fault gate cannot be armed. Blocked on self-contained
-        // multi-memory (#406 phase 2). The single-memory `--safety-bounds mpu`
-        // remains the #377 hardware-enforcement passthrough.
-        if safety_bounds == SafetyBounds::Mpu {
+        // #406 / Lane B + RQ-68-MPUHONEST (#1284, #1145): synth emits NO MPU
+        // programming on any path. Multi-memory compiles only on --relocatable,
+        // where the HOST owns startup, and the self-contained path declines
+        // multi-memory above (one R11 base) — so per-memory isolation exists
+        // only if the embedder programs one region per memory from the #1145
+        // region table. gale's two-tenant criterion executed on Renode
+        // (CONTAINED with regions programmed, ESCAPED without), so the flag is
+        // now ACCEPTED — but only with the caller's explicit acknowledgment
+        // (--embedder-mpu, the --embedder-data-init shape); without it this
+        // stays the loud refusal rather than a silent MPU no-op.
+        if safety_bounds == SafetyBounds::Mpu && !embedder_mpu {
             anyhow::bail!(
-                "multi-memory (#406): per-memory MPU isolation (--safety-bounds \
-                 mpu) is not yet realizable for a module with {} linear \
-                 memories. Programming one MPU region per memory requires synth \
-                 to emit the startup that writes MPU_RBAR/RASR — the \
-                 self-contained reset handler — but multi-memory compiles ONLY \
-                 on --relocatable, where the host owns startup and synth emits \
-                 no MPU programming; the self-contained path in turn declines \
-                 multi-memory (one R11 base). Refusing rather than accepting a \
-                 silent MPU no-op. What SHIPS today (#1145, RQ-62-MEMISOLATE): \
-                 the plain --relocatable compile of this module carries a \
-                 per-memory REGION TABLE (`__synth_mem_base_N` / \
-                 `__synth_mem_size_N` / `__synth_mem_count` symbols; memory \
-                 0's base is your R11 value) from which YOUR startup programs \
-                 the MPU — the embedder obligation is documented in \
-                 docs/embedder-abi-relocatable-arm.md. Accepting --safety-bounds \
-                 mpu itself stays refused until the #1145 two-tenant \
-                 cross-region fault criterion has executed on an MPU-bearing \
-                 venue",
+                "multi-memory (#406): --safety-bounds mpu on a module with {} \
+                 linear memories requires --embedder-mpu. synth emits NO MPU \
+                 programming — on --relocatable the host owns startup, and the \
+                 self-contained path declines multi-memory (one R11 base) — so \
+                 per-memory isolation exists only if YOUR startup programs one \
+                 MPU region per memory, granted per execution context, from the \
+                 object's REGION TABLE (`__synth_mem_base_N` / \
+                 `__synth_mem_size_N` / `__synth_mem_count` symbols; memory 0's \
+                 base is your R11 value). The obligation is documented in \
+                 docs/embedder-abi-relocatable-arm.md; gale's two-tenant \
+                 cross-region fault criterion showed that arrangement containing \
+                 an escape on Renode, not silicon (#1145). Pass --embedder-mpu to \
+                 acknowledge it, or drop --safety-bounds mpu (the object is \
+                 byte-identical either way). Refusing rather than accepting a \
+                 silent MPU no-op",
                 all_memories.len()
             );
         }
@@ -5430,6 +5528,41 @@ fn compile_all_exports(
         );
     }
 
+    // RQ-68-MPUHONEST (#1284, #1145): decided HERE because only now is the
+    // output kind known — a module with imports becomes a relocatable object
+    // even without --relocatable. synth emits no MPU programming on any path:
+    //  * a SELF-CONTAINED ARM image owns its startup, so nobody would program
+    //    the MPU — refuse;
+    //  * a relocatable object hands startup to the embedder, so `mpu` is honest
+    //    only when the caller acknowledged programming it (--embedder-mpu) —
+    //    refuse otherwise.
+    // Multi-memory without the flag is refused above with the region-table
+    // diagnostic; RV32 and AArch64 refuse `mpu` before any compilation.
+    if safety_bounds == SafetyBounds::Mpu && !is_aarch64 && !is_riscv {
+        if !(has_external_relocations || relocatable) {
+            anyhow::bail!(
+                "--safety-bounds mpu is refused on a self-contained ARM image: synth \
+                 owns this image's startup and emits NO MPU programming, so the flag \
+                 would be a silent no-op on a memory-safety control (the image would \
+                 be byte-identical to --safety-bounds none). Use --safety-bounds \
+                 software (per-access guards that trap), or compile --relocatable \
+                 --embedder-mpu so YOUR startup programs the MPU from the region \
+                 table (#1145, #1284)"
+            );
+        }
+        if !embedder_mpu {
+            anyhow::bail!(
+                "--safety-bounds mpu on an ARM relocatable object requires \
+                 --embedder-mpu: synth emits no MPU programming, so the embedder must \
+                 program it — one region per linear memory, granted per execution \
+                 context, from R11/R10 and the region table \
+                 (docs/embedder-abi-relocatable-arm.md). Pass --embedder-mpu to \
+                 acknowledge that obligation; the object is byte-identical to \
+                 --safety-bounds none either way (#1145, #1284)"
+            );
+        }
+    }
+
     let elf_data = if is_aarch64 {
         // #851: the aarch64 object ships NO data segments (no data section,
         // no startup — the x28 base itself is an embedder precondition). A
@@ -5710,7 +5843,13 @@ fn compile_all_exports(
     // Phase 1: emit safety-manifest.json next to the ELF when any
     // safety knob is active.
     let linear_mem_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
-    maybe_emit_safety_manifest(&output, target_spec, safety_bounds, linear_mem_bytes)?;
+    maybe_emit_safety_manifest(
+        &output,
+        target_spec,
+        safety_bounds,
+        linear_mem_bytes,
+        embedder_mpu,
+    )?;
 
     // Emit a CycloneDX SBOM when requested.
     if let Some(ref sbom_dest) = sbom_path {
@@ -7232,11 +7371,11 @@ fn build_relocatable_elf(
     // The embedder derives region 0 from the same address it loads into R11.
     //
     // synth still emits NO MPU programming on this path — programming the
-    // regions from this table is the embedder's acknowledged obligation, and
-    // `--safety-bounds mpu` on a multi-memory module KEEPS REFUSING until
-    // the #1145 two-tenant fault criterion has executed on an MPU-bearing
-    // venue (the RQ-62-REACH oracle-first rule). Emitted ONLY for a
-    // multi-memory object: single-memory output is byte-identical.
+    // regions from this table is the embedder's obligation. Since
+    // RQ-68-MPUHONEST (#1284) `--safety-bounds mpu` accepts a multi-memory
+    // module only with --embedder-mpu (the caller's explicit acknowledgment;
+    // gale's #1145 two-tenant criterion executed on Renode). Emitted ONLY for
+    // a multi-memory object: single-memory output is byte-identical.
     if !extra_memories.is_empty() {
         /// `st_shndx` for an absolute (link-invariant) symbol value.
         const SHN_ABS: u16 = 0xfff1;
