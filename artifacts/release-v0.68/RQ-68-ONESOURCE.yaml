@@ -120,13 +120,26 @@ artifacts:
         RATCHET: selector_lines_code 20224 -> 20201 (a fall, recorded as a
         value-bound waiver), selector_lines_total 31227 -> 31204.
 
-        LEFT FOR THE RELEASE, STATED: the mutation-survey re-anchor found 3
-        sites NOT FOUND because this lane deleted the literals they mutated
-        (none is in the CI-replayed subset; the other 34 anchors are exact and
-        the summary is byte-identical). Retiring them per the v0.66 precedent
-        would re-derive the published survey numbers (sampled 37->34,
-        byte-changing 21->19, killed 17->15, silent-changed 15->14), which is a
-        decision about a published measurement, not a refactor's.
+        MUTATION SURVEY — THREE RECORDS RETIRED, THE PUBLISHED NUMBERS MOVED
+        WITH THEM. The re-anchor found 3 sites NOT FOUND because this lane
+        deleted the literals they mutated (`select_with_stack.rs:206:45` and
+        `arm_backend.rs:1238:12`, both KILLED; `liveness.rs:5056:45`,
+        UNRESOLVED; none in the CI-replayed subset; the other 34 anchors are
+        exact). Following the v0.66 precedent they moved to the ledger's
+        `retired` list with reasons, through the tool's own `save_ledger`, so
+        the summary was re-derived, not typed: sampled 37 -> 34, byte-changing
+        21 -> 19, killed 17 -> 15, silent-changed 15 -> 14 — UNTESTED stays 4.
+        `mutation_survey.py report` now reads 4/19 = 21.1 % and silent 4/14 =
+        28.6 % (alternate 4/15 = 26.7 %). Relocating the records onto the new
+        single declarations was refused: a mutation there moves every former
+        copy at once, a different mutant whose classification needs the CI
+        suite replay. Every affected claims.yaml pin moved in the same commit;
+        the headline pin moved off the v0.65 sentence ("4 of 21", kept as
+        history) onto a dated v0.68 note in MUTATION_SURVEY.md that says the
+        rates rose only because the denominator shrank. Verified semantically:
+        exactly three records left `mutants`, every remaining record and the
+        v0.66 retirement are identical, controls/ci_subset/baseline/meta
+        unchanged.
 
         DEVIATION: disk was full on the work volume, so the baseline binary was
         built from the clean base tree into the lane's own target dir and

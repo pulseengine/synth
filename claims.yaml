@@ -3840,7 +3840,12 @@ claims:
   # cannot fail, the exact shape this release exists to find.
   - id: SYNTH-MUTATION-SURVEY-RQ65
     doc: docs/status/MUTATION_SURVEY.md
-    text: "4 of 21 byte-changing mutants survived"
+    # v0.68: the pin moves off the v0.65 sentence ("4 of 21 byte-changing
+    # mutants survived", kept in the report as history) onto the live
+    # headline, because the ledger it binds to no longer reads 21 — three
+    # records were retired by RQ-68-ONESOURCE (#1270). Binding a live count to
+    # a historical sentence would make the pin assert something false.
+    text: "4 of 19 byte-changing mutants UNTESTED (21 %)"
     evidence:
       - kind: ratchet
         name: mutants_untested
@@ -3852,7 +3857,7 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # the byte-changing denominator
-        pattern: '"survey_changed": 21\b'
+        pattern: '"survey_changed": 19\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # the stated sample size
@@ -3864,7 +3869,12 @@ claims:
       # for a first-class state). A denominator that moves needs provenance
       # as much as a numerator does — silently dropping a member shifts every
       # derived rate with no record.
-        pattern: '"survey_sampled": 37\b'
+      # v0.68: 37 -> 34. RQ-68-ONESOURCE (#1270) deleted the three literals
+      # `select_with_stack.rs:206:45`, `liveness.rs:5056:45` and
+      # `arm_backend.rs:1238:12` mutated (two KILLED, one UNRESOLVED); all
+      # three moved to `retired` with reasons, and every rate re-derived by
+      # `summarize()`. The UNTESTED numerator did not move.
+        pattern: '"survey_sampled": 34\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # every red-first control KILLED
@@ -3877,18 +3887,21 @@ claims:
       # loud iff the mutant's `changed[]` triage shows >= 1 `newly-declined`
       # or `compile-timeout` entry, a property of the mutant's corpus effect,
       # not of which layer/killer caught it), re-run over THIS SAME v0.65
-      # ledger (no re-sampling, no oracle invocation). PRIMARY reproduces the
+      # ledger (no re-sampling, no oracle invocation). PRIMARY reproduced the
       # published 27 % (4/15) exactly; ALTERNATE is the review's own named
       # caveat ("25 % if `arm_backend.rs:1006:8` is counted silent", 4/16).
+      # v0.68 (RQ-68-ONESOURCE retirement, above): PRIMARY 4/14, ALTERNATE
+      # 4/15 — the silent denominator lost one KILLED record and the loud
+      # count one; the four silent survivors are unchanged.
       # Pinned so neither number can drift from the ledger it is derived
       # from. See MUTATION_SURVEY.md "The silent subset" for the full rule
       # and why 1006:8 is borderline.
       - kind: count-eq
-        pattern: '"survey_killed_loud": 6\b'
+        pattern: '"survey_killed_loud": 5\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
-        pattern: '"survey_silent_changed": 15\b'
+        pattern: '"survey_silent_changed": 14\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
@@ -3904,15 +3917,15 @@ claims:
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
-        pattern: '"survey_silent_killed_freeze_only": 2\b'
+        pattern: '"survey_silent_killed_freeze_only": 1\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq                       # ALTERNATE: 1006:8 forced silent
-        pattern: '"survey_killed_loud_1006_8_silent": 5\b'
+        pattern: '"survey_killed_loud_1006_8_silent": 4\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
-        pattern: '"survey_silent_changed_1006_8_silent": 16\b'
+        pattern: '"survey_silent_changed_1006_8_silent": 15\b'
         glob: ['docs/status/mutation_survey.json']
         expect: 1
       - kind: count-eq
